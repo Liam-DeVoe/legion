@@ -25,6 +25,7 @@ import {
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
 import goUnicodeIsSpace from "../../../contracts/fixtures/go-unicode-isspace.json";
+import { routeAnswer } from "../../test/route-answers";
 import { bearerCredential } from "../bearer";
 import { cliRefusals } from "../dispatch-cli";
 import type { ExecFn } from "../dispatch-cwd";
@@ -47,7 +48,6 @@ import {
 import { followedAsk } from "../dispatch-subscribe";
 import { renderSessionAnswersList } from "../session-answers";
 import { ToolInputError } from "../tool-input-errors";
-import { routeAnswer } from "./dispatch-route-answers";
 import { fakeSearchResponse } from "./fake-search-response";
 
 const makeDirectory = temporaryDirectories("dispatch-execute");
@@ -57,6 +57,18 @@ function response(body: unknown, status = 200): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+/** A fetch that answers every request with `body` and names the request's `Idempotency-Key`
+ *  back, as Dispatch's keyed layer does, so a write reads the 2xx as Dispatch's own. */
+function echoing(body: unknown) {
+  return async (_url: RequestInfo | URL, init?: RequestInit): Promise<Response> =>
+    new Response(JSON.stringify(body), {
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": (init?.headers as Record<string, string>)["Idempotency-Key"] ?? "",
+      },
+    });
 }
 
 /**
@@ -5761,9 +5773,9 @@ describe("executeDispatchTool", () => {
       parent: null,
       external_links: [],
     };
-    // The read and the PATCH both answer the issue without its components.
-    const fetchImpl = async (_url: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
-      response(issue);
+    // The read and the PATCH both answer the issue without its components; the PATCH names its
+    // key back, as Dispatch's keyed layer does, so the answer is Dispatch's own.
+    const fetchImpl = echoing(issue);
     for (const components of [
       { mode: "explicit", ids: ["web"] },
       { mode: "none", reason: "hiring, not code" },
@@ -11933,6 +11945,51 @@ describe("executeDispatchTool", () => {
       "Dispatch could not say how it would store this text, so nothing was uploaded: POST /api/v1/markdown/round-trip answered without the text it would store (ANSWER_LOST). Send the upload again once that call is answered."
     );
     expect(posts).toEqual([]);
+  });
+
+  // The related-item check and the round trip store nothing (the route table's own words), so a
+  // 2xx of either that gives no answer made nothing: no landing that says what it made, a line that
+  // says nothing was made and that asking again is safe. Dispatch's own such 2xx names the key back.
+  test("dispatch_related answered without its answer says it stores nothing and made nothing", async () => {
+    const fetchImpl = echoing({});
+    const failure = await executeDispatchTool({
+      tool: "dispatch_related",
+      args: { project: "ACME", title: "Retry failed webhook deliveries" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+      writeRetry,
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught
+    );
+
+    expect(failure).not.toBeInstanceOf(DispatchWriteLandedError);
+    expect(failure instanceof Error ? failure.message : String(failure)).toBe(
+      "POST http://dispatch.test/api/v1/projects/ACME/related answered 200 without the answer it asks for (ANSWER_LOST); it stores nothing, so nothing was made, and asking again is safe."
+    );
+  });
+
+  test("the round trip answered without its text says it stores nothing and made nothing", async () => {
+    const fetchImpl = echoing({});
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl as typeof fetch
+    );
+
+    const failure = await client.markdownRoundTrip("# Notes\n").then(
+      () => undefined,
+      (caught: unknown) => caught
+    );
+
+    expect(failure).not.toBeInstanceOf(DispatchWriteLandedError);
+    expect(failure instanceof Error ? failure.message : String(failure)).toBe(
+      "POST http://dispatch.test/api/v1/markdown/round-trip answered 200 without the answer it asks for (ANSWER_LOST); it stores nothing, so nothing was made, and asking again is safe."
+    );
   });
 
   test("uploads inline content the store would hold as it stands, and asks no round trip for a file", async () => {

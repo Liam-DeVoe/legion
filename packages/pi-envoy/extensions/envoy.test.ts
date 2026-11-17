@@ -59,6 +59,7 @@ import {
   startEnvoyStack,
   useEnvoyStackDirectory,
 } from "@legion/envoy-client/test/envoy-stack";
+import { leastAnswerFor, routeAnswer } from "@legion/envoy-client/test/route-answers";
 import { startStallProxy } from "@legion/envoy-client/test/stall-proxy";
 import { runFreezeScenario } from "@legion/envoy-client/test/stall-scenario";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
@@ -1542,12 +1543,32 @@ async function bootSessionPod(query: string, sessionID: string, sessionRole?: st
   };
 }
 
+/**
+ * The listener's answer to a registration, a keyed write's answer to a Dispatch write, and
+ * `fallback` to anything else. A Dispatch write (a POST or PATCH under `/api/v1/`) these tests do
+ * not answer themselves gets its route's least answer, with the request's `Idempotency-Key` named
+ * back as Dispatch's keyed layer names it, so the session's client reads it as Dispatch's answer.
+ */
 function responseWithRegistration(
   input: string | URL | Request,
   init: RequestInit | undefined,
   fallback: unknown
 ): Response {
-  const path = new URL(input.toString()).pathname;
+  const request = new Request(input, init);
+  const path = new URL(request.url).pathname;
+  const written =
+    (request.method === "POST" || request.method === "PATCH") && path.startsWith("/api/v1/")
+      ? leastAnswerFor(request.method, path)
+      : undefined;
+  if (written !== undefined) {
+    return new Response(JSON.stringify(written.body), {
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": request.headers.get("Idempotency-Key") ?? "",
+      },
+      status: written.status,
+    });
+  }
   if (path !== "/v1/interests/subscribe") return response(fallback);
   const body = JSON.parse(init?.body?.toString() ?? "{}") as {
     readonly session_id: string;
@@ -5659,9 +5680,14 @@ console.log(JSON.stringify(args));
           recordWrites.uploads += 1;
           keep(body.content ?? "");
           const name = body.name ?? "";
+          const slug = name.replace(/\./g, "-");
           if (!recordDocuments.some((document) => document.name === name))
-            recordDocuments.push({ id: "doc-decisions", name, slug: name.replace(/\./g, "-") });
-          return Response.json({ artifact: { id: "doc-decisions" } });
+            recordDocuments.push({ id: "doc-decisions", name, slug });
+          return Response.json(
+            routeAnswer("POST /api/v1/projects/{key}/artifacts", {
+              artifact: { id: "doc-decisions", name, slug, project: "INFRA" },
+            })
+          );
         }
         if (url.endsWith("/edits")) {
           const body = JSON.parse(String(init?.body ?? "{}")) as {
@@ -5669,7 +5695,9 @@ console.log(JSON.stringify(args));
           };
           recordWrites.appends += 1;
           for (const op of body.ops ?? []) keep(op.markdown ?? "");
-          return Response.json({ applied: body.ops?.length ?? 0 });
+          return Response.json(
+            routeAnswer("POST /api/v1/artifacts/{id}/edits", { applied: body.ops?.length ?? 0 })
+          );
         }
         return other(input, init);
       };
@@ -5712,7 +5740,9 @@ console.log(JSON.stringify(args));
           stderr: () => {},
           readText: (path) => readFileSync(path, "utf8"),
           cwd: configDirectory,
-          fetchImpl: (async () => Response.json({})) as typeof fetch,
+          // The write's own answer, its route's row with its key named back, as Dispatch's.
+          fetchImpl: (async (input: string | URL | Request, init?: RequestInit) =>
+            responseWithRegistration(input, init, {})) as typeof fetch,
         }
       );
       await fixture.handlers.get("tool_result")?.(
@@ -5883,7 +5913,9 @@ console.log(JSON.stringify(args));
           stderr: () => {},
           readText: (path) => readFileSync(path, "utf8"),
           cwd: configDirectory,
-          fetchImpl: (async () => Response.json({})) as typeof fetch,
+          // The write's own answer, its route's row with its key named back, as Dispatch's.
+          fetchImpl: (async (input: string | URL | Request, init?: RequestInit) =>
+            responseWithRegistration(input, init, {})) as typeof fetch,
         }
       );
       const readLedger = () =>

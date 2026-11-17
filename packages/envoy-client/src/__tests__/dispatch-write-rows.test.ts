@@ -1,20 +1,31 @@
 // Every keyed write of the client (`#write`, `#writeAnswer`, `#upload`: each POST and PATCH) reads
-// its 2xx into the row its callers read (`dispatch-write-rows.ts`), and an answer that gives no row
-// is a landing whose answer was lost (`ANSWER_LOST`). A row check stricter than Dispatch's true
-// answer would turn a good answer into that landing, so each method is driven here against the
-// answers its route's operation declares in the OpenAPI document the server generates
-// (`dispatch-route-answers.ts` reads it): two instances of each 2xx schema, the least one the
-// schema admits (every optional member absent, every nullable member null, every list empty) and
-// the most one (every member present, none null, every list holding one item), each an answer the
-// route declares. Each must come back as the call's answer, and a body that is no row (an HTML
-// page, an empty body, `{}`, `null`) must be `ANSWER_LOST`. The answers the other tests' stubs
-// serve for a keyed write come from `routeAnswer`, which holds each to its route's schema.
+// its 2xx into the row its callers read (`dispatch-write-rows.ts`) by one rule, which turns on
+// whether the 2xx names the call's `Idempotency-Key` back, as Dispatch's keyed layer does on every
+// 2xx it gives a keyed write. A 2xx that names it back is Dispatch's: its row is the answer, and a
+// body that gives no row is a landing whose answer was lost (`ANSWER_LOST`). A 2xx that names no
+// key back and gives the row is the answer of a Dispatch with no keyed layer. Any other 2xx is not
+// Dispatch's answer to the call, so the write's outcome is unknown. A route that stores nothing
+// made nothing either way. A row check stricter than Dispatch's true answer would turn a good
+// answer into a landing, so each method is driven here against the answers its route's operation
+// declares in the OpenAPI document the server generates (`test/route-answers.ts` reads it):
+// two instances of each 2xx schema, the least one the schema admits (every optional member
+// absent, every nullable member null, every list empty) and the most one (every member present,
+// none null, every list holding one item), each an answer the route declares. The answers the
+// other tests' stubs serve for a keyed write come from `routeAnswer`, which holds each to its
+// route's schema.
 import { describe, expect, test } from "bun:test";
-import type { Actor } from "@legion/contracts";
+import { type Actor, IDEMPOTENCY_KEY_HEADER } from "@legion/contracts";
+import { answerErrors, answersOf, instance, onRoute, routeAnswer } from "../../test/route-answers";
 import { bearerCredential } from "../bearer";
-import { DISPATCH_ANSWER_LOST, DispatchClient, DispatchWriteLandedError } from "../dispatch-http";
-import { WRITE_ROWS } from "../dispatch-write-rows";
-import { answerErrors, answersOf, instance, onRoute, routeAnswer } from "./dispatch-route-answers";
+import {
+  DISPATCH_ANSWER_LOST,
+  DispatchAnswerMissingError,
+  DispatchClient,
+  type DispatchLandedCode,
+  DispatchWriteLandedError,
+  writeOutcomeUnknown,
+} from "../dispatch-http";
+import { rowStores, WRITE_ROWS } from "../dispatch-write-rows";
 
 const actor = { kind: "session", id: "session-rows" } as Actor;
 const content = { name: "notes.md", content: "# Notes\n", actor };
@@ -272,9 +283,20 @@ const CASES: readonly WriteRowCase[] = [
   },
 ];
 
-/** A Dispatch that answers the case's route with `status` and `body` under `type` (and its
- *  fallback's first route with no route for it), recording each request it was sent. */
-function dispatchAnswering(row: WriteRowCase, status: number, type: string, body: string) {
+/** Which key a stand-in's 2xx names back: the request's own, as Dispatch's keyed layer does,
+ *  none, as a Dispatch with no keyed layer or something in Dispatch's place does, or another. */
+type Echo = "this" | "none" | "other";
+
+/** A Dispatch that answers the case's route with `status` and `body` under `type`, naming back
+ *  the key `echo` says (and its fallback's first route with no route for it), recording each
+ *  request it was sent. */
+function dispatchAnswering(
+  row: WriteRowCase,
+  status: number,
+  type: string,
+  body: string,
+  echo: Echo
+) {
   const sent: string[] = [];
   const fetchImpl = (async (input: Request | string | URL, init?: RequestInit) => {
     const request = new Request(input, init);
@@ -287,7 +309,11 @@ function dispatchAnswering(row: WriteRowCase, status: number, type: string, body
         { status: 404 }
       );
     }
-    return new Response(body, { status, headers: { "Content-Type": type } });
+    const headers: Record<string, string> = { "Content-Type": type };
+    const key = request.headers.get(IDEMPOTENCY_KEY_HEADER) ?? "";
+    if (echo === "this") headers[IDEMPOTENCY_KEY_HEADER] = key;
+    if (echo === "other") headers[IDEMPOTENCY_KEY_HEADER] = `${key}-another`;
+    return new Response(body, { status, headers });
   }) as typeof fetch;
   const client = new DispatchClient("http://dispatch.test", bearerCredential("secret"), fetchImpl, {
     sleep: async () => undefined,
@@ -295,13 +321,16 @@ function dispatchAnswering(row: WriteRowCase, status: number, type: string, body
   return { sent, client };
 }
 
-/** What the call made of the answer: the answer, or the landing's code, or the error. */
-async function outcome(row: WriteRowCase, status: number, type: string, body: string) {
-  const { sent, client } = dispatchAnswering(row, status, type, body);
+/** What the call made of the answer: the answer, the landing's code, an outcome it cannot know,
+ *  the answer missing from a call that stores nothing, or the error. */
+async function outcome(row: WriteRowCase, status: number, type: string, body: string, echo: Echo) {
+  const { sent, client } = dispatchAnswering(row, status, type, body, echo);
   try {
     return { sent, answered: await row.call(client) };
   } catch (error) {
     if (error instanceof DispatchWriteLandedError) return { sent, landed: error.code };
+    if (error instanceof DispatchAnswerMissingError) return { sent, missing: error.code };
+    if (writeOutcomeUnknown(error)) return { sent, unknown: true };
     return {
       sent,
       thrown: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
@@ -309,10 +338,26 @@ async function outcome(row: WriteRowCase, status: number, type: string, body: st
   }
 }
 
-describe("every keyed write reads Dispatch's declared answer as its row, and anything else as ANSWER_LOST", () => {
+/** What a 2xx that is not the call's answer is: for a route that stores, a landing whose answer
+ *  was lost where the 2xx is Dispatch's own (it names the key back), and an outcome the call
+ *  cannot know where it is not; for a route that stores nothing, a missing answer either way. */
+function noAnswer(
+  row: WriteRowCase,
+  echo: Echo
+): { landed?: DispatchLandedCode; unknown?: boolean; missing?: string } {
+  if (!rowStores(WRITE_ROWS[row.method])) return { missing: DISPATCH_ANSWER_LOST };
+  return echo === "this" ? { landed: DISPATCH_ANSWER_LOST } : { unknown: true };
+}
+
+describe("every keyed write reads Dispatch's declared answer as its row, by the key it names back", () => {
   test("the table drives every row of WRITE_ROWS", () => {
     const driven = [...new Set<string>(CASES.map((row) => row.method))].sort();
     expect(driven).toEqual(Object.keys(WRITE_ROWS).sort());
+  });
+
+  test("the routes that store nothing are the round trip and the related-item check", () => {
+    const stores = Object.entries(WRITE_ROWS).filter(([, row]) => !rowStores(row));
+    expect(stores.map(([method]) => method).sort()).toEqual(["markdownRoundTrip", "related"]);
   });
 
   for (const row of CASES) {
@@ -328,7 +373,7 @@ describe("every keyed write reads Dispatch's declared answer as its row, and any
           const answered = instance(answer.schema, extent);
           expect(answerErrors(row.route, answer.status, answered)).toEqual([]);
           const body = JSON.stringify(answered);
-          const got = await outcome(row, answer.status, "application/json", body);
+          const got = await outcome(row, answer.status, "application/json", body, "this");
           expect({ landed: got.landed, thrown: got.thrown }).toEqual({
             landed: undefined,
             thrown: undefined,
@@ -338,18 +383,65 @@ describe("every keyed write reads Dispatch's declared answer as its row, and any
         });
       }
     }
-    const status = answers[0]?.status ?? 201;
-    for (const [name, type, body] of [
-      ["an HTML page", "text/html", "<html><body>not json</body></html>"],
-      ["an empty body", "application/json", ""],
-      ["JSON null", "application/json", "null"],
-      ...(READS_NOTHING[row.method] ? [] : [["the JSON {}", "application/json", "{}"]]),
-    ] as const) {
-      test(`${label}: a ${status} with ${name} is ANSWER_LOST`, async () => {
-        expect((await outcome(row, status, type, body)).landed).toBe(DISPATCH_ANSWER_LOST);
+    const first = answers[0];
+    if (first === undefined) throw new Error(`${row.route} declares no 2xx answer`);
+    const status = first.status;
+    const least = JSON.stringify(instance(first.schema, "least"));
+    // Every Dispatch 2xx to a keyed write names its key back (`TestEveryKeyedAnswerNamesItsKey`,
+    // packages/envoy/internal/dispatch/api/request_keys_test.go); a Dispatch that runs no keyed
+    // layer names none, and its answer is still the call's.
+    test(`${label}: the least ${status} answer naming no key back is the call's answer`, async () => {
+      const got = await outcome(row, status, "application/json", least, "none");
+      expect({
+        landed: got.landed,
+        unknown: got.unknown,
+        missing: got.missing,
+        thrown: got.thrown,
+      }).toEqual({ landed: undefined, unknown: undefined, missing: undefined, thrown: undefined });
+    });
+    test(`${label}: the least ${status} answer naming another key back is not this call's`, async () => {
+      const got = await outcome(row, status, "application/json", least, "other");
+      expect({ landed: got.landed, unknown: got.unknown, missing: got.missing }).toEqual({
+        landed: undefined,
+        unknown: undefined,
+        missing: undefined,
+        ...noAnswer(row, "other"),
       });
+    });
+    for (const echo of ["this", "none"] as const) {
+      const named = echo === "this" ? "naming its key back" : "naming no key back";
+      for (const [name, type, body] of [
+        ["an HTML page", "text/html", "<html><body>not json</body></html>"],
+        ["an empty body", "application/json", ""],
+        ["JSON null", "application/json", "null"],
+        ...(READS_NOTHING[row.method] ? [] : [["the JSON {}", "application/json", "{}"]]),
+      ] as const) {
+        const expected = noAnswer(row, echo);
+        const reads =
+          "landed" in expected ? "ANSWER_LOST" : "missing" in expected ? "no answer" : "unknown";
+        test(`${label}: a ${status} with ${name}, ${named}, is ${reads}`, async () => {
+          const got = await outcome(row, status, type, body, echo);
+          expect({ landed: got.landed, unknown: got.unknown, missing: got.missing }).toEqual({
+            landed: undefined,
+            unknown: undefined,
+            missing: undefined,
+            ...expected,
+          });
+        });
+      }
     }
   }
+});
+
+describe("a stub's answer names only members its route declares (routeAnswer)", () => {
+  test("a member the route does not declare is refused, naming it", () => {
+    expect(() =>
+      routeAnswer("PATCH /api/v1/issues/{key}", { key: "DSP-1", artifacts: [] })
+    ).toThrow("names artifacts, which the route does not declare");
+    expect(() =>
+      routeAnswer("POST /api/v1/issues/{key}/artifacts", { artifact: { id: "a", sha: "x" } })
+    ).toThrow("names artifact.sha, which the route does not declare");
+  });
 });
 
 describe("a stub's answer to a keyed write is one its route declares (routeAnswer)", () => {

@@ -426,9 +426,11 @@ func TestAWriteWithoutAKeyRunsEachTime(t *testing.T) {
 	}
 }
 
-// Every answer to a keyed request names its key back - run, replayed, refused 422, refused 409 and
-// a 5xx the key does not keep - so a client can tell a Dispatch that judged the key from one that
-// ignored the header, and retries a 5xx under its key only against the first.
+// Every answer to a keyed request names its key back - run, replayed, refused 422, refused 409, a
+// 5xx the key does not keep, a 204 with no body and an answer past the kept size, written through
+// as it comes and replayed as its status alone - so a client can tell a Dispatch that judged the
+// key from one that ignored the header, retries a 5xx under its key only against the first, and
+// reads a 2xx that names no key back, or another, as no answer of Dispatch's to its write.
 func TestEveryKeyedAnswerNamesItsKey(t *testing.T) {
 	running := make(chan struct{})
 	var slowRuns atomic.Int32
@@ -437,6 +439,12 @@ func TestEveryKeyedAnswerNamesItsKey(t *testing.T) {
 		switch {
 		case r.PathValue("thing") == "broken":
 			writeError(w, "BROKEN", http.StatusInternalServerError, "the handler's own failure")
+		case r.PathValue("thing") == "empty":
+			w.WriteHeader(http.StatusNoContent)
+		case r.PathValue("thing") == "large":
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(w, strings.Repeat("x", keyedAnswerKept+10))
 		case r.PathValue("thing") == "slow":
 			if slowRuns.Add(1) == 1 {
 				close(running)
@@ -457,6 +465,10 @@ func TestEveryKeyedAnswerNamesItsKey(t *testing.T) {
 	names("a replay", rig.send(t, "a", nil, "alice", `"echo-1"`), http.StatusCreated, "echo-1")
 	names("a reused key", rig.send(t, "b", nil, "alice", "echo-1"), http.StatusUnprocessableEntity, "echo-1")
 	names("a 5xx", rig.send(t, "broken", nil, "alice", "echo-2"), http.StatusInternalServerError, "echo-2")
+	names("a 204", rig.send(t, "empty", nil, "alice", "echo-4"), http.StatusNoContent, "echo-4")
+	names("a 204 replayed", rig.send(t, "empty", nil, "alice", "echo-4"), http.StatusNoContent, "echo-4")
+	names("an answer past the kept size", rig.send(t, "large", nil, "alice", "echo-5"), http.StatusCreated, "echo-5")
+	names("its replay, its status alone", rig.send(t, "large", nil, "alice", "echo-5"), http.StatusCreated, "echo-5")
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- rig.send(t, "slow", nil, "alice", "echo-3") }()
 	<-running
