@@ -123,7 +123,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 # The shell scanner below (commands_of) is .github/scripts/shell_commands.py's, beside this script
-# in the repository it checks; check-legion-version-inputs.sh reads a version step with it too.
+# in the repository it checks.
 # PYTHONDONTWRITEBYTECODE keeps the import from leaving a __pycache__ in the tree.
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 <<'PY'
 import json

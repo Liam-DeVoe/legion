@@ -1,20 +1,16 @@
 """Just enough shell to find the simple commands of a workflow step's `run:`: one quote-aware pass,
-as bash reads it, shared by check-release-credentials.sh, whose header gives the rules it follows
-(the paragraph on what "runs dependency code" means), and check-legion-version-inputs.sh, which
-holds a release's version step to the one invocation that hands it its paths.
+as bash reads it, for check-release-credentials.sh, whose header gives the rules it follows (the
+paragraph on what "runs dependency code" means).
 
-  commands_of(run)         each simple command, from its command word on: the assignments and
-                           keywords before it shed, an interpreter looked through to the command
-                           it is handed, and `eval` and `-c` strings scanned in turn.
-  simple_commands_of(run)  each simple command's words as written, assignments and keywords
-                           included, nothing looked through: what a check needs to see an
-                           assignment-only command such as `X=` that commands_of drops.
+  commands_of(run)  each simple command, from its command word on: the assignments and keywords
+                    before it shed, an interpreter looked through to the command it is handed, and
+                    `eval` and `-c` strings scanned in turn.
 
-Both read `${{ ... }}` expressions as the one word EXPR, drop comments, and drop a redirection's
+It reads `${{ ... }}` expressions as the one word EXPR, drops comments, and drops a redirection's
 target (`>> "$GITHUB_OUTPUT"` names no command); a word is its text with the quotes removed.
 
-Imported from this directory, which both scripts put on PYTHONPATH; their harnesses link it into
-each fixture beside the script under test.
+Imported from this directory, which the script puts on PYTHONPATH; its harness links it into each
+fixture beside the script under test.
 """
 
 from __future__ import annotations
@@ -35,13 +31,12 @@ INTERPRETERS = {"bash", "sh", "dash", "zsh", "source", "."}
 
 
 class Scanner:
-    """One quote-aware pass over a `run:`, as bash reads it, collecting each simple command's
-    words through `reduce`. Between characters it holds the word being read, the words of the
+    """One quote-aware pass over a `run:`, as bash reads it (the header's rules), collecting each
+    simple command's words. Between characters it holds the word being read, the words of the
     command being read, whether the next character begins a word (where a `#` starts a comment),
     and whether the next word is a redirection's target (dropped: `>/dev/null` names no command)."""
 
-    def __init__(self, reduce) -> None:
-        self.reduce = reduce
+    def __init__(self) -> None:
         self.commands: list[list[str]] = []
         self.words: list[str] = []
         self.word = ""
@@ -66,7 +61,7 @@ class Scanner:
     def end_command(self) -> None:
         self.end_word()
         if self.words:
-            self.commands += self.reduce(self.words)
+            self.commands += command_of(self.words)
         self.words = []
         self.redirect_target = False
 
@@ -147,13 +142,7 @@ class Scanner:
 
 def commands_of(run: str) -> list[list[str]]:
     """Each simple command of a `run:`, as its words with the command first."""
-    return Scanner(command_of).scan(EXPRESSION.sub("EXPR", run))
-
-
-def simple_commands_of(run: str) -> list[list[str]]:
-    """Each simple command of a `run:`, as its words as written: assignments, keywords and
-    interpreters kept, nothing looked through."""
-    return Scanner(lambda words: [list(words)]).scan(EXPRESSION.sub("EXPR", run))
+    return Scanner().scan(EXPRESSION.sub("EXPR", run))
 
 
 def command_of(words: list[str]) -> list[list[str]]:

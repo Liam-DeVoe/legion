@@ -16,6 +16,13 @@ accounts for are one plan, kept here.
                                leaves cgo to the runner; agent-secrets and agent-secrets-helper for
                                the same under CGO_ENABLED=0; and agent-secrets for each os/arch of
                                .github/agent-secrets-client-targets.json under CGO_ENABLED=0.
+  VERSION_STEPS                each step that hands a line's paths to release-push.sh, with the
+                               variables that hold those paths and the run: it must be, character
+                               for character after YAML has read it. Exact text is the rule
+                               because shell that reads like the command may not run it: an
+                               escaped `\\$`, a `${{ }}` line GitHub renders into an assignment, or
+                               any added line can keep the paths from release-push.sh, and a
+                               reader of shell finds one more such form each time.
 
 Pure: each caller reads the target lists its own way and hands them in, and keeps its own
 annotations and its own handling of a failure.
@@ -27,6 +34,46 @@ from typing import NamedTuple
 
 DAEMON = "packages/daemon"
 ENVOY = "packages/envoy"
+RELEASE = ".github/workflows/release.yaml"
+LISTENER = ".github/workflows/release-envoy-listener.yaml"
+LEGION_ARGS = "LEGION_VERSION_ARGS"
+LEGION_BLOCK = "LEGION_GO_INPUTS"
+ENVOY_ARGS = "LEGION_ENVOY_VERSION_ARGS"
+
+
+class VersionStep(NamedTuple):
+    """A step that hands a line's paths to release-push.sh: where it is, the workflow-level
+    variables that hold the paths, and its whole run: text."""
+
+    workflow: str
+    job: str
+    step_id: str
+    variables: tuple[str, ...]
+    run: str
+
+
+VERSION_STEPS = (
+    VersionStep(RELEASE, "legion_build", "version", (LEGION_ARGS, LEGION_BLOCK), (
+        "# shellcheck disable=SC2086 # the two are the argument list, split on purpose\n"
+        '.github/scripts/release-push.sh version legion-v $LEGION_VERSION_ARGS $LEGION_GO_INPUTS >> "$GITHUB_OUTPUT"\n'
+    )),
+    VersionStep(LISTENER, "release_build", "version", (ENVOY_ARGS,), (
+        "# shellcheck disable=SC2086 # $LEGION_ENVOY_VERSION_ARGS is the argument list, split on purpose\n"
+        '.github/scripts/release-push.sh version legion-envoy-v $LEGION_ENVOY_VERSION_ARGS >> "$GITHUB_OUTPUT"\n'
+    )),
+    VersionStep(LISTENER, "release_publish", "confirm", (ENVOY_ARGS,), (
+        "status=0\n"
+        "# shellcheck disable=SC2086 # $LEGION_ENVOY_VERSION_ARGS is the argument list, split on purpose\n"
+        '.github/scripts/release-push.sh version legion-envoy-v --expect "$VERSION" $LEGION_ENVOY_VERSION_ARGS'
+        " >/dev/null || status=$?\n"
+        "case $status in\n"
+        '  0) echo "release=true" >> "$GITHUB_OUTPUT" ;;\n'
+        "  3) ;;\n"
+        '  4) .github/scripts/release-push.sh restart release-envoy-listener.yaml "$LOST_RACES" ;;\n'
+        '  *) exit "$status" ;;\n'
+        "esac\n"
+    )),
+)
 
 
 class Listing(NamedTuple):
