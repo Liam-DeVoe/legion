@@ -199,6 +199,62 @@ func TestTheRetrosRatingReachesItsRecord(t *testing.T) {
 	}
 }
 
+// A retro runs again in its run when the merge finds the head conflicting with its base and sends
+// the work back: the work comes through testing, review and acceptance to the retro once more, and
+// that retro's completion rates the plan again. Each rating lands on the record of its own run of
+// the retro, the id of that run's end, from the count of the retro's starts, and the first rating
+// stays as it was written. The run is the issue's third, so the generation in each id is a number
+// neither retro's count of starts is, and each retro is completed by a new engine over the same
+// store, as after a restart.
+func TestASecondRetroOfARunRatesItsOwnRecord(t *testing.T) {
+	pool := migratedPool(t)
+	root := stepRoot(t, pool, phase.Accepting)
+	root.Generation = 3
+	seedIssue(t, pool, root)
+	seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleImplementer, Claim: "implement-claim"})
+	retro := func(rating int, reason string) {
+		t.Helper()
+		engine := stepEngine(nil)
+		move(t, pool, engine, root.Key, TriggerSignOff, "", record.PhaseRow{})
+		applyRefusingNothing(t, pool, engine, intake.HandoffComplete{Generation: 3, Issue: root.Key, Role: claim.RoleImplementer,
+			Claim: "implement-claim", Summary: "retro done", Commit: "head", PlanRating: rating, PlanReason: reason})
+		assertPhase(t, pool, phase.Merging)
+	}
+	retro(2, "The plan put the tests after the review.")
+	engine := stepEngine(nil)
+	for _, trigger := range []TriggerKind{TriggerConflict, TriggerImplementationReady, TriggerTesterPassed, TriggerReviewApproved} {
+		move(t, pool, engine, root.Key, trigger, "", record.PhaseRow{})
+	}
+	assertPhase(t, pool, phase.Accepting)
+	retro(4, "The plan left the migration to its last step.")
+
+	var ends, rated []record.StepRecord
+	for _, write := range stepWrites(t, pool, root.Key) {
+		if write.Kind == "retro" && isEnd(write) {
+			ends = append(ends, write)
+		}
+		if write.Rating != nil || write.RatingReason != nil {
+			rated = append(rated, write)
+		}
+	}
+	agent := token(t, root.Key, claim.RoleImplementer)
+	want := []record.StepRecord{
+		{ID: StepID(root.Key, 3, "default", "retro", 0, 1), Task: "default", Kind: "retro", Role: "implementer", Agent: agent,
+			Generation: 3, Rating: new(2), RatingReason: new("The plan put the tests after the review.")},
+		{ID: StepID(root.Key, 3, "default", "retro", 0, 2), Task: "default", Kind: "retro", Role: "implementer", Agent: agent,
+			Generation: 3, Rating: new(4), RatingReason: new("The plan left the migration to its last step.")},
+	}
+	if len(ends) != 2 || len(rated) != 2 {
+		t.Fatalf("two retros wrote the retro ends %+v and the ratings %+v, want two of each", ends, rated)
+	}
+	for i := range want {
+		if !reflect.DeepEqual(rated[i], want[i]) || rated[i].ID != ends[i].ID {
+			t.Errorf("rating %d = %+v (rating %v, reason %v), want %+v on the record of retro %d, whose end is %s", i+1, rated[i],
+				deref(rated[i].Rating), deref(rated[i].RatingReason), want[i], i+1, ends[i].ID)
+		}
+	}
+}
+
 // deref is a pointer's value, or "<absent>" for nil, so a failure prints what a field says.
 func deref[T any](value *T) any {
 	if value == nil {
