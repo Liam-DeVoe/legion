@@ -1673,6 +1673,47 @@ test("a person's decision is drawn as nothing while the asks read is out, and a 
   }
 });
 
+// R5 and R35: while the asks read is out or refused, the run a person's decision shaped stands
+// with an empty cell, and `w` on its statements says nothing rather than that no decision is
+// recorded behind them, which the view cannot know until that read answers.
+test("w on a statement whose person's decision waits on the asks read reports no missing decision", async () => {
+  const user = userEvent.setup();
+  const made = [
+    decision({
+      asks: ["ask-1"],
+      block_id: "d1",
+      kind: "person",
+      links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+    }),
+    decision({ block_id: "d2", kind: "agent", links: [shaped(statementRef("r2"))] }),
+  ];
+  const tree = issueTree([
+    statement("r1"),
+    statement("r2"),
+    decisionNode("d1"),
+    decisionNode("d2"),
+  ]);
+  for (const asks of ["out", "failed"] as const) {
+    const { read, view } = drawBody(tree, made, { asks });
+    try {
+      if (asks === "failed")
+        await waitFor(() => alertSaying(view, ANSWER_LINES.answers_unreadable));
+      for (const id of ["r1", "r2"]) {
+        const row = rowOf(view, `spec#b-${id}`);
+        act(() => row.focus());
+        await user.keyboard("w");
+        expect(
+          row.querySelector("[data-row-report]")?.textContent ?? "",
+          `w on statement ${id} says no decision is recorded while the asks read is ${asks}`
+        ).not.toBe(KEY_REPORTS.no_decision);
+      }
+    } finally {
+      view.unmount();
+      read.mockRestore();
+    }
+  }
+});
+
 // R5 and R35: a refused read of the spec's blocks says the statements could not be read, in the
 // line the view already says it in, and the issue's sentences say nothing, rather than that the
 // spec has no summary, which the view cannot know.
