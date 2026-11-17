@@ -154,7 +154,7 @@ func (r *reviewRangeLive) controlNoRecordNoCommit() {
 	if got := r.reviewedHead(issue.key); got != issue.first {
 		r.t.Fatalf("phases.reviewed_head of %s's reviewer before the clear = %q, want %s, the head its review of round 1 read", issue.key, got, issue.first)
 	}
-	tag, err := r.st.Pool().Exec(context.Background(), "update phases set reviewed_head = '' where issue = $1 and role = 'reviewer'", issue.key)
+	tag, err := r.st.Pool().Exec(context.Background(), "update phases set reviewed_head = '' where issue = $1 and role = $2", issue.key, string(claim.RoleReviewer))
 	if err != nil || tag.RowsAffected() != 1 {
 		r.t.Fatalf("clear phases.reviewed_head of %s's reviewer = %v rows, %v; want 1 row and no error", issue.key, tag.RowsAffected(), err)
 	}
@@ -286,7 +286,7 @@ func handoffLine(key, word string, version int) string {
 func (r *reviewRangeLive) reviewedHead(key string) string {
 	r.t.Helper()
 	var head string
-	if err := r.st.Pool().QueryRow(context.Background(), "select reviewed_head from phases where issue = $1 and role = 'reviewer'", key).Scan(&head); err != nil {
+	if err := r.st.Pool().QueryRow(context.Background(), "select reviewed_head from phases where issue = $1 and role = $2", key, string(claim.RoleReviewer)).Scan(&head); err != nil {
 		r.t.Fatalf("read phases.reviewed_head of %s's reviewer: %v", key, err)
 	}
 	return head
