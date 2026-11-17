@@ -10,6 +10,7 @@ import {
   GOING_EVENT_ITEM,
   GOING_EVENT_NONE,
   GOING_EVENT_TEXT,
+  type GraphFrame,
 } from "@legion/contracts";
 
 import { graphNode } from "../../../__tests__/graph-fixture";
@@ -17,28 +18,27 @@ import type { GraphEdge, GraphReferences } from "../../../api/types";
 import { drawnLine, firstLineOf } from "../issue-tree";
 import { EMPTY_STATE_LINES, NODE_REFERENCES_WORDS, STATE_LINES, sentenceCase } from "../page-words";
 import { plainWords } from "../tree-drafts";
-import { type RunFrame, runView } from "./run-page";
+import { runView } from "./run-page";
 
 const RUN = "3f2b8c1e-5d4a-4b6f-9e2d-1a7c0b9e8f43";
 const ASKED_AT = "2026-11-17T09:00:00Z";
 const QUESTION = "When does the release ship?\n\nAnd who **owns** it?";
 
 /** The run's read: its node, carrying `frames` as the server's answer does, and `edges`. */
-function answerOf(frames: readonly RunFrame[], edges: readonly GraphEdge[] = []): GraphReferences {
+function answerOf(
+  frames: readonly GraphFrame[],
+  edges: readonly GraphEdge[] = []
+): GraphReferences {
   return {
     edges: [...edges],
-    node: Object.assign(
-      graphNode({
-        id: RUN,
-        // Not in this branch's `GraphNode["kind"]` until the contracts that add it are merged, as
-        // `RunFrame` says; that merge drops the cast.
-        kind: "interaction" as GraphReferences["node"]["kind"],
-        made_at: ASKED_AT,
-        ref: `dispatch://interaction/${RUN}`,
-        text: QUESTION,
-      }),
-      { frames }
-    ),
+    node: graphNode({
+      frames: [...frames],
+      id: RUN,
+      kind: "interaction",
+      made_at: ASKED_AT,
+      ref: `dispatch://interaction/${RUN}`,
+      text: QUESTION,
+    }),
   };
 }
 
@@ -56,7 +56,7 @@ const CHANGED_ISSUE: GraphEdge = {
 };
 
 /** A frame of the answer. */
-function frame(sequence: number, name: string, data: RunFrame["data"] = null): RunFrame {
+function frame(sequence: number, name: string, data: GraphFrame["data"] = null): GraphFrame {
   return { data, name, sequence };
 }
 
@@ -109,7 +109,7 @@ test("the view holds the question, the time, each frame in order with its drawin
 
   // No answer at all, and each way a run fails, by its line; a code the page does not know, and
   // none, draw the answer having failed.
-  const lines = (frames: readonly RunFrame[]) =>
+  const lines = (frames: readonly GraphFrame[]) =>
     runView(answerOf(frames)).parts.map((part) => (part.kind === "line" ? part.text : ""));
   expect(lines([frame(1, GOING_EVENT_NONE), frame(2, GOING_EVENT_END)])).toEqual([
     EMPTY_STATE_LINES.run_none,

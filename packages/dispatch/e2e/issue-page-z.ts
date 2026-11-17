@@ -1,3 +1,4 @@
+import { GOING_RUN_HEADER } from "@legion/contracts";
 import { expect, type Locator, type Page } from "@playwright/test";
 
 import type { IssueTreeAnswer } from "../web/src/api/client";
@@ -37,13 +38,6 @@ import type { ApiRequests } from "./traffic";
  *   asker, drawn into the shell's content element `[data-testid="main-content"]` (`app.tsx`,
  *   `shell/NotFoundPage.tsx`).
  */
-
-/**
- * The header a write carries to say it is made inside a command bar run, naming the run. This is
- * the server's `GOING_RUN_HEADER` of `packages/contracts/src/going.ts`, which this branch's
- * contracts do not hold yet; the merge which brings it replaces this constant with the import.
- */
-const RUN_HEADER = "Dispatch-Going-Run";
 
 /** The project every issue of the seed is in. */
 const PROJECT = "CORE";
@@ -99,8 +93,8 @@ export async function runAs(
   return { created_at: run.created_at, id: run.id };
 }
 
-/** One write as `login` inside the run `run`: it carries `RUN_HEADER`, and anything but a 2xx
- *  answer throws. */
+/** One write as `login` inside the run `run`: it carries `GOING_RUN_HEADER`, and anything but a
+ *  2xx answer throws. */
 async function inRun<T>(
   run: string,
   login: string,
@@ -113,7 +107,7 @@ async function inRun<T>(
     headers: {
       ...(await userHeaders(login)),
       "Content-Type": "application/json",
-      [RUN_HEADER]: run,
+      [GOING_RUN_HEADER]: run,
     },
     method,
   });

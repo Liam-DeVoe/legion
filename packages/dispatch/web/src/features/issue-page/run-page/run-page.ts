@@ -7,6 +7,7 @@ import {
   GOING_EVENT_ITEM,
   GOING_EVENT_NONE,
   GOING_EVENT_TEXT,
+  type GraphFrame,
 } from "@legion/contracts";
 import { queryOptions, type UseQueryResult, useQuery } from "@tanstack/react-query";
 
@@ -33,23 +34,6 @@ import { plainWords } from "../tree-drafts";
  * can read; the page draws the asker's whole question, each frame of the answer in its own order
  * and words, and the nodes the run changed.
  */
-
-/**
- * One frame of a run's answer, as the graph read carries it on the run's node. This is the
- * server's generated `GraphFrame`, which this branch's contracts do not hold yet; the merge that
- * brings it replaces `RunFrame` with `GraphFrame` from `../../../api/types`.
- */
-export interface RunFrame {
-  data: { [key: string]: unknown } | null;
-  name: string;
-  sequence: number;
-}
-
-/** The run's frames, as its node carries them: none where the node carries none. */
-function runFramesOf(node: GraphReferences["node"]): readonly RunFrame[] {
-  // `GraphNode` has no `frames` until the merge `RunFrame`'s doc names, which drops this cast.
-  return (node as GraphReferences["node"] & { readonly frames?: readonly RunFrame[] }).frames ?? [];
-}
 
 /** Whether `id` can name a run at all: the lowercase canonical uuid the last segment of its
  *  address holds, as the store writes one. Anything else names no run, so nothing is asked for
@@ -157,7 +141,7 @@ function errorLine(code: unknown): string {
 
 /** The parts `frames` draw, in `sequence` order: a run of `text` frames is one answer, and an
  *  `end` frame, or a frame of a name the page does not know, draws nothing. */
-function partsOf(frames: readonly RunFrame[]): RunPart[] {
+function partsOf(frames: readonly GraphFrame[]): RunPart[] {
   const parts: RunPart[] = [];
   for (const frame of [...frames].sort((a, b) => a.sequence - b.sequence)) {
     const data = frame.data ?? {};
@@ -231,7 +215,7 @@ export function runView(answer: GraphReferences): RunView {
   return {
     at: answer.node.made_at,
     changed: changedOf(answer.edges ?? []),
-    parts: partsOf(runFramesOf(answer.node)),
+    parts: partsOf(answer.node.frames ?? []),
     question: answer.node.text ?? "",
   };
 }

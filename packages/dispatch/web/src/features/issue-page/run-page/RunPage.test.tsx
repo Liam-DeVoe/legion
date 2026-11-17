@@ -10,6 +10,7 @@ import {
   GOING_EVENT_ITEM,
   GOING_EVENT_NONE,
   GOING_EVENT_TEXT,
+  type GraphFrame,
 } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -34,7 +35,6 @@ import {
 } from "../page-words";
 import { plainWords } from "../tree-drafts";
 import { RunPage } from "./RunPage";
-import type { RunFrame } from "./run-page";
 
 const RUN = "3f2b8c1e-5d4a-4b6f-9e2d-1a7c0b9e8f43";
 const ASKED_AT = "2026-11-17T09:00:00Z";
@@ -42,29 +42,25 @@ const RUN_WORD = sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction);
 
 /** The run's read: its node, carrying `frames` as the server's answer does, and `edges`. */
 function answerOf(
-  frames: readonly RunFrame[],
+  frames: readonly GraphFrame[],
   edges: readonly GraphEdge[] = [],
   question = "When does the release ship?"
 ): GraphReferences {
   return {
     edges: [...edges],
-    node: Object.assign(
-      graphNode({
-        id: RUN,
-        // Not in this branch's `GraphNode["kind"]` until the contracts that add it are merged, as
-        // `RunFrame` says; that merge drops the cast.
-        kind: "interaction" as GraphReferences["node"]["kind"],
-        made_at: ASKED_AT,
-        ref: `dispatch://interaction/${RUN}`,
-        text: question,
-      }),
-      { frames }
-    ),
+    node: graphNode({
+      frames: [...frames],
+      id: RUN,
+      kind: "interaction",
+      made_at: ASKED_AT,
+      ref: `dispatch://interaction/${RUN}`,
+      text: question,
+    }),
   };
 }
 
 /** A frame of the answer. */
-function frame(sequence: number, name: string, data: RunFrame["data"] = null): RunFrame {
+function frame(sequence: number, name: string, data: GraphFrame["data"] = null): GraphFrame {
   return { data, name, sequence };
 }
 
