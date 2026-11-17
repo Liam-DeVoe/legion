@@ -57,9 +57,10 @@
 #      DECISION_READERS names, by the step's id:, name: or position, in its order, with the steps
 #      a listed if: reads, no continue-on-error: on a listed step, no two steps of one name in a
 #      listed job, and no reader it does not name, in any job (an `if: false` on a publish step
-#      skips the release as surely); the own if: of the four decision jobs, of every job they
-#      need and of worker_image_release as DECISION_READERS names it, and the needs: of the
-#      decision jobs and the jobs they need as JOB_NEEDS names them, order aside; every if: of the
+#      skips the release as surely); the own if: and the needs: of every job of the pinned chains
+#      - the four decision jobs and every job they need, and worker_image_release and the jobs it
+#      needs, publish and worker_image - as DECISION_READERS and JOB_NEEDS name them, needs: order
+#      aside (GitHub's needs context holds a job's direct needs alone); every if: of the
 #      two workflows reaching the needs or steps context by dotted names alone, no `[` and no
 #      `.*`, and naming the output it reads of a JOB_OUTPUTS job or a checked step rather than its
 #      outputs whole (`fromJSON(toJSON(needs.legion_build.outputs)).skip` is refused); every step
@@ -72,7 +73,7 @@
 #      itself (`bash --rcfile x -i {0}` sources x first). An expression in place of any of those
 #      mappings is refused, since no one can read what it sets. Each workflow's on: holds the
 #      events TRIGGERS names, a push trigger of PUSH_KEYS' keys and the branches PUSH_BRANCHES
-#      names. Free are the if: of a job that is neither a decision job nor one they need, where it
+#      names. Free are the if: of a job in neither chain, where it
 #      reads no decision; the values of concurrency:, cache-mode: and timeout-minutes:; the paths
 #      a push filters on; and the runner image behind the label; and so is the decision passed on
 #      through the env context or another step's output, env: or run:;

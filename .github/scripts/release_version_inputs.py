@@ -151,13 +151,17 @@ JOB_OUTPUTS = {
 # a need added on a job that skips on main skips the decision job with it. The jobs those needs
 # name, which a decision job's own if: reads (release_publish's reads build, image_index and
 # targets) or which run before it, are pinned the same way, own if: and needs:, since one of
-# them skipped on main skips the decision job too.
+# them skipped on main skips the decision job too. worker_image_release carries publish's release
+# on, so its chain is here as well: GitHub's needs context holds a job's direct needs alone, so
+# publish taken out of its needs leaves needs.publish.result empty and its pinned if: false.
 JOB_NEEDS = {
     (RELEASE, "legion_build"): (),
     (RELEASE, "publish"): ("claude_envoy_build", "legion_build", "pi_envoy_build", "pi_legion_build"),
     (RELEASE, "pi_envoy_build"): (),
     (RELEASE, "pi_legion_build"): (),
     (RELEASE, "claude_envoy_build"): (),
+    (RELEASE, "worker_image"): ("legion_build",),
+    (RELEASE, "worker_image_release"): ("publish", "worker_image"),
     (LISTENER, "release_build"): (),
     (LISTENER, "release_publish"): ("build", "image_index", "release_build", "targets"),
     (LISTENER, "targets"): (),
@@ -242,8 +246,13 @@ DECISION_READERS = {
     (LISTENER, "build"): (Reader(None, position=0),),
     (LISTENER, "docker"): (Reader(None, position=0),),
     (LISTENER, "image_index"): (Reader(None, position=0),),
-    # The job that reads publish's tag output: the worker image is tagged with the legion version,
-    # and named in the release body, only when its own if: reads the tag.
+    # The jobs that carry publish's release on: worker_image_release reads publish's tag output,
+    # and the worker image is tagged with the legion version, and named in the release body, only
+    # when its own if: reads the tag; worker_image is a job it needs.
+    (RELEASE, "worker_image"): (
+        Reader("always() && (needs.legion_build.result == 'success' || needs.legion_build.result == 'skipped')",
+               position=0),
+    ),
     (RELEASE, "worker_image_release"): (
         Reader("always() && needs.worker_image.result == 'success' && (needs.publish.result == 'success' || "
                "needs.publish.result == 'failure') && needs.publish.outputs.tag != ''", position=0),

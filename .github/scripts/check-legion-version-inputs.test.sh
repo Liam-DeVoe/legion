@@ -488,6 +488,29 @@ run_check "$root"
 check "exits 1 on docker's needs changed" "$(is "$status" 1)"
 check "names it" "$(contains "$out" "docker's needs: is \`\[\"targets\"\]\`, $needs_rule \`\[\"build\", \"targets\"\]\` for it")"
 
+# worker_image_release carries publish's release on, and GitHub's needs context holds a job's
+# direct needs alone: its needs and worker_image's own if: are pinned (the round-9 review's J).
+echo "case: worker_image_release's needs changed, or worker_image skipped on main (J4, J5, J6)"
+root=$(written worker-needs-publish)
+replace "$root/.github/workflows/release.yaml" $'    needs: ["publish", "worker_image"]\n' $'    needs: ["worker_image"]\n'
+run_check "$root"
+check "exits 1 on publish taken from worker_image_release's needs (J4)" "$(is "$status" 1)"
+check "names the needs and the module's" \
+  "$(contains "$out" "worker_image_release's needs: is \`\[\"worker_image\"\]\`, $needs_rule \`\[\"publish\", \"worker_image\"\]\` for it")"
+root=$(written worker-if)
+replace "$root/.github/workflows/release.yaml" \
+  $'    if: "always() && (needs.legion_build.result == \'success\' || needs.legion_build.result == \'skipped\')"\n' \
+  $'    if: github.ref != \'refs/heads/main\'\n'
+run_check "$root"
+check "exits 1 on worker_image's if: false on main (J5)" "$(is "$status" 1)"
+check "names its if: and the module's" \
+  "$(contains "$out" "the job's own if: of worker_image has the if: \`github.ref != 'refs/heads/main'\`, where $plan_file's DECISION_READERS names \`always() && (needs.legion_build.result == 'success'")"
+root=$(written worker-needs-attest)
+replace "$root/.github/workflows/release.yaml" $'    needs: ["publish", "worker_image"]\n' $'    needs: ["worker_image", "worker_image_attest"]\n'
+run_check "$root"
+check "exits 1 on worker_image_attest in place of publish (J6)" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "worker_image_release's needs: is \`\[\"worker_image\", \"worker_image_attest\"\]\`")"
+
 # Each workflow's on: events, push keys and push branches are pinned: a push to main is what
 # releases, so another filter skips every release with a green run and no release step changes.
 trigger_rule="where $plan_file's"
