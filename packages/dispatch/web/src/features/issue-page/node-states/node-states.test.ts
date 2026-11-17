@@ -960,6 +960,71 @@ test("the Verification view folds an overtaken check into one line that a press 
   }
 });
 
+// R5, R9: under Verification a press that closes a line takes the rows it holds off the tree, so
+// where one of them held the tree's one tab stop, the line takes it: a statement's line, whose
+// check would hand it back to the issue's row, and the issue's line, whose statements would keep
+// it on a row no longer drawn.
+test("a press that closes a Verification line over the tab stop hands the stop to the line", async () => {
+  const user = userEvent.setup();
+  const passed = checkThat("c-one", true);
+  const replaced = checkThat("c-two", false);
+  const underReplaced = checkThat("c-three", true);
+  const first = statementNode("r1", "The page draws the checks.", [
+    checkNode(passed),
+    checkNode(replaced),
+  ]);
+  const second = statementNode("r2", "A later statement took this one's place.", [
+    checkNode(underReplaced),
+  ]);
+  const replacedId = checkNode(replaced).id;
+  const underId = checkNode(underReplaced).id;
+  const view = drawVerification(
+    stamped(node(KEY, "issue", [first, second]), {
+      [replacedId]: { life: "overtaken" },
+      [second.id]: { life: "overtaken" },
+    }),
+    [passed, replaced, underReplaced]
+  );
+  try {
+    const [line, issueLine] = [
+      ...view.container.querySelectorAll<HTMLElement>("[data-overtaken-line]"),
+    ];
+    if (line === undefined || issueLine === undefined) throw new Error("two lines are drawn");
+    const issueRow = view.container.querySelector("[data-verification-issue]");
+    const rowStops = () =>
+      view.container.querySelectorAll('[role="tree"] [data-node-row][tabindex="0"]');
+
+    // A statement's line: the stop on the check it holds, then a press closes it.
+    await user.click(line);
+    expect(line).toHaveAttribute("aria-expanded", "true");
+    act(() => rowOf(view.container, first.id)?.focus());
+    await user.keyboard("jjj");
+    expect(document.activeElement).toBe(rowOf(view.container, replacedId));
+    expect(rowOf(view.container, replacedId)).toHaveAttribute("tabindex", "0");
+    await user.click(line);
+    expect(line).toHaveAttribute("aria-expanded", "false");
+    expect(rowOf(view.container, replacedId)).toBeNull();
+    expect(line).toHaveAttribute("tabindex", "0");
+    expect(issueRow).toHaveAttribute("tabindex", "-1");
+    expect(rowStops()).toHaveLength(0);
+
+    // The issue's line: the stop on a check of the statement it holds, then a press closes it.
+    await user.click(issueLine);
+    expect(issueLine).toHaveAttribute("aria-expanded", "true");
+    await user.keyboard("{End}");
+    expect(document.activeElement).toBe(rowOf(view.container, underId));
+    expect(rowOf(view.container, underId)).toHaveAttribute("tabindex", "0");
+    await user.click(issueLine);
+    expect(issueLine).toHaveAttribute("aria-expanded", "false");
+    expect(rowOf(view.container, second.id)).toBeNull();
+    expect(issueLine).toHaveAttribute("tabindex", "0");
+    expect(line).toHaveAttribute("tabindex", "-1");
+    expect(rowStops()).toHaveLength(0);
+  } finally {
+    view.unmount();
+  }
+});
+
 // R6: under Verification the words filter draws a match that is an overtaken check under its
 // open line, and a line the reader closes under the words stays closed.
 test("the Verification view draws an overtaken check the words match under an open line", async () => {
