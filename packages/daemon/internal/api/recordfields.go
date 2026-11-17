@@ -236,5 +236,5 @@ var AssignmentRecordFields = []RecordFieldDecision{
 	{Field: "Carried", Column: ColumnWithheld,
 		Reason: "the record's mark of a row a hand-over wrote rather than a draw: what a reader of the state measures is the arm the unit ran under, and a carried row names that arm as a drawn one does"},
 	{Field: "Plan", Column: ColumnWithheld,
-		Reason: "how the issue is done, which the workflow reads off the row (internal/experiment's GroupOf): the state serves the variant drawn, which names the arm, and the settings serve each arm's `plan` as the file writes it now"},
+		Reason: "the group the arm sets, which the workflow reads at the issue's first step and at register_plan and stop_task; the state serves the arm, and the settings say what group that arm sets"},
 }
