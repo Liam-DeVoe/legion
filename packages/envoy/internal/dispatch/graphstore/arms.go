@@ -418,7 +418,7 @@ func tupleParams(tuples []Tuple) ([]any, error) {
 	for index, tuple := range tuples {
 		who, err := json.Marshal(tuple.Who.Recorded())
 		if err != nil {
-			return nil, fmt.Errorf("encode writer of %s %s: %w", tuple.Kind, tuple.FromID, err)
+			return nil, fmt.Errorf("encode writer of a %s tuple from a %s node: %w", tuple.Kind, tuple.FromKind, err)
 		}
 		fromKinds[index], fromIDs[index], kinds[index] = tuple.FromKind, tuple.FromID, tuple.Kind
 		toKinds[index], toIDs[index], ats[index] = tuple.ToKind, tuple.ToID, tuple.At

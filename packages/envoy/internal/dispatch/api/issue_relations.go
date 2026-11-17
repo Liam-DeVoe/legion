@@ -382,7 +382,7 @@ func stateFiledFromNode(ctx context.Context, tx pgx.Tx, item *filedFromItem) err
 		return nil
 	}
 	if err := graphstore.Write(ctx, tx, item.node.nodes, item.node.tuples); err != nil {
-		return fmt.Errorf("state the node of %s: %w", item.ref, err)
+		return fmt.Errorf("state the node of the %s filed_from names: %w", item.kind, err)
 	}
 	if item.kind != graphstore.KindComment {
 		return nil
@@ -525,7 +525,7 @@ func conversationItemIssue(ctx context.Context, q queryer, kind, id string) (str
 		return "", nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("read the issue %s %s is on: %w", kind, id, err)
+		return "", fmt.Errorf("read the issue the %s is on: %w", kind, err)
 	}
 	return *issue, nil
 }

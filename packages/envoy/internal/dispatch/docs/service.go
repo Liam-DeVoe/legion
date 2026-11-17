@@ -115,10 +115,11 @@ type Deps struct {
 // its preflight load, and only while its head is still the one that load read. Load, ygo's, is a
 // room's load. Head is the version Load would fold up to now, which says whether a state loaded
 // earlier is still the stored one. DocumentStamp names the stored state a read of the document
-// meets now, and LoadDocument is that state decoded once with the stamp it was read under, which
-// a read of a document no room holds caches its rendering by (coldRead). compactRoom is the
-// compaction every path Dispatch compacts a document on runs (a room's close, the compaction
-// queue, the compaction sweep), under the tail rule; Compact, ygo's, is the keep-N rule only.
+// meets now, beside the room the document is edited in, and LoadDocument is that state decoded
+// once with the stamp it was read under, which a read of a document no room holds caches its
+// rendering by (coldRead). compactRoom is the compaction every path Dispatch compacts a document
+// on runs (a room's close, the compaction queue, the compaction sweep), under the tail rule;
+// Compact, ygo's, is the keep-N rule only.
 // pgVersioned is the PgVersioned the store is or wraps, which New hands the Service's
 // per-process values: its process id (Service.ProcessID), which every content-changing write's
 // announcement names (announceDocumentHead), and its note of each append and load
@@ -133,7 +134,7 @@ type VersionedStore interface {
 	AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string, update []byte, contentChanged bool) (persistence.Version, error)
 	RebuildTx(ctx context.Context, tx pgx.Tx, room string, loaded persistence.Version, seed []byte) (RebuildReport, error)
 	Head(ctx context.Context, room string) (persistence.Version, error)
-	DocumentStamp(ctx context.Context, room string) (DocumentStamp, error)
+	DocumentStamp(ctx context.Context, artifactID string) (room string, stamp DocumentStamp, err error)
 	LoadDocument(ctx context.Context, room string) (LoadedDocument, error)
 	compactRoom(ctx context.Context, room string, rule compactRule, wait bool) (compactResult, error)
 	pgVersioned() *PgVersioned

@@ -5612,17 +5612,17 @@ func (s failingVersionedStore) Load(ctx context.Context, room string) (persisten
 	return s.VersionedStore.Load(ctx, room)
 }
 
-func (s failingVersionedStore) DocumentStamp(ctx context.Context, room string) (DocumentStamp, error) {
+func (s failingVersionedStore) DocumentStamp(ctx context.Context, artifactID string) (string, DocumentStamp, error) {
 	if s.respectContext && ctx.Err() != nil {
-		return DocumentStamp{}, ctx.Err()
+		return "", DocumentStamp{}, ctx.Err()
 	}
 	if s.loadErr != nil {
-		return DocumentStamp{}, s.loadErr
+		return "", DocumentStamp{}, s.loadErr
 	}
 	if s.loadUpdate != nil {
-		return DocumentStamp{Version: 1}, nil
+		return artifactID, DocumentStamp{Version: 1}, nil
 	}
-	return s.VersionedStore.DocumentStamp(ctx, room)
+	return s.VersionedStore.DocumentStamp(ctx, artifactID)
 }
 
 func (s failingVersionedStore) LoadDocument(ctx context.Context, room string) (LoadedDocument, error) {

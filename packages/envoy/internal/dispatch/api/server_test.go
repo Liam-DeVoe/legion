@@ -778,8 +778,8 @@ func (failingLoadStore) Load(context.Context, string) (persistence.LoadResult, e
 	return persistence.LoadResult{}, errors.New("persistence unavailable")
 }
 
-func (failingLoadStore) DocumentStamp(context.Context, string) (docs.DocumentStamp, error) {
-	return docs.DocumentStamp{}, errors.New("persistence unavailable")
+func (failingLoadStore) DocumentStamp(context.Context, string) (string, docs.DocumentStamp, error) {
+	return "", docs.DocumentStamp{}, errors.New("persistence unavailable")
 }
 
 func (failingLoadStore) LoadDocument(context.Context, string) (docs.LoadedDocument, error) {

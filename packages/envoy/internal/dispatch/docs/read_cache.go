@@ -50,13 +50,30 @@ const documentStampSQL = `
 		from (select ` + headVersion + ` as version) h
 		left join doc_updates u on u.artifact_id = $1 and u.version = h.version`
 
-// readDocumentStamp is the room's DocumentStamp, read through q (documentStampSQL).
-func readDocumentStamp(ctx context.Context, q Queryer, room string) (DocumentStamp, error) {
+// documentRoomStampSQL selects, for the document $1, the room its document_rooms row names, null for
+// a document that is its own room (documentRoomOfStatement reads the same row), beside the
+// DocumentStamp of the stored history named $1 (documentStampSQL), in one statement, so a cold read
+// of a document that is its own room learns both in one round trip (documentReadRoom).
+const documentRoomStampSQL = `
+		select (select moved.room::text from document_rooms moved where moved.artifact_id = $1),
+			s.version, s.row_xmin
+		from (` + documentStampSQL + `
+		) s`
+
+// readDocumentStamp is, read through q (documentRoomStampSQL), the room artifactID's document is
+// edited in - its document_rooms row's room, else artifactID itself, spelled as the caller spelled
+// it, as roomOf answers it - and the DocumentStamp of the stored history named artifactID, which is
+// that room's stamp where the document is its own room.
+func readDocumentStamp(ctx context.Context, q Queryer, artifactID string) (string, DocumentStamp, error) {
+	var moved *string
 	var stamp DocumentStamp
-	if err := q.QueryRow(ctx, documentStampSQL, room).Scan(&stamp.Version, &stamp.Row); err != nil {
-		return DocumentStamp{}, fmt.Errorf("read document stamp: %w", err)
+	if err := q.QueryRow(ctx, documentRoomStampSQL, artifactID).Scan(&moved, &stamp.Version, &stamp.Row); err != nil {
+		return "", DocumentStamp{}, fmt.Errorf("read document stamp: %w", err)
 	}
-	return stamp, nil
+	if moved != nil {
+		return *moved, stamp, nil
+	}
+	return artifactID, stamp, nil
 }
 
 // documentReadBudget is the most weight (documentRead.weight) the cold reads' cache holds in a
@@ -312,14 +329,27 @@ type coldFold struct {
 // fails the room, as a failed room load does, and reaches each read as ErrServiceUnavailable,
 // unless the history does not decode, which is ErrDocumentUnloadable, the state a rebuild repairs.
 func (s *Service) coldRead(ctx context.Context, artifactID, room, fragment string) (*documentRead, *pmdoc.Node, error) {
-	stamp, err := s.persistence.DocumentStamp(ctx, room)
+	_, stamp, err := s.persistence.DocumentStamp(ctx, room)
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, nil, ctxErr
-		}
-		s.failRoom(room, err)
-		return nil, nil, fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
+		return nil, nil, s.stampUnread(ctx, room, err)
 	}
+	return s.coldReadAt(ctx, artifactID, room, fragment, stamp)
+}
+
+// stampUnread is what a read answers for a stamp of room the store did not give it: the read's own
+// context's error where that context ended, else the store's as ErrServiceUnavailable, after
+// failing room, as a failed load does.
+func (s *Service) stampUnread(ctx context.Context, room string, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	s.failRoom(room, err)
+	return fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
+}
+
+// coldReadAt is coldRead at stamp, the stamp of room its caller has just read, after finding that
+// no room of this process holds the document (heldTree, documentReadRoom).
+func (s *Service) coldReadAt(ctx context.Context, artifactID, room, fragment string, stamp DocumentStamp) (*documentRead, *pmdoc.Node, error) {
 	if stamp.Version == 0 {
 		return nil, nil, nil
 	}

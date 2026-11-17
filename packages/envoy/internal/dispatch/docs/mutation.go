@@ -1110,17 +1110,17 @@ func (s *Service) Text(ctx context.Context, artifactID string) (string, error) {
 // renders it. A document converted into an issue room is read from its fragment of that room,
 // since its own latest version no longer says what its room holds.
 func (s *Service) TextWithToken(ctx context.Context, artifactID string) (string, string, error) {
-	room, err := roomOf(ctx, s.queryFrom(ctx), artifactID)
+	room, stamp, err := s.documentReadRoom(ctx, artifactID)
 	if err != nil {
 		return "", "", err
 	}
-	if room == artifactID {
+	if room == artifactID && stamp == nil {
 		markdown, token, served, err := s.storedText(ctx, artifactID)
 		if err != nil || served {
 			return markdown, token, err
 		}
 	}
-	read, tree, err := s.readDocumentIn(ctx, room, artifactID)
+	read, tree, err := s.readDocumentIn(ctx, room, artifactID, stamp)
 	switch {
 	case err != nil:
 		return "", "", err
@@ -1137,19 +1137,48 @@ func (s *Service) TextWithToken(ctx context.Context, artifactID string) (string,
 // resident room, or of the stored document when that room is behind the stored head (heldTree),
 // else the rendering of the stored document (coldRead), or the stored document's tree where the
 // rendering does not take it. A document with no stored state has neither, and no error. It reads
-// the room artifactID's document is edited in first (roomOf), and of that room the document's own
-// fragment (fragmentOf): a document converted into an issue room is read out of that room.
+// the room artifactID's document is edited in first (documentReadRoom), and of that room the
+// document's own fragment (fragmentOf): a document converted into an issue room is read out of
+// that room.
 func (s *Service) readDocument(ctx context.Context, artifactID string) (*documentRead, *pmdoc.Node, error) {
-	room, err := roomOf(ctx, s.queryFrom(ctx), artifactID)
+	room, stamp, err := s.documentReadRoom(ctx, artifactID)
 	if err != nil {
 		return nil, nil, err
 	}
-	return s.readDocumentIn(ctx, room, artifactID)
+	return s.readDocumentIn(ctx, room, artifactID, stamp)
 }
 
-// readDocumentIn is readDocument of artifactID's document, which room holds.
-func (s *Service) readDocumentIn(ctx context.Context, room, artifactID string) (*documentRead, *pmdoc.Node, error) {
+// documentReadRoom is the room a read of artifactID's document reads it in (roomOf) and, for a
+// read of a document that is its own room and no room of this process holds, that room's stamp,
+// read in the same statement (VersionedStore.DocumentStamp), so such a cold read costs no round
+// trip for its room. heldTree's checks of the document's own room come first, as they come before
+// a cold read's stamp: the read is joined to no transaction, no failed room of artifactID's is
+// recovering, and none is resident. stamp is nil where one of them fails, whose read finds the
+// room (roomOf) and checks it as it always has, and for a document converted into an issue room,
+// whose room heldTree checks once it is known (readDocumentIn).
+func (s *Service) documentReadRoom(ctx context.Context, artifactID string) (room string, stamp *DocumentStamp, err error) {
+	if ledgerFrom(ctx).inTransaction() || s.roomFailed(artifactID) || s.srv.GetDoc(artifactID) != nil {
+		room, err := roomOf(ctx, s.queryFrom(ctx), artifactID)
+		return room, nil, err
+	}
+	room, read, err := s.persistence.DocumentStamp(ctx, artifactID)
+	if err != nil {
+		return "", nil, s.stampUnread(ctx, artifactID, err)
+	}
+	if room != artifactID {
+		return room, nil, nil
+	}
+	return room, &read, nil
+}
+
+// readDocumentIn is readDocument of artifactID's document, which room holds. stamp is room's stamp
+// where documentReadRoom read it, having found no room of this process holding the document, so
+// the read is the cold read at that stamp; nil where heldTree is still to look.
+func (s *Service) readDocumentIn(ctx context.Context, room, artifactID string, stamp *DocumentStamp) (*documentRead, *pmdoc.Node, error) {
 	fragment := fragmentOf(room, artifactID)
+	if stamp != nil {
+		return s.coldReadAt(ctx, artifactID, room, fragment, *stamp)
+	}
 	tree, _, held, err := s.heldTree(ctx, room, []string{fragment})
 	if err != nil || held {
 		return nil, tree, err
