@@ -1013,8 +1013,11 @@ func TestThePlannerAddsNoTaskBlockToAnOwnersPlan(t *testing.T) {
 // the earlier step its completion names. A parent with no `acceptance:owner` step gets no reading
 // of its finished whole from its owner, and each part says so in one sentence where it speaks of a
 // parent and its children. Each part gives `register_plan` and `stop_task` with the arguments of
-// the daemon's routes. The words the parts carried before are gone from both. This shows the text
-// is loaded, never that an owner follows it.
+// the daemon's routes. The words the parts carried before are gone from both, and from every part
+// of go/, the daemon's parts that Compose joins to them: a retired phrase there reaches its reader
+// as surely as one in a role part. The architect's three daemon parts are named, so a read of go/
+// that misses one of them fails rather than passing with nothing read. This shows the text is
+// loaded, never that an owner follows it.
 func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 	const parentRuling = "A parent whose plan has no step `acceptance:owner` gets no reading of its finished whole from you: Legion holds it before its retro while issues beneath it are still in the workflow (`retro-held`) and starts the retro once they have left, so give a parent whose finished work you want to read the step `acceptance:owner`."
 	shared := []string{
@@ -1064,5 +1067,24 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 				}
 			}
 		})
+	}
+	read := map[string]bool{}
+	err := eachPart(goParts, "go", func(name string, body []byte) error {
+		read[name] = true
+		text := foldWhitespace(string(body))
+		for _, phrase := range retired {
+			if strings.Contains(text, phrase) {
+				t.Errorf("go/%s still says %q", name, phrase)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("read the go parts: %v", err)
+	}
+	for _, part := range []string{"architect-common.md", "architect-root.md", "architect.md"} {
+		if !read[part] {
+			t.Errorf("the read of go/ visited no go/%s", part)
+		}
 	}
 }
