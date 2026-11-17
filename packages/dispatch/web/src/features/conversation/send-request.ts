@@ -41,13 +41,13 @@ export const saveCommentEdit: SaveCommentEdit = (id, body, carried, bounds) =>
   api.editComment(id, { body, ...carried }, bounds);
 
 /**
- * A statement of the issue's own documents that a comment is on, as the issue page's box writes
- * it: the document (its id or slug) and the statement's whole words, with no occurrence and no
- * mark, and the statement's row on the page. The server finds those words in the document and
- * anchors the comment to the lowest block that holds them, which for a statement of one paragraph
- * is that paragraph, and refuses words the document holds twice. No composer holds it as its own
- * anchor (`ComposerAnchor`): the host names it, and the send carries it beside the composer's
- * anchor (`SentRequest.statement`).
+ * A statement of the issue's spec (one of its `requirement` blocks) that a comment is on, as the
+ * issue page's box writes it: the document (its id or slug) and the statement's whole words, with
+ * no occurrence and no mark, and the statement's row on the page. The server finds those words in
+ * the document and anchors the comment to the lowest block that holds them, which for a statement
+ * of one paragraph is that paragraph, and refuses words the document holds twice. No composer
+ * holds it as its own anchor (`ComposerAnchor`): the host names it, and the send carries it beside
+ * the composer's anchor (`SentRequest.statement`).
  */
 export interface StatementAnchor {
   readonly artifact: string;
@@ -99,6 +99,13 @@ export interface SentRequest {
    *  live view sends a session its commands verbatim. */
   readonly pickedDelivery?: DeliveryCapability;
   readonly replyTo: ReplyTarget | null;
+  /** The mentions the issue page's box wrote in front of the draft for the reply it answers,
+   *  each the party and the link written for it (`partyMention`); absent where it wrote none, and
+   *  from every other send. A box that mounts again over the held send - after a reload, or after
+   *  the reader left the issue - takes these back out when the reply ends or moves, as the box
+   *  that wrote them would, and never a link the reader wrote. They are the page's own: no
+   *  request carries them (`attempt`). */
+  readonly seeds?: readonly { readonly target: string; readonly text: string }[];
   /** The key that names this send to Dispatch (`Idempotency-Key`), so that every attempt of it,
    *  and a reload's, is that one write there. Minted when Send builds the request, and kept by a
    *  Retry of a send that ended without Dispatch's verdict (`requestFor`). */

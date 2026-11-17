@@ -428,6 +428,68 @@ test("a held statement keeps its row across a reload, and a record with a malfor
   }
 });
 
+// A reply the issue page's box sent keeps the mentions the box wrote in front of its draft, so a
+// box that mounts again over the send after a reload takes those out when the reply ends, and no
+// link the reader wrote; the request goes out with the body alone. A record kept before the box
+// kept them holds none and loads with none. A record whose mentions are not mentions - a target
+// that is no string - is dropped as every malformed record is, rather than restored for the box
+// to read.
+test("a held reply keeps the mentions its box wrote across a reload, one kept without them loads with none, and one with malformed ones is dropped", async () => {
+  const tab = keptTab();
+  const createComment = spyOn(api, "createComment").mockReturnValue(
+    Promise.withResolvers<Comment>().promise
+  );
+  const link = "[@Planner](dispatch://agent/planner-session)";
+  const seeds = [{ target: "session:planner-session", text: link }];
+  const reply: SentRequest = {
+    ...request,
+    draft: { body: `${link} hello`, replacement: "" },
+    replyTo: {
+      actor: { id: "planner-session", kind: "session" },
+      excerpt: "The relay is fixed",
+      id: "comment-3",
+      mentions: [{ target: "session:planner-session", title: "Planner" }],
+      parentKind: "comment",
+    },
+  };
+  const keyOf = (sendKey: string): MutationKey => ["issue-composer", sendKey];
+  try {
+    const before = heldOf(tab).held;
+    before.send(keyOf("send-seeded"), { ...reply, seeds, sendKey: "send-seeded" });
+    before.send(keyOf("send-unseeded"), { ...reply, sendKey: "send-unseeded" });
+    before.send(keyOf("send-malformed"), { ...reply, seeds, sendKey: "send-malformed" });
+    await settle();
+    // The record without mentions is the shape a build that kept none wrote.
+    const unseeded = tab.kept("send-unseeded") as { detail: { request: object } };
+    expect("seeds" in unseeded.detail.request).toBe(false);
+    const kept = tab.kept("send-malformed") as { detail: { request: object } };
+    const detail = { ...kept.detail, request: { ...kept.detail.request, seeds: [{ target: 1 }] } };
+    tab.storage.setItem("dispatch.write:send-malformed", JSON.stringify({ ...kept, detail }));
+    for (const sendKey of ["send-seeded", "send-unseeded", "send-malformed"]) {
+      pressedLongAgo(tab, sendKey);
+    }
+
+    const { held: after, writes } = heldOf(tab);
+    writes.resume("alice");
+    await settle();
+    expect(after.get(keyOf("send-seeded"))?.request.seeds).toEqual(seeds);
+    expect(after.get(keyOf("send-unseeded"))?.status).toBe("refused");
+    expect(after.get(keyOf("send-unseeded"))?.request.seeds).toBeUndefined();
+    expect(after.get(keyOf("send-malformed"))).toBeUndefined();
+    expect(tab.kept("send-malformed")).toBeUndefined();
+    // Each press went out once, with the body alone: the mentions are the page's own.
+    expect(createComment).toHaveBeenCalledTimes(3);
+    expect(createComment.mock.calls[0]?.[1]).toEqual({
+      body: `${link} hello`,
+      delivery: "steer",
+      reply_to: "comment-3",
+    });
+  } finally {
+    createComment.mockRestore();
+    tab.close();
+  }
+});
+
 // A record the build before this one wrote keeps a `mentions` array beside a body holding only
 // the cosmetic `@Planner` that build drew. A mention is a reference now, so each of those is
 // written back into the body as the party link naming it: the draft reads as who it addresses

@@ -704,13 +704,14 @@ test("ending a reply to an agent's comment takes the agent's mention out of the 
 });
 
 // The same finding: the words the reader typed after the agent's mention are theirs, and stay when
-// the reader turns the box to a person's comment; the mention the box wrote goes.
+// the reader turns the box to a person's comment; the mention the box wrote goes, even with the
+// words typed straight after its link and no space between them.
 test("a Reply on a person's comment keeps the words typed after an agent's mention, and takes the mention out", async () => {
   const user = userEvent.setup();
   const page = renderWithPlannerComment();
   await replyToPlanner(user, page);
-  await user.keyboard(" please look again");
-  expect(writeField().value).toBe(`${PLANNER_SEED} please look again`);
+  await user.keyboard("please look again");
+  expect(writeField().value).toBe(`${PLANNER_SEED}please look again`);
 
   await page.press(user, "comment-1", "r");
   await waitFor(() => expect(targetWords()).toContain("Earlier words"));
@@ -785,77 +786,216 @@ test("a link to the agent the reader writes after their own word, in place of th
   expect(draft).toBe(`cc ${PLANNER_SEED}`);
 });
 
-/** A reply to the planner's comment: the planner's mention the box wrote, and the reader's words
- *  typed straight after it. */
-const PLANNER_REPLY = `${PLANNER_SEED}please look`;
+/** The draft of the refused reply to the planner's comment in the grid below, whoever wrote its
+ *  link: the planner's link, then the reader's words. */
+const PLANNER_HELLO = `${PLANNER_SEED} hello`;
 
-/** Replies to the planner's comment with `PLANNER_REPLY`, which Dispatch refuses once and takes
- *  after, then mounts the page again in the same tab over the refused send, as coming back to the
- *  issue or a reload brings the box back: the box takes the held draft, on the held reply. */
-async function remountOverRefusedPlannerReply(user: UserEvent) {
+/** What the reader does with the refused reply in the grid below: Retry it as it was; end it -
+ *  Escape, or the target line's control - and Retry the words on the issue; or move it - let it
+ *  go with Escape and press `r` on bob's comment, or let it go with the target line's control and
+ *  press that row's Reply - and send the words there with Enter. A refused reply holds the box on
+ *  the comment it answers until the reader lets it go in the box (`redirectedReplyTarget`), so a
+ *  move lets it go first. */
+type AfterRefusal =
+  | "retry"
+  | "end with Escape"
+  | "end with its control"
+  | "move with r"
+  | "move with Reply";
+
+/**
+ * One case of the grid below. The reader types their words in the box at rest: after their own
+ * link to the planner where `ownLink`, so the Reply on the planner's comment writes no link of its
+ * own, the draft naming the planner already; else alone, and the Reply writes the planner's link
+ * in front of them. The reply holds the same draft either way, and Dispatch refuses it once.
+ * Where `remount`, the page then mounts again in the same tab over the refused reply, as coming
+ * back to the issue or a reload brings the box back. Then the reader does `then`. Answers the
+ * draft the box holds as the second request goes, and that request.
+ */
+async function afterRefusedPlannerReply(
+  then: AfterRefusal,
+  { ownLink, remount }: { readonly ownLink: boolean; readonly remount: boolean }
+) {
+  const user = userEvent.setup();
   const createComment = stub(
     spyOn(api, "createComment")
       .mockRejectedValueOnce(
         new ApiError(400, { code: "INVALID_INPUT", error: "The reply was refused." })
       )
-      .mockResolvedValue(commentRecord("comment-9", ALICE, "please look"))
+      .mockResolvedValue(commentRecord("comment-9", ALICE, "hello"))
   );
   const first = renderWithPlannerComment();
-  await replyToPlanner(user, first);
-  await user.keyboard("please look{Enter}");
+  await user.click(writeField());
+  if (ownLink) await user.paste(PLANNER_HELLO);
+  else await user.keyboard("hello");
+  await first.press(user, "comment-3", "r");
+  await waitFor(() => expect(targetWords()).toContain("The relay is fixed"));
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  expect(writeField().value).toBe(PLANNER_HELLO);
+  await user.keyboard("{Enter}");
   await waitFor(() =>
     expect(within(composerBox()).getByRole("alert")).toHaveTextContent("The reply was refused.")
   );
   expect(createComment.mock.calls[0]?.[1]).toEqual({
-    body: PLANNER_REPLY,
+    body: PLANNER_HELLO,
     delivery: "steer",
     reply_to: "comment-3",
   });
 
-  first.view.unmount();
-  const again = renderPage({}, plannerOutline(), first.client);
-  await waitFor(() => expect(targetWords()).toContain("The relay is fixed"));
-  expect(again.writer().reply?.id).toBe("comment-3");
-  expect(writeField().value).toBe(PLANNER_REPLY);
-  return { again, createComment };
+  let page = first;
+  if (remount) {
+    first.view.unmount();
+    page = renderPage({}, plannerOutline(), first.client);
+    await waitFor(() => expect(targetWords()).toContain("The relay is fixed"));
+    expect(page.writer().reply?.id).toBe("comment-3");
+    expect(writeField().value).toBe(PLANNER_HELLO);
+  }
+
+  if (then !== "retry") {
+    // The reply let go: the box writes on the issue.
+    if (then === "end with Escape" || then === "move with r") {
+      await user.click(writeField());
+      await user.keyboard("{Escape}");
+    } else {
+      await user.click(
+        within(composerBox()).getByRole("button", { name: CONTROL_LABELS.write_on_issue })
+      );
+    }
+    await waitFor(() => expect(targetWords()).toBeNull());
+  }
+  if (then === "move with r") await page.press(user, "comment-1", "r");
+  if (then === "move with Reply") {
+    await act(async () => rowOf("comment-1").focus());
+    const reply = rowOf("comment-1").querySelector<HTMLElement>('[data-row-act="reply"]');
+    if (reply === null) throw new Error("bob's row drew no Reply");
+    await user.click(reply);
+  }
+  const moved = then === "move with r" || then === "move with Reply";
+  if (moved) {
+    await waitFor(() => expect(targetWords()).toContain("Earlier words"));
+    await waitFor(() => expect(writeField()).toHaveFocus());
+  }
+  const draft = writeField().value;
+  if (moved) await user.keyboard("{Enter}");
+  else await user.click(within(composerBox()).getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
+  return { draft, sent: createComment.mock.calls[1]?.[1] };
 }
 
-// The reviewer's finding 5945015185 on the same rule: a box that mounts again over a refused
-// reply to the agent's comment - after the reader left the issue and came back, or a reload -
-// still takes out the agent's mention the box wrote when the reply ends, so the send that follows
-// is a comment on the issue delivered to nobody.
-test("a box mounted again over a refused reply to an agent's comment takes the agent's mention out when the reply ends", async () => {
-  const user = userEvent.setup();
-  const { createComment } = await remountOverRefusedPlannerReply(user);
-  await user.click(
-    within(composerBox()).getByRole("button", { name: CONTROL_LABELS.write_on_issue })
-  );
-  await waitFor(() => expect(targetWords()).toBeNull());
-  const draft = writeField().value;
-  await user.click(within(composerBox()).getByRole("button", { name: "Retry" }));
-  await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
-  expect(createComment.mock.calls[1]?.[1]).toEqual({ body: "please look" });
-  expect(draft).toBe("please look");
+// The reviewer's findings 5945015185 and PRRT_kwDORFy7ds64qGzx on the same rule, as a grid: the
+// same box or one mounted again over the refused reply, times the planner's link written by the
+// box or by the reader before the Reply, times a move, an end or a Retry. The link the box wrote
+// goes when the reply moves or ends, so a reply under bob's comment or a comment on the issue
+// reaches no agent the reader did not name, and stays for a Retry, which sends the refused reply
+// as it was. The reader's own link stays in every case: the box takes nothing out of the draft
+// that it did not write, whether or not it mounted again over the send (`SentRequest.seeds`).
+test("a refused reply moved to bob's comment takes out the agent's link the box wrote", async () => {
+  const { draft, sent } = await afterRefusedPlannerReply("move with r", {
+    ownLink: false,
+    remount: false,
+  });
+  expect(draft).toBe("hello");
+  expect(sent).toEqual({ body: "hello", reply_to: "comment-1" });
 });
 
-// The same finding: on a box mounted again over the refused reply, Escape ends the reply and `r`
-// on a person's comment turns the box to it, and the reply under that comment is delivered to
-// nobody.
-test("a box mounted again over a refused reply to an agent's comment sends a reply on a person's comment to nobody", async () => {
-  const user = userEvent.setup();
-  const { again, createComment } = await remountOverRefusedPlannerReply(user);
-  await user.click(writeField());
-  await user.keyboard("{Escape}");
-  await waitFor(() => expect(targetWords()).toBeNull());
+test("a refused reply ended takes out the agent's link the box wrote", async () => {
+  const { draft, sent } = await afterRefusedPlannerReply("end with its control", {
+    ownLink: false,
+    remount: false,
+  });
+  expect(draft).toBe("hello");
+  expect(sent).toEqual({ body: "hello" });
+});
 
-  await again.press(user, "comment-1", "r");
-  await waitFor(() => expect(targetWords()).toContain("Earlier words"));
-  await waitFor(() => expect(writeField()).toHaveFocus());
-  const draft = writeField().value;
-  await user.keyboard("{Enter}");
-  await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
-  expect(createComment.mock.calls[1]?.[1]).toEqual({ body: "please look", reply_to: "comment-1" });
-  expect(draft).toBe("please look");
+test("a refused reply retried keeps the agent's link the box wrote", async () => {
+  const { draft, sent } = await afterRefusedPlannerReply("retry", {
+    ownLink: false,
+    remount: false,
+  });
+  expect(draft).toBe(PLANNER_HELLO);
+  expect(sent).toEqual({ body: PLANNER_HELLO, delivery: "steer", reply_to: "comment-3" });
+});
+
+test("a refused reply moved to bob's comment keeps the reader's own link to the agent", async () => {
+  const { draft, sent } = await afterRefusedPlannerReply("move with Reply", {
+    ownLink: true,
+    remount: false,
+  });
+  expect(draft).toBe(PLANNER_HELLO);
+  expect(sent).toEqual({ body: PLANNER_HELLO, delivery: "steer", reply_to: "comment-1" });
+});
+
+test("a refused reply ended keeps the reader's own link to the agent", async () => {
+  const { draft, sent } = await afterRefusedPlannerReply("end with Escape", {
+    ownLink: true,
+    remount: false,
+  });
+  expect(draft).toBe(PLANNER_HELLO);
+  expect(sent).toEqual({ body: PLANNER_HELLO, delivery: "steer" });
+});
+
+test("a refused reply retried keeps the reader's own link to the agent", async () => {
+  const { draft, sent } = await afterRefusedPlannerReply("retry", {
+    ownLink: true,
+    remount: false,
+  });
+  expect(draft).toBe(PLANNER_HELLO);
+  expect(sent).toEqual({ body: PLANNER_HELLO, delivery: "steer", reply_to: "comment-3" });
+});
+
+test("a box mounted again over a refused reply moved to bob's comment takes out the agent's link the box wrote", async () => {
+  const { draft, sent } = await afterRefusedPlannerReply("move with r", {
+    ownLink: false,
+    remount: true,
+  });
+  expect(draft).toBe("hello");
+  expect(sent).toEqual({ body: "hello", reply_to: "comment-1" });
+});
+
+test("a box mounted again over a refused reply ended takes out the agent's link the box wrote", async () => {
+  const { draft, sent } = await afterRefusedPlannerReply("end with its control", {
+    ownLink: false,
+    remount: true,
+  });
+  expect(draft).toBe("hello");
+  expect(sent).toEqual({ body: "hello" });
+});
+
+test("a box mounted again over a refused reply retried keeps the agent's link the box wrote", async () => {
+  const { draft, sent } = await afterRefusedPlannerReply("retry", {
+    ownLink: false,
+    remount: true,
+  });
+  expect(draft).toBe(PLANNER_HELLO);
+  expect(sent).toEqual({ body: PLANNER_HELLO, delivery: "steer", reply_to: "comment-3" });
+});
+
+test("a box mounted again over a refused reply moved to bob's comment keeps the reader's own link to the agent", async () => {
+  const { draft, sent } = await afterRefusedPlannerReply("move with Reply", {
+    ownLink: true,
+    remount: true,
+  });
+  expect(draft).toBe(PLANNER_HELLO);
+  expect(sent).toEqual({ body: PLANNER_HELLO, delivery: "steer", reply_to: "comment-1" });
+});
+
+// The architect's case: the finding's own probe.
+test("the reader's own link at the front survives a remount and an ended target", async () => {
+  const { draft, sent } = await afterRefusedPlannerReply("end with Escape", {
+    ownLink: true,
+    remount: true,
+  });
+  expect(draft).toBe(PLANNER_HELLO);
+  expect(sent).toEqual({ body: PLANNER_HELLO, delivery: "steer" });
+});
+
+test("a box mounted again over a refused reply retried keeps the reader's own link to the agent", async () => {
+  const { draft, sent } = await afterRefusedPlannerReply("retry", {
+    ownLink: true,
+    remount: true,
+  });
+  expect(draft).toBe(PLANNER_HELLO);
+  expect(sent).toEqual({ body: PLANNER_HELLO, delivery: "steer", reply_to: "comment-3" });
 });
 
 // R5: an answer sends the options picked and the reader's words, and a change of the reader's own

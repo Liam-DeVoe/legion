@@ -266,6 +266,11 @@ const keptComposerSend = shape.record({
         to: shape.optional(shape.string),
       })
     ),
+    // The mentions the issue page's box wrote for the reply (`SentRequest.seeds`), so a box that
+    // mounts again over the send after a reload takes out what the box that wrote them would, and
+    // no link the reader wrote. A record kept before they were holds none and reads as none; one
+    // whose mentions are not mentions is dropped.
+    seeds: shape.optional(shape.array(shape.record({ target: shape.string, text: shape.string }))),
     sendKey: shape.string,
     // The statement the issue page's box aimed a comment at, with the row the comment lands
     // under once it is sent (`StatementAnchor.row`), so a box that mounts again over the send
