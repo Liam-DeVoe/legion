@@ -5,15 +5,16 @@ approval, the tester on a look of its closed issue's production check, or the me
 the pull request. Every path it cites is in cybermonklabs/legion.
 
 The order, in full: the steps of the issue's task in the order its `Steps:` line names them — in
-the default steps, which a task with no `Steps:` line runs, the tester's evidence green → the
-reviewer's approval of the head → the architect's acceptance, in `accepting` — then retro → the
+the default steps, and in today's line, which a task with no `Task:` line runs, the tester's
+evidence green → the reviewer's approval of the head → the architect's acceptance, in
+`accepting` — then retro → the
 merger's merge of the head it read, which closes the issue → the production check after the
 close, which the project's `production_check` setting gives to a role or takes away. A step the
 task's `Steps:` line does not name is no gate of
 that task, and its duty falls as follows. With no tester step, the implementer's own results
 against the issue's `before_merge` checks are the evidence, which a reviewer step reads before it
 approves. With no reviewer step, no step approves the head, and on a base whose rules require an
-approving review the merger waits and tells the task's owner (*The merger*, below). With no
+approving review the merger waits and tells the owner of the task (*The merger*, below). With no
 `acceptance:owner` step, nobody accepts: the last step passing starts retro (*The architect's
 acceptance*, below). Every handoff is a record on the Dispatch issue, never a commit, so the head
 that merges carries none. Retro commits nothing (*Retro*, below), so the head the task's last step
@@ -342,7 +343,7 @@ it there until that answer comes clean.
     is waited for. Where the task's `Steps:` line names no reviewer step and the base's rules
     require an approving review that no step of the task gave, the merger does not merge, does
     not approve the pull request itself and does not return the task: it waits, and tells the
-    architect, the task's owner, which review is missing — the rule that requires it, and that the
+    architect, the owner of the task, which review is missing — the rule that requires it, and that the
     task's steps have no review step — since only the owner or a person can give that review or
     change the plan.
 - *The completion* is `handoff_complete` with the ordinary two-sentence `summary`, which names the
