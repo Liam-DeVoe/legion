@@ -139,6 +139,76 @@ func (e *Engine) planHoldRefusal(ctx context.Context, tx pgx.Tx, issue record.Is
 	return intake.RetryOfStoppedTask(issue.Key, w.Task), nil
 }
 
+// lateReport is the refusal of fact, role's report of reported, a phase issue no longer stands in,
+// where issue's run has plan rows and reported is the phase of a step of its task whose run Legion
+// ended (R7). left says whether the report is one handoff would record (leftItsPhase): the task
+// went on to the step issue stands at now, and a task runs one step at a time, so the reported
+// step's run is over (LateReportOfEndedStep). A report it would not record is late where issue is
+// held because its task was stopped at reported (record.HoldTaskStopped), and the report is of
+// the run the stop ended (ranUnreported); its first sentence is the reason the task stores
+// (LateReportOfStoppedTask). Every other report gets nil and keeps today's answer: one of an
+// issue with no plan rows (R20), one of the retro or the merge, one while the task stands at its
+// retro or its merge, one of a task whose issue left the workflow (HANDOFF_NOT_CURRENT_PHASE),
+// and one of a step other than the one the stop ended. The refusal writes nothing itself: the
+// caller answers it after the lingering tree's and keeps the report's handoff record
+// (spendLateHandoff).
+func (e *Engine) lateReport(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase, left bool) (*intake.Refusal, error) {
+	stopped := planHold(issue) && issue.Hold.Reason == record.HoldTaskStopped && issue.Hold.From == reported
+	if !left && !stopped {
+		return nil, nil
+	}
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil || !w.Stored {
+		return nil, err
+	}
+	at, ok := w.PlaceOf(reported)
+	if !ok || at.Kind != record.PlaceStep {
+		return nil, nil
+	}
+	ended := w.Steps[at.Position-1].Role
+	named := fact.HandoffRecord != ""
+	if left {
+		now, ok := w.PlaceOf(issue.Phase)
+		if !ok || now.Kind != record.PlaceStep {
+			return nil, nil
+		}
+		return intake.LateReportOfEndedStep(issue.Key, w.Task, at.Position, ended, now.Position, w.Steps[now.Position-1].Role, named), nil
+	}
+	ran, err := e.ranUnreported(ctx, tx, issue, fact.Role, fact.Claim)
+	if err != nil || !ran {
+		return nil, err
+	}
+	// The walk carries where the task stands, not why it was stopped: the reason is read from the
+	// task's own row, the one source of it (record.Store.StopTask).
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil {
+		return nil, err
+	}
+	for _, task := range stored.Tasks {
+		if task.Task == w.Task {
+			return intake.LateReportOfStoppedTask(issue.Key, w.Task, task.StoppedReason, at.Position, ended, named), nil
+		}
+	}
+	return nil, fmt.Errorf("late report of %s at generation %d: its plan holds no task %s", issue.Key, issue.Generation, w.Task)
+}
+
+// spendLateHandoff keeps the handoff record fact names, a late report lateReport refused, as its
+// role's last one (record.PhaseRow.LastHandoff), and writes nothing else: the issue, its task and
+// the rest of the row stand as they were, and no movement is marked. The record counts as used, so
+// the step's next run is refused it (HANDOFF_NOT_NEW) and writes a handoff of its own, as the
+// refusal tells the agent. A report that names no record writes nothing.
+func (e *Engine) spendLateHandoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComplete) error {
+	if fact.HandoffRecord == "" {
+		return nil
+	}
+	row, err := e.phaseRow(ctx, tx, fact.Issue, fact.Role)
+	if err != nil || row.LastHandoff == fact.HandoffRecord {
+		return err
+	}
+	row.LastHandoff = fact.HandoffRecord
+	return e.store.PutPhase(ctx, tx, row)
+}
+
 // stopTask stops w's task of issue where it stands, in the caller's transaction (R16; C2-1): the
 // step the issue stands in ends as end says (endStep), the task keeps its place and becomes
 // stopped with why (record.Store.StopTask), and the issue is held from the phase that place
