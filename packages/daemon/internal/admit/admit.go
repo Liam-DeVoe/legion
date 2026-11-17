@@ -2669,7 +2669,8 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		// worker of it: accepting's, whose role is the tree's architect, a held member's, whose
 		// hold starts none, and a role workflow.StartFor finds already started. A run still open
 		// goes on and gets no second start (workflow's StartStepRecord): the merge step of a member
-		// held from merging, which the linger left open and the hold's retry goes on with.
+		// held from merging, which the linger left open and the hold's retry goes on with. A member
+		// its plan holds, a stopped task or a parent held for its children, starts no step there.
 		if !promoted {
 			if err := a.engine.StartStepRecord(ctx, tx, member); err != nil {
 				return err

@@ -110,11 +110,14 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, a
 // ended too (record.Store.EndUncountedStep): the route makes the node from the end alone. The end
 // carries the moment now, end's fields, and the session and the model the daemon reads of the
 // agent now. A phase that runs no step writes nothing, and neither does a record key that is no
-// issue key (recordsSteps).
+// issue key (recordsSteps), nor an issue its plan holds (planHold): a stopped task's step ended
+// when its owner stopped it, and a parent held for its children started no retro, so a linger, a
+// hand-over or a re-admission over either has no run to end, and the end of a step with no count
+// would be written for one that never ran.
 func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, end StepEnd) error {
 	at := record.StandsAt(before)
 	place, step, role, typ, ok := stepOf(at)
-	if !ok || !recordsSteps(before) {
+	if !ok || !recordsSteps(before) || planHold(before) {
 		return nil
 	}
 	start, open, err := e.store.EndStepStart(ctx, tx, before.Key, place)
@@ -254,11 +257,14 @@ func (e *Engine) EndRunningStep(ctx context.Context, tx pgx.Tx, before record.Is
 // open goes on, and nothing is written: a member held from merging, whose merge step the linger
 // left open (beginLinger) and whose retry goes on with it, or a role the promotion found already
 // started for this run (workflow.StartFor). A second start there would open a run while the one
-// before it has no end, and the count would leave that one none.
+// before it has no end, and the count would leave that one none. A member its plan holds starts
+// no step either (planHold): its stopped task's step ended stopped and runs again only when a later
+// version of the plan starts the task at its first step, and a parent held for its children has
+// started no retro.
 func (e *Engine) StartStepRecord(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	at := record.StandsAt(issue)
 	place, _, _, _, ok := stepOf(at)
-	if !ok || !recordsSteps(issue) {
+	if !ok || !recordsSteps(issue) || planHold(issue) {
 		return nil
 	}
 	latest, err := e.store.StepStarts(ctx, tx, issue.Key, place)

@@ -104,6 +104,17 @@ func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 	return e.enqueue(ctx, tx, issue.Key, write)
 }
 
+// planHold says whether issue is held by its plan rather than by a failure: its owner stopped its
+// task (record.HoldTaskStopped), or, as a parent whose plan has no acceptance step, it waits for
+// the issues beneath it in place of its retro (record.HoldForChildren). No path that resumes the
+// work of a held issue resumes such a hold: a later version of the plan or a person's todo on a
+// root starts a stopped task again (restartTask), and the last issue beneath the parent to leave
+// starts its retro. An issue with no plan rows is never held so (R20).
+func planHold(issue record.Issue) bool {
+	return issue.Phase == phase.Held && issue.Hold != nil &&
+		(issue.Hold.Reason == record.HoldTaskStopped || issue.Hold.Reason == record.HoldForChildren)
+}
+
 // stopTask stops w's task of issue where it stands, in the caller's transaction (R16; C2-1): the
 // step the issue stands in ends as end says (endStep), the task keeps its place and becomes
 // stopped with why (record.Store.StopTask), and the issue is held from the phase that place
