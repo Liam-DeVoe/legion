@@ -229,6 +229,7 @@ import { endpointPath, isPost, methodOf, readWorld, reviewsRoute, submitsReview 
 import { routeOf } from "./gh-routes";
 import { type GhSelectors, ghTargetOf, namesOwnerOutside, runSelectors } from "./gh-selectors";
 import { graphqlOf, type Recorded, type ThreadRoute, threadCall, threadState } from "./gh-threads";
+import { FIELD_REFUSED, PULL_NOT_FOUND } from "./gh-view";
 import { githubRouteOf } from "./github-routes";
 import {
   holds,
@@ -531,12 +532,28 @@ const USER_403 =
   "gh: Resource not accessible by integration (HTTP 403) (the user a role App's token is)";
 /** `user` and the paths under it, with the leading slash and the query string `gh api` takes. */
 const USER = /^\/?user(?:[/?].*)?$/;
+/** gh's refusals of a read of a pull request, which the world's gh gives as gh does and records
+ * by name (gh-view.ts's PULL_NOT_FOUND and FIELD_REFUSED): a `gh pr view` or `gh pr diff` naming
+ * a pull request or a branch GitHub has not got, or any of `gh pr view`, `list` and `diff` naming
+ * a repository it has not got (`GraphQL: Could not resolve to …`, `no pull requests found for
+ * branch …`), and a `--json` naming a field gh does not take (`Unknown JSON field: …`), each exit 1
+ * as measured on 2026-11-17 against cybermonklabs/legion. */
+const PULL_MISSING =
+  "GraphQL: Could not resolve to a PullRequest or a Repository, or no pull requests found for branch (gh's refusal of one GitHub has not got)";
+const FIELD_UNKNOWN = "Unknown JSON field (gh's refusal of a --json field it does not take)";
 /** The refusals every role of every scenario may meet, since production refuses each so for every
  * role: OWNER_REFUSED, since a correct agent of any role may read a repository of another owner
  * (a reviewer reading the tag an action of the world's workflow is pinned to from that action's
- * own repository, in the rehearsal of 2026-11-16); and USER_403, since any role may ask GitHub
- * who its token is. */
-const GH_DECLARED_EVERY_ROLE: readonly string[] = [OWNER_REFUSED, USER_403];
+ * own repository, in the rehearsal of 2026-11-16); USER_403, since any role may ask GitHub who its
+ * token is; and PULL_MISSING and FIELD_UNKNOWN, since any role may read a pull request, and
+ * production gives every role that names one, a branch, a repository or a field it has not got
+ * gh's own refusal (the architect's ruling of 2026-11-17). */
+const GH_DECLARED_EVERY_ROLE: readonly string[] = [
+  OWNER_REFUSED,
+  USER_403,
+  PULL_MISSING,
+  FIELD_UNKNOWN,
+];
 
 /** The gh refusals each scenario provokes on purpose, or that a correct agent meets in it, by the
  * role that meets them; every other refusal is unhealthy (rule 7). Both labels' worlds are one
@@ -591,6 +608,10 @@ const OWN_READ = /\/compare\/[^?]+\.\.\.|\/pulls\/\d+\/reviews\/\d+(?:\?|$)/;
 /** The refusal the gh stand-in gave `call`, which exited with a status other than 0, or undefined
  * when that status is no refusal of the world's. The record keeps the status and not the text, so
  * the refusal is read back from the call the way the stand-in decided it:
+ *   - a read of the pull request gh refused (`gh pr view`, `list` or `diff` of one, a branch or a
+ *     repository GitHub has not got, or a `--json` field gh does not take) is the refusal the
+ *     record names it by (PULL_MISSING, FIELD_UNKNOWN); another such read that exited non-zero
+ *     was answered, its status its `--jq`'s;
  *   - the submit of a review (`reviewSubmission`) that left no review on the record was refused
  *     422 (SUBMIT_422); one that left a review was taken, and its status is its own `--jq`'s;
  *   - the create of a review (`reviewCreate`) a route matched that left no review was refused 422
@@ -618,6 +639,9 @@ function ghRefusal(
 ): string | undefined {
   const argv = call.argv ?? [];
   if (outside) return call.exit === 2 ? OWNER_REFUSED : OWNER_NOT_REFUSED;
+  // gh's own refusals of a read of the pull request, which the record names (gh-view.ts).
+  if (call.handler === PULL_NOT_FOUND) return PULL_MISSING;
+  if (call.handler === FIELD_REFUSED) return FIELD_UNKNOWN;
   if (repo !== undefined && argv[0] === "api" && isPost(argv)) {
     if (argv.some((arg) => submitsReview(arg, repo) !== undefined))
       return call.review === undefined ? SUBMIT_422 : undefined;
@@ -625,6 +649,9 @@ function ghRefusal(
       return call.review === undefined ? CREATE_422 : undefined;
   }
   if (call.route !== null && call.route !== undefined) {
+    // A read a route matched that the world still does not model (a `gh pr list --search`, GraphQL
+    // it does not read), refused 404 and recorded `unrouted`, is the world missing an answer.
+    if (call.handler === "unrouted") return UNROUTED;
     const route = routes.find((one) => one.match === call.route);
     if (route?.exit === undefined || route.exit === 0) return undefined;
     const refusal = (route.stderr ?? `exit ${route.exit}`).split("\n")[0];

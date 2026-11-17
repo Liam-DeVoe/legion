@@ -3106,9 +3106,16 @@ $2
 # `gh pr list` is among the shared routes because the worker skill has a role with no pull
 # request number find one that way (`gh pr list --repo <repo> --head legion/<KEY> --state open
 # --json number`), and a 404 there reads to the agent as a branch with no pull request open on
-# it. The world has exactly one open pull request and its head is `legion/<key>`, so that one
-# pull request is GitHub's answer to any listing of this world's open ones; no role of these
-# scenarios lists another head.
+# it. The world has exactly one open pull request and its head is `legion/<key>`. The two routes
+# hold the world's own facts of it — its number, node id, URL, title, body, state, branches,
+# mergeability, review decision and the checks of a head no remote holds — and the gh stand-in
+# answers each `gh pr view` and `gh pr list` from them and from what the run did, as gh reads a
+# pull request (gh-standin.ts's `prRead`): its head, checks and merge state, its reviews (the ones
+# the world held, REVIEWS, and the run's), its conversation, the files and commits of its diff,
+# each field `--json` names and gh's text without it, and gh's refusal of a pull request, a
+# repository or a field the world has not got. So no review, comment or file is written here: a
+# copy frozen here answered `gh pr view --json reviews` in GitHub's REST shape, which gh never
+# prints (INFRA-764 round 25's agents read `.commit.oid` null).
 #
 # The base branch's reads are shared routes for the same reason: the merge gate prescribes two of
 # them by name (skill://legion-worker/references/merge-gate.md, "the base branch's rulesets'
@@ -3241,7 +3248,7 @@ fixture_write() {
      title:("feat: greet() (" + $key + ")"), state:"OPEN", isDraft:false, isCrossRepository:false,
      headRefName:$ref, headRefOid:$head, baseRefName:$base, body:$body, mergeable:"MERGEABLE",
      mergeStateStatus:"CLEAN", mergedAt:null, autoMergeRequest:null,
-     reviewDecision:$decision, reviews:$reviews, latestReviews:$reviews, comments:[],
+     reviewDecision:$decision,
      statusCheckRollup:[$runs[] | {name, status:(.status|ascii_upcase), conclusion:(.conclusion|ascii_upcase)}]} as $pr
     | {id:1, node_id:"R_kgDOAAAAAQ", name:$name, full_name:$repo, owner:{login:$owner, type:"Organization"},
        private:false, visibility:"public", fork:false, archived:false, disabled:false, description:null,

@@ -6408,7 +6408,10 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
       [["PRRT_kwDOfix001"], true, "string"],
       [["PRRT_kwDOfix002"], false, "string"],
     ]);
-    // A pull request the world has not got is GitHub's NOT_FOUND, with the data it found.
+    // A pull request the world has not got is GitHub's NOT_FOUND, with the data it found and the
+    // place in the query that named it (`locations`: measured on 2026-11-17 against production,
+    // `…{pullRequest(number:999999){number} name}}` was answered so; THREAD_QUERY's `pullRequest`
+    // starts at column 85). gh prints GitHub's body as it came.
     const elsewhere = gh(
       dir,
       "api",
@@ -6430,6 +6433,7 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
           {
             type: "NOT_FOUND",
             path: ["repository", "pullRequest"],
+            locations: [{ line: 1, column: 85 }],
             message: "Could not resolve to a PullRequest with the number of 100.",
           },
         ],

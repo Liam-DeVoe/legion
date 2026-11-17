@@ -17,6 +17,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { endpointOf, FIELD_FLAGS, methodOf, valueAt } from "./gh-call";
+import { SCHEMA_TYPES } from "./graphql-schema";
 
 /** A route a text names or a call reaches: its key and whether it reads or writes. */
 export interface RouteKey {
@@ -234,9 +235,18 @@ function closing(text: string, open: number, quote: string): number {
 }
 
 // GraphQL, as far as reading which route a query reaches and answering it from a world goes:
-// operations, variables, fields with arguments and aliases, inline fragments. A fragment
-// spread, a directive or a fragment definition is no query any text or call of these worlds
-// writes, and a query holding one reads as none.
+// operations, variables, fields with arguments and aliases, inline fragments, read token by token
+// as GitHub's own parser (graphql-ruby) reads them, so a query that is no GraphQL document is
+// refused as GitHub refuses it: its parser's message for the token it stopped at, and where that
+// token stands (`readGraphql`). A fragment spread, a directive, a fragment definition or a
+// document of more than one operation is GraphQL that no text or call of these worlds writes,
+// and a query holding one is one this module does not read.
+
+/** Where a token of a query starts, as GitHub counts it: its line and its column, each from 1. */
+export interface Location {
+  readonly line: number;
+  readonly column: number;
+}
 
 type Value =
   | { readonly kind: "var"; readonly name: string }
@@ -252,6 +262,8 @@ export type Selection =
       readonly name: string;
       readonly args: Readonly<Record<string, Value>>;
       readonly selections: readonly Selection[] | undefined;
+      /** Where the field starts (its alias, where it has one), which GitHub's errors name. */
+      readonly loc: Location;
     }
   | {
       readonly kind: "fragment";
@@ -261,136 +273,433 @@ export type Selection =
 
 export interface Operation {
   readonly type: "query" | "mutation" | "subscription";
+  readonly name: string | undefined;
   readonly variables: readonly { name: string; type: string }[];
   readonly selections: readonly Selection[];
 }
 
-const GRAPHQL_TOKEN =
-  /\s+|,|#[^\n]*|(\.\.\.)|([{}()[\]:!=$@])|("(?:[^"\\]|\\.)*")|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|([_A-Za-z][_0-9A-Za-z]*)/y;
+/** One error of GitHub's GraphQL answer, with the keys GitHub gives it in the order it writes
+ * them: a parser's refusal is its `message` and its `locations`; a validator's (`undefinedFields`)
+ * its `path`, `extensions`, `locations` and `message`; an object a query names and the world has
+ * not got, its `type`, `path`, `locations` and `message` (measured on 2026-11-17, gh-standin.ts's
+ * `graphAnswer` says how). */
+export interface GraphError {
+  readonly type?: string;
+  readonly path?: readonly string[];
+  readonly extensions?: Readonly<Record<string, string>>;
+  readonly locations?: readonly Location[];
+  readonly message: string;
+}
 
-/** The operation `text` holds, or undefined when it holds none this parser reads. */
-export function parseGraphql(text: string): Operation | undefined {
-  const tokens: string[] = [];
-  GRAPHQL_TOKEN.lastIndex = 0;
-  while (GRAPHQL_TOKEN.lastIndex < text.length) {
-    const match = GRAPHQL_TOKEN.exec(text);
-    if (match === null) return undefined;
-    const token = match[1] ?? match[2] ?? match[3] ?? match[4] ?? match[5];
-    if (token !== undefined) tokens.push(token);
+/** The name GitHub's lexer gives each punctuation token, which its parser's refusal names. */
+const PUNCTUATION: Readonly<Record<string, string>> = {
+  "{": "LCURLY",
+  "}": "RCURLY",
+  "(": "LPAREN",
+  ")": "RPAREN",
+  "[": "LBRACKET",
+  "]": "RBRACKET",
+  ":": "COLON",
+  $: "VAR_SIGN",
+  "@": "DIR_SIGN",
+  "=": "EQUALS",
+  "!": "BANG",
+  "|": "PIPE",
+  "&": "AMP",
+};
+/** The words GitHub's lexer reads as tokens of their own, each named by the word in capitals;
+ * its parser takes each where it takes a name. */
+const KEYWORDS = new Set([
+  "on",
+  "fragment",
+  "true",
+  "false",
+  "null",
+  "query",
+  "mutation",
+  "subscription",
+  "schema",
+  "scalar",
+  "type",
+  "extend",
+  "implements",
+  "interface",
+  "union",
+  "enum",
+  "input",
+  "directive",
+  "repeatable",
+]);
+/** The tokens a document's definition starts with that define no operation: a fragment, an
+ * extension and the definitions of a schema, each GraphQL this module does not read. */
+const DEFINITIONS = new Set([
+  "FRAGMENT",
+  "EXTEND",
+  "SCHEMA",
+  "SCALAR",
+  "TYPE",
+  "ENUM",
+  "INPUT",
+  "UNION",
+  "INTERFACE",
+  "DIRECTIVE",
+]);
+const BLOCK_STRING = /"""(?:\\"""|[^"]|"(?!""))*"""/y;
+const STRING = /"(?:[^"\\\n\r]|\\["\\/bfnrt]|\\u[0-9A-Fa-f]{4})*"/y;
+const NUMBER = /-?(?:0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?/y;
+const NAME = /[_A-Za-z][_0-9A-Za-z]*/y;
+/** GitHub's lexer's refusal of a string it cannot read to its end, which names where the string
+ * starts and, unlike its parser's, says nothing of that place in its message. Measured on
+ * 2026-11-17: `query{repository(owner:"<owner>,name:"<repo>"){…}}` was answered `Expected string
+ * or block string, but it was malformed` at line 1, column 51, the quote that opens a string no
+ * quote closes. */
+const MALFORMED_STRING = "Expected string or block string, but it was malformed";
+
+/** A token of a query: its kind as GitHub's lexer names it, its text, the value GitHub's parser
+ * names it by in a refusal, whether that parser takes it as a name, and where it starts. */
+interface Token {
+  readonly kind: string;
+  readonly text: string;
+  readonly value: string;
+  readonly name: boolean;
+  readonly at: Location;
+}
+/** GitHub's refusal of a query, thrown where its parser stops. */
+class Refused extends Error {
+  constructor(readonly error: GraphError) {
+    super(error.message);
   }
-  let at = 0;
-  const peek = () => tokens[at];
-  const take = (want?: string): string => {
-    const token = tokens[at++];
-    if (token === undefined || (want !== undefined && token !== want))
-      throw new Error(`expected ${want ?? "a token"}, read ${token ?? "the end"}`);
-    return token;
+}
+/** A document of GraphQL this module does not read. */
+class Unread extends Error {}
+
+/** The reader of `text`'s tokens, one a call, as GitHub's lexer reads them: past white space,
+ * line ends, commas and comments, and only when its parser asks for the next, so a string no quote
+ * closes is refused only once the parser reaches it. A character no token starts with is GitHub's
+ * `UNKNOWN_CHAR`, whose value in a refusal is the character after it — measured on 2026-11-17:
+ * `query{viewer{login %x}}` was refused `Expected NAME, actual: UNKNOWN_CHAR ("x") at [1, 20]`, and
+ * `…login %}}` with `("}")` — as graphql-ruby's lexer reads the one character past it. */
+function tokensOf(text: string): () => Token | undefined {
+  let offset = 0;
+  let line = 1;
+  let lineStart = 0;
+  const match = (pattern: RegExp) => {
+    pattern.lastIndex = offset;
+    return pattern.exec(text);
+  };
+  return () => {
+    while (offset < text.length) {
+      const char = text[offset];
+      if (char === "\n" || char === "\r") {
+        offset += char === "\r" && text[offset + 1] === "\n" ? 2 : 1;
+        line++;
+        lineStart = offset;
+      } else if (char === "#")
+        while (offset < text.length && text[offset] !== "\n" && text[offset] !== "\r") offset++;
+      else if (char === " " || char === "\t" || char === "," || char === "\uFEFF") offset++;
+      else break;
+    }
+    if (offset >= text.length) return undefined;
+    const at = { line, column: offset - lineStart + 1 };
+    const char = text[offset] ?? "";
+    const token = (kind: string, length: number, value: string, name = false): Token => {
+      const read = text.slice(offset, offset + length);
+      offset += length;
+      return { kind, text: read, value, name, at };
+    };
+    if (text.startsWith("...", offset)) return token("ELLIPSIS", 3, "...");
+    const punctuation = PUNCTUATION[char];
+    if (punctuation !== undefined) return token(punctuation, 1, char);
+    if (char === '"') {
+      const block = text.startsWith('"""', offset);
+      const read = match(block ? BLOCK_STRING : STRING)?.[0];
+      if (read === undefined) throw new Refused({ message: MALFORMED_STRING, locations: [at] });
+      // A block string's lines are lines of the query, which every later token is counted from.
+      const breaks = [...read.matchAll(/\r\n|\n|\r/g)];
+      const value = block ? read.slice(3, -3) : (JSON.parse(read) as string);
+      const string = token("STRING", read.length, value);
+      const lastBreak = breaks.at(-1);
+      if (lastBreak !== undefined) {
+        line += breaks.length;
+        lineStart = offset - read.length + (lastBreak.index ?? 0) + lastBreak[0].length;
+      }
+      return string;
+    }
+    const number = /[-\d]/.test(char) ? match(NUMBER) : null;
+    if (number !== null)
+      return token(
+        number[1] === undefined && number[2] === undefined ? "INT" : "FLOAT",
+        number[0].length,
+        number[0]
+      );
+    const word = match(NAME)?.[0];
+    if (word !== undefined)
+      return token(KEYWORDS.has(word) ? word.toUpperCase() : "IDENTIFIER", word.length, word, true);
+    return token("UNKNOWN_CHAR", 1, text[offset + 1] ?? "");
+  };
+}
+
+/** The one operation the document `text` holds, read as GitHub's parser reads it: each refusal
+ * is that parser's, `Expected <what>, actual: <token> (<value>) at [<line>, <column>]`, at the
+ * token it stopped at, or, past the last token, at that last token — measured on 2026-11-17
+ * against production, each answered so and exit 1: a query with one `}` too few (`Expected NAME,
+ * actual: (none) ("") at [1, 87]`, the query's last `}`, and at [1, 176] for the eight `{` and
+ * seven `}` of prod-gql-error), a `{` where a `)` belongs (`Expected NAME, actual: LCURLY ("{")`),
+ * an argument with no `:` (`Expected COLON, actual: STRING ("<owner>")`, `actual: INT ("<n>")`),
+ * no value (`Expected VALUE, actual: RPAREN (")")`), `()` (`Expected ARGUMENT_NAME`), a `}` too many
+ * or a misspelt `query` (`Expected one of SCHEMA, SCALAR, TYPE, ENUM, INPUT, UNION, INTERFACE,
+ * actual: RCURLY ("}")`, `actual: IDENTIFIER ("quer") at [1, 1]`), and a document of white space
+ * and comments alone (`Unexpected end of document`, with no location). Throws `Refused` with
+ * GitHub's error, or `Unread` for GraphQL this module does not read. */
+function parseDocument(text: string): Operation {
+  const next = tokensOf(text);
+  let token = next();
+  if (token === undefined) throw new Refused({ message: "Unexpected end of document" });
+  let last = token.at;
+  const advance = () => {
+    token = next();
+    if (token !== undefined) last = token.at;
+  };
+  const at = (kind: string) => token?.kind === kind;
+  const refuse = (message: string): never => {
+    const where = token?.at ?? last;
+    throw new Refused({
+      message: `${message} at [${where.line}, ${where.column}]`,
+      locations: [where],
+    });
+  };
+  const actual = () => `actual: ${token?.kind ?? "(none)"} (${JSON.stringify(token?.value ?? "")})`;
+  const expect = (kind: string) => {
+    if (!at(kind)) refuse(`Expected ${kind}, ${actual()}`);
+    advance();
   };
   const name = (): string => {
-    const token = take();
-    if (!/^[_A-Za-z]/.test(token)) throw new Error(`expected a name, read ${token}`);
-    return token;
+    const read = token;
+    if (read === undefined || !read.name) return refuse(`Expected NAME, ${actual()}`);
+    advance();
+    return read.text;
   };
   const value = (): Value => {
-    const token = take();
-    if (token === "$") return { kind: "var", name: name() };
-    if (token === "[") {
-      const values: Value[] = [];
-      while (peek() !== "]") values.push(value());
-      take("]");
-      return { kind: "list", values };
-    }
-    if (token === "{") {
-      const fields: Record<string, Value> = {};
-      while (peek() !== "}") {
-        const key = name();
-        take(":");
-        fields[key] = value();
+    const read = token;
+    switch (read?.kind) {
+      case "INT":
+      case "FLOAT":
+        advance();
+        return { kind: "scalar", value: Number(read.text) };
+      case "STRING":
+        advance();
+        return { kind: "scalar", value: read.value };
+      case "TRUE":
+      case "FALSE":
+        advance();
+        return { kind: "scalar", value: read.kind === "TRUE" };
+      case "NULL":
+        advance();
+        return { kind: "scalar", value: null };
+      case "IDENTIFIER":
+        advance();
+        return { kind: "enum", value: read.text };
+      case "VAR_SIGN":
+        advance();
+        return { kind: "var", name: name() };
+      case "LBRACKET": {
+        advance();
+        const values: Value[] = [];
+        while (!at("RBRACKET")) values.push(value());
+        advance();
+        return { kind: "list", values };
       }
-      take("}");
-      return { kind: "object", fields };
+      case "LCURLY": {
+        advance();
+        const fields: Record<string, Value> = {};
+        while (!at("RCURLY")) {
+          const key = name();
+          expect("COLON");
+          fields[key] = value();
+        }
+        advance();
+        return { kind: "object", fields };
+      }
+      default:
+        return refuse(`Expected VALUE, ${actual()}`);
     }
-    if (token.startsWith('"')) return { kind: "scalar", value: JSON.parse(token) as string };
-    if (/^-?\d/.test(token)) return { kind: "scalar", value: Number(token) };
-    if (token === "true" || token === "false") return { kind: "scalar", value: token === "true" };
-    if (token === "null") return { kind: "scalar", value: null };
-    return { kind: "enum", value: token };
   };
-  const typeText = (): string => {
-    if (peek() === "[") {
-      take("[");
-      const inner = typeText();
-      take("]");
-      return `[${inner}]${peek() === "!" ? take("!") : ""}`;
-    }
-    return `${name()}${peek() === "!" ? take("!") : ""}`;
+  const typeOf = (variable: string): string => {
+    let read: string;
+    if (at("LBRACKET")) {
+      advance();
+      read = `[${typeOf(variable)}]`;
+      expect("RBRACKET");
+    } else if (at("IDENTIFIER")) read = name();
+    else return refuse(`Missing type definition for variable: $${variable}`);
+    if (!at("BANG")) return read;
+    advance();
+    return `${read}!`;
   };
   const selectionSet = (): Selection[] => {
-    take("{");
+    expect("LCURLY");
     const selections: Selection[] = [];
-    while (peek() !== "}") {
-      if (peek() === "...") {
-        take("...");
-        if (peek() !== "on") throw new Error("a fragment spread is no query this reads");
-        take("on");
+    while (!at("RCURLY")) {
+      if (at("ELLIPSIS")) {
+        advance();
+        if (at("LCURLY")) {
+          selections.push({ kind: "fragment", on: undefined, selections: selectionSet() });
+          continue;
+        }
+        if (!at("ON")) {
+          // A spread of a named fragment, which GitHub reads by its name.
+          name();
+          throw new Unread();
+        }
+        advance();
         const on = name();
+        if (at("DIR_SIGN")) throw new Unread();
         selections.push({ kind: "fragment", on, selections: selectionSet() });
         continue;
       }
+      const loc = token?.at ?? last;
       let field = name();
       let alias: string | undefined;
-      if (peek() === ":") {
-        take(":");
+      if (at("COLON")) {
+        advance();
         alias = field;
         field = name();
       }
       const args: Record<string, Value> = {};
-      if (peek() === "(") {
-        take("(");
-        while (peek() !== ")") {
+      if (at("LPAREN")) {
+        advance();
+        while (!at("RPAREN")) {
           const key = name();
-          take(":");
+          expect("COLON");
           args[key] = value();
         }
-        take(")");
+        if (Object.keys(args).length === 0) refuse(`Expected ARGUMENT_NAME, ${actual()}`);
+        advance();
       }
-      if (peek() === "@") throw new Error("a directive is no query this reads");
-      const selections_ = peek() === "{" ? selectionSet() : undefined;
-      selections.push({ kind: "field", alias, name: field, args, selections: selections_ });
+      if (at("DIR_SIGN")) throw new Unread();
+      const inner = at("LCURLY") ? selectionSet() : undefined;
+      selections.push({ kind: "field", alias, name: field, args, selections: inner, loc });
     }
-    take("}");
+    advance();
     return selections;
   };
-  try {
-    let type: Operation["type"] = "query";
+  const operation = (start: Token): Operation => {
+    const type = start.kind === "LCURLY" ? "query" : (start.text as Operation["type"]);
+    if (start.kind !== "LCURLY") advance();
+    const named = at("LPAREN") || at("LCURLY") || at("DIR_SIGN") ? undefined : name();
     const variables: { name: string; type: string }[] = [];
-    if (peek() !== "{") {
-      const word = name();
-      if (word !== "query" && word !== "mutation" && word !== "subscription") return undefined;
-      type = word;
-      if (peek() !== "(" && peek() !== "{") name();
-      if (peek() === "(") {
-        take("(");
-        while (peek() !== ")") {
-          take("$");
-          const variable = name();
-          take(":");
-          const declared = typeText();
-          if (peek() === "=") {
-            take("=");
-            value();
-          }
-          variables.push({ name: variable, type: declared });
+    if (at("LPAREN")) {
+      advance();
+      while (!at("RPAREN")) {
+        expect("VAR_SIGN");
+        const variable = name();
+        expect("COLON");
+        const declared = typeOf(variable);
+        if (at("EQUALS")) {
+          advance();
+          value();
         }
-        take(")");
+        if (at("DIR_SIGN")) throw new Unread();
+        variables.push({ name: variable, type: declared });
       }
+      advance();
     }
-    const selections = selectionSet();
-    if (at !== tokens.length) return undefined;
-    return { type, variables, selections };
-  } catch {
-    return undefined;
+    if (at("DIR_SIGN")) throw new Unread();
+    return { type, name: named, variables, selections: selectionSet() };
+  };
+  const operations: Operation[] = [];
+  for (let start = token; start !== undefined; start = token) {
+    if (["QUERY", "MUTATION", "SUBSCRIPTION", "LCURLY"].includes(start.kind)) {
+      operations.push(operation(start));
+      continue;
+    }
+    // A definition of the schema's own may follow a description, which is a string.
+    if (start.kind === "STRING") advance();
+    if (token !== undefined && DEFINITIONS.has(token.kind)) throw new Unread();
+    refuse(`Expected one of SCHEMA, SCALAR, TYPE, ENUM, INPUT, UNION, INTERFACE, ${actual()}`);
   }
+  const [one, ...more] = operations;
+  if (one === undefined || more.length > 0) throw new Unread();
+  return one;
+}
+
+/** The operation `text` holds, or undefined when it holds none this module reads: a query that
+ * is no GraphQL document, or GraphQL this module does not read. */
+export function parseGraphql(text: string): Operation | undefined {
+  try {
+    return parseDocument(text);
+  } catch (error) {
+    if (error instanceof Refused || error instanceof Unread) return undefined;
+    throw error;
+  }
+}
+
+/** What GitHub makes of the query `text` a call sends: the operation it runs; its refusal of a
+ * query that is no GraphQL document (`parseDocument`), of one selecting a field its type has not
+ * got (`undefinedFields`), and of a call that sends no query, which GitHub answers `A query
+ * attribute must be specified and must be a string.` with no location (measured on 2026-11-17
+ * for `-f query=` and for a call with no `query` field); or `unread`, GraphQL this module does not
+ * read. */
+export function readGraphql(
+  text: string
+): { operation: Operation } | { refused: GraphError[] } | { unread: true } {
+  if (text === "")
+    return { refused: [{ message: "A query attribute must be specified and must be a string." }] };
+  let operation: Operation;
+  try {
+    operation = parseDocument(text);
+  } catch (error) {
+    if (error instanceof Refused) return { refused: [error.error] };
+    if (error instanceof Unread) return { unread: true };
+    throw error;
+  }
+  const refused = undefinedFields(operation);
+  return refused.length === 0 ? { operation } : { refused };
+}
+
+/** GitHub's refusal of each field `operation` selects that the type it selects it on has not got,
+ * read against GitHub's own schema of the world's types (graphql-schema.ts): GitHub validates the
+ * whole query before it runs any of it and answers every such field, with no data. Each is named
+ * by the path GitHub's validator gives it — the operation (`query`, or `query <name>`), each field
+ * above it by the name it answers under (its alias, where it has one), and `... on <type>` for an
+ * inline fragment — measured on 2026-11-17: an aliased field of a named query was refused at
+ * `["query Q","repository","pr","b"]`, a field of a review thread's node at
+ * `[…,"reviewThreads","nodes","nope"]`, and one of an inline fragment at
+ * `[…,"author","... on Bot","nope"]`, each with `extensions` naming its code, its type and the
+ * field. A field whose type the schema does not hold is read no further, and nothing below it is
+ * refused. */
+export function undefinedFields(operation: Operation): GraphError[] {
+  const errors: GraphError[] = [];
+  const walk = (selections: readonly Selection[], type: string, at: readonly string[]) => {
+    const fields = SCHEMA_TYPES[type];
+    if (fields === undefined) return;
+    for (const selection of selections) {
+      if (selection.kind === "fragment") {
+        if (selection.on === undefined) walk(selection.selections, type, at);
+        else walk(selection.selections, selection.on, [...at, `... on ${selection.on}`]);
+        continue;
+      }
+      // GitHub's own fields of every type: `__typename`, and the schema's at the root.
+      if (selection.name.startsWith("__")) continue;
+      const path = [...at, selection.alias ?? selection.name];
+      const returns = fields[selection.name];
+      if (returns === undefined)
+        errors.push({
+          path,
+          extensions: { code: "undefinedField", typeName: type, fieldName: selection.name },
+          locations: [selection.loc],
+          message: `Field '${selection.name}' doesn't exist on type '${type}'`,
+        });
+      else if (selection.selections !== undefined) walk(selection.selections, returns, path);
+    }
+  };
+  const root = { query: "Query", mutation: "Mutation", subscription: "Subscription" }[
+    operation.type
+  ];
+  walk(operation.selections, root, [
+    operation.name === undefined ? operation.type : `${operation.type} ${operation.name}`,
+  ]);
+  return errors;
 }
 
 /** The route key of `operation`: a mutation by its first field, a query by the path of fields
@@ -417,7 +726,7 @@ export function graphqlKey(operation: Operation): string {
  * gh prints to stderr and exits 1 on. */
 export interface GraphAnswer {
   readonly data?: Record<string, unknown> | null;
-  readonly errors?: readonly { type?: string; path?: string[]; message: string }[];
+  readonly errors?: readonly GraphError[];
 }
 
 type Json = Record<string, unknown>;
@@ -469,9 +778,11 @@ export function argumentsOf(
  * (`first`, `last`, `after`, `before`, `nodes`, `edges`, `pageInfo`, `totalCount`) and filtered by
  * `itemTypes` where a timeline is asked for by them; an object whose `__args` names the arguments
  * that find it (a repository by owner and name, a pull request by number) answers null and
- * GitHub's NOT_FOUND where a call names another; a field the graph does not hold is null. A
- * variable the operation declares non-null and the call does not send is GitHub's refusal of the
- * whole query. */
+ * GitHub's NOT_FOUND where a call names another, at the place the query names it (`locations`:
+ * measured on 2026-11-17, `…{pullRequest(number:999999){number} name}}` was answered with the
+ * pull request null, the repository's name, and the error's `type`, `path`, `locations` and
+ * `message`, in that order); a field the graph does not hold is null. A variable the operation
+ * declares non-null and the call does not send is GitHub's refusal of the whole query. */
 export function executeGraphql(
   operation: Operation,
   graph: Json,
@@ -490,7 +801,7 @@ export function executeGraphql(
         },
       ],
     };
-  const errors: { type: string; path: string[]; message: string }[] = [];
+  const errors: GraphError[] = [];
   const items = new WeakSet<unknown[]>();
   const project = (selections: readonly Selection[], value: Json, at: string[]): Json => {
     const out: Json = {};
@@ -528,7 +839,12 @@ export function executeGraphql(
     if (isObject(finds))
       for (const [name, want] of Object.entries(args))
         if (name in finds && String(finds[name]).toLowerCase() !== String(want).toLowerCase()) {
-          errors.push({ type: "NOT_FOUND", path: at, message: notFound(field.name, args) });
+          errors.push({
+            type: "NOT_FOUND",
+            path: at,
+            locations: [field.loc],
+            message: notFound(field.name, args),
+          });
           return null;
         }
     return project(field.selections, raw, at);

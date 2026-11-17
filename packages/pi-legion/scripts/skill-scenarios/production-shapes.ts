@@ -46,17 +46,25 @@ export type PinnedRead = z.infer<typeof PinnedRead>;
 const Pin = z.object({ made_by: z.string(), reads: z.array(PinnedRead) });
 
 let pinned: Map<string, PinnedRead> | undefined;
-/** The read the pin names `name`. A name it does not hold throws, naming it. */
-export function pinnedRead(name: string): PinnedRead {
+/** Every read the pin holds, by its name. */
+function pin(): Map<string, PinnedRead> {
   pinned ??= new Map(
     Pin.parse(JSON.parse(readFileSync(PRODUCTION_SHAPES, "utf8"))).reads.map((read) => [
       read.name,
       read,
     ])
   );
-  const read = pinned.get(name);
+  return pinned;
+}
+/** The read the pin names `name`. A name it does not hold throws, naming it. */
+export function pinnedRead(name: string): PinnedRead {
+  const read = pin().get(name);
   if (read === undefined) throw new Error(`${PRODUCTION_SHAPES} pins no read named ${name}`);
   return read;
+}
+/** Every read the pin holds, in its order: what a row that holds each read of a kind lists. */
+export function pinnedReads(): PinnedRead[] {
+  return [...pin().values()];
 }
 
 /** `read`'s command, after its `gh`, with each placeholder filled from `values`, so a row reads

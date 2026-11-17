@@ -9,7 +9,8 @@
 //     dispatch names and no run runs, is not one;
 //   - every module of the directory one of those loads, at any depth (`importGraph`), since the
 //     digest of a program leaves a change to what it imports unseen (github-standin.ts's
-//     github-routes.ts, the gh stand-in's gh-routes.ts and gh-call.ts);
+//     github-routes.ts, the gh stand-in's gh-routes.ts and gh-call.ts), the JSON one imports
+//     among them (gh-routes.ts's graphql-schema.json, which the gh stand-in's bundle carries);
 //   - every Go program of the directory but a test: daemon-pane.ts hands daemon-routes.go,
 //     daemon-completion.go and gh-selectors.go to `go run` by their paths, which no import names.
 // A program rig.sh names that is not there is in the set all the same, and services_from records
@@ -20,8 +21,9 @@ import path from "node:path";
 /** Every file of this repository that bun loads to run the module `file`, itself among them: each
  * module its source imports, exports from, imports dynamically or requires (`Bun.Transpiler`'s
  * scan, which leaves out an import of types alone, as bun's run does), at any depth, a workspace
- * package's own sources included, and no installed package's. A `#!` first line is left out of
- * the scan, which refuses it, as bun's run skips it. */
+ * package's own sources included, and no installed package's; a JSON file one imports is loaded
+ * as data and scanned no further. A `#!` first line is left out of the scan, which refuses it, as
+ * bun's run skips it. */
 export function importGraph(file: string): Set<string> {
   const scanner = new Bun.Transpiler({ loader: "ts" });
   const seen = new Set<string>();
@@ -32,11 +34,9 @@ export function importGraph(file: string): Set<string> {
     for (const { path: specifier } of scanner.scanImports(source)) {
       if (/^(?:node|bun):/.test(specifier)) continue;
       const resolved = realpathSync(Bun.resolveSync(specifier, path.dirname(one)));
-      if (
-        !resolved.includes(`${path.sep}node_modules${path.sep}`) &&
-        /\.[cm]?[jt]sx?$/.test(resolved)
-      )
-        visit(resolved);
+      if (resolved.includes(`${path.sep}node_modules${path.sep}`)) continue;
+      if (resolved.endsWith(".json")) seen.add(resolved);
+      else if (/\.[cm]?[jt]sx?$/.test(resolved)) visit(resolved);
     }
   };
   visit(realpathSync(file));

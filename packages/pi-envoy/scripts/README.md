@@ -559,8 +559,10 @@ tool result of any
 agent, and no `out*.txt`, holds a line the push guard prints when it refuses a push or cannot run;
 no `gh` call the gh stand-in refused (`calls.jsonl`) with a refusal `health.ts`'s `GH_DECLARED`
 does not declare for the scenario and the calling role (a call no route of the world answers
-never is; the refusals production gives for a workflow run the world holds none of, GitHub's 404
-for its jobs and gh's for `gh run view` and `gh run watch`, are, for every role, and so is the
+never is, nor a read the world refused as one it does not model, recorded `unrouted`; the
+refusals production gives for a workflow run the world holds none of, GitHub's 404 for its jobs
+and gh's for `gh run view` and `gh run watch`, are, for every role, and so are gh's refusals of a
+pull request, a branch, a repository or a `--json` field GitHub or gh has not got, and the
 Legion gh wrapper's refusal, exit 2, of a call naming a repository whose owner is outside the
 project; the world answers
 every `gh` read either label's role texts name, which `gh-routes.ts`'s `WORLD_ROUTES` lists and the
@@ -834,7 +836,11 @@ has that production does not, and the paths whose kinds differ, none of them bel
 kind differs. An array the world holds empty is not compared below itself, nor is a variant of a
 list the world holds none of, since how many items a list holds is the world's state and not its
 shape; an array production held empty pins no item shape, so an item the world holds there is a
-path production does not show. `gh-standin.test.ts` holds each of the five ruleset reads to its
+path production does not show. A review's `url` in `gh pr view --json reviews` is state too: gh
+asks GitHub for it only on the pages after its first 100 reviews, so production's #2827, of 137,
+holds it on its last 37 and no world, of fewer than 100, holds it (measured on 2026-11-17 on #2827,
+whose reviews from the 100th on carry it and no earlier one does, and on #4326, whose 2 carry
+none). `gh-standin.test.ts` holds each of the five ruleset reads to its
 pin, shape, exit and stderr, with no difference. The branch's head is the world's developer's
 commit, signed with an SSH key of the developer's own: the world's GitHub holds the developer's
 account by the address the commit carries and the key it signs with (`rig.sh`'s
@@ -881,6 +887,55 @@ state: production read its check runs while they ran, so their `conclusion` and 
 are null there and the world's, concluded, are strings. A REST read the pin does not hold — the
 workflow runs, a ref, the answer of a write — is held to the fields GitHub requires and no more,
 and is not claimed to answer in production's whole shape.
+
+gh's own reads of the pull request — `gh pr view`, `gh pr list` and `gh pr diff` — are the gh
+stand-in's reading of the world as gh 2.98.0 prints it (`gh-standin.ts`'s `prRead`, `gh-view.ts`),
+never the object `fixture_write` holds. `--json` takes the 46 fields gh takes, refuses any other
+as gh does (`Unknown JSON field: "<field>"` and the fields it takes, exit 1), and serves every
+one: the world's facts of its one pull request, what the run did to it (its head, checks and
+merge state; its reviews, the world's, the run's and the `COMMENTED` ones GitHub files a lone
+comment in, each in gh's shape with its node id, its author's GraphQL login and `commit.oid`;
+`latestReviews`, the last review of each author but the pull request's own, ordered by login,
+with the id and the commit gh does not read left empty; its conversation; and the files and
+commits of its diff from the merge base), and the empty lists and nulls of what the world holds
+none of (labels, assignees, milestone, projects, reactions, review requests, issues it closes).
+A review still pending, and the thread its inline comment opens, is the App's that wrote it alone,
+as GitHub shows one to its author alone: every read of the reviews — the REST list and a review
+by id (GitHub's 404 for another App's, which 404 is not measured, since no pending review of
+another account can be found to read), `gh pr view`, GraphQL's reviews and review threads, the
+review comments — shows it to that App and to no other (`gh-standin.ts`'s `shown`), each role
+calling with its App's token as production gives it (`rest-objects.ts`'s `roleApp`: the implement
+App for the implementer and the merger, the review App for every other role), and each App keeps
+a pending review of its own.
+With no `--json`, `gh pr view` prints gh's text — thirteen `<name>:\t<value>` lines, `--` and the
+body — `gh pr view --comments` the comments and the reviews gh shows, and `gh pr list` a line a
+pull request; each was measured against cybermonklabs/legion on 2026-11-17. A pull request, a
+branch or a repository the world has not got is refused in gh's words (`GraphQL: Could not
+resolve to a PullRequest with the number of <n>. (repository.pullRequest)`, `no pull requests
+found for branch "<branch>"`, `GraphQL: Could not resolve to a Repository with the name
+'<owner>/<repo>'. (repository)`), exit 1, and `gh pr list` lists the pull request where its
+`--head`, `--base`, `--state`, `--label`, `--assignee`, `--draft`, `--author` and `--app` match
+it, as gh reads each. The record names both refusals (`calls.jsonl`'s `handler`), and `rig.sh
+health` declares both for every role, since production gives them to any role that makes the
+call. Each of the 55 `gh pr view`, `gh pr list` and `gh pr diff` reads round 25 made is pinned
+(`production-shapes.json`, read against #2827), and `gh-standin.test.ts` holds each to its
+shape, exit and stderr in a world holding a review, a reply and a comment of the run's, with no
+difference but the reviews' `url` above. A gh read with no pin is not claimed to answer in
+production's whole shape.
+
+GraphQL is read as GitHub's parser reads it (`gh-routes.ts`'s `readGraphql`): a query that is no
+GraphQL document is refused with that parser's message and the line and column of the token it
+stopped at (`Expected NAME, actual: (none) ("") at [1, 176]`, the production reads'
+`prod-gql-error.txt`, and a string no quote closes, a `{` where a `)` belongs, a `}` too many, a
+missing `:`, value or argument, a misspelt `query`, a document of comments alone and a call with
+no query, each measured on 2026-11-17), and a query selecting a field its type has not got with
+GitHub's validator's error, its path, `extensions` and location, read against GitHub's own
+schema of the world's types (`graphql-schema.json`, which `bun graphql-schema.ts
+graphql-schema.json` reads with GitHub's introspection and formats; a field of a type it does not
+hold is not judged). Either is answered with no data, as gh prints it: GitHub's body with no line
+end, `gh: ` and each message on a line of its own, exit 1. A mutation GitHub refuses changes
+nothing. An object a query names that the world has not got is GitHub's `NOT_FOUND`, with its
+`locations`.
 
 A write is answered only where the world models it, each by a route of its own that names its
 verb and the one path it writes, the world's repository and pull request read whole: the create
@@ -947,3 +1002,11 @@ Stated limits, each known and kept so:
   that the label's saved help does not show (`gh variable list -R`: no saved help shows that
   group's inherited `-R`). The world then answers such a call otherwise than production, health
   calls the run unhealthy, and the run is replaced.
+- Of gh's reads of the pull request, `gh pr list --search` is refused as a call the world does not
+  model (`gh: Not Found (HTTP 404)`, recorded `unrouted`), and `--template`, `--web`, and `gh pr
+  diff`'s `--patch`, `--exclude` and `--color always` are not read: such a call is answered as if
+  it did not carry them.
+- GraphQL the world does not read — a fragment spread, a fragment definition, a directive, a
+  document of two operations — is refused as a call the world does not model, where GitHub runs
+  it. A field the vendored schema holds no type of is not judged, and GitHub's other validator
+  refusals (a selection on a scalar, a variable declared and not used) are not modelled.

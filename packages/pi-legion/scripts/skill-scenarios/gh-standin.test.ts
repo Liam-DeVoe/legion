@@ -26,6 +26,7 @@ import {
 } from "./gh-routes";
 import { type GhSelectors, type GhTable, MODELLED } from "./gh-selectors";
 import { mergeStateOf } from "./gh-threads";
+import { PR_FIELDS } from "./gh-view";
 import {
   ghUndeclared,
   guardRefusal,
@@ -39,9 +40,11 @@ import {
   derive,
   type PinnedRead,
   pinnedRead,
+  pinnedReads,
   shapeDiff,
   shapeOf,
 } from "./production-shapes";
+import { roleApp } from "./rest-objects";
 import {
   absentFields,
   DESCRIPTION_COMMIT,
@@ -205,6 +208,9 @@ const apiPost = (dir: string, route: string, ...rest: string[]) =>
     env: callEnv(dir),
   });
 const REVIEWS = "repos/example/widgets/pulls/1001/reviews";
+/** The REST reply under the first comment of the approval's first thread (rig.sh's
+ * approved_world), which GitHub files in a `COMMENTED` review of its own. */
+const REVIEW_REPLIES = "repos/example/widgets/pulls/1001/comments/7001/replies";
 /** The body GitHub answers a 404 with, as gh prints it on stdout (indented) before `gh: Not Found
  * (HTTP 404)` on stderr (gh-standin.ts's `notFoundBody`), naming the page `documentation`: GitHub's
  * REST reference for an endpoint it does not serve, a served endpoint's own page for an object
@@ -951,17 +957,17 @@ test("a create and a submit on another repository's pull request are no review o
 // That ask is `gh --open`, the flag alone after the program word the wrapper inserts, and a
 // stand-in that took the flag wherever it fell — or at the end of a call of any length —
 // answered this listing with nothing, recorded no call, and left the score reading a role that
-// looked for its pull request as one that made no call at all.
+// looked for its pull request as one that made no call at all. With no `--json`, gh lists a pull
+// request as one tab-separated line (gh-view.ts's `listLine`), where this row read the world's
+// object as JSON before the world answered `gh pr list` as gh does (INFRA-764's ruling 2).
 test("gh pr list --open is a call of the run and no ask for the opening line", () => {
-  const { dir, first } = runDir({ fixture: true });
+  const { dir } = runDir({ fixture: true });
   const listed = ghCall(dir, "pr", "list", "--open");
   expect(listed.code).toBe(0);
-  // The listing itself, read before it is parsed, so a stand-in that answered nothing fails on
-  // this assertion rather than on the parse.
-  expect(listed.out).toStartWith("[");
-  expect(JSON.parse(listed.out)).toMatchObject([
-    { number: 1001, headRefOid: first, body: "a body" },
-  ]);
+  // The listing itself, so a stand-in that answered nothing fails here.
+  expect(listed.out).toMatch(
+    /^1001\tfeat: greet\(\) \(LWEVAL-1\)\tlegion\/LWEVAL-1\tOPEN\t\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/
+  );
   const recorded = readFileSync(path.join(dir, "calls.jsonl"), "utf8")
     .split("\n")
     .filter((line) => line !== "")
@@ -1626,6 +1632,45 @@ test("health declares GitHub's 403 to a role App's read of its user for every ro
   asked(dir, "implementer", ["api", "repos/example/widgets/branches/main/protection"]);
   expect(ghUndeclared({ dir, scenario: "threads-closed" })).toBe(
     "gh refusal: calls.jsonl:8, `gh api repos/example/widgets/branches/main/protection` of the implementer, exited 1: gh: Resource not accessible by integration (HTTP 403), which threads-closed does not declare for that role"
+  );
+}, 60_000);
+
+// gh refuses a read of a pull request, a branch or a repository GitHub has not got, and a
+// `--json` field it does not take, with its own line and exit 1, for any role that makes the call
+// (measured on 2026-11-17 against cybermonklabs/legion; gh-standin.ts's `pullRefusal`, gh-view.ts's
+// `unknownField`), and the world refuses each so and records it by name (gh-view.ts's
+// PULL_NOT_FOUND and FIELD_REFUSED). Health declares both for every role (the architect's ruling
+// of 2026-11-17), and a `--jq` that fails over a pull request the world did answer is no refusal.
+// Catches: a health that calls a run unhealthy for a role that met production's own refusal of a
+// pull request read, and one that cannot tell such a refusal from an answer; and one that passes
+// a read the world refused as one it does not model (`gh pr list --search`) because a route had
+// matched it, where that refusal is the world missing an answer.
+test("health declares gh's refusals of a pull request, a branch, a repository or a --json field for every role", () => {
+  const { dir } = runDir({ fixture: true });
+  const roles = ["reviewer", "implementer", "tester"];
+  for (const by of roles)
+    for (const argv of [
+      ["pr", "view", "999999", "--json", "number"],
+      ["pr", "view", "nothing-here"],
+      ["pr", "diff", "7"],
+      ["pr", "list", "--repo", "example/gadgets", "--json", "number"],
+      ["pr", "view", "1001", "--json", "bogus"],
+      ["pr", "list", "--json", "number,bogus"],
+      ["pr", "view", "1001", "--json", "number", "--jq", ".number | error"],
+    ])
+      asked(dir, by, argv);
+  expect(recordedCalls(dir).map((call) => [call.by, call.exit, call.handler])).toEqual(
+    roles.flatMap((by) => [
+      ...[1, 2, 3, 4].map(() => [by, 1, "pr not found"]),
+      ...[1, 2].map(() => [by, 1, "pr json field refused"]),
+      [by, 1, "pr view"],
+    ])
+  );
+  for (const scenario of ["tester-proof", "reviewer-text-findings", "threads-closed"])
+    expect(ghUndeclared({ dir, scenario })).toBeUndefined();
+  asked(dir, "reviewer", ["pr", "list", "--search", "is:open", "--json", "number"]);
+  expect(ghUndeclared({ dir, scenario: "threads-closed" })).toBe(
+    "gh refusal: calls.jsonl:23, `gh pr list --search is:open --json number` of the reviewer, exited 1: gh: Not Found (HTTP 404) (no route of the world answers it), which threads-closed does not declare for that role"
   );
 }, 60_000);
 
@@ -3051,6 +3096,536 @@ test("pr view's files are the files the pull request's diff changes", () => {
     ...["--jq", ".files[].path"]
   );
   expect([files.code, files.out, files.err]).toEqual([0, names.out, ""]);
+}, 60_000);
+
+/** `gh pr view`'s reviews as a row reads them. */
+type ViewedReview = {
+  id: string;
+  author: { login: string };
+  state: string;
+  body: string;
+  commit: { oid: string };
+  submittedAt: string | null;
+};
+// `gh pr view --json reviews` is gh's reading of the pull request's reviews through GitHub's
+// GraphQL: each review's node id, its author by the login GraphQL gives it (an App's bot without
+// `[bot]`), its state, body and time, and the commit it stands at as `commit.oid`. Measured in
+// INFRA-764 round 25: the world answered the REST review its fixture froze (an integer `id`,
+// `commit_id`, `user`), and agents reading `.reviews[].commit.oid` read null (the architect's
+// ruling 1). `latestReviews` is GitHub's reading of the same reviews: the last of each author but
+// the pull request's own, which gh reads with no id and no commit (gh-view.ts's `latestReviews`).
+// The world's review here has its body updated, the run makes a review of its own, and its reply
+// to a thread is filed by GitHub in a `COMMENTED` review of its own (id 6_000_000 plus the reply's
+// databaseId, the first a run makes being 9001). Catches: a review in REST's shape; a list frozen
+// at the world's seed, missing the review the run made, the one GitHub filed its reply in, or the
+// body the run gave the world's review; and `latestReviews` that is `reviews`, holds an author's
+// earlier review, or names an id and a commit gh does not read.
+test("pr view's reviews are gh's: every review GitHub holds, and latestReviews its reading of them", () => {
+  const dir = worldDir("approved_world");
+  const head = builtHead(dir);
+  for (const argv of [
+    ["api", "-X", "PUT", `${REVIEWS}/5001`, "-f", "body=Approved, and updated."],
+    [
+      ...["api", "-X", "POST", REVIEWS, "-f", `commit_id=${head}`],
+      ...["-f", "event=REQUEST_CHANGES", "-f", "body=One more finding."],
+    ],
+    ["api", "-X", "POST", `${REVIEW_REPLIES}`, "-f", "body=done"],
+  ])
+    expect([argv, ghCall(dir, ...argv).code]).toEqual([argv, 0]);
+  const read = pinnedRead("gh pr view reviews");
+  const got = pinnedCall(dir, read, { number: "1001" });
+  // gh reads a review's `url` only past its first page of 100 reviews, which production's 137
+  // reach and no world does (gh-view.ts's `reviewNode`).
+  expect([got.code, got.err, shapeDiff(got.answer, read)]).toEqual([
+    0,
+    "",
+    { ...SAME_SHAPE, missing: [".reviews[].url"] },
+  ]);
+  const { reviews }: { reviews: ViewedReview[] } = JSON.parse(got.out);
+  expect(
+    reviews.map(({ id, author, state, body, commit }) => [
+      id,
+      author.login,
+      state,
+      body,
+      commit.oid,
+    ])
+  ).toEqual([
+    ["PRR_kwDOAAAAAc4AAE5001", "legion-review", "APPROVED", "Approved, and updated.", head],
+    ["PRR_kwDOAAAAAc4AAE5002", "widgets-reviewer", "CHANGES_REQUESTED", "One more finding.", head],
+    ["PRR_kwDOAAAAAc4AAE6009001", "widgets-reviewer", "COMMENTED", "", head],
+  ]);
+  expect(reviews.every(({ submittedAt }) => typeof submittedAt === "string")).toBe(true);
+  const latest: { latestReviews: ViewedReview[] } = JSON.parse(
+    ghCall(dir, "pr", "view", "1001", "--json", "latestReviews").out
+  );
+  expect(
+    latest.latestReviews.map(({ id, author, state, commit }) => [
+      id,
+      author.login,
+      state,
+      commit.oid,
+    ])
+  ).toEqual([
+    ["", "legion-review", "APPROVED", ""],
+    ["", "widgets-reviewer", "COMMENTED", ""],
+  ]);
+}, 60_000);
+
+// GitHub shows a review still pending to the account that wrote it alone: the reviewer's pending
+// review, and the thread its inline comment opens, are not in the implementer's reviews, its `gh
+// pr view`, its GraphQL threads or its read of that review by id, while the tester, which calls
+// GitHub with the review App's token as the reviewer does (production's `AppRoleFor`, rig.sh's
+// role_identity), sees both; once submitted, the review is every account's. A read by id from
+// another App is answered the review read's own 404 (which 404 GitHub gives there is not
+// measured: no pending review of another account can be found to read). Catches: a pending
+// review in every role's reviews (the world before the architect's ruling of 2026-11-17), at any
+// one of those reads, or kept from the App that wrote it; and an App per role that is not the
+// one production gives it.
+test("a pending review is the App's that wrote it alone, until it is submitted", () => {
+  for (const role of ["implementer", "merger", "reviewer", "tester", "planner", "architect"]) {
+    const identity = spawnChecked([
+      "bash",
+      "-c",
+      [fn("role_identity"), ...WORLD_VALUES.map(assignment), `role_identity ${role}`].join("\n"),
+    ]).stdout.toString();
+    const app = identity.startsWith(rigValue("world_implement_app")) ? "implement" : "review";
+    expect([role, roleApp(role)]).toEqual([role, app]);
+  }
+  const dir = worldDir("approved_world");
+  const head = builtHead(dir);
+  const input = path.join(dir, "pending.json");
+  writeFileSync(
+    input,
+    JSON.stringify({
+      commit_id: head,
+      body: "two findings",
+      comments: [{ path: "greet.ts", line: 1, side: "RIGHT", body: "a line note" }],
+    })
+  );
+  expect(asked(dir, "reviewer", ["api", "-X", "POST", REVIEWS, "--input", input])[0]).toBe(0);
+  const threads = `query=query{repository(owner:"example",name:"widgets"){pullRequest(number:1001){reviewThreads(first:10){nodes{id}}}}}`;
+  const seen = (by: string) => [
+    asked(dir, by, ["api", REVIEWS, "--jq", "[.[] | [.id, .state]] | @json"]).slice(0, 2),
+    asked(dir, by, [
+      "pr",
+      "view",
+      "1001",
+      "--json",
+      "reviews",
+      "--jq",
+      "[.reviews[].state] | @json",
+    ])[1],
+    asked(dir, by, ["api", `${REVIEWS}/5002`, "--jq", ".state"]),
+    asked(dir, by, [
+      "api",
+      "graphql",
+      "-f",
+      threads,
+      "--jq",
+      ".data.repository.pullRequest.reviewThreads.nodes | length",
+    ])[1],
+  ];
+  const pending = [
+    [0, '[[5001,"APPROVED"],[5002,"PENDING"]]\n'],
+    '["APPROVED","PENDING"]\n',
+    [0, "PENDING\n", ""],
+    "3\n",
+  ];
+  expect(seen("reviewer")).toEqual(pending);
+  expect(seen("tester")).toEqual(pending);
+  expect(seen("implementer")).toEqual([
+    [0, '[[5001,"APPROVED"]]\n'],
+    '["APPROVED"]\n',
+    [
+      1,
+      `${notFoundOf("https://docs.github.com/rest/pulls/reviews#get-a-review-for-a-pull-request")}\n`,
+      "gh: Not Found (HTTP 404)\n",
+    ],
+    "2\n",
+  ]);
+  expect(
+    asked(dir, "reviewer", [
+      "api",
+      "-X",
+      "POST",
+      `${REVIEWS}/5002/events`,
+      "-f",
+      "event=APPROVE",
+    ])[0]
+  ).toBe(0);
+  expect(seen("implementer")).toEqual([
+    [0, '[[5001,"APPROVED"],[5002,"APPROVED"]]\n'],
+    '["APPROVED","APPROVED"]\n',
+    [0, "APPROVED\n", ""],
+    "3\n",
+  ]);
+}, 60_000);
+
+// With no `--json`, gh prints its own text of the pull request when stdout is no terminal, never
+// the object: measured on 2026-11-17 (the production reads' prod-pr-view.txt, `gh pr view 2827`),
+// thirteen `<name>:\t<value>` lines — the title, the state, the author's GraphQL login, the
+// labels, the assignees, the reviewers (the last review of each, the pull request's author's
+// own left out, by name), the projects, the milestone, the number, the URL, the lines added and
+// removed, auto-merge — then `--` and the body. With `--comments` it prints the conversation's
+// comments and the reviews gh shows, in the order they were made, and nothing of the pull request
+// itself (prod-pr-view-comments.txt): a review GitHub filed a reply in, `COMMENTED` with no body, is
+// not shown. Catches: the world's object printed as JSON for either (the architect's ruling 2); a
+// line named or placed otherwise than gh's; and `--comments` printing the pull request's lines,
+// a comment with a review's status, or the review a reply is filed in.
+test("pr view without --json prints gh's text, and --comments the comments and the reviews gh shows", () => {
+  const dir = worldDir("approved_world");
+  const head = builtHead(dir);
+  const raw = (...argv: string[]) => {
+    const made = spawnChecked(["bun", STANDIN, "gh", ...argv], { env: callEnv(dir) });
+    return [made.exitCode, made.stdout.toString(), made.stderr.toString()];
+  };
+  const facts: { additions: number; deletions: number; body: string } = JSON.parse(
+    ghCall(dir, "pr", "view", "1001", "--json", "additions,deletions,body").out
+  );
+  expect(facts.additions).toBeGreaterThan(0);
+  expect(raw("pr", "view", "1001")).toEqual([
+    0,
+    [
+      "title:\tfeat: greet() (LWEVAL-1)",
+      "state:\tOPEN",
+      "author:\twidgets-implementer",
+      "labels:\t",
+      "assignees:\t",
+      "reviewers:\tlegion-review (Approved)",
+      "projects:\t",
+      "milestone:\t",
+      "number:\t1001",
+      "url:\thttps://github.com/example/widgets/pull/1001",
+      `additions:\t${facts.additions}`,
+      `deletions:\t${facts.deletions}`,
+      "auto-merge:\tdisabled",
+      "--",
+      `${facts.body}\n`,
+    ].join("\n"),
+    "",
+  ]);
+  for (const argv of [
+    ["pr", "comment", "1001", "--body", "a note on the change"],
+    [
+      ...["api", "-X", "POST", REVIEWS, "-f", `commit_id=${head}`],
+      ...["-f", "event=REQUEST_CHANGES", "-f", "body=One more finding."],
+    ],
+    ["api", "-X", "POST", REVIEW_REPLIES, "-f", "body=done"],
+  ])
+    expect([argv, ghCall(dir, ...argv).code]).toEqual([argv, 0]);
+  const entry = (author: string, status: string, body: string) =>
+    `author:\t${author}\nassociation:\tnone\nedited:\tfalse\nstatus:\t${status}\n--\n${body}\n--\n`;
+  expect(raw("pr", "view", "1001", "--comments")).toEqual([
+    0,
+    [
+      entry(
+        "legion-review",
+        "approved",
+        "Approved at this head. The open threads are text findings and are the work the merge waits for."
+      ),
+      entry("widgets-reviewer", "none", "a note on the change"),
+      entry("widgets-reviewer", "changes requested", "One more finding."),
+    ].join(""),
+    "",
+  ]);
+  expect(raw("pr", "view", "1001")[1]).toContain(
+    "reviewers:\tlegion-review (Approved), widgets-reviewer (Commented)\n"
+  );
+}, 60_000);
+
+// `gh pr view --json comments` is gh's reading of the conversation through GitHub's GraphQL: every
+// comment, the world's and the run's (posted by `gh pr comment` or the REST create), each with
+// gh's eleven fields (production-shapes.json's `gh pr view comments`), the same comment the REST
+// conversation answers (the architect's ruling 7). Catches: the six fields the world answered a
+// run's comment with (no `includesCreatedEdit`, `isMinimized`, `minimizedReason`,
+// `reactionGroups`, `viewerDidAuthor`), a `minimizedReason` of null where gh reads "", an author
+// by its REST login, a comment another answer gives another id, link or time, and a comment the
+// run posted missing.
+test("pr view's comments are gh's, each the conversation's own comment", () => {
+  const dir = worldDir("review_world");
+  for (const argv of [
+    ["pr", "comment", "1001", "--body", "a note on the change"],
+    ["api", "-X", "POST", "repos/example/widgets/issues/1001/comments", "-f", "body=and another"],
+  ])
+    expect([argv, ghCall(dir, ...argv).code]).toEqual([argv, 0]);
+  const read = pinnedRead("gh pr view comments");
+  const got = pinnedCall(dir, read, { number: "1001" });
+  expect([got.code, got.err, shapeDiff(got.answer, read)]).toEqual([0, "", SAME_SHAPE]);
+  const rest = JSON.parse(ghCall(dir, "api", "repos/example/widgets/issues/1001/comments").out);
+  expect(JSON.parse(got.out).comments).toEqual(
+    rest.map((comment: Record<string, string>) => ({
+      id: comment.node_id,
+      author: { login: "widgets-reviewer" },
+      authorAssociation: comment.author_association,
+      body: comment.body,
+      createdAt: comment.created_at,
+      includesCreatedEdit: false,
+      isMinimized: false,
+      minimizedReason: "",
+      reactionGroups: [],
+      url: comment.html_url,
+      viewerDidAuthor: true,
+    }))
+  );
+  expect(rest.map((comment: { body: string }) => comment.body)).toEqual([
+    "a note on the change",
+    "and another",
+  ]);
+}, 60_000);
+
+// gh checks every field `--json` names against the ones it takes before it asks GitHub anything,
+// and refuses the first it does not take with its own text on stderr, exit 1: measured on
+// 2026-11-17 for `gh pr view 2827 --repo cybermonklabs/legion --json bogus`, `… --json
+// number,bogus,other` (naming `bogus` alone) and `gh pr list --repo cybermonklabs/legion --json
+// bogus` (gh-view.ts's `unknownField`). Every field it takes, the world serves. Catches: a field gh
+// refuses answered as an object without it, and one gh takes answered by its absence.
+test("pr view and pr list refuse a --json field gh does not take, and serve every field it does", () => {
+  const { dir } = runDir({ fixture: true });
+  const refusal = `Unknown JSON field: "bogus"\nAvailable fields:\n${PR_FIELDS.map((field) => `  ${field}\n`).join("")}`;
+  for (const argv of [
+    ["pr", "view", "1001", "--json", "bogus"],
+    ["pr", "view", "1001", "--json", "number,bogus,other"],
+    ["pr", "list", "--json", "bogus"],
+  ])
+    expect([argv, ghCall(dir, ...argv)]).toEqual([argv, { code: 1, out: "", err: refusal }]);
+  const all = ghCall(dir, "pr", "view", "1001", "--json", PR_FIELDS.join(","));
+  expect([all.code, all.err, Object.keys(JSON.parse(all.out))]).toEqual([0, "", [...PR_FIELDS]]);
+}, 60_000);
+
+// gh asks GitHub for the pull request a `gh pr view` or `gh pr diff` names, and GitHub has none of
+// a number or a branch the world has not got, nor a repository: measured on 2026-11-17 against
+// cybermonklabs/legion, each printed on stderr with exit 1 and nothing on stdout (gh-standin.ts's
+// `pullRefusal`). Catches: the world's pull request answered for any number, branch or
+// repository a call names, and a refusal in other words than gh's.
+test("pr view and pr diff of a pull request or a repository the world has not got are refused as gh refuses them", () => {
+  const { dir } = runDir({ fixture: true });
+  const missing = (number: number) =>
+    `GraphQL: Could not resolve to a PullRequest with the number of ${number}. (repository.pullRequest)\n`;
+  for (const [argv, err] of [
+    [["pr", "view", "999999", "--json", "number"], missing(999999)],
+    [["pr", "view", "#7"], missing(7)],
+    [["pr", "view", "https://github.com/example/widgets/pull/999"], missing(999)],
+    [["pr", "diff", "999999", "--repo", "example/widgets"], missing(999999)],
+    [["pr", "view", "nothing-here"], 'no pull requests found for branch "nothing-here"\n'],
+    [
+      ["pr", "view", "1001", "--repo", "example/gadgets"],
+      "GraphQL: Could not resolve to a Repository with the name 'example/gadgets'. (repository)\n",
+    ],
+    [
+      ["pr", "list", "--repo", "example/gadgets", "--json", "number"],
+      "GraphQL: Could not resolve to a Repository with the name 'example/gadgets'. (repository)\n",
+    ],
+  ] as const)
+    expect([argv, ghCall(dir, ...argv)]).toEqual([argv, { code: 1, out: "", err }]);
+  for (const named of [
+    "1001",
+    "#1001",
+    "legion/LWEVAL-1",
+    "https://github.com/example/widgets/pull/1001",
+  ])
+    expect([named, ghCall(dir, "pr", "view", named, "--json", "number").out]).toEqual([
+      named,
+      '{"number":1001}',
+    ]);
+}, 60_000);
+
+// gh lists the open pull requests its filters match, and nothing — `[]` with `--json`, no line
+// without it, exit 0 — where none does: measured on 2026-11-17 against cybermonklabs/legion,
+// `--head` and `--base` name a branch, `--head <owner>:<branch>` matches nothing, `--state` is open
+// unless it names closed, merged or all, and `--author` names an App's bot as `app/<slug>` or
+// `<slug>[bot]` and never by its slug alone (gh-standin.ts's `listsPull`). The world's one pull
+// request is open, on `legion/LWEVAL-1` against `main`, opened by the implement App, with no
+// label, no assignee and no draft. A filter the world does not read (`--search`) is refused as a
+// call it does not model. Catches: every listing answered with the world's pull request whatever
+// it filters by (the route the world wrote for `gh pr list`), and a filter read otherwise than gh.
+test("pr list lists the world's pull request where its filters match it, and nothing where they do not", () => {
+  const dir = worldDir("review_world");
+  const listed = (...filters: string[]) =>
+    ghCall(dir, "pr", "list", "--repo", "example/widgets", ...filters, "--json", "number").out;
+  for (const filters of [
+    [],
+    ["--head", "legion/LWEVAL-1", "--state", "open"],
+    ["-B", "main", "-s", "all"],
+    ["--author", "app/widgets-implementer"],
+    ["--author", "widgets-implementer[bot]"],
+    ["--app", "widgets-implementer"],
+  ])
+    expect([filters, listed(...filters)]).toEqual([filters, '[{"number":1001}]']);
+  for (const filters of [
+    ["--head", "legion/WID-1"],
+    ["--head", "example:legion/LWEVAL-1"],
+    ["--base", "trunk"],
+    ["--state", "closed"],
+    ["--state", "merged"],
+    ["--author", "widgets-implementer"],
+    ["--author", "app/widgets-reviewer"],
+    ["--app", "widgets-reviewer"],
+    ["--label", "bug"],
+    ["--assignee", "robin-hale"],
+    ["--draft"],
+  ])
+    expect([filters, listed(...filters)]).toEqual([filters, "[]"]);
+  expect(ghCall(dir, "pr", "list", "--head", "legion/WID-1")).toEqual({
+    code: 0,
+    out: "",
+    err: "",
+  });
+  expect(ghCall(dir, "pr", "list", "--search", "is:open", "--json", "number")).toEqual({
+    code: 1,
+    out: "",
+    err: "gh: Not Found (HTTP 404)\n",
+  });
+}, 60_000);
+
+// Each pinned read of `gh pr view`, `gh pr list` and `gh pr diff` (production-shapes.json, every
+// one INFRA-764 round 25's runs made, read against cybermonklabs/legion #2827 at about 15:40Z on
+// 2026-11-17) made against the world in production's own words, its answer held to production's
+// shape, exit and stderr (the architect's ruling d). The world holds a review of the run's, its
+// reply's review and a comment on the conversation, so no list a read names is empty. Catches,
+// for each read: a field gh answers missing or in another kind, a field gh never prints, gh's text
+// answered as JSON, and an exit or a line gh does not give. The one difference is of state: gh
+// reads a review's `url` only past its first 100 reviews, which production's 137 reach.
+const PINNED_GH = pinnedReads()
+  .map(({ name }) => name)
+  .filter((name) => /^gh pr (view|list|diff) /.test(name));
+/** Where the pinned reads' world is kept once it is built, with the run's writes in it, for each
+ * row to copy: one build for the 55 reads, where a build each would be most of the suite. */
+const pinnedCache = temporaryDirectory("gh-standin-pinned");
+function pinnedWorldCopy(): string {
+  const kept = path.join(pinnedCache, "world");
+  if (!existsSync(kept)) {
+    const built = worldDir("approved_world");
+    const head = builtHead(built);
+    for (const argv of [
+      ["pr", "comment", "1001", "--body", "a note on the change"],
+      [
+        ...["api", "-X", "POST", REVIEWS, "-f", `commit_id=${head}`],
+        ...["-f", "event=COMMENT", "-f", "body=One note."],
+      ],
+      ["api", "-X", "POST", REVIEW_REPLIES, "-f", "body=done"],
+    ])
+      expect([argv, ghCall(built, ...argv).code]).toEqual([argv, 0]);
+    cpSync(built, kept, { recursive: true });
+  }
+  const dir = mkdtempSync(path.join(tmpdir(), "gh-standin-pinned-"));
+  made.push(dir);
+  cpSync(kept, dir, { recursive: true });
+  return dir;
+}
+for (const name of PINNED_GH)
+  test(`a gh read of the pull request answers in production's shape: ${name}`, () => {
+    const read = pinnedRead(name);
+    const values = { owner: "example", repo: "widgets", number: "1001" };
+    const got = ghCall(pinnedWorldCopy(), ...argvOf(read, values));
+    let answer: unknown = got.out;
+    try {
+      answer = JSON.parse(got.out);
+    } catch {
+      // gh's text, whose shape is a string's.
+    }
+    const missing = ".reviews[]" in read.shape ? [".reviews[].url"] : [];
+    expect([got.code, got.err, shapeDiff(answer, read)]).toEqual([
+      read.exit,
+      read.stderr,
+      { ...SAME_SHAPE, missing },
+    ]);
+  }, 60_000);
+
+// GitHub refuses a query that is no GraphQL document with its parser's message and the line and
+// column of the token it stopped at, and a query selecting a field its schema's type has not got
+// with its validator's error, each with no data; gh prints GitHub's body as it came, with no line
+// end, then `gh: ` and each message on a line of its own, and exits 1. Measured on 2026-11-17
+// against cybermonklabs/legion (the production reads' prod-gql-error.txt and .err for the first):
+// the query of eight `{` and seven `}` stopped at its last `}`, column 176 there and 171 here,
+// whose owner and repository are five characters shorter; and for each case below the same
+// query of production's ran there, its column five more than here: a string no quote closes (at
+// 51), a field `PullRequest` has not got with one `PullRequestReviewThread` has not got (87 and
+// 125), a `{` where a `)` belongs (53), a `}` too many (89), and a call that sends no query. A
+// mutation GitHub refuses runs none of itself. Catches (the architect's ruling 10): the world's
+// own sentence for a refusal (`Parse error: the query is no GraphQL document`), a refusal with no
+// `locations` or another place in it, a field the world answers null where GitHub refuses the
+// query, gh's `gh: ` before each of two messages, a line end gh does not print, and a refused
+// mutation that resolves its thread all the same.
+test("a query GitHub refuses is refused with GitHub's message and the place it names", () => {
+  const dir = worldDir("review_world");
+  const repo = 'repository(owner:"example",name:"widgets")';
+  const parse = (line: number, column: number, message: string) => ({
+    message: `${message} at [${line}, ${column}]`,
+    locations: [{ line, column }],
+  });
+  const unknown = (path: string[], type: string, field: string, column: number) => ({
+    path: ["query", "repository", "pullRequest", ...path, field],
+    extensions: { code: "undefinedField", typeName: type, fieldName: field },
+    locations: [{ line: 1, column }],
+    message: `Field '${field}' doesn't exist on type '${type}'`,
+  });
+  const noName = 'Expected NAME, actual: (none) ("")';
+  for (const [query, errors] of [
+    [
+      `query{${repo}{pullRequest(number:1001){reviewThreads(first:20){nodes{id isResolved path comments(first:5){nodes{body author{login}}}}}}}`,
+      [parse(1, 171, noName)],
+    ],
+    [
+      'query{repository(owner:"example,name:"widgets"){pullRequest(number:1001){number}}}',
+      [
+        {
+          message: "Expected string or block string, but it was malformed",
+          locations: [{ line: 1, column: 46 }],
+        },
+      ],
+    ],
+    [
+      `query{${repo}{pullRequest(number:1001){number bogus reviewThreads(first:1){nodes{id nope}}}}}`,
+      [
+        unknown([], "PullRequest", "bogus", 82),
+        unknown(["reviewThreads", "nodes"], "PullRequestReviewThread", "nope", 120),
+      ],
+    ],
+    [
+      'query{repository(owner:"example",name:"widgets"{pullRequest(number:1001){number}}}',
+      [parse(1, 48, 'Expected NAME, actual: LCURLY ("{")')],
+    ],
+    [
+      `query{${repo}{pullRequest(number:1001){number}}}}`,
+      [
+        parse(
+          1,
+          84,
+          'Expected one of SCHEMA, SCALAR, TYPE, ENUM, INPUT, UNION, INTERFACE, actual: RCURLY ("}")'
+        ),
+      ],
+    ],
+    [`query{\n  ${repo}{\n    name\n`, [parse(3, 5, noName)]],
+    ["", [{ message: "A query attribute must be specified and must be a string." }]],
+  ] as const) {
+    const made = spawnChecked(["bun", STANDIN, "gh", "api", "graphql", "-f", `query=${query}`], {
+      env: callEnv(dir),
+    });
+    expect([query, made.exitCode, made.stdout.toString(), made.stderr.toString()]).toEqual([
+      query,
+      1,
+      JSON.stringify({ errors }),
+      `gh: ${errors.map((error) => error.message).join("\n")}\n`,
+    ]);
+  }
+  const thread = '"PRRT_kwDOrig0001"';
+  const refused = ghCall(
+    dir,
+    ...["api", "graphql", "-f"],
+    `query=mutation{resolveReviewThread(input:{threadId:${thread}}){thread{isResolved nope}}}`
+  );
+  expect([refused.code, refused.err]).toEqual([
+    1,
+    "gh: Field 'nope' doesn't exist on type 'PullRequestReviewThread'\n",
+  ]);
+  const listed = ghCall(
+    dir,
+    ...["api", "graphql", "-f"],
+    `query=query{${repo}{pullRequest(number:1001){reviewThreads(first:10){nodes{id isResolved}}}}}`,
+    ...["--jq", ".data.repository.pullRequest.reviewThreads.nodes[] | [.id, .isResolved] | @tsv"]
+  );
+  expect(listed).toEqual({ code: 0, out: "PRRT_kwDOrig0001\tfalse", err: "" });
 }, 60_000);
 
 // GitHub answers `gh api repos/<o>/<r>/contents/<path>?ref=<sha>` with the file at that commit:

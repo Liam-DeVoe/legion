@@ -25,7 +25,7 @@ import {
   valueAt,
   type World,
 } from "./gh-call";
-import { argumentsOf, isObject, type Operation, parseGraphql } from "./gh-routes";
+import { argumentsOf, type GraphError, isObject, type Operation, readGraphql } from "./gh-routes";
 
 /** A JSON object of the world's, as GitHub's schema names it: a review thread, a review comment,
  * the answer of a call. */
@@ -45,6 +45,8 @@ export interface Recorded {
   readonly route?: string | null;
   readonly review?: { state: string; head: string } | undefined;
   readonly handler?: string;
+  /** The role whose pane made the call (gh-standin.ts's `by`), none where the pane named none. */
+  readonly by?: string;
   readonly exit?: number;
 }
 
@@ -61,41 +63,45 @@ export function recordedCalls(record: string): Recorded[] {
 
 /** The GraphQL operation a `gh api graphql` call sends, and its variables: the query its `query`
  * field or its `--input` body holds, read by the parser the sweep of the role texts reads them
- * with (gh-routes.ts), and every other field as a variable — a `-F` typed as gh types one (`true`,
- * `false`, `null`, an integer, the text of an `@file`), a `-f` as written — or an `--input`'s own
- * `variables`. `operation` is undefined for a query that is no GraphQL document. */
+ * with (gh-routes.ts's `readGraphql`), and every other field as a variable — a `-F` typed as gh
+ * types one (`true`, `false`, `null`, an integer, the text of an `@file`), a `-f` as written — or
+ * an `--input`'s own `variables`. `operation` is undefined for a query GitHub refuses, which it
+ * runs none of — `refused` holds its errors — and for GraphQL the world does not read. */
 export function graphqlOf(call: Recorded): {
   operation: Operation | undefined;
   variables: Record<string, unknown>;
+  refused?: GraphError[];
 } {
   const { argv } = call;
   const sources = call.files ?? {};
+  let query = "";
+  let variables: Record<string, unknown> = {};
   if (flagValue(argv, ["--input"]) !== undefined) {
     const sent = sentBody(call) ?? {};
-    return {
-      operation: typeof sent.query === "string" ? parseGraphql(sent.query) : undefined,
-      variables: isObject(sent.variables) ? sent.variables : {},
-    };
-  }
-  let query = "";
-  const variables: Record<string, unknown> = {};
-  for (const index of argv.keys()) {
-    const pair = valueAt(argv, index, FIELD_FLAGS);
-    if (pair === undefined) continue;
-    const equals = pair.indexOf("=");
-    const name = equals < 0 ? pair : pair.slice(0, equals);
-    const text = equals < 0 ? "" : pair.slice(equals + 1);
-    let value: unknown = text;
-    if (valueAt(argv, index, FILE_FIELD_FLAGS) !== undefined) {
-      if (text.startsWith("@")) value = sources[text.slice(1)] ?? "";
-      else if (text === "true" || text === "false") value = text === "true";
-      else if (text === "null") value = null;
-      else if (/^-?\d+$/.test(text)) value = Number(text);
+    if (typeof sent.query === "string") query = sent.query;
+    if (isObject(sent.variables)) variables = sent.variables;
+  } else
+    for (const index of argv.keys()) {
+      const pair = valueAt(argv, index, FIELD_FLAGS);
+      if (pair === undefined) continue;
+      const equals = pair.indexOf("=");
+      const name = equals < 0 ? pair : pair.slice(0, equals);
+      const text = equals < 0 ? "" : pair.slice(equals + 1);
+      let value: unknown = text;
+      if (valueAt(argv, index, FILE_FIELD_FLAGS) !== undefined) {
+        if (text.startsWith("@")) value = sources[text.slice(1)] ?? "";
+        else if (text === "true" || text === "false") value = text === "true";
+        else if (text === "null") value = null;
+        else if (/^-?\d+$/.test(text)) value = Number(text);
+      }
+      if (name === "query") query = String(value);
+      else variables[name] = value;
     }
-    if (name === "query") query = String(value);
-    else variables[name] = value;
-  }
-  return { operation: parseGraphql(query), variables };
+  const read = readGraphql(query);
+  if ("operation" in read) return { operation: read.operation, variables };
+  return "refused" in read
+    ? { operation: undefined, variables, refused: read.refused }
+    : { operation: undefined, variables };
 }
 
 /** GitHub's 404, for a read of something the world has not got. */

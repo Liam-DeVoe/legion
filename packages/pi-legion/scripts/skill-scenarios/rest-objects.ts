@@ -59,6 +59,16 @@ export function accountsOf(runDir: string): Account[] {
   return existsSync(file) ? z.array(Account).parse(JSON.parse(readFileSync(file, "utf8"))) : [];
 }
 
+/** The App whose installation token a pane of `role` calls GitHub with, as production's daemon
+ * decides it (packages/daemon/internal/appauth's `AppRoleFor`, which rig.sh's role_identity gives
+ * each role's commits too): the implement App for the implementer and the merger, the review App
+ * for every other role, and none for a call whose pane names no role. GitHub shows a pending
+ * review to the account that wrote it alone, so this is whom the world shows one to. */
+export function roleApp(role: string | undefined): "implement" | "review" | "" {
+  if (role === undefined || role === "") return "";
+  return role === "implementer" || role === "merger" ? "implement" : "review";
+}
+
 /** The node id GitHub gives an account of each type, before its id. */
 const NODE_PREFIX = { User: "U_kgDO", Bot: "BOT_kgDO", Organization: "O_kgDO" } as const;
 
