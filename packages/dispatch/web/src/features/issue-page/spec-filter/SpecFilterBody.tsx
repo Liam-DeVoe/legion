@@ -47,6 +47,7 @@ import { useSetFocusedNode } from "../focused-node";
 import { IssueThreeThings } from "../IssueThreeThings";
 import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
 import type { TreeNode } from "../issue-tree";
+import { LensLines } from "../lenses/LensLines";
 import { NodeGlyph } from "../NodeGlyph";
 import { NodeEdges, useClamp, useRowOnScreen } from "../NodeRow";
 import { chipWords } from "../node-row-chip";
@@ -1629,6 +1630,9 @@ function Statement({
           </p>
         )}
         <Because decision={decision} statement={statement} />
+        {/* The constraints the statement names, as the outline draws them (dispatch://INFRA-4065
+            R5): out of the tab order, as the row's other controls are. */}
+        <LensLines body={false} node={statement.node} tabStops={false} />
         {report === undefined ? null : (
           <p
             className={`text-xs leading-5 ${pageMutedText}`}

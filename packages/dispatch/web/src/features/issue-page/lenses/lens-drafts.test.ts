@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import type { Actor, Artifact, CheckBlock, DisplayTree, IssueDetails } from "../../../api/types";
 import { issueAddress, pathToTarget } from "../issue-address";
 import {
-  assemble,
+  buildIssueTree,
   drawnLine,
   firstLineOf,
   type IssueTreeReads,
@@ -15,7 +15,7 @@ import { chipWords } from "../node-row-chip";
 import { blockNodeId, treeContext } from "../tree-drafts";
 import { type TreeWords, treeDraftsFrom } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
-import type { LensFacts } from "./lens-drafts";
+import { kindWords, type LensFacts } from "./lens-drafts";
 import { type LensInvoked, lensReadId } from "./lens-reads";
 
 /**
@@ -24,8 +24,8 @@ import { type LensInvoked, lensReadId } from "./lens-reads";
  * the answer as T's own cases write it (`tree-read/tree-nodes.test.ts`), from the contract's
  * prose (dispatch://INFRA-1253 R8): every node with its `parent`, in the read's walk order, a
  * typed block with the `document` it is written in, the catalogue's nodes as context, and the
- * tuples between them. The tree is built from the drafts with `assemble`, as T's `drawn` does.
- * When part T's t5 lands, these trees are built through `buildIssueTree` instead.
+ * tuples between them. The tree is built by `buildIssueTree`, as the page builds it; a case that
+ * asks what was drafted reads the drafts `treeDraftsFrom` makes of the same answer.
  */
 
 const KEY = "CORE-1";
@@ -187,9 +187,9 @@ function lensKind(id: string, attributes: Record<string, unknown>, text = ""): T
   return bare(id, "lens_kind", null, { attributes, author: null, mark: "context", text });
 }
 
-const PRE_MORTEM = lensKind("pre-mortem", {
-  words: "pre-mortem: imagine the work failed, then say why it did",
-});
+/** The words of the pre-mortem kind, longer than a chip holds. */
+const PRE_MORTEM_WORDS = "pre-mortem: imagine the work failed, then say why it did";
+const PRE_MORTEM = lensKind("pre-mortem", { words: PRE_MORTEM_WORDS });
 const TRADE_OFF = lensKind("trade-off", {}, "trade-off analysis");
 
 /** The issue's own node, the root every other node hangs from. */
@@ -224,11 +224,12 @@ function naming(reads: IssueTreeReads): TreeWords {
   return { ...treeContext(reads, chipLine), chipLine, lineWords };
 }
 
-/** The drafts `tree` holds, and the tree `assemble` builds from them. */
+/** The tree `buildIssueTree` builds from `tree`, and the drafts `treeDraftsFrom` makes of it. */
 function drawn(tree: TreeAnswer, reads: IssueTreeReads = { issue: issueDetails() }) {
-  const context = naming(reads);
-  const drafts = treeDraftsFrom(tree, reads, context);
-  return { drafts, root: assemble(reads.issue, [...drafts.values()], context.chipOf) };
+  return {
+    drafts: treeDraftsFrom(tree, reads, naming(reads)),
+    root: buildIssueTree({ ...reads, tree }),
+  };
 }
 
 /** The node `id` under `root`, wherever it sits. */
@@ -457,10 +458,7 @@ test("a trigger chip is drawn only for a lens the read holds", () => {
   const second = factsOf(rowOf(root, SECOND));
 
   expect(nodeOf(root, THIRD)).toBeUndefined();
-  expect([first.kind, second.kind]).toEqual([
-    "trade-off analysis",
-    "pre-mortem: imagine the work failed, then say why it did",
-  ]);
+  expect([first.kind, second.kind]).toEqual(["trade-off analysis", PRE_MORTEM_WORDS]);
   expect(second.triggeredBy).toEqual([
     {
       address: `dispatch://lens/${FIRST}`,
@@ -478,13 +476,13 @@ test("a trigger chip is drawn only for a lens the read holds", () => {
       id: SECOND,
       state: "proposed",
       visibility: "project",
-      words: "Pre-mortem: imagine the work…",
+      words: chipWords(kindWords(PRE_MORTEM_WORDS)),
     },
     {
       address: `dispatch://lens/${THIRD}`,
       state: "live",
       visibility: "author",
-      words: "Pre-mortem: imagine the work…",
+      words: chipWords(kindWords(PRE_MORTEM_WORDS)),
     },
   ]);
   expect(first.triggered.map((chip) => Object.hasOwn(chip, "id"))).toEqual([true, false]);
@@ -498,14 +496,11 @@ test("a trigger chip is drawn only for a lens the read holds", () => {
       `dispatch://lens/${SECOND}`,
       {
         id: SECOND,
-        kindWords: "pre-mortem: imagine the work failed, then say why it did",
+        kindWords: PRE_MORTEM_WORDS,
         onLine: "Words of r1.",
       },
     ],
-    [
-      `dispatch://lens/${THIRD}`,
-      { kindWords: "pre-mortem: imagine the work failed, then say why it did" },
-    ],
+    [`dispatch://lens/${THIRD}`, { kindWords: PRE_MORTEM_WORDS }],
   ]);
 });
 
@@ -558,11 +553,10 @@ test("a check's chip takes its words from its node", () => {
         id: "c1",
         state: "live",
         visibility: "project",
-        words: "C1. The index builds…",
+        words: chipWords(lineWords(checkRow)),
       },
     ],
   });
-  expect(factsOf(rowOf(root, "risk-b")).preventedBy[0]?.words).toBe(chipWords(lineWords(checkRow)));
   expect(checkRow.reference).toBe(`dispatch://${KEY}/verification#b-c1`);
   expect(factsOf(rowOf(root, "risk-a")).preventedBy).toEqual([]);
 });
@@ -703,6 +697,7 @@ test("a lens on a comment's block stands under the comment", () => {
 // a tag is, and links nothing. A lens kind is no row either.
 test("a catalogue constraint is no row and its chip has no link", () => {
   const catalogue = "f6000000-0000-4000-8000-000000000006";
+  const standard = "WCAG 2.2 AA, success criterion 1.4.3 contrast minimum";
   const elsewhere = "a7000000-0000-4000-8000-000000000007";
   const { drafts, root } = drawn(
     answer(
@@ -714,7 +709,7 @@ test("a catalogue constraint is no row and its chip has no link", () => {
         bare(catalogue, "constraint", null, {
           attributes: {
             reference: "w3.org/TR/WCAG22",
-            standard: "WCAG 2.2 AA, success criterion 1.4.3 contrast minimum",
+            standard,
           },
           author: null,
           mark: "context",
@@ -736,7 +731,7 @@ test("a catalogue constraint is no row and its chip has no link", () => {
     address: `dispatch://constraint/${catalogue}`,
     state: "live",
     visibility: "project",
-    words: "WCAG 2.2 AA, success criterion…",
+    words: chipWords(standard),
   });
   expect(chip === undefined ? true : Object.hasOwn(chip, "id")).toBe(false);
 });
@@ -810,7 +805,7 @@ test("a draft's lens facts reach the tree whole", () => {
   for (const id of ids) {
     const facts = drafts.get(id)?.lens;
     expect(facts).toBeDefined();
-    expect(rowOf(root, id).lens).toBe(facts);
+    expect(rowOf(root, id).lens).toEqual(facts);
   }
   expect(rowOf(root, blockNodeId("verification-md", "c1")).lens).toBeUndefined();
   expect(rowOf(root, "risk-1").lens).toEqual({
@@ -829,7 +824,7 @@ test("a draft's lens facts reach the tree whole", () => {
   });
   expect(rowOf(root, SECOND).lens).toEqual({
     ...NO_FACTS,
-    kind: "pre-mortem: imagine the work failed, then say why it did",
+    kind: PRE_MORTEM_WORDS,
     lenses: rowOf(root, FIRST).lens?.lenses,
     triggeredBy: [
       {

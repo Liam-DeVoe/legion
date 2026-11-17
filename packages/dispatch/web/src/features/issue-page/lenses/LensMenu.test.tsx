@@ -13,20 +13,24 @@ import { userOnFakeClock } from "../../../__tests__/user";
 import { buildDispatchReference } from "../../refs/routes";
 import { SEND_DEADLINE_MS } from "../../writes/keyed-write";
 import { writesOf } from "../../writes/write-store";
-import type { TreeNode } from "../issue-tree";
+import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import { LENS_ANSWERS, LENS_WORDS, NODE_TYPES, type NodeType } from "../page-words";
+import { issueDetails, node, READER_ACTOR } from "../spec-filter/spec-fixtures";
 import { TreeRows } from "../TreeRows";
 import type { DrawnRow } from "../tree-fold";
 import { rowKeyOf } from "../tree-keys";
+import { type TreeAnswer, type TreeAnswerNode, useTreeRead } from "../tree-read/tree-read";
 import { lensActFor } from "./LensMenu";
 
 /**
  * The Lens act of a focused row and its menu of lens kinds (dispatch://INFRA-4065 R4, R6, R8).
  *
  * The rows are drawn by `TreeRows`, as the outline draws them, under a router at the address the
- * test names, so the act is offered the way the page offers it. The catalogue and the invocation
- * go through the page's own client (`lens-reads.ts`), answered at `fetch` by the suite's network
+ * test names, so the act is offered the way the page offers it; where a case counts the rows, they
+ * are the issue's tree read's, built as the page builds its tree (`useTreeRead`,
+ * `buildIssueTree`). The catalogue, the invocation and the tree read go through the page's own
+ * client (`lens-reads.ts`, `tree-read.ts`), answered at `fetch` by the suite's network
  * (`answerRequests`), so every request the menu sends is one the test answers and counts. A failed
  * read is not retried, as in the page's other rendering tests.
  */
@@ -36,23 +40,6 @@ const KEY = "CORE-1";
 /** The statement the act is offered on, and its row. */
 const STATEMENT = `dispatch://${KEY}/spec#b-r1`;
 const STATEMENT_ID = "spec/r1";
-
-function node(partial: Partial<TreeNode> & { id: string; type: NodeType }): TreeNode {
-  return {
-    alsoUnder: [],
-    children: [],
-    chips: [],
-    facts: [],
-    gaps: [],
-    held: 0,
-    question: false,
-    replaced: false,
-    text: partial.id,
-    transcluded: false,
-    waiting: false,
-    ...partial,
-  };
-}
 
 const statement = node({
   id: STATEMENT_ID,
@@ -158,6 +145,88 @@ function Rows({ isClosed = false, nodes }: { isClosed?: boolean; nodes: readonly
   );
 }
 
+/** The issue of J's fixtures, with its spec, whose tree the tree read answers. */
+const ISSUE = issueDetails();
+
+/** One node of the tree read, live and seen by the project, with no words unless it holds some. */
+function readNode(
+  id: string,
+  supertag: string,
+  parent: string | null,
+  extra: Partial<TreeAnswerNode> = {}
+): TreeAnswerNode {
+  return {
+    attributes: {},
+    author: null,
+    id,
+    made_at: "2026-11-17T09:00:00Z",
+    parent,
+    rank: null,
+    state: "live",
+    supertag,
+    text: "",
+    visibility: "project",
+    ...extra,
+  };
+}
+
+/** The issue's tree read once `lenses` lenses have been made on its one statement, a block of
+ *  its spec: the issue, the statement, and each lens in the order it was made. */
+function treeAnswer(lenses: number): TreeAnswer {
+  const words = "Store the notices for a day";
+  return {
+    converted: true,
+    cursor: null,
+    nodes: [
+      readNode(KEY, "issue", null, { text: ISSUE.title }),
+      readNode("r1", "requirement", KEY, {
+        document: { artifact_id: "artifact-spec", position: 0, slug: "spec" },
+        rank: "0",
+        text: words,
+        text_tree: {
+          content: [{ content: [{ text: words, type: "text" }], type: "paragraph" }],
+          type: "doc",
+        },
+      }),
+      ...Array.from({ length: lenses }, (_unused, made) =>
+        readNode(`0c6f1d2e-${made}000-4a6b-9c1d-5e2f3a4b5c60`, "lens", "r1", {
+          author: READER_ACTOR,
+          made_at: `2026-11-17T1${made}:00:00Z`,
+        })
+      ),
+    ],
+    tree: "artifact-tree",
+    tuples: [],
+    view_of: null,
+  };
+}
+
+/** Answers every tree read of this issue, the first with its statement alone and each one after
+ *  it with one lens more, and counts them. */
+function answerTreeReads(): { readonly reads: number } {
+  const asked = { reads: 0 };
+  answerRequests(
+    http.get(`/api/v1/issues/${KEY}/tree`, () => {
+      asked.reads += 1;
+      return Response.json(treeAnswer(asked.reads - 1));
+    })
+  );
+  return asked;
+}
+
+/** Every node under `root`, each before its children. */
+function everyNode(root: TreeNode): TreeNode[] {
+  return root.children.flatMap((child) => [child, ...everyNode(child)]);
+}
+
+/** The rows of the issue's tree as the page reads and builds it (`useTreeRead`,
+ *  `buildIssueTree`), every node at the top level: none until the read answers, and every node
+ *  each read answers after it. */
+function TreeReadRows() {
+  const { answer } = useTreeRead(ISSUE);
+  return <Rows nodes={everyNode(buildIssueTree({ issue: ISSUE, tree: answer }))} />;
+}
+
 /** A client signed in as alice, as the page is, whose reads are held once read and whose failed
  *  read is not retried. */
 function signedIn(): QueryClient {
@@ -189,9 +258,10 @@ function lensAct(view: RenderResult): HTMLButtonElement | null {
   return view.container.querySelector<HTMLButtonElement>("[data-row-lens]");
 }
 
-/** Focuses the row, as `j` or a press does, and answers its act once the row draws it. */
+/** Focuses the row once it is drawn, as `j` or a press does, and answers its act once the row
+ *  draws it. */
 async function focusedAct(view: RenderResult, id = STATEMENT_ID): Promise<HTMLButtonElement> {
-  const row = rowOf(view, id);
+  const row = await waitFor(() => rowOf(view, id));
   act(() => row.focus());
   return waitFor(() => {
     const control = lensAct(view);
@@ -231,9 +301,17 @@ async function drawnItems(view: RenderResult): Promise<HTMLElement[]> {
   });
 }
 
+/** Where the acts' line says a refusal: a status among the acts that is not the menu's line. */
+const REFUSAL = '[data-row-acts] [role="status"]:not([data-lens-menu-line])';
+
 /** The one sentence the acts' line says of a refusal, where it says one. */
 function refusal(view: RenderResult): string | null {
-  return view.container.querySelector('[data-row-acts] [role="status"]')?.textContent ?? null;
+  return view.container.querySelector(REFUSAL)?.textContent ?? null;
+}
+
+/** What the menu's own line says of its reads, beside the menu; null where no menu is open. */
+function menuLine(view: RenderResult): string | null {
+  return view.container.querySelector("[data-lens-menu-line]")?.textContent ?? null;
 }
 
 /** Lets whatever a press would send go out and be answered. */
@@ -279,7 +357,10 @@ test("the menu lists the catalogue in order", async () => {
     const title = document.getElementById(menu?.getAttribute("aria-labelledby") ?? "");
     expect(title?.textContent).toBe(LENS_WORDS.menu_title);
     expect(title?.hasAttribute("data-page-chrome")).toBe(true);
-    expect(menu?.textContent).toBe(`${LENS_WORDS.menu_title}${LENS_ANSWERS.loading_kinds}`);
+    expect(menu?.textContent, "the menu holds what it says of its read").toBe(
+      LENS_WORDS.menu_title
+    );
+    expect(menuLine(view)).toBe(LENS_ANSWERS.loading_kinds);
     expect(document.activeElement, "the menu took no focus as it opened").toBe(menu);
     await waitFor(() => expect(catalogue.reads).toBe(1));
 
@@ -301,7 +382,7 @@ test("the menu lists the catalogue in order", async () => {
       { standard: null, standardMarked: null, words: "inversion", wordsMarked: true },
     ]);
     expect(drawn.map((item) => item.tagName)).toEqual(["BUTTON", "BUTTON", "BUTTON"]);
-    expect(menu?.textContent).not.toContain(LENS_ANSWERS.loading_kinds);
+    expect(menuLine(view), "the line still says the catalogue is out").toBe("");
     expect(document.activeElement, "the first kind took no focus").toBe(drawn[0]);
 
     // Up and Down move and wrap; Home and End go to the ends.
@@ -352,9 +433,17 @@ test("a failed catalogue read says so and reads again at the next opening", asyn
   try {
     const control = await focusedAct(view);
     await user.click(control);
-    await waitFor(() =>
-      expect(menuOf(view)?.textContent).toBe(`${LENS_WORDS.menu_title}${LENS_ANSWERS.kinds_failed}`)
+    await waitFor(() => expect(menuLine(view)).toBe(LENS_ANSWERS.kinds_failed));
+    // One line with the role `status`, beside the menu in its panel and not inside the menu,
+    // which holds the focus: a screen reader reads it out as it changes.
+    const line = view.container.querySelector("[data-lens-menu-line]");
+    expect(line?.getAttribute("role")).toBe("status");
+    expect(line?.hasAttribute("data-page-chrome")).toBe(true);
+    expect(line?.closest('[role="menu"]'), "the line is inside the menu").toBeNull();
+    expect(line?.parentElement, "the line is not in the menu's panel").toBe(
+      menuOf(view)?.parentElement
     );
+    expect(menuOf(view)?.textContent).toBe(LENS_WORDS.menu_title);
     expect(catalogue.reads).toBe(1);
     expect(items(view)).toEqual([]);
     expect(document.activeElement, "the menu lost the focus").toBe(menuOf(view));
@@ -365,7 +454,7 @@ test("a failed catalogue read says so and reads again at the next opening", asyn
     await user.click(control);
     await drawnItems(view);
     expect(catalogue.reads, "the next opening did not read the catalogue again").toBe(2);
-    expect(menuOf(view)?.textContent).not.toContain(LENS_ANSWERS.kinds_failed);
+    expect(menuLine(view), "the line still says the read failed").toBe("");
     expect(itemsRead(view).map((item) => item.words)).toEqual([
       "trade-off analysis",
       "pre-mortem",
@@ -400,7 +489,7 @@ test("a pick sends on and kind alone", async () => {
     await waitFor(() => expect(bodies).toHaveLength(1));
     expect(bodies[0]).toStrictEqual({ kind: "pre-mortem", on: STATEMENT });
     expect(Object.keys(bodies[0] as object).sort()).toEqual(["kind", "on"]);
-    expect(menuOf(view)?.textContent).toContain(LENS_ANSWERS.examining);
+    expect(menuLine(view)).toBe(LENS_ANSWERS.examining);
     expect(items(view)).toHaveLength(3);
     expect(items(view).some((item) => item.hasAttribute("disabled"))).toBe(false);
 
@@ -424,37 +513,63 @@ test("a pick sends on and kind alone", async () => {
 // R4: a refusal adds no row and says one sentence at the row, with the role `status`: the 404's
 // own, and the page's for any other. A 500 is no verdict: the write is tried again under its key
 // and the menu says it is out, until the reader stops it (the shell's Stop trying), which is the
-// refusal the menu then says. The sentence stands until the menu opens again.
+// refusal the menu then says. The sentence stands until the menu opens again. The rows are the
+// issue's tree read's, which answers one lens more at each read after the first: a refusal sends
+// no tree read and draws no row, where the same pick answered 201 reads the tree again and draws
+// the lens it made.
 test("a refusal adds no row", async () => {
   const user = userEvent.setup();
+  const [read] = buildIssueTree({ issue: ISSUE, tree: treeAnswer(0) }).children;
+  if (read?.reference === undefined) throw new Error("the tree read draws no statement");
   answerCatalogue(() => Response.json(schema(CATALOGUE)));
-  const gone = answerInvocations(() =>
-    Response.json({ code: "NOT_FOUND", error: "no node at that address" }, { status: 404 })
+  const tree = answerTreeReads();
+  let refusing = true;
+  const bodies = answerInvocations(() =>
+    refusing
+      ? Response.json({ code: "NOT_FOUND", error: "no node at that address" }, { status: 404 })
+      : Response.json(invoked("trade-off"), { status: 201 })
   );
-  const view = renderAt(<Rows nodes={[statement]} />);
+  const view = renderAt(<TreeReadRows />);
   try {
+    const control = await focusedAct(view, read.id);
     const rows = view.container.querySelectorAll("[data-node-row]").length;
-    const control = await focusedAct(view);
+    expect(tree.reads).toBe(1);
     await user.click(control);
     await user.click((await drawnItems(view))[0] as HTMLElement);
     await waitFor(() => expect(refusal(view)).toBe(LENS_ANSWERS.gone));
-    expect(gone).toEqual([{ kind: "trade-off", on: STATEMENT }]);
-    const status = view.container.querySelector('[data-row-acts] [role="status"]');
+    expect(bodies).toEqual([{ kind: "trade-off", on: read.reference }]);
+    const status = view.container.querySelector(REFUSAL);
     expect(status?.hasAttribute("data-page-chrome")).toBe(true);
     expect(control.nextElementSibling, "the sentence is not the act's next").toBe(status);
     expect(menuOf(view)).toBeNull();
-    expect(document.activeElement, "the focus did not go back to the row").toBe(rowOf(view));
+    expect(document.activeElement, "the focus did not go back to the row").toBe(
+      rowOf(view, read.id)
+    );
+    await settle();
+    expect(tree.reads, "the refusal read the tree again").toBe(1);
     expect(view.container.querySelectorAll("[data-node-row]")).toHaveLength(rows);
 
     await user.click(control);
     expect(refusal(view), "the sentence outlived the next opening").toBeNull();
-    await user.keyboard("{Escape}");
+
+    // The same pick, answered 201, reads the tree again, and the row of the lens it made is drawn.
+    refusing = false;
+    await user.click((await drawnItems(view))[0] as HTMLElement);
+    await waitFor(() => expect(menuOf(view)).toBeNull());
+    expect(bodies).toEqual([
+      { kind: "trade-off", on: read.reference },
+      { kind: "trade-off", on: read.reference },
+    ]);
+    expect(tree.reads, "the 201 did not read the tree again").toBe(2);
+    expect(view.container.querySelectorAll("[data-node-row]")).toHaveLength(rows + 1);
+    expect(refusal(view)).toBeNull();
   } finally {
     view.unmount();
   }
 
   jest.useFakeTimers();
   const onClock = userOnFakeClock();
+  const again = answerTreeReads();
   let attempts = 0;
   answerRequests(
     http.post(`/api/v1/issues/${KEY}/lenses`, () => {
@@ -463,15 +578,16 @@ test("a refusal adds no row", async () => {
     })
   );
   const client = signedIn();
-  const failing = renderAt(<Rows nodes={[statement]} />, `/issues/${KEY}`, client);
+  const failing = renderAt(<TreeReadRows />, `/issues/${KEY}`, client);
   try {
+    const control = await focusedAct(failing, read.id);
     const rows = failing.container.querySelectorAll("[data-node-row]").length;
-    const control = await focusedAct(failing);
+    expect(again.reads).toBe(1);
     await onClock.click(control);
     await onClock.click((await drawnItems(failing))[1] as HTMLElement);
     await tick(SEND_DEADLINE_MS + 1_000);
     expect(attempts, "a 500 was not tried again").toBeGreaterThan(1);
-    expect(menuOf(failing)?.textContent).toContain(LENS_ANSWERS.examining);
+    expect(menuLine(failing)).toBe(LENS_ANSWERS.examining);
     expect(refusal(failing)).toBeNull();
 
     const [late] = writesOf(client).rows();
@@ -482,7 +598,10 @@ test("a refusal adds no row", async () => {
     await tick(1_000);
     expect(refusal(failing)).toBe(LENS_ANSWERS.failed);
     expect(menuOf(failing)).toBeNull();
-    expect(document.activeElement, "the focus did not go back to the row").toBe(rowOf(failing));
+    expect(document.activeElement, "the focus did not go back to the row").toBe(
+      rowOf(failing, read.id)
+    );
+    expect(again.reads, "the refusal read the tree again").toBe(1);
     expect(failing.container.querySelectorAll("[data-node-row]")).toHaveLength(rows);
   } finally {
     failing.unmount();

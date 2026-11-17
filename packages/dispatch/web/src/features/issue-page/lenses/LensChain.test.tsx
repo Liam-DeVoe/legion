@@ -5,22 +5,25 @@ import { act, type RenderResult, render, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
 import { type ReactNode, useState } from "react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
 import { answerRequests } from "../../../__tests__/network";
 import type { TreeNode } from "../issue-tree";
 import { NodeRow } from "../NodeRow";
 import { NoTooltips } from "../NoTooltips";
+import { chipWords } from "../node-row-chip";
 import {
   authorKind,
   CONTROL_LABELS,
   LENS_ANSWERS,
   LENS_WORDS,
   NODE_TYPE_NAMES,
-  type NodeType,
 } from "../page-words";
+import { node } from "../spec-filter/spec-fixtures";
+import { blockNodeId } from "../tree-drafts";
 import { LensLines } from "./LensLines";
 import { kindWords, type LensFacts, type LensPlace } from "./lens-drafts";
+import { lensChainQuery } from "./lens-reads";
 
 /**
  * What a lens's row draws of its chain, and the lines a lens, a risk, a constrained statement and
@@ -44,23 +47,6 @@ const BEYOND = "dispatch://lens/0c6f1d2e-7777-4a6b-9c1d-5e2f3a4b5c67";
 /** The statement both lenses read, and its first line as the tree drew it. */
 const STATEMENT = "dispatch://CORE-1/spec#b-r1";
 const STATEMENT_LINE = "Store the notices for a day";
-
-function node(partial: Partial<TreeNode> & { id: string; type: NodeType }): TreeNode {
-  return {
-    alsoUnder: [],
-    children: [],
-    chips: [],
-    facts: [],
-    gaps: [],
-    held: 0,
-    question: false,
-    replaced: false,
-    text: partial.id,
-    transcluded: false,
-    waiting: false,
-    ...partial,
-  };
-}
 
 function facts(partial: Partial<LensFacts>): LensFacts {
   return { constrainedBy: [], preventedBy: [], triggered: [], triggeredBy: [], ...partial };
@@ -366,9 +352,10 @@ test("a stopped_at ends the chain with More lenses past this one", async () => {
     }
   };
 
+  const furtherKind = "risk review of the notice store's retention";
   const further = new Map(PLACES).set(FURTHER, {
     id: "lens/5555",
-    kindWords: "risk review of the notice store's retention",
+    kindWords: furtherKind,
     onLine: STATEMENT_LINE,
   });
   expect(await drawnEnd(further)).toEqual({
@@ -376,7 +363,7 @@ test("a stopped_at ends the chain with More lenses past this one", async () => {
     label: LENS_WORDS.more_lenses,
     labelMarked: true,
     more: true,
-    words: "Risk review of the notice…",
+    words: chipWords(kindWords(furtherKind)),
   });
   // A lens the tree drew no row for is named by the page's word for a lens, with no link.
   expect(await drawnEnd(PLACES)).toEqual({
@@ -419,6 +406,38 @@ test("a failed or 404 chain read says so", async () => {
     marked: true,
     status: LENS_ANSWERS.gone,
   });
+});
+
+// R2, dispatch://INFRA-1196 decision 98: a chain once drawn stays drawn when its read is sent
+// again and fails, as it is when something refreshes every read the page holds (`write-store.ts`
+// does for a landing no surface waits on); the failure is said only where no answer is held.
+test("a chain drawn stays drawn when a read again fails", async () => {
+  const user = userEvent.setup();
+  let failing = false;
+  const asked = answerLensReads(() =>
+    failing
+      ? Response.json({ code: "UNAVAILABLE", error: "the store is down" }, { status: 500 })
+      : Response.json(lensesOf([chain([lensRead(TRADE_OFF, null), lensRead(PREMORTEM, null)])]))
+  );
+  const queryClient = testClient();
+  const view = renderOnIssue(<LensRow drawn={premortem()} focused />, queryClient);
+  try {
+    await user.click(await drawnControl(view));
+    await waitFor(() => expect(chainAddresses(view)).toEqual([TRADE_OFF, PREMORTEM]));
+
+    failing = true;
+    await act(() => queryClient.invalidateQueries());
+    expect(asked, "the chain was not read again").toEqual([PREMORTEM, PREMORTEM]);
+    expect(
+      queryClient.getQueryState(lensChainQuery(PREMORTEM, true).queryKey)?.status,
+      "the read sent again did not fail"
+    ).toBe("error");
+    expect(chainAddresses(view), "the failure took the chain away").toEqual([TRADE_OFF, PREMORTEM]);
+    expect(chainStatus(view)).toBeNull();
+    expect(view.container.textContent).not.toContain(LENS_ANSWERS.chain_failed);
+  } finally {
+    view.unmount();
+  }
 });
 
 /**
@@ -468,6 +487,11 @@ function risk(partial: Partial<LensFacts>): TreeNode {
     text: "The store keeps notices for a week",
     type: "risk",
   });
+}
+
+/** The address's query as it stands, drawn where a case reads where a press went. */
+function AddressQuery(): ReactNode {
+  return <span data-address-query={useLocation().search} />;
 }
 
 describe("the lines under a row", () => {
@@ -536,6 +560,60 @@ describe("the lines under a row", () => {
         words: [],
       },
     ]);
+  });
+
+  // R3, R7: a press on a chip goes to its target's address and focuses the target's row where
+  // the tree draws it, at every press: the address puts the focus on its node once, and no more
+  // after the reader's first act, so a second press on the same chip, after the reader went back
+  // to the risk, focuses the check's row all the same. The chip names the check by its id in the
+  // tree read, and the row carries the id the tree draws a typed block by.
+  test("a chip focuses its row at every press", async () => {
+    const user = userEvent.setup();
+    const checkId = blockNodeId("verification-md", "c1");
+    const prevented = risk({
+      preventedBy: [{ address: CHECK, id: "c1", words: "Notices older than a day…" }],
+    });
+    const check = node({
+      id: checkId,
+      readId: "c1",
+      reference: CHECK,
+      text: "Notices older than a day are gone",
+      type: "check",
+    });
+    const view = renderOnIssue(
+      <>
+        <div aria-label={CONTROL_LABELS.tree} role="tree">
+          <LensRow drawn={prevented} />
+          <LensRow drawn={check} />
+        </div>
+        <AddressQuery />
+      </>
+    );
+    const rowOf = (id: string) =>
+      view.container.querySelector<HTMLElement>(
+        `[data-node-row][data-node-id="${CSS.escape(id)}"]`
+      );
+    const chip = () => {
+      const link = rowOf(prevented.id)?.querySelector<HTMLElement>("[data-node-chip] a");
+      if (link === null || link === undefined) throw new Error("the risk draws no chip's link");
+      return link;
+    };
+    const query = () =>
+      view.container.querySelector("[data-address-query]")?.getAttribute("data-address-query");
+    try {
+      await user.click(chip());
+      expect(document.activeElement, "the press left the focus").toBe(rowOf(checkId));
+      expect(query()).toBe("?node=c1");
+
+      // The reader goes back to the risk, and `f` steps to its chip.
+      act(() => rowOf(prevented.id)?.focus());
+      act(() => chip().focus());
+      await user.keyboard("{Enter}");
+      expect(document.activeElement, "Enter on the chip left the focus").toBe(rowOf(checkId));
+      expect(query()).toBe("?node=c1");
+    } finally {
+      view.unmount();
+    }
   });
 
   // R5: a statement names each constraint it is held to; one of the issue's is a row and its

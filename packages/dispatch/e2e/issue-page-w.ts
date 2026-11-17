@@ -1,5 +1,6 @@
-import type { Locator, Page } from "@playwright/test";
+import { expect, type Locator, type Page, type Response } from "@playwright/test";
 
+import type { IssueTreeAnswer, IssueTreeNode } from "../web/src/api/client";
 import {
   type Body,
   type Op,
@@ -29,8 +30,15 @@ import { issuePage } from "./issue-page";
  *   under a row's words (its label `[data-page-chrome]`, its chips `[data-node-chip]` with their
  *   words `[data-chip-name]`, and its stored words `[data-author-text]`), the focused row's act
  *   `[data-row-lens]`, the menu it opens (`role="menu"`, each `role="menuitem"` holding a kind's
- *   words `[data-lens-kind-words]` and its standard `[data-lens-kind-standard]`), and the page's
- *   own words.
+ *   words `[data-lens-kind-words]` and its standard `[data-lens-kind-standard]`) with its line
+ *   `[data-lens-menu-line]`, a focused lens's chain (`[data-lens-show-chain]`, each entry
+ *   `[data-lens-chain-entry]`), a row by the id the tree read gives its node
+ *   (`data-node-read-id`), and the page's own words.
+ * - **The tree read**: what the page received of `GET /api/v1/issues/{key}/tree` - its newest
+ *   read whose every page answered (`treeAnswerOf`, part T's, held here until T's export reaches
+ *   this branch), the pages of each read (`treePagesOf`) - and the read ids of the nodes
+ *   `seedLenses` wrote, read from that answer (`lensReadIds`), so a row names each node by the
+ *   id the page itself received and never builds one.
  */
 
 /** What `POST /api/v1/issues/{key}/lenses` answers: the lens, with its findings. */
@@ -403,4 +411,272 @@ export function chromeTexts(page: Page): Promise<string[]> {
         }),
       SELECTORS
     );
+}
+
+/** The id the page draws the node `readId` names under (`data-node-id`, the id G's readers take),
+ *  read off the first row that carries its read id (`data-node-read-id`) - a check under two
+ *  statements is drawn twice under one id - or null where the page draws none. */
+export async function drawnIdOf(page: Page, readId: string): Promise<string | null> {
+  expect(readId, `${readId} cannot be written into a selector`).not.toContain('"');
+  const rows = issuePage(page).locator(`${SELECTORS.nodeRow}[data-node-read-id="${readId}"]`);
+  return (await rows.count()) === 0 ? null : rows.first().getAttribute("data-node-id");
+}
+
+/** The read id of the row that holds the focus itself, or null where the focus is on no row, or
+ *  on a control inside one. */
+export function focusedRowReadId(page: Page): Promise<string | null> {
+  return page.evaluate((nodeRow) => {
+    const focused = document.activeElement;
+    return focused?.matches(nodeRow) === true ? focused.getAttribute("data-node-read-id") : null;
+  }, SELECTORS.nodeRow);
+}
+
+/** The links of the chips one line of the row `row` locates draws (`data-lens-line`, the
+ *  `LENS_WORDS` key of its label). */
+export function lensChipLinks(row: Locator, line: string): Locator {
+  return row.locator(`${SELECTORS.lensLine}[data-lens-line="${line}"] ${SELECTORS.chip} a[href]`);
+}
+
+/** The control of a focused lens that reads its chain. */
+export function lensShowChain(row: Locator): Locator {
+  return row.locator("[data-lens-show-chain]");
+}
+
+/** One entry of a drawn chain: its lens's kind's words, as the `lens_kind` node holds them, and
+ *  the first line of the row that lens stands under; empty where it draws none. */
+export interface LensChainEntry {
+  readonly kind: string;
+  readonly line: string;
+}
+
+/** The entries of the chain the row `row` locates draws, in order. */
+export function lensChainEntries(row: Locator): Promise<LensChainEntry[]> {
+  return row.locator("[data-lens-chain-entry]").evaluateAll((entries) =>
+    entries.map((entry) => ({
+      kind: (entry.querySelector("[data-lens-chain-kind]")?.textContent ?? "").trim(),
+      line: (entry.querySelector("[data-lens-chain-line]")?.textContent ?? "").trim(),
+    }))
+  );
+}
+
+/** The line beside the open menu of lens kinds (`role="status"`), which says that the catalogue
+ *  is being read or could not be, or that a pick is out; empty while it says nothing. */
+export function lensMenuLine(page: Page): Locator {
+  return page.locator(`${SELECTORS.nodeRow} [data-lens-menu-line]`);
+}
+
+/** One kind of the lens catalogue, as `GET /api/v1/schema/blocks` answers it. */
+export type LensKind = NonNullable<Result<"/api/v1/schema/blocks", "get">["lens_kinds"]>[number];
+
+/** The lens catalogue, in its own order, read as alice: what the menu of lens kinds lists. */
+export async function lensCatalogue(): Promise<LensKind[]> {
+  return (await read("/api/v1/schema/blocks", {})).lens_kinds ?? [];
+}
+
+// ---------------------------------------------------------------------------------------------
+// What the page received of the tree read.
+// ---------------------------------------------------------------------------------------------
+
+/** The tree read's path, whatever issue it reads (`GET /api/v1/issues/{key}/tree`). */
+const TREE_ROUTE = /^\/api\/v1\/issues\/[^/]+\/tree$/;
+
+/** Whether `response` is an answer of the tree read with no view that the page could read. */
+function treeReadAnswer(response: Response): boolean {
+  const url = new URL(response.url());
+  return (
+    response.request().method() === "GET" &&
+    TREE_ROUTE.test(url.pathname) &&
+    url.searchParams.get("view") === null &&
+    response.ok()
+  );
+}
+
+// The tree read as part T keeps it. This section goes once T's `e2e/issue-page-t.ts`
+// (INFRA-4062 at fb231b9e85) is merged under W: `issue-page-w.e2e.ts` then imports
+// `treeAnswerOf` from `./issue-page-t`, whose export has this signature and this behaviour, and
+// nothing else changes.
+
+/** What the page received of the tree route with no view. */
+export interface TreeAnswerWatch {
+  /** The newest read whose every page has answered, its pages merged; undefined until one has. */
+  answer(): IssueTreeAnswer | undefined;
+}
+
+/** One page of a read as the page received it: in which place it arrived, the cursor its request
+ *  sent (none for a read's first page), and the page. */
+interface ReceivedPage {
+  readonly arrived: number;
+  readonly cursor: string | null;
+  readonly page: IssueTreeAnswer;
+}
+
+/** The tree read the page receives with no view, every page of its newest read merged. Start it
+ *  before the navigation, so the first load's read is kept. */
+export function treeAnswerOf(page: Page): TreeAnswerWatch {
+  const received: ReceivedPage[] = [];
+  let arrivals = 0;
+  page.on("response", (response) => {
+    if (!treeReadAnswer(response)) return;
+    const arrived = arrivals;
+    arrivals += 1;
+    const cursor = new URL(response.url()).searchParams.get("cursor");
+    void response.json().then(
+      (body: IssueTreeAnswer) => {
+        received.push({ arrived, cursor, page: body });
+      },
+      // A body the browser let go of before it was read, as the page moved on, is no answer.
+      () => undefined
+    );
+  });
+  return { answer: () => newestRead(received) };
+}
+
+/** The newest read every page of which has answered: a read starts at a page its request sent no
+ *  cursor for, and goes on with each page whose cursor the page before it answered. */
+function newestRead(received: readonly ReceivedPage[]): IssueTreeAnswer | undefined {
+  const reads: IssueTreeAnswer[][] = [];
+  for (const { cursor, page } of [...received].sort((a, b) => a.arrived - b.arrived)) {
+    const read = reads[reads.length - 1];
+    if (cursor === null) reads.push([page]);
+    else if (read !== undefined && read[read.length - 1]?.cursor === cursor) read.push(page);
+  }
+  for (let at = reads.length - 1; at >= 0; at -= 1) {
+    const [first, ...rest] = reads[at] ?? [];
+    if (first !== undefined && (rest[rest.length - 1] ?? first).cursor === null) {
+      return mergedPages(first, rest);
+    }
+  }
+  return undefined;
+}
+
+/** The pages of one read as one answer, as `tree-read/tree-read.ts`' `mergeTreePages` merges
+ *  them: every page's nodes and tuples in the order the pages came, and what describes the issue
+ *  rather than a page from the first. */
+function mergedPages(first: IssueTreeAnswer, rest: readonly IssueTreeAnswer[]): IssueTreeAnswer {
+  if (rest.length === 0) return first;
+  const pages = [first, ...rest];
+  return {
+    ...first,
+    cursor: null,
+    nodes: pages.flatMap((one) => one.nodes),
+    tuples: pages.flatMap((one) => one.tuples),
+  };
+}
+
+// The end of the section that goes once part T's export is merged under W.
+
+/** How long `heldTreeAnswer` waits for a read: a load's, or the one a write sends again. */
+const TREE_HELD_MS = 30_000;
+
+/** Waits until the newest read `watch` holds (`treeAnswerOf`) is one `holds` is true of - any
+ *  read, unless it says otherwise - and answers it. */
+export async function heldTreeAnswer(
+  watch: { answer(): IssueTreeAnswer | undefined },
+  what: string,
+  holds: (answer: IssueTreeAnswer) => boolean = () => true
+): Promise<IssueTreeAnswer> {
+  const message = `${what} never answered the read the row waits for`;
+  await expect
+    .poll(
+      () => {
+        const answer = watch.answer();
+        return answer !== undefined && holds(answer);
+      },
+      { message, timeout: TREE_HELD_MS }
+    )
+    .toBe(true);
+  const answer = watch.answer();
+  if (answer === undefined) throw new Error(message);
+  return answer;
+}
+
+/** One page of the tree read as the page received it: the cursor its request sent (null for a
+ *  read's first page) and the cursor it answered for the next (null on a read's last page). */
+export interface TreePage {
+  readonly cursor: string | null;
+  readonly next: string | null;
+}
+
+/** Keeps each page of the tree read with no view the page receives from now on, so a row counts
+ *  the pages a read has against the requests it sent; the answer reads them, in the order they
+ *  arrived, once every page received so far has been read. */
+export function treePagesOf(page: Page): () => Promise<TreePage[]> {
+  const kept: Promise<TreePage>[] = [];
+  page.on("response", (response) => {
+    if (!treeReadAnswer(response)) return;
+    const cursor = new URL(response.url()).searchParams.get("cursor");
+    kept.push(response.json().then((body: IssueTreeAnswer) => ({ cursor, next: body.cursor })));
+  });
+  return () => Promise.all(kept);
+}
+
+/** The read ids of what `seedLenses` wrote, as the issue's tree read holds them. */
+export interface LensReadIds {
+  /** The check risk A's `prevented_by` tuple names. */
+  readonly check1: string;
+  /** The node under the trade-off analysis: its one finding. */
+  readonly finding: string;
+  readonly measurement: string;
+  readonly preMortem: string;
+  readonly riskA: string;
+  readonly riskB: string;
+  readonly standard: string;
+  /** The issue's own statements in the read's order, which is the spec's: statement N is
+   *  `statements[N - 1]`, as `seedLenses` counts them from the coverage read. */
+  readonly statements: readonly string[];
+  /** The lens the pre-mortem's `triggered_by` tuple names. */
+  readonly tradeOff: string;
+}
+
+/**
+ * The read id of each node `seedLenses` wrote on issue `key`, found in `answer` by what the seed
+ * wrote into it and by the server's own tuples, never built: the pre-mortem by its verdict, the
+ * trade-off analysis by the pre-mortem's `triggered_by`, the finding as the node under it, each
+ * risk by its heading and check 1 by risk A's `prevented_by`, each constraint by its standard or
+ * its measurement. A node of another issue, and the context a view or a catalogue tuple brings
+ * in, is none of them. Throws, naming the node, where the answer holds none.
+ */
+export function lensReadIds(answer: IssueTreeAnswer, key: string, seeded: LensSeed): LensReadIds {
+  const own = answer.nodes.filter(
+    (node) => (node.issue === undefined || node.issue === key) && node.mark !== "context"
+  );
+  const idOf = (what: string, node: IssueTreeNode | undefined): string => {
+    if (node === undefined) throw new Error(`the tree read of ${key} holds no ${what}`);
+    return node.id;
+  };
+  const targetOf = (what: string, kind: string, from: string): string => {
+    const tuple = answer.tuples.find((one) => one.kind === kind && one.from === from);
+    if (tuple === undefined) throw new Error(`the tree read of ${key} holds no ${what}`);
+    return tuple.to;
+  };
+  const holding = (supertag: string, attribute: string, value: string | null) =>
+    own.find((node) => node.supertag === supertag && node.attributes[attribute] === value);
+  const preMortem = idOf("pre-mortem", holding("lens", "verdict", seeded.preMortem.verdict));
+  const tradeOff = targetOf("trigger of the pre-mortem", "triggered_by", preMortem);
+  const riskA = idOf("risk A", holding("risk", "heading", seeded.riskA.heading));
+  return {
+    check1: targetOf("check that prevents risk A", "prevented_by", riskA),
+    finding: idOf(
+      "finding",
+      own.find((node) => node.parent === tradeOff)
+    ),
+    measurement: idOf(
+      "measurement constraint",
+      holding("constraint", "measurement", seeded.measurement.measurement)
+    ),
+    preMortem,
+    riskA,
+    riskB: idOf("risk B", holding("risk", "heading", seeded.riskB.heading)),
+    standard: idOf(
+      "standard constraint",
+      holding("constraint", "standard", seeded.standard.standard)
+    ),
+    statements: own.filter((node) => node.supertag === "requirement").map((node) => node.id),
+    tradeOff,
+  };
+}
+
+/** The read id of every lens `answer` holds, in its order. */
+export function lensIdsIn(answer: IssueTreeAnswer): string[] {
+  return answer.nodes.flatMap((node) => (node.supertag === "lens" ? [node.id] : []));
 }

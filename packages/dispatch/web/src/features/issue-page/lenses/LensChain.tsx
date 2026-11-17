@@ -70,17 +70,11 @@ function Chain({
           {LENS_WORDS.show_chain}
         </button>
       </p>
-      {!pressed ? null : read.isPending ? (
-        <p role="status" {...pageChrome}>
-          {LENS_ANSWERS.loading_chain}
-        </p>
-      ) : read.isError ? (
-        <p className={pageFailedText} role="status" {...pageChrome}>
-          {read.error instanceof ApiError && read.error.status === 404
-            ? LENS_ANSWERS.gone
-            : LENS_ANSWERS.chain_failed}
-        </p>
-      ) : (
+      {/* An answer once held stays drawn through a later read that fails - a refresh of every
+          read the page holds sends this one again - since TanStack keeps the answer and sets the
+          error beside it (dispatch://INFRA-1196 decision 98). The failure is said only where no
+          answer is held and no read is out, as the menu says its catalogue's. */}
+      {!pressed ? null : read.data !== undefined ? (
         <ChainEntries
           chain={read.data.chains?.find((each) =>
             (each.lenses ?? []).some((entry) => entry.address === address)
@@ -88,6 +82,16 @@ function Chain({
           lens={lens}
           tabStops={tabStops}
         />
+      ) : read.isError && !read.isFetching ? (
+        <p className={pageFailedText} role="status" {...pageChrome}>
+          {read.error instanceof ApiError && read.error.status === 404
+            ? LENS_ANSWERS.gone
+            : LENS_ANSWERS.chain_failed}
+        </p>
+      ) : (
+        <p role="status" {...pageChrome}>
+          {LENS_ANSWERS.loading_chain}
+        </p>
       )}
     </div>
   );

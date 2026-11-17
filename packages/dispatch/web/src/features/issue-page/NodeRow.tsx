@@ -266,6 +266,7 @@ export function NodeRow({
       data-folded-count={folded}
       data-node-context={context ? "" : undefined}
       data-node-id={node.id}
+      data-node-read-id={node.readId}
       data-node-row=""
       data-node-state={node.state}
       data-node-type={node.type}
