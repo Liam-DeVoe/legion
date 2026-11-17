@@ -151,6 +151,7 @@ export const architecture: ArchitectureTree = {
 
 export const SPEC_ID = "artifact-spec";
 export const DECISIONS_ID = "artifact-decisions";
+export const VERIFICATION_ID = "artifact-verification";
 
 /** A document of the issue (`ApprovalSteps.test.tsx`'s `doc`). */
 export function doc(id: string, name: string, approval?: ArtifactApproval): Artifact {
