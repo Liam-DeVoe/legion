@@ -81,9 +81,11 @@ What the agent sees depends on the projects its token lists:
   write of the whole deployment, such as `dispatch project` or a broadcast,
   `403 PROJECT_SCOPE_DEPLOYMENT`.
 - A token that lists no project sees the public projects its person sees, and no private one,
-  even one its person sees. It reads every person, every session and the whole deployment, unless
-  its person is a restricted member: such a person's token is held as a token that lists projects
-  is, and its writes of the whole deployment are refused `403 RESTRICTED_MEMBER`.
+  even one its person sees. It reads every person and the whole deployment, and every agent
+  session but one that has acted in a project it cannot see (while a project is private and the
+  operator has not yet filled the sessions' projects, no session but its own), unless its person
+  is a restricted member: such a person's token is held as a token that lists projects is, and its
+  writes of the whole deployment are refused `403 RESTRICTED_MEMBER`.
 - The shared token, and any other credential that acts for no person, sees the public projects,
   within its list when it has one.
 

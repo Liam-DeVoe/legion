@@ -352,10 +352,13 @@ this order:
 5. A repository of the project that shares its GitHub subject lane with another project's
    repository is `409 REPOSITORY_LANE_SHARED`.
 6. Last, in the same transaction, Dispatch writes the project's key in the hub's
-   `envoy_private_projects` bucket, which every Envoy listener reads to hold the project's
-   messages back from a token that does not list it. When the hub refuses that write, as a hub
-   without its auth service does, or Dispatch has no bus to write it to, the switch is
-   `409 PRIVATE_PROJECTS_UNAVAILABLE` and nothing changes.
+   `envoy_private_projects` bucket, the record by which Envoy's listeners are to hold the
+   project's messages back from a token that does not list it. When the hub refuses that write,
+   as a hub without its auth service does, or Dispatch has no bus to write it to, the switch is
+   `409 PRIVATE_PROJECTS_UNAVAILABLE` and nothing changes. This release of Dispatch has no writer
+   of that bucket, so every switch that passes steps 1 to 5 is
+   `409 PRIVATE_PROJECTS_UNAVAILABLE`: no project can be made private until a release carries the
+   writer.
 
 Of these, only the owner check of step 2 applies to a switch to public.
 
@@ -373,9 +376,10 @@ envoy-dispatch project-visibility <KEY> public
 ```
 
 So to take a key off the list, make the project public first, and only then remove its key. At
-start Dispatch also logs, at INFO, the listed keys no private project holds yet, and, with a list,
-an ERROR line at start and once an hour while the store cannot hold a private project, naming its
-first rows and the command that repairs it. Every response carries `Dispatch-Private-Projects: 1`
+start Dispatch also logs, at INFO, the listed keys no private project holds yet. With a list, each
+server logs an ERROR line as it starts, and then once an hour, while the store cannot hold a
+private project for one of the reasons of step 4, naming the reason and the command that repairs
+it. Every response carries `Dispatch-Private-Projects: 1`
 while the list names a project or the database holds a private one, and
 `Dispatch-Private-Projects: 0` otherwise.
 

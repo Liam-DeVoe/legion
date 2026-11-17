@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+    `GET /api/v1/whoami`'s `project` is deprecated in favour of `projects`: it is the one key of a one-key list, and null for any other list or none, so a broker-issued token scoped to one project still reads that project there.
+time: 2026-11-17T09:42:28.109902541Z
+custom:
+    Issue: pr4177

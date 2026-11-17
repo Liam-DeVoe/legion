@@ -164,10 +164,11 @@ Every project has an owner, and a boot over a project with none refuses to serve
 `DISPATCH_PRIVATE_PROJECTS` names, comma-separated, the projects this deployment has provisioned as private: their namespaces, stores and grants exist (agent-infra's `legion.PrivateProjects`).
 Only these projects can be made private, and an entry that is not a project key, the old value `1` included, refuses startup; unset or empty, no project can be made private, as before the setting existed.
 An owner's switch of a project to private (`PATCH /api/v1/projects/{key}/access`) is refused `409 PRIVATE_PROJECTS_OFF` with no list, `409 PRIVATE_PROJECT_NOT_PROVISIONED` for a project the list does not name, `409 PRIVATE_PROJECTS_INCOMPLETE` until that project's rows all have their nodes and both `envoy-dispatch backfill-session-projects` and `envoy-dispatch scrub-access-events` have run, naming the command, and `409 PRIVATE_PROJECTS_UNAVAILABLE` while the hub does not take the project's key in its `envoy_private_projects` bucket.
+This build has no writer of that bucket (`cmd/dispatch` leaves `api.Deps.BusProjects` nil), so a switch that passes every other check is always `409 PRIVATE_PROJECTS_UNAVAILABLE`: no project can be made private through the server until a build carries the writer.
 A switch to public is never refused by any of them.
 Nothing here stops the boot, because a boot that exits would stop every project:
 a project the database holds private that the list does not name stays private, refuses every change of its visibility but its owner's switch to public, and is named by an ERROR line at boot and at every maintenance pass, while `/healthz` answers the fixed reason `degraded: ["private_project_unprovisioned"]`, naming no project, and leaves `ok` and the status as they are (Making a project public without the server, below);
-with a list, a store a private project's reads would answer wrongly is one ERROR line at boot and one an hour, naming its first rows and the command that repairs it.
+with a list, a store that cannot hold a private project yet, for any of the reasons a switch is `409 PRIVATE_PROJECTS_INCOMPLETE` for, is one ERROR line as each process starts and then one an hour per process, naming why and the command that repairs it.
 
 Every response Dispatch's HTTP server makes, errors, `/healthz` and both sockets' `101` included, carries `Dispatch-Private-Projects: 1` when `DISPATCH_PRIVATE_PROJECTS` is non-empty or the database holds a private project, and `Dispatch-Private-Projects: 0` otherwise; the shared stores' check reads it.
 The database's part is read at boot, right after the migrate and before any loop or the repository seed, and a boot whose read fails logs `dispatch: read the private projects` and exits 1, as one whose database will not open does; it is read again every 30 seconds after, and a later read that fails answers `1`.
@@ -237,7 +238,8 @@ A broker-issued token's list is the one project the broker scoped it to, and eve
 - A credential that names no person — the shared token, a Kubernetes service-account token, a broker-issued token that names a service — sees the public projects, within its list when it holds one.
 
 A caller is an open viewer when its person is not a restricted member and its credential lists nothing.
-An open viewer reads every person, every session and every row of the whole deployment.
+An open viewer reads every person and every row of the whole deployment, and every session but one that has acted in a project it does not see (`access.SessionClause`);
+while a project is private and `session_projects_filled` holds no row, it reads no session but its own (Filling the sessions' projects, below).
 Any other caller reads, of what belongs to no project, only the people and sessions of the projects it sees, its own, and the direct conversations its person or session is a party to (`access.PersonClause`, `access.SessionClause`, `access.PartyClause`);
 every read of the whole deployment (`readclass.Deployment`: the priorities, Delivery and Pipeline, the CI reconcile passes, the broadcasts, the delivery and new-issue settings, the credential requests, the machine logins and the groups) is `403 DEPLOYMENT_READ_REFUSED` to it (`api.withinReadScope`).
 A project the caller does not see, and every object in it, answers exactly as one no row holds.
@@ -261,7 +263,7 @@ A credential that lists projects sees no project outside its list, so this is wh
 `TestNoWriteReachesAHiddenObject` calls every write row that names an object, and `TestNoBodyReachesAHiddenObject` every body field that does, on a private project's object and on one nobody holds.
 A person or a session a body names is read the same way for a viewer that is not open: an assignee, an `asked_of`, a default assignee or a new owner it may not see is refused as a login that has not signed in,
 a message's or a mention's `session:` target it may not see is recorded as `no live session <id>`, and a `role:` target whose holder it may not see as `no holder for role <role>`, the listener's words for a role nobody claims;
-an open viewer sees every person and session and is answered as before (`TestNoBodyNamesAHiddenPersonOrSession`).
+an open viewer sees every person, and every session but one that has acted in a project it does not see, so with no private project it is answered as before (`TestNoBodyNamesAHiddenPersonOrSession`).
 A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT` to a credential that lists projects and `403 RESTRICTED_MEMBER` to a restricted member, naming the route and the credential's list:
 what it writes belongs to no project such a viewer could be held to.
 `POST /api/v1/issues` and `POST /api/v1/going/requests` take their project from the body, so a credential that lists projects is refused one outside its list, `403 PROJECT_SCOPE`, naming its list and the project the body named, before anything is read.
@@ -1455,7 +1457,7 @@ A process that finds it held tries again
 - The keyed writes' maintenance sweep (`api.RunMaintenanceSweep`, lease `suggestion-outcomes`, `api.MaintenanceSweepInterval`) deletes the `Idempotency-Key` rows past their 24 hours, ends and clears the answer runs the going routes leave behind (Answering a question, below), and then sends every delivery a process that died left owed (Keyed writes, below), once a minute across the processes:
   its pass records its period in `duty_passes` like the timers above, so the other process's tick inside a period already served skips.
   `DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL` replaces the minute for an end-to-end test, and a deployment never sets it.
-  Each pass also logs an ERROR line for each project the database holds private that `DISPATCH_PRIVATE_PROJECTS` does not name, and, with a list, once an hour per process, an ERROR line while the store cannot hold a private project (Required configuration, above).
+  Each pass also logs an ERROR line for each project the database holds private that `DISPATCH_PRIVATE_PROJECTS` does not name, and, with a list, the loop logs an ERROR line while the store cannot hold a private project once as it starts in each process and then once an hour per process (Required configuration, above).
   No notification replaces this timer, which is why it is the one piece of maintenance that stayed one:
   a key passes its window by the clock alone, an answer run passes its own by the clock too, and a delivery is owed because the process holding it died, which commits nothing to announce.
   It keeps the lease name the suggestion outcome sweep carried this work under, so during a roll the earlier release's pass and this one still exclude each other on it.
@@ -2634,7 +2636,7 @@ envoy-dispatch project-visibility <KEY> public
 ```
 
 It reads `DATABASE_URL` and makes the change in one transaction that appends `project.access_changed`, written by the actor `{"kind": "system", "id": "envoy-dispatch project-visibility"}` (`access.SetVisibility`).
-It makes a project public only, so it makes no bus call: the private-projects record's writer deletes the project's key at the server's start pass, or within a minute on a running server, and until then the project's messages stay withheld, never shown.
+It makes a project public only, so it makes no bus call, and this build has no writer of the hub's private-projects record (`envoy_private_projects`), so no key of the project was written there for anything to remove.
 It exits 0 once the change commits;
 2 for a key no project holds, for any value but `public`, and for arguments that are not exactly a key and `public`, writing nothing;
 and 1 when the database cannot be opened or written.
@@ -2664,6 +2666,7 @@ Once it has read every event it writes the one `session_projects_filled` row, no
 It exits 0 then, 1 when the database cannot be opened or written, and 2 for an argument other than `--reset`.
 
 Migration `20261116081157_session_projects_proven` empties `session_projects` and `session_projects_filled`, because the rows the earlier rule recorded cannot be told apart once written, so run the fill again after the deploy that carries it; until it has run, no project can be made private (`409 PRIVATE_PROJECTS_INCOMPLETE`).
+Until it has run, an open viewer of a deployment that holds a private project reads no session but its own (`access.SessionClause`), since a session of a private project may have no row placing it there yet.
 Under `Recreate` the build before has stopped when the migration runs.
 A deployment that rolls keeps an old build recording pairs under the earlier rule while the new one starts, and a fill never takes a pair away, so its operator runs `envoy-dispatch backfill-session-projects --reset` once the last old pod is gone: it first runs the migration's two deletes, each in a statement of its own, and then fills.
 The migration's census answers `0`, because a census that counts refuses the deploy; the count it drops is `select count(*) from session_projects;` on the release still serving.
@@ -4095,7 +4098,7 @@ Each item below names a path with its method and identity, then its purpose.
   List live Envoy sessions (`session_id`, `title`, `dir`, `machine_id`, `roles`, `capabilities`, `last_seen`), newest first, from Dispatch's copy of the listener's session list, at most 5 s old;
   `503 ENVOY_REFILLING` with the listener's `Retry-After` (5 when it sends none) while the listener refuses its list as refilling (it cannot stand behind its copy of the sessions yet), and `503 ENVOY_UNAVAILABLE` when the listener cannot be reached, each for up to 5 s after that listener read without asking the listener again.
   Neither is an empty list: a client reads neither as "no agents".
-  Only the sessions the caller may see are listed (`access.SessionClause`): every one for an open viewer, and for any other caller its own and those that have acted in a project it sees.
+  Only the sessions the caller may see are listed (`access.SessionClause`): for an open viewer every one but those that have acted in a project it does not see, and for any other caller its own and those that have acted in a project it sees.
 
 - `/api/v1/agents/{session_id}/answers?since=&max_chars=` (GET; cookie, trusted header, or bearer)
 
@@ -4141,9 +4144,10 @@ Each item below names a path with its method and identity, then its purpose.
   A target project the caller cannot see is answered as an unknown project (`404 NOT_FOUND`).
   A mapping of a project the caller cannot see is neither moved nor named:
   a PUT over it answers the lane refusal's hidden form, which names the lane alone, and a DELETE answers `204` and removes nothing.
-  A PUT into a private project writes that project's key in the hub's `envoy_private_projects` bucket through its own transaction, as its last step before the commit, and is `409 PRIVATE_PROJECTS_UNAVAILABLE`, with nothing changed, while the hub does not take it.
+  A PUT into a private project writes that project's key in the hub's `envoy_private_projects` bucket through its own transaction, as its last step before the commit, and is `409 PRIVATE_PROJECTS_UNAVAILABLE`, with nothing changed, while the hub does not take it;
+  this build has no writer of that bucket, so every PUT into a private project is that `409`.
   The route adds names to the key and never removes one:
-  a move out of the project, a DELETE and a `renamed_to` change leave the old name there until the bucket's writer rewrites the key from the committed rows, the closed direction.
+  a move out of the project, a DELETE and a `renamed_to` change leave the old name there, the closed direction, for the bucket's writer to rewrite from the committed rows once a build carries it.
   The boot seed of `DISPATCH_REPO_PROJECTS` leaves out an entry either refusal would refuse, logs it at ERROR naming the lane or the bucket, and goes on to the next entry and the boot.
   `AGENTS.md` gives the rules and the `settings.repo_project.updated` events.
 

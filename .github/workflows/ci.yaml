@@ -391,7 +391,7 @@ jobs:
       # says why). The output above decides whether the job runs at all, the `full-ci` term with
       # it, so this one carries only the dispatched term.
       dispatch_two_builds_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.dispatch_two_builds_go }}
-      # The private-projects acceptance drivers build the merge base and this tree and read a few
+      # The private-projects blob driver builds the merge base and this tree and reads a few
       # hundred routes from each, minutes rather than tens of them, so no `full-ci` term: a pull
       # request that changes what any caller reads finds out on its own run.
       dispatch_project_access: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.dispatch_project_access }}
@@ -5293,7 +5293,7 @@ jobs:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
       dispatch_two_builds_go: ${{ needs.changes.outputs.dispatch_two_builds_go }}
 
-  # The private-projects acceptance drivers (verification v17): its steps and why they are what
+  # The private-projects blob driver (verification v17): the job's steps and why they are what
   # they are are in ci-job-dispatch-project-access.yaml.
   dispatch-project-access:
     needs: changes
