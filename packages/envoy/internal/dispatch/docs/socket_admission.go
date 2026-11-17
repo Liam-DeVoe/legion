@@ -205,12 +205,14 @@ func socketRoom(r *http.Request) string {
 // load failed or panicked - gives it back. The room's place the socket gives back however it ends,
 // and a room ygo loaded keeps a place of its own until it unloads (releaseUnloadedRoom).
 //
-// A socket whose document could not be admitted is refused 503 with Retry-After before the upgrade
-// (refuseUnservedSocket), and so is one whose room's load, once ygo joins the socket to the room,
-// found a pool busy or met a request the server ended: ygo answers such a join with a 500 of its
-// own, which the socket's writer answers in its place (socketAnswerWriter). A cold socket's load
-// reads the store once, in the statement that checks its preload against the head (takePreload),
-// so it is refused within one acquire bound of the pool it found busy.
+// A socket whose document, or the live server processes its page is admitted against, could not be
+// read is refused 503 with Retry-After before the upgrade (refuseAdmission, refuseUnservedSocket),
+// and so is one whose room's load, once ygo joins the socket to the room, found a pool busy or met a
+// request the server ended, and one ygo's authorization refuses for a room a busy pool failed: ygo
+// answers those with a 500 or a 401 of its own, which the socket's writer answers in its place
+// (socketAnswerWriter). A cold socket's load reads the store once, in the statement that checks
+// its preload against the head (takePreload), so it is refused within one acquire bound of the
+// pool it found busy.
 //
 // The room's name has to be the document's id as Dispatch writes it, lower case and hyphenated,
 // and a name uuid.Parse takes in any other spelling - upper case, braced, a dash-free run of hex,
@@ -285,7 +287,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	held := s.holdForAdmission(room, issue)
 	defer s.releaseAdmission(room, held)
 	// A load of the room that failed before this socket held its record failed no join of this
-	// socket's (socketAnswerWriter.refuse).
+	// socket's (socketAnswerWriter.refuseFailedLoad).
 	failedBefore := held.latestLoadFailure()
 	if s.afterSocketIssueRead != nil {
 		s.afterSocketIssueRead(room)
@@ -300,48 +302,67 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		cause := context.Cause(r.Context())
-		if cause == context.Canceled {
-			// The browser left while its document loaded, which ends the load with the request's
-			// own cancellation (loadTree): nothing refused the socket, and nobody is left to read
-			// an answer, so none is written and the line carries the client gone, as a request
-			// whose client left in admission's queue does (accesslog.ClientGone). net/http ends a
-			// request's context with the plain context.Canceled, and only then is the client gone:
-			// a context the server ended under the socket carries a cause of its own - the
-			// heartbeat's re-resolution of the caller failed (api's whileCallerResolves), which
-			// under load is a busy pool and not a browser that left - and that socket's browser is
-			// still waiting, so it is refused below like any other.
-			accesslog.ClientGone(r.Context())
-			return
-		}
-		attrs := []any{"room", room, "pool", loadPoolName(r.Context()), "error", err}
-		if cause != nil {
-			attrs = append(attrs, "cause", cause)
-		}
-		refuseUnservedSocket(w, "dispatch: a document socket was refused: its document could not be admitted", attrs...)
+		refuseAdmission(w, r, "dispatch: a document socket was refused: its document could not be admitted", room, loadPoolName(r.Context()), err)
 		return
 	}
 	defer withdraw()
+	// The live server processes are read here, before ygo's authorization of the socket
+	// (authorize) admits its page against them, so a read of them that fails - under load, the
+	// request pool with no connection free - is this admission's refusal: a refusal of
+	// authorize's reaches the browser as ygo's 401, which says it is not signed in. The read is
+	// the request's own, through the pool its reads take (queryFrom), the request pool here.
+	fleet, err := readSchemaFleet(r.Context(), s.queryFrom(r.Context()))
+	if err != nil {
+		refuseAdmission(w, r, "dispatch: a document socket was refused: the live server processes could not be read", room, store.RequestsPool, err)
+		return
+	}
+	connection.fleet = fleet
 	connection.admission.documentSince = documentSince
 	ctx = context.WithValue(ctx, connectionContextKey{}, connection)
 	// The awareness clients the socket's peer may announce are bounded before ygo reads its
-	// frames (awareness_limit.go), and a join whose room's load fails is answered with the
-	// socket's own refusal where it has one (socketAnswerWriter).
+	// frames (awareness_limit.go), and a join whose room's load fails, or that authorize refuses
+	// for a room a busy pool failed, is answered with the socket's own refusal where it has one
+	// (socketAnswerWriter).
 	s.srv.ServeHTTP(&socketAnswerWriter{
 		awarenessLimitWriter: awarenessLimitWriter{ResponseWriter: w, room: room},
+		service:              s,
 		request:              r,
 		socket:               ctx,
+		connection:           connection,
 		held:                 held,
 		failedBefore:         failedBefore,
 	}, r.WithContext(ctx))
+}
+
+// refuseAdmission answers a document socket whose admission's read - of its document, or of the
+// live server processes - failed with err, reading through the pool pool names. The browser left
+// while that read ran when the request's context ended with net/http's own context.Canceled,
+// which ends the read with the request's own cancellation (loadTree): nothing refused the socket,
+// and nobody is left to read an answer, so none is written and the line carries the client gone,
+// as a request whose client left in admission's queue does (accesslog.ClientGone). A context the
+// server ended under the socket carries a cause of its own - the heartbeat's re-resolution of the
+// caller failed (api's whileCallerResolves), which under load is a busy pool and not a browser
+// that left - and that socket's browser is still waiting, so it is refused like any other
+// (refuseUnservedSocket), with message, and with that cause.
+func refuseAdmission(w http.ResponseWriter, r *http.Request, message, room, pool string, err error) {
+	cause := context.Cause(r.Context())
+	if cause == context.Canceled {
+		accesslog.ClientGone(r.Context())
+		return
+	}
+	attrs := []any{"room", room, "pool", pool, "error", err}
+	if cause != nil {
+		attrs = append(attrs, "cause", cause)
+	}
+	refuseUnservedSocket(w, message, attrs...)
 }
 
 // refuseUnservedSocket refuses a document socket the server could not serve now, before any
 // upgrade: 503 with Retry-After (admission.RetryAfter), as the API's 503s carry it, and why at
 // WARN with attrs. The 503 alone names neither the room nor what refused it, so a refusal that
 // reached a person could be placed only from a neighbouring line: attrs carry the room, the pool
-// its document was read through (loadPoolName), the error, and what ended the request's context
-// when something did.
+// the read that failed went through (loadPoolName for a document's), the error, and what ended
+// the request's context when something did.
 func refuseUnservedSocket(w http.ResponseWriter, message string, attrs ...any) {
 	slog.Warn(message, attrs...)
 	w.Header().Set("Retry-After", admission.RetryAfter)
@@ -350,29 +371,35 @@ func refuseUnservedSocket(w http.ResponseWriter, message string, attrs ...any) {
 
 // socketAnswerWriter is a document socket's response writer while ygo serves the socket: the
 // awareness bound's writer (awarenessLimitWriter), whose Hijack holds the upgraded socket to its
-// clients, and the socket's own answer to a join whose room did not load. ygo answers that join
-// 500 "room unavailable", whatever ended the load (sjawhar/ygo v1.55.1-sami.2,
-// provider/websocket/server.go:2088-2096), and offers no hook on that answer, so the answer is
-// decided where ygo writes it: a WriteHeader of 500 is that one or the upgrader's own failure to
-// hijack the connection (gorilla/websocket's returnError), which no load recorded and refuse leaves
-// as it is. When refuse answers in ygo's place, the body ygo writes next is dropped. Every other
-// answer, and the upgrade, pass through as ygo wrote them.
+// clients, and the socket's own answer to the two refusals of ygo's that a busy pool reaches. ygo
+// answers a join whose room did not load 500 "room unavailable", whatever ended the load
+// (sjawhar/ygo v1.55.1-sami.2, provider/websocket/server.go:2088-2096), and a socket its
+// authorization refused 401 "unauthorized" (server.go:2066-2070), which authorize does only for a
+// room that has failed, and offers no hook on either answer, so the answer is decided where ygo
+// writes it. A WriteHeader of 500 is the load's, or the upgrader's own failure to hijack the
+// connection (gorilla/websocket's returnError), which no load recorded and refuseFailedLoad
+// leaves as it is; one of 401 is authorize's (refuseFailedRoom). When the socket answers in ygo's
+// place, the body ygo writes next is dropped. Every other answer, and the upgrade, pass through as
+// ygo wrote them.
 type socketAnswerWriter struct {
 	awarenessLimitWriter
+	service *Service
 	// request is the socket's request as ServeHTTP took it, whose context tells a browser that
-	// left from a request the server ended, and socket the context ygo serves the join on. held is
-	// the room's record the socket's admission holds, and failedBefore the load failure that record
-	// held as the admission took it (latestLoadFailure).
+	// left from a request the server ended, socket the context ygo serves the join on, and
+	// connection the socket's state, on which authorize records why it refused the socket. held
+	// is the room's record the socket's admission holds, and failedBefore the load failure that
+	// record held as the admission took it (latestLoadFailure).
 	request      *http.Request
 	socket       context.Context
+	connection   *connectionState
 	held         *roomState
 	failedBefore *roomLoadFailure
-	// answered is set once refuse has answered in ygo's place.
+	// answered is set once the socket has answered in ygo's place.
 	answered bool
 }
 
 func (w *socketAnswerWriter) WriteHeader(status int) {
-	if status == http.StatusInternalServerError && !w.answered && w.refuse() {
+	if !w.answered && w.refuse(status) {
 		w.answered = true
 		return
 	}
@@ -386,28 +413,40 @@ func (w *socketAnswerWriter) Write(p []byte) (int, error) {
 	return w.ResponseWriter.Write(p)
 }
 
-// refuse gives the socket's own answer in place of ygo's 500 to a join whose room did not load,
-// when it has one, and reports whether it did:
+// refuse gives the socket's own answer in place of ygo's status when it has one, and reports
+// whether it did.
+func (w *socketAnswerWriter) refuse(status int) bool {
+	switch status {
+	case http.StatusInternalServerError:
+		return w.refuseFailedLoad()
+	case http.StatusUnauthorized:
+		return w.refuseFailedRoom()
+	}
+	return false
+}
+
+// refuseFailedLoad gives the socket's own answer in place of ygo's 500 to a join whose room did
+// not load, when it has one, and reports whether it did:
 //
 //   - the browser left while the room loaded (the request's context ended with net/http's own
 //     context.Canceled): nothing is written, nobody being left to read it, and the access line
 //     carries the client gone (accesslog.ClientGone), as for a browser that left while its
-//     admission loaded the document (ServeHTTP);
-//   - the server ended the socket's request while its room loaded - the heartbeat's re-resolution
-//     of the caller failed (api's whileCallerResolves), which under load is a busy pool, or a
-//     re-check revoked the socket's admission (RunSchemaAdmission) - which ends the join's wait
-//     for the load, or the load's own reads: refused, with what ended it, as the admission refuses
-//     a request the server ended under it;
+//     admission loaded the document (refuseAdmission);
+//   - the server ended the socket's request while its join waited on the room's load - the
+//     heartbeat's re-resolution of the caller failed (api's whileCallerResolves), which under
+//     load is a busy pool, or a re-check revoked the socket's admission (RunSchemaAdmission):
+//     refused, with what ended it, as the admission refuses a request the server ended under it.
+//     The load's own reads run detached from any one request's end (onLoadDocument);
 //   - a load of the room failed, since the admission took the room's record, on a pool that could
 //     not serve it (store.Unserved: no connection came free within the pool's acquire bound, or
 //     the database stopped answering under it): refused, with the load's error. ygo hands every
 //     join waiting on a load that load's error, so this is the socket's own load's failure or that
 //     of the load its join waited on - a settlement's warm-up, a committed write's publish, another
-//     socket's - and the load recorded it on the room's record (noteLoadFailed).
+//     socket's - and the load recorded it on the room's record (noteLoadFailed, loadFailedSince).
 //
 // Any other failure keeps ygo's 500, since no bound of a pool made it: a history that does not
 // decode, a room being rebuilt, a load that panicked, a room that failed for one of those.
-func (w *socketAnswerWriter) refuse() bool {
+func (w *socketAnswerWriter) refuseFailedLoad() bool {
 	if context.Cause(w.request.Context()) == context.Canceled {
 		accesslog.ClientGone(w.request.Context())
 		return true
@@ -415,12 +454,27 @@ func (w *socketAnswerWriter) refuse() bool {
 	attrs := []any{"room", w.room, "pool", store.RoomsPool}
 	if err := w.socket.Err(); err != nil {
 		attrs = append(attrs, "error", err, "cause", context.Cause(w.socket))
-	} else if failure := w.held.loadFailureSince(w.failedBefore); store.Unserved(w.socket, failure) {
+	} else if failure := w.service.loadFailedSince(w.room, w.held, w.failedBefore); store.Unserved(w.socket, failure) {
 		attrs = append(attrs, "error", failure)
 	} else {
 		return false
 	}
 	refuseUnservedSocket(w.ResponseWriter, "dispatch: a document socket was refused: its room could not load", attrs...)
+	return true
+}
+
+// refuseFailedRoom gives the socket's own answer in place of ygo's 401 to a socket authorize
+// refused because its room had failed (connectionState.refusal), when a pool's bound failed the
+// room - a busy room-appends pool failing the room's append, a busy rooms pool failing its load
+// (store.Unserved) - and reports whether it did. The browser is signed in, and the room reloads
+// once its eviction has run, so it is refused 503 like any socket the server cannot serve now. A
+// room that failed any other way keeps ygo's 401, as it always has.
+func (w *socketAnswerWriter) refuseFailedRoom() bool {
+	failure := w.connection.refusal
+	if !store.Unserved(w.socket, failure) {
+		return false
+	}
+	refuseUnservedSocket(w.ResponseWriter, "dispatch: a document socket was refused: its room failed on a busy pool", "room", w.room, "error", failure)
 	return true
 }
 
@@ -571,16 +625,18 @@ func (s *Service) offerPreload(room string, loaded *persistence.LoadResult, rend
 
 // authorize is ygo's authorization of a document socket ServeHTTP admitted, read-only unless its
 // page may write (schemaFleet.admits). It registers the browser as the caller ServeHTTP resolved,
-// and takes the issue read ServeHTTP made, so it resolves and reads neither again. The connection
-// is counted already: ServeHTTP took its place under the connection cap (reserveConnection)
-// before it loaded anything, so registering it counts nothing more, and no cap refuses it here,
-// where a refusal would reach the browser as ygo's 401, which says it is not signed in. The issue
-// is closed for the socket when that read says so or the room's state records it closed:
-// ServeHTTP's hold on the state (holdForAdmission) is where a close made while the socket loaded
-// its document is recorded (setRoomIssueOpen), so such a socket is admitted read-only, as one
-// opened after the close is. A closed issue, or a page the live fleet does not admit, admits the
-// socket read-only; a request no admission read the issue for is refused, as is a socket to a
-// failed room.
+// and takes the issue read and the read of the live server processes ServeHTTP made, so it
+// resolves and reads nothing again. The connection is counted already: ServeHTTP took its place
+// under the connection cap (reserveConnection) before it loaded anything, so registering it
+// counts nothing more, and no cap refuses it here, where a refusal would reach the browser as
+// ygo's 401, which says it is not signed in. The issue is closed for the socket when that read
+// says so or the room's state records it closed: ServeHTTP's hold on the state
+// (holdForAdmission) is where a close made while the socket loaded its document is recorded
+// (setRoomIssueOpen), so such a socket is admitted read-only, as one opened after the close is. A
+// closed issue, or a page the live fleet does not admit, admits the socket read-only; a request no
+// admission read the issue for is refused, as is a socket to a failed room, whose failure goes on
+// the connection's state (connectionState.refusal) for the socket to answer its own refusal in
+// place of ygo's 401 when a busy pool failed the room (socketAnswerWriter.refuseFailedRoom).
 //
 // It decides the admission ServeHTTP put on the socket's context and records it with the service,
 // so a re-check can close the socket again (schemaAdmissions); the answer to the socket's token
@@ -591,13 +647,9 @@ func (s *Service) authorize(r *http.Request) (websocket.ConnectionConfig, bool) 
 		return websocket.ConnectionConfig{}, false
 	}
 	room := socketRoom(r)
-	fleet, err := readSchemaFleet(r.Context(), s.queryFrom(r.Context()))
-	if err != nil {
-		slog.Warn("dispatch: refuse a document socket: read the live server processes", "room", room, "error", err)
-		return websocket.ConnectionConfig{}, false
-	}
 	state := s.lockState(room)
 	if state.failed != nil {
+		connection.refusal = state.failed
 		s.unlockState(room, state)
 		return websocket.ConnectionConfig{}, false
 	}
@@ -612,7 +664,7 @@ func (s *Service) authorize(r *http.Request) (websocket.ConnectionConfig, bool) 
 	admission := connection.admission
 	admission.key = schemaAdmissionKey{room: room, token: query.Get("schema_version")}
 	admission.page = schemaPageOf(query)
-	admission.writable = open && fleet.admits(admission.page, admission.documentSince)
+	admission.writable = open && connection.fleet.admits(admission.page, admission.documentSince)
 	s.schemaAdmissions.admit(admission)
 	// A reader joining a room already resident here asks the other processes for their readers'
 	// awareness, so their cursors reach it at once; a room this join has yet to load asks once its

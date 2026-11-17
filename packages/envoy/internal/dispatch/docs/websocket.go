@@ -34,6 +34,15 @@ type connectionState struct {
 	// records it, the answer to the socket's token reads it (authorizeSchemaVersion), a re-check
 	// revokes it (RunSchemaAdmission), and ServeHTTP forgets it once the socket has ended.
 	admission *schemaAdmission
+	// fleet is the live server processes' schema numbers, which the admission reads before ygo
+	// authorizes the socket (ServeHTTP) and authorize admits the page against, so a read of them
+	// the pool could not serve is the admission's refusal rather than ygo's 401.
+	fleet schemaFleet
+	// refusal is the failure of the room authorize refused the socket for (state.failed), nil
+	// while it refused nothing: ygo answers that refusal with its own 401, and the socket's writer
+	// reads this to answer its own refusal instead when a pool's bound failed the room
+	// (socketAnswerWriter.refuseFailedRoom).
+	refusal error
 }
 
 type connectionContextKey struct{}
@@ -599,10 +608,29 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// The issue is read once per room load. A cold socket's admission, which holds the room's state
 	// while its load runs, has read it and recorded it there, as has a close or reopen of the issue
 	// since (admittedIssueRead); a load no admission holds - a settlement's warm-up, a committed
-	// write's publish - reads it here.
+	// write's publish - reads it here. The document's pending-settlement row is read here too,
+	// unless the load read it already in the statement that checked a socket's preload against the
+	// head: its record then holds what it read and where the room's record stood just before
+	// (takePreload), which is this load's read of the row, so an admitted cold socket's load reads
+	// the rooms pool once.
 	issue, admitted := s.admittedIssueRead(room)
+	var checked *owedSettlement
+	if held {
+		checked = load.(*roomLoad).takeSettlement()
+	}
+	// The load belongs to the room, not to the request whose join began it: ygo hands every join
+	// waiting on this load the load's error, so a read the joiner's own end cut short - its browser
+	// left, or the server ended its request - failed every other join with it. The reads run
+	// detached from that end, keeping ctx's values, under the bound a cold read's fold of the same
+	// history runs under (coldReadTimeout), and each acquire under the rooms pool's own bound.
+	reads := ctx
+	if !admitted || checked == nil {
+		var cancel context.CancelFunc
+		reads, cancel = context.WithTimeout(context.WithoutCancel(ctx), coldReadTimeout)
+		defer cancel()
+	}
 	if !admitted {
-		if issue, err = s.readIssue(ctx, rooms, room); err != nil {
+		if issue, err = s.readIssue(reads, rooms, room); err != nil {
 			return err
 		}
 	}
@@ -610,20 +638,12 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// transaction runs: the row it reads is written whole by each writer's transaction, so a
 	// plain read sees one writer's commit or the one before it. What the record has recorded by
 	// then is taken first, so an edit source recorded after the read is told from one before it.
-	// A load that checked a socket's preload against the head read the row in that statement, and
-	// its record holds what it read and where the room's record stood just before (takePreload):
-	// that is this load's read of the row, so an admitted cold socket's load reads the rooms pool
-	// once.
-	var checked *owedSettlement
-	if held {
-		checked = load.(*roomLoad).takeSettlement()
-	}
 	var settlement owedSettlement
 	if checked != nil {
 		settlement = *checked
 	} else {
 		settlement.mark = s.markEditSource(room)
-		if settlement.owed, settlement.lastActor, err = readOwedSettlement(ctx, rooms, room); err != nil {
+		if settlement.owed, settlement.lastActor, err = readOwedSettlement(reads, rooms, room); err != nil {
 			return err
 		}
 	}

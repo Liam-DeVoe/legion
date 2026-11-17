@@ -15,9 +15,11 @@ import (
 	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/reearth/ygo/crdt"
+	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
 
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -28,7 +30,10 @@ import (
 // load found a pool busy or the server ended the socket's request while the room loaded. The
 // tester's row (TestASocketWhoseRoomLoadFindsTheRoomsPoolBusyIsRefused503) holds the status of the
 // first case; these hold the rest of that answer, the joins that wait on a load another caller
-// began, and the loads no socket's admission holds.
+// began, and the loads no socket's admission holds. The last rows are the other answers of ygo's a
+// busy pool reached: the 401 of its authorization (server.go:2066-2070), whose read of the live
+// server processes and whose failed room a busy pool can make, and the 500 every join waiting on
+// a load got when the request that began the load ended.
 
 // A cold socket whose room's load finds the rooms pool busy is refused as the socket's other
 // refusals are, 503 with Retry-After and a WARN line naming the room, the pool and the busy pool's
@@ -293,6 +298,243 @@ func TestALoadNoAdmissionHoldsFailsAfterOneBoundOrLoadsOnceAConnectionFrees(t *t
 	}
 	if service.srv.GetDoc(artifactID) == nil {
 		t.Fatal("the warm-up returned with no room resident")
+	}
+}
+
+// A socket whose read of the live server processes finds the request pool busy is refused by its
+// admission, 503 with Retry-After and a WARN line naming the read and the pool. That read was ygo's
+// authorization's (authorize), whose refusal ygo answers 401 "unauthorized", which tells a browser
+// that is signed in that it is not. The pool fills once the admission has read the document's
+// issue, which reads it too, so the read of it the socket meets next is the fleet's: the document
+// itself is read through the rooms pool.
+func TestASocketWhoseFleetReadFindsTheRequestPoolBusyIsRefused503(t *testing.T) {
+	logs := captureWarnings(t)
+	database := storetest.Open(t)
+	service, server := newTestServiceInstance(t, database)
+	artifactID := createDocuments(t, database, 1)[0]
+	held := make(chan []*pgxpool.Conn, 1)
+	t.Cleanup(func() {
+		select {
+		case conns := <-held:
+			for _, conn := range conns {
+				conn.Release()
+			}
+		default:
+		}
+	})
+	var once atomic.Bool
+	service.afterSocketIssueRead = func(room string) {
+		if room != artifactID || once.Swap(true) {
+			return
+		}
+		var conns []*pgxpool.Conn
+		for range database.Pool.Stat().MaxConns() {
+			conn, err := database.Pool.Acquire(context.Background())
+			if err != nil {
+				t.Errorf("hold a request-pool connection: %v", err)
+				break
+			}
+			conns = append(conns, conn)
+		}
+		held <- conns
+	}
+
+	answer := <-answerSocketAsync(server.URL, artifactID)
+	if answer.err != nil {
+		t.Fatal(answer.err)
+	}
+	t.Logf("the socket's handshake was answered %d %q", answer.status, answer.body)
+	if answer.status != http.StatusServiceUnavailable {
+		t.Fatalf("a socket whose read of the live server processes found the request pool busy was answered %d %q, want 503", answer.status, answer.body)
+	}
+	if answer.retryAfter != admission.RetryAfter {
+		t.Errorf("the refused socket's Retry-After = %q, want %q", answer.retryAfter, admission.RetryAfter)
+	}
+	line := logLineWith(logs.String(), "a document socket was refused")
+	if line == "" {
+		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logs.String())
+	}
+	for _, want := range []string{"the live server processes could not be read", "room=" + artifactID, "pool=" + store.RequestsPool, store.ErrPoolBusy.Error()} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the refused socket's line %q does not carry %q", line, want)
+		}
+	}
+}
+
+// A socket ygo's authorization refuses because its room has failed (authorize) is refused 503 with
+// Retry-After when a busy pool failed the room - a busy room-appends pool failing the room's
+// append, a busy rooms pool failing its load - where ygo answered 401 "unauthorized" to a browser
+// that is signed in: the room reloads once its eviction has run, and the browser retries. A room
+// that failed any other way keeps ygo's 401, as it always had. The room fails once the socket's
+// admission has offered what it read, and its eviction is held off until the test ends, so the
+// socket's authorization meets it failed.
+func TestASocketToARoomABusyPoolFailedIsRefused503(t *testing.T) {
+	for _, row := range []struct {
+		name   string
+		cause  error
+		status int
+	}{
+		{"a busy pool failed the room", fmt.Errorf("append the room's browser updates: %w", store.ErrPoolBusy), http.StatusServiceUnavailable},
+		{"the room failed another way", errors.New("decode the room's stored history: unexpected end of input"), http.StatusUnauthorized},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			database := storetest.Open(t)
+			service, server := newTestServiceInstance(t, database)
+			artifactID := createDocuments(t, database, 1)[0]
+			evict := make(chan struct{})
+			t.Cleanup(func() { close(evict) })
+			service.beforeFailedEviction = func(string) { <-evict }
+			var once atomic.Bool
+			service.afterSocketPreload = func(room string, _ *persistence.LoadResult) {
+				if room == artifactID && !once.Swap(true) {
+					service.failRoom(room, row.cause)
+				}
+			}
+
+			answer := <-answerSocketAsync(server.URL, artifactID)
+			if answer.err != nil {
+				t.Fatal(answer.err)
+			}
+			t.Logf("the socket's handshake was answered %d %q", answer.status, answer.body)
+			if answer.status != row.status {
+				t.Fatalf("a socket to a room that failed (%v) was answered %d %q, want %d", row.cause, answer.status, answer.body, row.status)
+			}
+			if row.status == http.StatusServiceUnavailable && answer.retryAfter != admission.RetryAfter {
+				t.Errorf("the refused socket's Retry-After = %q, want %q", answer.retryAfter, admission.RetryAfter)
+			}
+		})
+	}
+}
+
+// A join waiting on a room's load is served when the request whose join began the load ends while
+// it runs: the load belongs to the room, and its reads run detached from that request's end
+// (onLoadDocument). The load's reads ran under that request's context, so the end of it - its
+// browser left, or the server ended it - failed the load, and ygo answered every other join
+// waiting on it 500. The first socket's preload is taken away, so its load reads the document's
+// pending-settlement row itself, under that context, as the load of a socket whose admission
+// found the room resident and whose join found it gone does; the load is held as it decodes the
+// history until the second socket waits on it, and the first socket's request is ended then.
+func TestAJoinWaitingOnALoadIsServedWhenTheRequestThatBeganTheLoadEnds(t *testing.T) {
+	database := storetest.Open(t)
+	service, _ := newTestServiceInstance(t, database)
+	artifactID := createDocuments(t, database, 1)[0]
+	var requests atomic.Int32
+	var endFirst atomic.Pointer[context.CancelCauseFunc]
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithCancelCause(r.Context())
+		defer cancel(nil)
+		if requests.Add(1) == 1 {
+			endFirst.Store(&cancel)
+		}
+		service.ServeHTTP(w, r.WithContext(ctx))
+	}))
+	t.Cleanup(server.Close)
+	var offered atomic.Bool
+	service.afterSocketPreload = func(room string, _ *persistence.LoadResult) {
+		if room == artifactID && !offered.Swap(true) {
+			service.preloads.Delete(room)
+		}
+	}
+	loading := make(chan struct{})
+	proceed := make(chan struct{})
+	var releaseOnce atomic.Bool
+	release := func() {
+		if !releaseOnce.Swap(true) {
+			close(proceed)
+		}
+	}
+	t.Cleanup(release)
+	var decoding atomic.Bool
+	service.bootstrapping = func(room string, _ []byte) {
+		if room != artifactID || decoding.Swap(true) {
+			return
+		}
+		close(loading)
+		<-proceed
+	}
+
+	first := answerSocketAsync(server.URL, artifactID)
+	select {
+	case <-loading:
+	case <-time.After(roomWait(t)):
+		t.Fatal("the first socket's room never began to load, so nothing here is tested")
+	}
+	second := dialSocketAsync(server.URL, artifactID)
+	// ygo authorizes a socket just before its join, so a second socket registered on the room's
+	// record is one about to wait on the first one's load; the pause is for it to reach that wait.
+	deadline := time.Now().Add(roomWait(t))
+	for registeredConnections(service) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("the second socket was never authorized, so it never waited on the first one's load")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	(*endFirst.Load())(nil)
+	release()
+
+	opened := <-second
+	if opened.err != nil {
+		t.Fatalf("the socket waiting on the load the first socket's request began was refused (%v), want it admitted: that request's end is no failure of the room's load", opened.err)
+	}
+	t.Cleanup(func() { _ = opened.connection.Close() })
+	_ = opened.connection.SetReadDeadline(time.Now().Add(roomWait(t)))
+	if _, message, err := opened.connection.ReadMessage(); err != nil {
+		t.Fatalf("the waiting socket's first frame = %q (%v), want the room's sync", message, err)
+	}
+	<-first
+}
+
+// A socket whose join waits on a load that finds the rooms pool busy is refused 503 even when the
+// room's record its admission holds was handed over before that load failed: a failed room's
+// eviction hands the record's place, with the browsers connected to it, to a successor
+// (handOverFailedRoomLocked), and the load records its failure on the record registered then
+// (noteLoadFailed), which the socket reads under the room's name (loadFailedSince). The room
+// fails, and its eviction runs, once the socket's admission has offered what it read, with a
+// browser connected so the record has a successor; a settlement's warm-up then begins the load
+// the socket's join waits on, with the rooms pool full.
+func TestASocketWaitingOnALoadAfterItsRoomRecordWasHandedOverIsRefused503(t *testing.T) {
+	database := storetest.Open(t)
+	service, server := newTestServiceInstance(t, database)
+	const bound = 2 * time.Second
+	service.store.Pool.SetAcquireBoundForTest(store.RoomsPool, bound)
+	artifactID := createDocuments(t, database, 1)[0]
+	holds := make(chan heldRoomsPool, 1)
+	t.Cleanup(func() { releaseHeldRoomsPool(holds) })
+	warmed := make(chan error, 1)
+	loadBegun := waitForRoomLoad(service, artifactID, roomWait(t))
+	var once atomic.Bool
+	service.afterSocketPreload = func(room string, _ *persistence.LoadResult) {
+		if room != artifactID || once.Swap(true) {
+			return
+		}
+		service.addConnection(room, 1<<62, model.Actor{Kind: "user", ID: "bob"})
+		service.failRoom(room, errors.New("a test's failure of the room"))
+		if err := service.awaitRoomRecovery(context.Background(), room); err != nil {
+			t.Errorf("wait for the failed room's eviction: %v", err)
+		}
+		holds <- takeTheRoomsPool(t, service)
+		go func() { warmed <- warmUpAsASettlementDoes(service, artifactID) }()
+		if err := loadBegun(); err != nil {
+			t.Error(err)
+		}
+	}
+
+	answer := <-answerSocketAsync(server.URL, artifactID)
+	if answer.err != nil {
+		t.Fatal(answer.err)
+	}
+	t.Logf("the socket's handshake was answered %d %q", answer.status, answer.body)
+	if answer.status != http.StatusServiceUnavailable {
+		t.Errorf("a socket waiting on a load that found the rooms pool busy, after its room's record was handed over, was answered %d %q, want 503", answer.status, answer.body)
+	}
+	select {
+	case err := <-warmed:
+		if !store.IsPoolBusy(err) {
+			t.Errorf("the settlement's warm-up load ended %v, want the busy pool's error", err)
+		}
+	case <-time.After(roomWait(t)):
+		t.Fatal("the settlement's warm-up load never ended")
 	}
 }
 

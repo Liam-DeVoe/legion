@@ -148,8 +148,9 @@ type roomState struct {
 	// its load hook ended it with (servicePersistenceAdapter.LoadDoc, onLoadDocument;
 	// noteLoadFailed). ygo answers every join waiting on a failed load with its own 500, and this is
 	// what the socket of such a join reads to tell a pool that was busy from a load that broke
-	// (socketAnswerWriter.refuse). It is never cleared: a socket reads only a failure recorded
-	// since its admission took this record (loadFailureSince), so an older one answers for nothing.
+	// (socketAnswerWriter.refuseFailedLoad). It is never cleared: a socket reads only a failure
+	// recorded since its admission took this record (loadFailedSince), so an older one answers for
+	// nothing.
 	loadFailure *roomLoadFailure
 	// released marks a state the service has forgotten (forgetLocked), so a lookup that found it
 	// before it went takes the document's current state instead.
@@ -390,6 +391,9 @@ func (s *Service) handOverFailedRoomLocked(room string, state *roomState) {
 	}
 	successor := newRoomState()
 	maps.Copy(successor.connected, state.connected)
+	// The latest load failure goes with the browsers: a socket whose join waited on the load that
+	// failed reads that failure under the room's name (loadFailedSince).
+	successor.loadFailure = state.loadFailure
 	successor.updateClasses = carried
 	successor.pendingUpdates = state.pendingUpdates
 	successor.queuedBytes = carriedBytes
@@ -767,8 +771,8 @@ func (s *Service) releaseAdmission(room string, state *roomState) {
 type roomLoadFailure struct{ err error }
 
 // noteLoadFailed records err, what a load of room ended with, on room's record, for the sockets
-// whose joins ygo answers with that load's failure (socketAnswerWriter.refuse). A document with no
-// record has no socket being admitted to it, so nothing is recorded for it.
+// whose joins ygo answers with that load's failure (socketAnswerWriter.refuseFailedLoad). A
+// document with no record has no socket being admitted to it, so nothing is recorded for it.
 func (s *Service) noteLoadFailed(room string, err error) {
 	state := s.lockExistingState(room)
 	if state == nil {
@@ -792,6 +796,28 @@ func (state *roomState) loadFailureSince(before *roomLoadFailure) error {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	if state.loadFailure == before {
+		return nil
+	}
+	return state.loadFailure.err
+}
+
+// loadFailedSince is the error of the latest failure of a load of room recorded since a socket's
+// admission took held, the record registered for the room then, on which it found before: a
+// failure recorded on held, or else one on the record registered under the room's name now when
+// that is another. A failed room's eviction hands held's place to a successor, which takes the
+// latest failure with it (handOverFailedRoomLocked), and a load that fails after that records its
+// failure there (noteLoadFailed): a failure the successor holds is since the hold unless it is the
+// one held had then. nil when neither holds one.
+func (s *Service) loadFailedSince(room string, held *roomState, before *roomLoadFailure) error {
+	if err := held.loadFailureSince(before); err != nil {
+		return err
+	}
+	state := s.lockExistingState(room)
+	if state == nil {
+		return nil
+	}
+	defer s.unlockState(room, state)
+	if state == held || state.loadFailure == nil || state.loadFailure == before {
 		return nil
 	}
 	return state.loadFailure.err
