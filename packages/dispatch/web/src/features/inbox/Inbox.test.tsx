@@ -1466,6 +1466,14 @@ function mockPeople() {
   return spyOn(api, "listUsers").mockResolvedValue([{ login: "alice" }, { login: "bob" }]);
 }
 
+/** Hands the question on from the hand-on list in `scope`, as a reader does: opens the list and
+ *  presses `login`'s option, which the list holds once it has read the people as it opened. The
+ *  list is portalled onto the body, so its options are reached from the screen. */
+async function handOnTo(user: UserEvent, scope: HTMLElement, login: string): Promise<void> {
+  await user.click(within(scope).getByRole("button", { name: "Hand this question to" }));
+  await user.click(await screen.findByRole("option", { name: new RegExp(`^${login}\\b`) }));
+}
+
 /** The bar's one **Filter** button, which reveals the five fields it opens. The caller hands its
  *  own user: this file's rows read where the pointer rests, and a user of this helper's own would
  *  leave it somewhere the test does not know about. */
@@ -2056,10 +2064,7 @@ test("a refused hand-on keeps its row in the reader's own list, with the reason 
   const { unmount } = renderInbox("/");
   try {
     await screen.findByText("Hand this on?");
-    await user.selectOptions(
-      within(rowOf("ask-mine")).getByLabelText("Hand this question to"),
-      "bob"
-    );
+    await handOnTo(user, rowOf("ask-mine"), "bob");
     await waitFor(() => expect(handAskTo).toHaveBeenCalledWith("ask-mine", "bob", keyedAttempt));
     // Handed on optimistically, the row waits on somebody else - and stays.
     await waitFor(() => expect(screen.getByText("Handing on…")).toBeTruthy());
@@ -4669,7 +4674,7 @@ test("a refused hand-on from the column's decision block keeps the row, with the
     });
     const card = await within(pane).findByTestId("ask-ask-mine");
 
-    await user.selectOptions(within(card).getByLabelText("Hand this question to"), "bob");
+    await handOnTo(user, card, "bob");
     await waitFor(() => expect(handAskTo).toHaveBeenCalledWith("ask-mine", "bob", keyedAttempt));
     // Handed on optimistically, the row waits on somebody else - and the column keeps the card
     // the reader pressed, which is the only surface the server's answer can reach.
@@ -4750,11 +4755,11 @@ test("a refused hand-on from a Reply-thread card leaves the reader's own list as
       if (found === null) throw new Error("the Reply row has not rendered");
       return found;
     });
-    const control = await within(row).findByLabelText("Hand this question to");
+    await within(row).findByLabelText("Hand this question to");
     expect(rowIds()).toEqual(["reply:ask-theirs"]);
 
     // Handed back to the assignee of its own issue, from the thread card.
-    await user.selectOptions(control, "carol");
+    await handOnTo(user, row, "carol");
     await waitFor(() =>
       expect(handAskTo).toHaveBeenCalledWith("ask-theirs", "carol", keyedAttempt)
     );

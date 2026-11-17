@@ -46,22 +46,32 @@ const asker = {
   as: "agent" as const,
 };
 
-/** The ask card's hand-on control, wherever that card is drawn. It is a native `<select>`, which
- *  is also what the Inbox's own filters are built from, so every query for it is scoped to the
- *  card's own ask rather than to a bare role. */
+/** The ask card's hand-on control, wherever that card is drawn: the trigger of the list of
+ *  people, inside the badge the card marks with its ask's id. Every query for it is scoped to
+ *  the card's own ask rather than to a bare role, since a page can draw many cards. */
 function handOnControl(scope: Locator | Page, askId: string): Locator {
-  return scope.locator(`select[data-ask-hand-on="${askId}"]`);
+  return scope
+    .locator(`[data-ask-hand-on="${askId}"]`)
+    .getByRole("button", { exact: true, name: "Hand this question to" });
 }
 
 /**
- * Hands the ask the control belongs to over to `login`, as a reader does: the people it offers
- * are read only once the reader reaches for it, so the control is focused first and the option
- * waited for. Naming the assignee of the ask's own issue is how a reader hands it back.
+ * Hands the ask the control belongs to over to `login`, as a reader does: opens the list and
+ * presses that person, whose option the list holds once the people are read - they are read
+ * only once the reader reaches for the control. Naming the assignee of the ask's own issue is
+ * how a reader hands it back, and that option carries their role after the login. A pick of
+ * the person the ask already waits on writes nothing, so the option is pressed only once the
+ * list no longer marks that person as picked: a card still to read the last hand-on is waited
+ * for rather than pressed.
  */
 async function handTo(control: Locator, login: string): Promise<void> {
-  await control.focus();
-  await expect(control.locator(`option[value="${login}"]`)).toHaveCount(1);
-  await control.selectOption(login);
+  await control.click();
+  const person = control
+    .page()
+    .getByRole("listbox", { name: "Hand this question to options" })
+    .getByRole("option", { name: new RegExp(`^${login}(?: \\(the issue's assignee\\))?$`) });
+  await expect(person).toHaveAttribute("aria-selected", "false");
+  await person.click();
 }
 
 /** Every band heading the Inbox list is drawing, with its count. */
@@ -184,7 +194,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     // it waits on until she does.
     const rowControl = handOnControl(inboxRow(alicePage, moved.id), moved.id);
     await expect(rowControl).toHaveCount(1);
-    await expect(rowControl).toHaveValue("alice");
+    await expect(rowControl).toHaveAccessibleDescription("Asked of alice");
     await expect(inboxRow(alicePage, moved.id)).toContainText("Asked of alice");
     await handTo(rowControl, "bob");
     await handsOff(alicePage);
@@ -244,7 +254,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await selectRow(bobPage, moved.id);
     const paneControl = handOnControl(inboxPane(bobPage), moved.id);
     await expect(paneControl).toHaveCount(1);
-    await expect(paneControl).toHaveValue("bob");
+    await expect(paneControl).toHaveAccessibleDescription("Asked of bob");
     await expect(handOnControl(aliceCard, moved.id)).toHaveCount(1);
 
     const docPage = await alice.newPage();
