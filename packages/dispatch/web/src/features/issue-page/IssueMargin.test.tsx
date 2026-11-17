@@ -23,14 +23,17 @@ import type {
   GraphReferences,
   Issue,
   IssueDetails,
+  RepoProject,
   UserState,
 } from "../../api/types";
 import { linkText, pageInkText } from "../../theme/classes";
 import { componentsControlName } from "../issue/IssueComponentsLine";
 import { labelsControlName } from "../issue/IssueLabels";
 import { conversationItemId, pinnedItemMarker, stateForIssue } from "../issue/pins";
+import { repoControlName } from "../issue/RepoControl";
 import { type DocumentBridge, MarginProvider, useMargin } from "../margin/margin-context";
 import { issue as marginIssue, specArtifact } from "../margin/margin-fixture";
+import { addPriorityControlName } from "../priorities/IssuePriorityLine";
 import { buildDispatchReference } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
@@ -998,11 +1001,9 @@ test("removing the last label draws Add, whose Labels the row's control now answ
     route: "role:legion-controller-core",
   };
   getIssue.mockResolvedValue(full);
-  const patched: unknown[] = [];
-  patchIssue.mockImplementation(async (_key, update) => {
-    patched.push(update);
-    return narrowIssue({ ...full, labels: [...(update.labels ?? full.labels ?? [])] });
-  });
+  patchIssue.mockImplementation(async (_key, update) =>
+    narrowIssue({ ...full, labels: [...(update.labels ?? full.labels ?? [])] })
+  );
   const view = renderDetails();
   try {
     await screen.findByRole("link", { name: "CORE-3" });
@@ -1011,7 +1012,7 @@ test("removing the last label draws Add, whose Labels the row's control now answ
     await user.click(screen.getByRole("button", { name: "Edit labels" }));
     await user.click(await screen.findByRole("option", { name: "bug" }));
     await user.keyboard("{Escape}");
-    await waitFor(() => expect(patched.length).toBeGreaterThan(0));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     expect(
       await screen.findByRole("button", {
         name: labelsControlName("CORE-1", {
@@ -1036,6 +1037,155 @@ test("removing the last label draws Add, whose Labels the row's control now answ
   } finally {
     view.unmount();
     listIssues.mockRestore();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+// R5 and the review of 5906c38b: Add is drawn again when a control it reaches comes back in a
+// commit of the component that draws it. On an issue with a value for every property but the
+// priorities it advances, Add lists Advances alone. Picking it presses "Add a priority to
+// CORE-1", whose form replaces that control in the same commit, so Add, finding no control, went;
+// Cancel drew the control again in a commit of the priority line alone, which Add never read, so
+// Add stayed gone beside the control it reaches.
+test("Add is drawn again after the Advances form it opened is cancelled", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue({
+    empty: "No priority is live now, so the list is empty.",
+    priorities: [],
+    priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+    work_under_no_priority: { by_project: {}, count: 0, issues: [] },
+  });
+  getIssue.mockResolvedValue({
+    ...issue,
+    advances: [],
+    assignee: "alice",
+    blocked_by: ["CORE-3"],
+    components: {
+      mode: "inherit",
+      ids: ["api"],
+      unknown: [],
+      reason: null,
+      inherited_from: "CORE-2",
+    },
+    labels: ["bug"],
+    parent: "CORE-2",
+    repo: "acme/widgets",
+    resolved_repo: "acme/widgets",
+    route: "role:legion-controller-core",
+  });
+  const view = renderDetails();
+  try {
+    await screen.findByRole("link", { name: "CORE-3" });
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
+    await user.click(await screen.findByRole("menuitem", { name: PROPERTY_LABELS.advances }));
+    const cancel = await screen.findByRole("button", { name: CONTROL_LABELS.cancel });
+    await user.click(cancel);
+    expect(
+      await screen.findByRole("button", { name: addPriorityControlName("CORE-1") }),
+      "the priority's add control is not back"
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: CONTROL_LABELS.add }),
+        "Advances has no value and its control is drawn, but Details draws no Add"
+      ).toBeInTheDocument()
+    );
+  } finally {
+    view.unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+// The review of 5906c38b: with Details open, the repository's control draws its select only once
+// its own read of the project's mappings answers, in a commit of that control alone. Add, read
+// after its own commits only, never saw the select, so on an issue with a value for every other
+// property Details drew no Add beside the control it would press.
+test("Add is drawn once the repository's control draws its select", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue({
+    empty: "No priority is live now, so the list is empty.",
+    priorities: [],
+    priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+    work_under_no_priority: { by_project: {}, count: 0, issues: [] },
+  });
+  // Open, Details reads what waits on the issue.
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  // The issue resolves to no repository, so its control reads the mappings at once and draws
+  // its select once they answer with one for the project.
+  const mappings = Promise.withResolvers<RepoProject[]>();
+  const listRepoProjects = spyOn(api, "listRepoProjects").mockImplementation(
+    () => mappings.promise
+  );
+  getIssue.mockResolvedValue({
+    ...issue,
+    advances: [{ id: "PRI-7", inherited: false }],
+    assignee: "alice",
+    blocked_by: ["CORE-3"],
+    components: {
+      mode: "inherit",
+      ids: ["api"],
+      unknown: [],
+      reason: null,
+      inherited_from: "CORE-2",
+    },
+    labels: ["bug"],
+    parent: "CORE-2",
+    route: "role:legion-controller-core",
+  });
+  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
+  const { unmount } = renderDetails(undefined, drawer);
+
+  try {
+    // Every other read of the panel has answered, so the select is drawn in a commit of the
+    // repository's control alone.
+    await screen.findByRole("link", { name: "CORE-3" });
+    await waitFor(() => expect(priorities).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent(CONTROL_LABELS.none)
+    );
+    expect(listRepoProjects).toHaveBeenCalled();
+    expect(
+      screen.queryByRole("button", { name: CONTROL_LABELS.add }),
+      "Add is drawn before the one control it reaches is"
+    ).not.toBeInTheDocument();
+
+    mappings.resolve([
+      {
+        created_at: "2026-09-10T00:00:00Z",
+        created_by: { id: "alice", kind: "user" },
+        default: true,
+        project: "CORE",
+        renamed_to: null,
+        repo: "acme/widgets",
+      },
+    ]);
+    expect(
+      await screen.findByRole("combobox", { name: repoControlName("CORE-1") }),
+      "the repository's control drew no select for the mapping"
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: CONTROL_LABELS.add }),
+        "Repository has no value and its control is drawn, but Details draws no Add"
+      ).toBeInTheDocument()
+    );
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.add }));
+    expect(
+      await screen.findByRole("menuitem", { name: PROPERTY_LABELS.repository }),
+      "the add menu lists no Repository for the select the row draws"
+    ).toBeInTheDocument();
+  } finally {
+    unmount();
+    listRepoProjects.mockRestore();
+    getReferences.mockRestore();
     priorities.mockRestore();
     restore();
   }
@@ -1401,11 +1551,12 @@ test("on an issue with no label, the Add menu's Labels and the key l reach the l
   }
 });
 
-// Decision 145 of the parts: while a save of the labels is out, the labels' control is named for
-// it ("Saving labels of CORE-1", `labelsControlName` given the page's `ANSWER_LINES`), and the
-// key `l` finds it by that name. While `l` looked for the name the issue's labels give the
-// control, it found none for the length of the save.
-test("while the labels are saving, the key l finds the labels control by the name it draws", async () => {
+// R4 and decision 145 of the parts: while a save of the labels is out, the labels' control is
+// named for it ("Saving labels of CORE-1", `labelsControlName` given the page's `ANSWER_LINES`),
+// and the key `l` finds it by that name; the control is then busy, `aria-disabled` and refusing
+// to open, so `l` is off until the save lands. While `l` read only `disabled`, the list of keys
+// named it enabled for the length of the save and the key pressed a control that opened nothing.
+test("while the labels are saving, the key l is off, and on again once the save lands", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   // The labels' popover reads the project's issues for the labels it offers.
@@ -1457,13 +1608,17 @@ test("while the labels are saving, the key l finds the labels control by the nam
     ).toBeInTheDocument();
     expect(
       appKeymap.describe().find((entry) => entry.id === "labels")?.enabled,
-      "l found no labels control while the labels were saving"
-    ).toBe(true);
+      "l is enabled while the labels control it presses is busy with the save"
+    ).toBe(false);
 
     saving.resolve(narrowIssue({ ...labelled, labels: [] }));
     await waitFor(() =>
       expect(within(row).queryByRole("button", { name: savingName })).not.toBeInTheDocument()
     );
+    expect(
+      appKeymap.describe().find((entry) => entry.id === "labels")?.enabled,
+      "l is not on again once the labels' save has landed"
+    ).toBe(true);
   } finally {
     view.unmount();
     listIssues.mockRestore();

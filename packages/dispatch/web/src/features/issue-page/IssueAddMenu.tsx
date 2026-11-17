@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { IssueDetails } from "../../api/types";
 import { pageHeaderControl, pageMenu, pageMenuItem } from "../../theme/classes";
@@ -28,14 +28,20 @@ import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
  * so the two sides cannot drift apart, and lists one only while the page draws it: a project
  * that maps no repository offers no repository to set.
  *
- * Whether any entry can be reached, which decides whether Add is drawn at all, is read after each
- * commit of the menu rather than while it renders: during a render the page still holds the
- * previous commit, so a control renamed in the same commit as the issue's value is not found by
- * its new name. Read during the render, removing an issue's last label drew no Add: in the render
- * where the save landed the labels' control was still "Saving labels of CORE-1", that render's
- * commit renamed it "Add a label to CORE-1", and nothing drew the menu again
- * (dispatch://INFRA-3945 R5). The open menu's entries are read while it renders, which comes
- * after a commit, since it opens on a press.
+ * Which entries can be reached - which decides whether Add is drawn at all, and what its open
+ * menu lists - is read from the page, never while the menu renders: during a render the page
+ * still holds the previous commit, so a control renamed in the same commit as the issue's value
+ * is not found by its new name. Read during the render, removing an issue's last label drew no
+ * Add: in the render where the save landed the labels' control was still "Saving labels of
+ * CORE-1", that render's commit renamed it "Add a label to CORE-1", and nothing drew the menu
+ * again (dispatch://INFRA-3945 R5). So it is read after each commit of the menu, and again on
+ * each change of the page that can draw, rename or remove a control an entry reaches, which a
+ * `MutationObserver` on the document's body reports: most such changes are a commit of the
+ * control's own component alone, which draws the menu no further time. Read after the menu's own
+ * commits only, Add went when it opened the priorities' form, which replaces "Add a priority to
+ * CORE-1", and stayed gone once Cancel drew that control again in a commit of
+ * `IssuePriorityLine` alone; the repository's select and the components' picker, each drawn
+ * once its own read answers, were never seen either (the review of 5906c38b).
  */
 export function IssueAddMenu({
   isClosed,
@@ -47,9 +53,12 @@ export function IssueAddMenu({
   onOpenField: (field: IssueField) => void;
 }): ReactNode {
   const [open, setOpen] = useState(false);
-  // Whether any entry can be reached, as the layout effect below reads it after a commit: false
-  // until the first one, which that effect corrects before the page is painted.
-  const [anyReachable, setAnyReachable] = useState(false);
+  // The labels of the entries whose control is on the page, in `emptyFields`' order, as `read`
+  // last found them: none until the first commit, which the layout effect below reads before the
+  // page is painted. A read that finds the list as it was keeps the array held, so it draws the
+  // menu no further time, and the observer below, which also sees the menu's own drawing, cannot
+  // loop.
+  const [reachable, setReachable] = useState<readonly string[]>([]);
   const drawer = useMarginDrawer();
   const wrapper = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -90,14 +99,45 @@ export function IssueAddMenu({
   }, [open]);
 
   const fields = emptyFields(issue);
-  // After every commit of the menu, since any of them can draw, rename or remove a control an
-  // entry reaches. The answer is a boolean, so a commit that leaves it as it was sets nothing and
-  // draws the menu no further time.
+  // The fields of the latest commit, which `read` reads: which entries the issue lists and the
+  // names their controls have both follow the issue, and the observer that calls `read` is set
+  // up once, so `read` takes them from here rather than from the render it was made in.
+  const committed = useRef(fields);
+  const read = useCallback(() => {
+    const found = committed.current
+      .filter((field) => field.reachable())
+      .map((field) => field.label);
+    setReachable((held) =>
+      held.length === found.length && held.every((label, index) => label === found[index])
+        ? held
+        : found
+    );
+  }, []);
+  // A render reads the previous commit, so the page is read once a commit is on it: after every
+  // commit of the menu, since the issue's value and a control's name can change in the same one,
+  // and on each change the observer reports, since a control drawn, renamed or removed by another
+  // component's own commit draws the menu no further time. The header's assignee control is
+  // outside Details, so the whole body is watched. An entry is reached by its control's name
+  // alone (`pageControl`), so only the changes that draw, remove or rename an element are read.
   useLayoutEffect(() => {
-    setAnyReachable(fields.some((field) => field.reachable()));
+    committed.current = fields;
+    read();
   });
+  useEffect(() => {
+    const watching = new MutationObserver(read);
+    watching.observe(document.body, {
+      attributeFilter: ["aria-label"],
+      attributes: true,
+      childList: true,
+      subtree: true,
+    });
+    return () => watching.disconnect();
+  }, [read]);
+  // The entries of this render's fields the page was last read to reach. A field that got a
+  // value in this render is gone from them at once; one that lost it joins once the commit is read.
+  const entries = fields.filter((field) => reachable.includes(field.label));
 
-  if (isClosed || !anyReachable) return null;
+  if (isClosed || entries.length === 0) return null;
   return (
     <div className="relative flex shrink-0" ref={wrapper}>
       <button
@@ -130,23 +170,21 @@ export function IssueAddMenu({
           ref={menu}
           role="menu"
         >
-          {fields
-            .filter((field) => field.reachable())
-            .map((field) => (
-              <button
-                className={pageMenuItem}
-                key={field.label}
-                onClick={() => {
-                  setOpen(false);
-                  field.open();
-                }}
-                role="menuitem"
-                type="button"
-                {...pageChrome}
-              >
-                {field.label}
-              </button>
-            ))}
+          {entries.map((field) => (
+            <button
+              className={pageMenuItem}
+              key={field.label}
+              onClick={() => {
+                setOpen(false);
+                field.open();
+              }}
+              role="menuitem"
+              type="button"
+              {...pageChrome}
+            >
+              {field.label}
+            </button>
+          ))}
         </div>
       ) : null}
     </div>
