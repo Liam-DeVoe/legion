@@ -1614,12 +1614,14 @@ func validateArtifactRequestRef(r *http.Request) error {
 
 // artifactReaderOf is readerOf for a route that names an artifact: the caller is resolved as
 // every gate resolves it, and then an {id} that is no uuid is refused as an id no row holds
-// (validateArtifactRequestRef) before the viewer is read, so such a request reaches no database
-// (TestArtifactIDRoutesValidateBeforeDatabaseUse). The caller is resolved once: readerOf reads
-// the resolution this kept in the request's context.
+// (validateArtifactRequestRef) before the viewer is read, so no statement binds such an id
+// (TestArtifactIDRoutesValidateBeforeDatabaseUse). Each artifact route runs behind its gate
+// (withinReadScope, withinProjectScope), which has already read the caller's viewer, the one
+// statement such a request sends; the caller and the reader are each resolved once, kept in the
+// request's context.
 func (s *server) artifactReaderOf(w http.ResponseWriter, r *http.Request) (model.Actor, bool) {
-	actor, human, err := s.optionalActor(r)
-	if err != nil {
+	r = s.withCallerResolved(r)
+	if _, _, err := s.optionalActor(r); err != nil {
 		s.writeAuthenticationError(w, err)
 		return model.Actor{}, false
 	}
@@ -1627,7 +1629,7 @@ func (s *server) artifactReaderOf(w http.ResponseWriter, r *http.Request) (model
 		s.writeHandlerError(w, err)
 		return model.Actor{}, false
 	}
-	return s.readerOf(w, r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human})))
+	return s.readerOf(w, r)
 }
 
 func parseArtifactID(id string) (string, error) {

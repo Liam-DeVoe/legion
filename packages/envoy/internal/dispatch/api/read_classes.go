@@ -228,9 +228,10 @@ var readClasses = map[string]readEntry{
 //   - accessAccount: only a service account DISPATCH_ACCESS_ACCOUNTS names reads the row
 //     (requireAccessAccount); every other caller is 403 ACCESS_ACCOUNT_REQUIRED before anything
 //     is read.
-//   - project, graph, people, agents and deployment need the viewer: the reader is resolved once
-//     (readerOf) and put in the request's context, where every read of the row finds it, so no
-//     handler resolves it a second time. A caller whose credential does not resolve is refused as
+//   - project, graph, people, agents and deployment need the viewer: the caller is resolved once
+//     (withCallerResolved) and its reader once (readerOf), and both are put in the request's
+//     context, where every read of the row finds them, so no handler verifies the credential or
+//     resolves the viewer a second time. A caller whose credential does not resolve is refused as
 //     every gate refuses one.
 //   - deployment besides: what the row reads belongs to the whole deployment and to no project a
 //     viewer could be held to, so a viewer that is not open - a restricted member, or a credential
@@ -252,6 +253,7 @@ func (s *server) withinReadScope(route apiRoute, handler http.HandlerFunc) http.
 		return handler
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		r = s.withCallerResolved(r)
 		reader, ok := s.readerOf(w, r)
 		if !ok {
 			return
