@@ -2153,7 +2153,7 @@ done
 
 # 92. An id names one row (the architect's note of 2026-11-16T06:35Z). At beda0a6c32 the one
 # parse read a second row of an id it had read as a row of its own, so a row recorded twice
-# ran twice and each passed; claims.jsonl holds none, 731 rows and 731 ids. The second is
+# ran twice and each passed; claims.jsonl held none at 134143b4fb, 731 rows and 731 ids. The second is
 # now no row, one FAIL naming both lines, in --replay's claim-form and --admitted's
 # admitted-rows, exit 1. The honest form is each mode over the file as it stands, which
 # cases 88 and 86 run.
