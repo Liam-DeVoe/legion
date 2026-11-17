@@ -55,7 +55,7 @@ The rule holds for every later phase too. No phase of an issue whose phases star
 ## 4. Integration verification
 
 - Prove every criterion of your issue in its own pull request, never in a child: a child that proves its parent defers the tree's own verification. A parent's head carries the merges of every child its checks need: `skill://legion-architect/references/acceptance.md`, "A parent's head".
-- Read the issue's own tester evidence, not a child pull request's check status. A failed check goes back to its implementer by the daemon's table; a fix that belongs in other work follows section 1's sizing reasons and red-team check. Never downgrade a parent criterion or carry the failure forward.
+- Read the issue's own tester evidence, not a child pull request's check status. A failed check goes back to its implementer by the daemon's table; for an issue with children, a code defect goes into an open child's pull request or a new child, as decomposition.md says; a fix that belongs in other work follows section 1's sizing reasons and red-team check. Never downgrade a parent criterion or carry the failure forward.
 - While the work is built, a role runs the application from the issue's branch and uses it as its user would: a passing check does not show that a person can do their job with it. Where the work is a page or a tool a person uses, offer the person it is for a running build before the review, because a change they ask for then costs less than one after it. The deployment's instructions say how a pod runs one.
 
 ## 5. Retro
