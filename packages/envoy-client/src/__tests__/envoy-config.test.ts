@@ -946,73 +946,71 @@ describe("a ! command in envoy.json", () => {
     });
   });
 
-  /** The longest gap between the ticks of a 10 ms interval while `work` runs and just after: what
-   * a process holding a NATS connection or a delivery timer sees of `work`, at every moment of it
-   * and not only its first. A real interval on purpose: a fake clock ticks when told to, and only
-   * the real one shows whether the event loop was free to serve it. */
-  async function longestStall(work: () => unknown): Promise<number> {
-    let last = Date.now();
-    let longest = 0;
+  /** A real 10 ms interval of this process that answers each command waiting on it: a command
+   * touches `started-<name>` in `directory` and waits for `go-<name>`, which only a tick of this
+   * interval creates. So a command that ends had a tick of this process's event loop while it ran,
+   * however long the machine takes to schedule one; a command whose read holds the loop is still
+   * waiting when its bound ends it. A fake clock would tick when told to, which shows nothing of
+   * the loop. Returns the interval's stop. */
+  function answerWaitingCommands(directory: string): () => void {
     const ticker = setInterval(() => {
-      const now = Date.now();
-      longest = Math.max(longest, now - last);
-      last = now;
+      for (const entry of readdirSync(directory)) {
+        if (!entry.startsWith("started-")) continue;
+        const go = path.join(directory, `go-${entry.slice("started-".length)}`);
+        if (!existsSync(go)) writeFileSync(go, "");
+      }
     }, 10);
-    try {
-      await work();
-      // One more tick after the work, so a stall that lasted to its very end is measured too.
-      await Bun.sleep(20);
-    } finally {
-      clearInterval(ticker);
-    }
-    return Math.max(longest, Date.now() - last);
+    return () => clearInterval(ticker);
   }
 
   // A read leaves the process serving its timers while its command runs: waiting for the command
   // synchronously would hold every timer, delivery and NATS ping of the session for up to 10 s.
-  // Each command takes 2 s, so a held loop stalls the ticks 1.8 s or more, and a free one, on a
-  // machine loaded enough to delay a tick by most of a second, still stalls them under 1 s.
+  // Each command here ends only once a tick of this process has answered it, so the proof needs
+  // no wall-clock margin: on a machine loaded enough to stall a free loop for seconds, the read
+  // still ends, and a held loop still never answers.
   test("runs while the process goes on serving its timers, for every field that names one", async () => {
     const home = tempDir();
     const env = commandEnvironment(home);
-    const slow = (value: string) => `!sleep 2; echo ${value} # ${home}`;
-    const wait = ["/bin/sh", "-c", slow("x").slice(1)];
-    // The controls: the same command waited for synchronously stalls the ticks, at the start of
-    // the work and after its first ticks alike, as a second field's command would.
-    expect(await longestStall(() => Bun.spawnSync(wait))).toBeGreaterThanOrEqual(1_800);
-    expect(
-      await longestStall(async () => {
-        await Bun.sleep(100);
-        Bun.spawnSync(wait);
-      })
-    ).toBeGreaterThanOrEqual(1_800);
+    const signals = tempDir();
+    const waiting = (name: string, value: string) =>
+      `!touch ${signals}/started-${name}; while [ ! -e ${signals}/go-${name} ]; do sleep 0.02; done; echo ${value} # ${home}`;
+    const stop = answerWaitingCommands(signals);
+    try {
+      // The control: the same command waited for synchronously holds the loop, so no tick answers
+      // it, and its bound ends it still waiting. Read before the loop runs again.
+      const held = Bun.spawnSync(["/bin/sh", "-c", waiting("control", "x").slice(1)], {
+        timeout: 2_000,
+      });
+      expect(held.exitedDueToTimeout).toBe(true);
+      expect(existsSync(path.join(signals, "go-control"))).toBe(false);
 
-    const dispatchSecret = fixtureSecret("dsp");
-    const listenerSecret = fixtureSecret("listener");
-    const file = writeFile(path.join(home, "envoy.json"), {
-      dispatch: { ...dispatchOn, token: slow(dispatchSecret) },
-      envoy: { ...envoyOn, token: slow(listenerSecret), natsSeed: slow("SUSEED") },
-    });
-    const config = readEnvoyConfig(file, env, { cwd: tempDir() });
-    let dispatch: DispatchWithToken | undefined;
-    let envoy: EnvoyWithToken | undefined;
-    expect(
-      await longestStall(async () => {
-        dispatch = await dispatchSettings(env, config);
-      })
-    ).toBeLessThan(1_000);
-    expect(dispatch).toMatchObject({ enabled: true, token: dispatchSecret });
-    // Envoy's two fields: its listener's bearer, then its NATS seed, each a slow command.
-    expect(
-      await longestStall(async () => {
-        envoy = await envoySettings(env, config);
-      })
-    ).toBeLessThan(1_000);
-    expect(envoy).toMatchObject({
-      enabled: true,
-      token: listenerSecret,
-      inbound: { natsCredential: { kind: "seed", seed: { value: "SUSEED" } } },
-    });
+      const dispatchSecret = fixtureSecret("dsp");
+      const listenerSecret = fixtureSecret("listener");
+      const file = writeFile(path.join(home, "envoy.json"), {
+        dispatch: { ...dispatchOn, token: waiting("dispatch", dispatchSecret) },
+        envoy: {
+          ...envoyOn,
+          token: waiting("listener", listenerSecret),
+          natsSeed: waiting("seed", "SUSEED"),
+        },
+      });
+      const config = readEnvoyConfig(file, env, { cwd: tempDir() });
+      expect(await dispatchSettings(env, config)).toMatchObject({
+        enabled: true,
+        token: dispatchSecret,
+      });
+      // Envoy's two fields: its listener's bearer, then its NATS seed, each answered in its turn.
+      expect(await envoySettings(env, config)).toMatchObject({
+        enabled: true,
+        token: listenerSecret,
+        inbound: { natsCredential: { kind: "seed", seed: { value: "SUSEED" } } },
+      });
+      for (const name of ["dispatch", "listener", "seed"]) {
+        expect(existsSync(path.join(signals, `go-${name}`))).toBe(true);
+      }
+    } finally {
+      stop();
+    }
   }, 60_000);
 
   // A command relative to a directory, or one a directory configures (a mise or direnv shim), must

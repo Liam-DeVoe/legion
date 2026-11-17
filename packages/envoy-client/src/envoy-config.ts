@@ -1,17 +1,5 @@
-import {
-  chmodSync,
-  closeSync,
-  existsSync,
-  fstatSync,
-  lstatSync,
-  mkdtempSync,
-  openSync,
-  readFileSync,
-  readlinkSync,
-  readSync,
-  rmSync,
-  statSync,
-} from "node:fs";
+import { existsSync, lstatSync, readFileSync, readlinkSync, statSync } from "node:fs";
+import { chmod, type FileHandle, mkdtemp, open, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import * as path from "node:path";
 import type { Subprocess } from "bun";
@@ -365,26 +353,27 @@ processGlobal[COMMAND_RUNS] = commandRuns;
  * which is removed again before the command starts. The command writes it through the descriptor
  * it is handed, this process reads it through its own (`readOutput`), and the kernel frees it once
  * the last of them is closed: no exit of this process or of the command leaves the value on disk
- * under a name. */
-function unnamedFile(): number {
-  const directory = mkdtempSync(path.join(tmpdir(), "envoy-command-"));
+ * under a name. Each step is asynchronous, so a loaded disk holds this read alone, never the
+ * process's event loop. */
+async function unnamedFile(): Promise<FileHandle> {
+  const directory = await mkdtemp(path.join(tmpdir(), "envoy-command-"));
   try {
-    chmodSync(directory, 0o700);
-    return openSync(path.join(directory, "stdout"), "wx+", 0o600);
+    await chmod(directory, 0o700);
+    return await open(path.join(directory, "stdout"), "wx+", 0o600);
   } finally {
-    rmSync(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true });
   }
 }
 
-/** All that was written to `fd`, read from its start: the command's writes moved the offset this
- * descriptor shares with it, so each read names its position. */
-function readOutput(fd: number): string {
-  const output = Buffer.alloc(fstatSync(fd).size);
+/** All that was written to `file`, read from its start: the command's writes moved the offset
+ * this descriptor shares with it, so each read names its position. */
+async function readOutput(file: FileHandle): Promise<string> {
+  const output = Buffer.alloc((await file.stat()).size);
   let read = 0;
   while (read < output.length) {
-    const got = readSync(fd, output, read, output.length - read, read);
-    if (got === 0) break;
-    read += got;
+    const { bytesRead } = await file.read(output, read, output.length - read, read);
+    if (bytesRead === 0) break;
+    read += bytesRead;
   }
   return output.toString("utf-8", 0, read);
 }
@@ -400,7 +389,7 @@ async function runCommand(
   }
   // stdout goes to a file, so the wait is for the shell alone: a pipe would be held open by any
   // process the command left running, until the timeout.
-  const fd = unnamedFile();
+  const file = await unnamedFile();
   try {
     let child: Subprocess<"pipe", number, "ignore">;
     try {
@@ -410,7 +399,7 @@ async function runCommand(
         cwd,
         env: childEnv,
         stdin: "pipe",
-        stdout: fd,
+        stdout: file.fd,
         stderr: "ignore",
         detached: true,
       });
@@ -443,7 +432,7 @@ async function runCommand(
         timedOut: false,
       };
     }
-    const value = readOutput(fd).trim();
+    const value = (await readOutput(file)).trim();
     if (value.length === 0) return { failure: "printed nothing", timedOut: false };
     if (!sendable(value)) {
       return {
@@ -453,7 +442,7 @@ async function runCommand(
     }
     return { value };
   } finally {
-    closeSync(fd);
+    await file.close();
   }
 }
 
