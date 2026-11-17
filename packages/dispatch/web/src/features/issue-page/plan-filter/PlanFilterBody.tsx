@@ -30,8 +30,8 @@ import { buildReferencePath, parseNodeReference } from "../../refs/routes";
 import { useKeymap } from "../../shell/keymap";
 import { conversationPath } from "../decisions-filter/decisions-parts";
 import { useSetFocusedNode } from "../focused-node";
-import { bringOnScreen } from "../identity-block";
 import { focusedNodeOf, IssueTree, landOnRow, useReleaseFocus } from "../IssueTree";
+import { bringOnScreen } from "../identity-block";
 import { drawnLine, firstLineOf, heldBy, lineWords, type TreeNode } from "../issue-tree";
 import { useRowOnScreen } from "../NodeRow";
 import { chipWords } from "../node-row-chip";
@@ -72,63 +72,59 @@ export type PlanReads =
     };
 
 /**
- * The Plan filter's body (dispatch://INFRA-1196 R26, ruling 5 of build-rulings-md, the picture
- * `page-v3-plan-1440.png` and the prototype's `.plan`).
+ * The Plan filter's body (the picture `page-v3-plan-1440.png` and the prototype's `.plan`).
  *
  * It opens on the chart of time: one bar for each step, starting after every task it needs has
  * ended, with the lines between a step and the steps it needs, the step's words beside its bar
  * and the statements it serves at the end of its row. One control switches to the ordered
  * steps, which are the outline's own rows in the same order (`IssueTree`): each task after every
  * task in its `needs`, each row drawing the task's words, the chips naming what it needs by the
- * names part F's view gives them, and the line naming the statement it serves, which is the
- * parent the filter draws as no row (R2).
+ * names the tree gives them (`buildIssueTree`), and the line naming the statement it serves,
+ * which is the parent the filter draws as no row.
  *
  * Tasks that need each other can be given no place of their own, so the order gives the cycle
  * one place (`plan-order.ts`): the chart draws it there as one line that lists its tasks, and
  * the steps draw that line over the tree and the cycle's tasks as rows at its place, so a step
- * that waits on one of them stands after it and an address naming one lands on a row (R26).
+ * that waits on one of them stands after it and an address naming one lands on a row.
  *
  * The order and the chart's places are the whole plan's (`plan`, the Plan view with no words
  * filter on), and the view's own tasks (`root`) choose which places are drawn: a step where its
  * task is in the view, a cycle where any of its tasks is, and under Steps the view's tasks as
  * rows in that order. So under a words filter a drawn bar starts where it does on the whole
  * plan and names, after "needs", every task it needs that the plan holds, drawn or not, and a
- * curve joins two drawn bars alone (dispatch://INFRA-3938 R2 and R4, decision 3 of its plan).
- * Ordered from the view's tasks alone, a task the filter left would stand at 0 and need nothing.
+ * curve joins two drawn bars alone. Ordered from the view's tasks alone, a task the filter left
+ * would stand at 0 and need nothing.
  *
  * The node the address names takes the focus once per address for the whole view, which is
  * held here rather than in the chart or the tree, since each is drawn anew at every press of
  * the switch: a press on "Chart" or "Steps" is the reader taking over, and leaves the focus on
- * the button pressed (dispatch://INFRA-3938 R6 and R7; dispatch://INFRA-1196 R11). Held by the
- * chart, the address would take the focus back from "Chart" each time the chart is drawn again.
+ * the button pressed. Held by the chart, the address would take the focus back from "Chart"
+ * each time the chart is drawn again.
  *
  * It draws its tasks, its switch and its empty line once both reads it is drawn from have
- * answered (`reads`), so it never says the issue has no plan tasks before they are in
- * (dispatch://INFRA-3938 R1); until then its tree holds nothing, and a read refused before it
- * first answered is one line over the tree with a Retry that asks that read alone again, as
- * part V says its own (decisions 126 and 148 of dispatch://INFRA-1196). It stays mounted
- * through all of it (`slots/view-plan.tsx`), so no read takes the reader's press of "Steps",
- * the focus or its mark (R6, R7).
+ * answered (`reads`), so it never says the issue has no plan tasks before they are in; until
+ * then its tree holds nothing, and a read refused before it first answered is one line over the
+ * tree with a Retry that asks that read alone again. It stays mounted through all of it
+ * (`slots/view-plan.tsx`), so no read takes the reader's press of "Steps", the focus or its
+ * mark.
  *
- * ## What today's reads give, and what waits
+ * ## What the reads give, and what they do not
  *
  * - **The plan's own order** is the order the tasks are written in (`plan-order.ts`'s
  *   `writtenOrder`), read from the blocks of the plan document the page already holds
  *   (`useIssueTree.ts` reads them under the same key, so this costs no request): the filter's
  *   view hands the tasks over grouped by the statement each serves, which is the spec's order
- *   and not the plan's (the tester's F19).
- * - **A bar's place** is worked out here from the `needs` the plan document holds. The place
- *   the server's plan read gives each task waits on dispatch://INFRA-1253 (R8, R11).
- * - **A bar's length** is the task's size, and the `plan_task` block declares none today, so
- *   every bar is one unit long and its row says "No size" (R26). Sizes, and with them the
- *   points of work and the longest path the picture names, wait on dispatch://INFRA-1253; the
- *   axis draws its units as lines and no numbers, since a number would be a size nobody
- *   recorded.
- * - **A step's state** is drawn nowhere: "the model holds none today, so the page draws none,
- *   and the states the pictures show are made up" (R26). dispatch://INFRA-1253 R7 and
- *   dispatch://INFRA-1950 R5.
- * - **Who carries a step out**, and a parent's children's tasks in its own Plan filter, wait on
- *   dispatch://INFRA-3577 and dispatch://INFRA-1253.
+ *   and not the plan's.
+ * - **A bar's place** is worked out here from the `needs` the plan document holds, since no read
+ *   gives a task its place.
+ * - **A bar's length** is the task's size, and the `plan_task` block declares none, so every
+ *   bar is one unit long and its row says "No size". The points of work and the longest path
+ *   the picture names need sizes, so the view draws neither; the axis draws its units as lines
+ *   and no numbers, since a number would be a size nobody recorded.
+ * - **A step's state** is drawn nowhere: the model holds none, so the page draws none, and the
+ *   states the pictures show are made up.
+ * - **Who carries a step out**, and a parent's children's tasks in its own Plan filter, are
+ *   drawn nowhere: no read gives them.
  */
 export function PlanFilterBody({
   emptyLine,
@@ -139,7 +135,7 @@ export function PlanFilterBody({
 }: ComponentProps<typeof IssueTree> & {
   /** The whole plan's tasks, as the Plan view gives them with no words filter on
    *  (`slots/view-plan.tsx`): the order and the chart's places are worked out from them, and
-   *  `root`, the view, chooses which of those places are drawn (dispatch://INFRA-3938 R4). */
+   *  `root`, the view, chooses which of those places are drawn. */
   plan: readonly TreeNode[];
   /** How the plan's and the spec's blocks reads stand, which the body draws its tasks after. */
   reads: PlanReads;
@@ -149,13 +145,15 @@ export function PlanFilterBody({
   const [steps, setSteps] = useState(false);
   const { artifacts } = tree;
   // The documents the plan's tasks are blocks of, and each one's block ids in the order it is
-  // written (`writtenOrder`): every task of the plan, so a words filter changes no task's place
-  // (R2). A document whose read has not answered is left out, so its tasks keep the places the
-  // view gives them.
+  // written (`writtenOrder`): every task of the plan, so a words filter changes no task's place.
+  // A document whose read has not answered is left out, so its tasks keep the places the view
+  // gives them.
   const documentIds = useMemo(() => taskDocumentIds(plan, artifacts), [artifacts, plan]);
+  // Each observer reads the key `useIssueTree` fills and fetches nothing of its own: staleness
+  // is an observer's own, so an enabled one mounted past the app's stale time would fetch again.
   const written = useQueries({
     combine: blockIdsOf,
-    queries: documentIds.map((id) => artifactBlocksQuery(id)),
+    queries: documentIds.map((id) => ({ ...artifactBlocksQuery(id), enabled: false })),
   });
   const entries = useMemo(() => {
     const held = new Map<string, readonly string[]>();
@@ -166,7 +164,7 @@ export function PlanFilterBody({
     return planOrder(writtenOrder(plan, artifacts, held));
   }, [artifacts, documentIds, plan, written]);
   // The view's tasks by id, each as the view gives it and once, as the order holds it: the
-  // places drawn are those holding one of them (R4). None until both reads have answered, so
+  // places drawn are those holding one of them. None until both reads have answered, so
   // the view draws no row, no cycle and no switch before the tasks and the statements they
   // serve are in.
   const answered = reads.state === "answered";
@@ -184,11 +182,10 @@ export function PlanFilterBody({
     [entries, inView]
   );
   // The steps, in the plan's order, with the tasks of a cycle at the cycle's place: the view's
-  // tasks alone (R4). Each row is its task as part F's view gives it: its `needs` chips carry
-  // F's names - the needed task's first line, and the page's word for its kind where that task
-  // holds no words - which are the names the chart draws for the same needs (`needsChip`), so
-  // the switch changes the drawing alone (decision 66 of dispatch://INFRA-1196;
-  // dispatch://INFRA-3938 R3, R4 and R6).
+  // tasks alone. Each row is its task as the filter's view gives it: its `needs` chips carry the
+  // tree's names - the needed task's first line, and the page's word for its kind where that
+  // task holds no words - which are the names the chart draws for the same needs (`needsChip`),
+  // so the switch changes the drawing alone.
   const ordered = useMemo(() => {
     const rows = entries
       .flatMap((entry) => (entry.kind === "step" ? [entry.task] : entry.tasks))
@@ -216,7 +213,7 @@ export function PlanFilterBody({
   // A view with no task to draw - none in the view, or reads not yet answered - draws no switch,
   // having nothing to switch between, and draws the tree, which says the issue has no plan tasks
   // in the line the slot hands on (`emptyLine`, `IssueTree`) once both reads have answered, and
-  // nothing before (dispatch://INFRA-3938 R1).
+  // nothing before.
   const empty = inView.size === 0;
   // Each read that failed before it first answered, which the body says over the tree.
   const unreadable = reads.state === "failed" ? reads : undefined;
@@ -225,9 +222,8 @@ export function PlanFilterBody({
   // A refused read leaves the view nothing to act on but its Retry: the empty tree holds no row,
   // and Tab from it never reaches the lines above it. So once the lines are drawn the first
   // line's Retry takes the focus, where the view's key (`t p`) or the page opened at the view's
-  // address left it on nothing, as part I's stage finds no row to give it to
-  // (`slots/stage.tsx`); a reader whose focus is anywhere else keeps it (decision 182 of
-  // dispatch://INFRA-1196, dispatch://INFRA-3938 R7).
+  // address left it on nothing, as the stage finds no row to give it to (`slots/stage.tsx`); a
+  // reader whose focus is anywhere else keeps it.
   useEffect(() => {
     if (firstUnreadable === undefined) return;
     const active = document.activeElement;
@@ -239,8 +235,7 @@ export function PlanFilterBody({
   // Whether the reader pressed a Retry while it held the focus, until the reads answer. The
   // Retry is drawn no more once they do, which leaves the focus on nothing, so the view's first
   // row takes it - the tree's one tab stop, under the chart the first bar's row - unless
-  // something else holds it by then (decisions 182 and 162 of dispatch://INFRA-1196,
-  // dispatch://INFRA-3938 R7).
+  // something else holds it by then.
   const retried = useRef(false);
   useEffect(() => {
     if (!answered || !retried.current) return;
@@ -256,9 +251,9 @@ export function PlanFilterBody({
       ref={box}
     >
       {/* Each read that failed before it first answered, one line in the page's words with a
-          Retry that asks that read alone again, in the order plan, statements (decisions 126
-          and 148 of dispatch://INFRA-1196). The lines stand over the tree and never in it: an
-          alert inside a tree would break the tree's own structure of rows. */}
+          Retry that asks that read alone again, in the order plan, statements. The lines stand
+          over the tree and never in it: an alert inside a tree would break the tree's own
+          structure of rows. */}
       {unreadable === undefined
         ? null
         : PLAN_READS.flatMap((read) =>
@@ -277,12 +272,12 @@ export function PlanFilterBody({
                 ]
               : []
           )}
-      {/* R26's one control: the chart of time, or the ordered steps. A plan with no task has
+      {/* The one control: the chart of time, or the ordered steps. A plan with no task has
           nothing to switch between. The box is 22 px under the view row, and 10 px at 760 px
-          and below, as the prototype's `.plan` is (dispatch://INFRA-3938 R1 and its Sizes): D's
-          column already stands 10 px under the row (`pt-2.5` of `[data-testid="issue-column"]`),
-          so the box adds 12 px, and nothing at 760 px and below. The 120 px above the page's foot
-          are the box's, so the steps keep them as the chart does. */}
+          and below, as the prototype's `.plan` is: the issue's column already stands 10 px
+          under the row (`pt-2.5` of `[data-testid="issue-column"]`), so the box adds 12 px, and
+          nothing at 760 px and below. The 120 px above the page's foot are the box's, so the
+          steps keep them as the chart does. */}
       {empty ? null : (
         // biome-ignore lint/a11y/useSemanticElements: two toggles of one control; a fieldset would draw a frame the picture has none of.
         <div
@@ -319,8 +314,8 @@ export function PlanFilterBody({
             <CycleLine cycle={cycle} key={cycleIds(cycle.tasks)} />
           ))}
           {/* The tree takes the address's node only while the view has not: drawn after a
-              press of the switch, it leaves the focus on the button pressed (R6). While a read
-              is out or has failed it holds nothing, and is still the tree `t p` and the stage
+              press of the switch, it leaves the focus on the button pressed. While a read is
+              out or has failed it holds nothing, and is still the tree `t p` and the stage
               focus. */}
           <IssueTree
             {...tree}
@@ -346,13 +341,13 @@ export function PlanFilterBody({
 /** The two reads, in the order the body says which of them failed. */
 const PLAN_READS: readonly PlanRead[] = ["plan", "statements"];
 
-/** The row of the view's tree that holds its one tab stop, as part I's stage finds it
+/** The row of the view's tree that holds its one tab stop, as the stage finds it
  *  (`slots/stage.tsx`): the first bar's row under the chart. */
 const TAB_STOP_ROW = '[role="tree"] [role="treeitem"][tabindex="0"]';
 
 /** What the body says of each read that failed before it first answered, in the page's words:
  *  the plan for the plan document's blocks, which hold its tasks, and the statements for the
- *  spec's blocks, as the Spec view says it (decisions 126 and 179 of dispatch://INFRA-1196). */
+ *  spec's blocks, as the Spec view says it. */
 const UNREADABLE_LINES: Readonly<Record<PlanRead, string>> = {
   plan: ANSWER_LINES.plan_unreadable,
   statements: ANSWER_LINES.statements_unreadable,
@@ -372,13 +367,12 @@ function cycleIds(tasks: readonly TreeNode[]): string {
   return tasks.map((one) => one.id).join(" ");
 }
 
-/** One cycle, as one line that lists the tasks in it, each a link that lands on that task
- *  (R26). The line is the prototype's own line above the plan (`.psum`, proto-v3.html :490).
+/** One cycle, as one line that lists the tasks in it, each a link that lands on that task.
+ *  The line is the prototype's own line above the plan (`.psum`, proto-v3.html :490).
  *
  *  In the chart the line is a row of the tree, which is one stop of Tab, so its links take
  *  none and `f` reaches them. Above the steps it is outside the tree, so its links take Tab as
- *  any link does: a task of a cycle is reached by the keyboard in both drawings
- *  (dispatch://INFRA-3938 R7, dispatch://INFRA-1196 R11). */
+ *  any link does: a task of a cycle is reached by the keyboard in both drawings. */
 function CycleLine({ cycle, inChart = false }: { cycle: PlanCycle; inChart?: boolean }): ReactNode {
   return (
     <p
@@ -393,18 +387,16 @@ function CycleLine({ cycle, inChart = false }: { cycle: PlanCycle; inChart?: boo
   );
 }
 
-/** The task's one line, the line the page draws for it wherever it draws one (R1, R26: "each
- *  bar labelled with the task's first line"), by part F's one-line rule: R1's first line of the
- *  words of its first block that holds any (`lineWords`), so a heading is never run into the
- *  paragraph after it, drawn with F's ellipsis where the cut falls inside a sentence
- *  (`drawnLine`, ruling 1 and decision 51 of dispatch://INFRA-1196). It is the line G's row
- *  draws for the same task under "Steps" (`NodeRow.tsx`) and F's name of a `needs` chip pointing
- *  at it (`buildIssueTree`), so the switch changes the drawing alone (dispatch://INFRA-3938 R4
- *  and R6). A task that holds no words is named by the page's word for its kind
- *  (`NODE_TYPE_NAMES`), never by its id (R22, dispatch://INFRA-3938 R3), as a parent's line
- *  under a filter is (`presets.ts`'s `parentLineOf`). The marks say whose words the line is,
- *  and F's name of a `needs` chip pointing at the task: the author's, or the page's own for a
- *  task that holds none, since both are then its kind's word. */
+/** The task's one line, the line the page draws for it wherever it draws one and the label of
+ *  its bar, by the page's one-line rule: the first line of the words of its first block that
+ *  holds any (`lineWords`), so a heading is never run into the paragraph after it, drawn with an
+ *  ellipsis where the cut falls inside a sentence (`drawnLine`). It is the line the outline's
+ *  row draws for the same task under "Steps" (`NodeRow.tsx`) and the tree's name of a `needs`
+ *  chip pointing at it (`buildIssueTree`), so the switch changes the drawing alone. A task that
+ *  holds no words is named by the page's word for its kind (`NODE_TYPE_NAMES`), never by its
+ *  id, as a parent's line under a filter is (`presets.ts`'s `parentLineOf`). The marks say whose
+ *  words the line is, and the tree's name of a `needs` chip pointing at the task: the author's,
+ *  or the page's own for a task that holds none, since both are then its kind's word. */
 function taskLine(task: TreeNode): {
   readonly marks: Readonly<Record<string, string>>;
   readonly words: string;
@@ -437,12 +429,11 @@ function TaskLink({ inChart, task }: { inChart: boolean; task: TreeNode }): Reac
 }
 
 /** The chart's three columns, as the prototype's `.prow` divides them: the step, the time, and
- *  what the step serves; at 1240 px and below the checkpoint's narrower outer columns
- *  (dispatch://INFRA-3938 R5). At 760 px and below the head row is not drawn and each row is a
- *  card that lays its parts out itself (`BarRow`, `.pitem`). "And below" is one pixel over the
- *  width: Tailwind writes an arbitrary `max-[N]:` as `(width < N)`, so `max-[1241px]:` and
- *  `max-[761px]:` take 1240 px and 760 px themselves, as the header's `(max-width: 760px)` does
- *  (decision 72 of dispatch://INFRA-1196; `NodeRow.tsx`'s `NODE_ROW_LAYOUT`). */
+ *  what the step serves; at 1240 px and below the checkpoint's narrower outer columns. At 760 px
+ *  and below the head row is not drawn and each row is a card that lays its parts out itself
+ *  (`BarRow`, `.pitem`). "And below" is one pixel over the width: Tailwind writes an arbitrary
+ *  `max-[N]:` as `(width < N)`, so `max-[1241px]:` and `max-[761px]:` take 1240 px and 760 px
+ *  themselves, as the header's `(max-width: 760px)` does (`NodeRow.tsx`'s `NODE_ROW_LAYOUT`). */
 const CHART_COLUMNS =
   "grid min-w-0 grid-cols-[330px_minmax(0,1fr)_320px] max-[1241px]:grid-cols-[260px_minmax(0,1fr)_220px]";
 
@@ -451,7 +442,7 @@ const CAP = `text-xs leading-4 font-semibold tracking-[0.08em] uppercase ${pageQ
 
 /** The row the reader is on, a step's or a cycle's, as the prototype's `.prow.focused` draws
  *  it, and at 760 px and below its card as `.pitem.focused` does: a ring of ink outside a gap of
- *  paper, on the card's own paper, so the mark is not the tint alone (dispatch://INFRA-3938 R7). */
+ *  paper, on the card's own paper, so the mark is not the tint alone. */
 const FOCUSED =
   "bg-page-step-tint shadow-[inset_3px_0_0_var(--color-page-step)] max-[761px]:bg-page-paper max-[761px]:shadow-[0_0_0_2px_var(--color-page-paper),0_0_0_4px_var(--color-page-ink)]";
 
@@ -468,14 +459,14 @@ interface DrawnPlace {
 }
 
 /**
- * The chart of time (R26, the prototype's `.chart`): one row per place in the plan's order. A
+ * The chart of time (the prototype's `.chart`): one row per place in the plan's order. A
  * step's row draws its first line and the steps it needs, its bar, and the statements it
  * serves; a cycle's row lists the tasks that need each other. The lines between a bar and the
  * bars it needs are drawn over the rows from where the bars stand.
  *
  * The places and the axis are the whole plan's (`entries`), and the chart draws those that hold
  * a task of the view (`inView`): a bar a words filter leaves starts where it does on the whole
- * plan, and its curves are drawn to the bars drawn beside it (dispatch://INFRA-3938 R4).
+ * plan, and its curves are drawn to the bars drawn beside it.
  *
  * It is the outline the page draws under this view, so it is one tree named as the outline is,
  * and its rows are its items: the outline's own keys work it, under the ids the outline
@@ -485,25 +476,23 @@ interface DrawnPlace {
  * itself enters the chart at its one tab stop, the arrows and `j`/`k` reach the bars in order
  * and pass over a cycle's row, Home and End the first and the last bar, `f` steps through the
  * focused row's links, Escape gives a row back from its link and leaves the chart from the row,
- * and Enter goes to the row's task in the conversation, where it is edited
- * (dispatch://INFRA-3938 R7). The focus on a row puts its task in Details. A focus anywhere
- * inside a row - the row's own, or a link of it that a pointer went down on - is the focus on
- * that row, as it is on the outline's (`NodeRow.tsx`): the row takes the mark, the heavier
- * curves, Details and the Tab stop, and the keys, which find the row that holds the focus
- * (`at`), move from there. The focus leaving the chart lets go of its row by the outline's rule
- * (`releaseFocus`, below).
+ * and Enter goes to the row's task in the conversation, where it is edited. The focus on a row
+ * puts its task in Details. A focus anywhere inside a row - the row's own, or a link of it that
+ * a pointer went down on - is the focus on that row, as it is on the outline's (`NodeRow.tsx`):
+ * the row takes the mark, the heavier curves, Details and the Tab stop, and the keys, which find
+ * the row that holds the focus (`at`), move from there. The focus leaving the chart lets go of
+ * its row by the outline's rule (`releaseFocus`, below).
  *
  * A cycle's row takes the focus too, as a bar's does: a press on it, an address naming one of
- * its tasks, and the Tab stop where the chart draws no bar (decision 2 of dispatch://INFRA-3938's
- * plan). It stands for the task the address names, else its first, and from it the arrows go
- * to the step after it and the step before it. Were it to take no focus, an address naming a
- * task of a cycle would focus nothing and a plan whose every task is in a cycle would have no
- * Tab stop.
+ * its tasks, and the Tab stop where the chart draws no bar. It stands for the task the address
+ * names, else its first, and from it the arrows go to the step after it and the step before it.
+ * Were it to take no focus, an address naming a task of a cycle would focus nothing and a plan
+ * whose every task is in a cycle would have no Tab stop.
  *
  * The one Tab stop is the row the reader last stood on, else the first bar's, else the first
  * cycle's. Each row places itself on screen by the outline's one hook (`useRowOnScreen`), so the
  * keys move the focus without the browser's own scroll, which knows nothing of the band that
- * stays at the top of the page (R7).
+ * stays at the top of the page.
  */
 function PlanChart({
   entries,
@@ -515,7 +504,7 @@ function PlanChart({
 }: {
   entries: readonly PlanEntry[];
   /** Whether the page takes Escape from a row before the chart is left: the words filter's,
-   *  which comes first in the key table's order (`slots/view-plan.tsx`, part N). */
+   *  which comes first in the key table's order (`slots/view-plan.tsx`). */
   holdsEscape: boolean;
   /** The view's tasks by id: a place is drawn where it holds one of them. */
   inView: ReadonlyMap<string, unknown>;
@@ -550,7 +539,7 @@ function PlanChart({
     [inView, places]
   );
   const [focused, setFocused] = useState<string | undefined>(undefined);
-  // Where the chart's one tab stop rests, which outlives the focus leaving it (R9).
+  // Where the chart's one tab stop rests, which outlives the focus leaving it.
   const [stop, setStop] = useState<string | undefined>(undefined);
   const tabStop = rows.some((place) => place.key === stop)
     ? stop
@@ -559,8 +548,7 @@ function PlanChart({
   // The focused row gives its task to Details (`focused-node.tsx`) as the outline gives a focused
   // node, by the outline's own facts of it (`focusedNodeOf`: who wrote it, the item it is, its
   // address, its state, its first line as its title, its kind), so a step's facts in Details
-  // are the same in the chart and under "Steps" (dispatch://INFRA-3938 R6 and R7;
-  // dispatch://INFRA-1196 R14).
+  // are the same in the chart and under "Steps".
   const takeFocus = useCallback(
     (key: string, task: TreeNode) => {
       setFocused(key);
@@ -569,20 +557,19 @@ function PlanChart({
     },
     [setFocusedNode]
   );
-  // The chart lets go of its focused row by the outline's own rule (part I's `useReleaseFocus`;
-  // decision 105, as amended, and R14 of dispatch://INFRA-1196): the focus leaving the chart with
-  // no press under way runs `leave` at once, and a press that takes it elsewhere runs it once
-  // that press has ended, unless the focus is back in the chart by then, so the row's mark and
-  // its heavier curves go as the outline's row lets go of its look (dispatch://INFRA-3938 R6).
+  // The chart lets go of its focused row by the outline's own rule (`IssueTree.tsx`'s
+  // `useReleaseFocus`): the focus leaving the chart with no press under way runs `leave` at
+  // once, and a press that takes it elsewhere runs it once that press has ended, unless the
+  // focus is back in the chart by then, so the row's mark and its heavier curves go as the
+  // outline's row lets go of its look.
   // Details goes back to the issue's own facts as the focus leaves, unless it goes to Details or
   // the control that opens it. A focus moving within the chart is no leave. The chart edits no
   // row (Enter goes to the conversation), so no edit holds the focus.
   const leave = useCallback(() => setFocused(undefined), []);
   const releaseFocus = useReleaseFocus({ editing: false, onLeave: leave });
   // An address that names a task puts the focus on its row, a cycle's included, and holds the
-  // row on screen until the reader acts, by the outline's own landing (part I's `landOnRow`,
-  // decision 94 of dispatch://INFRA-1196): the rows around it are still arriving and push it down
-  // the page.
+  // row on screen until the reader acts, by the outline's own landing (`IssueTree.tsx`'s
+  // `landOnRow`): the rows around it are still arriving and push it down the page.
   const landingHold = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => landingHold.current?.abort(), []);
   useEffect(() => {
@@ -674,7 +661,7 @@ function PlanChart({
     document.activeElement === document.body ||
     at(items()) !== -1;
   /** The first bar's row of `held` past `from`, going `by` rows at a time, or -1 where there is
-   *  none: the keys that move the reader pass over a cycle's row (R7). */
+   *  none: the keys that move the reader pass over a cycle's row. */
   const barFrom = (held: readonly HTMLElement[], from: number, by: 1 | -1): number => {
     for (let index = from + by; index >= 0 && index < held.length; index += by) {
       if (held[index]?.hasAttribute("data-plan-bar-row") === true) return index;
@@ -692,10 +679,9 @@ function PlanChart({
     target?.focus({ preventScroll: true });
   };
   useKeymap("issue", [
-    // The chart is one tab stop (R7): Tab from the page itself enters it at that stop, the row
-    // the reader last stood on, by the outline's own key (part I's `treeEnterKey`, decision 94 of
-    // dispatch://INFRA-1196), so after Escape the same Tab goes back to the row under either
-    // drawing (R6).
+    // The chart is one tab stop: Tab from the page itself enters it at that stop, the row the
+    // reader last stood on, by the outline's own key (`useTreeKeymap.ts`'s `treeEnterKey`), so
+    // after Escape the same Tab goes back to the row under either drawing.
     treeEnterKey({ moveTo: (index) => moveTo(items(), index), rows: items }),
     {
       id: "tree-next",
@@ -745,7 +731,7 @@ function PlanChart({
     },
     {
       // The statements a step serves and the tasks a cycle lists are links, and the chart is
-      // one tab stop (R9), so a key reaches them; Enter on the link it left the focus on is the
+      // one tab stop, so a key reaches them; Enter on the link it left the focus on is the
       // browser's own.
       id: "tree-link",
       keys: "f",
@@ -809,12 +795,11 @@ function PlanChart({
       data-plan-chart=""
       ref={chart}
     >
-      {/* The head row's three columns are "Steps", the axis and "Serves" (dispatch://INFRA-3938
-          R4): the axis is drawn in a cell of its own, as tall as the row, which holds it as a
-          bar's track holds its own, so "Serves" stands over the statements' column and every
-          line of the axis inside the time's column. Drawn straight into the grid, the axis would
-          be no cell of it: "Serves" would take the second column and the lines would span the
-          chart. */}
+      {/* The head row's three columns are "Steps", the axis and "Serves": the axis is drawn in
+          a cell of its own, as tall as the row, which holds it as a bar's track holds its own,
+          so "Serves" stands over the statements' column and every line of the axis inside the
+          time's column. Drawn straight into the grid, the axis would be no cell of it: "Serves"
+          would take the second column and the lines would span the chart. */}
       <div
         className={`${CHART_COLUMNS} min-h-10 items-center max-[761px]:hidden`}
         data-plan-head=""
@@ -882,14 +867,14 @@ function PlanChart({
 }
 
 /**
- * One cycle's row of the chart: R3's line for the tasks that need each other, and a row the
- * focus stands on as it does on a step's (decision 2 of dispatch://INFRA-3938's plan). It stands
- * for `task` - the task the address names where it is one of the cycle's, else its first - which
- * is its node id, so the page's `[data-node-row]` readers (D's `t p`, Details) reach it as any
- * row, and which it gives to Details when it takes the focus: a focus inside it, on one of its
- * task links as well as on the row, takes the focus for it (`PlanChart`, dispatch://INFRA-3938
- * R7). `data-plan-cycle-row` holds every task of it. It places itself on screen as every row
- * does (`useRowOnScreen`, R7), and its focus is marked as a step's is, not by colour alone.
+ * One cycle's row of the chart: the line for the tasks that need each other, and a row the
+ * focus stands on as it does on a step's. It stands for `task` - the task the address names
+ * where it is one of the cycle's, else its first - which is its node id, so the page's
+ * `[data-node-row]` readers (`t p`, Details) reach it as any row, and which it gives to Details
+ * when it takes the focus: a focus inside it, on one of its task links as well as on the row,
+ * takes the focus for it (`PlanChart`). `data-plan-cycle-row` holds every task of it. It places
+ * itself on screen as every row does (`useRowOnScreen`), and its focus is marked as a step's
+ * is, not by colour alone.
  */
 function CycleRow({
   cycle,
@@ -928,9 +913,9 @@ function CycleRow({
 }
 
 /** The axis: one faint line per unit of the chart (the prototype's `.grid-l`). It draws no
- *  number: a unit is a size, and today's plan holds none (R26). The last line is drawn against
- *  the column's right edge, so every line stands inside the column that holds the axis
- *  (dispatch://INFRA-3938 R4): at `left: 100%` it would be one pixel past it. */
+ *  number: a unit is a size, and today's plan holds none. The last line is drawn against the
+ *  column's right edge, so every line stands inside the column that holds the axis: at
+ *  `left: 100%` it would be one pixel past it. */
 const Units = memo(function Units({ end }: { end: number }): ReactNode {
   const unit = 100 / end;
   return (
@@ -955,33 +940,31 @@ const Units = memo(function Units({ end }: { end: number }): ReactNode {
  * One step of the chart (the prototype's `.prow`, and its `.pitem` card at 760 px and below):
  * its first line, that the model holds no size for it and the steps it needs; its bar; and the
  * statements it serves. The row's name is what it draws, which begins with the task's first
- * line, so each bar is labelled with it (R26). The bar is the step's plain tint inside a dashed
+ * line, so each bar is labelled with it. The bar is the step's plain tint inside a dashed
  * border: the prototype's hatch is its legend's "Not started", a state today's model holds
  * none of, and the dash says the length is no size anybody wrote.
  *
- * A need is named by the task's own `needs` chip for it (`needsChip`), as part F's view names
- * it and the steps' row draws it (decision 66 of dispatch://INFRA-1196, dispatch://INFRA-3938
- * R3 and R4), in the needed task's marks: the author's words, or the page's own where that task
- * holds none, since F names it then by its kind's word. A chip F has not named, or names by no
- * words, names no task, so the row draws no need for it, names none from the needed task's own
- * node, and draws "· needs" only before a need it draws (decision 103 of dispatch://INFRA-1196).
- * The curves are the chart's, and join two drawn bars whatever the names.
+ * A need is named by the task's own `needs` chip for it (`needsChip`), as the tree names it and
+ * the steps' row draws it, in the needed task's marks: the author's words, or the page's own
+ * where that task holds none, since the tree names it then by its kind's word. A chip the tree
+ * has not named, or names by no words, names no task, so the row draws no need for it, names
+ * none from the needed task's own node, and draws "· needs" only before a need it draws. The
+ * curves are the chart's, and join two drawn bars whatever the names.
  *
  * At 761 px and above the row is the chart's three columns. At 760 px and below it is one card
  * that draws, from the top, the task's first line, the track with the bar at its place and
- * length, and one line, wrapping where it must, with "No size", the needs and the statements
- * (dispatch://INFRA-3938 R5). Each part is drawn once, in the order the row's name reads them:
- * the card is a wrapping flex box, the columns' own boxes give their parts to it
- * (`display: contents`), and the first line and the track each take a line of their own ahead
- * of the rest (`order`), so the track, which says nothing to a screen reader, is the one part
- * drawn out of the document's order. The track stands 8 px under the first line and over the
- * line under it: 3 px of its own margin and the card's 5 px between two lines, which is also
- * what parts the chips' lines where they wrap.
+ * length, and one line, wrapping where it must, with "No size", the needs and the statements.
+ * Each part is drawn once, in the order the row's name reads them: the card is a wrapping flex
+ * box, the columns' own boxes give their parts to it (`display: contents`), and the first line
+ * and the track each take a line of their own ahead of the rest (`order`), so the track, which
+ * says nothing to a screen reader, is the one part drawn out of the document's order. The track
+ * stands 8 px under the first line and over the line under it: 3 px of its own margin and the
+ * card's 5 px between two lines, which is also what parts the chips' lines where they wrap.
  *
  * A focus inside the row, on one of its statement links as well as on the row, takes the focus
  * for it (`PlanChart`). The focused row places itself on screen, clear of the band that stays at
  * the top, by the outline's one hook, and a press on it is left where the reader pressed
- * (`useRowOnScreen`, dispatch://INFRA-3938 R7).
+ * (`useRowOnScreen`).
  */
 function BarRow({
   bar,
@@ -1078,13 +1061,13 @@ function BarRow({
           const route = one.reference === undefined ? undefined : parseNodeReference(one.reference);
           // The chip is a box of its own, `data-plan-serve` for either kind, which draws its
           // border and padding and wraps a long first word inside the column rather than run past
-          // it (R5). A linked chip's link inside it draws none: below 1280 px a
+          // it. A linked chip's link inside it draws none: below 1280 px a
           // `dispatch-inline-link` takes 6 px of padding above and below (`styles.css`), which an
           // inline link inside the box's 18 px line takes without growing the box. The chip draws
           // a border and padding around its link, so the link is stretched over the whole box, its
           // border included (the link's `::after`, laid over the box it is `relative` to): a press
-          // anywhere on the chip opens the statement (R4: each chip "a link to that statement"),
-          // where a press on its edge would land on the row and give the row the focus.
+          // anywhere on the chip opens the statement, where a press on its edge would land on the
+          // row and give the row the focus.
           const look = `min-w-0 rounded-[5px] border px-1.5 text-xs leading-[18px] font-semibold text-page-statement [overflow-wrap:anywhere] ${pageHairBorder}`;
           return route === undefined ? (
             <span className={look} data-plan-serve="" key={one.line} {...authorText}>

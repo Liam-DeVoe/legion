@@ -47,33 +47,31 @@ import { expect, test } from "./test";
 import { assertPageFits } from "./unclipped";
 
 /**
- * Part K's rows of the new issue page (dispatch://INFRA-3938, part K of dispatch://INFRA-1196):
- * the Plan view, read on the real stack. Each row turns the new page on for its reader with D's
- * `phase`, seeds the plan it reads (I's `seedPlanOrder` and `seedWholeIssue`, or this part's
- * `seedPlanMarks`), opens the page with D's `gotoIssue`, and reads it through D's
- * `e2e/issue-page.ts`, G's `e2e/issue-page-g.ts`, I's `e2e/issue-page-i.ts` and this part's
- * `e2e/issue-page-k.ts`.
+ * The Plan view's rows of the new issue page, read on the real stack. Each row turns the new
+ * page on for its reader with `phase`, seeds the plan it reads (`seedPlanOrder` and
+ * `seedWholeIssue` of `e2e/issue-layout-seed.ts`, or `seedPlanMarks` of `e2e/issue-page-k.ts`),
+ * opens the page with `gotoIssue`, and reads it through `e2e/issue-page.ts`,
+ * `e2e/issue-page-g.ts`, `e2e/issue-page-i.ts` and `e2e/issue-page-k.ts`.
  *
- * The rows are the five of the check c-rows (`verification.md` of dispatch://INFRA-3938), under
- * the titles it names and with its messages, and with the readings task t10 of its plan adds.
- * Each reads at 1440 by 900 px, where `phase` opens the page, and at 390 by 664 px (`PHONE_K`,
- * the iPhone 13's own viewport, where G's `PHONE` is 390 by 844); row (4) reads the phone alone.
- * Each row's first reading is an assertion of its own on the view, so on a build whose slot
- * draws nothing it fails there and not on its deadline.
+ * The rows are the five of the check c-rows, under the titles it names and with its messages,
+ * and with readings of their own beyond it. Each reads at 1440 by 900 px, where `phase` opens
+ * the page, and at 390 by 664 px (`PHONE_K`, the iPhone 13's own viewport, where
+ * `e2e/issue-page-g.ts`'s `PHONE` is 390 by 844); row (4) reads the phone alone. Each row's
+ * first reading is an assertion of its own on the view, so on a build whose slot draws nothing
+ * it fails there and not on its deadline.
  *
- * Every row runs on K's base (decision 8 of the plan): rows (1), (2) and (4) read part I's
- * `seedPlanOrder`, whose second write deletes the gone task by its block id; row (5) reads part
- * F's names (decisions 49 and 51 of dispatch://INFRA-1196: a block chip named by the words of its
- * `text_tree`, and a number label kept with its sentence) as part G's chip draws them (decision
- * 66); and row (2) reads at 390 px that a card the keys move to stands clear of what stays at
- * the top of the screen, whose height part P publishes for the rows to be placed below
- * (dispatch://INFRA-3943, t13 of the plan).
+ * Rows (1), (2) and (4) read `seedPlanOrder`, whose second write deletes the gone task by its
+ * block id; row (5) reads the tree's names (a block chip named by the words of its `text_tree`,
+ * and a number label kept with its sentence) as the outline's chip draws them; and row (2)
+ * reads at 390 px that a card the keys move to stands clear of what stays at the top of the
+ * screen, whose height the page publishes for the rows to be placed below
+ * (`--issue-identity-height`).
  */
 
 /** The phone every row reads: 390 px wide, and as tall as the iPhone 13's viewport. */
 const PHONE_K = { height: 664, width: 390 } as const;
 
-/** Part B's tokens as the browser computes them (dispatch://INFRA-3938, "Colours"). */
+/** The page's colour tokens as the browser computes them. */
 const COLOURS = {
   /** `page-ink`, the focused card's ring. */
   ink: "rgb(28, 25, 23)",
@@ -100,8 +98,9 @@ async function primarySlug(key: string): Promise<string> {
 /** `seedPlanOrder`'s places by node id: its four steps, the chart's rows (the cycle as
  *  `"cycle"`) and the steps' rows, each in the order the page draws them. Each task stands after
  *  every task in its needs, which is not the order the plan is written in: the document holds
- *  t1, t2, t3, and t1 needs t2 and t2 needs t3. The two that need each other stand where the
- *  order puts them; the task whose need the plan no longer holds waits on nothing. */
+ *  `T.first`, `T.second`, `T.third`, and the first needs the second and the second the third.
+ *  The two that need each other stand where the order puts them; the task whose need names no
+ *  task the plan holds waits on nothing. */
 async function planOrderPlaces(seeded: PlanOrderSeed) {
   const planSlug = (await getArtifact(seeded.planArtifactId)).slug;
   const step = (blockId: string) => blockNodeId(planSlug, blockId);
@@ -129,7 +128,8 @@ async function boxOf(
   return box ?? { height: 0, width: 0, x: 0, y: 0 };
 }
 
-/** The words R8 keeps off the view: states, their legend, the longest path and points. */
+/** The words the view never draws, since the model holds none of them: states, their legend,
+ *  the longest path and points. */
 const MADE_UP_WORDS = [
   "Not started",
   "In progress",
@@ -139,8 +139,8 @@ const MADE_UP_WORDS = [
   "points",
 ] as const;
 
-/** R8 and R9 on what the box draws now: none of the made-up words, and every word the page
- *  draws of its own in its one list. */
+/** What the box draws: none of the made-up words, and every word the page draws of its own in
+ *  its one list. */
 async function expectPlainView(page: Page, where: string): Promise<void> {
   const text = await planBody(page).innerText();
   expect(
@@ -157,11 +157,11 @@ async function expectPlainView(page: Page, where: string): Promise<void> {
  *  (`useIssueTree.ts`). */
 const BLOCKS_READ = "**/api/v1/artifacts/*/blocks";
 
-/** R1 before the reads it needs answer: opened with every document's blocks read held, `path`
+/** Before the reads it needs answer: opened with every document's blocks read held, `path`
  *  draws no line saying the issue has no task and no switch, since a task is a block of the
  *  plan document and the plan holds none until that read answers (`slots/view-plan.tsx`, which
  *  draws the view's tasks, its switch and its empty line once the plan's and the spec's blocks
- *  reads have answered, decision 148 of dispatch://INFRA-1196); let go, it draws the chart. */
+ *  reads have answered); let go, it draws the chart. */
 async function expectNothingBeforeTheBlocks(page: Page, path: string): Promise<void> {
   const held = Promise.withResolvers<void>();
   let asked = 0;
@@ -198,14 +198,14 @@ async function expectNothingBeforeTheBlocks(page: Page, path: string): Promise<v
   await page.unroute(BLOCKS_READ, hold);
 }
 
-/** Decision 98 of dispatch://INFRA-1196 on what the view waits for (`slots/view-plan.tsx`): the
- *  blocks held, not the last read's success. With the chart drawn, a version of the plan
- *  document refreshes that document's reads (`api/event-refresh.ts`), and every blocks read now
- *  fails: the plan's is asked three times, the page's two retries 500 ms apart included
- *  (`api/query-client.ts`'s `queryRetry`), and then holds its blocks as a read that failed. A
- *  move to Spec and back to Plan draws the view again, which draws the chart from the blocks
- *  held. The version is given again until its event reaches the page, since an event published
- *  before the page's feed has started reaches no page. */
+/** What the view waits for (`slots/view-plan.tsx`): the blocks held, not the last read's
+ *  success. With the chart drawn, a version of the plan document refreshes that document's reads
+ *  (`api/event-refresh.ts`), and every blocks read then fails: the plan's is asked three times,
+ *  the page's two retries 500 ms apart included (`api/query-client.ts`'s `queryRetry`), and then
+ *  holds its blocks as a read that failed. A move to Spec and back to Plan draws the view again,
+ *  which draws the chart from the blocks held. The version is given again until its event
+ *  reaches the page, since an event published before the page's feed has started reaches no
+ *  page. */
 async function expectChartAfterAFailedRead(page: Page, seeded: WholeIssueSeed): Promise<void> {
   let failed = 0;
   const fail = async (route: Route) => {
@@ -245,12 +245,11 @@ async function expectChartAfterAFailedRead(page: Page, seeded: WholeIssueSeed): 
   }
 }
 
-/** Decisions 148, 182 and 162 of dispatch://INFRA-1196 on a first read that fails
- *  (`slots/view-plan.tsx`): with every read of the plan document's blocks refused, the page's two
- *  retries included, `t p` from the conversation opens Plan, which says in the page's words that
- *  it could not load the plan, with a Retry that holds the focus, and draws no bar and no switch.
- *  With the read let through, Enter on that Retry asks it again, and the view draws the chart
- *  with the focus on its first row (dispatch://INFRA-3938 R7). */
+/** A first read that fails (`slots/view-plan.tsx`): with every read of the plan document's
+ *  blocks refused, the page's two retries included, `t p` from the conversation opens Plan,
+ *  which says in the page's words that it could not load the plan, with a Retry that holds the
+ *  focus, and draws no bar and no switch. With the read let through, Enter on that Retry asks it
+ *  again, and the view draws the chart with the focus on its first row. */
 async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSeed): Promise<void> {
   let refusing = true;
   const refuse = async (route: Route) => {
@@ -310,19 +309,16 @@ async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSe
   }
 }
 
-// c-rows (1), as the architect's ruling 5 reads R26 (build-rulings-md): the Plan view opens on
-// the chart of time, and one control switches to the ordered steps. The order and each bar's
-// place are the page's own, worked out from the `needs` the plan document holds
-// (`web/src/features/issue-page/plan-filter/plan-order.ts`), because today's reads give no plan
-// read. What waits on dispatch://INFRA-1253, and is not read here: the position and the size
-// the plan read gives each task - so every bar is one unit long and its row says "No size" -
-// and a parent's Plan view drawing its children's tasks from one request. The overtaken task
-// waits on dispatch://INFRA-1950 R5, which is the state the model holds none of today. The
-// tester's F19 is read here too: each task is drawn once, and after every task it needs.
-// Beyond the check (t10 of the plan): the head row's three columns, the box's place, R4's name
-// and R6's group, a press on the edge of a statement chip, the breakpoints at 760, 761, 1240 and
-// 1241 px and 1000 px, and the words filter, which keeps the whole plan's places.
-// The plan is I's `seedPlanOrder` (e2e/issue-layout-seed.ts), whose second write deletes the gone
+// c-rows (1): the Plan view opens on the chart of time, and one control switches to the ordered
+// steps. The order and each bar's place are the page's own, worked out from the `needs` the plan
+// document holds (`web/src/features/issue-page/plan-filter/plan-order.ts`), because no read
+// gives them. Not read here, since no read gives them either: each task's position and size - so
+// every bar is one unit long and its row says "No size" - a parent's Plan view drawing its
+// children's tasks, and a step's state. Read here too: each task is drawn once, and after every
+// task it needs. Beyond the check: the head row's three columns, the box's place, the treeitem's
+// name and the switch's group, a press on the edge of a statement chip, the breakpoints at 760,
+// 761, 1240 and 1241 px and 1000 px, and the words filter, which keeps the whole plan's places.
+// The plan is `seedPlanOrder` (e2e/issue-layout-seed.ts), whose second write deletes the gone
 // task by its block id, which leaves the loose task's need pointing at no task the plan holds.
 // SLOW(>=2s): a seeded plan read at seven widths, under both drawings and at a second address.
 test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser }) => {
@@ -376,7 +372,7 @@ test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser
         `the bar of ${task} starts before the bar of ${needed}, which it needs, has ended`
       ).toBeGreaterThanOrEqual((theirs?.left ?? 0) + (theirs?.width ?? 1e6) - 1);
     }
-    // Today's model holds no size, so each bar is one unit long and its row says so (R26): a
+    // Today's model holds no size, so each bar is one unit long and its row says so: a
     // dashed border in the step's colour around the step's plain tint, which is no hatch.
     const layouts = await stepLayouts(page);
     expect(
@@ -455,7 +451,7 @@ test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser
       ),
       `${T.first} does not link the statement it serves`
     ).toHaveCount(1);
-    // The whole chip is the link, its edge included (R4: each chip "a link to that statement"):
+    // The whole chip is the link to its statement, its edge included:
     // a press 2 px inside its left edge, on its padding, and one 1 px under its top edge, above
     // the words, each open the statement, where they would land on the row and give it the
     // focus. At 1280 px and up the link takes no padding of its own (`styles.css`'s
@@ -502,7 +498,7 @@ test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser
     }
 
     // The head row's three columns: "Serves" over the statements, and every line of the axis
-    // inside the middle one (R4).
+    // inside the middle one.
     const head = await headLayout(page);
     expect(head, "the chart draws no head row at 1440 px").not.toBeNull();
     expect(
@@ -518,7 +514,7 @@ test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser
       "a line of the axis stands outside the head row's middle cell"
     ).toEqual([]);
 
-    // The box: 1300 px wide, 22 px under the view row, and 120 px above the page's foot (R1).
+    // The box: 1300 px wide, 22 px under the view row, and 120 px above the page's foot.
     const column = page.getByTestId("issue-column");
     const box = await boxOf(planBody(page), "the view's box at 1440 px");
     expect(box.width, "the view's box is not 1300 px wide at 1440 px").toBeCloseTo(1300, 0);
@@ -532,7 +528,7 @@ test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser
     );
     await expectPlainView(page, "the chart");
 
-    // The columns from 1240 px down, and the prototype's from 1241 px up (R5). Each statement
+    // The columns from 1240 px down, and the prototype's from 1241 px up. Each statement
     // chip's border holds its 18 px lines alone at each width: below 1280 px a link takes 6 px
     // of padding above and below (`styles.css`'s `.dispatch-inline-link`), which the chip's
     // link takes inside the chip's line, so a linked chip is as tall as an unlinked one.
@@ -616,7 +612,7 @@ test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser
     );
     await expectPlainView(page, "the steps");
 
-    // The same order on a phone, in both views, where the page fits in one direction (R18), in
+    // The same order on a phone, in both views, where the page fits in one direction, in
     // a box 10 px under the view row and 10 px in from each side of the column.
     await page.setViewportSize(PHONE_K);
     await expectIssuePageDrawn(page);
@@ -645,8 +641,8 @@ test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser
     ).toEqual(bars.map(() => PLAN_WORDS.no_size));
     await assertPageFits(page);
 
-    // The words filter chooses which places are drawn, and every place is the whole plan's: t1
-    // alone, its bar where it stands on the whole plan, naming the task it needs (R2, R4).
+    // The words filter chooses which places are drawn, and every place is the whole plan's:
+    // `T.first` alone, its bar where it stands on the whole plan, naming the task it needs.
     await page.setViewportSize(DESKTOP);
     await gotoIssue(page, planPath(seeded.key, "?q=Task%20t1"));
     await expect
@@ -664,13 +660,13 @@ test("the Plan filter draws the tasks as ordered steps @phone", async ({ browser
 });
 
 // c-rows (2): the chart is one tab stop of the page, and the outline's own keys move through its
-// steps in their order, passing over a cycle's row (R7). Beyond the check (t10 of the plan): an
-// address naming a task of a cycle puts the focus on the cycle's row, an address naming a node
-// that is no task draws the plan as /plan does, Escape gives a row back from its link, and a
-// press of the switch under an address leaves the focus on the button pressed.
-// The plan is I's `seedPlanOrder`, as row (1) reads it. At 390 by 664 px, after End and after
-// Home, the focused card stands on screen, clear of what stays at the top, whose height part P
-// publishes.
+// steps in their order, passing over a cycle's row. Beyond the check: an address naming a task of
+// a cycle puts the focus on the cycle's row, an address naming a node that is no task draws the
+// plan as /plan does, Escape gives a row back from its link, and a press of the switch under an
+// address leaves the focus on the button pressed.
+// The plan is `seedPlanOrder`, as row (1) reads it. At 390 by 664 px, after End and after Home,
+// the focused card stands on screen, clear of what stays at the top, whose height the page
+// publishes (`--issue-identity-height`).
 // SLOW(>=2s): a seeded plan walked by the keyboard at two widths and at five addresses.
 test("the Plan view's chart is reached in order with the keyboard @phone", async ({ browser }) => {
   test.setTimeout(180_000);
@@ -819,7 +815,7 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
       .toEqual(charted);
 
     // Under an address that names a step, a press of the switch is the reader taking over: the
-    // focus stays on the button pressed (R6).
+    // focus stays on the button pressed.
     await gotoIssue(page, planPath(seeded.key, `#b-${T.first}`));
     await expect
       .poll(() => focusedNodeId(page), { message: `#b-${T.first} does not focus its row` })
@@ -862,7 +858,7 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
     await reach("ArrowDown", step(T.loose));
 
     // An address naming a node that is no task draws the plan as /plan does: the statement's
-    // address draws no row of it, and a comment's no bar of it (R1).
+    // address draws no row of it, and a comment's no bar of it.
     const statement = blockNodeId(specSlug, requirementBlockId(1));
     await gotoIssue(page, planPath(seeded.key, `#b-${requirementBlockId(1)}`));
     await expect
@@ -895,10 +891,9 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
     for (const next of [T.second, T.first, T.loose]) await reach("ArrowDown", step(next));
     // After End and after Home the focused card stands on screen, clear of the view row that
     // stays at the top at 760 px and below (`onScreen`): the rows' own hook places it below the
-    // height part P publishes for that band (`useRowOnScreen`, `bringOnScreen`,
-    // `--issue-identity-height`; dispatch://INFRA-3943). Each key is pressed with the page put
-    // at its far end from the card the key goes to, so that card is off the screen until its
-    // placing puts it on.
+    // height the page publishes for that band (`useRowOnScreen`, `bringOnScreen`,
+    // `--issue-identity-height`). Each key is pressed with the page put at its far end from the
+    // card the key goes to, so that card is off the screen until its placing puts it on.
     const first = nodeRow(page, step(T.third)).first();
     const last = nodeRow(page, step(T.loose)).first();
     await page.evaluate(() =>
@@ -946,17 +941,15 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
   });
 });
 
-// c-rows (3), ruling 8's `c-row` reading on Plan (the checkpoint's line 1149): the steps are the
-// outline's own rows, so G's readers of every row hold on them, and the chart names each tie by
-// words and never by an address or a slug. Beyond the check: at 1440 px, with the blocks reads
-// held, the view draws no line saying the issue has no task and no switch, and draws the chart
-// once they are let go (dispatch://INFRA-3938 R1; `expectNothingBeforeTheBlocks`); a first read
-// of the plan's blocks that fails draws the page's line for it with a Retry, which `t p` leaves
-// the focus on, and no bar and no switch, and Enter on the Retry draws the chart with the focus
-// on its first row once the read is let through (decisions 148, 182 and 162 of
-// dispatch://INFRA-1196, R7; `expectRetryAfterAFailedFirstRead`); and a read of the plan's
-// blocks that fails once the chart is drawn leaves the chart drawn on a return to Plan (decision
-// 98 of dispatch://INFRA-1196; `expectChartAfterAFailedRead`).
+// c-rows (3), read on Plan: the steps are the outline's own rows, so the outline's readers of
+// every row (`e2e/issue-page-g.ts`) hold on them, and the chart names each tie by words and never
+// by an address or a slug. Beyond the check: at 1440 px, with the blocks reads held, the view
+// draws no line saying the issue has no task and no switch, and draws the chart once they are let
+// go (`expectNothingBeforeTheBlocks`); a first read of the plan's blocks that fails draws the
+// page's line for it with a Retry, which `t p` leaves the focus on, and no bar and no switch, and
+// Enter on the Retry draws the chart with the focus on its first row once the read is let through
+// (`expectRetryAfterAFailedFirstRead`); and a read of the plan's blocks that fails once the chart
+// is drawn leaves the chart drawn on a return to Plan (`expectChartAfterAFailedRead`).
 // SLOW(>=2s): the whole seeded issue, loaded and read under both drawings at two widths.
 test("the Plan view's steps are drawn as every row of the outline @phone", async ({ browser }) => {
   test.setTimeout(180_000);
@@ -1015,10 +1008,10 @@ test("the Plan view's steps are drawn as every row of the outline @phone", async
 });
 
 // c-rows (4): at 760 px and below the chart is one card for each step, in the same order, with
-// no head row and no curve, and the page does not scroll sideways from 320 px (R5). "No size"
-// is read as R5's line under the track, with the needs and the statements (departure 4 of the
-// plan): t3's line wraps, so it is not the card's last line of text.
-// The plan is I's `seedPlanOrder`, as row (1) reads it.
+// no head row and no curve, and the page does not scroll sideways from 320 px. "No size" is read
+// on the card's line under the track, with the needs and the statements: `T.third`'s line wraps,
+// so it is not the card's last line of text.
+// The plan is `seedPlanOrder`, as row (1) reads it.
 // SLOW(>=2s): a seeded plan read at two phone widths, with a key pressed between.
 test("on a phone the Plan chart is one card for each step @phone @phone-only", async ({
   browser,
@@ -1095,17 +1088,15 @@ test("on a phone the Plan chart is one card for each step @phone @phone-only", a
   });
 });
 
-// c-rows (5), the tester's finding F18: a need is named by the needed task's words, as a reader
-// reads them, with none of the marks its markdown is written in, in the chart and in the steps.
-// Beyond the check (the architect's reading): the chart's first reading is that each step's row
-// names its step by its words past the number they start with, and a statement chip draws no
-// `*` or `\` either.
-// The names are part F's (decisions 49 and 51 of dispatch://INFRA-1196): a task's first line is
-// R1's first line of its first block's words, its number label kept with its sentence, so each
-// chart row reads past `1.` and `2.`; a task's `needs` chip is named by that line of the needed
-// task's `text_tree`, so a need holds none of its markdown. Part G's chip draws
-// `chipWords(chip.name)` with no markdown pass (decision 66), so the steps' needs chip draws the
-// same words.
+// c-rows (5): a need is named by the needed task's words, as a reader reads them, with none of
+// the marks its markdown is written in, in the chart and in the steps. Beyond the check: the
+// chart's first reading is that each step's row names its step by its words past the number they
+// start with, and a statement chip draws no `*` or `\` either.
+// The names are the tree's: a task's first line is the first line of its first block's words,
+// its number label kept with its sentence, so each chart row reads past `1.` and `2.`; a task's
+// `needs` chip is named by that line of the needed task's `text_tree`, so a need holds none of
+// its markdown. The outline's chip draws `chipWords(chip.name)` with no markdown pass
+// (`NodeRow.tsx`'s `Chip`), so the steps' needs chip draws the same words.
 // SLOW(>=2s): a seeded plan read under both drawings at two widths.
 test("the Plan view names a needed task by its words, with no mark of their source @phone", async ({
   browser,
@@ -1132,12 +1123,12 @@ test("the Plan view names a needed task by its words, with no mark of their sour
       ).toHaveAttribute("aria-pressed", "true");
       // The chart's words of a task are the batched names read's, which lands after the blocks
       // are read (`useIssueTree.ts`): until it does, a need holds no words and a row its kind's
-      // word. So the chart is read once t2's need holds words.
+      // word. So the chart is read once the second task's need holds words.
       const need = nodeRow(page, second).first().locator("[data-plan-need]");
       await expect(need.first(), `t2's need draws no words at ${size.width} px`).toHaveText(/\S/);
       // Each step's row names its step by its words, and not by the number they start with
-      // alone: t1's words start `**1\. Stand the harness up.**`, t2's `**2\. Read the needs
-      // back.**` (`seedPlanMarks`).
+      // alone: the first task's words start `**1\. Stand the harness up.**`, the second's
+      // `**2\. Read the needs back.**` (`seedPlanMarks`).
       for (const [id, words] of [
         [first, "Stand"],
         [second, "Read"],
@@ -1163,8 +1154,8 @@ test("the Plan view names a needed task by its words, with no mark of their sour
       await expect(planView(page, "steps")).toHaveAttribute("aria-pressed", "true");
       const chips = nodeRow(page, second).first().locator("[data-node-chip]");
       await expect(chips.first(), `t2's row draws no chip at ${size.width} px`).toBeVisible();
-      // G's chip draws its name once its own markdown reading answers (`NodeRow.tsx`'s `Chip`),
-      // so the needs chip is read until it is drawn with a name.
+      // The outline's chip draws its name once its own markdown reading answers
+      // (`NodeRow.tsx`'s `Chip`), so the needs chip is read until it is drawn with a name.
       const needs = async () =>
         (
           await chips.evaluateAll((all) =>

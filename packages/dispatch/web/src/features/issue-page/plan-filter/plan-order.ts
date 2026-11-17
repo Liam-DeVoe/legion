@@ -6,7 +6,7 @@ import { BLOCK_ATTRIBUTE_LABELS } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
 
 /**
- * The plan's tasks as ordered steps (dispatch://INFRA-1196 R26).
+ * The plan's tasks as ordered steps.
  *
  * A step stands after every task in its `needs`. The order is stable: where the `needs` leave
  * two tasks free to stand in either order, the plan's own order decides, so a plan already
@@ -15,15 +15,15 @@ import { blockNodeId } from "../tree-drafts";
  *
  * Tasks that need each other, directly or through the rest, are one cycle: no order can put any
  * of them after every task it needs, so they are one group, which the page draws as one line
- * that lists them (R26). Everything that waits on a cycle keeps its place after it.
+ * that lists them. Everything that waits on a cycle keeps its place after it.
  *
  * Today's reads hold no position of their own. `needs` is a `block[]` attribute of the plan's
  * own blocks (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json:123-127`), which the
- * tree draws as a chip on the task's row (`tree-drafts.ts`'s `placeBlocks`), and the position
- * the plan read gives each task (R26, dispatch://INFRA-1253 R11) waits on that read. So the
- * order is worked out here, from the edges the model does hold, and a task whose `needs` names a
- * task this plan does not hold waits on nothing: its row says the target is gone or names an
- * address nothing answers to (`NodeRow.tsx`'s `Chip`), and the order is the plan's own.
+ * tree draws as a chip on the task's row (`tree-drafts.ts`'s `placeBlocks`), and no read gives a
+ * task its position. So the order is worked out here, from the edges the model does hold, and a
+ * task whose `needs` names a task this plan does not hold waits on nothing: its row says the
+ * target is gone or names an address nothing answers to (`NodeRow.tsx`'s `Chip`), and the order
+ * is the plan's own.
  *
  * The plan's own order is the order its tasks are written in (`writtenOrder`), read off the
  * blocks the page already holds. The module is pure: it holds no React, reads no model of its
@@ -65,9 +65,9 @@ function documentOf(id: string): string {
  * `task`'s own document. The reference's own document part is not read, because the issue's
  * primary document is spelled `spec` in a reference and by its slug in a node's id, and one
  * block id is unique inside one document alone. Nor is its pin: the server refuses a pointer
- * named twice by its raw value alone (`pmdoc/schema.go`), so `…#b-t1@v1` and `…#b-t1` can stand
- * in one `needs`, and they name one task, which the chart then names and joins by one curve
- * once.
+ * named twice by its raw value alone (`pmdoc/schema.go`), so `…#b-<id>@v1` and `…#b-<id>` can
+ * stand in one `needs`, and they name one task, which the chart then names and joins by one
+ * curve once.
  */
 function neededIds(task: TreeNode): readonly string[] {
   return [
@@ -118,10 +118,9 @@ export function taskDocumentIds(
 
 /**
  * `tasks` in the order the plan is written in, which is the plan's own order: the order
- * `planOrder` keeps where the `needs` leave two tasks free (dispatch://INFRA-3938 R2, the
- * tester's F19). The Plan filter's view hands the tasks over grouped by the statement each one
- * serves, which is the spec's order and not the plan's, so the view hands them to `planOrder`
- * through this.
+ * `planOrder` keeps where the `needs` leave two tasks free. The Plan filter's view hands the
+ * tasks over grouped by the statement each one serves, which is the spec's order and not the
+ * plan's, so the view hands them to `planOrder` through this.
  *
  * `written` holds the block ids of each document the tasks are blocks of, by the document's id,
  * in the order the document writes them, as the page's blocks read holds them (`useIssueTree.ts`
@@ -160,12 +159,12 @@ export function writtenOrder(
  * `nodes` as the plan's order draws them: each a step of its own, or, for tasks that need each
  * other, one cycle holding them all. `nodes` are the rows the Plan filter draws with no words
  * filter on, in the plan's own order (`writtenOrder`): the whole plan, since a words filter
- * chooses which places the view draws and not where they stand (dispatch://INFRA-3938 R2 and
- * R4). A node that is no plan task needs nothing and is needed by nothing, so it keeps the place
- * the plan gave it; the Plan view hands over none, since it keeps the address's node only where
- * it is a task (dispatch://INFRA-3938 R1, `slots/view-plan.tsx`). A task the filter drew under
- * two statements is one task here, at its first place: a plan holds each task once, and its
- * second statement is its "Also under" chip (the tester's F19: task 1 was drawn twice).
+ * chooses which places the view draws and not where they stand. A node that is no plan task
+ * needs nothing and is needed by nothing, so it keeps the place the plan gave it; the Plan view
+ * hands over none, since it keeps the address's node only where it is a task
+ * (`slots/view-plan.tsx`). A task the filter drew under two statements is one task here, at its
+ * first place: a plan holds each task once, and its second statement is its "Also under" chip,
+ * so the task is not drawn twice.
  */
 export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
   const seen = new Set<string>();
@@ -255,13 +254,13 @@ export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
 }
 
 /** One bar of the chart of time: one step and the unit it starts at. Every bar is one unit
- *  long, because today's model holds no size for a task (R26: "a task with no size is a short
- *  bar marked No size"); the length joins this once dispatch://INFRA-1253 gives the size. */
+ *  long, because the model holds no size for a task, and a task with no size is a short bar
+ *  marked No size. */
 export interface PlanBar {
   readonly kind: "bar";
   /** The tasks drawn above it that it needs, steps and tasks of a cycle alike. */
   readonly needs: readonly TreeNode[];
-  /** Where it starts: after every task it needs has ended (R26). */
+  /** Where it starts: after every task it needs has ended. */
   readonly start: number;
   readonly task: TreeNode;
 }
@@ -277,13 +276,13 @@ export interface PlanChart {
 }
 
 /**
- * The chart of time over the plan's order (R26): one bar per step, starting after every task it
+ * The chart of time over the plan's order: one bar per step, starting after every task it
  * needs has ended, and one line per cycle at its place in the order.
  *
- * Where a bar starts is worked out here from the `needs` the plan holds, since today's reads
- * give no position (dispatch://INFRA-1253 R8 and R11), and every bar is one unit long, since
- * they give no size. A cycle takes one unit after whatever its tasks need from outside it,
- * since the order cannot say more of tasks that need each other.
+ * Where a bar starts is worked out here from the `needs` the plan holds, since the reads give
+ * no position, and every bar is one unit long, since they give no size. A cycle takes one unit
+ * after whatever its tasks need from outside it, since the order cannot say more of tasks that
+ * need each other.
  */
 export function planChart(entries: readonly PlanEntry[]): PlanChart {
   const ends = new Map<string, number>();
@@ -318,12 +317,12 @@ export function planChart(entries: readonly PlanEntry[]): PlanChart {
  * The chip of `task` that names `needed` as a need: the first `needs` pointer of `task` that
  * names it (`neededId`), or undefined where no chip of `task` points at `needed`.
  *
- * The chart names each need by this chip's own name, as part F's view gives it (decision 66 of
- * dispatch://INFRA-1196, dispatch://INFRA-3938 R3 and R4): the needed task's first line, and the
- * page's word for its kind where that task holds no words. The steps' rows draw the same chip
- * through part G's `Chip`, so the switch changes the drawing alone (R6) and no edge is named
- * twice: the view gives the rows no chips renamed by the chart's line for the task, which would
- * be a second naming of what F's view already names.
+ * The chart names each need by this chip's own name, as the tree names it (`buildIssueTree`):
+ * the needed task's first line, and the page's word for its kind where that task holds no
+ * words. The steps' rows draw the same chip through `NodeRow.tsx`'s `Chip`, so the switch
+ * changes the drawing alone and no edge is named twice: the view gives the rows no chips
+ * renamed by the chart's line for the task, which would be a second naming of what the tree
+ * already names.
  */
 export function needsChip(task: TreeNode, needed: TreeNode): NodeChip | undefined {
   return task.chips.find((chip) => neededId(task, chip) === needed.id);

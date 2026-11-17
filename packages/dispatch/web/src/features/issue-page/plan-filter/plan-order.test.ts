@@ -7,7 +7,7 @@ import { blockNodeId } from "../tree-drafts";
 import { type PlanEntry, planChart, planOrder, writtenOrder } from "./plan-order";
 
 /**
- * The plan's order, read off the edges today's model holds (dispatch://INFRA-1196 R26).
+ * The plan's order, read off the edges today's model holds.
  *
  * The nodes are built as `issue-tree.ts` builds them from the plan document's blocks: a task's
  * id is `<slug>#b-<block id>` (`tree-drafts.ts`'s `blockNodeId`), and its `needs` are its chips,
@@ -70,8 +70,8 @@ function blockOf(id: string): string {
 }
 
 test("a task stands after every task in its needs, and the plan's own order decides the rest", () => {
-  // Written in the document as t3, t1, t2: t3 needs t2, t2 needs t1, and t4 needs nothing, so
-  // the chain is drawn as a chain and t4 keeps the place the plan gave it.
+  // Written as the chain's last task, a free task, then the chain's first two: the chain is
+  // drawn as a chain, and the free task keeps the place the plan gave it.
   const entries = planOrder([task("t3", ["t2"]), task("t4"), task("t1"), task("t2", ["t1"])]);
   expect(drawn(entries)).toEqual(["t4", "t1", "t2", "t3"]);
 });
@@ -103,8 +103,8 @@ test("a task that needs itself is a cycle of one, and no step", () => {
 });
 
 test("what a cycle holds up keeps its place after the cycle, and what it waits on stands before", () => {
-  // t1 is needed by the cycle, and t4 waits on it: the cycle is one place in the order like any
-  // other, so t1 stands before it and t4 after.
+  // The first task is needed by the cycle, and the fourth waits on it: the cycle is one place in
+  // the order like any other, so the first task stands before it and the fourth after.
   const entries = planOrder([
     task("t4", ["t2"]),
     task("t2", ["t1", "t3"]),
@@ -143,9 +143,8 @@ test("a node that is no plan task keeps its place and holds nothing up", () => {
   expect(drawn(entries)).toEqual(["r1", "t1", "t2"]);
 });
 
-// The tester's F19: the filter's view hands the tasks over grouped by the statement each one
-// serves, which is the spec's order, and the plan's own order is the one its document writes
-// (dispatch://INFRA-3938 R2).
+// The filter's view hands the tasks over grouped by the statement each one serves, which is the
+// spec's order, and the plan's own order is the one its document writes.
 test("tasks given grouped by statement come back in the order the plan writes them", () => {
   const artifacts = new Map<string, Artifact>([
     [PLAN, { id: "artifact-plan", slug: PLAN } as Artifact],
@@ -191,9 +190,9 @@ test("a plan with no tasks draws nothing", () => {
   expect(planOrder([])).toEqual([]);
 });
 
-// R26's chart of time: "one bar per task, starting after every task it needs has ended ... a
-// task with no size is a short bar marked No size". Today's model holds no size, so each bar is
-// one unit long.
+// The chart of time: one bar per task, starting after every task it needs has ended, and a task
+// with no size a short bar marked No size. Today's model holds no size, so each bar is one unit
+// long.
 test("a bar starts where every task it needs has ended", () => {
   const chart = planChart(
     planOrder([task("t1"), task("t2", ["t1"]), task("t3", ["t1"]), task("t4", ["t2", "t3"])])
@@ -211,7 +210,7 @@ test("a bar starts where every task it needs has ended", () => {
   expect(
     chart.rows.map((row) => (row.kind === "bar" ? row.needs.map((one) => blockOf(one.id)) : []))
   ).toEqual([[], ["t1"], ["t1"], ["t2", "t3"]]);
-  // A pinned and an unpinned pointer to one task (`…#b-t1@v1`, `…#b-t1`) name one need: the
+  // A pinned and an unpinned pointer to one task (`…#b-<id>@v1`, `…#b-<id>`) name one need: the
   // server refuses a pointer named twice by its raw value alone (`pmdoc/schema.go`), and the
   // chart names each need, and draws its curve, once.
   const twice: TreeNode = {
