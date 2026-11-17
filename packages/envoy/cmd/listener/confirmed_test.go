@@ -192,13 +192,43 @@ func expectFrames(t *testing.T, frames <-chan contracts.Envelope, want int) []co
 	return got
 }
 
-// noException fails when any delivery exception is published while the probe listens: the route
-// answers its sender and publishes none.
+// noException fails when the probe holds a delivery exception: the code under test published
+// none. It reads what the probe holds and waits for nothing, the proof of an absence from state
+// (R2, docs/testing.md), so its caller calls it once two things hold. The code that would
+// publish the exception has returned: a route answered, a handler called in line returned and
+// the role forwarder settled, or, for a handler a subscription runs, a marker sent behind the
+// message through that subscription was handled (keptBehind). And a round trip on the probe's
+// own connection followed: a flush, or a request on it such as a read of the stream. The round
+// trip orders the probe after the exception because every exception the listener raises reached
+// the server before its publish returned - publishDeliveryException and publishRefusalException
+// publish through bus.Client.Publish, which waits for the stream's acknowledgement on a stored
+// lane and for publishConfirmed's flush on a core one - and the server writes the probe's copy
+// of a message before it answers a later round trip on the probe's connection. A refusal's
+// exception goes out on a goroutine of its own after the 404 (publishRefusalException), which
+// nothing a caller can wait for orders, so no caller reads a refusal with this.
 func noException(t *testing.T, probe *natsgo.Subscription) {
 	t.Helper()
-	if _, err := probe.NextMsg(250 * time.Millisecond); !errors.Is(err, natsgo.ErrTimeout) {
-		t.Fatalf("the route published a delivery exception: the probe answered %v, want a timeout", err)
+	// A timeout of zero reads what the subscription already holds and waits for nothing.
+	if message, err := probe.NextMsg(0); err == nil {
+		t.Fatalf("a delivery exception was published on %s: %s", message.Subject, message.Data)
+	} else if !errors.Is(err, natsgo.ErrTimeout) {
+		t.Fatalf("read the exception probe: %v", err)
 	}
+}
+
+// keptBehind publishes a marker on role's lane, on the harness's client, and waits for the lane
+// to keep it for the role's next holder. A subscription hands its messages to the lane's handler
+// one at a time, so once the marker is kept the handler has returned from every message
+// published on that lane before it. It is the later action a test of a role nobody holds live
+// takes before it reads the probe (noException): the kept copy of the message under test is
+// stored before the handler that stored it returns.
+func keptBehind(t *testing.T, harness listenerDeliveryHarness, role string) {
+	t.Helper()
+	marker := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "marker-"+id.New())
+	if err := harness.client.Publish(marker); err != nil {
+		t.Fatalf("publish the marker on role %s's lane: %v", role, err)
+	}
+	waitForKeptRoleMessage(t, harness.client, role, marker.EventID)
 }
 
 func exceptionProbe(t *testing.T, client *bus.Client) *natsgo.Subscription {
@@ -238,6 +268,9 @@ func TestPublishRouteAnswersStoredOnceTheHoldersForwardIsKept(t *testing.T) {
 		if frame.EventID != answer.EventID || frame.DedupeKey != roleForwardDedupePrefix+"publish.stored-1" || frame.Topic != contracts.RoleTopicPrefix+role {
 			t.Fatalf("frame %d: event %s dedupe key %s topic %s, want the answered event %s under %s on its role topic", i+1, frame.EventID, frame.DedupeKey, frame.Topic, answer.EventID, roleForwardDedupePrefix+"publish.stored-1")
 		}
+	}
+	if err := harness.client.Conn.FlushWithContext(testwait.Context(t)); err != nil {
+		t.Fatalf("a round trip on the exception probe's connection: %v", err)
 	}
 	noException(t, probe)
 }
@@ -279,6 +312,9 @@ func TestPublishRouteStoresTheForwardForAHolderThatIsNotConnected(t *testing.T) 
 	if count := storedForwards(t, harness.client, subject); count != 1 {
 		t.Fatalf("the stream holds %d messages on %s, want the one forward", count, subject)
 	}
+	if err := harness.client.Conn.FlushWithContext(testwait.Context(t)); err != nil {
+		t.Fatalf("a round trip on the exception probe's connection: %v", err)
+	}
 	noException(t, probe)
 }
 
@@ -311,6 +347,9 @@ func TestPublishRouteStoresOneCopyOfARoleForwardSentTwice(t *testing.T) {
 	subject := contracts.AgentSubject("ses_one_copy")
 	if count := storedForwards(t, harness.client, subject); count != 1 {
 		t.Fatalf("the stream holds %d messages on %s after two forwards of publish.stored-once-1, want the one copy their Nats-Msg-Id keeps", count, subject)
+	}
+	if err := harness.client.Conn.FlushWithContext(testwait.Context(t)); err != nil {
+		t.Fatalf("a round trip on the exception probe's connection: %v", err)
 	}
 	noException(t, probe)
 }
@@ -416,8 +455,21 @@ func TestPublishRouteSendsNothingToASenderHoldingTheRole(t *testing.T) {
 		t.Fatalf("answer %s (%v), want holder ses_self", recorder.Body.String(), err)
 	}
 	expectFrames(t, frames, 0)
-	if _, err := lane.NextMsg(100 * time.Millisecond); !errors.Is(err, natsgo.ErrTimeout) {
-		t.Fatalf("the send went out on the role lane: the probe answered %v, want a timeout", err)
+	// A marker the test publishes on the role lane, on the client the route published on, after
+	// the send was answered, is the later action that proves the route published nothing there:
+	// anything the route sent on the lane reaches the probe before the marker.
+	if err := harness.client.Conn.Publish(contracts.RoleTopicPrefix+role, []byte("marker")); err != nil {
+		t.Fatalf("publish the marker on the role lane: %v", err)
+	}
+	if err := harness.client.Conn.FlushWithContext(testwait.Context(t)); err != nil {
+		t.Fatalf("flush the marker: %v", err)
+	}
+	message, err := lane.NextMsgWithContext(testwait.Context(t))
+	if err != nil {
+		t.Fatalf("read the role lane up to the marker: %v", err)
+	}
+	if string(message.Data) != "marker" {
+		t.Fatalf("the send went out on the role lane: the probe read %s before the marker", message.Data)
 	}
 }
 

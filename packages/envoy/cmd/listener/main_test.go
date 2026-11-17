@@ -710,6 +710,11 @@ func TestPublishHandler_RoleFreshDeafHolderIsAnsweredStored(t *testing.T) {
 	if answer.Holder != "ses_deaf" {
 		t.Fatalf("answer %+v, want the forward stored for ses_deaf", answer)
 	}
+	// The route answered, and the round trip after it puts every exception it published on the
+	// probe (noException).
+	if err := harness.client.Conn.FlushWithContext(testwait.Context(t)); err != nil {
+		t.Fatalf("a round trip on the exception probe's connection: %v", err)
+	}
 	noException(t, probe)
 	logs := harness.logs.String()
 	var lines []string
@@ -2973,6 +2978,9 @@ func TestListenerDeliveryHandler_RoleReleasedByReplacementIsKeptForItsNextHolder
 	if kept.Topic != controllerTopic {
 		t.Fatalf("the kept copy's topic is %q, want the role topic %s it was published on", kept.Topic, controllerTopic)
 	}
+	// The lane's handler runs on the subscription, so a marker kept behind the message is what
+	// shows it has returned; the read of the marker's kept copy is the round trip (noException).
+	keptBehind(t, harness, controller)
 	noException(t, probe)
 }
 
@@ -3008,6 +3016,9 @@ func TestListenerDeliveryHandler_ExpiredRoleKeepsTheClaimAndItsMessageIsKept(t *
 		t.Fatalf("publish role delivery: %v", err)
 	}
 	waitForKeptRoleMessage(t, harness.client, role, item.EventID)
+	// The lane's handler runs on the subscription, so a marker kept behind the message is what
+	// shows it has returned; the read of the marker's kept copy is the round trip (noException).
+	keptBehind(t, harness, role)
 	noException(t, probe)
 	if holder, err := harness.registry.RoleHolder(role); err != nil || holder != "ses_expired" {
 		t.Fatalf("the claim after the kept delivery = %q, %v; want ses_expired's, left for the reaper", holder, err)
@@ -3368,6 +3379,10 @@ func TestListenerDeliveryHandler_NoHolderKeepsARoleAndExceptsAnAgent(t *testing.
 			if kept.Topic != tc.topic {
 				t.Fatalf("the kept copy's topic is %q, want the role topic %s it was published on", kept.Topic, tc.topic)
 			}
+			// The lane's handler runs on the subscription, so a marker kept behind the message is
+			// what shows it has returned; the read of the marker's kept copy is the round trip
+			// (noException).
+			keptBehind(t, harness, tc.role)
 			noException(t, probe)
 		})
 	}
@@ -3960,11 +3975,13 @@ func marshalListenerEnvelope(t *testing.T, item contracts.Envelope) []byte {
 	return data
 }
 
+// assertDeliveryException waits for the next delivery exception the probe reads, through the
+// shared wait's bound (testwait.Context), and checks it is original's under reason.
 func assertDeliveryException(t *testing.T, probe *natsgo.Subscription, original contracts.Envelope, reason string) contracts.Envelope {
 	t.Helper()
-	message, err := probe.NextMsg(5 * time.Second)
+	message, err := probe.NextMsgWithContext(testwait.Context(t))
 	if err != nil {
-		t.Fatalf("read delivery exception: %v", err)
+		t.Fatalf("read the delivery exception of %s on %s: %v", original.EventID, probe.Subject, err)
 	}
 	var exception contracts.Envelope
 	if err := json.Unmarshal(message.Data, &exception); err != nil {

@@ -189,6 +189,9 @@ In `packages/daemon/internal/daemon`, `overrides.passes` holds one trigger for e
 A test hooks them with `triggering` (`passes_test.go`), and its `pass` runs one pass of a loop and waits for that pass's `observedPass`.
 A child process that a test starts keeps its own clock, so its intervals may be shortened through its settings, as the `DISPATCH_TEST_*` settings of `cmd/dispatch` and the `ENVOY_*` settings of Oh My Pi do.
 The test of a child waits for the facts that the child reports, and no verdict depends on the interval.
+A time that a server records itself, such as the moment JetStream stores a message, is the server's clock, and no clock of the test or of the code reaches it.
+A row whose input is a message older than a window lets real time age the message before anything is delivered, says so beside the sleep, and reads no verdict from that time, as `soak` in `startEnvelopeDeliveryThrough` does (`packages/envoy/cmd/listener/unplaceable_delivery_acceptance_test.go`).
+Such a sleep is no wait and no span: a loaded machine only makes the message older.
 
 The reason: a verdict on measured time measures the machine.
 A budget of 1 s of processor time in `internal/dispatch/pmdoc` read 1.07 s and 1.23 s beside other work, and a `pi-envoy` row read 2,210.99 ms against a bound of 2,000 ms.
@@ -586,6 +589,12 @@ The two are copies, because Go's internal rule keeps one module from importing t
 
 A test that wants a client of its own takes it from `testnats.Connect(t, url)`, which names it after the test and closes it when the test ends.
 A test that dials the server itself leaves a connection nobody named.
+
+A test proves that a subscription of its own received nothing by reading what the subscription holds (`NextMsg(0)`), once two things hold.
+First, the code that would publish has returned, and its publish reached the server before it returned: a JetStream publish waits for the stream's acknowledgement, and `bus.Client`'s core publish flushes (`publishConfirmed`).
+Second, a round trip on the subscription's own connection follows, a flush or any request, and the server answers it only after it has written that subscription every message it took before.
+A handler that a subscription runs may still be running when its effect shows, so the test first sends a marker behind the message through the same subscription and waits for the marker's effect (`keptBehind` in `packages/envoy/cmd/listener/confirmed_test.go`).
+A publish made on a goroutine that nothing waits for, such as the listener's refusal exception (`publishRefusalException`), is ordered by none of this.
 
 The end of the test's server is its leak check (`packages/daemon/internal/testnats/leakcheck.go`).
 The server held no client when it started, so each client it holds at the end is one that the test, or the code under it, left open.

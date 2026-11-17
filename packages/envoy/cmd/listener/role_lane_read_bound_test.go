@@ -85,6 +85,11 @@ func TestTheRoleLaneBoundsItsClaimReadAndItsHoldersSessionReadEachOnItsOwn(t *te
 		t.Fatalf("the role message reached no holder: a claim read that answered after %s left the session read less than its own %s bound:\n%s",
 			claimDelay, roleHolderReadTimeout, harness.logs.String())
 	}
+	// The handler returned and the forwarder settled; the round trip after them puts every
+	// exception the lane published on the probe (noException).
+	if err := harness.client.Conn.Flush(); err != nil {
+		t.Fatalf("a round trip on the exception probe's connection: %v", err)
+	}
 	noException(t, probe)
 	assertNothingKept(t, harness.client, role)
 	// Both reads went to their slow bucket, so the case this test is about held: a resolution

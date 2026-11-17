@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -324,6 +325,22 @@ func holdPullRequestOneUntilAbandoned(fake *fakeGitHub) *heldPullRequests {
 	return held
 }
 
+// holdReads is an intake's lease pool that counts the reads of its durable's hold the intake
+// makes on it (duty.HoldToken, the one statement an intake sends through its pool's QueryRow;
+// TryHold, the hold's renewals and the consumer lease go through Exec and Acquire). An intake
+// that holds no hold reads the hold first in each attempt it makes (heldDurable.takeHold), and
+// makes no attempt once it delivers, so a read is the sign that the attempt before it ended
+// without a take-over.
+type holdReads struct {
+	intakeLeases
+	reads atomic.Int64
+}
+
+func (l *holdReads) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	l.reads.Add(1)
+	return l.intakeLeases.QueryRow(ctx, sql, args...)
+}
+
 // A process standing by for the durable when the intake holding it stops does not start a pull
 // request's next message while the stopping intake is still handling the one before it: the order
 // of one key's messages holds across the hand-over, as it does inside one intake. The message the
@@ -359,7 +376,8 @@ func TestAHandOverKeepsAPullRequestsMessagesInOrder(t *testing.T) {
 
 	// The standby is running before the stop, as the second envoy-dispatch process of a rolling
 	// deploy is.
-	runIntake(t, newIntake(intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	standbyLeases := &holdReads{intakeLeases: deliveryTestLeases(t, pool)}
+	runIntake(t, newIntake(intakeTestClient(t), pool, standbyLeases, github, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
@@ -370,6 +388,7 @@ func TestAHandOverKeepsAPullRequestsMessagesInOrder(t *testing.T) {
 		defer first.mu.Unlock()
 		return first.delivering != nil && first.delivering.stopping.Load()
 	}, func() string { return "the first intake never began stopping" })
+	stopBegan := standbyLeases.reads.Load()
 
 	// overlapped reports whether a fetch of pull request 1 started while an earlier one had not
 	// yet ended.
@@ -388,12 +407,23 @@ func TestAHandOverKeepsAPullRequestsMessagesInOrder(t *testing.T) {
 		}
 		return false
 	}
-	// The standby polls for the hold every durableBindInterval and finds it live, since the
-	// stopping intake holds it until its stop has ended, so several of its polls go by with the
+	// The standby tries for the hold every durableBindInterval and finds it live, since the
+	// stopping intake holds it until its stop has ended, so several of its attempts go by with the
 	// stopping intake's handler of pull request 1 still held. Only once that stop releases the
 	// hold does the standby take the durable over, and its take-over recreates the durable, which
 	// starts its delivered count afresh, so the order across the hand-over is read off the fetches.
-	testwait.Span(t, 4*durableBindInterval, "a poll of the standby's leaves nothing to read: it finds the hold live and says it stands by once per standbyLogEvery, it does real NATS and Postgres I/O, which synctest cannot hold, and no action of the row is ordered after its next poll")
+	// Five reads of the hold begun after the stop did are four attempts that ended with no
+	// take-over (holdReads): the standby took nothing over in four tries while the handler was held.
+	testwait.Until(t, "the standby to try for the durable's hold five times after the first intake began stopping", func() (string, bool) {
+		events := held.of("1")
+		if overlapped(events) {
+			held.release()
+			t.Fatalf("pull request 1's events across the hand-over = %q: the standby started the pull request's next message "+
+				"while the stopping intake's handler of the one before it was still waiting on GitHub", events)
+		}
+		reads := standbyLeases.reads.Load() - stopBegan
+		return fmt.Sprintf("%d reads of the hold since the stop began; pull request 1's events %q", reads, events), reads >= 5
+	})
 	if events := held.of("1"); overlapped(events) {
 		held.release()
 		t.Fatalf("pull request 1's events across the hand-over = %q: the standby started the pull request's next message "+
