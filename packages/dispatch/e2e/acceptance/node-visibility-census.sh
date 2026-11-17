@@ -7,10 +7,11 @@
 #
 #   B1  The base build, booted through lib-baseline.sh, which builds it from BASELINE_SHA (unset,
 #       `git merge-base origin/main HEAD`) and stamps it with that commit, over the run's empty
-#       database, which it migrates. Its /healthz names that commit as its own and as its
-#       fleet_commit, the build processes.Live reads every live process as serving. Through its own
-#       API three people each ask the command bar, and the driver reads each run's stream to its
-#       terminal frame; the server stops, so nothing appends a frame after the inventory is read.
+#       database, which it migrates; the driver keeps the versions schema_migrations holds then as
+#       a file. Its /healthz names that commit as its own and as its fleet_commit, the build
+#       processes.Live reads every live process as serving. Through its own API three people each
+#       ask the command bar, and the driver reads each run's stream to its terminal frame; the
+#       server stops, so nothing appends a frame after the inventory is read.
 #       With psql it writes one run row a day ahead that holds no frame, and one run for each row
 #       of the identity table below, each a day ahead too and each form straight into
 #       going_requests.author, since the older server's sign-in stores a login in its canonical
@@ -18,7 +19,9 @@
 #       either build ends one by itself. It then reads the inventory - each run's id, author,
 #       words and frames - out of that database and keeps it as a file.
 #   H1  This head's server (DISPATCH_E2E_SERVER_BIN, stamped with its own commit) boots over the
-#       same database and runs every migration it holds; its /healthz names its own commit as the
+#       same database and runs every migration it holds that the database does not record, so the
+#       migrations it applied are the versions schema_migrations holds now and did not after B1,
+#       20261116205055_interaction_nodes among them; its /healthz names its own commit as the
 #       fleet's. The driver runs `envoy-dispatch backfill-graph-store`, waits ten minutes at most
 #       until no document_block_versions row has a null version, and compares the store with the
 #       inventory row by row, then going_requests and going_events the same way, naming every run
@@ -431,12 +434,15 @@ registered_commit B1 "read the base build's row of server_processes"
   fail B1 "the base build registers the commit it was built from" "server_processes names '$answer', want $baseline_commit"
 pass B1 "the base build serves $base, stamped with commit $baseline_commit, which its row of server_processes names"
 fleet_reads B1 "$baseline_commit"
-base_mark="$(baseline_high_water "$database_url")" ||
-  fail B1 "read the base build's schema_migrations high-water mark" "psql refused it"
-readonly base_mark
-[[ "$base_mark" =~ ^[0-9]+$ && "$base_mark" -gt 0 ]] ||
-  fail B1 "the base build ran its own migrations over the empty database" "schema_migrations reads '$base_mark'"
-pass B1 "the base build migrated the empty database to $base_mark"
+# The versions the base build applied, one a line, kept as a file: H1 reads the migrations this
+# head applied as the versions schema_migrations holds after its boot that this list lacks.
+query B1 "read the versions of schema_migrations the base build applied" \
+  "select version from schema_migrations order by version"
+printf '%s\n' "$answer" >"$work/base.migrations"
+readonly versions_re=$'^[0-9]+(\n[0-9]+)*$'
+[[ "$answer" =~ $versions_re ]] ||
+  fail B1 "the base build ran its own migrations over the empty database" "schema_migrations reads '$answer'"
+pass B1 "the base build migrated the empty database: schema_migrations holds $(wc -l <"$work/base.migrations") versions, kept in $work/base.migrations"
 
 sign_in B1 "$alice" " at $base"
 sign_in B1 "$bob" " at $base"
@@ -552,13 +558,21 @@ readonly head_commit="$answer"
   fail H1 "this head is stamped with a commit of its own" "its row names '$head_commit', the base build's $baseline_commit"
 pass H1 "this head registers commit $head_commit and the base build registered $baseline_commit: two stamped builds"
 fleet_reads H1 "$head_commit"
-query H1 "read this head's schema_migrations" \
-  "select coalesce(string_agg(version::text, ' ' order by version), '') from schema_migrations where version > $base_mark"
-readonly head_migrations="$answer"
-[[ " $head_migrations " == *" 20261116205055 "* ]] ||
+# The migrations this head applied are the versions schema_migrations holds now that it did not
+# hold after B1, and not the versions above the base's newest. A version is its migration's
+# timestamp, and the base may be a commit holding every unmerged branch this child builds on, whose
+# newest migration can sort after every one of this head's; the store applies each version
+# schema_migrations does not record, wherever it sorts (store.go, migrate).
+query H1 "read the versions of schema_migrations after this head's boot" \
+  "select version from schema_migrations order by version"
+printf '%s\n' "$answer" >"$work/head.migrations"
+head_migrations="$(comm -13 <(sort "$work/base.migrations") <(sort "$work/head.migrations") | tr '\n' ' ')" ||
+  fail H1 "compare the versions of schema_migrations after this head's boot with the base build's" "comm refused them"
+readonly head_migrations="${head_migrations% }"
+[[ -n "$head_migrations" && " $head_migrations " == *" 20261116205055 "* ]] ||
   fail H1 "this head ran its migrations over the base build's schema, 20261116205055_interaction_nodes among them" \
-    "the versions above $base_mark are: '$head_migrations'"
-pass H1 "this head ran $(wc -w <<<"$head_migrations") migration(s) above $base_mark, 20261116205055_interaction_nodes among them: $head_migrations"
+    "the versions schema_migrations holds after this head's boot and did not hold after B1 are: '$head_migrations'"
+pass H1 "this head ran $(wc -w <<<"$head_migrations") migration(s) the base build had not, 20261116205055_interaction_nodes among them: $head_migrations"
 
 backfill H1
 query H1 "read the owed block versions" "select count(*) from document_block_versions where version is null"
@@ -1096,7 +1110,7 @@ for version in $head_migrations; do
   pass M "${files[0]##*/}, the select run before a deploy, reads 0"
   censused=$((censused + 1))
 done
-[[ "$censused" -gt 0 ]] || fail M "run this head's migrations' .census.sql" "no migration above $base_mark"
+[[ "$censused" -gt 0 ]] || fail M "run this head's migrations' .census.sql" "this head applied no migration the base build had not"
 
 # --- E: the erase of the run the edit was made under ------------------------------------------------
 

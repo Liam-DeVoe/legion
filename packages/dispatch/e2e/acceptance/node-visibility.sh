@@ -28,11 +28,15 @@
 # was written. The first person repeats each surface that holds these kinds and finds the node in
 # each, beside his reads, so each absence stands beside the same read finding the node; her
 # personal token finds her pre-mortem and her risk at their addresses and reads her run as an
-# address nobody wrote, since a run is read by the whole credential that asked it, her cookie. The
-# event list, the log and search hold none of them for anybody, so each absence there stands beside
-# the same read finding a public comment. The issue tree, the inbox, the coverage read and a version
-# read can hold none of these kinds, and no route walks up from a risk, so the driver reads none of
-# them.
+# address nobody wrote, since a run is read by the whole credential that asked it, her cookie. One
+# read finds her run for nobody, her cookie included: the lens read of it (GET /api/v1/lenses?on=).
+# A run stands under no issue and no lens stands on it (plan P9), and that read answers a node of a
+# kind no lens stands on the 404 an address nobody wrote answers before it reads the store
+# (lensStandsOnKinds), so it answers every reader of her run that address's answer, byte for byte
+# once the id is substituted, as it answers bob. The event list, the log and search hold none of
+# them for anybody, so each absence there stands beside the same read finding a public comment. The
+# issue tree, the inbox, the coverage read and a version read can hold none of these kinds, and no
+# route walks up from a risk, so the driver reads none of them.
 #
 # His read of a hidden node's own address answers the status, the Content-Type and the body bytes
 # (never Date) an address of the same form nobody ever wrote answers, once the id is substituted. The
@@ -448,10 +452,14 @@ finds() {
 
 # Bob reads each address with his cookie and with his personal token, and each answers him what an
 # address of the same form nobody wrote answers through the same credential. The first person's
-# cookie, which wrote all three, finds each. Her personal token proves her too, so it finds her
-# pre-mortem and her risk, whose predicate compares the author a credential proved, and reads her
-# run as an address nobody wrote: a run's predicate compares the whole credential that asked it,
-# and her cookie asked it.
+# cookie, which wrote all three, finds each in every read but one. Her personal token proves her
+# too, so it finds her pre-mortem and her risk, whose predicate compares the author a credential
+# proved, and reads her run as an address nobody wrote: a run's predicate compares the whole
+# credential that asked it, and her cookie asked it. The read her cookie does not find is the lens
+# read of her run: a run stands under no issue and no lens stands on it (plan P9), and GET
+# /api/v1/lenses?on= refuses its kind before it reads the store (lensStandsOnKinds), so its answer
+# is the same whatever the store holds: every reader, her cookie among them, reads what an address
+# nobody wrote answers, byte for byte once the id is substituted.
 for name in premortem risk interaction; do
   address="${!name}"
   form="${address%/*}"
@@ -459,12 +467,17 @@ for name in premortem risk interaction; do
   for read in to from on; do
     nobody_path="$(address_read "$form/$missing" "$read")"
     path="$(address_read "$address" "$read")"
+    # The lens read of a run, which the read refuses by its kind whoever asks.
+    refused=false
+    [[ "$name" != interaction || "$read" != on ]] || refused=true
     readers=("cookie:$second" "token:$second")
     [[ "$name" != interaction ]] || readers+=("token:$first")
+    [[ "$refused" == false ]] || readers+=("cookie:$first")
     for reader in "${readers[@]}"; do
       case "$reader" in
         "cookie:$second") who="$second" label=bob ;;
         "token:$second") who="$second's personal token" label=bob-token ;;
+        "cookie:$first") who="$first" label=first ;;
         *) who="$first's personal token" label=first-token ;;
       esac
       request "$reader" GET "$nobody_path"
@@ -478,6 +491,8 @@ for name in premortem risk interaction; do
           "HTTP $status, Content-Type $content_type: $(body); the address nobody wrote answers $(<"$work/nobody.$label.$name.$read.head"): $(<"$work/nobody.$label.$name.$read.json")"
       pass C3 "$who's read GET $path answers HTTP $status, Content-Type $content_type and the body bytes of $form/$missing, once the id is substituted: $(body)"
     done
+    # Her cookie read the refused read above, as an address nobody wrote; it finds every other.
+    [[ "$refused" == false ]] || continue
     as_first C3 "$first reads GET $path" "$path"
     finds C3 "$first" "$path" "$read" "$address"
     if [[ "$name" != interaction ]]; then
