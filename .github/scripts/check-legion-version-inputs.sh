@@ -655,11 +655,18 @@ def decision_readers(path, doc):
     listed = {(job, reader_selector(reader)): reader.if_ for (workflow, job), readers in plan.DECISION_READERS.items()
               if workflow == path for reader in readers}
 
-    why = ("it reads a checked version step's decision, and an if: that skips it throws the decision away as "
-           "a job output `skip: \"true\"` does")
+    reads = ("it reads a checked version step's decision, and an if: that skips it throws the decision away as "
+             "a job output `skip: \"true\"` does")
+    # A job whose entry is its own if: alone and that a pinned job needs reads no decision: what
+    # holds it is that a job that carries the decision needs it.
+    needed = {job for (workflow, _), names in plan.JOB_NEEDS.items() if workflow == path for job in names}
+    chained = {job for (workflow, job), readers in plan.DECISION_READERS.items()
+               if workflow == path and job in needed and all(r.position == 0 for r in readers)}
     for (job_name, selector), want in sorted(listed.items()):
         name = described(selector)
         pinned = f"`{want}`" if want is not None else "nothing"
+        why = ("a job that carries the release decision needs it, so an if: that skips it skips that job too"
+               if job_name in chained else reads)
         if (job_name, selector) not in held:
             problem(f"in {path}'s job {job_name}, {name}, which {PLAN}'s DECISION_READERS names with the if: {pinned}, "
                     f"is not there: {why}; a step that moved or was renamed needs its entry changed too", path)

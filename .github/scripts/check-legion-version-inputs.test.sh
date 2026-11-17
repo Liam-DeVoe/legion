@@ -476,12 +476,15 @@ run_check "$root"
 check "exits 1 on targets given an if: false on main (N6a)" "$(is "$status" 1)"
 check "names the job's if: and the module's nothing" \
   "$(contains "$out" "the job's own if: of targets has the if: \`github.ref != 'refs/heads/main'\`, where $plan_file's DECISION_READERS names nothing for it")"
+check "gives a chain job's reason, not a reader's" \
+  "$(contains "$out" "names nothing for it: a job that carries the release decision needs it, so an if: that skips it skips that job too")"
+check "and not the reader's" "$(is "$(contains "$out" "of targets has the if: .*it reads a checked version step's decision")" false)"
 root=$(written chain-plugin-if)
 replace "$root/.github/workflows/release.yaml" $'  pi_envoy_build:\n    runs-on: ubuntu-24.04\n    if: "github.ref == \'refs/heads/main\'"\n' \
   $'  pi_envoy_build:\n    runs-on: ubuntu-24.04\n    if: false\n'
 run_check "$root"
 check "exits 1 on a plugin build's if: false (N6b)" "$(is "$status" 1)"
-check "names it" "$(contains "$out" "the job's own if: of pi_envoy_build has the if: \`false\`, where $plan_file's DECISION_READERS names \`github.ref == 'refs/heads/main'\` for it")"
+check "names it" "$(contains "$out" "the job's own if: of pi_envoy_build has the if: \`false\`, where $plan_file's DECISION_READERS names \`github.ref == 'refs/heads/main'\` for it: a job that carries the release decision needs it")"
 root=$(written chain-needs)
 replace "$root/.github/workflows/release-envoy-listener.yaml" $'    needs: ["build", "targets"]\n' $'    needs: ["targets"]\n'
 run_check "$root"
@@ -504,7 +507,7 @@ replace "$root/.github/workflows/release.yaml" \
 run_check "$root"
 check "exits 1 on worker_image's if: false on main (J5)" "$(is "$status" 1)"
 check "names its if: and the module's" \
-  "$(contains "$out" "the job's own if: of worker_image has the if: \`github.ref != 'refs/heads/main'\`, where $plan_file's DECISION_READERS names \`always() && (needs.legion_build.result == 'success'")"
+  "$(contains "$out" "the job's own if: of worker_image has the if: \`github.ref != 'refs/heads/main'\`, where $plan_file's DECISION_READERS names \`always() && (needs.legion_build.result == 'success'.*: a job that carries the release decision needs it")"
 root=$(written worker-needs-attest)
 replace "$root/.github/workflows/release.yaml" $'    needs: ["publish", "worker_image"]\n' $'    needs: ["worker_image", "worker_image_attest"]\n'
 run_check "$root"
@@ -715,6 +718,8 @@ replace "$root/.github/workflows/release.yaml" "needs.publish.outputs.tag != ''\
 run_check "$root"
 check "exits 1 on worker_image_release's if: changed" "$(is "$status" 1)"
 check "names its if:" "$(contains "$out" "the job's own if: of worker_image_release has the if: \`always() && .*false\`, where $readers_rule")"
+check "with a reader's reason, since its if: reads publish's tag" \
+  "$(contains "$out" "of worker_image_release has the if: .*: it reads a checked version step's decision")"
 root=$(written publish-reader-new)
 printf '      - name: Extra\n        if: needs.publish.outputs.version != %s\n        run: echo extra\n' "''" \
   >> "$root/.github/workflows/release.yaml"
