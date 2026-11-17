@@ -30,7 +30,7 @@ import { buildReferencePath, parseNodeReference } from "../../refs/routes";
 import { useKeymap } from "../../shell/keymap";
 import { conversationPath } from "../decisions-filter/decisions-parts";
 import { useSetFocusedNode } from "../focused-node";
-import { focusedNodeOf, holdOnScreen, IssueTree, useReleaseFocus } from "../IssueTree";
+import { focusedNodeOf, IssueTree, landOnRow, useReleaseFocus } from "../IssueTree";
 import { drawnLine, firstLineOf, heldBy, lineWords, type TreeNode } from "../issue-tree";
 import { useRowOnScreen } from "../NodeRow";
 import { chipWords } from "../node-row-chip";
@@ -42,6 +42,7 @@ import {
   PLAN_WORDS,
   PRESET_NAMES,
 } from "../page-words";
+import { treeEnterKey } from "../useTreeKeymap";
 import {
   needsChip,
   type PlanBar,
@@ -578,12 +579,9 @@ function PlanChart({
   const leave = useCallback(() => setFocused(undefined), []);
   const releaseFocus = useReleaseFocus({ editing: false, onLeave: leave });
   // An address that names a task puts the focus on its row, a cycle's included, and holds the
-  // row on screen until the reader acts, by the outline's own hold (`IssueTree.tsx`'s
-  // `holdOnScreen`, decision 94 of dispatch://INFRA-1196): the rows around it are still arriving
-  // and push it down the page. A row already inside the viewport is focused where it stands, as
-  // the outline focuses its address's row; one outside it is brought in by the focus, then placed
-  // by the row's own rule (`useRowOnScreen`). A key, a press, a wheel or a touch ends the hold,
-  // and so does a focus that has moved off the row.
+  // row on screen until the reader acts, by the outline's own landing (part I's `landOnRow`,
+  // decision 94 of dispatch://INFRA-1196): the rows around it are still arriving and push it down
+  // the page.
   const landingHold = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => landingHold.current?.abort(), []);
   useEffect(() => {
@@ -593,10 +591,7 @@ function PlanChart({
     );
     if (row == null) return;
     onLanded(land);
-    const box = row.getBoundingClientRect();
-    row.focus({ preventScroll: box.top >= 0 && box.bottom <= window.innerHeight });
-    landingHold.current?.abort();
-    landingHold.current = holdOnScreen(row);
+    landOnRow(row, landingHold);
   }, [land, onLanded, rows]);
 
   // The lines between a bar and the bars it needs, from where the browser laid the bars out:
@@ -691,25 +686,11 @@ function PlanChart({
     held[index]?.focus({ preventScroll: true });
   };
   useKeymap("issue", [
-    {
-      // The chart is one tab stop (R7): Tab from the page itself enters it at that stop, the
-      // row the reader last stood on, as Tab enters the outline (`useTreeKeymap.ts`'s
-      // `tree-enter`), so after Escape the same Tab goes back to the row under either drawing
-      // (R6). Tab from inside the chart is the browser's own, which leaves it, since every row
-      // but that one takes no focus.
-      id: "tree-enter",
-      keys: ["Tab", "Shift+Tab"],
-      label: "Move into the tree",
-      palette: false,
-      run: () => {
-        const held = items();
-        const tabbed = held.findIndex((row) => row.tabIndex === 0);
-        moveTo(held, tabbed === -1 ? 0 : tabbed);
-      },
-      when: () =>
-        (document.activeElement === null || document.activeElement === document.body) &&
-        items().length > 0,
-    },
+    // The chart is one tab stop (R7): Tab from the page itself enters it at that stop, the row
+    // the reader last stood on, by the outline's own key (part I's `treeEnterKey`, decision 94 of
+    // dispatch://INFRA-1196), so after Escape the same Tab goes back to the row under either
+    // drawing (R6).
+    treeEnterKey({ moveTo: (index) => moveTo(items(), index), rows: items }),
     {
       id: "tree-next",
       keys: ["j", "ArrowDown"],

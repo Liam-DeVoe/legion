@@ -1,12 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { type ReactNode, useMemo } from "react";
+import { useLocation } from "react-router-dom";
 
 import { primarySpec, roleDocument } from "../../../api/issue-cache";
 import { artifactBlocksQuery } from "../../../api/queries";
-import { buildIssuePath } from "../../refs/routes";
 import { useAddressTarget } from "../address-target";
-import { IssuePresetPanels } from "../IssuePresetPanels";
+import { useOutlineEditing } from "../IssuePresetPanels";
 import { issueAddress } from "../issue-address";
 import { artifactsBySlug } from "../issue-artifacts";
 import { NoTooltips } from "../NoTooltips";
@@ -15,7 +14,6 @@ import { EMPTY_STATE_LINES } from "../page-words";
 import { PlanFilterBody, type PlanRead, type PlanReads } from "../plan-filter/PlanFilterBody";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
-import { useToolbarSink } from "../useDocumentToolbars";
 import { useIssueTree } from "../useIssueTree";
 
 /**
@@ -24,12 +22,12 @@ import { useIssueTree } from "../useIssueTree";
  * instead (`plan-filter/PlanFilterBody.tsx`). The steps are the outline's own rows, so their
  * props are built as `slots/body.tsx` builds the outline's, from F's Plan view of the issue's
  * one tree (`presetView`), and a row of them is edited in its document's one editor as a row of
- * the outline is (`IssuePresetPanels`). Two things differ from the outline's (departure 2 of
- * dispatch://INFRA-3938's plan): the address's node is the view's only where it is a task, and
- * the view is handed the whole plan beside what the words filter left of it, for the order.
+ * the outline is (part I's `useOutlineEditing`). Two things differ from the outline's
+ * (departure 2 of dispatch://INFRA-3938's plan): the address's node is the view's only where it
+ * is a task, and the view is handed the whole plan beside what the words filter left of it, for
+ * the order.
  */
 export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
-  const navigate = useNavigate();
   const { hash, search } = useLocation();
   const spec = primarySpec(issue);
   const address = issueAddress(route, search, hash, spec?.slug);
@@ -109,17 +107,10 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
   const plan = whole.root.children;
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   const request = useOutlineRequest();
-  // The sink alone, which never changes, as the outline's body reads it (`slots/body.tsx`): the
-  // toolbars it fills are no part of the view, so each one an editor publishes while a step is
-  // edited draws neither the view nor its tree again.
-  const toolbarSink = useToolbarSink();
-  // The document a step is being edited in, whose one editor the view draws for the row to take
-  // onto its own stage (`IssuePresetPanels`, `document-stage.tsx`).
-  const [editing, setEditing] = useState<string | undefined>(undefined);
-  const edited =
-    editing === undefined
-      ? undefined
-      : issue.artifacts?.find((artifact) => artifact.id === editing);
+  // The document a step is being edited in, and that document's one editor, which the view draws
+  // for the row to take onto its own stage: part I's `useOutlineEditing`, as the outline's body
+  // reads it (`slots/body.tsx`, decision 94 of dispatch://INFRA-1196).
+  const { onEditing, panels } = useOutlineEditing(issue);
   const isClosed = issue.closed_at !== null;
   return (
     <NoTooltips>
@@ -137,7 +128,7 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
           // The words filter's Escape comes before the view is left (part N).
           holdsEscape={address.filter !== ""}
           isClosed={isClosed}
-          onEditing={setEditing}
+          onEditing={onEditing}
           plan={plan}
           reads={reads}
           {...(request === undefined ? {} : { request })}
@@ -146,23 +137,7 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
           rootRow={view.rootRow}
         />
       </div>
-      <IssuePresetPanels
-        editedDocument={edited}
-        isClosed={isClosed}
-        issueKey={issue.key}
-        onToolbarSink={toolbarSink}
-        // A version picked in the edited document's own editor opens that document at it.
-        onVersionChange={(artifact, version) =>
-          navigate(
-            buildIssuePath({
-              key: issue.key,
-              kind: "artifact",
-              slug: artifact.slug,
-              ...(version === null ? {} : { version }),
-            })
-          )
-        }
-      />
+      {panels}
     </NoTooltips>
   );
 }
