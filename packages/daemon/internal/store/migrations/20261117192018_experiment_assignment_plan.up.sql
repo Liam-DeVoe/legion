@@ -1,13 +1,15 @@
 -- 20261117192018_experiment_assignment_plan.up.sql — how the issue a draw was made for is done.
 --
 -- A variant of an experiment may name `plan` (config.Variant.Plan): `owner`, whose issues take the
--- plan their owner gives, `default`, whose issues run the project's default steps and take no plan
--- from their owner, and `owner-alone`. The draw records that word on its row beside the arm
+-- plan their owner gives, or `default`, whose issues run the project's default steps and take no
+-- plan from their owner. The draw records that word on its row beside the arm
 -- (experiment.DrawAndRecord), so an issue keeps the way it is done for its whole life, whatever
 -- the project's file says later: the row is written once and never updated
 -- (20261111045636_experiment_assignments, the paragraph on the primary key). The workflow reads it
--- off the issue's own rows (experiment.GroupOf). The check keeps the empty word and the three words
--- the loader takes (config.PlanGroup).
+-- off the issue's own rows (experiment.GroupOf). The check keeps the empty word, the two words the
+-- loader takes, and `owner-alone`, the owner doing the whole issue itself in one step: the loader
+-- refuses that word in this release (config's readVariants), so no draw writes it, and the check
+-- holds it so that a release that carries it out needs no migration to write it.
 --
 -- It back-fills nothing. Every row written before it reads '', which is an issue of no group: it
 -- runs as an issue with no experiment runs, as it did when it was drawn. A carried or settled row
