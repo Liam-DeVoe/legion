@@ -184,6 +184,80 @@ test(
   ROW_MS
 );
 
+// A foreground step (`Supervisor.run`: dev-postgres.sh, the web build) ends long before the run
+// does, and the id of its process group is then free for the system to give another process. So
+// the step is given back to the reaper as it ends, and a reaper whose starter is killed signals
+// no group of a step that already ended. A process left holding the step's group once the step's
+// leader has exited stands in for one the system gave that id to, and records any SIGTERM it is
+// sent; a process the supervisor still runs is the reaper's to end, so the row also sees the
+// reaper end what it holds.
+test(
+  "a reaper whose starter is killed signals no group of a foreground step that already ended",
+  async () => {
+    const dir = makeDirectory();
+    const stepGroup = join(dir, "step-group");
+    const signals = join(dir, "signals");
+    const kept = join(dir, "kept");
+    const standIn = join(dir, "stand-in");
+    await Bun.write(
+      standIn,
+      `#!/usr/bin/env bash\ntrap 'echo TERM >> "$1"; exit 0' TERM\nsleep 60 &\nwait\n`
+    );
+    await Bun.spawn(["chmod", "+x", standIn]).exited;
+    const step = `echo $$ > ${JSON.stringify(stepGroup)}; ${JSON.stringify(standIn)} ${JSON.stringify(signals)} &`;
+    const support = fileURLToPath(new URL("../local-instance-support.ts", import.meta.url));
+    const parent = Bun.spawn(
+      [
+        "bun",
+        "-e",
+        `import { writeFileSync } from "node:fs";
+         import { Supervisor } from ${JSON.stringify(support)};
+         const supervisor = new Supervisor();
+         await supervisor.run(["bash", "-c", ${JSON.stringify(step)}], "/");
+         const held = supervisor.start("held", ["sleep", "60"], "/");
+         writeFileSync(${JSON.stringify(kept)}, held.child.pid + "\\n");
+         setInterval(() => {}, 1 << 30);`,
+      ],
+      { stderr: "inherit", stdout: "ignore" }
+    );
+    try {
+      const written = await eventually(
+        async () =>
+          /\n$/u.test(
+            await Bun.file(kept)
+              .text()
+              .catch(() => "")
+          ),
+        ROW_MS / 2
+      );
+      if (!written) throw new Error("the parent ran no step: it wrote no pid of the held process");
+      const group = Number((await Bun.file(stepGroup).text()).trim());
+      const held = Number((await Bun.file(kept).text()).trim());
+      survivors.push(group, held);
+      expect(groupAlive(group)).toBe(true);
+      expect(groupAlive(held)).toBe(true);
+      // The parent's other child is its reaper, the leader of a session and group of its own,
+      // which exits only once it has signalled every group it holds and seen them end.
+      const reapers = childrenOf(parent.pid).filter((pid) => pid !== held);
+      const [reaperGroup] = reapers;
+      if (reapers.length !== 1 || reaperGroup === undefined) {
+        throw new Error(`the parent should have one child besides the held process: ${reapers}`);
+      }
+
+      parent.kill("SIGKILL");
+      await parent.exited;
+
+      expect(await eventually(() => !groupAlive(reaperGroup), 15_000)).toBe(true);
+      expect(groupAlive(held)).toBe(false);
+      expect(await Bun.file(signals).exists()).toBe(false);
+      expect(groupAlive(group)).toBe(true);
+    } finally {
+      parent.kill("SIGKILL");
+    }
+  },
+  ROW_MS
+);
+
 /** A directory holding stand-ins for `docker`, `initdb` and `pg_ctl`. Each appends how it was run
  *  to `calls`, one line per run, with its own pid first. A `pg_ctl start` then hangs, as a start
  *  that has not answered yet does. So does a `docker run`, unless `runFor` is given: it then runs
