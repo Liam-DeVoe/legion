@@ -1056,6 +1056,40 @@ export function owedUnless(gate: Gate): void {
   test.skip(true, gate.owed);
 }
 
+/**
+ * Waits until every event of the seed has landed: the workspace's event head, which the sign-in
+ * check names (`event_head`), reads the same twice a second apart. A first load opened before
+ * then would hear the seed's last events through the live feed and read the tree again for them,
+ * which a row's count of one tree read would take for the page's own. Read through the signed-in
+ * page's own request context.
+ */
+export async function seedEventsLanded(page: Page): Promise<void> {
+  let last: string | undefined;
+  await expect
+    .poll(
+      async () => {
+        const response = await page.request.get("/auth/whoami");
+        const answer: unknown = await response.json();
+        const head =
+          answer !== null &&
+          typeof answer === "object" &&
+          "event_head" in answer &&
+          typeof answer.event_head === "string"
+            ? answer.event_head
+            : undefined;
+        const still = head !== undefined && head === last;
+        last = head;
+        return still;
+      },
+      {
+        intervals: [1_000],
+        message: "the workspace's event head was still moving after the seed",
+        timeout: 30_000,
+      }
+    )
+    .toBe(true);
+}
+
 /** The model's tree read, which answers 404 for issue `key` while the route is absent. Read
  *  through the signed-in page's own request context. */
 export async function treeReadGate(page: Page, key: string): Promise<Gate> {
