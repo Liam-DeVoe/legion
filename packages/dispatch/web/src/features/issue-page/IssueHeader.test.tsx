@@ -15,9 +15,17 @@ import {
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import { issueQuery } from "../../api/queries";
-import type { Ask, IssueCoverage, IssueDetails, Project, UserIssueState } from "../../api/types";
+import type {
+  ArtifactReview,
+  Ask,
+  IssueCoverage,
+  IssueDetails,
+  Project,
+  UserIssueState,
+} from "../../api/types";
 import { parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { HeaderSlot } from "./slots/header";
 
 /**
@@ -192,12 +200,21 @@ function headerClient(): QueryClient {
   });
 }
 
-function renderHeader(path = "/issues/CORE-1", queryClient = headerClient()) {
+/** Pushes the `issue` scope, which the page's view row pushes (`useIssueKeymap.ts`) and the
+ *  header's slot does not: the header's keys register into it, and fire only while it is on. */
+function IssueScope(): null {
+  useKeymapScope("issue");
+  return null;
+}
+
+/** `issueScope` pushes the scope the header's keys fire in, for a case that presses them. */
+function renderHeader(path = "/issues/CORE-1", queryClient = headerClient(), issueScope = false) {
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
   return render(
     <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
+          {issueScope ? <IssueScope /> : null}
           <Routes>
             <Route path="/issues/:key/*" element={<HeaderAlone />} />
           </Routes>
@@ -572,6 +589,82 @@ test("the header lets a human move a Todo issue to In progress", async () => {
   } finally {
     view.unmount();
     patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// Decision 164 of dispatch://INFRA-1196/artifact/part-decisions-md: `a` and Shift+R are the
+// approval's only with the focus on the chip of a document whose request waits on the reader, or
+// on one of its two actions, and only while the action each presses takes a press. A stale
+// approval's Approve says its version; while the review is written Approve is disabled and
+// Request changes refuses a press, so neither key applies then.
+test("the approval chip's keys press its own actions, and only while those take a press", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader({
+    ...issue,
+    artifacts: [
+      { ...issue.artifacts[0], approval: { latest_version: 2, state: "stale", version: 1 } },
+    ],
+    open_asks: [approvalAsk()],
+  });
+  const answered = Promise.withResolvers<ArtifactReview>();
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockImplementation(
+    () => answered.promise
+  );
+  const view = renderHeader("/issues/CORE-1", headerClient(), true);
+  // Whether each of the two keys applies now, as the key card reads it (`appKeymap.describe`).
+  const bothApply = () =>
+    ["approve", "request-changes"].map(
+      (id) => appKeymap.describe().find((key) => key.scope === "issue" && key.id === id)?.enabled
+    );
+
+  try {
+    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+    const stateActions = screen.getByTestId("issue-state-actions");
+    const approve = await within(stateActions).findByRole("button", { name: "Approve v2" });
+    const requestChanges = within(stateActions).getByRole("button", { name: "Request changes" });
+    const chip = stateActions.querySelector<HTMLElement>("[data-approval-artifact]");
+    if (chip === null) throw new Error("the header draws no approval chip");
+
+    // Off the chip neither key applies, and `a` sends no review.
+    act(() => heading.focus());
+    expect(bothApply()).toEqual([false, false]);
+    await user.keyboard("a");
+    expect(createArtifactReview).not.toHaveBeenCalled();
+
+    // On the chip and on each of its actions both apply, and Shift+R opens Request changes.
+    for (const focused of [chip, approve, requestChanges]) {
+      act(() => focused.focus());
+      expect(bothApply()).toEqual([true, true]);
+    }
+    act(() => chip.focus());
+    await user.keyboard("{Shift>}R{/Shift}");
+    expect(await screen.findByRole("dialog", { name: "Request changes" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Request changes" })).not.toBeInTheDocument()
+    );
+    expect(document.activeElement).toBe(chip);
+
+    // `a` presses Approve, whose write is then out: neither key applies until it is answered.
+    await user.keyboard("a");
+    await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
+    expect(createArtifactReview).toHaveBeenCalledWith(
+      "artifact-1",
+      { state: "approved" },
+      keyedAttempt
+    );
+    await waitFor(() => expect(approve).toBeDisabled());
+    expect(requestChanges).toHaveAttribute("aria-disabled", "true");
+    expect(bothApply()).toEqual([false, false]);
+    await user.keyboard("a");
+    await user.keyboard("{Shift>}R{/Shift}");
+    expect(createArtifactReview).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog", { name: "Request changes" })).not.toBeInTheDocument();
+  } finally {
+    answered.reject(new Error("the connection dropped"));
+    view.unmount();
+    createArtifactReview.mockRestore();
     restore();
   }
 });

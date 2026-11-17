@@ -2129,3 +2129,266 @@ test("the header's menu gives the focus back to its control on Escape and after 
     ).toBe(true);
   });
 });
+
+/** The header's approval chip of the document `artifactId`, a server-made id that holds no `"`:
+ *  the issue's own chip, or the chip of a gated root's entry. */
+function approvalChip(page: Page, artifactId: string): Locator {
+  return issueHeader(page).locator(`[data-approval-artifact="${artifactId}"]`);
+}
+
+/** The documents the page sends a review of, in the order it sends them: each `POST` of
+ *  `/api/v1/artifacts/{id}/reviews`, the write Approve and Request changes make. */
+function reviewsSent(page: Page): string[] {
+  const sent: string[] = [];
+  page.on("request", (request) => {
+    const reviewed = /^\/api\/v1\/artifacts\/([^/]+)\/reviews$/.exec(
+      new URL(request.url()).pathname
+    );
+    if (request.method() === "POST" && reviewed !== null) {
+      sent.push(decodeURIComponent(reviewed[1] ?? ""));
+    }
+  });
+  return sent;
+}
+
+// Decision 164 of dispatch://INFRA-1196/artifact/part-decisions-md, R6 of dispatch://INFRA-3943's
+// spec version 6: with the focus on the approval chip of a document whose request waits on the
+// reader, `a` presses its Approve and the approval is recorded, and the focus stays on the chip.
+// With the focus on another of the header's controls, the title's heading, `a` is not the
+// approval's: it sends no review and the request still waits. Nor is it on the chip once the
+// document is approved, which draws no Approve.
+test("the approval chip's a approves the document whose request waits, and a elsewhere approves nothing", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await requestApproval(seeded.specArtifactId, { summary: "Read it." });
+    const reviewed = reviewsSent(page);
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const header = issueHeader(page);
+    const approve = header.getByRole("button", { exact: true, name: "Approve" });
+    await expect(approve, "the chip carries no Approve while its request waits").toBeVisible();
+
+    const heading = header.getByRole("heading", { level: 1 });
+    await heading.focus();
+    await expect(heading).toBeFocused();
+    await page.keyboard.press("a");
+    await framesDrawn(page, 2);
+    expect(reviewed, "a on the title's heading sent a review").toEqual([]);
+    expect(
+      (await getArtifact(seeded.specArtifactId)).approval?.state,
+      "a on the title's heading answered the request"
+    ).toBe("awaiting");
+    await expect(approve, "a on the title's heading took the chip's Approve away").toBeVisible();
+
+    const chip = approvalChip(page, seeded.specArtifactId);
+    await chip.focus();
+    await expect(chip).toBeFocused();
+    await page.keyboard.press("a");
+    await expect
+      .poll(async () => (await getArtifact(seeded.specArtifactId)).approval?.state, {
+        message: "a on the chip recorded no approval",
+      })
+      .toBe("approved");
+    expect(reviewed, "a on the chip sent other reviews than the spec's one").toEqual([
+      seeded.specArtifactId,
+    ]);
+    // The header takes the approval in - no request waits, so it draws neither action - and the
+    // focus is still on the chip, not on the page's body.
+    await expect(reviewActions(header), "the header still draws an action").toHaveCount(0);
+    await framesDrawn(page, 2);
+    await expect(chip, "the approval left the focus off the chip").toBeFocused();
+    // The approved document's chip draws no Approve, so there `a` sends nothing more.
+    await page.keyboard.press("a");
+    await framesDrawn(page, 2);
+    expect(reviewed, "a on the approved document's chip sent another review").toEqual([
+      seeded.specArtifactId,
+    ]);
+  });
+});
+
+// Decision 164, R6: with the focus on the chip whose request waits, or on its Approve, Shift+R
+// presses its Request changes, which opens part E's Request changes dialog, and Escape closes the
+// dialog and gives the focus back. With the focus on the title's heading it opens nothing.
+test("the approval chip's Shift+R opens Request changes, from the chip and from its Approve", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await requestApproval(seeded.specArtifactId, { summary: "Read it." });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const header = issueHeader(page);
+    const approve = header.getByRole("button", { exact: true, name: "Approve" });
+    await expect(approve, "the chip carries no Approve while its request waits").toBeVisible();
+    const dialog = page.getByRole("dialog", { name: "Request changes" });
+
+    const heading = header.getByRole("heading", { level: 1 });
+    await heading.focus();
+    await expect(heading).toBeFocused();
+    await page.keyboard.press("Shift+R");
+    await framesDrawn(page, 2);
+    await expect(dialog, "Shift+R on the title's heading opened Request changes").toHaveCount(0);
+
+    for (const [from, control] of [
+      ["the chip", approvalChip(page, seeded.specArtifactId)],
+      ["its Approve", approve],
+    ] as const) {
+      await control.focus();
+      await expect(control).toBeFocused();
+      await page.keyboard.press("Shift+R");
+      await expect(dialog, `Shift+R on ${from} did not open Request changes`).toBeVisible();
+      await expect(dialog.getByRole("textbox", { name: "Reason" })).toBeFocused();
+      await page.keyboard.press("Escape");
+      await expect(dialog, "Escape did not close Request changes").toHaveCount(0);
+      await expect(control, `Escape did not give the focus back to ${from}`).toBeFocused();
+    }
+    expect(
+      (await getArtifact(seeded.specArtifactId)).approval?.state,
+      "opening and closing Request changes answered the request"
+    ).toBe("awaiting");
+  });
+});
+
+// Decision 164, R6, on a gated root, whose header draws an entry per step: with the requests of
+// the spec and of the Verification document both waiting on the reader, each entry carries its
+// own Approve and Request changes, and `a` on the Verification document's entry approves that
+// document alone. The spec's request still waits, and its entry still carries its actions.
+test("an approval entry's a approves that entry's document and no other", async ({ browser }) => {
+  test.setTimeout(120_000);
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: "GATED", name: "Gated" });
+      await setGatedSteps("GATED", ["decisions", "criteria", "spec"]);
+      const root = await createIssue({ project: "GATED", spec: "The plan.", title: "Gated root" });
+      const verification = await createIssueArtifact(root.key, {
+        content: "# Verification\n\nOne check.\n",
+        name: "verification.md",
+      });
+      const spec = root.primary_artifact_id ?? "";
+      await requestApproval(spec, { summary: "Read it." });
+      await requestApproval(verification.artifact.id, { summary: "Read it." });
+      return { key: root.key, spec, verification: verification.artifact.id };
+    },
+    async (page, seeded) => {
+      const reviewed = reviewsSent(page);
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectHeaderDrawn(page);
+      const steps = issueHeader(page).getByTestId("issue-approval-steps");
+      const entry = (step: string) => steps.locator(`[data-approval-step="${step}"]`);
+      await expect(waitingCount(page)).toHaveText("Waiting on you (2)");
+      for (const step of ["criteria", "spec"]) {
+        await expect(
+          entry(step).getByRole("button", { name: /^Approve\b/ }),
+          `the ${step} entry carries no Approve while its request waits`
+        ).toBeVisible();
+      }
+
+      const chip = entry("criteria").locator(`[data-approval-artifact="${seeded.verification}"]`);
+      await chip.focus();
+      await expect(chip).toBeFocused();
+      await page.keyboard.press("a");
+      await expect
+        .poll(async () => (await getArtifact(seeded.verification)).approval?.state, {
+          message: "a on the Verification document's entry recorded no approval",
+        })
+        .toBe("approved");
+      expect(reviewed, "a on the Verification document's entry reviewed another document").toEqual([
+        seeded.verification,
+      ]);
+      expect(
+        (await getArtifact(seeded.spec)).approval?.state,
+        "a on the Verification document's entry answered the spec's request"
+      ).toBe("awaiting");
+      await expect(waitingCount(page)).toHaveText("Waiting on you (1)");
+      await expect(reviewActions(entry("criteria"))).toHaveCount(0);
+      await expect(
+        entry("spec").getByRole("button", { exact: true, name: "Approve" }),
+        "the spec's entry lost its Approve while its request waits"
+      ).toBeVisible();
+      await expect(chip, "the approval left the focus off the entry's chip").toBeFocused();
+    }
+  );
+});
+
+// Decision 164, R6, and the architect's "the key card's lines": the key card lists the two keys
+// with their lines, applying while the focus is on the chip whose request waits and greyed with
+// it anywhere else; the palette offers the two as rows on that same focus alone, and its Request
+// changes row opens the dialog the key does.
+test("the key card and the palette offer the approval chip's two keys while the focus is on it", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await requestApproval(seeded.specArtifactId, { summary: "Read it." });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    await expect(
+      issueHeader(page).getByRole("button", { exact: true, name: "Approve" }),
+      "the chip carries no Approve while its request waits"
+    ).toBeVisible();
+    const chip = approvalChip(page, seeded.specArtifactId);
+    const lines = [
+      ["Approve the focused approval request", "a"],
+      ["Request changes on the focused approval request", "Shift+R"],
+    ] as const;
+
+    const help = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+    const issueKeys = help.getByRole("region", { exact: true, name: "Issue" });
+    for (const onChip of [true, false]) {
+      if (onChip) {
+        await chip.focus();
+        await expect(chip).toBeFocused();
+      } else {
+        await leaveFocus(page);
+      }
+      await page.keyboard.press("?");
+      await expect(help, "? did not open the key card").toBeVisible();
+      for (const [label, keys] of lines) {
+        const line = issueKeys.getByRole("listitem").filter({ hasText: label });
+        await expect(line.locator("kbd"), `the key card lists no "${label}"`).toHaveText([keys]);
+        await expect(
+          line,
+          onChip
+            ? `"${label}" does not apply with the focus on the chip`
+            : `"${label}" applies with the focus off the chip`
+        ).toHaveAttribute("data-enabled", String(onChip));
+      }
+      await page.keyboard.press("Escape");
+      await expect(help, "Escape did not close the key card").toHaveCount(0);
+      if (onChip) await expect(chip, "the key card left the focus off the chip").toBeFocused();
+    }
+
+    const palette = page.getByRole("dialog", { name: "Search" });
+    const actions = palette.getByRole("group", { name: "Actions" });
+    await leaveFocus(page);
+    await page.keyboard.press("Control+k");
+    await expect(palette, "Control+k did not open the palette").toBeVisible();
+    for (const [label] of lines) {
+      await expect(
+        actions.getByRole("option", { name: label }),
+        `the palette offers "${label}" with the focus off the chip`
+      ).toHaveCount(0);
+    }
+    await page.keyboard.press("Escape");
+    await expect(palette, "Escape did not close the palette").toHaveCount(0);
+    await chip.focus();
+    await expect(chip).toBeFocused();
+    await page.keyboard.press("Control+k");
+    for (const [label] of lines) {
+      await expect(
+        actions.getByRole("option", { name: label }),
+        `the palette offers no "${label}" with the focus on the chip`
+      ).toBeVisible();
+    }
+    await actions.getByRole("option", { name: lines[1][0] }).click();
+    await expect(palette, "the palette's row did not close the palette").toHaveCount(0);
+    const requestChanges = page.getByRole("dialog", { name: "Request changes" });
+    await expect(requestChanges, "the palette's row opened no Request changes").toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(requestChanges, "Escape did not close Request changes").toHaveCount(0);
+    await expect(chip, "Request changes did not give the focus back to the chip").toBeFocused();
+  });
+});
