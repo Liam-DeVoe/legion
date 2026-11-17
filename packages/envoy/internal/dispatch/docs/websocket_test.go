@@ -49,7 +49,7 @@ func TestIssueCloseClosesOpenDocumentConnection(t *testing.T) {
 	if _, err := service.store.Pool.Exec(context.Background(), `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
 		t.Fatalf("close document issue: %v", err)
 	}
-	service.SetIssueClosed(context.Background(), "DOC-1", true)
+	service.issueOpenChanged(context.Background(), "DOC-1")
 	waitForNoLiveDocument(t, service, artifactID)
 	connection.SetReadDeadline(time.Now().Add(time.Second))
 	for {
@@ -89,11 +89,13 @@ func TestIssueReopenClosesADocumentConnectionAdmittedWhileClosed(t *testing.T) {
 					`update issues set closed_at = case when $1::boolean then now() end where key = 'DOC-1'`, closed); err != nil {
 					t.Fatalf("set the document issue's closed_at: %v", err)
 				}
-				service.SetIssueClosed(context.Background(), "DOC-1", closed)
+				service.issueOpenChanged(context.Background(), "DOC-1")
 			}
 			setIssueClosed(true)
 			reader := connectPeer(t, httpServer.URL, artifactID, "alice")
-			waitForPeerDocument(t, reader, "before\n")
+			if err := reader.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
+				t.Fatal(err)
+			}
 
 			// The premise: the room admitted the reader read-only, so it drops what the reader
 			// types and keeps the connection. The room handles one connection's frames in order, so
@@ -134,11 +136,30 @@ func TestIssueReopenClosesADocumentConnectionAdmittedWhileClosed(t *testing.T) {
 			// The room a connection now loads takes edits. It loads from the store, so its copy
 			// also shows the read-only reader's keystroke never reached the store.
 			editor := connectPeer(t, httpServer.URL, artifactID, "alice")
-			waitForPeerDocument(t, editor, "before\n")
+			if err := editor.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
+				t.Fatal(err)
+			}
 			typeOver(t, editor, "before", "after")
 			waitForPersistedProofText(t, service.store, artifactID, "after\n")
 		})
 	}
+}
+
+// admittedRequest is request on a request context of its own carrying the admission ServeHTTP
+// puts on every document socket's context, that context's cancel included, and the one read of
+// the document's issue ServeHTTP makes for it: authorize fills the admission in and takes that
+// read, and cancelling the context with errSchemaRevoked is how a re-check closes the socket
+// (revokeUnless).
+func admittedRequest(t *testing.T, service *Service, request *http.Request) *http.Request {
+	t.Helper()
+	ctx, cancel := context.WithCancelCause(request.Context())
+	t.Cleanup(func() { cancel(nil) })
+	issue, err := service.readIssue(ctx, service.queryFrom(ctx), request.PathValue("room"))
+	if err != nil {
+		t.Fatalf("read the document's issue as the socket's admission does: %v", err)
+	}
+	connection := &connectionState{issue: issue, admission: &schemaAdmission{cancel: cancel}}
+	return request.WithContext(context.WithValue(ctx, connectionContextKey{}, connection))
 }
 
 func TestClosedColdRoomAuthorizesReadOnly(t *testing.T) {
@@ -149,7 +170,7 @@ func TestClosedColdRoomAuthorizesReadOnly(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/ws/doc/"+artifactID, nil)
 	request.Header.Set("X-Dispatch-User", "alice")
 	request.SetPathValue("room", artifactID)
-	request = request.WithContext(context.WithValue(request.Context(), connectionContextKey{}, &connectionState{}))
+	request = admittedRequest(t, service, request)
 	config, ok := service.authorize(request)
 	if !ok || !config.ReadOnly {
 		t.Fatalf("cold closed room authorization = %#v, %t; want read-only acceptance", config, ok)
@@ -167,9 +188,7 @@ func TestSchemaVersionAdmissionAuthorizesMismatchAndVersionlessClientsReadOnly(t
 			)
 			request.Header.Set("X-Dispatch-User", "alice")
 			request.SetPathValue("room", artifactID)
-			request = request.WithContext(
-				context.WithValue(request.Context(), connectionContextKey{}, &connectionState{}),
-			)
+			request = admittedRequest(t, service, request)
 
 			config, ok := service.authorize(request)
 			if !ok || !config.ReadOnly {
@@ -184,23 +203,30 @@ func TestSchemaVersionAdmissionAuthorizesMismatchAndVersionlessClientsReadOnly(t
 	}
 }
 
-func TestSchemaVersionAdmissionCommunicatesReadOnlyScope(t *testing.T) {
+// The page presents its schema in the socket's query as schema_version and schema_creatable, and
+// in its Hocuspocus token as the version alone. A page of this build that does so is writable on
+// an open issue, both when the socket is accepted and when the provider authenticates.
+func TestSchemaAdmissionAuthorizesAPagePresentingItsCreatableVersionReadWrite(t *testing.T) {
 	service, artifactID := newTestService(t)
+	version := strconv.Itoa(pmdoc.SchemaVersion())
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/ws/doc/"+artifactID+"?schema_creatable="+strconv.Itoa(pmdoc.SchemaCreatable())+"&schema_version="+version,
+		nil,
+	)
+	request.Header.Set("X-Dispatch-User", "alice")
+	request.SetPathValue("room", artifactID)
+	request = admittedRequest(t, service, request)
 
-	mismatched, err := service.authorizeSchemaVersion(artifactID, "0")
-	if err != nil {
-		t.Fatalf("authorize mismatched schema version: %v", err)
+	accepted, ok := service.authorize(request)
+	if !ok || accepted.ReadOnly {
+		t.Fatalf("socket authorization = %#v, %t; want read-write acceptance", accepted, ok)
 	}
-	if !mismatched.ReadOnly {
-		t.Fatalf("mismatched schema admission = %#v, want read-only", mismatched)
-	}
-
-	current, err := service.authorizeSchemaVersion(artifactID, fmt.Sprintf("%d", pmdoc.SchemaVersion()))
-	if err != nil {
-		t.Fatalf("authorize current schema version: %v", err)
-	}
-	if current.ReadOnly {
-		t.Fatalf("current schema admission = %#v, want read-write", current)
+	// The token's answer is the admission the socket's own context carries, so it is asked on that
+	// context, as ygo asks it on the one it served the connection on.
+	authenticated, err := service.authorizeSchemaVersion(request.Context(), artifactID, version)
+	if err != nil || authenticated.ReadOnly {
+		t.Fatalf("token authorization = %#v, %v; want read-write", authenticated, err)
 	}
 }
 
@@ -446,9 +472,9 @@ func (s *panickingRoomLoadStore) Load(ctx context.Context, room string) (persist
 // A load that panics is failed where the panic is met, on the load's own goroutine and before ygo
 // closes the room's barrier (LoadDoc), as the store's refusal and a history the room's document
 // cannot take are failed there (loadableHistory, bootstrapLoadedState). It was once left to whichever
-// caller's Apply met ygo's recovery of it (sjawhar/ygo v1.54.1-sami.3,
-// provider/websocket/server.go:1904-1923), and such a caller can answer for no load: ygo removes
-// the room and closes its barrier before any waiter wakes (server.go:1932-1941), so the record
+// caller's Apply met ygo's recovery of it (sjawhar/ygo v1.55.1-sami.2,
+// provider/websocket/server.go:2004-2023), and such a caller can answer for no load: ygo removes
+// the room and closes its barrier before any waiter wakes (server.go:2025-2034), so the record
 // under the room's name by the time that caller looks can be a later load's, and failing that
 // room would fail the room the later load is building, while dropping its record would leave its
 // instance holding none, so the versions appended while it ran would reach no cursor

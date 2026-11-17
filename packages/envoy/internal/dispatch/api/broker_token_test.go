@@ -9,6 +9,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,10 +19,12 @@ import (
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/ratelimit"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 const (
@@ -30,6 +33,12 @@ const (
 	// bob), so a token this suite presents names someone the server already knows.
 	brokerTestSession = "ses_b1c2d3e4f5a6"
 	brokerTestPerson  = "alice"
+	// brokerTestService is the service a token that names no person names instead: the fleet
+	// the machine presenting it belongs to, as the broker's own configuration names it.
+	brokerTestService = "example-fleet"
+	// brokerTestReader is the service a read-only token names: the one a read entry of the
+	// broker's configuration names for the account its token is exchanged from.
+	brokerTestReader = "example-reader"
 	// brokerTestProject is the one project a named-scope token may write.
 	brokerTestProject = "BRK"
 	// brokerTestAddress is the source address the verifier's per-address bucket is keyed on.
@@ -45,8 +54,44 @@ func liveNamedToken(jkt string) brokertoken.Introspection {
 		Session:      brokerTestSession,
 		Person:       brokerTestPerson,
 		ProjectScope: brokertoken.ProjectScopeNamed,
-		Project:      brokerTestProject,
+		Projects:     []string{brokerTestProject},
 		Scope:        "dispatch.write",
+		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		ClientID:     brokertoken.ExchangeClientID,
+		Thumbprint:   jkt,
+	}
+}
+
+// serviceOnlyToken is the broker's answer for a machine nobody has signed in on: live, bound to
+// jkt, naming a session and the service its fleet is, and no person. It names no project either.
+// The exchange mints this shape for one caller only, a machine whose fleet entry names neither a
+// person nor a project (broker/exchange's Set.Google), and marks it with the person scope, the
+// wire's word for a token held to no one project.
+func serviceOnlyToken(jkt string) brokertoken.Introspection {
+	return brokertoken.Introspection{
+		Active:       true,
+		Session:      brokerTestSession,
+		Service:      brokerTestService,
+		ProjectScope: brokertoken.ProjectScopePerson,
+		Scope:        "dispatch.write",
+		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		ClientID:     brokertoken.ExchangeClientID,
+		Thumbprint:   jkt,
+	}
+}
+
+// readOnlyToken is the broker's answer for a read-only token: live, bound to jkt, naming a session
+// and the service of the read entry it was exchanged under, and no person and no project. The
+// project scope is none and the scope is the one word read, the shape the broker mints from a
+// read entry and nothing else (BROKER_EXCHANGE_READ_ACCOUNTS), and the one a verifier built with
+// Options.ServesReadOnly marks read-only.
+func readOnlyToken(jkt string) brokertoken.Introspection {
+	return brokertoken.Introspection{
+		Active:       true,
+		Session:      brokerTestSession,
+		Service:      brokerTestReader,
+		ProjectScope: brokertoken.ProjectScopeNone,
+		Scope:        brokertoken.ScopeRead,
 		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
 		ClientID:     brokertoken.ExchangeClientID,
 		Thumbprint:   jkt,
@@ -140,6 +185,9 @@ type brokerTokenRig struct {
 	deps     Deps
 	database *store.Store
 	broker   *brokertokentest.StubBroker
+	// served is the server Register mounted, whose own chains a test builds again around a
+	// stand-in for a route's handler (routeHandler, liveSocketHandler).
+	served *server
 }
 
 // newBrokerTokenRig is the package's own test server (newTestServer) with the broker-token check
@@ -148,29 +196,39 @@ type brokerTokenRig struct {
 // for a test that needs a bucket it can reach.
 func newBrokerTokenRig(t *testing.T, options ...func(*brokertoken.Options)) *brokerTokenRig {
 	t.Helper()
+	return newBrokerTokenRigOn(t, testServerOptions{}, options...)
+}
+
+// newBrokerTokenRigOn is newBrokerTokenRig on a server built from serving, whose brokerTokens is
+// the rig's own verifier: a test that needs the test hooks' rows mounted, or a GitHub and a
+// traced store of its own, sets them there, and the server is still the one newTestServer call.
+func newBrokerTokenRigOn(t *testing.T, serving testServerOptions, options ...func(*brokertoken.Options)) *brokerTokenRig {
+	t.Helper()
 	broker := brokertokentest.NewStubBroker(t)
-	handler, database, deps := newTestServer(t, testServerOptions{
-		brokerTokens: func(database *store.Store) *brokertoken.Verifier {
-			opts := brokertoken.Options{
-				BrokerURL: broker.Server.URL,
-				Account:   brokertoken.NewAccountToken(accountTokenFile(t, credentialTestAccountToken)),
-				Origin:    testServerURL,
-				Replay:    store.NewDPoPProofs(database.Pool),
-				// What Dispatch itself passes: the check keys its bucket on the address
-				// Dispatch's own proxy-trust rule reads, never one of its own.
-				Address: auth.ForwardedAddress,
-			}
-			for _, option := range options {
-				option(&opts)
-			}
-			verifier, err := brokertoken.New(opts)
-			if err != nil {
-				t.Fatalf("build the broker token verifier: %v", err)
-			}
-			return verifier
-		},
-	})
-	return &brokerTokenRig{handler: handler, deps: deps, database: database, broker: broker}
+	serving.brokerTokens = func(database *store.Store) *brokertoken.Verifier {
+		opts := brokertoken.Options{
+			BrokerURL: broker.Server.URL,
+			Account:   brokertoken.NewAccountToken(accountTokenFile(t, credentialTestAccountToken)),
+			Origin:    testServerURL,
+			Replay:    store.NewDPoPProofs(database.Pool),
+			// What Dispatch itself passes: the check keys its bucket on the address
+			// Dispatch's own proxy-trust rule reads, never one of its own, and serves a
+			// read-only token on the routes its read list names (cmd/dispatch,
+			// brokerTokenVerifier).
+			Address:        auth.ForwardedAddress,
+			ServesReadOnly: true,
+		}
+		for _, option := range options {
+			option(&opts)
+		}
+		verifier, err := brokertoken.New(opts)
+		if err != nil {
+			t.Fatalf("build the broker token verifier: %v", err)
+		}
+		return verifier
+	}
+	handler, database, deps, served := newRegisteredTestServer(t, serving)
+	return &brokerTokenRig{handler: handler, deps: deps, database: database, broker: broker, served: served}
 }
 
 // serve carries one request through the server under test.
@@ -231,7 +289,7 @@ func TestAPersonScopedBrokerTokenCarriesNoProject(t *testing.T) {
 	caller := newBrokerCaller(t)
 	const token = "a-dev-box-session-token"
 	answer := liveNamedToken(caller.jkt)
-	answer.ProjectScope, answer.Project = brokertoken.ProjectScopePerson, ""
+	answer.ProjectScope, answer.Projects = brokertoken.ProjectScopePerson, nil
 	rig.broker.Says(token, answer)
 
 	response := rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
@@ -325,6 +383,98 @@ func TestABrokerTokenWritesAsTheSessionItProves(t *testing.T) {
 	}
 }
 
+// TestANamedBrokerTokenNamingTwoProjectsWritesNothing: no exchange mints a named token naming two
+// projects, and Dispatch writes its project limit only for one; such an answer is refused before
+// any write rather than read as a caller no project limits.
+func TestANamedBrokerTokenNamingTwoProjectsWritesNothing(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const token = "a-named-token-naming-two-projects"
+	answer := liveNamedToken(caller.jkt)
+	answer.Projects = []string{brokerTestProject, "OTHER"}
+	rig.broker.Says(token, answer)
+	seedProject(t, rig, "OTHER", "Other")
+	written := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"project": "OTHER", "title": "Written under a named token naming two projects", "spec": "# Spec",
+	}))
+	if refusal := decodeBody[refusalAnswer](t, written); written.Code != http.StatusUnauthorized || refusal.Code != "BROKER_TOKEN_NOT_A_SESSION" {
+		t.Fatalf("a write under a named token naming two projects: status=%d body=%s, want 401 BROKER_TOKEN_NOT_A_SESSION", written.Code, written.Body.String())
+	}
+}
+
+// TestAnOlderBrokersNamedAnswerWritesNothing: while an older broker replica answers introspection
+// for a named token this release stored (a rolling update, a canary, a rollback), it reads the
+// token's one project from the older `project` claim the exchange also writes, and answers
+// `"project":"<key>"` with no `projects`. Dispatch refuses that answer before any write, rather
+// than reading a named token naming no project, which it would hold to no project at all. This is
+// the reader's half and passes whatever the exchange stores; the writer's half, that the exchange
+// stores that claim at all, is TestANamedTokenStoresItsProjectUnderTheOlderClaimToo
+// (internal/broker/oauth).
+func TestAnOlderBrokersNamedAnswerWritesNothing(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const token = "a-named-token-an-older-replica-answers-for"
+	rig.broker.SaysRaw(token, fmt.Sprintf(`{"active":true,"session":%q,"person":%q,"project_scope":"named","project":%q,"exp":%d,"client_id":%q,"jkt":%q}`,
+		brokerTestSession, brokerTestPerson, brokerTestProject, time.Now().Add(time.Hour).Unix(), brokertoken.ExchangeClientID, caller.jkt))
+	seedProject(t, rig, "OTHER", "Other")
+	written := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"project": "OTHER", "title": "Written under an older replica's answer", "spec": "# Spec",
+	}))
+	if refusal := decodeBody[refusalAnswer](t, written); written.Code != http.StatusUnauthorized || refusal.Code != "BROKER_TOKEN_NOT_A_SESSION" {
+		t.Fatalf("a write under an older replica's named answer: status=%d body=%s, want 401 BROKER_TOKEN_NOT_A_SESSION", written.Code, written.Body.String())
+	}
+}
+
+// TestANamedBrokerTokenLimitsWritesToItsProject: a token an operator's entry mapped to one
+// project writes that project and no other, as it always has.
+func TestANamedBrokerTokenLimitsWritesToItsProject(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const token = "a-named-token"
+	rig.broker.Says(token, liveNamedToken(caller.jkt))
+	seedProject(t, rig, brokerTestProject, "Broker")
+	seedProject(t, rig, "OTHER", "Other")
+
+	own := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"project": brokerTestProject, "title": "Written into its own project", "spec": "# Spec",
+	}))
+	if own.Code != http.StatusCreated {
+		t.Fatalf("a named token's write into its own project: status=%d body=%s", own.Code, own.Body.String())
+	}
+	other := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"project": "OTHER", "title": "Written into another project", "spec": "# Spec",
+	}))
+	if refusal := decodeBody[refusalAnswer](t, other); other.Code != http.StatusForbidden || refusal.Code != codeProjectScope {
+		t.Fatalf("a named token's write into another project: status=%d body=%s, want 403 %s", other.Code, other.Body.String(), codeProjectScope)
+	}
+}
+
+// TestAPersonTokenWithProjectsLimitsNoWriteYet: a token acting as its person carries the list its
+// trade asked for, and that list names no project the token writes as its own: whoami names
+// none, and the token writes another project its person may write, exactly as a token naming no
+// project does. What later reads the list is Dispatch's own project access rule.
+func TestAPersonTokenWithProjectsLimitsNoWriteYet(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const token = "a-person-token-naming-a-project"
+	answer := liveNamedToken(caller.jkt)
+	answer.ProjectScope, answer.Projects = brokertoken.ProjectScopePerson, []string{brokerTestProject}
+	rig.broker.Says(token, answer)
+	seedProject(t, rig, brokerTestProject, "Broker")
+	seedProject(t, rig, "OTHER", "Other")
+
+	who := decodeBody[whoamiAnswer](t, rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil)))
+	if who.Project != nil {
+		t.Fatalf("whoami project = %q, want null: a person token's list names no project it writes as its own", *who.Project)
+	}
+	other := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"project": "OTHER", "title": "Written into a project the list does not name", "spec": "# Spec",
+	}))
+	if other.Code != http.StatusCreated {
+		t.Fatalf("a person token's write into a project its list does not name: status=%d body=%s, want it written as before", other.Code, other.Body.String())
+	}
+}
+
 // withPerson signs a request in as a person through the test header identity.
 func withPerson(request *http.Request, login string) *http.Request {
 	request.Header.Set("X-Dispatch-User", login)
@@ -415,10 +565,11 @@ func TestBrokerTokenRefusalsEachHaveTheirOwnCode(t *testing.T) {
 		}
 	})
 	t.Run("the broker unreachable", func(t *testing.T) {
-		rig := newBrokerTokenRig(t)
+		// The verifier asks a broker at a port the test holds and nothing listens on.
+		refused := "http://" + testport.Refused(t)
+		rig := newBrokerTokenRig(t, func(o *brokertoken.Options) { o.BrokerURL = refused })
 		caller := newBrokerCaller(t)
 		const token = "a-token-nobody-can-be-asked-about"
-		rig.broker.Server.Close()
 
 		response := rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
 		refusal := decodeBody[refusalAnswer](t, response)
@@ -612,5 +763,134 @@ func TestTheRateRefusalCarriesTheWaitInItsHeader(t *testing.T) {
 	}
 	if rig.broker.Count() != 1 {
 		t.Fatalf("the refused request reached the broker: %d introspections, want 1", rig.broker.Count())
+	}
+}
+
+// TestAServiceOnlyBrokerTokenReadsAndIsNamedByWhoami: a machine nobody has signed in on holds a
+// token the broker says names a session and a service, no person and no project. It is a
+// session's credential like any other — whoami names the session and the service, and a read
+// answers — and only its writes are refused (the test below).
+func TestAServiceOnlyBrokerTokenReadsAndIsNamedByWhoami(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const token = "a-token-naming-no-person"
+	rig.broker.Says(token, serviceOnlyToken(caller.jkt))
+	own := seedProject(t, rig, brokerTestProject, "Broker")
+
+	who := rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
+	if who.Code != http.StatusOK {
+		t.Fatalf("whoami under a service-only token: status=%d body=%s", who.Code, who.Body.String())
+	}
+	answer := decodeBody[whoamiAnswer](t, who)
+	if answer.Kind != "agent" || answer.Session == nil || *answer.Session != brokerTestSession {
+		t.Fatalf("whoami = %+v, want the session the token names", answer)
+	}
+	if answer.Service == nil || *answer.Service != brokerTestService {
+		t.Fatalf("whoami service = %v, want %q", answer.Service, brokerTestService)
+	}
+	if answer.Owner != nil {
+		t.Fatalf("whoami owner = %q, want null: the token names no person", *answer.Owner)
+	}
+	if answer.Project != nil {
+		t.Fatalf("whoami project = %q, want null: the token is held to no one project", *answer.Project)
+	}
+
+	read := rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/issues/"+own.issue, token, nil))
+	if read.Code != http.StatusOK {
+		t.Fatalf("read an issue under a service-only token: status=%d body=%s", read.Code, read.Body.String())
+	}
+}
+
+// TestAServiceOnlyBrokerTokenIsRefusedEveryWrite: the refusal is at the one chokepoint register
+// wraps every mutating row in, so it covers every write class — a project's object, the
+// deployment's own rows, a write whose project its body names, and a session's own rows — and
+// the rows below are one of each. Each refusal names the command that makes the write possible,
+// and nothing lands.
+func TestAServiceOnlyBrokerTokenIsRefusedEveryWrite(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const token = "a-token-that-may-not-write"
+	rig.broker.Says(token, serviceOnlyToken(caller.jkt))
+	own := seedProject(t, rig, brokerTestProject, "Broker")
+
+	writes := map[string]struct {
+		method, pattern, path string
+		body                  any
+		class                 writeScope
+	}{
+		"a comment on its own project's issue": {
+			http.MethodPost, "/api/v1/issues/{key}/comments", "/api/v1/issues/" + own.issue + "/comments",
+			map[string]any{"body": "Written by nobody."}, scopeProject,
+		},
+		"an issue whose body names the project": {
+			http.MethodPost, "/api/v1/issues", "/api/v1/issues",
+			map[string]any{"project": brokerTestProject, "title": "Filed by nobody", "spec": "# Spec"},
+			scopeProjectInBody,
+		},
+		"a project of the deployment's own": {
+			http.MethodPost, "/api/v1/projects", "/api/v1/projects",
+			map[string]any{"key": "NEW", "name": "New"}, scopeDeployment,
+		},
+		"an artifact of its own session": {
+			http.MethodPost, "/api/v1/agents/{session_id}/artifacts", "/api/v1/agents/" + brokerTestSession + "/artifacts",
+			map[string]any{"name": "notes.md", "content": "# Notes"}, scopeSession,
+		},
+	}
+	for name, write := range writes {
+		t.Run(name, func(t *testing.T) {
+			if got := writeClasses[write.method+" "+write.pattern]; got != write.class {
+				t.Fatalf("%s %s is classed %q, want %q", write.method, write.pattern, got, write.class)
+			}
+			response := rig.serve(caller.presenting(t, write.method, write.path, token, write.body))
+			refusal := decodeBody[refusalAnswer](t, response)
+			if response.Code != http.StatusForbidden || refusal.Code != contracts.DispatchSignInRequired {
+				t.Fatalf("status=%d refusal=%+v, want 403 %s", response.Code, refusal, contracts.DispatchSignInRequired)
+			}
+			if !strings.Contains(refusal.Error, "agent-secrets login") {
+				t.Fatalf("the refusal does not name the sign-in command: %q", refusal.Error)
+			}
+			if !strings.Contains(refusal.Error, brokerTestService) {
+				t.Fatalf("the refusal does not name the service: %q", refusal.Error)
+			}
+		})
+	}
+
+	issues := rig.asPerson(t, http.MethodGet, "/api/v1/issues?project="+brokerTestProject, nil)
+	if strings.Contains(issues.Body.String(), "Filed by nobody") {
+		t.Fatalf("a refused write created an issue: %s", issues.Body.String())
+	}
+	projects := rig.asPerson(t, http.MethodGet, "/api/v1/projects", nil)
+	if strings.Contains(projects.Body.String(), `"NEW"`) {
+		t.Fatalf("a refused write created a project: %s", projects.Body.String())
+	}
+}
+
+// TestAServiceOnlyBrokerTokenWithNoProofIsRefused: the new caller kind changes nothing about how
+// a token is presented. A DPoP-bound token sent with no proof at all is refused where it always
+// was — the broker holds it live and the proof check is what turns it down — so no write
+// refusal is ever reached, there being no caller to refuse, and a write under it lands nothing.
+func TestAServiceOnlyBrokerTokenWithNoProofIsRefused(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const token = "a-token-sent-without-its-proof"
+	rig.broker.Says(token, serviceOnlyToken(caller.jkt))
+	seedProject(t, rig, brokerTestProject, "Broker")
+
+	response := rig.serve(brokerRequest(t, http.MethodGet, "/api/v1/whoami", nil, "DPoP "+token, ""))
+	refusal := decodeBody[refusalAnswer](t, response)
+	if response.Code != http.StatusUnauthorized || refusal.Code != "BROKER_TOKEN_PROOF_INVALID" {
+		t.Fatalf("status=%d refusal=%+v, want 401 BROKER_TOKEN_PROOF_INVALID", response.Code, refusal)
+	}
+
+	written := rig.serve(brokerRequest(t, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": brokerTestProject, "title": "Filed with no proof", "spec": "# Spec",
+	}, "DPoP "+token, ""))
+	refused := decodeBody[refusalAnswer](t, written)
+	if written.Code != http.StatusUnauthorized || refused.Code != "BROKER_TOKEN_PROOF_INVALID" {
+		t.Fatalf("a write: status=%d refusal=%+v, want 401 BROKER_TOKEN_PROOF_INVALID", written.Code, refused)
+	}
+	issues := rig.asPerson(t, http.MethodGet, "/api/v1/issues?project="+brokerTestProject, nil)
+	if strings.Contains(issues.Body.String(), "Filed with no proof") {
+		t.Fatalf("the unproved write created an issue: %s", issues.Body.String())
 	}
 }

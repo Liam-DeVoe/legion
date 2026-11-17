@@ -1,17 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   closeServers,
   daemonStub,
@@ -32,6 +24,7 @@ import {
   recordedCalls,
   run,
   servers,
+  useScratchDirectory,
 } from "./multi-repo-acceptance-harness";
 import {
   type FakeProcTreeOptions,
@@ -50,6 +43,10 @@ import {
 // credential helper) and `gh` (the read of T) by absolute path under a trusted root, as a pod's
 // `/opt/legion/bin/...`; the agent's PATH carries only a fake `git` that records every call and
 // fails, so a run that reached git would show.
+
+useScratchDirectory();
+
+const makeDirectory = temporaryDirectories("multi-repo-acceptance");
 
 afterEach(() => {
   closeServers();
@@ -382,8 +379,8 @@ describe("second-owner: the role's credential, resolved once, with a positive pu
     });
   }
 
-  test("a pre-merge phase (awaiting_merge) is a FAIL even with a merged PR and valid credentials", async () => {
-    const result = await scenario({ phase: "awaiting_merge" });
+  test("a phase before the close (merging) is a FAIL even with a merged PR and valid credentials", async () => {
+    const result = await scenario({ phase: "merging" });
     expectVerdictFail(result);
   });
 
@@ -741,10 +738,11 @@ describe("second-owner: the role's credential, resolved once, with a positive pu
   });
 
   describe("nothing of the agent's cmdline or environment reaches evidence", () => {
-    // A pod agent's real cmdline carries --append-system-prompt <the whole composed prompt,
-    // deployment instructions included>. The evidence holds only the pid, argv[0], the argument
-    // count, and a sha256 of the whole /proc/<pid>/cmdline file, from one parse that reads the
-    // file once and cannot restart mid-argv.
+    // A pod agent's cmdline carries --append-system-prompt <its prompt file>, and one launched by
+    // an older daemon carried the whole composed prompt there, deployment instructions included,
+    // which this case stands in for. The evidence holds only the pid, argv[0], the argument count,
+    // and a sha256 of the whole /proc/<pid>/cmdline file, from one parse that reads the file once
+    // and cannot restart mid-argv.
     test("the agent's cmdline never reaches evidence as values, only pid/argv0/argc/sha256: PASS", async () => {
       const marker = "DEPLOYMENT-INSTRUCTIONS-MARKER-do-not-leak-this-host.internal.example";
       const prompt = `# Role prompt\n\nAddressing fragment.\n\n${marker}\n`;
@@ -760,10 +758,10 @@ describe("second-owner: the role's credential, resolved once, with a positive pu
       );
     });
 
-    // A prompt just under the runtime's 131,072-byte argument bound
-    // (packages/daemon/internal/runtime/sandbox/manifest.go) would make a line-batching redactor
-    // (xargs) lose its "previous argument was --append-system-prompt" state across invocations.
-    // The parser reads the whole file once; a near-limit prompt proves it never restarts.
+    // A prompt just under the 131,072 bytes Linux allows one argument (MAX_ARG_STRLEN), as an
+    // older daemon's agent could carry, would make a line-batching redactor (xargs) lose its
+    // "previous argument was --append-system-prompt" state across invocations. The parser reads
+    // the whole file once; a near-limit prompt proves it never restarts.
     test("a ~130 KB prompt, near the runtime's own argument bound, is never in evidence: PASS", async () => {
       const marker = "DEPLOYMENT-INSTRUCTIONS-MARKER-must-not-leak";
       const prompt = marker + "-".repeat(130400 - marker.length);
@@ -845,10 +843,10 @@ describe("second-owner: the role's credential, resolved once, with a positive pu
       push_t: { status: 403, content_type: "text/plain", output: writeRefused.body },
     });
     const forgedProtocol = `import json, sys; print(${JSON.stringify(forged)}); sys.exit(0)`;
-    const workspace = mkdtempSync(join(tmpdir(), "multi-repo-acceptance-workspace-"));
+    const workspace = makeDirectory("workspace");
     writeFileSync(join(workspace, "hashlib.py"), forgedProtocol);
 
-    const fakeHome = mkdtempSync(join(tmpdir(), "multi-repo-acceptance-home-"));
+    const fakeHome = makeDirectory("home");
     const siteProc = Bun.spawnSync([
       "python3",
       "-c",
@@ -859,19 +857,14 @@ describe("second-owner: the role's credential, resolved once, with a positive pu
     mkdirSync(userSite, { recursive: true });
     writeFileSync(join(userSite, "user-site-attack.pth"), `${forgedProtocol}\n`);
 
-    try {
-      const result = await scenario({ cwd: workspace, hostEnv: { HOME: fakeHome } });
-      expectPass(result);
-      const written = result.summary();
-      expect(written).toContain("role pid: 9");
-      expect(written).not.toContain("role pid: 999");
-      expect(written).not.toContain("argv0=forged");
-      // The real prober ran: it made both of GitHub's requests itself.
-      expect(result.github.requests.map((request) => request.repo)).toEqual([O, T]);
-    } finally {
-      rmSync(workspace, { recursive: true, force: true });
-      rmSync(fakeHome, { recursive: true, force: true });
-    }
+    const result = await scenario({ cwd: workspace, hostEnv: { HOME: fakeHome } });
+    expectPass(result);
+    const written = result.summary();
+    expect(written).toContain("role pid: 9");
+    expect(written).not.toContain("role pid: 999");
+    expect(written).not.toContain("argv0=forged");
+    // The real prober ran: it made both of GitHub's requests itself.
+    expect(result.github.requests.map((request) => request.repo)).toEqual([O, T]);
   });
 
   describe("the test-only seams are refused without the marker", () => {

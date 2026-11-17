@@ -10,7 +10,9 @@
 // (nothingToEmbed) is settled with no vector and no model call instead. The coverage pass
 // (coverage.go) adds what no trigger saw - items written before the triggers existed or with them
 // off - and, once the configured embedder has answered, drops vectors another model or place
-// made, so the server keeps meaning search's coverage itself.
+// made, so the server keeps meaning search's coverage itself. Every server process runs both, but
+// only a process whose embedder has the one active identity (active.go) embeds or drops anything,
+// so two processes configured with different embedders do not undo each other's work.
 package embedqueue
 
 import (
@@ -311,7 +313,10 @@ type pendingRow struct {
 // committed: it is done, so a full batch of them keeps scan draining. Every poller drives the
 // queue through this one function; scanPending's claim is what lets the pollers of two
 // envoy-dispatch processes run safely at once, each claiming a different set of pending rows
-// rather than racing to embed the same ones twice.
+// rather than racing to embed the same ones twice. A process whose embedder's identity is not
+// the active one (embedderActive) claims, settles, embeds and reserves nothing, and reports
+// nothing done: the rows are the active identity's process's to embed, and a vector this one made
+// would be another identity's, which that process's coverage pass drops.
 //
 // A throttled whole-batch failure never counts toward any row's dead-letter threshold, however
 // many times it recurs: it is infrastructure (the provider is rate-limiting this account), never
@@ -333,6 +338,9 @@ type pendingRow struct {
 // came back: handleGroupFailure checks for it before confirmSoloFailure or bisectSplit ever run,
 // and retries the whole group instead.
 func ProcessBatch(ctx context.Context, deps Deps) (succeeded, failed int, blocked, throttled bool, err error) {
+	if active, _, err := deps.embedderActive(ctx); err != nil || !active {
+		return 0, 0, false, false, err
+	}
 	rows, settled, err := scanPending(ctx, deps)
 	if err != nil {
 		return 0, 0, false, false, err
@@ -513,9 +521,9 @@ type budgetedGroup struct {
 // has to reserve more than one minute's worth of budget for a single group, or its bytes
 // (embed.BoundedBytes) past MaxBatchBytes when that is set, so every background call fits the
 // place's request timeout (Azure's, azureMaxBatchBytes' comment). Each row is in exactly one
-// group. A row that alone meets or passes either limit - a maxInputChars-length document under
+// group. A row that alone meets or passes either limit - a MaxInputRunes-length document under
 // a small quota, say - still gets a group of its own rather than being split further: both counts
-// already truncate at maxInputChars, so even that worst case is a known, bounded size (at most
+// already truncate at MaxInputRunes, so even that worst case is a known, bounded size (at most
 // 128,000 bytes, under Azure's 320,000), and one row is the smallest unit this package ever
 // embeds. Each group's tokens field is the sum of its own rows' estimates, computed here once and
 // carried forward rather than re-estimated from the group's joined texts later.
@@ -653,6 +661,14 @@ func reserveBackgroundTokens(ctx context.Context, deps Deps, texts []string, ren
 // background work on it can pass the deployment's quota; the 429s that follow are throttles,
 // which the queue retries without counting them against any row. That is accepted.
 //
+// Two processes may reserve with different ceilings: two builds whose places set different
+// limits, during the release that changes them. Each statement refills at most its own ceiling's
+// rate and caps at its own ceiling, so the row never refills faster than the larger ceiling, and
+// each process waits out its debt at its own rate, never faster than the larger one: together they
+// take no more than one process with the larger ceiling would, the larger ceiling a minute once
+// the row is in debt. Only a process whose embedder's identity is active reserves at all
+// (ProcessBatch, Cover).
+//
 // chunkForBudget already keeps one reservation's own tokens at or under ceilingPerMinute, but the
 // wait can still run past renewClaimInterval when other debt was already on the row (another
 // process's, or this one's own earlier groups) - renewal is woken (renew) at every
@@ -703,7 +719,7 @@ func waitOutDebt(ctx context.Context, wait time.Duration, renewal *claimRenewal,
 // Foundry's deployment answers HTTP 500 to an empty input, which bisection would confirm as the
 // row's own failure and dead-letter). The queue settles its row with no model call
 // (scanPending, settleDeadNothingToEmbed), and the coverage pass and report leave the item out
-// (coverageSource.items).
+// (searchableItems).
 func nothingToEmbed(expr string) string {
 	return "(" + expr + " !~ '[^[:space:]]')"
 }

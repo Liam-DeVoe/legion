@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { GraphEdge } from "../../api/types";
@@ -10,6 +10,7 @@ import {
   textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { compiledBlockSchema } from "../doc/schema";
 import { blockFragment, isBlockItemKind } from "./block-reference";
 import { referenceTriggerProps } from "./RefPreview";
 import { referencesQuery } from "./reference-target";
@@ -33,13 +34,47 @@ const NODE_LABELS: Record<GraphEdge["node"]["kind"], string> = {
 
 const STRUCTURAL_LABELS: Partial<Record<GraphEdge["kind"], string>> = {
   anchored_to: "Anchored item",
+  answers: "Answer",
   attached_to: "Attached document",
   blocked_by: "Blocked issue",
   child_of: "Child issue",
   followed_by: "Follower",
+  // The two kinds a typed block's `block[]` attributes make (`blocks.json`): a check or a plan
+  // task that names a requirement in `serves`, and a plan task that names another in `needs`.
+  // Read from the named block, the edge says what the citing block does for it.
+  needs: "needed by",
   owned_by: "Owned item",
   replies_to: "Reply",
+  serves: "served by",
 };
+
+/** Every structural edge kind the page renders: all the ones `GraphEdgeKind` names. */
+const RENDERED_EDGE_KINDS: Record<GraphEdge["kind"], true> = {
+  affects: true,
+  anchored_to: true,
+  answers: true,
+  attached_to: true,
+  blocked_by: true,
+  child_of: true,
+  depends_on: true,
+  followed_by: true,
+  mentions: true,
+  owned_by: true,
+  part_of: true,
+  replies_to: true,
+};
+
+/** The other kinds the page renders: the edge kinds the `block[]` attributes of the manifest
+ *  this page was built with make, each such attribute's name, as Go's `pmdoc.LinkKinds` reads
+ *  them. A kind only a newer build's manifest declares is not among them, so the page leaves it
+ *  out rather than draw it under another edge's label. */
+const MANIFEST_EDGE_KINDS = new Set(
+  compiledBlockSchema.types.flatMap((type) =>
+    Object.entries(type.attributes)
+      .filter(([, attribute]) => attribute.kind === "block[]")
+      .map(([name]) => name)
+  )
+);
 
 /** Beyond this the row clamps the excerpt and offers to expand it. The real clamp is CSS, so
  *  this is the text shape that makes a clamp likely rather than a measurement. */
@@ -47,13 +82,14 @@ const CLAMP_LINES = 3;
 const CLAMP_CHARACTERS = 240;
 
 /** The ask, comment or message a graph node is a block of: its parent, for a block node naming
- *  no document (`ask/<uuid>#b2`, `comment/<uuid>#b2`, `message/<uuid>#b1`); undefined for any
- *  other node. A part of an ask reads as its ask, as a block of a comment reads as its comment:
- *  one set of item kinds says which (`isBlockItemKind`). */
+ *  no document (`ask/<uuid>#b2`, `comment/<uuid>#b2`, `message/<uuid>#b1`); null for any
+ *  other node, as the read itself carries null for a node with no parent. A part of an ask reads
+ *  as its ask, as a block of a comment reads as its comment: one set of item kinds says which
+ *  (`isBlockItemKind`). */
 function blockItem(node: GraphEdge["node"]): GraphEdge["node"]["parent"] {
   return node.kind === "block" && node.document === undefined && isBlockItemKind(node.parent?.kind)
     ? node.parent
-    : undefined;
+    : null;
 }
 
 function edgeLabel(edge: GraphEdge): string {
@@ -160,7 +196,11 @@ function Excerpt({ text }: { text: string }): ReactNode {
 /** The control every host uses: the count comes from the list response the page already read,
  *  so a card or a header costs no graph request until the reader opens its panel. A count of
  *  zero is a fact, not an affordance: it renders as plain text, since opening it would only say
- *  nothing references the node. `controls` names the panel the host renders when expanded. */
+ *  nothing references the node. `controls` names the panel the host renders when expanded.
+ *
+ *  A block of a document has no such count - no listing the tabs read carries one - so `count`
+ *  is left out there and the control offers itself without one, the panel's own read being the
+ *  first thing that knows. */
 export function ReferencedByToggle({
   controls,
   count,
@@ -168,7 +208,7 @@ export function ReferencedByToggle({
   onToggle,
 }: {
   controls: string;
-  count: number;
+  count?: number;
   expanded: boolean;
   onToggle: () => void;
 }): ReactNode {
@@ -190,7 +230,7 @@ export function ReferencedByToggle({
       onClick={onToggle}
       type="button"
     >
-      Referenced by ({count})
+      {count === undefined ? "Referenced by" : `Referenced by (${count})`}
     </button>
   );
 }
@@ -212,13 +252,21 @@ export function ReferencedBy({
   toggle?: { id: string };
 }): ReactNode {
   const query = useQuery(referencesQuery(reference));
-  const groups = groupBySource(query.data?.edges ?? []);
+  // During a release a newer Dispatch can answer with an edge kind, or a node kind at the other
+  // end, that this page does not know; the page leaves such an edge out rather than draw it under
+  // another edge's label.
+  const edges = query.data?.edges?.filter(
+    (edge) =>
+      (Object.hasOwn(RENDERED_EDGE_KINDS, edge.kind) || MANIFEST_EDGE_KINDS.has(edge.kind)) &&
+      Object.hasOwn(NODE_LABELS, edge.node.kind)
+  );
+  const groups = groupBySource(edges ?? []);
 
   return (
     <section aria-label="Referenced by" className={`space-y-2 ${className ?? ""}`} id={toggle?.id}>
       {toggle === undefined ? (
         <h3 className={`text-sm font-semibold ${textSecondaryOnSurface}`}>
-          Referenced by{query.data === undefined ? "" : ` (${query.data.edges.length})`}
+          Referenced by{edges === undefined ? "" : ` (${edges.length})`}
         </h3>
       ) : null}
       {query.isPending ? (
@@ -237,7 +285,7 @@ export function ReferencedBy({
           </button>
         </p>
       ) : null}
-      {query.data?.edges.length === 0 ? (
+      {edges?.length === 0 ? (
         <p className={`text-sm ${textMutedOnSurface}`}>Nothing references this yet.</p>
       ) : null}
       {groups.length === 0 ? null : (
@@ -313,5 +361,25 @@ export function ReferencedBy({
         </ul>
       )}
     </section>
+  );
+}
+
+/** The Referenced-by disclosure a typed block carries on the Spec, Verification and Plan tabs:
+ *  the control, and under it, once the reader opens it, the panel that reads what points at that
+ *  block. No listing those tabs read carries the block's reference count, so the control shows
+ *  none and nothing is read until it is opened. */
+export function BlockReferences({ reference }: { reference: string }): ReactNode {
+  const panelId = useId();
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="space-y-2">
+      <ReferencedByToggle
+        controls={panelId}
+        expanded={open}
+        onToggle={() => setOpen((shown) => !shown)}
+      />
+      {open ? <ReferencedBy reference={reference} toggle={{ id: panelId }} /> : null}
+    </div>
   );
 }

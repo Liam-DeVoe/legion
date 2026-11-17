@@ -1,7 +1,8 @@
 // Package metrics provides minimal Prometheus-compatible metrics without
 // third-party dependencies. It supports counters (with labels), histograms
-// (with labels and configurable buckets), gauges, and gauge functions
-// evaluated at scrape time.
+// (with labels and configurable buckets), gauges, gauge functions evaluated at
+// scrape time, and labelled gauge sets whose series a function computes at
+// scrape time.
 package metrics
 
 import (
@@ -35,6 +36,7 @@ type Registry struct {
 	histograms []*Histogram
 	gauges     []*Gauge
 	gaugeFuncs []*GaugeFunc
+	gaugeSets  []*gaugeSet
 }
 
 // New creates an empty metrics registry.
@@ -68,6 +70,23 @@ func (r *Registry) NewCounter(name, help string) *Counter {
 
 // Inc increments the counter for the given label set by 1.
 func (c *Counter) Inc(labels ...[2]string) {
+	c.Add(1, labels...)
+}
+
+// Add advances the counter for the given label set by delta, for a caller that counts a batch it
+// has already tallied - the messages one session's reaped record had stored for it - rather than
+// taking the series lock once per unit. A counter only ever rises, so a negative delta is
+// dropped: a series that went backwards would make every rate computed over it meaningless, and
+// there is no value to answer with instead.
+//
+// A nil counter counts nothing rather than panicking, so a struct field a caller leaves unset -
+// every listener test that builds a handler config by hand - still runs the code under test. A
+// deployed binary registers every counter it names at start, in one place (cmd/listener/main.go),
+// so no deployed path can be the one that leaves one unset.
+func (c *Counter) Add(delta int64, labels ...[2]string) {
+	if c == nil || delta <= 0 {
+		return
+	}
 	key := labelKey(labels)
 	c.mu.Lock()
 	e, ok := c.series[key]
@@ -76,7 +95,7 @@ func (c *Counter) Inc(labels ...[2]string) {
 		c.series[key] = e
 	}
 	c.mu.Unlock()
-	e.value.Add(1)
+	e.value.Add(delta)
 }
 
 // ---------------------------------------------------------------------------
@@ -176,17 +195,56 @@ func (g *Gauge) Dec() { g.value.Add(-1) }
 // GaugeFunc
 // ---------------------------------------------------------------------------
 
-// GaugeFunc evaluates fn at scrape time to produce a gauge value.
+// GaugeFunc evaluates fn at scrape time to produce a gauge value. When fn reports no value, the
+// scrape carries the gauge's HELP and TYPE lines and no sample, so a value that cannot be stood
+// behind reads as missing rather than as a number.
 type GaugeFunc struct {
 	name string
 	help string
-	fn   func() int64
+	fn   func() (int64, bool)
 }
 
 // NewGaugeFunc registers a gauge whose value is computed by fn on each scrape.
 func (r *Registry) NewGaugeFunc(name, help string, fn func() int64) {
+	r.NewOptionalGaugeFunc(name, help, func() (int64, bool) { return fn(), true })
+}
+
+// NewOptionalGaugeFunc registers a gauge whose value is computed by fn on each scrape, and which
+// writes no sample on a scrape where fn reports false: a reader sees the series as absent there,
+// never as a value fn could not stand behind.
+func (r *Registry) NewOptionalGaugeFunc(name, help string, fn func() (int64, bool)) {
 	r.mu.Lock()
 	r.gaugeFuncs = append(r.gaugeFuncs, &GaugeFunc{name: name, help: help, fn: fn})
+	r.mu.Unlock()
+}
+
+// ---------------------------------------------------------------------------
+// Gauge set
+// ---------------------------------------------------------------------------
+
+// GaugeSample is one series of a gauge set: the labels that name it, as Counter.Inc takes them,
+// and the value it reads.
+type GaugeSample struct {
+	Labels [][2]string
+	Value  int64
+}
+
+// gaugeSet is a labelled gauge whose series fn computes on each scrape.
+type gaugeSet struct {
+	name string
+	help string
+	fn   func() []GaugeSample
+}
+
+// NewGaugeSetFunc registers a labelled gauge whose series are computed by fn on each scrape: one
+// sample for each GaugeSample fn answers, written in the order of their label text so two scrapes
+// of one set read alike, and none for a series fn no longer answers. So a series leaves the scrape
+// the moment what it counts is gone, with no call anywhere to remove it, and a set that is empty
+// writes the gauge's HELP and TYPE lines and no sample. fn answers each label set at most once,
+// since the text format holds one sample per series.
+func (r *Registry) NewGaugeSetFunc(name, help string, fn func() []GaugeSample) {
+	r.mu.Lock()
+	r.gaugeSets = append(r.gaugeSets, &gaugeSet{name: name, help: help, fn: fn})
 	r.mu.Unlock()
 }
 
@@ -253,7 +311,22 @@ func (r *Registry) Handler() http.Handler {
 
 		for _, gf := range r.gaugeFuncs {
 			writeType(w, gf.name, gf.help, "gauge")
-			fmt.Fprintf(w, "%s %d\n", gf.name, gf.fn())
+			if value, ok := gf.fn(); ok {
+				fmt.Fprintf(w, "%s %d\n", gf.name, value)
+			}
+		}
+
+		for _, gs := range r.gaugeSets {
+			writeType(w, gs.name, gs.help, "gauge")
+			samples := gs.fn()
+			lines := make([]string, len(samples))
+			for i, s := range samples {
+				lines[i] = fmt.Sprintf("%s%s %d\n", gs.name, labelFormat(s.Labels), s.Value)
+			}
+			sort.Strings(lines)
+			for _, line := range lines {
+				fmt.Fprint(w, line)
+			}
 		}
 	})
 }
@@ -309,6 +382,13 @@ func labelKey(labels [][2]string) string {
 	return b.String()
 }
 
+// labelValueEscaper writes a label value as the Prometheus text format requires: a backslash, a
+// double quote and a line feed each as a backslash escape. A value a caller takes from text it
+// does not choose - a secret's store id, an owner tag - can hold any of the three, and unescaped
+// one would end the value, or the whole sample line, early. A value holding none of them is
+// written as it is, byte for byte.
+var labelValueEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`)
+
 func labelFormat(labels [][2]string) string {
 	if len(labels) == 0 {
 		return ""
@@ -321,7 +401,7 @@ func labelFormat(labels [][2]string) string {
 		}
 		b.WriteString(kv[0])
 		b.WriteString(`="`)
-		b.WriteString(kv[1])
+		b.WriteString(labelValueEscaper.Replace(kv[1]))
 		b.WriteByte('"')
 	}
 	b.WriteByte('}')

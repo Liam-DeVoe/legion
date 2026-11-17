@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -266,6 +267,109 @@ func TestSetStatusSendsDaemonActorAndAnswersTheWrittenIssue(t *testing.T) {
 	}
 }
 
+// A claim release is a DELETE on the issue's claim, under the daemon's own session. It sends a
+// body carrying that actor and nothing else: Dispatch's route decodes the request, so a release
+// with no JSON body would be refused before it reached the claim. A claim this caller may not
+// release comes back as Dispatch's 409.
+func TestReleaseClaimDeletesTheClaimUnderTheDaemonSession(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.EscapedPath() != "/api/v1/issues/LEGION-4/claim" {
+			t.Fatalf("request = %s %s, want DELETE /api/v1/issues/LEGION-4/claim", r.Method, r.URL.EscapedPath())
+		}
+		assertBearer(t, r)
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Fatalf("Content-Type = %q, want application/json so Dispatch's route decodes the body", got)
+		}
+		var body map[string]json.RawMessage
+		decodeJSON(t, r, &body)
+		if _, status := body["status"]; status {
+			t.Fatalf("release request = %v, want the actor alone", body)
+		}
+		var sender struct {
+			Kind string `json:"kind"`
+			ID   string `json:"id"`
+		}
+		if err := json.Unmarshal(body["actor"], &sender); err != nil {
+			t.Fatalf("decode release actor from %v: %v", body, err)
+		}
+		if sender.Kind != "session" || sender.ID != "legion-daemon:LEGION" {
+			t.Fatalf("release actor = %#v, want the session legion-daemon:LEGION", sender)
+		}
+		writeJSON(t, w, map[string]any{"key": "LEGION-4", "claim": nil})
+	}))
+	defer server.Close()
+
+	if err := New(server.URL, dispatchToken).ReleaseClaim(context.Background(), "LEGION-4"); err != nil {
+		t.Fatalf("release claim: %v", err)
+	}
+
+	claimed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSONStatus(t, w, http.StatusConflict, map[string]string{"code": "ISSUE_CLAIMED", "error": "issue is claimed by another session"})
+	}))
+	defer claimed.Close()
+
+	err := New(claimed.URL, dispatchToken).ReleaseClaim(context.Background(), "LEGION-4")
+	var dispatchErr *Error
+	if !errors.As(err, &dispatchErr) {
+		t.Fatalf("release claim error = %T %v, want *dispatch.Error", err, err)
+	}
+	if dispatchErr.Status != http.StatusConflict || dispatchErr.Code != "ISSUE_CLAIMED" {
+		t.Fatalf("Dispatch error = %#v, want 409 ISSUE_CLAIMED", dispatchErr)
+	}
+}
+
+// The gated-steps publish is a PUT on the project, under the daemon's own session, and it always
+// names a list: Dispatch refuses a body with no `steps` rather than reading it as the empty list,
+// so a deployment that gates nothing has to send `[]` for its publish to land.
+func TestGatedStepsPublishSendsTheListUnderTheDaemonSession(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		steps []string
+		want  []string
+	}{
+		{name: "two steps", steps: []string{"criteria", "spec"}, want: []string{"criteria", "spec"}},
+		{name: "a deployment that gates nothing", steps: nil, want: []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPut || r.URL.Path != "/api/v1/projects/LEGION/gated-steps" {
+					t.Fatalf("request = %s %s, want PUT /api/v1/projects/LEGION/gated-steps", r.Method, r.URL.Path)
+				}
+				assertBearer(t, r)
+				var body map[string]json.RawMessage
+				decodeJSON(t, r, &body)
+				raw, named := body["steps"]
+				if !named {
+					t.Fatalf("publish = %s, want a steps list Dispatch will not refuse", mustJSON(t, body))
+				}
+				var steps []string
+				if err := json.Unmarshal(raw, &steps); err != nil {
+					t.Fatalf("decode steps: %v", err)
+				}
+				if steps == nil || !reflect.DeepEqual(steps, tc.want) {
+					t.Fatalf("steps = %#v, want %#v", steps, tc.want)
+				}
+				var actor struct {
+					Kind string `json:"kind"`
+					ID   string `json:"id"`
+				}
+				if err := json.Unmarshal(body["actor"], &actor); err != nil {
+					t.Fatalf("decode actor: %v", err)
+				}
+				if actor.Kind != "session" || actor.ID != "legion-daemon:LEGION" {
+					t.Fatalf("publish actor = %#v, want the legion daemon session", actor)
+				}
+				writeJSON(t, w, map[string]any{"project": "LEGION", "steps": tc.want})
+			}))
+			defer server.Close()
+
+			if err := New(server.URL, dispatchToken).PutGatedSteps(context.Background(), "LEGION", tc.steps); err != nil {
+				t.Fatalf("publish the gated steps: %v", err)
+			}
+		})
+	}
+}
+
 func TestPostMessageSendsBodyWithoutAnUnsupportedIdempotencyKey(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/issues/LEGION-5/messages" {
@@ -303,8 +407,105 @@ func TestPostMessageSendsBodyWithoutAnUnsupportedIdempotencyKey(t *testing.T) {
 	}
 }
 
-// The artifact read carries the approval Dispatch derives, the latest review's time and its event's
-// sequence (none from a Dispatch that predates the sequence).
+// The issue's artifact list is read for each one's slug, which is what a message's link names.
+func TestArtifactSlugsReadsTheSlugOfEveryArtifactOfTheIssue(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues/LEGION-5/artifacts" {
+			t.Fatalf("request = %s %s, want GET /api/v1/issues/LEGION-5/artifacts", r.Method, r.URL.Path)
+		}
+		assertBearer(t, r)
+		writeJSON(t, w, []map[string]any{
+			{"id": "artifact-1", "slug": "plan-md", "name": "plan.md", "kind": "doc"},
+			{"id": "artifact-2", "slug": "rescue-pod-9d3f0c7a", "name": "rescue-pod-9d3f0c7a", "kind": "doc"},
+		})
+	}))
+	defer server.Close()
+
+	slugs, err := New(server.URL, dispatchToken).ArtifactSlugs(context.Background(), "LEGION-5")
+	if err != nil {
+		t.Fatalf("artifact slugs: %v", err)
+	}
+	if want := []string{"plan-md", "rescue-pod-9d3f0c7a"}; !reflect.DeepEqual(slugs, want) {
+		t.Fatalf("artifact slugs = %v, want %v", slugs, want)
+	}
+}
+
+// A document upload sends the name, the markdown and the daemon's actor, and no other field,
+// since Dispatch's JSON upload decoder refuses an unknown one. The slug comes from the artifact
+// Dispatch answers with. An answer that names no slug is an error, and so is Dispatch's refusal.
+func TestUploadArtifactSendsTheDocumentUnderTheDaemonSessionAndReadsItsSlug(t *testing.T) {
+	const content = "# The full list\n\n```\nabc first commit\n```\n"
+	answers := []func(w http.ResponseWriter){
+		func(w http.ResponseWriter) {
+			writeJSONStatus(t, w, http.StatusCreated, map[string]any{
+				"artifact": map[string]any{"id": "artifact-3", "slug": "rescue-pod-9d3f0c7a", "name": "rescue-pod-9d3f0c7a", "kind": "doc"},
+				"version":  map[string]any{"number": 1},
+			})
+		},
+		func(w http.ResponseWriter) {
+			writeJSONStatus(t, w, http.StatusCreated, map[string]any{"version": map[string]any{"number": 1}})
+		},
+		func(w http.ResponseWriter) {
+			writeJSONStatus(t, w, http.StatusRequestEntityTooLarge, map[string]string{"code": "CAP_EXCEEDED", "error": "a markdown document is at most 1 MiB"})
+		},
+	}
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/issues/LEGION-5/artifacts" {
+			t.Fatalf("request = %s %s, want POST /api/v1/issues/LEGION-5/artifacts", r.Method, r.URL.Path)
+		}
+		assertBearer(t, r)
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Fatalf("Content-Type = %q, want application/json, the upload Dispatch reads as a markdown document", got)
+		}
+		var body map[string]json.RawMessage
+		decodeJSON(t, r, &body)
+		fields := make([]string, 0, len(body))
+		for field := range body {
+			fields = append(fields, field)
+		}
+		slices.Sort(fields)
+		if want := []string{"actor", "content", "name"}; !slices.Equal(fields, want) {
+			t.Fatalf("upload fields = %v, want %v: Dispatch refuses any field it does not read", fields, want)
+		}
+		var name, got string
+		if err := json.Unmarshal(body["name"], &name); err != nil || name != "rescue-pod-9d3f0c7a" {
+			t.Fatalf("upload name = %s (%v), want rescue-pod-9d3f0c7a", body["name"], err)
+		}
+		if err := json.Unmarshal(body["content"], &got); err != nil || got != content {
+			t.Fatalf("upload content = %s (%v), want %q", body["content"], err, content)
+		}
+		var actor struct {
+			Kind string `json:"kind"`
+			ID   string `json:"id"`
+		}
+		if err := json.Unmarshal(body["actor"], &actor); err != nil {
+			t.Fatalf("decode actor: %v", err)
+		}
+		if actor.Kind != "session" || actor.ID != "legion-daemon:LEGION" {
+			t.Fatalf("upload actor = %#v, want legion daemon session", actor)
+		}
+		answers[requests](w)
+		requests++
+	}))
+	defer server.Close()
+
+	client := New(server.URL, dispatchToken)
+	slug, err := client.UploadArtifact(context.Background(), "LEGION-5", "rescue-pod-9d3f0c7a", content)
+	if err != nil || slug != "rescue-pod-9d3f0c7a" {
+		t.Fatalf("upload = %q, %v; want the slug Dispatch filed the document under", slug, err)
+	}
+	if slug, err := client.UploadArtifact(context.Background(), "LEGION-5", "rescue-pod-9d3f0c7a", content); err == nil {
+		t.Fatalf("an answer with no artifact gave slug %q, want an error", slug)
+	}
+	_, err = client.UploadArtifact(context.Background(), "LEGION-5", "rescue-pod-9d3f0c7a", content)
+	if refusal, permanent := PermanentRefusal(err); !permanent || refusal.Code != "CAP_EXCEEDED" {
+		t.Fatalf("a refused upload = %v, want Dispatch's permanent CAP_EXCEEDED refusal", err)
+	}
+}
+
+// The artifact read carries the approval Dispatch derives, who gave the review it shows, the latest
+// review's time and its event's sequence (none from a Dispatch that predates the sequence).
 func TestApprovalReturnsCurrentDocumentApproval(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertBearer(t, r)
@@ -314,7 +515,8 @@ func TestApprovalReturnsCurrentDocumentApproval(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/v1/artifacts/artifact-6":
 			writeJSON(t, w, map[string]any{"id": "artifact-6", "issue_key": "LEGION-6", "approval": map[string]any{
-				"state": "approved", "latest_version": 3, "version": 3, "at": "2026-10-23T18:00:00.123456Z", "seq": 12}})
+				"state": "approved", "latest_version": 3, "version": 3, "at": "2026-10-23T18:00:00.123456Z", "seq": 12,
+				"by": map[string]any{"kind": "user", "id": "alice"}}})
 		case "/api/v1/artifacts/artifact-7":
 			writeJSON(t, w, map[string]any{"id": "artifact-7", "issue_key": "LEGION-7", "approval": map[string]any{
 				"state": "awaiting", "latest_version": 4, "version": 3, "at": "2026-10-23T17:00:00Z"}})
@@ -332,16 +534,17 @@ func TestApprovalReturnsCurrentDocumentApproval(t *testing.T) {
 		t.Fatalf("read approval: %v", err)
 	}
 	if approval.IssueKey != "LEGION-6" || approval.State != "approved" || approval.LatestVersion != 3 || approval.Version == nil || *approval.Version != 3 || approval.ApprovedLatest() != 3 ||
-		!approval.At.Equal(time.Date(2026, 10, 23, 18, 0, 0, 123456000, time.UTC)) || approval.Seq != 12 {
-		t.Fatalf("approval = %#v, want LEGION-6's document approved at version 3 by the review at sequence 12", approval)
+		!approval.At.Equal(time.Date(2026, 10, 23, 18, 0, 0, 123456000, time.UTC)) || approval.Seq != 12 ||
+		approval.By != (Actor{Kind: "user", ID: "alice"}) || approval.By.Name() != "user:alice" {
+		t.Fatalf("approval = %#v, want LEGION-6's document approved at version 3 by user:alice, the review at sequence 12", approval)
 	}
 	awaiting, err := client.Approval(context.Background(), "artifact-7")
 	if err != nil {
 		t.Fatalf("read awaiting approval: %v", err)
 	}
-	if awaiting.State != "awaiting" || awaiting.ApprovedLatest() != 0 ||
+	if awaiting.State != "awaiting" || awaiting.ApprovedLatest() != 0 || awaiting.By != (Actor{}) ||
 		!awaiting.At.Equal(time.Date(2026, 10, 23, 17, 0, 0, 0, time.UTC)) || awaiting.Seq != 0 {
-		t.Fatalf("awaiting approval = %#v, want an open request, its review's time and no sequence", awaiting)
+		t.Fatalf("awaiting approval = %#v, want an open request reviewed by nobody, its review's time and no sequence", awaiting)
 	}
 	draft, err := client.Approval(context.Background(), "artifact-8")
 	if err != nil {
@@ -492,72 +695,6 @@ func TestHandoffReadsTheRecordAndItsAuthor(t *testing.T) {
 	}
 }
 
-// The newest record of a phase reads back with its body exactly as Dispatch stores it; a phase with
-// none is Dispatch's 404 HANDOFF_NOT_FOUND, not found; a 404 with another code, a Dispatch without
-// the route, is an error.
-func TestLatestHandoffReadsTheBodyAndTellsNoneFromNoRoute(t *testing.T) {
-	const body = "{\"schemaVersion\":1,\n  \"phase\": \"implement\"}\n"
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assertBearer(t, r)
-		switch r.URL.Path {
-		case "/api/v1/issues/LEGION-6/handoffs/implement/latest":
-			writeJSON(t, w, map[string]any{
-				"id": "h-2", "issue_key": "LEGION-6", "phase": "implement", "version": 2,
-				"author": map[string]any{"kind": "session", "id": "ses_implementer_6"}, "body": body,
-			})
-		case "/api/v1/issues/LEGION-6/handoffs/test/latest":
-			writeJSONStatus(t, w, http.StatusNotFound, map[string]string{"code": "HANDOFF_NOT_FOUND", "error": "issue LEGION-6 has no test handoff"})
-		default:
-			writeJSONStatus(t, w, http.StatusNotFound, map[string]string{"code": "NOT_FOUND", "error": "no route for GET " + r.URL.Path})
-		}
-	}))
-	defer server.Close()
-
-	client := New(server.URL, dispatchToken)
-	handoff, found, err := client.LatestHandoff(context.Background(), "LEGION-6", "implement")
-	want := Handoff{ID: "h-2", IssueKey: "LEGION-6", Phase: "implement", Version: 2, Author: HandoffAuthor{Kind: "session", ID: "ses_implementer_6"}, Body: body}
-	if err != nil || !found || handoff != want {
-		t.Fatalf("latest implement = %#v, %v, %v; want %#v", handoff, found, err, want)
-	}
-	if _, found, err := client.LatestHandoff(context.Background(), "LEGION-6", "test"); err != nil || found {
-		t.Fatalf("latest test = %v, %v; want none and no error", found, err)
-	}
-	if _, found, err := client.LatestHandoff(context.Background(), "LEGION-6", "review"); found || !Missing(err) {
-		t.Fatalf("latest review on a Dispatch without the route = %v, %v; want its 404", found, err)
-	}
-}
-
-// A handoff write sends the body exactly as given, under the daemon's session, and reads back the
-// record Dispatch made.
-func TestWriteHandoffSendsTheBodyUnderTheDaemonSession(t *testing.T) {
-	const text = "{\"schemaVersion\": 1}\n"
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/issues/LEGION-7/handoffs/plan" {
-			t.Fatalf("request = %s %s, want POST /api/v1/issues/LEGION-7/handoffs/plan", r.Method, r.URL.Path)
-		}
-		assertBearer(t, r)
-		var request struct {
-			Body  string `json:"body"`
-			Actor actor  `json:"actor"`
-		}
-		decodeJSON(t, r, &request)
-		if request.Body != text || request.Actor != (actor{Kind: "session", ID: "legion-daemon:LEGION"}) {
-			t.Fatalf("write = %#v, want the file's text under legion-daemon:LEGION", request)
-		}
-		writeJSONStatus(t, w, http.StatusCreated, map[string]any{
-			"id": "h-1", "issue_key": "LEGION-7", "phase": "plan", "version": 1,
-			"author": map[string]any{"kind": "session", "id": "legion-daemon:LEGION"}, "created_at": "2026-10-27T08:00:00Z",
-		})
-	}))
-	defer server.Close()
-
-	handoff, err := New(server.URL, dispatchToken).WriteHandoff(context.Background(), "LEGION-7", "plan", text)
-	want := Handoff{ID: "h-1", IssueKey: "LEGION-7", Phase: "plan", Version: 1, Author: HandoffAuthor{Kind: "session", ID: "legion-daemon:LEGION"}}
-	if err != nil || handoff != want {
-		t.Fatalf("write = %#v, %v; want %#v", handoff, err, want)
-	}
-}
-
 func TestClientReturnsDispatchErrorForCoded4xx(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSONStatus(t, w, http.StatusConflict, map[string]string{"code": "ISSUE_CLOSED", "error": "issue is closed"})
@@ -693,49 +830,38 @@ func TestMessageBodiesSincePagesNewestFirstUntilTheOutboxWindow(t *testing.T) {
 	}
 }
 
-// BuildCommit is the build Dispatch's server fleet serves: its /healthz `fleet_commit` when the body
-// carries the field, whatever this process's own `commit`, and none ("") when it is null; a body
-// without the field, from a Dispatch older than the fleet's announcement, is read for its `commit`,
-// none when that is null or absent. A Dispatch that answers other than 2xx — its own 503 while its
-// database is down — is an error, not a commit of none.
-func TestBuildCommitReadsTheFleetCommitOrTheCommitOfAnOlderDispatch(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		status int
-		body   string
-		want   string
-		err    bool
-	}{
-		{name: "fleet commit", status: http.StatusOK, body: `{"ok":true,"db":true,"nats":true,"files":null,"commit":"b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2","fleet_commit":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","schema_version":121}`, want: "a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0"},
-		{name: "null fleet commit", status: http.StatusOK, body: `{"ok":true,"db":true,"nats":true,"files":null,"commit":"b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2","fleet_commit":null,"schema_version":121}`},
-		{name: "older Dispatch, stamped", status: http.StatusOK, body: `{"ok":true,"db":true,"nats":true,"files":null,"commit":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","schema_version":41}`, want: "a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0"},
-		{name: "older Dispatch, null", status: http.StatusOK, body: `{"ok":true,"db":true,"nats":null,"files":null,"commit":null,"schema_version":41}`},
-		{name: "older Dispatch, absent", status: http.StatusOK, body: `{"ok":true,"db":true}`},
-		{name: "unavailable", status: http.StatusServiceUnavailable, body: `{"ok":false,"db":false,"commit":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","fleet_commit":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0"}`, err: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodGet || r.URL.Path != "/healthz" {
-					t.Fatalf("request = %s %s, want GET /healthz", r.Method, r.URL.Path)
-				}
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(tc.status)
-				_, _ = w.Write([]byte(tc.body))
-			}))
-			defer server.Close()
+// An event carries at most the first part of a long body and says so; the whole of it, the outbox
+// marker at its end included, is read from the message itself. A body the event carries whole is
+// read from the event alone, so the common message costs no second request.
+func TestMessageBodiesSinceReadsACutBodyFromItsMessage(t *testing.T) {
+	since := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
+	whole := strings.Repeat("x", 40000) + "\n\n<!-- legion-outbox:7 -->"
+	reads := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBearer(t, r)
+		switch r.URL.Path {
+		case "/api/v1/issues/LEGION-5/events":
+			writeJSON(t, w, []map[string]any{
+				{"seq": 9, "type": "message.created", "created_at": "2026-09-23T01:02:00Z",
+					"payload": map[string]any{"id": "f1c0ffee-0000-4000-8000-000000000001", "body": whole[:32000], "body_truncated": true}},
+				{"seq": 8, "type": "message.created", "created_at": "2026-09-23T01:01:00Z",
+					"payload": map[string]any{"id": "f1c0ffee-0000-4000-8000-000000000002", "body": "A short daemon notice."}},
+			})
+		case "/api/v1/issues/LEGION-5/messages/f1c0ffee-0000-4000-8000-000000000001":
+			reads++
+			writeJSON(t, w, map[string]any{"message": map[string]any{"id": "f1c0ffee-0000-4000-8000-000000000001", "body": whole}, "replies": []any{}})
+		default:
+			t.Fatalf("request = %s %s, want the issue's events or its cut message", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
 
-			got, err := New(server.URL, dispatchToken).BuildCommit(context.Background())
-			if tc.err {
-				var refused *Error
-				if !errors.As(err, &refused) || refused.Status != tc.status {
-					t.Fatalf("BuildCommit = %q, %v; want Dispatch's %d as an error", got, err, tc.status)
-				}
-				return
-			}
-			if err != nil || got != tc.want {
-				t.Fatalf("BuildCommit = %q, %v; want %q", got, err, tc.want)
-			}
-		})
+	bodies, err := New(server.URL, dispatchToken).MessageBodiesSince(context.Background(), "LEGION-5", since)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if reads != 1 || len(bodies) != 2 || bodies[0] != whole || bodies[1] != "A short daemon notice." {
+		t.Fatalf("message reads=%d bodies=%d, want the cut body read whole from its message and the short one from its event alone", reads, len(bodies))
 	}
 }
 

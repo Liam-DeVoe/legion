@@ -1,7 +1,7 @@
 // packages/envoy/cmd/agent-secrets/client.go
 //
 // client is agent-secrets's own thin HTTP client for the broker routes it needs, as the broker's
-// HTTP API reference (https://sjawhar.github.io/legion/broker/reference/api/) defines them. Session routes
+// HTTP API reference (https://cybermonklabs.github.io/legion/broker/reference/api/) defines them. Session routes
 // — everything but enrollment issuance/revocation and launcher-credential issuance — are signed
 // per call through a Signer (proofsource.go: an agent box or pod's own key, or a machine session's
 // agent-secrets-helper), producing exactly the Proof header internal/broker/proof.Verifier
@@ -37,6 +37,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -48,51 +49,79 @@ type client struct {
 // terminalRenewal is the closed set of renewal refusals `agent-secrets renew` stops on, exiting
 // exitRenewRefused (76) so the worker shim does not restart it; every other refusal keeps the retry
 // backoff. Each member is an answer no retry can change: POD_TOKEN_REQUIRED is a pod enrollment's
-// renewal that carried no token and VM_TOKEN_REQUIRED a vm enrollment's, VM_NOT_LISTED a VM its
-// fleet's broker settings no longer allow (only an operator's change of them can), and
+// renewal that carried no token, and
 // ENROLLMENT_NOT_LIVE an enrollment that has ended, lapsed or never existed. A broker that predates
 // ENROLLMENT_NOT_LIVE answers an ended enrollment
 // PROOF_INVALID with a message saying "not live" (its renew handler's "enrollment is not live" and
 // its proof check's "proof invalid: not live"), which no recoverable proof failure says.
 // POD_IDENTITY_MISMATCH is not a member: the broker also answers it for a token it could not
 // verify while its issuer or key set was unreachable, and a real mismatch ends with the lease,
-// after which the next renewal is ENROLLMENT_NOT_LIVE. VM_IDENTITY_MISMATCH and VM_TOKEN_EXPIRED
-// are not members for the same reason as their pod counterparts.
+// after which the next renewal is ENROLLMENT_NOT_LIVE.
 var terminalRenewal = struct {
 	Codes                     []string
 	LegacyCode, LegacyMessage string
 }{
-	Codes:         []string{"POD_TOKEN_REQUIRED", "VM_TOKEN_REQUIRED", "VM_NOT_LISTED", "ENROLLMENT_NOT_LIVE"},
+	Codes:         []string{"POD_TOKEN_REQUIRED", enrollmentEndedCode},
 	LegacyCode:    "PROOF_INVALID",
 	LegacyMessage: "not live",
 }
 
+// enrollmentEndedCode is the renew route's own answer to a proof naming an enrollment the broker
+// no longer holds, written once here and read by terminalRenewal and by enrollmentEnded.
+const enrollmentEndedCode = "ENROLLMENT_NOT_LIVE"
+
+// newClient is the HTTP client every agent-secrets call goes out on, renewals among them. Its
+// whole-call timeout is leasetime.RenewClientTimeout, the same figure the broker's lease bound
+// charges a renewal an outage black-holes: a connection a front door accepts with nothing
+// behind it costs this renewer the whole of it.
 func newClient(baseURL string) *client {
-	return &client{baseURL: baseURL, http: &http.Client{Timeout: 30 * time.Second}}
+	return &client{baseURL: baseURL, http: &http.Client{Timeout: leasetime.RenewClientTimeout}}
 }
 
-// apiError is the broker's {"code":...,"error":...} error envelope, plus the HTTP status it came
-// with.
+// apiError is the broker's {"code":...,"error":...,"answer_id":...} error envelope, plus the HTTP
+// status it came with. AnswerID is the id the broker's own record of the answer names: the body's
+// answer_id, else the X-Broker-Answer-Id header every answer the broker itself writes carries, so
+// a refusal whose body is not the envelope (the broker's 404 for a path it does not serve) still
+// names it. A broker from before the id sends neither, and neither does an answer net/http writes
+// before any of the broker's code runs, such as its 400 for a malformed request, 431 and 417.
 type apiError struct {
-	Status  int
-	Code    string
-	Message string
+	Status   int
+	Code     string
+	Message  string
+	AnswerID string
 }
 
+// Error is the broker's message and code, and the answer id to quote when it named one. A body
+// that was not the envelope is the message as it came, a line ending and all (the mux's
+// "404 page not found\n"), so the message is cut at its trailing line endings before the id goes
+// after it on the same line.
 func (e *apiError) Error() string {
+	message := strings.TrimRight(e.Message, "\r\n")
+	var text string
 	if e.Code == "" {
-		return fmt.Sprintf("HTTP %d: %s", e.Status, e.Message)
+		text = fmt.Sprintf("HTTP %d: %s", e.Status, message)
+	} else {
+		text = fmt.Sprintf("%s (%s)", message, e.Code)
 	}
-	return fmt.Sprintf("%s (%s)", e.Message, e.Code)
+	if e.AnswerID != "" {
+		text += " (answer " + e.AnswerID + ")"
+	}
+	return text
 }
 
-// Permanent reports whether this refusal is one of terminalRenewal's: a code it lists, or its
-// legacy code with a message naming the ended enrollment.
+// enrollmentEnded reports whether this refusal is the broker's answer to a proof naming an
+// enrollment it no longer holds: the lease lapsed, or it was revoked. Only the renew route
+// answers ENROLLMENT_NOT_LIVE; every other session route says PROOF_INVALID with "not live" in
+// its message, which no recoverable proof failure (iat skew, key, URL) says.
+func (e *apiError) enrollmentEnded() bool {
+	return e.Code == enrollmentEndedCode ||
+		(e.Code == terminalRenewal.LegacyCode && strings.Contains(e.Message, terminalRenewal.LegacyMessage))
+}
+
+// Permanent reports whether this refusal is one of terminalRenewal's: a code it lists, or the
+// ended enrollment its legacy code spells (enrollmentEnded).
 func (e *apiError) Permanent() bool {
-	if slices.Contains(terminalRenewal.Codes, e.Code) {
-		return true
-	}
-	return e.Code == terminalRenewal.LegacyCode && strings.Contains(e.Message, terminalRenewal.LegacyMessage)
+	return slices.Contains(terminalRenewal.Codes, e.Code) || e.enrollmentEnded()
 }
 
 // unreachableError is a broker call that did not complete. Its host might not resolve, nothing
@@ -214,20 +243,44 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 	}
 	if resp.StatusCode/100 != 2 {
 		var envelope struct {
-			Code  string `json:"code"`
-			Error string `json:"error"`
+			Code     string `json:"code"`
+			Error    string `json:"error"`
+			AnswerID string `json:"answer_id"`
 		}
 		_ = json.Unmarshal(data, &envelope)
 		if envelope.Error == "" {
 			envelope.Error = string(data)
 		}
-		return resp.StatusCode, nil, &apiError{Status: resp.StatusCode, Code: envelope.Code, Message: envelope.Error}
+		if envelope.AnswerID == "" {
+			envelope.AnswerID = resp.Header.Get(answerIDHeader)
+		}
+		return resp.StatusCode, nil, &apiError{Status: resp.StatusCode, Code: envelope.Code, Message: envelope.Error, AnswerID: envelope.AnswerID}
 	}
 	return resp.StatusCode, data, nil
 }
 
+// answerIDHeader is the header every answer the broker itself writes names its answer id in
+// (answer.Header in internal/broker/answer, which this client does not link); net/http's own
+// 400, 431 and 417, written before any of the broker's code runs, carry none.
+const answerIDHeader = "X-Broker-Answer-Id"
+
 // errNothingSent is the cause of a call this client could not even build a request for.
 var errNothingSent = errors.New("nothing was sent")
+
+// reenroller is a signer that can replace an enrollment the broker no longer holds: a person's
+// sign-in on this box, and a machine that registered its own session here (proofsource.go).
+// Nothing else is one — a box or pod its launcher enrolled is the launcher's to enrol again,
+// and a launcher proof names no enrollment at all.
+type reenroller interface {
+	Reenroll(ctx context.Context) error
+}
+
+// enrollmentNotLive reports whether err is a refusal (*apiError) naming an enrollment the broker
+// no longer holds, which is enrollmentEnded's question asked of an error.
+func enrollmentNotLive(err error) bool {
+	var refusal *apiError
+	return errors.As(err, &refusal) && refusal.enrollmentEnded()
+}
 
 // doProof signs the request with signer.Sign against exactly this method and URL (no query
 // string appended after signing), the shape proof.Verifier.Verify compares htm/htu against.
@@ -237,7 +290,44 @@ func (c *client) doProof(ctx context.Context, signer proofSigner, method, path s
 }
 
 // doProofStatus is doProof, also answering the 2xx status (doStatus).
+//
+// A signer that can register itself again (reenroller) gets exactly one retry when the broker
+// says the enrollment its proof named is not live. Nothing renews a sign-in's or a machine's own
+// session enrollment otherwise, so after BROKER_LEASE_SECONDS every call on that box would fail
+// with the dead id still in its record, and only signing in again would cure it — making a
+// second box key and a second sign-in on the person's list. One retry, because a second refusal
+// is the broker saying no to the enrollment this call just made, which no further retry changes.
 func (c *client) doProofStatus(ctx context.Context, signer proofSigner, method, path string, body []byte) (int, []byte, error) {
+	return c.doProofBuilt(ctx, signer, method, path, func(bool) ([]byte, error) { return body, nil })
+}
+
+// doProofBuilt is doProofStatus for a body the session's own key signs part of, which build
+// makes: build(false) for the first call, and build(true) again for the retry after the session
+// registered again, since a machine registers again under a key of its own (machineReregister)
+// and the broker takes only what the enrollment's own key signed.
+func (c *client) doProofBuilt(ctx context.Context, signer proofSigner, method, path string, build func(reregistered bool) ([]byte, error)) (int, []byte, error) {
+	body, err := build(false)
+	if err != nil {
+		return 0, nil, err
+	}
+	status, data, err := c.proofCall(ctx, signer, method, path, body)
+	again, ok := signer.(reenroller)
+	if !ok || !enrollmentNotLive(err) {
+		return status, data, err
+	}
+	if reErr := again.Reenroll(ctx); reErr != nil {
+		return status, data, fmt.Errorf("%w; registering this session again: %v", err, reErr)
+	}
+	if body, err = build(true); err != nil {
+		return 0, nil, err
+	}
+	return c.proofCall(ctx, signer, method, path, body)
+}
+
+// proofCall is one signed call, which is all `renew` may make: its whole contract is to report
+// the enrollment the broker no longer holds (terminalRenewal, exit 76) rather than quietly
+// register another.
+func (c *client) proofCall(ctx context.Context, signer proofSigner, method, path string, body []byte) (int, []byte, error) {
 	url := c.baseURL + path
 	token, err := signer.Sign(method, url)
 	if err != nil {
@@ -258,7 +348,11 @@ type SecretDecision struct {
 // broker gave the request's grant, nil for until its session ends; a broker from before
 // lifetime_seconds sends no such field, and it decodes as nil. ApproveURL is the record's page on
 // the broker, where its approver signs in and decides it, while the request is pending; empty
-// once it is not, and from a broker from before that page.
+// once it is not, and from a broker from before that page. Detail is the broker's one sentence
+// about why it denied the request — the secret that refused it and the rule that did, as
+// "GCLOUD_SAMI: requester-not-listed" — which every line this CLI prints about a refusal carries,
+// so a session reads that asking again will not help; nil when the broker recorded none, and from
+// a broker from before the field.
 type RequestResult struct {
 	RequestID       string           `json:"request_id"`
 	State           string           `json:"state"`
@@ -268,15 +362,33 @@ type RequestResult struct {
 	Approver        *string          `json:"approver"`
 	LifetimeSeconds *int             `json:"lifetime_seconds"`
 	Coalesced       bool             `json:"coalesced,omitempty"`
+	Detail          *string          `json:"detail"`
 	ApproveURL      string           `json:"approve_url"`
 }
 
 // createRequestBody is POST /v1/requests's exact shape in the broker's HTTP API: a signed
-// request object plus an optional, unsigned session_id (wake-only). The v8 top-level
+// request object plus two optional, unsigned fields, session_id (wake-only) and github_app, the
+// narrowing this request's grant will be released with. The v8 top-level
 // "secrets"/"reason"/"issue" fields are gone — they live inside the signed request object instead.
+// github_app is left out when the run asks for no narrowing, so such a run sends the body it
+// always sent; it narrows nothing by itself, the release being what applies a narrowing, and the
+// broker checks it before it asks a person to approve the request.
 type createRequestBody struct {
-	Request   string  `json:"request"`
-	SessionID *string `json:"session_id"`
+	Request   string           `json:"request"`
+	SessionID *string          `json:"session_id"`
+	GitHubApp *GitHubNarrowing `json:"github_app,omitempty"`
+}
+
+// brokerTookNoNarrowing reports whether err is a broker from before POST /v1/requests took a
+// github_app field: its readJSON refuses an unknown field with 400 INVALID_REQUEST, and refuses
+// it before the request machine runs, so nothing was written and the signed request object's jti
+// is unspent. Every refusal of the narrowing itself has a code of its own (INVALID_NARROWING,
+// NARROWING_NOT_APPLICABLE, NARROWING_OWNER_NOT_LISTED, NARROWING_BEHIND_AIRLOCK,
+// NARROWING_REFUSED), and a request object the broker would not take is REQUEST_INVALID, so none
+// of them reads as an older broker and none is sent again.
+func brokerTookNoNarrowing(err error) bool {
+	var refusal *apiError
+	return errors.As(err, &refusal) && refusal.Status == http.StatusBadRequest && refusal.Code == "INVALID_REQUEST"
 }
 
 // CreateRequest builds and signs a credential-request object carrying one
@@ -285,20 +397,53 @@ type createRequestBody struct {
 // URL), then calls POST /v1/requests with that object nested in the body and the outer call still
 // authenticated with a session Proof header. It returns both the decoded result and the exact raw
 // response bytes, for --json's "print the response body verbatim" requirement.
-func (c *client) CreateRequest(ctx context.Context, signer Signer, names []string, reason string, lifetimeSeconds *int, sessionID string) (RequestResult, []byte, error) {
-	requestObject, err := signer.SignRequestObject(c.baseURL, names, reason, lifetimeSeconds)
+//
+// narrowing is the narrowing the release will ask for, sent as github_app so the broker refuses a
+// narrowing it cannot serve before anybody is asked to approve the request; nil sends no such
+// field. A broker from before that field refuses the whole body (brokerTookNoNarrowing) without
+// reading the request object, so the same signed object is sent once more without the field and
+// that second call's own result and raw bytes are what this answers. Once only: a second refusal
+// is about something else, which sending it again cannot mend. When the session registers again
+// on the way (doProofBuilt), the object is signed again, by the key the session now holds.
+func (c *client) CreateRequest(ctx context.Context, signer Signer, names []string, reason string, lifetimeSeconds *int, sessionID string, narrowing *GitHubNarrowing) (RequestResult, []byte, error) {
+	sign := func() (string, error) {
+		requestObject, err := signer.SignRequestObject(c.baseURL, names, reason, lifetimeSeconds)
+		if err != nil {
+			return "", fmt.Errorf("sign request object: %w", err)
+		}
+		return requestObject, nil
+	}
+	requestObject, err := sign()
 	if err != nil {
-		return RequestResult{}, nil, fmt.Errorf("sign request object: %w", err)
+		return RequestResult{}, nil, err
 	}
 	var sessionIDPtr *string
 	if sessionID != "" {
 		sessionIDPtr = &sessionID
 	}
-	body, err := json.Marshal(createRequestBody{Request: requestObject, SessionID: sessionIDPtr})
-	if err != nil {
-		return RequestResult{}, nil, err
+	body := func(narrowing *GitHubNarrowing) func(bool) ([]byte, error) {
+		return func(reregistered bool) ([]byte, error) {
+			if reregistered {
+				signed, err := sign()
+				if err != nil {
+					return nil, err
+				}
+				requestObject = signed
+			}
+			return json.Marshal(createRequestBody{Request: requestObject, SessionID: sessionIDPtr, GitHubApp: narrowing})
+		}
 	}
-	raw, err := c.doProof(ctx, signer, http.MethodPost, "/v1/requests", body)
+	result, raw, err := c.postRequest(ctx, signer, body(narrowing))
+	if narrowing == nil || !brokerTookNoNarrowing(err) {
+		return result, raw, err
+	}
+	return c.postRequest(ctx, signer, body(nil))
+}
+
+// postRequest is one POST /v1/requests with the body build makes (doProofBuilt), answering the
+// decoded result and the exact bytes the broker sent.
+func (c *client) postRequest(ctx context.Context, signer Signer, build func(reregistered bool) ([]byte, error)) (RequestResult, []byte, error) {
+	_, raw, err := c.doProofBuilt(ctx, signer, http.MethodPost, "/v1/requests", build)
 	if err != nil {
 		return RequestResult{}, nil, err
 	}
@@ -314,7 +459,8 @@ type requestDecision struct {
 	At time.Time `json:"at"`
 }
 
-// RequestStatus is GET /v1/requests/{id}'s exact response shape. ApproveURL is as RequestResult's.
+// RequestStatus is GET /v1/requests/{id}'s exact response shape. ApproveURL is as RequestResult's,
+// and so is Detail: the broker's own sentence about the refusal, nil when it recorded none.
 type RequestStatus struct {
 	State      string           `json:"state"`
 	GrantID    *string          `json:"grant_id"`
@@ -322,6 +468,7 @@ type RequestStatus struct {
 	Approver   *string          `json:"approver"`
 	DecidedAt  *time.Time       `json:"decided_at"`
 	Decision   *requestDecision `json:"decision"`
+	Detail     *string          `json:"detail"`
 	ApproveURL string           `json:"approve_url"`
 }
 
@@ -369,6 +516,8 @@ func (c *client) CancelRequest(ctx context.Context, signer Signer, id string) er
 
 // GitHubNarrowing is POST /v1/grants/{id}/values's github_app object: one release's narrowing of
 // its GitHub App tokens, as the request names it and as the answer names what the broker applied.
+// POST /v1/requests takes the same object, where it says which narrowing the release will ask
+// for, so the broker checks it before a person is asked to approve the request.
 type GitHubNarrowing struct {
 	Owner        string   `json:"owner"`
 	Repositories []string `json:"repositories,omitempty"`
@@ -377,29 +526,76 @@ type GitHubNarrowing struct {
 
 // GrantValues is POST /v1/grants/{id}/values's exact response shape. GitHubApp is the narrowing
 // the broker applied: nil when it applied none, and always from a broker from before narrowing.
+// Airlock is how to reach the values this release did not hand over, nil when every granted name
+// was handed over — which is every release of a broker with no rules file.
 type GrantValues struct {
 	Values    map[string]string `json:"values"`
 	ExpiresAt *time.Time        `json:"expires_at"`
 	GitHubApp *GitHubNarrowing  `json:"github_app"`
+	Airlock   *AirlockRelease   `json:"airlock"`
 }
 
+// AirlockRelease is POST /v1/grants/{id}/values's airlock object: how a session reaches the
+// values the airlock holds back — the proxy it sends their requests through, the certificate
+// authority that proxy's certificates are signed by, the password every connection to it opens
+// with, and one entry per name held back. A name this object holds is released: it is in
+// "names" and in no other field of the answer, never in "values".
+type AirlockRelease struct {
+	// The URL the command points HTTPS_PROXY at.
+	ProxyURL string `json:"proxy_url"`
+	// The PEM certificate the command must trust to reach the proxy, which signs a certificate
+	// for each host it carries a request to.
+	CACertificate string `json:"ca_certificate"`
+	// The password every proxy connection authenticates with: one of this grant's own
+	// placeholders, the first (name, slot) pair in sorted order.
+	ProxyPassword string `json:"proxy_password"`
+	// Each name the airlock holds back, by the name the command knows it as.
+	Names map[string]AirlockName `json:"names"`
+}
+
+// AirlockName is one name the airlock holds back.
+type AirlockName struct {
+	// What the command's environment variable of that name holds: the released shape of the
+	// secret with a placeholder wherever its value would be.
+	Value string `json:"value"`
+	// Each slot of the secret and the placeholder standing for it, so a command that takes one
+	// value of the secret apart knows which placeholder is which.
+	Slots map[string]string `json:"slots"`
+	// The hosts the secret's airlock entry allows, which the command keeps off its NO_PROXY so
+	// their requests reach the proxy.
+	Hosts []string `json:"hosts"`
+}
+
+// releaseCall is what this client says of one release to the broker, which logs it with the
+// grant's reason and decides nothing by it: the command the release starts, nil for none, and
+// the reason this call gave, "" for none. That reason can differ from the grant's, since a call
+// that asks again for names its session holds a live grant of gets that grant back. The exec form
+// sends the command as record.ClipCommand leaves it, the 32 arguments of at most 256 bytes the
+// broker records, so no command takes the body past the broker's 1 MiB cap and fails a release
+// that would have succeeded without it.
+type releaseCall struct {
+	Command []string `json:"command,omitempty"`
+	Reason  string   `json:"reason,omitempty"`
+}
+
+// says reports whether call names anything, which is what puts it in a release's body.
+func (call releaseCall) says() bool { return len(call.Command) > 0 || call.Reason != "" }
+
 // GrantValues releases grantID's values, asking the broker to narrow its GitHub App tokens when
-// narrowing is not nil; nil sends no body, the release as the grant holds it.
-func (c *client) GrantValues(ctx context.Context, signer Signer, grantID string, narrowing *GitHubNarrowing) (GrantValues, error) {
+// narrowing is not nil, and naming what call says of the release; with neither it sends no body,
+// the release as the grant holds it. A broker from before the command or the reason field
+// refuses a body holding it, 400 INVALID_NARROWING naming the unknown field, and releases nothing
+// (callRefused), so the same release is sent once more without either: a newer client releases
+// from an older broker as before, only unlogged. This stays: a client can meet an older broker
+// on every future independent rollout.
+func (c *client) GrantValues(ctx context.Context, signer Signer, grantID string, narrowing *GitHubNarrowing, call releaseCall) (GrantValues, error) {
 	if err := pathID("a grant id", grantID); err != nil {
 		return GrantValues{}, err
 	}
-	var body []byte
-	if narrowing != nil {
-		encoded, err := json.Marshal(struct {
-			GitHubApp *GitHubNarrowing `json:"github_app"`
-		}{narrowing})
-		if err != nil {
-			return GrantValues{}, fmt.Errorf("encode the narrowing: %w", err)
-		}
-		body = encoded
+	raw, err := c.release(ctx, signer, grantID, narrowing, call)
+	if call.says() && callRefused(err) {
+		raw, err = c.release(ctx, signer, grantID, narrowing, releaseCall{})
 	}
-	raw, err := c.doProof(ctx, signer, http.MethodPost, "/v1/grants/"+grantID+"/values", body)
 	if err != nil {
 		return GrantValues{}, err
 	}
@@ -408,6 +604,33 @@ func (c *client) GrantValues(ctx context.Context, signer Signer, grantID string,
 		return GrantValues{}, fmt.Errorf("decode grant values: %w", err)
 	}
 	return values, nil
+}
+
+// release is one POST /v1/grants/{id}/values, its body holding narrowing and what call says
+// where each is given, and no body when none is.
+func (c *client) release(ctx context.Context, signer Signer, grantID string, narrowing *GitHubNarrowing, call releaseCall) ([]byte, error) {
+	var body []byte
+	if narrowing != nil || call.says() {
+		encoded, err := json.Marshal(struct {
+			GitHubApp *GitHubNarrowing `json:"github_app,omitempty"`
+			releaseCall
+		}{narrowing, call})
+		if err != nil {
+			return nil, fmt.Errorf("encode the release: %w", err)
+		}
+		body = encoded
+	}
+	return c.doProof(ctx, signer, http.MethodPost, "/v1/grants/"+grantID+"/values", body)
+}
+
+// callRefused reports whether err is a broker from before the command or the reason field
+// refusing a release for holding one: its body reader answers 400 INVALID_NARROWING, the release
+// route's code for a body it cannot read, with the JSON decoder's own words for a field it does
+// not declare, before anything is released.
+func callRefused(err error) bool {
+	var refusal *apiError
+	return errors.As(err, &refusal) && refusal.Status == http.StatusBadRequest && refusal.Code == "INVALID_NARROWING" &&
+		(strings.Contains(refusal.Message, `unknown field "command"`) || strings.Contains(refusal.Message, `unknown field "reason"`))
 }
 
 func (c *client) RevokeGrant(ctx context.Context, signer Signer, grantID string) error {
@@ -451,21 +674,20 @@ func (c *client) Self(ctx context.Context, signer Signer) (SelfResult, []byte, e
 
 // RenewEnrollment is the one Signer-taking method that still needs enrollmentID explicitly: the
 // broker route is /v1/enrollments/{id}/renew, so the id is in the URL path, not just the signed
-// payload. A pod's renewal carries its current projected token as pod_token and a VM's its
-// current metadata token as vm_token; an empty field or token sends no body at all, a box's
-// renewal.
-func (c *client) RenewEnrollment(ctx context.Context, signer Signer, enrollmentID, tokenField, token string) (time.Time, error) {
+// payload. A pod's renewal carries its current projected token as pod_token; an empty podToken
+// sends no body at all, which is every other session's renewal.
+func (c *client) RenewEnrollment(ctx context.Context, signer Signer, enrollmentID, podToken string) (time.Time, error) {
 	if err := pathID("an enrollment id", enrollmentID); err != nil {
 		return time.Time{}, err
 	}
 	var body []byte
-	if tokenField != "" && token != "" {
+	if podToken != "" {
 		var err error
-		if body, err = json.Marshal(map[string]string{tokenField: token}); err != nil {
+		if body, err = json.Marshal(map[string]string{"pod_token": podToken}); err != nil {
 			return time.Time{}, err
 		}
 	}
-	raw, err := c.doProof(ctx, signer, http.MethodPost, "/v1/enrollments/"+enrollmentID+"/renew", body)
+	_, raw, err := c.proofCall(ctx, signer, http.MethodPost, "/v1/enrollments/"+enrollmentID+"/renew", body)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -481,16 +703,20 @@ func (c *client) RenewEnrollment(ctx context.Context, signer Signer, enrollmentI
 // --- GET /v1/settings, POST /v1/secrets/{name}/reread (public: no proof) ---
 
 // Settings is GET /v1/settings's exact response shape: the store and namespace every agent secret
-// lives under and, per store, the key they are encrypted with and where they are. A broker from
-// before the store field answers none, and holds them in AWS Secrets Manager.
+// lives under and, per store, the key they are encrypted with and where they are; and, on either
+// store, the Google exchange audience a machine's own identity token must carry, from which the
+// use command finds that identity with no setting (machineSource). A broker from before the store
+// field answers none, and holds them in AWS Secrets Manager; one from before the audience, or one
+// that accepts no machine identity, names none.
 type Settings struct {
-	Store         string `json:"store,omitempty"`
-	SecretsPrefix string `json:"secrets_prefix"`
-	KMSKeyARN     string `json:"kms_key_arn,omitempty"`
-	AWSAccountID  string `json:"aws_account_id,omitempty"`
-	AWSRegion     string `json:"aws_region,omitempty"`
-	KMSKeyName    string `json:"kms_key_name,omitempty"`
-	GCPProject    string `json:"gcp_project,omitempty"`
+	Store                  string `json:"store,omitempty"`
+	SecretsPrefix          string `json:"secrets_prefix"`
+	KMSKeyARN              string `json:"kms_key_arn,omitempty"`
+	AWSAccountID           string `json:"aws_account_id,omitempty"`
+	AWSRegion              string `json:"aws_region,omitempty"`
+	KMSKeyName             string `json:"kms_key_name,omitempty"`
+	GCPProject             string `json:"gcp_project,omitempty"`
+	GoogleExchangeAudience string `json:"google_exchange_audience,omitempty"`
 }
 
 func (c *client) Settings(ctx context.Context) (Settings, error) {
@@ -591,8 +817,14 @@ type OperatorGrant struct {
 	Enrollment OperatorGrantEnrollment `json:"enrollment"`
 	Names      []string                `json:"names"`
 	Approver   *string                 `json:"approver"`
-	ExpiresAt  *time.Time              `json:"expires_at"`
-	CreatedAt  time.Time               `json:"created_at"`
+	// DecidedBy is who decided the request this grant rests on: the approving person's own
+	// login, or "judge:<model id>" where the model judge approved it in that person's stead.
+	// Null for an automatic grant, which nobody decided. It differs from Approver for a judged
+	// grant alone, which records the record's own approver — the secret's owner, or anyone —
+	// and that is what makes the two worth printing side by side.
+	DecidedBy *string    `json:"decided_by"`
+	ExpiresAt *time.Time `json:"expires_at"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 // OperatorGrants is GET /v1/operator/grants's exact response shape.

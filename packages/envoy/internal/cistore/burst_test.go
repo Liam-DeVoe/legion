@@ -193,7 +193,7 @@ func (k *writeKV) states(key string) []State {
 func wrapStore(t testing.TB, conn *natsgo.Conn, delay time.Duration) (*Store, *writeKV) {
 	t.Helper()
 	s := openStore(t, conn)
-	kv := &writeKV{KeyValue: s.watcher.KV(), delay: delay, written: map[string][]writtenState{}}
+	kv := &writeKV{KeyValue: s.watcher.KV().Legacy(), delay: delay, written: map[string][]writtenState{}}
 	useKV(t, s, kv)
 	return s, kv
 }
@@ -853,7 +853,7 @@ func TestAKVCallInFlightAtAReconnectIsRetriedOnTheNewConnection(t *testing.T) {
 			batch := newCalls(t, s, h.key(), n, checkCall(s, h, 900))
 			batch.behind(entered, n)
 			began := time.Now()
-			if err := s.Rewatch(conn); err != nil {
+			if err := s.Rewatch(context.Background(), conn); err != nil {
 				t.Fatalf("rewatch: %v", err)
 			}
 			requireNoErrors(t, "a burst with a KV call in flight at a reconnect", batch.wait("a KV call in flight at a reconnect"))

@@ -413,9 +413,12 @@ if [ -z "${LEGION_E2E_PG_DSN:-}" ]; then
   LEGION_E2E_PG_DSN="postgres://legion:legion@127.0.0.1:$(docker port "$pg_container" 5432/tcp | head -1 | sed 's/.*://')/legion"
 fi
 
-# NATS and the Envoy listener on the host: nats:2.10 with JetStream, and the listener built from
-# packages/envoy with its API bearer, which reaches every pane as a 0600 file (envoy_token_file).
-docker run -d --name "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 nats:2.10 -js >/dev/null
+# NATS and the Envoy listener on the host: the hub's nats-server with JetStream (lib/nats-image.sh),
+# and the listener built from packages/envoy with its API bearer, which reaches every pane as a 0600
+# file (envoy_token_file).
+# shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
+. "$root/scripts/e2e/lib/nats-image.sh"
+docker run -d --name "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
 nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/envoy-token" &&
@@ -454,6 +457,9 @@ nats_urls:
   - $nats_url
 envoy_token_file: $work/envoy-token
 probe_interval_seconds: 5
+# The wake pacing off (INFRA-976): this proof starts many roles and waits on bounded times, and at
+# the default of 8 wakes a minute every wake after the first would spend those waits queueing.
+worker_wakes_per_minute: 0
 EOF
 cat >"$work/architect.md" <<'EOF'
 You are the root architect of a Legion stage-2 proof. You have no work to do. Reply to every
@@ -501,13 +507,13 @@ pass
 
 begin gate-refuses-a-missing-skill
 # The gate's load probe resolves every skill Legion's prompts load through the pane's own Oh My Pi.
-# The installed plugin without the rubric that thermonuclear-code-quality, the
-# thermonuclear-deep-review agent and the reviewer's role prompt load is refused, naming the skill
-# and every file that loads it.
-mv "$work/pi-legion/dist/skills/thermonuclear-deep-review" "$work/rubric.aside"
+# The reviewer's pair ships in the Envoy plugin, which every consumer installs; the installed set
+# without the rubric that thermonuclear-code-quality, the thermonuclear-deep-review agent and the
+# reviewer's role prompt load is refused, naming the skill and every file that loads it.
+mv "$work/pi-envoy/dist/skills/thermonuclear-deep-review" "$work/rubric.aside"
 expect_refusal missing-skill "finds no skill thermonuclear-deep-review (loaded by dist/skills/thermonuclear-code-quality/SKILL.md, agents/thermonuclear-deep-review.md, roles/core/reviewer.md)"
-mv "$work/rubric.aside" "$work/pi-legion/dist/skills/thermonuclear-deep-review"
-[ -f "$work/pi-legion/dist/skills/thermonuclear-deep-review/SKILL.md" ] || fail "the rubric was not restored"
+mv "$work/rubric.aside" "$work/pi-envoy/dist/skills/thermonuclear-deep-review"
+[ -f "$work/pi-envoy/dist/skills/thermonuclear-deep-review/SKILL.md" ] || fail "the rubric was not restored"
 pass
 
 begin gate-refuses-a-skill-only-a-role-prompt-loads
@@ -738,6 +744,9 @@ state_dir: $work/deadline-state
 operator_token_file: $work/operator-token
 worker_boot_timeout_seconds: 5
 worker_boot_registration_deadline_intervals: 2
+# The wake pacing off, as the run's first daemon has it (INFRA-976): the deadlines this second
+# daemon is read against are seconds long, and a paced wake would spend them waiting its turn.
+worker_wakes_per_minute: 0
 EOF
 python3 "$held_port" exec --from "$work/deadline.sock" --fd-env LEGION_LISTEN_FD -- \
   env LEGION_OMP_PATH="$work/stub/omp" HOME="$omp_home" OMP_PROFILE="$profile" PATH="$work/realbin:$PATH" \

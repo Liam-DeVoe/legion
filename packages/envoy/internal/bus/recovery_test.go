@@ -1,6 +1,7 @@
 package bus_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testsocks5"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // startNATS runs a NATS server for the test and returns it with the connection
@@ -29,14 +31,9 @@ func startNATS(t *testing.T) (*testnats.Server, string) {
 // waitFor polls a condition with timeout. Returns true if condition was met.
 func waitFor(t *testing.T, timeout time.Duration, desc string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(250 * time.Millisecond)
+	if !testwait.Holds(timeout, 250*time.Millisecond, cond) {
+		t.Fatalf("timed out waiting for: %s", desc)
 	}
-	t.Fatalf("timed out waiting for: %s", desc)
 }
 
 func subscribeAllNotifications(client *bus.Client, handler natsgo.MsgHandler, opts ...natsgo.SubOpt) (*natsgo.Subscription, error) {
@@ -62,25 +59,14 @@ func TestSubOK_NoSubscription(t *testing.T) {
 }
 
 func TestPublishBoundsReconnectWhenNATSUnavailable(t *testing.T) {
+	// Publish routes each topic to its transport (bus.Client.UsesCoreTransport), so both cases are
+	// the one call a caller makes.
 	cases := []struct {
-		name    string
-		topic   string
-		publish func(*bus.Client, contracts.Envelope) error
+		name  string
+		topic string
 	}{
-		{
-			name:  "jetstream",
-			topic: "notifications.github.acme.widgets.timeout",
-			publish: func(client *bus.Client, item contracts.Envelope) error {
-				return client.Publish(item)
-			},
-		},
-		{
-			name:  "core",
-			topic: "notifications.role.legion-timeout",
-			publish: func(client *bus.Client, item contracts.Envelope) error {
-				return client.PublishCore(item)
-			},
-		},
+		{name: "jetstream", topic: "notifications.github.acme.widgets.timeout"},
+		{name: "core", topic: "notifications.role.legion-timeout"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -97,7 +83,7 @@ func TestPublishBoundsReconnectWhenNATSUnavailable(t *testing.T) {
 			result := make(chan error, 1)
 			started := time.Now()
 			go func() {
-				result <- tc.publish(client, contracts.Envelope{
+				result <- client.Publish(contracts.Envelope{
 					EventID:        "evt-publish-reconnect-timeout-" + tc.name,
 					Source:         "agent",
 					SourceEventID:  "source-publish-reconnect-timeout-" + tc.name,
@@ -262,7 +248,7 @@ func TestReconnectHooksRunWhileTheDurableCannotBind(t *testing.T) {
 			defer client.Close()
 			waitOutHeldDurable(t, client, uri)
 			hooked := make(chan *natsgo.Conn, 8)
-			client.AddReconnectHook(func(conn *natsgo.Conn) error {
+			client.AddReconnectHook(func(_ context.Context, conn *natsgo.Conn) error {
 				hooked <- conn
 				return nil
 			})
@@ -319,7 +305,7 @@ func TestReconnectHooksRunOneAtATimeOnceForEachEventBetweenRuns(t *testing.T) {
 	const hookTakes = 3 * time.Second
 	var runs, running, mostAtOnce atomic.Int32
 	ended := make(chan struct{}, 8)
-	client.AddReconnectHook(func(*natsgo.Conn) error {
+	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		runs.Add(1)
 		now := running.Add(1)
 		for most := mostAtOnce.Load(); now > most; most = mostAtOnce.Load() {
@@ -383,7 +369,7 @@ func TestAFailedRunOfTheReconnectHooksRunsAgainWithoutAnotherConnectionEvent(t *
 	}
 	ran := make(chan hookRun, 8)
 	var runs atomic.Int32
-	client.AddReconnectHook(func(conn *natsgo.Conn) error {
+	client.AddReconnectHook(func(_ context.Context, conn *natsgo.Conn) error {
 		ran <- hookRun{conn: conn, goroutine: goroutinetest.ID()}
 		if runs.Add(1) == 1 {
 			return errors.New("the first run fails")
@@ -437,7 +423,7 @@ func TestAConnectionThatClosesAsARecoveryEndsIsRecovered(t *testing.T) {
 	running := make(chan *natsgo.Conn, 1)
 	finish := make(chan struct{})
 	var runs atomic.Int32
-	client.AddReconnectHook(func(conn *natsgo.Conn) error {
+	client.AddReconnectHook(func(_ context.Context, conn *natsgo.Conn) error {
 		if runs.Add(1) == 1 {
 			running <- conn
 			<-finish
@@ -489,7 +475,7 @@ func TestAnInPlaceReconnectDoesNotWaitForABindInFlight(t *testing.T) {
 		t.Fatalf("add the durable: %v", err)
 	}
 	hooked := make(chan time.Time, 8)
-	client.AddReconnectHook(func(*natsgo.Conn) error {
+	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		hooked <- time.Now()
 		return nil
 	})
@@ -838,7 +824,7 @@ func TestReconnectHookRunsAfterReconnect(t *testing.T) {
 	defer client.Close()
 
 	hookRan := make(chan *natsgo.Conn, 1)
-	client.AddReconnectHook(func(conn *natsgo.Conn) error {
+	client.AddReconnectHook(func(_ context.Context, conn *natsgo.Conn) error {
 		hookRan <- conn
 		return nil
 	})
@@ -852,6 +838,38 @@ func TestReconnectHookRunsAfterReconnect(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("reconnect hook did not run")
+	}
+}
+
+// A lost connection runs the disconnect hooks before the reconnect hooks of the reconnect that
+// follows: a KV watcher's subscription survives the outage, so the hook is what tells its cache it
+// stopped following the bucket, and the reconnect hook's read starts after that.
+func TestDisconnectHookRunsBeforeTheReconnectHook(t *testing.T) {
+	_, uri := startNATS(t)
+	client, err := bus.ConnectOwningStream([]string{uri})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer client.Close()
+
+	events := make(chan string, 4)
+	client.AddDisconnectHook(func() { events <- "disconnected" })
+	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
+		events <- "reconnected"
+		return nil
+	})
+	if err := client.Conn.ForceReconnect(); err != nil {
+		t.Fatalf("force reconnect: %v", err)
+	}
+	for _, want := range []string{"disconnected", "reconnected"} {
+		select {
+		case got := <-events:
+			if got != want {
+				t.Fatalf("hook ran %q, want %q next", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("the %s hook did not run", want)
+		}
 	}
 }
 

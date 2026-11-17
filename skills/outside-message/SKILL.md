@@ -6,8 +6,6 @@ description: "Use before any text reaches a person outside the company: a commen
 # A message to someone outside the company
 
 The operator approves every message that leaves the company, and four steps come before you ask.
-The rules below are the operator's own, from the answers that set them; this skill is where they
-are written down.
 
 ## The exclusions
 
@@ -19,8 +17,7 @@ answer names such a project, and your stream's brief is where that answer reache
 answer for the project in front of you, there is no exclusion.
 
 **A pull request to a project that has already enrolled**, with its description and its comments to
-that project's maintainers. The operator does not want to be asked for approval every time for an
-enrolled project, and ceremony around a pull request must not stop the work. The four steps still
+that project's maintainers.  The four steps still
 apply. The approval ask does not. The work does not wait for the pull request either: prepare and
 sign the changes locally, and send them when the work they belong to ends.
 
@@ -30,6 +27,10 @@ to the company before.
 
 Everything else waits for the operator: a first contact with a project that has not enrolled, a bug
 report, a disclosure, and a reply to a maintainer who wrote first.
+
+Hold an extremely high bar. Optimise every upstream report, patch or public post for a human
+reader and for being received well, so each one builds the company's reputation rather than a
+reputation for low-quality or careless submissions.
 
 ## The four steps
 
@@ -50,14 +51,12 @@ report, a disclosure, and a reply to a maintainer who wrote first.
    do: a reader of the same model as the writer is the weaker check, though no measurement here
    separates the two.
 
-**Step 4 ends with a list of what it removed, and that list goes in the ask.** Measured on
-2026-10-30 over 18 drafts of three real messages: drafts written with this skill met the bar 9
-times in 9, drafts with no guidance 8 times in 9, so the first three steps changed almost nothing
-— the research teaches them. The step that changed the message was the cut, and it is the step
-agents skip: 2 of 9 with the skill and 3 of 9 without had no cut at all. Only the cut drafts lost
-a promise about a future release, and they lost half their length. An instruction alone did not
-make the cut happen, so the list is what proves it did: three lines naming what came out, or the
-sentence "the reviewer removed nothing", which is itself an answer.
+**Step 4 ends with a list of what it removed, and that list goes in the ask.** The list is what proves the cut happened: three lines naming what came out,
+or the sentence "the reviewer removed nothing", which is itself an answer.
+
+**The text the operator approves is the text the reviewer cut, byte for byte.** Any edit after the
+cut, even one line of fact, sends the text back through step 1 and a new fresh review, because a
+sentence added after the cut reaches the operator unreviewed.
 
 The form of the text is not in this skill. Where the stream that owns the relationship keeps its own
 rules for writing to maintainers — in its project's `AGENTS.md`, in its skills, or in its brief —
@@ -71,8 +70,7 @@ cover how the text reads.
 ## Then the ask
 
 **Put the full message text in the ask itself.** Not a link to a document holding it, not a summary
-of it, not "the draft is at …". The operator has to open another document to read the message in
-almost every one of these asks, and cannot judge the message from the ask.
+of it, not "the draft is at …". A link makes the operator open another document, and the operator cannot judge the message from the ask.
 
 An ask for an outside message has, in this order:
 
@@ -85,23 +83,16 @@ An ask for an outside message has, in this order:
 Link the research, not the message. An ask with no removal line has not had step 4, whatever it
 says.
 
-## Never write these
+## One batch, not one ask at a time
 
-Delete the empty verb phrases and say the literal thing instead. These shapes:
-
-| Never | Write instead |
-|---|---|
-| "to name the problem" | say the problem |
-| "land the change" | merge it, release it, deploy it — whichever it is |
-| "carry the finding to X" | tell X, send X, put it on the issue |
-| "this shows the gap" | the gap is … |
-| "that pays for itself" | it costs $X and returns $Y |
-
-The test: delete the verb phrase and ask what literally happens. If you cannot say what happens, you
-did not know, and the phrase hid that from both of you. Write what happens.
-
-The same rule runs over asks, specs, messages, commit bodies and pull-request descriptions, not only
-outside messages. `skill://plain-words` has the full list and the rewrites.
+An upstream bug report, patch or public post that needs the operator's approval goes into one
+review batch, never a per-message "can I send this" ask. Write its entry — what it is and how
+serious; who receives it and what they do; the exact text or patch; its evidence; a non-author
+reviewer's APPROVE under your stream's reviewer-model rule; what the operator decides; its owner
+— into the batch, add it under the batch's Waiting list, and tell the batch owner. Your stream's
+brief names the batch and its owner. Where your stream's brief names no batch, ask the operator
+for one, or hold the entry until there is a batch; a missing batch is not a reason to send a
+per-message ask.
 
 ## What this skill does not cover
 

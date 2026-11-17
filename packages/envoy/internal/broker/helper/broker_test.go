@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // failAlways, set as a failure count (failFirst, revokeFailFirst), fails every such call a test
@@ -59,7 +60,8 @@ const failAlways = 1 << 30
 // revokeFailFirst, so a test can poll for exactly when an attempt has been answered instead of
 // guessing with a raw sleep. revokeForbidden answers a DELETE of each id it names with 403
 // OPERATOR_MISMATCH, as the broker does for an enrollment made under another operator's launcher
-// credential.
+// credential, and revokeNotEnrolling with 403 NOT_ENROLLING_CREDENTIAL, as it does for one made
+// under another credential of no operator — a machine whose credential was replaced.
 //
 // The launcher half (Enroll, Revoke) now authenticates with a Proof header carrying an "lid"
 // claim instead of a bearer token: enrollUnauthorizedNext simulates an
@@ -74,24 +76,25 @@ const failAlways = 1 << 30
 // token and moves the expiry, "invalid_grant" refuses it, "unavailable" answers 503,
 // "rate_limited" answers the broker's 429 invalid_request with Retry-After 1).
 type fakeBroker struct {
-	mu               sync.Mutex
-	srv              *httptest.Server
-	enrolled         map[string]string    // enrollment id -> thumbprint
-	byTP             map[string]string    // thumbprint -> enrollment id
-	runtimeIDToID    map[string]string    // runtime_id -> the currently live enrollment id for it
-	leaseExpiry      map[string]time.Time // enrollment id -> its current lease expiry
-	posts            []map[string]any
-	deletes          []string
-	renews           int
-	conflicts        int           // 409 ALREADY_ENROLLED answers from the runtime_id-keyed conflict path
-	failFirst        int           // 503 this many enroll calls first
-	revokeFirstDelay time.Duration // sleep this long before the first DELETE actually removes its row
-	revokeFailFirst  int           // 503 this many DELETE calls first, row untouched (an unreachable broker)
-	revokeAttempts   int           // every DELETE this fake received, failed or not
-	lease            time.Duration // lease length the fake grants; 900 s unless a test shortens it
-	seen             map[string]bool
-	revokeForbidden  map[string]bool
-	next             int // ids are minted, never derived from the key, like the broker's uuids
+	mu                 sync.Mutex
+	srv                *httptest.Server
+	enrolled           map[string]string    // enrollment id -> thumbprint
+	byTP               map[string]string    // thumbprint -> enrollment id
+	runtimeIDToID      map[string]string    // runtime_id -> the currently live enrollment id for it
+	leaseExpiry        map[string]time.Time // enrollment id -> its current lease expiry
+	posts              []map[string]any
+	deletes            []string
+	renews             int
+	conflicts          int           // 409 ALREADY_ENROLLED answers from the runtime_id-keyed conflict path
+	failFirst          int           // 503 this many enroll calls first
+	revokeFirstDelay   time.Duration // sleep this long before the first DELETE actually removes its row
+	revokeFailFirst    int           // 503 this many DELETE calls first, row untouched (an unreachable broker)
+	revokeAttempts     int           // every DELETE this fake received, failed or not
+	lease              time.Duration // lease length the fake grants; 900 s unless a test shortens it
+	seen               map[string]bool
+	revokeForbidden    map[string]bool
+	revokeNotEnrolling map[string]bool
+	next               int // ids are minted, never derived from the key, like the broker's uuids
 
 	lastAuthorization      string // the Authorization header the most recent Enroll call carried; must stay empty
 	enrollUnauthorizedNext int    // fail the next N Enroll calls with 401 LAUNCHER_INVALID (an expired/revoked credential)
@@ -131,6 +134,10 @@ type fakeBroker struct {
 	// enrollArrivals counts every enroll POST this fake received, on arrival and before any gate, so
 	// a test can tell that an enroll is waiting at the gate.
 	enrollArrivals int
+	// heldSessions are omp session ids this broker keeps for ANOTHER principal: an enroll
+	// stating one is refused 403 SESSION_HELD, as the real broker refuses a name whose carry
+	// principal is not the enrolling one (enroll.ErrSessionHeld). Set before the helper runs.
+	heldSessions map[string]bool
 	// renewGate, when set, holds every renew until the test closes it. A renew reads the gate as it
 	// arrives, so a test can hold one renew, swap in another gate for the next, and release them
 	// one at a time.
@@ -148,6 +155,22 @@ type fakeBroker struct {
 	// refuseKinds answers an enroll naming one of these kinds 400 INVALID_KIND, as a broker before
 	// the session kind refuses "session".
 	refuseKinds map[string]bool
+	// deviceAuthFail answers the next N device authorizations 503 without reading them: an outage
+	// of the broker's OAuth front door, whose 503 can come after the broker acted.
+	deviceAuthFail int
+	// deviceAuthHold, when set, holds every device authorization until its request's context ends
+	// (the client has given up on it), and deviceAuthEnded counts each such end, so a test can tell
+	// that the helper ended the request rather than left it running.
+	deviceAuthHold  bool
+	deviceAuthEnded int
+	// revokeGate, when set, holds every DELETE until the test closes it, after revokeAttempts has
+	// counted it, so a test can keep a revoke in flight for exactly as long as it needs.
+	revokeGate chan struct{}
+	// enrollEmpty2xx answers every enroll 200 with {} — no enrollment_id — a 2xx the helper cannot
+	// read, so the outcome is unknown. deviceAuthEmpty2xx does the same for the device
+	// authorization, answering 200 with no device_code or user_code.
+	enrollEmpty2xx     bool
+	deviceAuthEmpty2xx bool
 }
 
 func newFakeBroker(t *testing.T) *fakeBroker {
@@ -181,11 +204,20 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 			writeJSON(w, 503, map[string]string{"code": "DATABASE", "error": "postgres unreachable"})
 			return
 		}
+		if f.enrollEmpty2xx {
+			writeJSON(w, 200, map[string]string{})
+			return
+		}
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.posts = append(f.posts, body)
 		if kind, _ := body["kind"].(string); f.refuseKinds[kind] {
 			writeJSON(w, 400, map[string]string{"code": "INVALID_KIND", "error": `kind must be "box", "host", or "pod"`})
+			return
+		}
+		if sid, _ := body["session_id"].(string); f.heldSessions[sid] {
+			writeJSON(w, 403, map[string]string{"code": "SESSION_HELD",
+				"error": "the session " + sid + " belongs to another principal; enrol under a name of your own"})
 			return
 		}
 		tp, _ := body["thumbprint"].(string)
@@ -227,9 +259,20 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		}
 		f.mu.Lock()
 		f.revokeAttempts++
+		gate := f.revokeGate
+		f.mu.Unlock()
+		if gate != nil {
+			<-gate
+		}
+		f.mu.Lock()
 		if f.revokeForbidden[r.PathValue("id")] {
 			f.mu.Unlock()
 			writeJSON(w, 403, map[string]string{"code": "OPERATOR_MISMATCH", "error": "the enrollment belongs to another operator"})
+			return
+		}
+		if f.revokeNotEnrolling[r.PathValue("id")] {
+			f.mu.Unlock()
+			writeJSON(w, 403, map[string]string{"code": "NOT_ENROLLING_CREDENTIAL", "error": "only the launcher credential that created this enrollment may revoke it"})
 			return
 		}
 		if f.revokeFailFirst > 0 {
@@ -326,7 +369,27 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 	})
 	mux.HandleFunc("POST /v1/oauth/device_authorization", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
+		if f.deviceAuthHold {
+			f.mu.Unlock()
+			// The server watches the connection for the client's close, which is what ends the
+			// request's context, only once the request's body is read.
+			_ = r.ParseForm()
+			<-r.Context().Done()
+			f.mu.Lock()
+			f.deviceAuthEnded++
+			f.mu.Unlock()
+			return
+		}
 		defer f.mu.Unlock()
+		if f.deviceAuthFail > 0 {
+			f.deviceAuthFail--
+			writeJSON(w, 503, map[string]string{"code": "DATABASE", "error": "postgres unreachable"})
+			return
+		}
+		if f.deviceAuthEmpty2xx {
+			writeJSON(w, 200, map[string]any{})
+			return
+		}
 		_ = r.ParseForm()
 		f.lastLoginRequest = r.PostForm.Get("request")
 		ro, err := record.VerifyRequestObject(f.lastLoginRequest, f.srv.URL, time.Minute, time.Now())
@@ -563,14 +626,9 @@ func loggedInBroker(t *testing.T, f *fakeBroker, operator string) *Broker {
 // interval the fake names).
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
+	if !testwait.Holds(5*time.Second, 5*time.Millisecond, cond) {
+		t.Fatal("condition never became true")
 	}
-	t.Fatal("condition never became true")
 }
 
 func TestLoginHoldsTheKeyAndEnrollSignsLauncherProofs(t *testing.T) {
@@ -586,8 +644,8 @@ func TestLoginHoldsTheKeyAndEnrollSignsLauncherProofs(t *testing.T) {
 		t.Fatalf("request object: %+v %v", ro, err)
 	}
 	waitFor(t, func() bool { return b.LoginStatus().State == "issued" })
-	sess, _ := newSession(1234, 77, "h:1234:77", nil)
-	if _, _, err := b.Enroll(context.Background(), sess); err != nil {
+	sess, _ := newSession(1234, 77, "h:1234:77", "", nil, nil)
+	if _, _, err := b.EnrollIdentity(context.Background(), sess.identity()); err != nil {
 		t.Fatal(err)
 	}
 	if f.lastAuthorization != "" {
@@ -611,9 +669,9 @@ func TestNoCredentialAndExpiredCredentialBothNameTheLoginCommand(t *testing.T) {
 	f := newFakeBroker(t)
 	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
-	sess, _ := newSession(1, 1, "h:1:1", nil)
+	sess, _ := newSession(1, 1, "h:1:1", "", nil, nil)
 
-	if _, _, err := b.Enroll(context.Background(), sess); err == nil || !strings.Contains(err.Error(), "agent-secrets machine login") {
+	if _, _, err := b.EnrollIdentity(context.Background(), sess.identity()); err == nil || !strings.Contains(err.Error(), "agent-secrets machine login") {
 		t.Fatalf("no credential yet: expected the remedy in the error, got %v", err)
 	}
 
@@ -621,20 +679,20 @@ func TestNoCredentialAndExpiredCredentialBothNameTheLoginCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return b.LoginStatus().State == "issued" })
-	if _, _, err := b.Enroll(context.Background(), sess); err != nil {
+	if _, _, err := b.EnrollIdentity(context.Background(), sess.identity()); err != nil {
 		t.Fatalf("a fresh credential must enroll: %v", err)
 	}
 
 	f.mu.Lock()
 	f.enrollUnauthorizedNext = 1
 	f.mu.Unlock()
-	if _, _, err := b.Enroll(context.Background(), sess); err == nil || !strings.Contains(err.Error(), "agent-secrets machine login") {
+	if _, _, err := b.EnrollIdentity(context.Background(), sess.identity()); err == nil || !strings.Contains(err.Error(), "agent-secrets machine login") {
 		t.Fatalf("expired credential: expected the remedy in the error, got %v", err)
 	}
 	if b.cred.Load() != nil {
 		t.Fatal("a 401 LAUNCHER_INVALID must clear the credential")
 	}
-	if _, _, err := b.Enroll(context.Background(), sess); err == nil || !strings.Contains(err.Error(), "agent-secrets machine login") {
+	if _, _, err := b.EnrollIdentity(context.Background(), sess.identity()); err == nil || !strings.Contains(err.Error(), "agent-secrets machine login") {
 		t.Fatalf("cleared credential: expected the remedy again, got %v", err)
 	}
 	if _, err := LoadMachineFile(b.MachineFile); err != nil {
@@ -675,14 +733,14 @@ func TestALateRejectionOfAnOldCredentialLeavesTheNewLoginAlone(t *testing.T) {
 	fresh := b.cred.Load()
 
 	rejected := &BrokerError{Status: http.StatusUnauthorized, Code: "LAUNCHER_INVALID", Message: "the launcher credential is not valid"}
-	if err := b.clearOnInvalid(old, rejected); err != rejected {
+	if err := b.clearOnInvalid(context.Background(), old, rejected); err != rejected {
 		t.Fatalf("a rejection of a replaced credential reached its caller as %v; want the broker's refusal as it came", err)
 	}
 	if b.cred.Load() != fresh || b.LoginStatus().State != "issued" {
 		t.Fatalf("a late rejection of the replaced credential changed the new login: cred replaced %v, state %q", b.cred.Load() != fresh, b.LoginStatus().State)
 	}
 
-	if err := b.clearOnInvalid(fresh, rejected); !errors.Is(err, errNoCredential) {
+	if err := b.clearOnInvalid(context.Background(), fresh, rejected); !errors.Is(err, errNoCredential) {
 		t.Fatal(err)
 	}
 	if b.cred.Load() != nil || b.LoginStatus().State == "issued" {
@@ -717,7 +775,7 @@ func TestLoginStatusReadsARefusalWithTheClearThatCausedIt(t *testing.T) {
 		}
 	}
 	rejected := &BrokerError{Status: http.StatusUnauthorized, Code: "LAUNCHER_INVALID", Message: "the launcher credential is not valid"}
-	if err := b.clearOnInvalid(held, rejected); !errors.Is(err, errNoCredential) {
+	if err := b.clearOnInvalid(context.Background(), held, rejected); !errors.Is(err, errNoCredential) {
 		t.Fatal(err)
 	}
 	if got := <-read; got.State != "expired" || !got.Refused || got.CredentialHeld {
@@ -741,7 +799,7 @@ func TestALoginPendingWhenTheCredentialIsRefusedReportsItsOwnOutcome(t *testing.
 		t.Fatal(err)
 	}
 	rejected := &BrokerError{Status: http.StatusUnauthorized, Code: "LAUNCHER_INVALID", Message: "the launcher credential is not valid"}
-	if err := b.clearOnInvalid(held, rejected); !errors.Is(err, errNoCredential) {
+	if err := b.clearOnInvalid(context.Background(), held, rejected); !errors.Is(err, errNoCredential) {
 		t.Fatal(err)
 	}
 	if got := b.LoginStatus(); got.State != "pending" || !got.Refused || got.CredentialHeld {
@@ -805,19 +863,19 @@ func TestDeniedAndExpiredLoginsSurfaceTheirState(t *testing.T) {
 func TestEnrollSendsKindSessionAndAcceptsBothStatuses(t *testing.T) {
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
-	sess, _ := newSession(1234, 77, "example-host-devbox:1234:77", nil)
-	id, lease, err := b.Enroll(context.Background(), sess)
+	sess, _ := newSession(1234, 77, "example-host-devbox:1234:77", "", nil, nil)
+	id, lease, err := b.EnrollIdentity(context.Background(), sess.identity())
 	if err != nil || id == "" || time.Until(lease) < 10*time.Minute {
 		t.Fatalf("enroll: %q %v %v", id, lease, err)
 	}
 	posts, _, _ := f.snapshot()
 	post := posts[0]
 	if post["kind"] != "session" || post["runtime_id"] != "example-host-devbox:1234:77" || post["operator"] != "ada@example.com" ||
-		post["thumbprint"] != sess.Thumbprint || post["approver"] != nil ||
+		post["thumbprint"] != sess.identity().Thumbprint || post["approver"] != nil ||
 		post["session_id"] != nil || post["pod_token"] != nil {
 		t.Fatalf("enroll body: %+v", post)
 	}
-	again, _, err := b.Enroll(context.Background(), sess)
+	again, _, err := b.EnrollIdentity(context.Background(), sess.identity())
 	if err != nil || again != id {
 		t.Fatalf("a repeat enroll must return the same enrollment (200): %q %v", again, err)
 	}
@@ -826,13 +884,13 @@ func TestEnrollSendsKindSessionAndAcceptsBothStatuses(t *testing.T) {
 func TestRenewSignsWithTheSessionKeyAndRevokeIsIdempotent(t *testing.T) {
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
-	sess, _ := newSession(1, 1, "h:1:1", nil)
-	id, _, err := b.Enroll(context.Background(), sess)
+	sess, _ := newSession(1, 1, "h:1:1", "", nil, nil)
+	id, _, err := b.EnrollIdentity(context.Background(), sess.identity())
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess.setEnrolled(id)
-	if _, err := b.Renew(context.Background(), sess); err != nil {
+	sess.setEnrolledAt(id, sess.identity().Generation)
+	if _, _, err := b.Renew(context.Background(), sess); err != nil {
 		t.Fatalf("renew: %v", err)
 	}
 	if _, _, renews := f.snapshot(); renews != 1 {
@@ -844,7 +902,7 @@ func TestRenewSignsWithTheSessionKeyAndRevokeIsIdempotent(t *testing.T) {
 	if err := b.Revoke(context.Background(), id); err != nil {
 		t.Fatalf("a second revoke (404) is done, not an error: %v", err)
 	}
-	_, err = b.Renew(context.Background(), sess)
+	_, _, err = b.Renew(context.Background(), sess)
 	var be *BrokerError
 	if !errors.As(err, &be) || be.Status != 401 {
 		t.Fatalf("renew after revoke must be 401: %v", err)
@@ -853,9 +911,31 @@ func TestRenewSignsWithTheSessionKeyAndRevokeIsIdempotent(t *testing.T) {
 
 func TestMissingCredentialNamesTheLoginCommand(t *testing.T) {
 	b := &Broker{URL: "http://127.0.0.1:1", OperatorFile: filepath.Join(t.TempDir(), "none"), HTTP: http.DefaultClient}
-	sess, _ := newSession(1, 1, "h:1:1", nil)
-	_, _, err := b.Enroll(context.Background(), sess)
+	sess, _ := newSession(1, 1, "h:1:1", "", nil, nil)
+	_, _, err := b.EnrollIdentity(context.Background(), sess.identity())
 	if err == nil || !strings.Contains(err.Error(), "agent-secrets machine login") {
 		t.Fatalf("expected the remedy in the error, got %v", err)
+	}
+}
+
+// TestABrokerErrorNamesOnlyTheFieldsItHas pins BrokerError.Error's four shapes: the status alone,
+// the status with a code, the status with a message, and the filled form. The filled form is what
+// the broker's own refusals carry, and nocredential_test.go matches its "broker 401
+// LAUNCHER_INVALID" prefix; each shape with an empty part drops that part, so a front door's 502
+// with no JSON body does not read "broker 502 : ".
+func TestABrokerErrorNamesOnlyTheFieldsItHas(t *testing.T) {
+	for _, tc := range []struct {
+		err  BrokerError
+		want string
+	}{
+		{BrokerError{Status: 502}, "broker 502"},
+		{BrokerError{Status: 502, Code: "DATABASE"}, "broker 502 DATABASE"},
+		{BrokerError{Status: 502, Message: "postgres unreachable"}, "broker 502: postgres unreachable"},
+		{BrokerError{Status: 403, Code: "SESSION_HELD", Message: "the session s belongs to another principal"},
+			"broker 403 SESSION_HELD: the session s belongs to another principal"},
+	} {
+		if got := tc.err.Error(); got != tc.want {
+			t.Errorf("BrokerError%+v: %q; want %q", tc.err, got, tc.want)
+		}
 	}
 }

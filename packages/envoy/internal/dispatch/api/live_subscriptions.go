@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync/atomic"
 
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -42,8 +43,10 @@ type liveStreamer interface {
 	// once the socket has ended, which ends ctx too, and otherwise ctx's error once ctx (the
 	// subscription's own) ends.
 	SendWait(ctx context.Context, frame any) error
-	// Human reports whether the caller is a person (cookie identity) rather than a bearer.
-	Human() bool
+	// Holds reports whether the caller's credential holds one OAuth scope, as the socket kept
+	// that credential at the upgrade: the gate a view only a person's credential may watch uses,
+	// since gateRouteScopes gates a route and no frame carries a credential.
+	Holds(scope string) bool
 }
 
 // runningSubscription is an events or agent subscription whose whole life runs on a goroutine of
@@ -138,7 +141,7 @@ func (stream *liveSubscriptionStream) ended(ctx context.Context) error {
 	}
 }
 
-func (stream *liveSubscriptionStream) Human() bool { return stream.socket.human }
+func (stream *liveSubscriptionStream) Holds(scope string) bool { return stream.socket.holds(scope) }
 
 // subscribeLive answers one subscribe frame: it starts the subscription the frame's view's kind
 // names in place of any the socket holds under the frame's sub, or answers the error frame refusing
@@ -264,8 +267,12 @@ func hasLiveResume(raw json.RawMessage) bool {
 	return len(raw) > 0 && !bytes.Equal(raw, []byte("null"))
 }
 
-// decodeLiveResume decodes a subscribe frame's resume as T, refusing a member T does not declare,
-// so a resume of another kind's shape is refused; it is nil when the frame carried none.
+// decodeLiveResume decodes a subscribe frame's resume as T; it is nil when the frame carried
+// none. A member T does not declare is refused by name, where a member of the frame around it is
+// ignored (decodeSocketClientFrame): a resume is the point the view restarts from, so one of
+// another kind's shape, or one carrying a member this build drops, would start the view somewhere
+// other than where the page left it - rows it never sees, or sees twice - which is a loss the
+// page is told about rather than served.
 func decodeLiveResume[T any](raw json.RawMessage) (*T, error) {
 	if !hasLiveResume(raw) {
 		return nil, nil
@@ -273,6 +280,9 @@ func decodeLiveResume[T any](raw json.RawMessage) (*T, error) {
 	var resume T
 	if err := decodeSocketClientFrame(raw, &resume); err != nil {
 		return nil, err
+	}
+	if undeclared := undeclaredMembers(&resume, raw); len(undeclared) > 0 {
+		return nil, errors.New("this view's resume does not take " + strings.Join(undeclared, ", "))
 	}
 	return &resume, nil
 }

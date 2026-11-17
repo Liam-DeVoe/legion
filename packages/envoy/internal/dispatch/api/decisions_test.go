@@ -207,6 +207,11 @@ func TestIssueDecisionsReadsEachDecisionOfTheDocument(t *testing.T) {
 	if got := specVersionCount(t, fixture.database, fixture.issue.PrimaryArtifactID); got != specVersions {
 		t.Fatalf("the spec has %d versions, want %d: writing decisions.md writes the spec none", got, specVersions)
 	}
+	// The view answers each decision's text with the reading Go made of it, so the panel that
+	// lays a decision out block by block takes those blocks from this tree rather than splitting
+	// the markdown in the browser.
+	requireDisplayTree(t, fixture.handler, "/api/v1/issues/"+fixture.issue.Key+"/decisions",
+		"decisions.0.text", "decisions.0.text_tree")
 }
 
 // A link added to an existing decision is not out of date; a version that changes the decision's
@@ -340,9 +345,11 @@ func TestKeepRecordsAgreementUntilTheDecisionChanges(t *testing.T) {
 		t.Fatalf("after a Keep of the text as it stands the decision = %#v, want it kept", now)
 	}
 
+	// A Keep is the person's own agreement, so the route needs the person scope: the deployment's
+	// shared token holds none and is refused, naming it.
 	bearer := sessionRequest(t, handler, http.MethodPost, keepPath, map[string]any{"actor": sessionActor()})
-	if bearer.Code != http.StatusForbidden || !strings.Contains(bearer.Body.String(), "HUMAN_ONLY") {
-		t.Fatalf("a bearer's keep: status=%d body=%s, want 403 HUMAN_ONLY", bearer.Code, bearer.Body.String())
+	if bearer.Code != http.StatusForbidden || !strings.Contains(bearer.Body.String(), codeScopeRequired) {
+		t.Fatalf("a bearer's keep: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), codeScopeRequired)
 	}
 
 	blocks := blockIDsByText(t, handler, fixture.decisions.ID)
@@ -497,8 +504,8 @@ func TestDocumentReadRecordsEachPersonsLastReadVersion(t *testing.T) {
 		{http.MethodPut, map[string]any{"version": 2, "actor": sessionActor()}},
 	} {
 		response := sessionRequest(t, handler, probe.method, path, probe.body)
-		if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "HUMAN_ONLY") {
-			t.Fatalf("a bearer's %s: status=%d body=%s, want 403 HUMAN_ONLY", probe.method, response.Code, response.Body.String())
+		if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), codeScopeRequired) {
+			t.Fatalf("a bearer's %s: status=%d body=%s, want 403 %s", probe.method, response.Code, response.Body.String(), codeScopeRequired)
 		}
 	}
 }
@@ -531,7 +538,7 @@ func TestAFirstIndexingMarksNothingOutOfDate(t *testing.T) {
 			t.Fatalf("%s: %v", statement, err)
 		}
 	}
-	if _, err := fixture.deps.Docs.(*docs.Service).ReconcileBlockIndex(ctx, "", nil); err != nil {
+	if _, err := fixture.deps.Docs.(*docs.Service).ReconcileBlockIndex(ctx, docs.BlockIndexCursors{}, nil); err != nil {
 		t.Fatalf("reconcile the block index: %v", err)
 	}
 	view := readIssueDecisions(t, handler, key)
@@ -567,6 +574,12 @@ func TestIssueDecisionsListTheSpecsOpenQuestions(t *testing.T) {
 	if fmt.Sprint(questions) != "[Which store? Which name?]" {
 		t.Fatalf("open_questions = %v, want the spec's two asks oldest first", questions)
 	}
+	// Each question is the ask row the ask list answers, and that row declares a question tree,
+	// so this view answers one too: a caller that asked for the trees is given the same row by
+	// both routes, and a client that reads either draws what the server read rather than its own
+	// reading of the markdown.
+	requireDisplayTree(t, handler, "/api/v1/issues/"+issue.Key+"/decisions",
+		"open_questions.0.question", "open_questions.0.question_tree")
 }
 
 // waitForOpenQuestions reads the view until it holds want open questions: settlement indexes a

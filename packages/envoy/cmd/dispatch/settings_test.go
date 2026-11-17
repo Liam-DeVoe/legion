@@ -11,9 +11,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -35,7 +32,9 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/config"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
@@ -44,129 +43,10 @@ import (
 	"github.com/sjawhar/envoy/internal/githubappjwt"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testsocks5"
 )
-
-// storetestImport is the one package under internal/dispatch that reads the process environment
-// for itself: the Postgres fixture of Dispatch's tests (DISPATCH_TEST_DATABASE_URL), which only
-// test files may import.
-const storetestImport = "github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-
-// environmentReaders are the functions that read the process environment, by package.
-var environmentReaders = map[string][]string{
-	"os":      {"Getenv", "LookupEnv", "Environ", "ExpandEnv"},
-	"syscall": {"Getenv", "Environ"},
-}
-
-// environmentReads walks the non-test Go files under roots and returns each reference to an
-// environment reader as "<path> <package>.<name>", whatever name the file imports the package
-// under, and each dot import of a reader's package as "<path> import . <package>": with the
-// package's names unqualified, a read cannot be told from a call to the file's own function, so
-// the import is the finding. It also returns the files that import storetest.
-func environmentReads(roots ...string) (reads, storetestImporters []string, err error) {
-	fileSet := token.NewFileSet()
-	for _, root := range roots {
-		err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if entry.IsDir() {
-				if entry.Name() == "testdata" || entry.Name() == "node_modules" {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-				return nil
-			}
-			file, err := parser.ParseFile(fileSet, path, nil, parser.SkipObjectResolution)
-			if err != nil {
-				return err
-			}
-			fixture := strings.Contains(filepath.ToSlash(path), "store/storetest/")
-			// The name each environment-reading package has in this file.
-			packages := map[string]string{}
-			for _, spec := range file.Imports {
-				importPath, _ := strconv.Unquote(spec.Path.Value)
-				if importPath == storetestImport {
-					storetestImporters = append(storetestImporters, path)
-				}
-				if _, reads := environmentReaders[importPath]; !reads {
-					continue
-				}
-				name := importPath
-				if spec.Name != nil {
-					name = spec.Name.Name
-				}
-				if name == "." && !fixture {
-					reads = append(reads, filepath.ToSlash(path)+" import . "+importPath)
-				}
-				packages[name] = importPath
-			}
-			if fixture {
-				return nil
-			}
-			ast.Inspect(file, func(node ast.Node) bool {
-				selector, ok := node.(*ast.SelectorExpr)
-				if !ok {
-					return true
-				}
-				pkg, ok := selector.X.(*ast.Ident)
-				if !ok {
-					return true
-				}
-				if importPath, ok := packages[pkg.Name]; ok && slices.Contains(environmentReaders[importPath], selector.Sel.Name) {
-					position := fileSet.Position(selector.Pos())
-					reads = append(reads, filepath.ToSlash(position.Filename)+" "+importPath+"."+selector.Sel.Name)
-				}
-				return true
-			})
-			return nil
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("walk %s: %w", root, err)
-		}
-	}
-	return reads, storetestImporters, nil
-}
-
-// Dispatch reads its environment in one place: processSettings, over the settings table. Any
-// other reference to the process environment under cmd/dispatch or internal/dispatch is a reader
-// the table, `envoy-dispatch settings` and the generated configuration reference do not list.
-func TestNoReaderBypassesTheSettingsTable(t *testing.T) {
-	reads, storetestImporters, err := environmentReads(".", filepath.Join("..", "..", "internal", "dispatch"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{"settings.go os.LookupEnv"}; !slices.Equal(reads, want) {
-		t.Errorf("environment reads outside the settings table: %q, want only %q (processSettings). Add the variable as a row of the settings table (cmd/dispatch/settings.go) and hand its reader the value", reads, want)
-	}
-	if len(storetestImporters) > 0 {
-		t.Errorf("non-test files import %s, which reads DISPATCH_TEST_DATABASE_URL outside the settings table: %q", storetestImport, storetestImporters)
-	}
-}
-
-// The guard sees a read however the file imports its package: under another name, or with no
-// name at all, where the read is a bare Getenv.
-func TestTheGuardSeesAReadUnderAnyImportName(t *testing.T) {
-	for name, probe := range map[string]string{
-		"an aliased import":       "package auth\n\nimport environment \"os\"\n\nfunc acceptProbe() string { return environment.Getenv(\"DISPATCH_ACCEPT_PROBE\") }\n",
-		"a dot import":            "package auth\n\nimport . \"os\"\n\nfunc acceptProbe() string { return Getenv(\"DISPATCH_ACCEPT_PROBE\") }\n",
-		"a dot import of syscall": "package auth\n\nimport . \"syscall\"\n\nfunc acceptProbe() []string { return Environ() }\n",
-	} {
-		t.Run(name, func(t *testing.T) {
-			path := writeFile(t, filepath.Join("auth", "probe.go"), probe)
-			reads, _, err := environmentReads(filepath.Dir(path))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(reads) != 1 || !strings.HasPrefix(reads[0], filepath.ToSlash(path)+" ") {
-				t.Errorf("environment reads %q, want the one in %s", reads, path)
-			}
-		})
-	}
-}
 
 func TestSettingsTableNamesEachVariableOnce(t *testing.T) {
 	name := regexp.MustCompile(`^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$`)
@@ -820,7 +700,16 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot := resolveWith(t, nil); boot.PprofAddr != "" {
 				t.Errorf("unset: PprofAddr = %q, want none", boot.PprofAddr)
 			}
-			refusedWith(t, map[string]string{"DISPATCH_PPROF_PORT": "0"}, "DISPATCH_PPROF_PORT")
+			if boot := resolveWith(t, map[string]string{"DISPATCH_PPROF_PORT": "0"}); boot.PprofAddr != "127.0.0.1:0" {
+				t.Errorf("0: PprofAddr = %q, want 127.0.0.1:0, a port the kernel chooses", boot.PprofAddr)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_PPROF_PORT": "65536"}, "DISPATCH_PPROF_PORT")
+		},
+		"DISPATCH_MAX_LIVE_ROOMS": func(t *testing.T) {
+			documentCapReachesTheService(t, "DISPATCH_MAX_LIVE_ROOMS", func(rooms, _ int) int { return rooms })
+		},
+		"DISPATCH_MAX_DOC_CONNECTIONS": func(t *testing.T) {
+			documentCapReachesTheService(t, "DISPATCH_MAX_DOC_CONNECTIONS", func(_, connections int) int { return connections })
 		},
 		"DISPATCH_SERVER_URL": func(t *testing.T) {
 			if cfg, err := envoyJSON(t, map[string]string{"DISPATCH_SERVER_URL": "https://from-the-table.example"}); err != nil || cfg.Dispatch.ServerURL != "https://from-the-table.example" {
@@ -1006,6 +895,35 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"ENVOY_URL": "listener.example:9020"}, "ENVOY_URL")
 		},
+		"ENVOY_SESSION_LIVE_WINDOW": func(t *testing.T) {
+			// The window the outbox judges a role route's holder by (roleHolderWindows,
+			// roles.NewBuckets): a holder that registered 10 minutes ago is live under a window
+			// the deployment widened, and unresponsive under the compiled five minutes, which
+			// holds its event pending rather than forwarding it.
+			holder := session.SessionEntry{UpdatedAt: time.Now().Add(-10 * time.Minute).UnixMilli()}
+			if state := resolveWith(t, map[string]string{"ENVOY_SESSION_LIVE_WINDOW": "30m"}).RoleHolderWindows.EntryState(holder); state != session.Live {
+				t.Errorf("ENVOY_SESSION_LIVE_WINDOW=30m: a holder that registered 10m ago reads %s, want live", state)
+			}
+			if state := resolveWith(t, nil).RoleHolderWindows.EntryState(holder); state != session.Unresponsive {
+				t.Errorf("unset: a holder that registered 10m ago reads %s, want unresponsive on the compiled 5m window", state)
+			}
+			refusedWith(t, map[string]string{"ENVOY_SESSION_LIVE_WINDOW": "0s"}, "ENVOY_SESSION_LIVE_WINDOW")
+		},
+		"ENVOY_SESSION_GONE_HORIZON": func(t *testing.T) {
+			// The horizon that decides whether a stalled holder's event waits for it or is
+			// counted reached with nothing sent (forwardOf). A deployment that raises it for a
+			// stall longer than an hour raises it here too: with the raise in the listener
+			// alone, Dispatch calls gone a holder whose role that listener still keeps, and the
+			// event reaches it never (dispatch://INFRA-392).
+			holder := session.SessionEntry{UpdatedAt: time.Now().Add(-90 * time.Minute).UnixMilli()}
+			if state := resolveWith(t, map[string]string{"ENVOY_SESSION_GONE_HORIZON": "3h"}).RoleHolderWindows.EntryState(holder); state != session.Unresponsive {
+				t.Errorf("ENVOY_SESSION_GONE_HORIZON=3h: a holder that registered 90m ago reads %s, want unresponsive", state)
+			}
+			if state := resolveWith(t, nil).RoleHolderWindows.EntryState(holder); state != session.Gone {
+				t.Errorf("unset: a holder that registered 90m ago reads %s, want gone on the compiled 1h horizon", state)
+			}
+			refusedWith(t, map[string]string{"ENVOY_SESSION_GONE_HORIZON": "-1m"}, "ENVOY_SESSION_GONE_HORIZON")
+		},
 		"ENVOY_TOKEN": func(t *testing.T) {
 			// The bearer the Envoy listener receives when a signed-in human's GET /api/v1/agents
 			// reads its sessions.
@@ -1162,6 +1080,31 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("not an integer: err = %v, want a refusal naming DISPATCH_APP_ID", err)
 			}
 		},
+		"DISPATCH_REVIEWER_APP_ID": func(t *testing.T) {
+			if boot := resolveWith(t, nil); boot.ReviewerAppID != "" {
+				t.Errorf("unset: ReviewerAppID = %q, want empty, which records no verdict check", boot.ReviewerAppID)
+			}
+			boot := resolveWith(t, map[string]string{"DISPATCH_REVIEWER_APP_ID": " 5341243 "})
+			if boot.ReviewerAppID != "5341243" {
+				t.Errorf("ReviewerAppID = %q, want %q", boot.ReviewerAppID, "5341243")
+			}
+			for _, value := range []string{"x", "0", "-1", "5341243x", "5 341 243"} {
+				refusedWith(t, map[string]string{"DISPATCH_REVIEWER_APP_ID": value}, "DISPATCH_REVIEWER_APP_ID")
+			}
+			// Its reader: the pass main starts, which compares a verdict check's app.id against
+			// this id. The pass this builds runs nothing, so the rate limits it would read make
+			// an empty database every database it needs, as the sweeper's own case above does.
+			_, url := testnats.Start(t)
+			_, pemText := githubapptest.Key(t)
+			reconciler, err := ciReconciler(startDispatchStream(t, []string{url}, nil), &store.Store{},
+				&auth.AppConfig{ClientID: "Iv1.reviewer", PEM: pemText}, "", boot.ReviewerAppID, cireconcile.Interval, &registeredInstance{})
+			if err != nil || reconciler == nil {
+				t.Fatalf("build the CI reconcile pass: %+v, %v", reconciler, err)
+			}
+			if reconciler.ReviewerAppID != "5341243" {
+				t.Errorf("the pass's ReviewerAppID = %q, want %q", reconciler.ReviewerAppID, "5341243")
+			}
+		},
 		"DISPATCH_APP_SLUG": func(t *testing.T) {
 			app, _, err := loadAppCredentials(envGetter(map[string]string{"DISPATCH_APP_CLIENT_ID": "Iv1.env", "DISPATCH_APP_SLUG": "table-slug"}), t.TempDir())
 			if err != nil || app.Slug != "table-slug" {
@@ -1183,7 +1126,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			t.Run("router", func(t *testing.T) {
 				database := storetest.Open(t)
 				if _, err := database.Pool.Exec(context.Background(), `
-					insert into projects (key, name) values ('ARCH', 'ARCH');
+					insert into projects (key, name, default_assignee) values ('ARCH', 'ARCH', 'alice');
 					insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
 					values ('ARCH', 'acme/arch', 'main', 1, '{"kind":"session","id":"test"}');
 				`); err != nil {
@@ -1493,8 +1436,16 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot := resolveWith(t, azureEmbedEnvironment(withOverrides(azureKeyless, map[string]string{"DISPATCH_AZURE_TENANT_ID": " tenant "}))); boot.Embedder.AzureTenantID != "tenant" {
 				t.Errorf("AzureTenantID = %q", boot.Embedder.AzureTenantID)
 			}
+			// The sign-in is shared: a Bedrock embedder beside an Azure answerer resolves, and the
+			// three rows are read by the answerer.
+			boot := resolveWith(t, azureChatEnvironment(map[string]string{"DISPATCH_AZURE_TENANT_ID": " tenant "}))
+			if boot.Embedder.Place != embed.PlaceBedrock || boot.Embedder.AzureTenantID != "" || boot.Answerer.TenantID != "tenant" {
+				t.Errorf("bedrock embedder beside an azure answerer: Embedder.Place = %q, Embedder.AzureTenantID = %q, Answerer.TenantID = %q",
+					boot.Embedder.Place, boot.Embedder.AzureTenantID, boot.Answerer.TenantID)
+			}
 			refusedWith(t, azureEmbedEnvironment(withOverrides(azureKeyless, map[string]string{"DISPATCH_AZURE_TENANT_ID": ""})), "DISPATCH_AZURE_TENANT_ID missing")
-			refusedWith(t, map[string]string{"DISPATCH_AZURE_TENANT_ID": "tenant"}, "DISPATCH_AZURE_TENANT_ID set, but DISPATCH_EMBEDDER is unset")
+			refusedWith(t, azureChatEnvironment(map[string]string{"DISPATCH_AZURE_TENANT_ID": ""}), "DISPATCH_AZURE_TENANT_ID missing")
+			refusedWith(t, map[string]string{"DISPATCH_AZURE_TENANT_ID": "tenant"}, "DISPATCH_AZURE_TENANT_ID set, but neither DISPATCH_EMBEDDER nor DISPATCH_ANSWERER is azure: the shared Azure sign-in is read by whichever of them is azure")
 			if embedder := azureEmbedderFor(t, azureKeyless); embedder.Identity() != "azure:embed.example/embed-v-4-0" {
 				t.Errorf("keyless: Identity() = %q", embedder.Identity())
 			}
@@ -1503,8 +1454,11 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot := resolveWith(t, azureEmbedEnvironment(withOverrides(azureKeyless, map[string]string{"DISPATCH_AZURE_CLIENT_ID": " client "}))); boot.Embedder.AzureClientID != "client" {
 				t.Errorf("AzureClientID = %q", boot.Embedder.AzureClientID)
 			}
+			if boot := resolveWith(t, azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CLIENT_ID": " client "})); boot.Answerer.ClientID != "client" {
+				t.Errorf("the answerer's ClientID = %q", boot.Answerer.ClientID)
+			}
 			refusedWith(t, azureEmbedEnvironment(withOverrides(azureKeyless, map[string]string{"DISPATCH_AZURE_CLIENT_ID": ""})), "DISPATCH_AZURE_CLIENT_ID missing")
-			refusedWith(t, map[string]string{"DISPATCH_AZURE_CLIENT_ID": "client"}, "DISPATCH_AZURE_CLIENT_ID set, but DISPATCH_EMBEDDER is unset")
+			refusedWith(t, map[string]string{"DISPATCH_AZURE_CLIENT_ID": "client"}, "DISPATCH_AZURE_CLIENT_ID set, but neither DISPATCH_EMBEDDER nor DISPATCH_ANSWERER is azure")
 		},
 		"DISPATCH_AZURE_FEDERATED_TOKEN_FILE": func(t *testing.T) {
 			// A path, read at each exchange, not at boot: a file that is not there yet boots.
@@ -1512,8 +1466,91 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot := resolveWith(t, azureEmbedEnvironment(withOverrides(azureKeyless, map[string]string{"DISPATCH_AZURE_FEDERATED_TOKEN_FILE": " " + missing + " "}))); boot.Embedder.AzureTokenFile != missing {
 				t.Errorf("AzureTokenFile = %q, want %q", boot.Embedder.AzureTokenFile, missing)
 			}
+			if boot := resolveWith(t, azureChatEnvironment(map[string]string{"DISPATCH_AZURE_FEDERATED_TOKEN_FILE": " " + missing + " "})); boot.Answerer.FederatedToken != missing {
+				t.Errorf("the answerer's FederatedToken = %q, want %q", boot.Answerer.FederatedToken, missing)
+			}
 			refusedWith(t, azureEmbedEnvironment(withOverrides(azureKeyless, map[string]string{"DISPATCH_AZURE_FEDERATED_TOKEN_FILE": ""})), "DISPATCH_AZURE_FEDERATED_TOKEN_FILE missing")
-			refusedWith(t, map[string]string{"DISPATCH_AZURE_FEDERATED_TOKEN_FILE": missing}, "DISPATCH_AZURE_FEDERATED_TOKEN_FILE set, but DISPATCH_EMBEDDER is unset")
+			refusedWith(t, map[string]string{"DISPATCH_AZURE_FEDERATED_TOKEN_FILE": missing}, "DISPATCH_AZURE_FEDERATED_TOKEN_FILE set, but neither DISPATCH_EMBEDDER nor DISPATCH_ANSWERER is azure")
+		},
+		"DISPATCH_ANSWERER": func(t *testing.T) {
+			if boot := resolveWith(t, nil); boot.Answerer.Place != "" {
+				t.Errorf("unset: Answerer.Place = %q, want no model configured", boot.Answerer.Place)
+			}
+			if boot := resolveWith(t, azureChatEnvironment(nil)); boot.Answerer.Place != "azure" {
+				t.Errorf("azure: Answerer.Place = %q", boot.Answerer.Place)
+			}
+			if boot := resolveWith(t, endpointChatEnvironment(nil)); boot.Answerer.Place != "endpoint" {
+				t.Errorf("endpoint: Answerer.Place = %q", boot.Answerer.Place)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_ANSWERER": "openai"}, `DISPATCH_ANSWERER="openai" (expected azure or endpoint)`)
+			refusedWith(t, azureChatEnvironment(map[string]string{"DISPATCH_ANSWERER": "Azure"}), `DISPATCH_ANSWERER="Azure" (expected azure or endpoint)`)
+		},
+		"DISPATCH_AZURE_CHAT_ENDPOINT": func(t *testing.T) {
+			if boot := resolveWith(t, azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_ENDPOINT": " https://Chat.Example/models "})); boot.Answerer.Endpoint != "https://Chat.Example/models" {
+				t.Errorf("Endpoint = %q, want the trimmed URL", boot.Answerer.Endpoint)
+			}
+			refusedWith(t, azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_ENDPOINT": ""}), "DISPATCH_AZURE_CHAT_ENDPOINT is required")
+			refusedWith(t, azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_ENDPOINT": "http://chat.example/models"}), "DISPATCH_AZURE_CHAT_ENDPOINT=")
+			refusedWith(t, map[string]string{"DISPATCH_AZURE_CHAT_ENDPOINT": "https://chat.example/models"}, "DISPATCH_AZURE_CHAT_ENDPOINT set, but DISPATCH_ANSWERER is unset")
+			refusedWith(t, endpointChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_ENDPOINT": "https://chat.example/models"}), "DISPATCH_AZURE_CHAT_ENDPOINT set, but DISPATCH_ANSWERER is endpoint")
+		},
+		"DISPATCH_AZURE_CHAT_DEPLOYMENT": func(t *testing.T) {
+			if boot := resolveWith(t, azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_DEPLOYMENT": " gpt-5-chat "})); boot.Answerer.Model != "gpt-5-chat" {
+				t.Errorf("Model = %q, want the trimmed deployment", boot.Answerer.Model)
+			}
+			refusedWith(t, azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_DEPLOYMENT": ""}), "DISPATCH_AZURE_CHAT_DEPLOYMENT is required")
+			refusedWith(t, map[string]string{"DISPATCH_AZURE_CHAT_DEPLOYMENT": "gpt-5-chat"}, "DISPATCH_AZURE_CHAT_DEPLOYMENT set, but DISPATCH_ANSWERER is unset")
+		},
+		"DISPATCH_AZURE_CHAT_API_VERSION": func(t *testing.T) {
+			if boot := resolveWith(t, azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_API_VERSION": " 2024-05-01-preview "})); boot.Answerer.APIVersion != "2024-05-01-preview" {
+				t.Errorf("APIVersion = %q, want the trimmed value", boot.Answerer.APIVersion)
+			}
+			if boot := resolveWith(t, azureChatEnvironment(nil)); boot.Answerer.APIVersion != "" {
+				t.Errorf("unset: APIVersion = %q, want no api-version sent", boot.Answerer.APIVersion)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_AZURE_CHAT_API_VERSION": "2024-05-01-preview"}, "DISPATCH_AZURE_CHAT_API_VERSION set, but DISPATCH_ANSWERER is unset")
+		},
+		"DISPATCH_AZURE_CHAT_SCOPE": func(t *testing.T) {
+			if boot := resolveWith(t, azureChatEnvironment(nil)); boot.Answerer.Scope != embed.DefaultEntraScope {
+				t.Errorf("unset: Scope = %q, want the embedder's %q", boot.Answerer.Scope, embed.DefaultEntraScope)
+			}
+			if boot := resolveWith(t, azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_SCOPE": " https://ai.azure.com/.default "})); boot.Answerer.Scope != "https://ai.azure.com/.default" {
+				t.Errorf("Scope = %q, want the trimmed scope", boot.Answerer.Scope)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_AZURE_CHAT_SCOPE": "https://ai.azure.com/.default"}, "DISPATCH_AZURE_CHAT_SCOPE set, but DISPATCH_ANSWERER is unset")
+		},
+		"DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE": func(t *testing.T) {
+			if boot := resolveWith(t, azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE": " 90000 "})); boot.Answerer.TokensPerMinute != 90_000 {
+				t.Errorf("TokensPerMinute = %d, want 90,000", boot.Answerer.TokensPerMinute)
+			}
+			refusedWith(t, azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE": ""}), "DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE is required")
+			refusedWith(t, azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE": "0"}), `DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE="0"`)
+			refusedWith(t, map[string]string{"DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE": "90000"}, "DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE set, but DISPATCH_ANSWERER is unset")
+		},
+		"DISPATCH_CHAT_ENDPOINT": func(t *testing.T) {
+			if boot := resolveWith(t, endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_ENDPOINT": " https://Chat.Example/v1 "})); boot.Answerer.Endpoint != "https://Chat.Example/v1" {
+				t.Errorf("Endpoint = %q, want the trimmed URL", boot.Answerer.Endpoint)
+			}
+			refusedWith(t, endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_ENDPOINT": ""}), "DISPATCH_CHAT_ENDPOINT is required")
+			refusedWith(t, endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_ENDPOINT": "http://chat.example/v1"}), "DISPATCH_CHAT_ENDPOINT=")
+			refusedWith(t, map[string]string{"DISPATCH_CHAT_ENDPOINT": "https://chat.example/v1"}, "DISPATCH_CHAT_ENDPOINT set, but DISPATCH_ANSWERER is unset")
+			refusedWith(t, azureChatEnvironment(map[string]string{"DISPATCH_CHAT_ENDPOINT": "https://chat.example/v1"}), "DISPATCH_CHAT_ENDPOINT set, but DISPATCH_ANSWERER is azure")
+		},
+		"DISPATCH_CHAT_TOKEN_FILE": func(t *testing.T) {
+			// A path, read on each call, not at boot: a file that is not there yet boots.
+			missing := filepath.Join(t.TempDir(), "chat-token")
+			if boot := resolveWith(t, endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_TOKEN_FILE": " " + missing + " "})); boot.Answerer.TokenFile != missing {
+				t.Errorf("TokenFile = %q, want %q", boot.Answerer.TokenFile, missing)
+			}
+			refusedWith(t, endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_TOKEN_FILE": ""}), "DISPATCH_CHAT_TOKEN_FILE is required")
+			refusedWith(t, map[string]string{"DISPATCH_CHAT_TOKEN_FILE": missing}, "DISPATCH_CHAT_TOKEN_FILE set, but DISPATCH_ANSWERER is unset")
+		},
+		"DISPATCH_CHAT_MODEL": func(t *testing.T) {
+			if boot := resolveWith(t, endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_MODEL": " llama-3-70b "})); boot.Answerer.Model != "llama-3-70b" {
+				t.Errorf("Model = %q, want the trimmed model", boot.Answerer.Model)
+			}
+			refusedWith(t, endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_MODEL": ""}), "DISPATCH_CHAT_MODEL is required")
+			refusedWith(t, map[string]string{"DISPATCH_CHAT_MODEL": "llama-3-70b"}, "DISPATCH_CHAT_MODEL set, but DISPATCH_ANSWERER is unset")
 		},
 		"DISPATCH_WEB_DIST": func(t *testing.T) {
 			if dir, err := defaultWebDistDir(resolveWith(t, map[string]string{"DISPATCH_WEB_DIST": "/srv/dispatch/dist"}).WebDist); err != nil || dir != "/srv/dispatch/dist" {
@@ -1611,6 +1648,18 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Error("two dev-sign-in processes with no shared value signed with one key")
 			}
 		},
+		"DISPATCH_DEV_EMBEDDER": func(t *testing.T) {
+			// Its reader: the embedder newEmbedder builds, which calls nothing and names itself.
+			boot, err := resolveBootConfig(devSignInEnvironment(map[string]string{"DISPATCH_DEV_EMBEDDER": "1"}))
+			if err != nil {
+				t.Fatalf("DISPATCH_DEV_EMBEDDER=1 under dev sign-in: %v", err)
+			}
+			embedder, err := newEmbedder(context.Background(), boot.Embedder)
+			if err != nil || embedder == nil || embedder.Identity() != embed.NewDev().Identity() {
+				t.Fatalf("newEmbedder = %v, %v, want the dev embedder", embedder, err)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_DEV_EMBEDDER": "1"}, "DISPATCH_DEV_EMBEDDER is read only with DISPATCH_DEV_SIGNIN=1")
+		},
 		"DISPATCH_TEST_HOOKS": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1"}); !boot.TestHooksEnabled {
 				t.Error("DISPATCH_TEST_HOOKS=1: hooks off")
@@ -1649,6 +1698,36 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_SETTLE_DELAY": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_MARK_WAIT": func(t *testing.T) {
+			const shortWait = 250 * time.Millisecond
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":     "1",
+				"DISPATCH_TEST_MARK_WAIT": shortWait.String(),
+			})
+			if boot.MarkWait != shortWait {
+				t.Errorf("DISPATCH_TEST_MARK_WAIT: MarkWait = %v, want %v", boot.MarkWait, shortWait)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_MARK_WAIT": invalid},
+					fmt.Sprintf("DISPATCH_TEST_MARK_WAIT=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_MARK_WAIT": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_UNRECORDED_MARK_TTL": func(t *testing.T) {
+			const shortTTL = 4 * time.Second
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":               "1",
+				"DISPATCH_TEST_UNRECORDED_MARK_TTL": shortTTL.String(),
+			})
+			if boot.UnrecordedMarkTTL != shortTTL {
+				t.Errorf("DISPATCH_TEST_UNRECORDED_MARK_TTL: UnrecordedMarkTTL = %v, want %v", boot.UnrecordedMarkTTL, shortTTL)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_UNRECORDED_MARK_TTL": invalid},
+					fmt.Sprintf("DISPATCH_TEST_UNRECORDED_MARK_TTL=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_UNRECORDED_MARK_TTL": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_ROUTE_ROSTER_TTL": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.RouteRosterTTL != 0 {
 				t.Errorf("DISPATCH_TEST_ROUTE_ROSTER_TTL unset: RouteRosterTTL = %v, want 0 (the server's own five seconds)", boot.RouteRosterTTL)
@@ -1669,6 +1748,69 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					fmt.Sprintf("DISPATCH_TEST_ROUTE_ROSTER_TTL=%q (expected a positive Go duration)", invalid))
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_ROUTE_ROSTER_TTL": "1m"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.ListenerTakeoverWindow != 0 {
+				t.Errorf("DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW unset: ListenerTakeoverWindow = %v, want 0 (the server's own twelve seconds)", boot.ListenerTakeoverWindow)
+			}
+			const shortWindow = time.Second
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":                    "1",
+				"DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW": shortWindow.String(),
+			})
+			if boot.ListenerTakeoverWindow != shortWindow {
+				t.Errorf("DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW: ListenerTakeoverWindow = %v, want %v", boot.ListenerTakeoverWindow, shortWindow)
+			}
+			if options := appContextOptions(boot, routes.AppContextOptions{}); options.ListenerTakeoverWindow != shortWindow {
+				t.Errorf("DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW: the router is handed ListenerTakeoverWindow = %v, want %v", options.ListenerTakeoverWindow, shortWindow)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW": invalid},
+					fmt.Sprintf("DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_HORIZON_STALL_AFTER": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.HorizonStallAfter != 0 {
+				t.Errorf("DISPATCH_TEST_HORIZON_STALL_AFTER unset: HorizonStallAfter = %v, want 0 (the horizon's own horizonStallAfter, five seconds)", boot.HorizonStallAfter)
+			}
+			const quick = 250 * time.Millisecond
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":               "1",
+				"DISPATCH_TEST_HORIZON_STALL_AFTER": quick.String(),
+			})
+			if boot.HorizonStallAfter != quick {
+				t.Errorf("DISPATCH_TEST_HORIZON_STALL_AFTER: HorizonStallAfter = %v, want %v", boot.HorizonStallAfter, quick)
+			}
+			if options := appContextOptions(boot, routes.AppContextOptions{}); options.HorizonStallAfter != quick {
+				t.Errorf("DISPATCH_TEST_HORIZON_STALL_AFTER: the router is handed HorizonStallAfter = %v, want %v", options.HorizonStallAfter, quick)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HORIZON_STALL_AFTER": invalid},
+					fmt.Sprintf("DISPATCH_TEST_HORIZON_STALL_AFTER=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HORIZON_STALL_AFTER": "250ms"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_HORIZON_WARN_EVERY": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.HorizonWarnEvery != 0 {
+				t.Errorf("DISPATCH_TEST_HORIZON_WARN_EVERY unset: HorizonWarnEvery = %v, want 0 (the horizon's own horizonWarnEvery, thirty seconds)", boot.HorizonWarnEvery)
+			}
+			const quick = 250 * time.Millisecond
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":              "1",
+				"DISPATCH_TEST_HORIZON_WARN_EVERY": quick.String(),
+			})
+			if boot.HorizonWarnEvery != quick {
+				t.Errorf("DISPATCH_TEST_HORIZON_WARN_EVERY: HorizonWarnEvery = %v, want %v", boot.HorizonWarnEvery, quick)
+			}
+			if options := appContextOptions(boot, routes.AppContextOptions{}); options.HorizonWarnEvery != quick {
+				t.Errorf("DISPATCH_TEST_HORIZON_WARN_EVERY: the router is handed HorizonWarnEvery = %v, want %v", options.HorizonWarnEvery, quick)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HORIZON_WARN_EVERY": invalid},
+					fmt.Sprintf("DISPATCH_TEST_HORIZON_WARN_EVERY=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HORIZON_WARN_EVERY": "250ms"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
 		"DISPATCH_TEST_EDIT_NOTICE_QUIET": func(t *testing.T) {
 			const shortQuiet = 3 * time.Second
@@ -1693,6 +1835,78 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Error("DISPATCH_TEST_RECONCILE_AT_START=true: ReconcileAtStart true, want only 1 to set it")
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_RECONCILE_AT_START": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_CI_RECONCILE_INTERVAL": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.CIReconcileInterval != 0 {
+				t.Errorf("DISPATCH_TEST_CI_RECONCILE_INTERVAL unset: CIReconcileInterval = %v, want 0 (cireconcile.Interval's five minutes)", boot.CIReconcileInterval)
+			}
+			const quick = 2 * time.Second
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":                 "1",
+				"DISPATCH_TEST_CI_RECONCILE_INTERVAL": quick.String(),
+			})
+			if boot.CIReconcileInterval != quick {
+				t.Errorf("DISPATCH_TEST_CI_RECONCILE_INTERVAL: CIReconcileInterval = %v, want %v", boot.CIReconcileInterval, quick)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_CI_RECONCILE_INTERVAL": invalid},
+					fmt.Sprintf("DISPATCH_TEST_CI_RECONCILE_INTERVAL=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_CI_RECONCILE_INTERVAL": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.DeliveryReconcileInterval != 0 {
+				t.Errorf("DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL unset: DeliveryReconcileInterval = %v, want 0 (delivery.ReconcileInterval's five minutes)", boot.DeliveryReconcileInterval)
+			}
+			const quick = 2 * time.Second
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":                       "1",
+				"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL": quick.String(),
+			})
+			if boot.DeliveryReconcileInterval != quick {
+				t.Errorf("DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL: DeliveryReconcileInterval = %v, want %v", boot.DeliveryReconcileInterval, quick)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL": invalid},
+					fmt.Sprintf("DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.MaintenanceSweepInterval != 0 {
+				t.Errorf("DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL unset: MaintenanceSweepInterval = %v, want 0 (api.MaintenanceSweepInterval's minute)", boot.MaintenanceSweepInterval)
+			}
+			const quick = 2 * time.Second
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":                      "1",
+				"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL": quick.String(),
+			})
+			if boot.MaintenanceSweepInterval != quick {
+				t.Errorf("DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL: MaintenanceSweepInterval = %v, want %v", boot.MaintenanceSweepInterval, quick)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL": invalid},
+					fmt.Sprintf("DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_PROCESS_HEARTBEAT": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.ProcessHeartbeat != 0 {
+				t.Errorf("DISPATCH_TEST_PROCESS_HEARTBEAT unset: ProcessHeartbeat = %v, want 0 (processes.HeartbeatInterval's five seconds)", boot.ProcessHeartbeat)
+			}
+			const quick = 500 * time.Millisecond
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":             "1",
+				"DISPATCH_TEST_PROCESS_HEARTBEAT": quick.String(),
+			})
+			if boot.ProcessHeartbeat != quick {
+				t.Errorf("DISPATCH_TEST_PROCESS_HEARTBEAT: ProcessHeartbeat = %v, want %v", boot.ProcessHeartbeat, quick)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_PROCESS_HEARTBEAT": invalid},
+					fmt.Sprintf("DISPATCH_TEST_PROCESS_HEARTBEAT=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_PROCESS_HEARTBEAT": "500ms"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
 		"DISPATCH_TEST_ROSTER_UNCACHED": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_ROSTER_UNCACHED": "1"}); !boot.ListenerRosterUncached {
@@ -1730,6 +1944,43 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				}
 			})
 		},
+		"DISPATCH_NEW_ISSUE_LABEL": func(t *testing.T) {
+			// The label an issue the bar files from a person's typed words carries, trimmed as
+			// every other name of the table is, and empty when nothing names one.
+			if boot := resolveWith(t, map[string]string{"DISPATCH_NEW_ISSUE_LABEL": " from-the-bar "}); boot.NewIssueLabel != "from-the-bar" {
+				t.Errorf("NewIssueLabel = %q", boot.NewIssueLabel)
+			}
+			if boot := resolveWith(t, map[string]string{}); boot.NewIssueLabel != "" {
+				t.Errorf("unset: NewIssueLabel = %q, want the issue to carry no label", boot.NewIssueLabel)
+			}
+		},
+		"DISPATCH_NEW_ISSUE_SESSION": func(t *testing.T) {
+			// The session that issue is routed to, and that its first message goes to; unset, the
+			// issue is still made and no conversation is started on it.
+			if boot := resolveWith(t, map[string]string{"DISPATCH_NEW_ISSUE_SESSION": " 0199e2a0-1111-7000-8000-000000000001 "}); boot.NewIssueSession != "0199e2a0-1111-7000-8000-000000000001" {
+				t.Errorf("NewIssueSession = %q", boot.NewIssueSession)
+			}
+			if boot := resolveWith(t, map[string]string{}); boot.NewIssueSession != "" {
+				t.Errorf("unset: NewIssueSession = %q, want no conversation started", boot.NewIssueSession)
+			}
+		},
+		"DISPATCH_TEST_EMBEDDER_OFF": func(t *testing.T) {
+			// Azure's own environment, the one shape that builds an embedder with no AWS SDK and
+			// no model service reachable, so the switch is what decides and not the credentials.
+			if boot := resolveWith(t, azureEmbedEnvironment(map[string]string{
+				"DISPATCH_TEST_HOOKS":        "1",
+				"DISPATCH_TEST_EMBEDDER_OFF": "1",
+			})); !boot.EmbedderOff {
+				t.Error("DISPATCH_TEST_EMBEDDER_OFF=1: EmbedderOff false")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_EMBEDDER_OFF": "true"}); boot.EmbedderOff {
+				t.Error("DISPATCH_TEST_EMBEDDER_OFF=true: EmbedderOff true, want only 1 to set it")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1"}); boot.EmbedderOff {
+				t.Error("unset: EmbedderOff true")
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_EMBEDDER_OFF": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 	}
 	for _, row := range settings {
 		test, ok := cases[row.Name]
@@ -1742,6 +1993,55 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 	}
 	for name := range cases {
 		t.Errorf("a case for %s, which the settings table does not list", name)
+	}
+}
+
+// Every setting the document service takes from boot reaches the service main builds
+// (newDocumentService, through documentDeps): boot's seven values, each one distinct, are each
+// found on the dependencies the service is built from.
+func TestDocumentDepsCarryEveryBootSetting(t *testing.T) {
+	boot := bootConfig{
+		SettleDelay:       11 * time.Second,
+		MarkWait:          12 * time.Second,
+		UnrecordedMarkTTL: 13 * time.Second,
+		EditNoticeQuiet:   14 * time.Second,
+		MaxLiveRooms:      15,
+		MaxDocConnections: 16,
+		TestHooksEnabled:  true,
+	}
+	got := documentDeps(boot, docs.Deps{})
+	for _, field := range []struct {
+		name      string
+		got, want any
+	}{
+		{"Settle", got.Settle, boot.SettleDelay},
+		{"MarkWait", got.MarkWait, boot.MarkWait},
+		{"UnrecordedMarkTTL", got.UnrecordedMarkTTL, boot.UnrecordedMarkTTL},
+		{"EditNoticeQuiet", got.EditNoticeQuiet, boot.EditNoticeQuiet},
+		{"MaxLiveRooms", got.MaxLiveRooms, boot.MaxLiveRooms},
+		{"MaxDocConnections", got.MaxDocConnections, boot.MaxDocConnections},
+		{"TestHooks", got.TestHooks, boot.TestHooksEnabled},
+	} {
+		if field.got != field.want {
+			t.Errorf("docs.Deps.%s = %v, want boot's %v: documentDeps drops the setting", field.name, field.got, field.want)
+		}
+	}
+}
+
+// documentCapReachesTheService hands name, one of the document service's caps, to the service
+// main builds (newDocumentService) through the settings read alone, and reads back the cap it
+// sets (capOf of docs.Service.RoomCapsForTest): unset, the service's own default of 1,000; set,
+// its value; and a value that is not a positive integer refuses startup naming it.
+func documentCapReachesTheService(t *testing.T, name string, capOf func(rooms, connections int) int) {
+	t.Helper()
+	for value, want := range map[string]int{"": 1000, " 25 ": 25} {
+		boot := resolveWith(t, map[string]string{name: value})
+		if got := capOf(newDocumentService(boot, docs.Deps{}).RoomCapsForTest()); got != want {
+			t.Errorf("%s=%q: the document service's cap is %d, want %d", name, value, got, want)
+		}
+	}
+	for _, invalid := range []string{"0", "-5", "+3", "1.5", "lots"} {
+		refusedWith(t, map[string]string{name: invalid}, fmt.Sprintf("%s=%q (expected a positive integer)", name, invalid))
 	}
 }
 

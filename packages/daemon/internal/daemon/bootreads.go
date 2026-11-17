@@ -21,20 +21,34 @@ type bootReads struct {
 	paneNatsUser                          string         // the pane seed's user's public key, "" with no pane seed
 	nats                                  natsConnection // the user the daemon's own NATS connection authenticates as
 	instructions                          []byte         // nil when the configuration names none
-	tmux                                  tmuxReads      // runtime: tmux
-	sandbox                               sandboxReads   // runtime: kubernetes
+	variantInstructions                   []variantInstructions
+	hookPrompts                           map[string]string // the words of each hook whose prompt_file names a file, by hook name; nil while no hook names one
+	tmux                                  tmuxReads         // runtime: tmux
+	sandbox                               sandboxReads      // runtime: kubernetes
+}
+
+// variantInstructions is one declared variant's instructions file as boot read it: the experiment
+// and the arm that name it, and the operator's file verbatim. Boot writes one copy per entry
+// under the state directory (config.WriteVariantInstructions), named and headed as the arm's
+// declaration says (config.Variant.MemoryBlock), and a launch's prompt ends with the copies of the
+// arms its unit was drawn into.
+type variantInstructions struct {
+	experiment string
+	variant    config.Variant
+	contents   []byte
 }
 
 // readBoot is every refusal boot makes from the configuration, the daemon's environment (lookup,
 // and getenv for the OMP invocation) and the files they name, writing nothing: the project token,
 // the operator bearer's file, operator configuration colliding with Legion's own
 // (checkOperatorConfig), the launch secrets (readLaunchSecrets), the daemon's own NATS nkey seed
-// (natsauth.DaemonSeed), the instructions file, the Dispatch bearer's file, and the runtime's own
-// reads (readTmux, readSandbox).
+// (natsauth.DaemonSeed), the instructions file, every declared variant's instructions file, the
+// file of every hook that reads its words from one (`hooks[].prompt_file`), the Dispatch bearer's
+// file, and the runtime's own reads (readTmux, readSandbox).
 // hostOMP is whether boot runs the host's Oh My Pi, false only for a test that replaced the
 // runtime. prepare runs it first; CheckStart is it for `legion start --check-config`, so the check
 // refuses whatever boot refuses before its first write. What boot does after it is not a check's to
-// do: create the state directory, write the instructions copy and the Dispatch token file, read
+// do: create the state directory, write the instructions copies and the Dispatch token file, read
 // provider keys from secretsd, and run the plugin gate or the image probe.
 func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func(string) string, hostOMP bool, log *slog.Logger) (bootReads, error) {
 	var r bootReads
@@ -70,6 +84,49 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	if cfg.InstructionsPath != "" {
 		if r.instructions, err = config.ReadDeploymentInstructions(cfg.InstructionsPath); err != nil {
 			return bootReads{}, err
+		}
+	}
+	// Every hook that reads its words from a file rather than writing them in the key, read as
+	// the deployment's instructions are and refused the same way. The engine is given words and
+	// never a path, so a file a hook names is as much a part of boot as the instructions are: a
+	// missing one refuses boot, and `legion start --check-config` with it.
+	for _, hook := range cfg.Hooks {
+		if hook.PromptFile == "" {
+			continue
+		}
+		words, err := config.ReadHookPrompt(hook.Name, hook.PromptFile)
+		if err != nil {
+			return bootReads{}, err
+		}
+		if r.hookPrompts == nil {
+			r.hookPrompts = map[string]string{}
+		}
+		r.hookPrompts[hook.Name] = words
+	}
+	// Every declared variant's instructions, read as the deployment's are and refused the same
+	// way, in the order the project's file declares the experiments
+	// (config.Config.ExperimentsDeclared, the list that maps the `memory` block in as the
+	// experiment named memory). No mode decides it: a unit already drawn into an arm is given
+	// that arm's instructions whatever the mode is now, and only removing the key takes them away.
+	// The block's own arm (config.Variant.MemoryBlock) is refused in the block's own words
+	// (config.ReadMemoryInstructions), which the documentation quotes, and every arm of the
+	// `experiments` key, `experiments.memory` included, in the experiments' words
+	// (config.ReadVariantInstructions).
+	for _, experiment := range cfg.ExperimentsDeclared() {
+		for _, variant := range experiment.Variants {
+			if variant.InstructionsPath == "" {
+				continue
+			}
+			var contents []byte
+			if variant.MemoryBlock {
+				contents, err = config.ReadMemoryInstructions(variant.InstructionsPath)
+			} else {
+				contents, err = config.ReadVariantInstructions(experiment.Name, variant.Name, variant.InstructionsPath)
+			}
+			if err != nil {
+				return bootReads{}, err
+			}
+			r.variantInstructions = append(r.variantInstructions, variantInstructions{experiment: experiment.Name, variant: variant, contents: contents})
 		}
 	}
 	if cfg.DispatchURL != "" {
@@ -162,15 +219,34 @@ func readTmux(cfg config.Config, lookup func(string) (string, bool), getenv func
 	return r, nil
 }
 
-// checkRoleConfigFiles refuses an overlay of role_config_files that is not a file a pane of its
-// role could read, naming the role and the file: a pane's Oh My Pi refuses to start on an overlay
-// it cannot read, and every pane of the daemon runs on this host as this daemon's user. Under
-// kubernetes the files are the pods' mounts', which only the image probe reads.
+// checkRoleConfigFiles refuses an overlay of role_config_files, or of the project's `memory`
+// block, that is not a file a pane that names it could read, naming the key and the file: a
+// pane's Oh My Pi refuses to start on an overlay it cannot read, and every pane of the daemon
+// runs on this host as this daemon's user. Under kubernetes the files are the pods' mounts',
+// which only the image probe reads. Every declared arm's overlays are read whatever its
+// experiment's mode is: a unit already drawn into an arm names that arm's files under any mode,
+// and only taking the arm out of the file takes them away. The block's own arm
+// (config.Variant.MemoryBlock) is refused in the block's own words, which the documentation
+// quotes, and every arm of the `experiments` key, `experiments.memory` included, in the
+// experiments' words.
 func checkRoleConfigFiles(cfg config.Config) error {
 	for _, role := range config.RoleConfigRoles {
 		for _, file := range cfg.RoleConfigFiles[role] {
 			if err := podsafety.CheckOverlay(file); err != nil {
 				return fmt.Errorf("role_config_files.%s names %s, which the %s's Oh My Pi could not read: %w", role, file, role, err)
+			}
+		}
+	}
+	for _, declared := range cfg.ExperimentsDeclared() {
+		for _, variant := range declared.Variants {
+			reader := "a role drawn into that arm could not read"
+			if variant.MemoryBlock {
+				reader = "a memory-group role's Oh My Pi could not read"
+			}
+			for _, file := range variant.ConfigFiles {
+				if err := podsafety.CheckOverlay(file); err != nil {
+					return fmt.Errorf("%s names %s, which %s: %w", variant.ConfigFilesField, file, reader, err)
+				}
 			}
 		}
 	}

@@ -35,8 +35,10 @@ func rolesLocator(token claim.Token, uid string) runtime.Locator {
 // private, state and agent-secrets key directories its own — and none at the fixed paths a role
 // reads them at, which role-init binds inside the role's namespaces; the role homes volume is a
 // disk emptyDir at /var/run/legion/roles/.homes; the shared mounts are mounted once. The container
-// and both init containers carry the one issue-pod reservation, by default the six roles' former
-// sum: 3 CPU and 19Gi, each requested in full, and an 80Gi disk limit over a 6Gi request.
+// and both init containers carry the one issue-pod reservation — the third init container a
+// `skills_repository` adds carries it too, which TestASkillsRepositoryAddsTheSkillsInitContainer
+// proves — by default the six roles' former sum: 3 CPU and 19Gi, each requested in full, and an
+// 80Gi disk limit over a 6Gi request.
 func TestAnIssuePodRunsEveryRoleInOneContainer(t *testing.T) {
 	opts := goldenOptions()
 	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
@@ -167,8 +169,18 @@ func TestAnIssuePodServesItsOwnTestPostgres(t *testing.T) {
 	if cluster == nil || cluster.EmptyDir == nil || cluster.EmptyDir.Medium != corev1.StorageMediumDefault {
 		t.Errorf("the test database's volume is %+v, want an emptyDir on the node's disk", cluster)
 	}
-	if value := envValue(r.mainEnvironment(l), launcher.TestPGVariable); value != launcher.TestPGDSN {
-		t.Errorf("an issue pod's role is told %s=%q, want %q", launcher.TestPGVariable, value, launcher.TestPGDSN)
+	// The start command names `postgres`, the one database the server of every worker image
+	// serves, rather than the database this daemon's own build creates: the deployment pins the
+	// daemon and the worker image apart, so a pod whose image predates a change of the served
+	// database would otherwise be told of a database nothing in that pod creates. A pod whose
+	// launcher serves another database replaces this value in every generation it starts (the
+	// launcher package's testPGEnv), so each daemon and image pairing tells a role a DSN its own
+	// pod's server holds. The DSN is written out here rather than read from testPGStartDSN, so
+	// that a change of that constant to the launcher's own `legion_test` DSN fails this test.
+	const served = "postgres://legion_test@127.0.0.1:5433/postgres?sslmode=disable"
+	if value := envValue(r.mainEnvironment(l), launcher.TestPGVariable); value != served {
+		t.Errorf("an issue pod's role is told %s=%q, want %q, the database an older image's server serves",
+			launcher.TestPGVariable, value, served)
 	}
 	// The controller's pod runs no tests and is told nothing: its launcher serves no server.
 	controller := r.mainEnvironment(launchOf(t, r, controllerSpec(t)))
@@ -177,7 +189,7 @@ func TestAnIssuePodServesItsOwnTestPostgres(t *testing.T) {
 	}
 	// An operator may not point that name anywhere, whether or not this deployment serves one.
 	refused := CheckPod(Pod{Env: map[string]string{launcher.TestPGVariable: "postgres://x@127.0.0.1:5433/postgres"}}, nil,
-		testOptions().Tools, []string{"ENVOY_TOKEN"}, nil, postgresStore)
+		testOptions().Tools, []string{"ENVOY_TOKEN"}, nil, postgresStore, false)
 	if refused == nil || !strings.Contains(refused.Error(), launcher.TestPGVariable) {
 		t.Errorf("CheckPod with %s in the pod env = %v, want it refused", launcher.TestPGVariable, refused)
 	}
@@ -396,7 +408,10 @@ func TestAnIssuePodOfTheEarlierLayoutIsStaleForEveryRoleAndReplacedByTheNextLaun
 
 // A pod of the earlier layout that ended before this daemon replaced it has no `roles` container:
 // each role's Gone names its own container's end and quotes that container's log, as the release
-// that built the pod did, rather than a status and a log of a container the pod never ran.
+// that built the pod did, rather than a status and a log of a container the pod never ran. The
+// tester's own container ended OOMKilled here, and its Gone carries no out-of-memory mark: the
+// note that mark sends is written for a role of an issue pod's one container, which this pod
+// never had (outOfMemory).
 func TestAnEndedPodOfTheEarlierLayoutReportsTheRolesOwnContainer(t *testing.T) {
 	labels := claimLabels(claim.RoleTester)
 	name := SandboxName(workerToken)
@@ -431,6 +446,9 @@ func TestAnEndedPodOfTheEarlierLayoutReportsTheRolesOwnContainer(t *testing.T) {
 		}
 		if obs.Kind != runtime.Gone || !strings.Contains(obs.Detail, "pod "+name+" (uid "+recorded+") Failed: ") || !strings.HasSuffix(obs.Detail, want) {
 			t.Errorf("%s: %s %q, want Gone ending %q", token, obs.Kind, obs.Detail, want)
+		}
+		if obs.OutOfMemory {
+			t.Errorf("%s: %q is marked out of memory; a container of the layout before one container is no issue pod's one container", token, obs.Detail)
 		}
 	}
 }
@@ -881,7 +899,7 @@ func TestCheckPodRefusesAMountARolesNamespaceHides(t *testing.T) {
 		"/var/run/legion/gh", "/var/run/legion/gh/x", "/var/run/legion/private", "/var/run/legion/state", "/var/run/legion/agent-secrets",
 		"/var/run/legion/home", "/var/run/legion/home/.config",
 	} {
-		if err := CheckPod(mountAt(path), nil, testOptions().Tools, nil, nil, ompsessions.Store{}); err == nil {
+		if err := CheckPod(mountAt(path), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err == nil {
 			t.Errorf("a mount at %s passed, want it refused", path)
 		}
 	}
@@ -889,7 +907,7 @@ func TestCheckPodRefusesAMountARolesNamespaceHides(t *testing.T) {
 		"/tmp/cache", "/var/tmp/cache", "/run/lock/operator", "/var/lock/operator", "/dev/shm/operator", "/run/shm/operator", "/home/legion/.cache/operator",
 		"/run/operator", "/var/run/operator",
 	} {
-		if err := CheckPod(mountAt(path), nil, testOptions().Tools, nil, nil, ompsessions.Store{}); err != nil {
+		if err := CheckPod(mountAt(path), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err != nil {
 			t.Errorf("a mount at %s was refused: %v; role-init carries it back", path, err)
 		}
 	}
@@ -912,12 +930,12 @@ func TestCheckPodRefusesAMountAtOrUnderARolesOwnDevices(t *testing.T) {
 		"/dev/pts": "/dev/pts", "/dev/pts/operator": "/dev/pts", "/dev/mqueue": "/dev/mqueue", "/dev/mqueue/x": "/dev/mqueue",
 		"/dev/ptmx": "/dev/ptmx", "/proc": "/proc", "/proc/sys": "/proc", "/proc/self/fd": "/proc",
 	} {
-		err := CheckPod(mountAt(path), nil, testOptions().Tools, nil, nil, ompsessions.Store{})
+		err := CheckPod(mountAt(path), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false)
 		if err == nil || !strings.Contains(err.Error(), "overlaps "+device+", which every role's namespace in an issue pod replaces with a filesystem of its own") {
 			t.Errorf("a mount at %s = %v, want it refused naming %s", path, err, device)
 		}
 	}
-	if err := CheckPod(mountAt("/dev/operator"), nil, testOptions().Tools, nil, nil, ompsessions.Store{}); err != nil {
+	if err := CheckPod(mountAt("/dev/operator"), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err != nil {
 		t.Errorf("a mount at /dev/operator was refused: %v; role-init replaces nothing there", err)
 	}
 }

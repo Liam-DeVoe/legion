@@ -1,12 +1,14 @@
-// Package agentsecrets is the daemon's side of the secrets broker's token-login and enrollment
-// routes: it logs the daemon in with its own projected Kubernetes ServiceAccount token
-// (POST /v1/launcher-credentials/token), which no person approves, holding the key the launcher
-// credential is bound to in process memory only, logs in again before that credential expires,
-// and enrolls a pod's key under it — authenticating every call with a launcher proof signed by the
-// key, never a bearer token. Revoke tears the enrollment down when the pod is gone. No key, no
-// token, no launcher credential id, and no grant or brokered secret value ever goes into an error,
-// a log line, or the daemon's state; the pod's own `agent-secrets` client handles brokered secret
-// values with the pod's own key.
+// Package agentsecrets is the daemon's side of the secrets broker's token-login, enrollment and
+// pod-session registration routes: it logs the daemon in with its own projected Kubernetes
+// ServiceAccount token (POST /v1/launcher-credentials/token), which no person approves, holding the
+// key the launcher credential is bound to in process memory only, logs in again before that
+// credential expires, and enrolls a pod's key under it — authenticating each enrollment call with a
+// launcher proof signed by the key. Revoke tears the enrollment down when the pod is gone. The one
+// route it calls with a bearer is the pod-session registration (RegisterPodSession), whose class
+// authenticates a service by that same ServiceAccount token. No key, no token, no launcher
+// credential id, and no grant or brokered secret value ever goes into an error, a log line, or the
+// daemon's state; the pod's own `agent-secrets` client handles brokered secret values with the
+// pod's own key.
 package agentsecrets
 
 import (
@@ -15,11 +17,13 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -35,9 +39,11 @@ import (
 // for a token login: it names the credential after the token's ServiceAccount instead.
 const launcherService = "legion-daemon"
 
-// loginRetryInitial and loginRetryMax bound the wait after a token login that failed because the
-// broker refused it (any answer but a 5xx or a 200 with a body of the contract's shape, so every
-// 4xx, 429 included) or the token file could not be read or was empty: the first wait is
+// loginRetryInitial and loginRetryMax bound the wait after a token login that no wait of seconds
+// changes: one the broker refused (any answer but a 5xx or a 200 with a body of the contract's
+// shape, so every 4xx, 429 included), one a fault on the daemon's own side ended (a TLS handshake
+// that failed, or a host name that does not resolve — daemonSideFault), and one that could not be
+// made at all (a token file that could not be read or was empty). The first wait is
 // loginRetryInitial, each one after it doubles, up to loginRetryMax.
 // unavailableRetryInitial and unavailableRetryMax bound the wait after a login the broker was not
 // there to decide: one given no HTTP answer at all, or a 5xx answer from the broker or its front
@@ -163,36 +169,50 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("broker answered %d %s: %s", e.Status, e.Code, e.Message)
 }
 
-// Permanent is a refusal a retry cannot change: every 4xx but 429 and POD_TOKEN_EXPIRED. A
-// client-side NO_MACHINE_CREDENTIAL (Status 0) is never permanent — the caller retries once the
-// daemon's next token login wins a credential — and neither is an expired pod token, which the
-// pod's current token replaces under the same key (TokenExpired).
+// Permanent is a refusal a retry cannot change: every 4xx but 429, POD_TOKEN_EXPIRED and
+// POD_REGISTRAR_NOT_LISTED. A client-side NO_MACHINE_CREDENTIAL (Status 0) is never permanent —
+// the caller retries once the daemon's next token login wins a credential — and neither is an
+// expired pod token, which the pod's current token replaces under the same key (TokenExpired), nor
+// a registrar the broker does not yet list (RegistrarNotListed).
 func (e *APIError) Permanent() bool {
-	return e.Status >= 400 && e.Status < 500 && e.Status != http.StatusTooManyRequests && !e.TokenExpired()
+	return e.Status >= 400 && e.Status < 500 && e.Status != http.StatusTooManyRequests && !e.TokenExpired() && !e.RegistrarNotListed()
 }
 
 // TokenExpired is the broker refusing the pod token presented because it has expired
 // (POD_TOKEN_EXPIRED): the key stands, and the pod's current token enrolls it.
 func (e *APIError) TokenExpired() bool { return e.Code == "POD_TOKEN_EXPIRED" }
 
-// IsPermanent reports whether err is a permanent broker refusal. A transport failure, a 5xx, a
-// 429, an expired pod token and a daemon with no credential yet are all transient.
+// RegistrarNotListed is the broker refusing a pod-session registration with 403
+// POD_REGISTRAR_NOT_LISTED: its BROKER_POD_REGISTRARS does not pair the daemon's account with the
+// pod's. The broker answers it until the deployment's registrar rows are applied, so a later write
+// of the same registration can succeed with nothing about the daemon changed. Every other 403
+// stays permanent.
+func (e *APIError) RegistrarNotListed() bool {
+	return e.Status == http.StatusForbidden && e.Code == "POD_REGISTRAR_NOT_LISTED"
+}
+
+// IsPermanent reports whether err is a refusal a retry cannot change: a permanent broker refusal
+// (*APIError), a registration the broker answered for another pod or key (*AnswerMismatchError)
+// or at a later generation than sent (*SupersededError), or one named with no key
+// (*MissingThumbprintError). A transport failure, a 5xx, a 429, an expired pod token and a daemon
+// with no credential yet are all transient.
 func IsPermanent(err error) bool {
-	var api *APIError
-	return errors.As(err, &api) && api.Permanent()
+	var permanent interface{ Permanent() bool }
+	return errors.As(err, &permanent) && permanent.Permanent()
 }
 
 // Start logs the daemon in with its token now and keeps it logged in until ctx ends
 // (keepLoggedIn), under the retry bounds the four retry variables hold at the call. A first login
 // that fails starts the loop's wait on the schedule its failure calls for (loginRetry): the short
-// one when the broker gave no HTTP answer or a 5xx, the long one otherwise. It returns after the
-// first login, with that login's error. No step of it asks a person anything. Call it once.
+// one when the broker was not there to decide, the long one when the broker refused it, when the
+// fault is on the daemon's own side, and when the login could not be made at all. It returns after
+// the first login, with that login's error. No step of it asks a person anything. Call it once.
 func (c *Client) Start(ctx context.Context) error {
 	retry := newLoginRetry()
 	var retryAt time.Time
 	_, err := c.Login(ctx)
 	if err != nil {
-		retryAt = time.Now().Add(retry.failed(err))
+		retryAt = c.retryAfter(ctx, &retry, err)
 	}
 	go c.keepLoggedIn(ctx, retry, retryAt)
 	return err
@@ -202,8 +222,9 @@ func (c *Client) Start(ctx context.Context) error {
 // file and posts the token, with a request object signed by the held credential's key (a fresh one
 // when none is held), to /v1/launcher-credentials/token. On 200 the client holds the credential the
 // broker answered, bound to that key; any other outcome records the login failed and leaves a held
-// credential in place, which keeps working until it expires. Login logs its outcome, the expiry and
-// never the key, the token or the credential's id, except when ctx has ended. Start's loop is its
+// credential in place, which keeps working until it expires. It logs the login it won, the expiry
+// and never the key, the token or the credential's id. A login that failed is logged where the
+// wait after it is known (retryAfter), so each failure is one line and not two. Start's loop is its
 // one caller; it is not safe to call concurrently with itself.
 func (c *Client) Login(ctx context.Context) (time.Time, error) {
 	cred, err := c.tokenLogin(ctx)
@@ -212,9 +233,6 @@ func (c *Client) Login(ctx context.Context) (time.Time, error) {
 		c.update(func(cur loginState) (loginState, bool) {
 			return loginState{cred: cur.cred, failure: reason}, true
 		})
-		if ctx.Err() == nil {
-			c.log().Error("agent-secrets: the token login failed; retrying", "error", err)
-		}
 		return time.Time{}, err
 	}
 	c.state.Store(&loginState{cred: cred})
@@ -224,15 +242,13 @@ func (c *Client) Login(ctx context.Context) (time.Time, error) {
 
 // tokenLogin is one POST /v1/launcher-credentials/token, answering the credential the broker
 // issued. A POST the broker gave no HTTP answer to, while ctx has not ended, or one answered with a
-// 5xx, fails with a *brokerUnavailableError; the 5xx one wraps the answer's *APIError.
+// 5xx, fails with a *brokerUnavailableError; the 5xx one wraps the answer's *APIError. A transport
+// failure that is a fault on the daemon's own side is wrapped the same way, and classify reads it
+// out of the wrapper, so the login loop waits the long schedule for that one.
 func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
-	raw, err := os.ReadFile(c.TokenFile)
+	token, err := c.serviceToken()
 	if err != nil {
-		return nil, fmt.Errorf("agent-secrets login: read the ServiceAccount token: %w", err)
-	}
-	token := strings.TrimSpace(string(raw))
-	if token == "" {
-		return nil, fmt.Errorf("agent-secrets login: the ServiceAccount token file %s is empty", c.TokenFile)
+		return nil, fmt.Errorf("agent-secrets login: %w", err)
 	}
 	var key *ecdsa.PrivateKey
 	if held := c.snapshot().cred; held != nil {
@@ -271,6 +287,48 @@ func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 	return &credential{key: key, id: answer.CredentialID, expires: answer.ExpiresAt, renewAt: now.Add(answer.ExpiresAt.Sub(now) / 2)}, nil
 }
 
+// serviceToken is the daemon's projected ServiceAccount token as the file holds it now: read at
+// every use, so the kubelet's rotation is always picked up. Its errors name the file, never a token.
+func (c *Client) serviceToken() (string, error) {
+	raw, err := os.ReadFile(c.TokenFile)
+	if err != nil {
+		return "", fmt.Errorf("read the ServiceAccount token: %w", err)
+	}
+	token := strings.TrimSpace(string(raw))
+	if token == "" {
+		return "", fmt.Errorf("the ServiceAccount token file %s is empty", c.TokenFile)
+	}
+	return token, nil
+}
+
+// daemonSideFault reports whether err, from a login POST that got no HTTP answer, is a fault on
+// the daemon's own side rather than a broker out of reach: a TLS handshake that failed — a
+// certificate that does not verify (crypto/tls wraps a missing or wrong trust root, a host name
+// that does not match and an expired certificate alike as *tls.CertificateVerificationError), an
+// answer that is not TLS at all, or an alert the far side sent — and a host name that does not
+// resolve. Nothing the daemon waits for fixes one of these: its trust store, its broker URL or its
+// resolver has to change, so the login takes the long schedule, as the daemon's Dispatch client
+// keeps the same certificate shapes out of the class it waits out (transportFailure,
+// internal/dispatch). Every other transport failure — a refused or reset connection, a timeout, an
+// unreachable network, a resolver that failed for any other reason — is the broker out of reach,
+// which the next seconds may fix.
+//
+// Two shapes are read as the standard library leaves them. net/http answers a plain-HTTP port with
+// http.ErrSchemeMismatch in place of the tls.RecordHeaderError it read (net/http/client.go), so
+// both of those are read here. An alert the far side sends over TCP arrives as a *net.OpError
+// whose Op is "remote error", holding crypto/tls's own unexported alert type (crypto/tls/conn.go);
+// tls.AlertError is the QUIC transport's shape, which this client never speaks, so the alert is
+// read by that Op.
+func daemonSideFault(err error) bool {
+	var verify *tls.CertificateVerificationError
+	var record tls.RecordHeaderError
+	var remote *net.OpError
+	var dns *net.DNSError
+	return errors.As(err, &verify) || errors.As(err, &record) || errors.Is(err, http.ErrSchemeMismatch) ||
+		(errors.As(err, &remote) && remote.Op == "remote error") ||
+		(errors.As(err, &dns) && dns.IsNotFound)
+}
+
 // LoginStatus reports the login as LoginState describes it, from one snapshot.
 func (c *Client) LoginStatus() LoginState {
 	s := c.snapshot()
@@ -289,9 +347,10 @@ func (c *Client) LoginStatus() LoginState {
 // keepLoggedIn is Start's loop, retry counting the logins in a row that have failed so far and
 // retryAt when the next is due after the latest failure: it logs in again when nextDue says, and
 // recomputes that whenever a call wakes it. After a failed login it waits as retry says before the
-// next, so a login the broker keeps refusing, or a token file it cannot read, is retried at 30 s
-// doubling to 5 min, and one the broker gives no HTTP answer or a 5xx to at 2 s doubling to 10 s,
-// never in a tight loop, whether or not a credential is still held.
+// next, so a login the broker keeps refusing, a token file it cannot read and a fault on the
+// daemon's own side are retried at 30 s doubling to 5 min, and one the broker gives no HTTP answer
+// or a 5xx to at 2 s doubling to 10 s, never in a tight loop, whether or not a credential is still
+// held.
 func (c *Client) keepLoggedIn(ctx context.Context, retry loginRetry, retryAt time.Time) {
 	for {
 		timer := time.NewTimer(time.Until(c.nextDue(time.Now(), retryAt)))
@@ -308,12 +367,26 @@ func (c *Client) keepLoggedIn(ctx context.Context, retry loginRetry, retryAt tim
 			if ctx.Err() != nil {
 				return
 			}
-			retryAt = time.Now().Add(retry.failed(err))
+			retryAt = c.retryAfter(ctx, &retry, err)
 			continue
 		}
 		retry.won()
 		retryAt = time.Time{}
 	}
+}
+
+// retryAfter records a login that failed with err on its schedule and answers when the next login
+// is due. It writes the one log line a failed login gets — the class, the schedule that class
+// takes, the wait and the cause — because only a caller holding the schedule knows the wait, and a
+// second line per failure is noise an operator reads. A login that failed while ctx was ending is
+// the daemon stopping, and says nothing.
+func (c *Client) retryAfter(ctx context.Context, retry *loginRetry, err error) time.Time {
+	class, wait := retry.failed(err)
+	if ctx.Err() == nil {
+		c.log().Error("agent-secrets: the token login failed; retrying",
+			"class", string(class), "schedule", class.schedule(), "retry_in", wait, "error", err)
+	}
+	return time.Now().Add(wait)
 }
 
 // nextDue is when the next login is due: with a live credential, the later of its renewal instant
@@ -412,13 +485,136 @@ func (c *Client) Revoke(ctx context.Context, id string) error {
 	return refusal(status, raw)
 }
 
+// podSessionBody is POST /v1/oauth/exchange/pod-sessions's body: the pod's own projected token for
+// the broker's audience, which names the pod (its account and uid), the session name that pod may
+// trade under, the RFC 7638 thumbprint of the role's own key, which binds the registration to
+// that key (the broker refuses a trade for the session proved with any other), and the launch
+// generation of the process the registration is for, by which the broker orders two processes'
+// writes of one registration: it writes one only when its generation is at least the one it holds.
+type podSessionBody struct {
+	PodToken   string `json:"pod_token"`
+	Session    string `json:"session"`
+	Thumbprint string `json:"thumbprint,omitempty"`
+	Generation int64  `json:"generation,omitempty"`
+}
+
+// RegisterPodSession is POST /v1/oauth/exchange/pod-sessions: it records at the broker that the pod
+// podToken names — podUID, by the daemon's own record of the process — may trade under session
+// with the key thumbprint names, the role's own, and answers when the broker stops honouring that
+// registration unless it is written again (expires_at). The route's class is the broker's
+// serviceAuth, which verifies the Authorization bearer with the token login's own check
+// (serviceCaller, MachineLogin.VerifyServiceToken), so the call carries the daemon's own projected
+// ServiceAccount token as that bearer, read from TokenFile at each call as a login reads it, and
+// no launcher proof; it needs no won launcher credential.
+//
+// It sends nothing for an empty thumbprint — a registration with none would leave the session to
+// every role of the pod — and answers a *MissingThumbprintError, permanent; nor for a token file it
+// cannot read. It sends generation, the launch generation of the process it registers, which rises
+// with each launch of a claim. The broker answers the registration as it stands after the write:
+// the pod uid it read from the token (pod_uid), its generation and the key the row is bound to
+// (thumbprint). An answer at a later generation than sent is a registration the broker kept: a
+// *SupersededError, permanent. An answer naming another pod than podUID, or
+// another key than thumbprint, is an *AnswerMismatchError, permanent, since the token presented
+// was not that pod's or the broker did not bind the role's key. Any other answer than 200 is an
+// *APIError carrying the broker's code (Permanent says which a retry can change), and a transport
+// failure is a plain error; none repeats a token.
+func (c *Client) RegisterPodSession(ctx context.Context, podUID, podToken, session, thumbprint string, generation int64) (time.Time, error) {
+	if thumbprint == "" {
+		return time.Time{}, &MissingThumbprintError{Session: session}
+	}
+	token, err := c.serviceToken()
+	if err != nil {
+		return time.Time{}, fmt.Errorf("agent-secrets registration: %w", err)
+	}
+	status, raw, err := c.do(ctx, http.MethodPost, "/v1/oauth/exchange/pod-sessions", podSessionBody{PodToken: podToken, Session: session, Thumbprint: thumbprint, Generation: generation}, func(req *http.Request) {
+		req.Header.Set("Authorization", "Bearer "+token)
+	})
+	if err != nil {
+		return time.Time{}, err
+	}
+	if status != http.StatusOK {
+		return time.Time{}, refusal(status, raw)
+	}
+	var answer struct {
+		PodUID     string    `json:"pod_uid"`
+		Thumbprint string    `json:"thumbprint"`
+		Generation int64     `json:"generation"`
+		ExpiresAt  time.Time `json:"expires_at"`
+	}
+	if err := json.Unmarshal(raw, &answer); err != nil {
+		return time.Time{}, fmt.Errorf("broker answered %d with a body that is not the contract's shape: %w", status, err)
+	}
+	if answer.PodUID != podUID {
+		return time.Time{}, &AnswerMismatchError{Field: "pod_uid", Pod: podUID, Session: session, Sent: podUID, Answered: answer.PodUID}
+	}
+	if answer.Generation > generation {
+		return time.Time{}, &SupersededError{Pod: podUID, Session: session, Sent: generation, Answered: answer.Generation}
+	}
+	if answer.Thumbprint != thumbprint {
+		return time.Time{}, &AnswerMismatchError{Field: "thumbprint", Pod: podUID, Session: session, Sent: thumbprint, Answered: answer.Thumbprint}
+	}
+	if answer.ExpiresAt.IsZero() {
+		return time.Time{}, fmt.Errorf("broker answered %d with no expires_at", status)
+	}
+	return answer.ExpiresAt, nil
+}
+
+// AnswerMismatchError is a registration the broker answered otherwise than the daemon wrote it:
+// for Pod under Session, the answer's Field (pod_uid, the pod the broker read from the token
+// presented, or thumbprint, the key the row is bound to) is Answered where the daemon sent Sent.
+// Its message names the pod, the session and both values, never a token.
+type AnswerMismatchError struct {
+	Field, Pod, Session, Sent, Answered string
+}
+
+func (e *AnswerMismatchError) Error() string {
+	return fmt.Sprintf("the broker answered the registration of pod %s for session %s with %s %q, where the daemon sent %q", e.Pod, e.Session, e.Field, e.Answered, e.Sent)
+}
+
+// Permanent is true: no later write of the same registration presents another token or key.
+func (*AnswerMismatchError) Permanent() bool { return true }
+
+// MissingThumbprintError is a registration of Session named with no thumbprint, which
+// RegisterPodSession never sends.
+type MissingThumbprintError struct{ Session string }
+
+func (e *MissingThumbprintError) Error() string {
+	return fmt.Sprintf("the registration of session %s names no thumbprint of the role's own key; a registration is never sent without one", e.Session)
+}
+
+// Permanent is true: the registration names no key, however often it is tried.
+func (*MissingThumbprintError) Permanent() bool { return true }
+
+// SupersededError is a registration of Pod under Session written at generation Sent and answered
+// at generation Answered, a later one: the broker holds a registration it took at that generation
+// and kept. Foreign is whether Answered is above Latest, the claim's current generation
+// (PodSessionRenewal.Latest), so that no process of this claim made it — another claim registered
+// the session, or another service login wrote the row; otherwise a later process of this claim
+// registered the session since. Its message names the pod, the session and the generations, never
+// a token.
+type SupersededError struct {
+	Pod, Session           string
+	Sent, Answered, Latest int64
+	Foreign                bool
+}
+
+func (e *SupersededError) Error() string {
+	if e.Foreign {
+		return fmt.Sprintf("the broker holds the registration of pod %s for session %s at generation %d, above this claim's generation %d (this write's was generation %d): a registration this daemon never made", e.Pod, e.Session, e.Answered, e.Latest, e.Sent)
+	}
+	return fmt.Sprintf("the broker holds the registration of pod %s for session %s at generation %d, later than this write's generation %d: a later process of this claim registered the session", e.Pod, e.Session, e.Answered, e.Sent)
+}
+
+// Permanent is true: this process's generation never rises, so no later write of it is taken.
+func (*SupersededError) Permanent() bool { return true }
+
 // doProof signs a launcher proof over this call with the held credential's key and sends it as
-// the Proof header — never Authorization, which no route on this client uses. It takes no lock: a
-// renewal proves the same key again, so the broker keeps the credential's id and key and a proof
-// in flight during one stays valid. With no live credential it wakes the login loop and answers
-// NO_MACHINE_CREDENTIAL. A 401 (LAUNCHER_INVALID) clears the credential that failed, wakes the
-// login loop, and answers NO_MACHINE_CREDENTIAL; a 401 on a credential a login already replaced
-// clears nothing.
+// the Proof header — never Authorization, which only RegisterPodSession's route reads. It takes
+// no lock: a renewal proves the same key again, so the broker keeps the credential's id and key
+// and a proof in flight during one stays valid. With no live credential it wakes the login loop
+// and answers NO_MACHINE_CREDENTIAL. A 401 (LAUNCHER_INVALID) clears the credential that failed,
+// wakes the login loop, and answers NO_MACHINE_CREDENTIAL; a 401 on a credential a login already
+// replaced clears nothing.
 func (c *Client) doProof(ctx context.Context, method, path string, body any) (int, []byte, error) {
 	cred := c.snapshot().cred
 	if !cred.live(time.Now()) {
@@ -460,43 +656,98 @@ func (b backoff) wait() time.Duration {
 	return min(wait, b.most)
 }
 
-// loginRetry is the login loop's wait after failed logins, on two schedules: unavailable counts the
-// run of logins the broker gave no HTTP answer or a 5xx to (unavailableRetryInitial doubling to
-// unavailableRetryMax), refused the run of every other failed login (loginRetryInitial doubling to
-// loginRetryMax). A failure of one kind ends the other kind's run, so when the kind changes, that
-// kind's schedule starts fresh; a login that wins ends both.
+// loginRetry is the login loop's wait after failed logins, on two schedules. short counts the run
+// of logins the broker was not there to decide — no HTTP answer, or a 5xx from the broker or its
+// front door — at unavailableRetryInitial doubling to unavailableRetryMax, because the broker
+// serving again is all such a login waits for. long counts the run of every other failed login —
+// the broker's refusal, a fault on the daemon's own side, and a login that could not be made at
+// all — at loginRetryInitial doubling to loginRetryMax, because no wait of seconds changes one of
+// those. A failure of one kind ends the other kind's run, so when the kind changes, that kind's
+// schedule starts fresh; a login that wins ends both.
 type loginRetry struct {
-	unavailable, refused backoff
+	short, long backoff
 }
 
 // newLoginRetry is a loginRetry under the bounds the retry variables hold now.
 func newLoginRetry() loginRetry {
 	return loginRetry{
-		unavailable: backoff{initial: unavailableRetryInitial, most: unavailableRetryMax},
-		refused:     backoff{initial: loginRetryInitial, most: loginRetryMax},
+		short: backoff{initial: unavailableRetryInitial, most: unavailableRetryMax},
+		long:  backoff{initial: loginRetryInitial, most: loginRetryMax},
 	}
 }
 
-// failed records a login that failed with err and answers the wait before the next one.
-func (r *loginRetry) failed(err error) time.Duration {
+// loginClass is what a failed login was, as its one log line names it.
+type loginClass string
+
+const (
+	// brokerUnavailable: the broker was not there to decide — no HTTP answer, or a 5xx.
+	brokerUnavailable loginClass = "broker-unavailable"
+	// daemonSide: the fault is on the daemon's own side (daemonSideFault).
+	daemonSide loginClass = "daemon-side-fault"
+	// brokerRefusal: the broker answered and refused the login.
+	brokerRefusal loginClass = "broker-refusal"
+	// loginNotMade: no login reached a decision — the token file, the key, the request object, or
+	// an answer that is not the contract's shape.
+	loginNotMade loginClass = "login-not-made"
+)
+
+// classify sorts a failed login into its class. A fault on the daemon's own side is read first:
+// tokenLogin wraps every transport failure that was not ctx ending as a *brokerUnavailableError,
+// and daemonSideFault reads such a fault out of that wrapper, since errors.As walks Unwrap. A 5xx
+// is a *brokerUnavailableError around the answer's *APIError, so the broker's absence is read
+// before its refusal.
+func classify(err error) loginClass {
 	var unavailable *brokerUnavailableError
-	if errors.As(err, &unavailable) {
-		r.refused.failed = 0
-		r.unavailable.failed++
-		return r.unavailable.wait()
+	var refused *APIError
+	switch {
+	case daemonSideFault(err):
+		return daemonSide
+	case errors.As(err, &unavailable):
+		return brokerUnavailable
+	case errors.As(err, &refused):
+		return brokerRefusal
+	default:
+		return loginNotMade
 	}
-	r.unavailable.failed = 0
-	r.refused.failed++
-	return r.refused.wait()
+}
+
+// short answers whether c takes the short schedule, which only a broker that was not there to
+// decide does. It is the one place that decides, so the backoff a failure counts against and
+// the word its log line carries can never say different things.
+func (c loginClass) short() bool { return c == brokerUnavailable }
+
+// schedule is the word the log line carries for c's schedule.
+func (c loginClass) schedule() string {
+	if c.short() {
+		return "short"
+	}
+	return "long"
+}
+
+// failed records a login that failed with err and answers its class and the wait before the next.
+// The class names which of the two backoffs counts the failure; the other kind's run has ended,
+// and starts fresh when it comes again.
+func (r *loginRetry) failed(err error) (loginClass, time.Duration) {
+	class := classify(err)
+	taken, ended := &r.long, &r.short
+	if class.short() {
+		taken, ended = &r.short, &r.long
+	}
+	ended.failed = 0
+	taken.failed++
+	return class, taken.wait()
 }
 
 // won records a login that won a credential.
-func (r *loginRetry) won() { r.unavailable.failed, r.refused.failed = 0, 0 }
+func (r *loginRetry) won() { r.short.failed, r.long.failed = 0, 0 }
 
-// brokerUnavailableError is a token login the broker was not there to decide: the POST failed
-// before a response came back, or while it was read, or it was answered with a 5xx, by the broker
-// or by a front door with no broker behind it. err is the transport's error, which names the route
-// and never the token or the request object, or the 5xx answer's *APIError; its message is err's.
+// brokerUnavailableError is a token login the broker gave no answer this client could read: the
+// POST failed before a response came back, or while it was read, or it was answered with a 5xx,
+// by the broker or by a front door with no broker behind it. err is the transport's error, which
+// names the route and never the token or the request object, or the 5xx answer's *APIError; its
+// message is err's. A transport failure that is a fault on the daemon's own side comes wrapped in
+// one of these too, and classify reads it out again (daemonSideFault), so it is no sign on its
+// own that waiting a few seconds is what the login needs.
 type brokerUnavailableError struct{ err error }
 
 func (e *brokerUnavailableError) Error() string { return e.err.Error() }

@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -314,6 +315,55 @@ func sameTokenProjection(held, want *corev1.ServiceAccountTokenProjection) bool 
 		held.ExpirationSeconds != nil && *held.ExpirationSeconds == *want.ExpirationSeconds
 }
 
+// movedExchangeIdentity compares the exchange token a pod created now carries
+// (exchangeTokenProjection, for AgentSecrets.ExchangeAudience) with what pod carries; ok is whether
+// pod lacks it. A role started now in a pod that lacks it is told no identity (tradesIn), and so
+// trades nothing for as long as it runs there; a pod's volumes are fixed when it is created, so
+// turning the exchange on, or moving its audience, leaves every enrolled pod lacking it until the
+// pod is replaced, which is its update round's to do once its workers have pushed, as the
+// enrollment's is (movedEnrollment). It compares the three fields the token file depends on, as
+// movedEnrollment does. A runtime that names no exchange audience, or enrolls no pod, lacks
+// nothing: a pod that still carries a token is no pod to replace for a generation told of none.
+func (r *Runtime) movedExchangeIdentity(pod *corev1.Pod) (movedAddress, bool) {
+	broker := r.agentSecrets
+	if broker == nil || broker.ExchangeAudience == "" {
+		return movedAddress{}, false
+	}
+	want := exchangeTokenProjection(broker)
+	held := heldExchangeToken(pod.Spec, want)
+	if sameTokenProjection(held, want) {
+		return movedAddress{}, false
+	}
+	return movedAddress{agentSecretsExchangeVolume, enrollmentName(held), enrollmentName(want)}, true
+}
+
+// heldExchangeToken is the token pod's exchange volume projects, the one matching want where it
+// projects several, nil where it carries no such volume.
+func heldExchangeToken(pod corev1.PodSpec, want *corev1.ServiceAccountTokenProjection) *corev1.ServiceAccountTokenProjection {
+	var held *corev1.ServiceAccountTokenProjection
+	for _, volume := range pod.Volumes {
+		if volume.Name != agentSecretsExchangeVolume || volume.Projected == nil {
+			continue
+		}
+		for _, source := range volume.Projected.Sources {
+			if token := source.ServiceAccountToken; token != nil && (held == nil || sameTokenProjection(token, want)) {
+				held = token
+			}
+		}
+	}
+	return held
+}
+
+// carriesExchangeIdentity is whether the pod spec carries the exchange token a role is told of for
+// broker: the exchange volume projecting a token for broker's exchange audience at
+// AgentSecretsExchangeFile, the file AGENT_SECRETS_MACHINE_TOKEN_FILE names. Its lifetime does not
+// decide it: a token of another lifetime still trades. It is the pod's half of the exchange
+// decision and is read through that decision alone (Runtime.tradesIn).
+func carriesExchangeIdentity(pod corev1.PodSpec, broker *AgentSecrets) bool {
+	held := heldExchangeToken(pod, exchangeTokenProjection(broker))
+	return held != nil && held.Audience == broker.ExchangeAudience && held.Path == AgentSecretsExchangeFile
+}
+
 // movedInPod is what pod holds, for role, that a pod created now is not handed and that no worker
 // of the pod can be asked about first: the layout before one container (movedLayout), whose pod's
 // workers predate the update round's contract and have no op to signal with, and the stream its
@@ -327,14 +377,14 @@ func sameTokenProjection(held, want *corev1.ServiceAccountTokenProjection) bool 
 // carry is drift, not a moved address (driftedInPod, podShapeDrift): its worker can be asked to
 // push its work first, and an update round asks it before the pod is replaced.
 //
-// A pod no round covers holds every facet here, those three included. No round is ever opened
-// over such a pod — PodDrift answers nothing for it — so a facet that was neither a moved address
-// nor a round's would leave its role in the pod it was created in for ever, with nothing saying
-// so: today that is the project controller's pod, which has nobody in it to task and no issue disk
-// to protect, and so keeps the replacement it has always had, at the next launch into it. The rest
-// of such a pod's drift, the shape its template was built from, is its launch's too (relaunch,
-// shapeDrift), so a round covers every drift of a pod or a launch covers every drift of it, and no
-// drifted pod is left to neither.
+// A pod no round covers holds every facet here, driftedInPod's five included. No round is ever
+// opened over such a pod — PodDrift answers nothing for it — so a facet that was neither a moved
+// address nor a round's would leave its role in the pod it was created in for ever, with nothing
+// saying so: today that is the project controller's pod, which has nobody in it to task and no
+// issue disk to protect, and so keeps the replacement it has always had, at the next launch into
+// it. The rest of such a pod's drift, the shape its template was built from, is its launch's too
+// (relaunch, shapeDrift), so a round covers every drift of a pod or a launch covers every drift of
+// it, and no drifted pod is left to neither.
 func (r *Runtime) movedInPod(pod *corev1.Pod, role claim.Role) []movedAddress {
 	var moved []movedAddress
 	if layout, ok := movedLayout(pod); ok {
@@ -351,16 +401,20 @@ func (r *Runtime) movedInPod(pod *corev1.Pod, role claim.Role) []movedAddress {
 
 // driftedInPod is what pod holds, for role, that a pod created now is not handed and whose
 // replacement is an update round's business rather than a launch's: the operator's volume and
-// mount holding every named role's overlays in role's container (movedRoleOverlays), the secrets
-// broker's enrollment its next generation is started against (movedEnrollment), and the whole
-// session store it was created under (movedSessionStore). Each is fixed for the pod's life, so the
-// pod must be replaced for the role to run as one launched now — but each leaves the workers
-// already in the pod running and able to reach this daemon, so each is a reason to open a round
-// (PodDrift) and ask them to push, where replacing the pod under them would end every turn in it
-// and take the issue's disk with it. The two facets whose worker cannot be reached at all are
-// movedInPod's and are never a round's — and for a pod no round covers (roundCovers), the project
-// controller's today, so are these three: no round is opened over such a pod, so movedInPod holds
-// every facet there and its launch replaces it, as it always did.
+// mount holding every named role's overlays and the overlays of every arm the project declares
+// in role's container
+// (movedRoleOverlays), the secrets broker's enrollment its next generation is started against
+// (movedEnrollment), the exchange identity it is told of (movedExchangeIdentity), the whole session
+// store it was created under (movedSessionStore), and the gh directories its gh volume projects
+// (movedGhDirs). Each is fixed for the
+// pod's life, so the pod must be replaced for the role to run as one launched now — but each
+// leaves the workers already in the pod running and able to reach this daemon, so each is a
+// reason to open a round (PodDrift) and ask them to push, where replacing the pod under them
+// would end every turn in it and take the issue's disk with it. The two facets whose worker
+// cannot be reached at all are movedInPod's and are never a round's — and for a pod no round
+// covers (roundCovers), the project controller's today, so are these five: no round is opened
+// over such a pod, so movedInPod holds every facet there and its launch replaces it, as it always
+// did.
 func (r *Runtime) driftedInPod(pod *corev1.Pod, role claim.Role) []movedAddress {
 	var moved []movedAddress
 	if overlays, ok := r.movedRoleOverlays(pod.Spec, role); ok {
@@ -369,15 +423,140 @@ func (r *Runtime) driftedInPod(pod *corev1.Pod, role claim.Role) []movedAddress 
 	if enrollment, ok := r.movedEnrollment(pod, role); ok {
 		moved = append(moved, enrollment)
 	}
+	if exchange, ok := r.movedExchangeIdentity(pod); ok {
+		moved = append(moved, exchange)
+	}
 	if store, ok := r.movedSessionStore(pod); ok {
 		moved = append(moved, store)
+	}
+	if dirs, ok := r.movedGhDirs(pod, role); ok {
+		moved = append(moved, dirs)
 	}
 	return moved
 }
 
-// movedRoleOverlays is the first overlay of any role role_config_files names (Options.RoleConfigFiles)
-// that runs in role's container of the pod spec — every issue role shares an issue pod's one
-// container, the controller has its own pod — whose holder in a pod created now, the deepest
+// movedGhDirs is the owner directories a pod created now would project (r.gitHubDirs,
+// appauth.GitHubDirs) that role's gh volume of the pod projects none of; ok is whether it lacks
+// any. That volume is one Secret projection whose items are fixed when the pod is created
+// (volumes), one pair of keys per directory of the launch, while the role Secret those keys come
+// from gains a directory's pair the moment the daemon serves it (refreshGitHubCredentials). So a
+// Secret that holds a new owner's files reaches no pod made before it: the pod's
+// /var/run/legion/gh has no directory of that name, every `gh` call of its roles that would read
+// the token there runs unauthenticated, and only a new pod projects it.
+//
+// What a pod created now would project is what a mint really produces, not what the mapping
+// names: an owner whose every repository GitHub refuses a lease for is left out of the bundle
+// and recorded as left out (appauth's mintBundle and LeftOut), so appauth.GitHubDirs leaves it
+// out of this answer too, and a pod without it is no pod to replace. Were it named here, the
+// pod would be replaced at every sweep and its replacement's bundle would lack the directory
+// again, for ever (INFRA-513). A mint that answers for it again clears the record, and the pod
+// is then replaced once, which is right.
+//
+// That record is read for the Apps this pod runs and no others: the roles of the kind the role
+// belongs to (podKindFor), mapped through appauth.AppRoleFor. An issue pod projects what both
+// Apps' bundles hold, so a directory either App is refused is in no projection of it; the
+// project controller's pod holds the review App's bundle alone, and an owner the implement
+// App's installation does not reach is one its own `gh` reaches all the same, so a controller
+// pod without that owner's directory has drifted and is replaced by its next launch.
+//
+// Owner directories alone are compared, on both sides (ghOwnerDirs). A bundle built now holds a
+// `<owner>/<repo>` directory for each other repository the pod's recorded owner and the owner
+// whose installation serves its repository serve, and a pod that
+// lacks one of those is not a pod to replace: a repository the mapping gains under another owner
+// is reached through that owner's directory, whose read lease the refresher re-mints over the
+// repositories the mapping serves now, and one it gains under the pod's own write owner is read
+// through that owner's directory too, whose lease names the pod's own repository alone and so
+// does not reach it, until the pod is replaced for a reason of its own and the issue's next pod
+// projects it. Were a repository directory read as an address, a repository added to the mapping
+// would replace every running pod of that owner at once.
+// An owner's own directory is the other case: a pod without it holds no token of that owner at
+// all.
+//
+// The pod's own repository is still read from its workspace fetch (fetchRepository), and a pod
+// that fetches none — the controller's — asked for with the zero Repository, since the owner
+// directories a bundle holds depend on it: among them is the owner the pod writes to, which is
+// the role's own and not the project's.
+//
+// The two pods without a Secret projection are not the same. One with no gh volume at all is no
+// pod of this runtime's making and stays unmoved: this runtime does not know what it holds. One
+// whose gh volume is an EmptyDir was launched with no directories at all (volumes: a Secret
+// projection with no items would project every key of the Secret, the launcher token among
+// them), so it holds the empty set — a controller whose project had no owner yet reads every
+// owner the daemon serves now as lacking, and the first owner its project gains remakes it.
+// The comparison runs one way only: a directory the pod holds that the daemon no longer serves
+// costs the pod a stale directory and nothing more, and must never be worth remaking a pod and
+// deleting its disk for. The daemon's set comes sorted (Options.GitHubDirs), and the pod's is
+// sorted here, so each is searched and named in one order.
+func (r *Runtime) movedGhDirs(pod *corev1.Pod, role claim.Role) (movedAddress, bool) {
+	name := roleVolume(ghVolume, role)
+	at := slices.IndexFunc(pod.Spec.Volumes, func(v corev1.Volume) bool { return v.Name == name })
+	if at < 0 {
+		return movedAddress{}, false
+	}
+	var held []string
+	if secret := pod.Spec.Volumes[at].Secret; secret != nil {
+		for _, item := range secret.Items {
+			if dir, ok := GitHubHostsDir(item.Key); ok {
+				held = append(held, dir)
+			}
+		}
+	}
+	slices.Sort(held)
+	held = ghOwnerDirs(held)
+	repo, _ := fetchRepository(pod)
+	served := ghOwnerDirs(r.gitHubDirs(repo, podAppRoles(podKindFor(role))))
+	lacking := slices.ContainsFunc(served, func(dir string) bool {
+		_, found := slices.BinarySearch(held, dir)
+		return !found
+	})
+	if !lacking {
+		return movedAddress{}, false
+	}
+	return movedAddress{where: name, held: ghDirsName(held), handed: ghDirsName(served)}, true
+}
+
+// podAppRoles are the GitHub Apps a pod of kind holds a bundle of, each named once
+// (appauth.AppRoleFor): both of them for an issue pod, whose six roles run as one or the other,
+// and the review App alone for the project controller's. It is what the record of the
+// directories a mint found GitHub refuses is read for (movedGhDirs, appauth.LeftOut).
+func podAppRoles(kind podKind) []appauth.AppRole {
+	apps := make([]appauth.AppRole, 0, len(appauth.Roles))
+	for _, role := range kind.roles() {
+		if app := appauth.AppRoleFor(role); !slices.Contains(apps, app) {
+			apps = append(apps, app)
+		}
+	}
+	return apps
+}
+
+// ghOwnerDirs is the owner directories of a gh directory set, in the order they come: the names
+// holding no slash, where a repository's directory is `<owner>/<repo>` (ghconfig.IsDirName). It
+// is what movedGhDirs compares, a repository directory a pod lacks being no address of its own.
+func ghOwnerDirs(dirs []string) []string {
+	owners := make([]string, 0, len(dirs))
+	for _, dir := range dirs {
+		if !strings.Contains(dir, "/") {
+			owners = append(owners, dir)
+		}
+	}
+	return owners
+}
+
+// ghDirsName names a set of gh directories as one string, each name in order; "(unset)" for none,
+// and no credential in any of it.
+func ghDirsName(dirs []string) string {
+	if len(dirs) == 0 {
+		return "(unset)"
+	}
+	return strings.Join(dirs, " ")
+}
+
+// movedRoleOverlays is the first overlay of any role role_config_files names
+// (Options.RoleConfigFiles) that runs in role's container of the pod spec — every issue role
+// shares an issue pod's one container, the controller has its own pod — or of any arm of any
+// experiment the project declares (Options.ExperimentVariants), which every pod of the
+// deployment is read for, since any unit may be drawn into any arm, whose holder in a pod created
+// now, the deepest
 // operator mount at or above the file (runtime.kubernetes.pod volume_mounts) with its volume, is
 // not the deepest mount at or above the file in that container as a role sees it (an issue pod's
 // HomeMountsDir view mapped back to the image's home): another volume, sub_path or mount path, a
@@ -392,7 +571,7 @@ func (r *Runtime) driftedInPod(pod *corev1.Pod, role claim.Role) []movedAddress 
 // It is asked of a running pod's spec and of a Sandbox's stored pod template alike: the template
 // is the pod's own build, which is what a launch that keeps the pod reads.
 func (r *Runtime) movedRoleOverlays(pod corev1.PodSpec, role claim.Role) (movedAddress, bool) {
-	if len(r.roleConfigFiles) == 0 {
+	if len(r.roleConfigFiles) == 0 && len(r.variantFiles) == 0 {
 		return movedAddress{}, false
 	}
 	seen, ok := roleMounts(pod, role)
@@ -409,31 +588,65 @@ func (r *Runtime) movedRoleOverlays(pod corev1.PodSpec, role claim.Role) (movedA
 			}
 		}
 	}
+	// The controller runs in no tree, so it is in no experiment and no arm ever names it these
+	// files; a pod of its own that lacks them is no drift of its: its own overlays alone are
+	// read above.
+	if role != claim.RoleController {
+		for _, variant := range r.experimentVariants {
+			for _, file := range variant.ConfigFiles {
+				if held, want, moved := r.movedOverlay(seen, pod.Volumes, file); moved {
+					// The key the operator wrote these overlays under, carried on the arm
+					// (runtime.Variant.ConfigFilesField): the experiment's own
+					// `…experiments.<name>.variants.<arm>.config_files` for an arm of the
+					// `experiments` key, so a drift names a key an operator can find in the
+					// file. The `memory` block's own arm (runtime.Variant.MemoryBlock) is named
+					// as it was before any experiment was declared, memoryOverlayField.
+					field := variant.ConfigFilesField
+					if variant.MemoryBlock {
+						field = memoryOverlayField
+					}
+					return movedAddress{where: field + " " + file, held: held, handed: want}, true
+				}
+			}
+		}
+	}
 	return movedAddress{}, false
 }
 
-// heldRoleOverlays are the overlays role_config_files names for role (Options.RoleConfigFiles), in
-// that order, that the pod spec's own container for role holds: each file the pod carries where a
-// pod created now would (movedOverlay), none of the ones it was built too early to carry. ok is
-// false when the spec has no container for role at all, where nothing can be said of what the pod
-// holds.
+// memoryOverlayField is the project's `memory.config_files`, as a drift of one of the `memory`
+// block's own overlays names it (movedRoleOverlays): the key an operator reads in the daemon's
+// configuration, which names no project, since a daemon runs one.
+const memoryOverlayField = "memory.config_files"
+
+// heldRoleOverlays are the overlays role_config_files names for role (Options.RoleConfigFiles) and
+// the overlays of every arm the project declares (Options.ExperimentVariants), each in that
+// order, that the pod
+// spec's own container for role holds: each file the pod carries where a pod created now would
+// (movedOverlay), none of the ones it was built too early to carry. ok is false when the spec has
+// no container for role at all, where nothing can be said of what the pod holds.
 //
 // It is what a launch that keeps a live pod builds that role's PI_CONFIG_FILES from, read from the
 // pod's stored template (relaunch's keptBy, roleOperatorEnv): Oh My Pi refuses to start on an
 // entry that is not there, so a role started in a drifted pod against the configuration as it now
-// reads would never register and never answer the round that is to replace that pod.
-func (r *Runtime) heldRoleOverlays(pod corev1.PodSpec, role claim.Role) ([]string, bool) {
+// reads would never register and never answer the round that is to replace that pod. A pod built
+// before an arm's overlays were mounted holds none of them, and a role of a unit recorded in that
+// arm is told none of them — it runs in neither arm until the round replaces the pod, which
+// launch.overlays logs.
+func (r *Runtime) heldRoleOverlays(pod corev1.PodSpec, role claim.Role) (own, variants []string, ok bool) {
 	seen, ok := roleMounts(pod, role)
 	if !ok {
-		return nil, false
+		return nil, nil, false
 	}
-	var held []string
-	for _, file := range r.roleConfigFiles[role] {
-		if _, _, moved := r.movedOverlay(seen, pod.Volumes, file); !moved {
-			held = append(held, file)
+	held := func(files []string) []string {
+		var kept []string
+		for _, file := range files {
+			if _, _, moved := r.movedOverlay(seen, pod.Volumes, file); !moved {
+				kept = append(kept, file)
+			}
 		}
+		return kept
 	}
-	return held, true
+	return held(r.roleConfigFiles[role]), held(r.variantFiles), true
 }
 
 // carriesEnrollment is whether the pod spec carries the secrets broker's enrollment for role: the
@@ -572,10 +785,16 @@ func volumeFillName(volumes []corev1.Volume, name string) string {
 // would carry, so no pod outlives a change of store; ok is whether they differ. A generation
 // started under a database store names a URL file no pod created under another store has: the
 // providers volume's projection of the Secret key under postgres, the proxy the pod's launcher
-// serves under cloudsql-iam. A pod created under another store or key is replaced by its relaunch
-// rather than start a generation whose Oh My Pi would refuse the URL file it cannot read. Each side
-// is named from what a pod spec holds, the kubelet escaping included (kubeletLiteral), as
-// movedStream names the stream.
+// serves under cloudsql-iam. A pod created under another store or key is drift (driftedInPod): an
+// issue pod is replaced by its update round, and a launch into it before that keeps the pod and
+// tells its generation the store the pod itself carries (keptPod), so no generation starts against
+// a URL file its Oh My Pi cannot read; the controller's pod, which no round covers (roundCovers),
+// is replaced at the next launch into it. Under
+// cloudsql-iam the instance, the database, the login and the service account the launcher
+// impersonates are all compared — an account named where the pod has none, none where it has one,
+// or another one — since the pod's launcher was told them once, at its creation, and signs in to
+// Cloud SQL as that identity for the pod's life. Each side is named from what a pod spec holds, the
+// kubelet escaping included (kubeletLiteral), as movedStream names the stream.
 func (r *Runtime) movedSessionStore(pod *corev1.Pod) (movedAddress, bool) {
 	proxy := r.sessionProxyFlags()
 	for i, value := range proxy {
@@ -598,9 +817,12 @@ func sessionStoreInPod(spec *corev1.PodSpec) string {
 
 // heldSessionStore is the session store the pod spec was created under, and the one field that
 // kind carries in a pod: the providers volume's session item under postgres (providers), the
-// session proxy's flags a launcher container carries under cloudsql-iam (sessionProxyFlags), and
+// session proxy's flags a launcher container carries under cloudsql-iam (sessionProxyFlagsIn), and
 // neither under the volume store, which is what a pod created before any store was configured
-// reads as.
+// reads as. Under cloudsql-iam the kind comes from the three required flags alone, so a pod whose
+// launcher impersonates a service account is a cloudsql-iam pod as one that signs in as itself is;
+// the flags it answers name the account too where the pod carries it, so the two still name
+// different stores (sessionStoreName).
 //
 // It is asked of a running pod's spec and of a Sandbox's stored pod template alike, as
 // movedRoleOverlays is: the template is the pod's own build, which is what a launch that keeps
@@ -625,16 +847,22 @@ func heldSessionStore(pod corev1.PodSpec) (ompsessions.StoreKind, string, []stri
 }
 
 // sessionProxyFlagsIn are the session proxy's flags command carries, in the order sessionProxyFlags
-// writes them, nil unless it carries all three of them with a value each: a pod created under any
-// other store, and the containers of every pod that run no launcher, carry none.
+// writes them, nil unless it carries all three of sessionProxyFlagNames with a value each: a pod
+// created under any other store, and the containers of every pod that run no launcher, carry none.
+// The service account the launcher impersonates (sessionProxyAccountFlag) follows the three when
+// command carries it with a value, and is left out when it does not: it is optional, so it never
+// decides the kind, and a command that carries it without the three is no cloudsql-iam launcher.
 func sessionProxyFlagsIn(command []string) []string {
-	proxy := make([]string, 0, 2*len(sessionProxyFlagNames))
+	proxy := make([]string, 0, 2*len(sessionProxyFlagNames)+2)
 	for _, flag := range sessionProxyFlagNames {
 		value, ok := flagValue(command, flag)
 		if !ok {
 			return nil
 		}
 		proxy = append(proxy, flag, value)
+	}
+	if account, ok := flagValue(command, sessionProxyAccountFlag); ok {
+		proxy = append(proxy, sessionProxyAccountFlag, account)
 	}
 	return proxy
 }

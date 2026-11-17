@@ -71,19 +71,26 @@ func servedSchema(t *testing.T) schema {
 
 func TestSchemaNamesTheReleaseDownloadURLAndTheGoImportPath(t *testing.T) {
 	s := servedSchema(t)
-	require.Equal(t, "https://github.com/sjawhar/legion/releases/download/envoy-infra-v${VERSION}", s.PluginDownloadURL)
+	require.Equal(t, "https://github.com/cybermonklabs/legion/releases/download/envoy-infra-v${VERSION}", s.PluginDownloadURL)
 	require.Equal(t, "github.com/sjawhar/envoy/infra/sdk/go/envoyinfra", s.Language.Go.ImportBasePath)
 }
 
-// The schema's types are exactly the components' own, the rules every NATS component shares under
-// nats, which names no cloud.
+// The schema's types are exactly the components' own, and the rules and the authorization callout
+// every NATS component shares under nats, which names no cloud.
 func TestSchemaTypes(t *testing.T) {
+	s := servedSchema(t)
 	require.ElementsMatch(t, []string{
 		"envoy-infra:host:Watchdog", "envoy-infra:host:Adopt",
-		"envoy-infra:aws:Authorization", "envoy-infra:aws:User", "envoy-infra:nats:Rules",
+		"envoy-infra:aws:Authorization", "envoy-infra:aws:User", "envoy-infra:nats:Rules", "envoy-infra:nats:AuthCallout",
 		"envoy-infra:gcp:NatsUser", "envoy-infra:gcp:Permissions", "envoy-infra:gcp:HubListener", "envoy-infra:gcp:SessionUser",
 		"envoy-infra:gcp:ClusteredHubTailnet", "envoy-infra:gcp:ClusteredHubListener",
-	}, slices.Collect(maps.Keys(servedSchema(t).Types)))
+	}, slices.Collect(maps.Keys(s.Types)))
+	// One callout type for every NATS component, the AWS one's authorization and the hubs', so a
+	// consumer running both writes it alike; core refuses a callout without its issuer, its xkey or
+	// its service user, so the schema requires all three.
+	callout := s.Types["envoy-infra:nats:AuthCallout"]
+	require.ElementsMatch(t, []string{"issuer", "xkey", "serviceUser"}, slices.Collect(maps.Keys(callout.Properties)))
+	require.ElementsMatch(t, []string{"issuer", "xkey", "serviceUser"}, callout.Required)
 }
 
 func TestSchemaServesTheListenerComponentWithASecretSeed(t *testing.T) {
@@ -106,6 +113,7 @@ func TestSchemaServesTheNatsHubComponentWithASecretAuthKey(t *testing.T) {
 	require.ElementsMatch(t, []string{
 		"users", "tailnetAuthKey", "hostname", "tailnetDnsName", "tags", "zone", "machineType", "diskType",
 		"diskSizeGb", "natsImage", "tailscaleImage", "network", "subnetwork", "listener", "sessionUser",
+		"authCallout", "privateProjects",
 	}, slices.Collect(maps.Keys(hub.InputProperties)))
 	require.ElementsMatch(t, []string{"tailnetAuthKey", "hostname", "tags", "zone", "natsImage", "tailscaleImage"},
 		hub.RequiredInputs)
@@ -115,9 +123,11 @@ func TestSchemaServesTheNatsHubComponentWithASecretAuthKey(t *testing.T) {
 	require.Equal(t, "#/types/envoy-infra:gcp:NatsUser", hub.InputProperties["users"].Items.Ref)
 	require.Equal(t, "#/types/envoy-infra:gcp:HubListener", hub.InputProperties["listener"].Ref)
 	require.Equal(t, "#/types/envoy-infra:gcp:SessionUser", hub.InputProperties["sessionUser"].Ref)
+	require.Equal(t, "#/types/envoy-infra:nats:AuthCallout", hub.InputProperties["authCallout"].Ref)
+	require.Equal(t, "boolean", hub.InputProperties["privateProjects"].Type)
 	// The listener's whole property set is pinned, not its required inputs alone, so a property
 	// added to it cannot stay invisible here.
-	require.ElementsMatch(t, []string{"image", "seedSecret", "nkey", "allowedHosts"},
+	require.ElementsMatch(t, []string{"image", "seedSecret", "nkey", "allowedHosts", "agentSecretsUrl", "agentSecretsAudience", "publicUrl"},
 		slices.Collect(maps.Keys(s.Types["envoy-infra:gcp:HubListener"].Properties)))
 	require.ElementsMatch(t, []string{"image", "seedSecret", "nkey"}, s.Types["envoy-infra:gcp:HubListener"].Required)
 	require.ElementsMatch(t, []string{"name", "nkey"}, s.Types["envoy-infra:gcp:SessionUser"].Required)
@@ -151,7 +161,7 @@ func TestSchemaServesTheClusteredNatsHubComponent(t *testing.T) {
 		"kubeconfig", "namespace", "name", "serviceName", "natsImage", "reloaderImage", "exporterImage",
 		"natsReplicas", "streamMaxBytes", "maxFileStoreGb", "diskSizeGb", "storageClassName", "natsCpu", "natsMemory",
 		"priorityClassName", "clientNamespaces", "monitorNamespaces", "metricsNamespaces", "users", "sessionUser",
-		"tailnet", "tailnetAuthKey",
+		"authCallout", "privateProjects", "tailnet", "tailnetAuthKey",
 	}, slices.Collect(maps.Keys(hub.InputProperties)))
 	require.ElementsMatch(t, []string{
 		"kubeconfig", "namespace", "name", "serviceName", "natsImage", "reloaderImage", "exporterImage", "clientNamespaces",
@@ -164,6 +174,8 @@ func TestSchemaServesTheClusteredNatsHubComponent(t *testing.T) {
 	}
 	require.Equal(t, "#/types/envoy-infra:gcp:NatsUser", hub.InputProperties["users"].Items.Ref)
 	require.Equal(t, "#/types/envoy-infra:gcp:SessionUser", hub.InputProperties["sessionUser"].Ref)
+	require.Equal(t, "#/types/envoy-infra:nats:AuthCallout", hub.InputProperties["authCallout"].Ref)
+	require.Equal(t, "boolean", hub.InputProperties["privateProjects"].Type)
 	// Generated SDKs append Args to an object type's name for its input type, so the Go names
 	// ClusteredHubTailnetArgs and ClusteredHubListenerArgs would reach consumers doubled.
 	require.Equal(t, "#/types/envoy-infra:gcp:ClusteredHubTailnet", hub.InputProperties["tailnet"].Ref)
@@ -216,6 +228,20 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 		require.NotContains(t, dispatch.RequiredInputs, input)
 	}
 	require.NotContains(t, dispatch.InputProperties, "azureEmbedKey")
+	// The answerer's inputs are references and identifiers too, with one exception: chatTokenSecret
+	// names a Secret Manager secret whose value is a bearer token, so it carries provider:"secret".
+	// The Azure chat form takes no key at all.
+	for _, input := range []string{
+		"azureChatEndpoint", "azureChatDeployment", "azureChatApiVersion", "azureChatScope",
+		"azureChatTokensPerMinute", "chatEndpoint", "chatModel",
+	} {
+		require.Contains(t, dispatch.InputProperties, input)
+		require.False(t, dispatch.InputProperties[input].Secret, input)
+		require.NotContains(t, dispatch.RequiredInputs, input)
+	}
+	require.True(t, dispatch.InputProperties["chatTokenSecret"].Secret)
+	require.NotContains(t, dispatch.RequiredInputs, "chatTokenSecret")
+	require.NotContains(t, dispatch.InputProperties, "chatToken")
 	// The profiler's port is an optional plain integer.
 	require.Equal(t, "integer", dispatch.InputProperties["pprofPort"].Type)
 	require.False(t, dispatch.InputProperties["pprofPort"].Secret)
@@ -275,6 +301,9 @@ func TestSchemaServesTheNatsServiceComponentWithNoSecretInput(t *testing.T) {
 	for _, direction := range []string{"publish", "subscribe"} {
 		require.Equal(t, "#/types/envoy-infra:nats:Rules", s.Types["envoy-infra:aws:User"].Properties[direction].Ref, "aws:User's %s", direction)
 	}
+	// The callout is the shared nats:AuthCallout, as the hubs' authCallout is.
+	require.Equal(t, "#/types/envoy-infra:nats:AuthCallout", s.Types["envoy-infra:aws:Authorization"].Properties["callout"].Ref)
+	require.Equal(t, "boolean", s.Types["envoy-infra:aws:Authorization"].Properties["privateProjects"].Type)
 	// Every input is required but the authorization and what belongs to it, and the optional
 	// settings.
 	require.ElementsMatch(t, []string{
@@ -290,13 +319,10 @@ func TestSchemaServesTheWebhookListenerComponentWithNoSecretInput(t *testing.T) 
 	for name, input := range listener.InputProperties {
 		require.False(t, input.Secret, "%s is not a secret input", name)
 	}
-	// Every input is required but the seed, each webhook's inputs, the opt-in to every
-	// notification topic and adopt.
+	// Every input is required but the seed, each webhook's inputs and adopt.
 	require.ElementsMatch(t, []string{
-		"seedSecretArn", "githubWebhookSecretArn", "slackSigningSecretArn", "reviewerAppId", "mentionTrigger",
-		"subscribeAllTopics", "adopt",
+		"seedSecretArn", "githubWebhookSecretArn", "slackSigningSecretArn", "reviewerAppId", "mentionTrigger", "adopt",
 	}, optionalInputs(listener.InputProperties, listener.RequiredInputs))
-	require.Equal(t, "boolean", listener.InputProperties["subscribeAllTopics"].Type)
 }
 
 // optionalInputs are the names in properties that required does not list.

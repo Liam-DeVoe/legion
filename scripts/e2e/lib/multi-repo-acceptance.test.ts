@@ -18,12 +18,15 @@ import {
   servers,
   spawnScript,
   stateBody,
+  useScratchDirectory,
 } from "./multi-repo-acceptance-harness";
 
 // scripts/e2e/multi-repo-acceptance.sh is the observer for the live multi-repository acceptance
 // run; this file covers every observation but second-owner (multi-repo-second-owner.test.ts) and
 // the `negative` ones (multi-repo-negative.test.ts). The stubs and fakes it runs against are in
 // multi-repo-acceptance-harness.ts.
+useScratchDirectory();
+
 afterEach(() => {
   closeServers();
 });
@@ -229,31 +232,42 @@ describe("a failed Dispatch read never prints the bearer", () => {
 // reads in the parent is never set.
 //
 // Both tests send a real OS signal to a real bash subprocess mid-fetch and then wait on its real
-// exit: there is no in-process JS timer to fake here (the clock being driven is the kernel's, not
-// Bun's), so a real `Bun.sleep` window for the signal to land mid-request, and a real slow HTTP
-// response to hold that window open, are the only way to exercise this.
+// exit: the clock being driven is the kernel's, not Bun's, so there is no in-process timer to
+// fake. The window the signal has to land in is held open by the stub rather than by a wall-clock
+// wait: the stub says when the observer's fetch has reached it and holds the answer until the
+// test lets it go, so the signal always lands mid-request and nothing waits on a guess.
 describe("an interrupted run cleans up and actually stops", () => {
-  test("a SIGTERM to the observer's own pid stops it immediately with exit 143, not a later failure", async () => {
-    const daemonServer = servers.track(
+  /** A daemon stub whose state read answers only once `release` is called, and whose `reached`
+   *  resolves the moment the observer's fetch arrives. */
+  function heldStateDaemon(): { port: number; reached: Promise<void>; release: () => void } {
+    const arrival = Promise.withResolvers<void>();
+    const held = Promise.withResolvers<void>();
+    const server = servers.track(
       Bun.serve({
         port: 0,
         async fetch(req) {
           const url = new URL(req.url);
           if (url.pathname === "/healthz") return Response.json({ status: "ok" });
           if (url.pathname === "/legion/v1/state") {
-            await Bun.sleep(3000);
+            arrival.resolve();
+            await held.promise;
             return new Response(stateBody, { headers: { "content-type": "application/json" } });
           }
           return new Response("not found", { status: 404 });
         },
       })
     );
+    return { port: server.port, reached: arrival.promise, release: () => held.resolve() };
+  }
+
+  test("a SIGTERM to the observer's own pid stops it immediately with exit 143, not a later failure", async () => {
+    const daemon = heldStateDaemon();
     const dispatchServer = dispatchStub({
       "ACME-1": JSON.stringify({ key: "ACME-1", children: [{ key: "ACME-2" }] }),
       "ACME-2": JSON.stringify({ key: "ACME-2", resolved_repo: "acme/widgets" }),
     });
     const env = fullInputs(
-      `http://127.0.0.1:${daemonServer.port}`,
+      `http://127.0.0.1:${daemon.port}`,
       `http://127.0.0.1:${dispatchServer.port}`
     );
     const { bin, evidence } = newFakeDir();
@@ -262,33 +276,27 @@ describe("an interrupted run cleans up and actually stops", () => {
       stdout: "pipe",
       stderr: "pipe",
     });
-    await Bun.sleep(300); // real wait: lets the real subprocess reach its real slow fetch
-    process.kill(proc.pid, "SIGTERM");
-    const status = await proc.exited;
-    expect(status).toBe(143);
+    try {
+      await daemon.reached;
+      process.kill(proc.pid, "SIGTERM");
+      // The signal is queued while the fetch is still out; letting the answer go now is what
+      // lets the script's own `curl` return, so bash reaches its trap and the exit is the one
+      // under test rather than a kill of a process stuck on a socket.
+      daemon.release();
+      expect(await proc.exited).toBe(143);
+    } finally {
+      daemon.release();
+    }
   });
 
   test("a group SIGINT removes a raw_fetch temp file created inside a $(...) subshell", async () => {
-    const daemonServer = servers.track(
-      Bun.serve({
-        port: 0,
-        async fetch(req) {
-          const url = new URL(req.url);
-          if (url.pathname === "/healthz") return Response.json({ status: "ok" });
-          if (url.pathname === "/legion/v1/state") {
-            await Bun.sleep(3000);
-            return new Response(stateBody, { headers: { "content-type": "application/json" } });
-          }
-          return new Response("not found", { status: 404 });
-        },
-      })
-    );
+    const daemon = heldStateDaemon();
     const dispatchServer = dispatchStub({
       "ACME-1": JSON.stringify({ key: "ACME-1", children: [{ key: "ACME-2" }] }),
       "ACME-2": JSON.stringify({ key: "ACME-2", resolved_repo: "acme/widgets" }),
     });
     const env = fullInputs(
-      `http://127.0.0.1:${daemonServer.port}`,
+      `http://127.0.0.1:${daemon.port}`,
       `http://127.0.0.1:${dispatchServer.port}`
     );
     const { bin, evidence } = newFakeDir();
@@ -297,16 +305,25 @@ describe("an interrupted run cleans up and actually stops", () => {
       stdout: "pipe",
       stderr: "pipe",
     });
-    await Bun.sleep(300); // real wait: lets the real subprocess reach its real slow fetch
-    process.kill(-proc.pid, "SIGINT");
-    const status = await proc.exited;
-    expect(status).toBe(130);
-    const stray = readdirSync(evidence).filter((f) => /\.raw\.[^.]{6}$/.test(f));
-    expect(stray).toEqual([]);
+    try {
+      await daemon.reached;
+      process.kill(-proc.pid, "SIGINT");
+      daemon.release();
+      expect(await proc.exited).toBe(130);
+      const stray = readdirSync(evidence).filter((f) => /\.raw\.[^.]{6}$/.test(f));
+      expect(stray).toEqual([]);
+    } finally {
+      daemon.release();
+    }
   });
 });
 
 describe("raw evidence is named per observation, never overwritten by a later one", () => {
+  // This test runs the observer twice, so it takes two runs of bash, curl and jq: 0.14 to 1.25 s
+  // in 15 passing runs of ci.yaml's test job read on 2026-11-16, and more than 5 s, Bun's default
+  // bound, on a slower runner (run 43825137066, where this file's other tests that read the
+  // daemon's state ran 3 to 7 times slower too). It takes the 30 s bound that
+  // app-logins.test.ts gives its own script runs.
   test("children's state.raw survives a later, different observation's own state read", async () => {
     const { server: daemonServer, setBody } = mutableDaemonStub(
       makeStateBody({
@@ -372,7 +389,7 @@ describe("raw evidence is named per observation, never overwritten by a later on
     expect(readFileSync(join(evidence, "negative-no-repo-state.raw"), "utf8")).not.toBe(
       childrenStateBefore
     );
-  });
+  }, 30_000);
 
   // A state read made fresh per child could judge an early child against
   // one read and a later child against a different one the daemon moved to meanwhile, while the

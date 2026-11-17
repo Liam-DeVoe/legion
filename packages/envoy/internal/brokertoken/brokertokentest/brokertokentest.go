@@ -17,8 +17,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/brokertoken"
 )
 
@@ -32,6 +32,7 @@ type StubBroker struct {
 
 	mu      sync.Mutex
 	answers map[string]brokertoken.Introspection
+	raw     map[string]string
 	bearers []string
 
 	introspections atomic.Int64
@@ -40,7 +41,7 @@ type StubBroker struct {
 // NewStubBroker serves the stub until the test ends.
 func NewStubBroker(t testing.TB) *StubBroker {
 	t.Helper()
-	broker := &StubBroker{answers: map[string]brokertoken.Introspection{}}
+	broker := &StubBroker{answers: map[string]brokertoken.Introspection{}, raw: map[string]string{}}
 	broker.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != brokertoken.IntrospectPath {
 			http.Error(w, "not the introspection route", http.StatusNotFound)
@@ -54,8 +55,13 @@ func NewStubBroker(t testing.TB) *StubBroker {
 		broker.mu.Lock()
 		broker.bearers = append(broker.bearers, r.Header.Get("Authorization"))
 		answer := broker.answers[r.PostForm.Get("token")]
+		raw, isRaw := broker.raw[r.PostForm.Get("token")]
 		broker.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		if isRaw {
+			_, _ = w.Write([]byte(raw))
+			return
+		}
 		_ = json.NewEncoder(w).Encode(answer)
 	}))
 	t.Cleanup(broker.Server.Close)
@@ -68,6 +74,14 @@ func (b *StubBroker) Says(token string, answer brokertoken.Introspection) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.answers[token] = answer
+}
+
+// SaysRaw makes the broker answer body, verbatim, for token: an answer this release's broker
+// would never serialise, such as one an older broker wrote.
+func (b *StubBroker) SaysRaw(token, body string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.raw[token] = body
 }
 
 // Count is how many introspections have reached the broker.
@@ -118,7 +132,7 @@ func NewCaller(t testing.TB) *Caller {
 		t.Fatalf("thumbprint the caller's key: %v", err)
 	}
 	captured := &capturedRequest{}
-	return &Caller{client: &http.Client{Transport: helper.NewDPoPTransport(key, captured)}, captured: captured, jkt: jkt}
+	return &Caller{client: &http.Client{Transport: brokerclient.NewDPoPTransport(key, captured)}, captured: captured, jkt: jkt}
 }
 
 // JKT is the thumbprint of the caller's key: what the broker binds a token to, and what a proof

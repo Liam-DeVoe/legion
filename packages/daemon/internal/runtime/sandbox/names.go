@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -35,9 +36,10 @@ import (
 // RolesDir (roleDir) instead, and each role's namespace (`legion launcher role-init`) covers
 // RolesDir and binds its own back at these paths, all but the launcher token, which no role's
 // process sees. GHConfigDir is the role's gh bundle root (LEGION_GH_OWNERS_DIR): the read-only
-// projection of its role Secret's gh files, one directory per GitHub owner of the project
-// (GitHubHostsKey(owner) as <owner>/ghconfig.HostsFile, GitHubConfigKey(owner) as
-// <owner>/ghconfig.ConfigFile), whose default owner's directory (GitHubDefaultKey) is its
+// projection of its role Secret's gh files, one directory per entry of the role's gh bundle
+// (GitHubHostsKey(dir) as <dir>/ghconfig.HostsFile, GitHubConfigKey(dir) as
+// <dir>/ghconfig.ConfigFile, where a dir is a GitHub owner of the project or one of its
+// repositories, `<owner>/<repo>`), whose default owner's directory (GitHubDefaultKey) is its
 // GH_CONFIG_DIR, and which its gh (the image's `legion gh`) and the clone's `legion git-credential`
 // helper read the token of the owner a command names from. The kubelet rewrites a whole-volume
 // Secret projection in place when the Secret changes, and a bind of it sees the rewrite, so the
@@ -88,6 +90,13 @@ const (
 	// write postgresql.auto.conf would have the launcher load it, outside every role namespace,
 	// at the server's next start.
 	TestPGDir = RolesDir + "/" + launcher.TestPGDirName
+	// WorkloadIdentityDir is where a microVM issue pod whose deployment names the metadata
+	// endpoint (runtime.kubernetes.sandbox.microvm.metadata) mounts, read-only, the projected
+	// ServiceAccount token its launcher exchanges for a Google one (workloadIdentityTokenVolume),
+	// at launcher.WorkloadIdentityTokenFile in it, the file the launcher reads under its roles
+	// directory. It is under RolesDir, which every role's namespace covers, so no role's process
+	// reads the token: a role that could would hold the pod's Google identity without the endpoint.
+	WorkloadIdentityDir = RolesDir + "/" + launcher.WorkloadIdentityDirName
 	// HomeMountsDir is where an issue pod's roles container mounts every volume that belongs at
 	// or under the image's home (homeMountsView), and where `legion launcher role-init` finds
 	// each to bind it back at its own path under the role's home overlay.
@@ -97,6 +106,14 @@ const (
 	// generation's namespaces over (launcher.CheckRoleNamespaces).
 	RoleProbeDir = launcher.FixedRoot + "/role-probe"
 )
+
+// SkillsDir is where an issue pod mounts its skills volume: the clone of the deployment's skills
+// marketplace (runtime.kubernetes.skills_repository) that skills-fetch filled, with the commit,
+// the marketplace's name and its plugins recorded beside it (workspace.SkillsClone and its
+// siblings). It is read-write in skills-fetch alone and read-only in the pod's launcher
+// container, and it is not under RolesDir or HomeMountsDir, the two directories a role's
+// namespaces cover, so every role of the pod reads it at this one path.
+const SkillsDir = launcher.FixedRoot + "/skills"
 
 // roleDir is role's own directory of an issue pod's one container, under RolesDir: its launcher
 // token and gh projections of its role Secret, read-only, and its memory-backed private, state and
@@ -136,10 +153,16 @@ const feedSubPath = "feed"
 // AgentSecretsKeyDir is the memory-backed directory a role's agent-secrets key and enrollment id
 // live in, and AgentSecretsTokenDir where the pod's projected token for the broker's audience is
 // mounted, as AgentSecretsTokenFile. The key directory is each role's own; the token is shared.
+// AgentSecretsExchangeDir is where an enrolled pod's projected token for the exchange's audience
+// (AgentSecrets.ExchangeAudience) is mounted, as AgentSecretsExchangeFile, beside the broker's
+// token: the identity every role of the pod is told of as AGENT_SECRETS_MACHINE_TOKEN_FILE, shared
+// as the broker's token is.
 const (
-	AgentSecretsKeyDir    = launcher.FixedRoot + "/" + launcher.RoleAgentSecretsDir
-	AgentSecretsTokenDir  = launcher.FixedRoot + "/agent-secrets-token"
-	AgentSecretsTokenFile = "token"
+	AgentSecretsKeyDir       = launcher.FixedRoot + "/" + launcher.RoleAgentSecretsDir
+	AgentSecretsTokenDir     = launcher.FixedRoot + "/agent-secrets-token"
+	AgentSecretsTokenFile    = "token"
+	AgentSecretsExchangeDir  = launcher.FixedRoot + "/agent-secrets-exchange"
+	AgentSecretsExchangeFile = "token"
 )
 
 // The image's own paths (packages/daemon/docker/worker.Dockerfile: ENV and the COPY lines).
@@ -258,17 +281,45 @@ const (
 )
 
 // The keys of a role's Secret that carry its GitHub credential beside the launcher token: each
-// owner's rendered hosts.yml and config.yml (ghconfig.Bundle), and the bundle's default owner,
-// written for every launcher role: every workflow role of an issue pod and the controller's.
-// credentialFromSecret hashes the launcher token alone, so the refresher rewrites the gh keys
-// without changing the launcher's binding.
+// bundle directory's rendered hosts.yml and config.yml (ghconfig.Bundle), and the bundle's
+// default owner, written for every launcher role: every workflow role of an issue pod and the
+// controller's. credentialFromSecret hashes the launcher token alone, so the refresher rewrites
+// the gh keys without changing the launcher's binding.
 const GitHubDefaultKey = "github-default"
 
-// GitHubHostsKey is the role Secret's key holding owner's hosts.yml.
-func GitHubHostsKey(owner string) string { return "github-hosts-" + owner }
+// githubHostsPrefix and githubConfigPrefix are the one spelling of the gh keys' prefixes, which
+// GitHubHostsKey and GitHubConfigKey write and GitHubHostsDir reads back.
+const (
+	githubHostsPrefix  = "github-hosts-"
+	githubConfigPrefix = "github-config-"
+)
 
-// GitHubConfigKey is the role Secret's key holding owner's config.yml.
-func GitHubConfigKey(owner string) string { return "github-config-" + owner }
+// ghKeyTail is a bundle directory's name as the tail of a Secret key. A directory names either an
+// owner or one of its repositories, `<owner>/<repo>`, and a Kubernetes Secret key holds no slash,
+// so the slash is written as a dot: a GitHub login holds no dot (ghconfig.IsOwner), so the first
+// dot of a tail is the one this wrote, and a repository name keeps every dot of its own after it
+// (GitHubHostsDir reads it back by that rule). Nothing else of the name changes, so an owner's
+// key is what it has always been and a pod written by an older daemon reads the same.
+func ghKeyTail(dir string) string { return strings.Replace(dir, "/", ".", 1) }
+
+// GitHubHostsKey is the role Secret's key holding the hosts.yml of the bundle directory dir.
+func GitHubHostsKey(dir string) string { return githubHostsPrefix + ghKeyTail(dir) }
+
+// GitHubConfigKey is the role Secret's key holding the config.yml of the bundle directory dir.
+func GitHubConfigKey(dir string) string { return githubConfigPrefix + ghKeyTail(dir) }
+
+// GitHubHostsDir is the bundle directory a role Secret's key names the hosts.yml of, and whether
+// key is such a key at all: GitHubHostsKey read backwards, the first dot of the tail turned back
+// into the slash ghKeyTail wrote, so a pod's gh projection can be read as the directories it
+// holds (movedGhDirs). One key of the pair names each directory, the config one naming the same,
+// so the hosts keys alone answer the whole set.
+func GitHubHostsDir(key string) (dir string, ok bool) {
+	tail, ok := strings.CutPrefix(key, githubHostsPrefix)
+	if !ok {
+		return "", false
+	}
+	return strings.Replace(tail, ".", "/", 1), true
+}
 
 // The labels every object of a claim carries: the Sandbox, its pod template (the only place the
 // controller copies pod labels from), the claim's Secret, and the controller Sandbox's volume
@@ -279,6 +330,13 @@ const (
 	labelIssue   = "legion.dev/issue"
 	labelRole    = "legion.dev/role"
 )
+
+// labelSandbox marks a microVM issue pod, with the value SandboxMicroVM; a gVisor pod carries
+// none. It is the label a NetworkPolicy selects a microVM pod by. It is on the pod template alone
+// (podTemplate), and so on the pod, never on the Sandbox or its Secrets: a Sandbox is kept across
+// the pods it runs, which may run in either sandbox, while the template is rebuilt for every pod
+// from the sandbox the launch that builds it decided.
+const labelSandbox = "legion.dev/sandbox"
 
 // issueVolume is the name a pod's disk is mounted under, an issue's and the controller's alike,
 // and the name of the one volume claim template the controller's Sandbox owns — an issue's owns
@@ -417,8 +475,21 @@ func generationDir(generation uint64) string {
 	return LauncherPrivateDir + "/" + shimwire.GenerationDir(generation)
 }
 
-// claudeMCPFile is the one file a Claude launch adds to its generation's credentials
-// (launcherCommand's Files): the MCP document its agent command reads as `--mcp-config`
+// claudeMCPFile is the one file a Claude launch adds to its generation's credentials beyond every
+// launch's (launcherCommand's Files): the MCP document its agent command reads as `--mcp-config`
 // (claudelaunch.MCPConfig), written 0600 into generationDir beside the boot token and removed
 // with it when the generation ends.
 const claudeMCPFile = "claude-mcp.json"
+
+// systemPromptPath is where a generation's agent reads the launch's system prompt:
+// runtime.SystemPromptFile in generationDir, which the launcher writes 0600, with every entry of
+// the start command's Files (launcherCommand), into the 0700 directory it makes for the generation,
+// before the child starts, and removes with the rest of that directory when the generation ends
+// (internal/launcher's writeFiles). The agent's argv names this path as the value of Oh My Pi's
+// `--append-system-prompt` or Claude Code's `--append-system-prompt-file` (agentArgv, claudeArgv;
+// runtime.SystemPromptFile says why it is a file). The directory is on the role's own
+// memory-backed private volume, which in an issue pod only that role's namespace binds back at
+// LauncherPrivateDir (RolesDir, role-init), so no other role's process can read or change the file.
+func systemPromptPath(generation uint64) string {
+	return generationDir(generation) + "/" + runtime.SystemPromptFile
+}

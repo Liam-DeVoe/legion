@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { ROLE_TOPIC_PREFIX, roleForPhase, roleToken } from "@legion/contracts";
 import type { LegionIssue, LegionState } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
-import { EnvoyApiError, type PublishInput } from "@legion/envoy-client/transport";
+import {
+  EnvoyApiError,
+  type PublishInput,
+  type PublishResult,
+} from "@legion/envoy-client/transport";
 import type { ClaimCapability } from "./legion-phase-ops";
 import {
   LAST_MESSAGE_LIMIT,
@@ -12,7 +16,9 @@ import {
   recordedPhaseStall,
   reminderText,
   stepPhaseStall,
+  type TurnEnd,
 } from "./phase-stall";
+import type { SessionActivityPhase } from "./session-activity";
 import type { StallLimits } from "./stall-limits";
 
 /**
@@ -25,14 +31,27 @@ import type { StallLimits } from "./stall-limits";
  * The first reminder of a run is the `session_stop` continuation, which the host turns into one
  * more turn of the same session, and it is the only one of that run: every one after it is a
  * timer, so the run settles and the daemon sees the turn end, can deliver a queued task and can
- * land a held suspension. A host that cannot continue at all says so on `settle`, and its first
- * reminder is a timer too. The host's timer cannot be cancelled (`SessionContext.setTimeout`
- * returns void and there is no clearTimeout), so a monotonic generation, bumped by everything
- * that makes an armed timer stale, is the whole defence against two timers sending two reminders.
+ * land a held suspension. A turn the provider refused earns no continuation, since the worker
+ * never read the last reminder and the next turn would be refused the same way; it earns one
+ * timer instead, so a single transient refusal cannot leave the worker idle. The host's timer
+ * cannot be cancelled (`SessionContext.setTimeout` returns void and there is no clearTimeout), so
+ * a monotonic generation, bumped by everything that makes an armed timer stale, is the whole
+ * defence against two timers sending two reminders.
  */
 
-/** Publishes one Envoy message (`EnvoyClient.publish`). */
-export type EnvoyPublish = (input: PublishInput) => Promise<unknown>;
+/**
+ * Publishes one Envoy message (`EnvoyClient.publish`), typed as the part of the listener's answer
+ * this reminder reads: `kept` and `keptUntil`. The notice sends no `keep` field, so a listener
+ * keeps it for an architect role no live session holds and answers 202 kept, which tells no
+ * architect (`tellArchitect`). `keptUntil` says whether the next attempt may send the same key
+ * again: a listener that names it answers a repeat with the copy it still holds, or keeps a new
+ * copy once that copy has been forwarded or its hour has ended. A listener of an earlier release
+ * names none, and answers a repeat inside its stream's 72-hour duplicate window as the first copy,
+ * which it may already have dropped.
+ */
+export type EnvoyPublish = (
+  input: PublishInput
+) => Promise<Pick<PublishResult, "kept" | "keptUntil">>;
 
 export interface PhaseReminderLog {
   readonly debug: (message: string, context?: Record<string, unknown>) => void;
@@ -78,20 +97,28 @@ export interface PhaseReminder {
   readonly armResumeReminder: () => void;
   /** `message_start`: a turn is running, and every armed timer is now stale. */
   readonly turnStarted: () => void;
-  /** An input the session's hooks classified; `settle` and `reminded` are this module's own. */
-  readonly apply: (input: Exclude<PhaseStallInput, { kind: "settle" | "reminded" }>) => void;
-  /** `session_stop`: the continuation text to return to the host, or undefined. A host that
-   * cannot turn this settle into one more turn of the same session — Claude Code ignores what a
-   * `StopFailure` hook returns — says so with `canContinue: false`, and the reminder it earned
-   * comes from the timer instead, under every guard an armed reminder has. `backgroundWork` is a
-   * turn ending with the session's own background job still running, which buys the same quiet
-   * wait a WAITING line does. */
-  readonly settle: (
-    lastAssistantText: string,
-    options?: { readonly canContinue?: boolean; readonly backgroundWork?: boolean }
-  ) => Promise<string | undefined>;
+  /** An input the session's hooks classified; `settle`, `refused` and `reminded` are this
+   * module's own — the first two arrive through `settle`. */
+  readonly apply: (
+    input: Exclude<PhaseStallInput, { kind: "settle" | "refused" | "reminded" }>
+  ) => void;
+  /** `session_stop`: the turn's end as the session's hooks classified it (`turnEndOf`), and the
+   * continuation text to return to the host, or undefined. A host that cannot turn this settle
+   * into one more turn of the same session gets undefined whatever it asked: a refused turn earns
+   * no continuation — its reminder comes from the timer this arms instead — and Claude Code's
+   * `StopFailure`, the one settle it ignores the answer of, is exactly a refused turn. A settle
+   * whose `backgroundWork` is set is a turn ending with the session's own background job still
+   * running, which buys the same quiet wait a WAITING line does. */
+  readonly settle: (turn: TurnEnd) => Promise<string | undefined>;
   /** `session_switch`, `session_branch`, `session_tree`. */
   readonly sessionChanged: () => void;
+  /** The phase half of the session's activity report (`src/session-activity.ts`): when the
+   * reminder this session armed last is due. This is the one statement of that moment — the
+   * delay each arming picks comes from the limits here, so nothing outside recomputes it.
+   * `nextReminderAt` is null when no armed timer is still live: none was armed, the phase has
+   * closed, or something has happened since that made it stale, which is the same generation
+   * guard the armed callback applies to itself. */
+  readonly phaseWake: () => SessionActivityPhase;
 }
 
 /** How long the record check waits for the daemon. `createLegionDaemonClient` puts no deadline on
@@ -99,9 +126,20 @@ export interface PhaseReminder {
  * aborts it at the bound. */
 export const RECORD_READ_BOUND_MS = 5_000;
 
-/** The listener's "no live session holds that role": a 404 whose body names `unclaimed` or
- * `holder_lapsed` (`packages/envoy/cmd/listener/api.go`). The next delivered reminder tries the
- * same notice again, under the same idempotency key. */
+/**
+ * The listener's "no live session holds that role, and nothing was kept": a 404 whose body names
+ * `unclaimed` or `holder_lapsed` (`packages/envoy/cmd/listener/api.go`). Nobody was told, so
+ * `reported` stays false and the next delivered reminder publishes the same notice again, under
+ * the same idempotency key, until a session holding the role takes it.
+ *
+ * The notice sends no `keep` field, so a listener keeps it for a role no live session holds and
+ * answers 202 kept rather than this (`tellArchitect`). This 404 comes when the listener's keep
+ * failed, and from a listener of an earlier release for a holder that is not live, which such a
+ * listener keeps nothing for.
+ *
+ * It stays a debug line rather than a warning because an architect that is away is not this
+ * worker's doing, and the retry is already in hand.
+ */
 function roleUnheld(error: unknown): boolean {
   if (!(error instanceof EnvoyApiError) || error.details.status !== 404) return false;
   let body: unknown;
@@ -116,8 +154,12 @@ function roleUnheld(error: unknown): boolean {
 
 /** `work`'s answer, or a rejection once `ms` have passed without one, when the signal `work` was
  * handed is aborted so what it started does not outlive the bound (`withinBudget` in
- * `src/capability-report.ts` is the same shape, with a fallback answer in place of the throw). */
-async function withBound<T>(work: (signal: AbortSignal) => Promise<T>, ms: number): Promise<T> {
+ * `src/capability-report.ts` is the same shape, with a fallback answer in place of the throw).
+ * The stall watch's own notice bounds its record read with this (`pi-legion/src/stall-evidence.ts`). */
+export async function withBound<T>(
+  work: (signal: AbortSignal) => Promise<T>,
+  ms: number
+): Promise<T> {
   const controller = new AbortController();
   const deadline = Promise.withResolvers<T>();
   const timer = setTimeout(() => {
@@ -130,6 +172,15 @@ async function withBound<T>(work: (signal: AbortSignal) => Promise<T>, ms: numbe
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Whether an issue's own architect claim is live: a record the daemon holds, whose architect is
+ * neither retired nor failed. An issue whose own architect is not live is one whose tree's
+ * architect owns the worker, which is what decides the topic both this reminder (`tellArchitect`)
+ * and the stall notice (`pi-legion/src/stall-evidence.ts`) publish to. */
+export function architectLive(record: LegionIssue | undefined): boolean {
+  const architect = record?.architect;
+  return architect !== undefined && architect.state !== "retired" && architect.state !== "failed";
 }
 
 /** What the record check decided, and the record it read, for the architect notice that may
@@ -159,6 +210,10 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
   let lastMessage = "";
   /** The entry last saved or restored, so only a change of the recorded value is saved. */
   let recorded = "";
+  /** The wake the last `armReminder` set: the moment its timer is due, and the generation it was
+   * armed at, so a stale one is reported as no wake at all. The host's timer cannot be cancelled,
+   * so this is dropped by the same guard the callback is. */
+  let armed: { readonly at: number; readonly generation: number } | undefined;
 
   const entryOf = (): PhaseStallEntry => ({
     // The machine's own wait that the record does not hold (`recordedPhaseStall`): a session
@@ -194,9 +249,14 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
 
   /**
    * D5: this session's own issue record, read as `read_record` reads it, bounded. The reminder is
-   * dropped only when the record says this role no longer works this phase — the shape of a worker
-   * that completed its phase from the shell instead of the tool. Everything else fails open and is
-   * logged at debug: an unreachable daemon is exactly when a stalled worker must still be nudged.
+   * dropped when the record says this role no longer works this phase — the shape of a worker
+   * that completed its phase from the shell instead of the tool — and when the daemon has failed
+   * this role's claim, which is the daemon's own word that this session is finished: a claim the
+   * daemon failed is replaced by a retry in a session of its own, and a reminder written into
+   * this one reaches nobody who can act on it. That is what stops Claude Code's reminder, which
+   * has no refused-turn settle of its own for a turn the provider never answered. Everything else
+   * fails open and is logged at debug: an unreachable daemon is exactly when a stalled worker
+   * must still be nudged.
    */
   const recordCheck = async (): Promise<RecordCheck> => {
     const claim = deps.claim();
@@ -225,6 +285,14 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       });
       return { reminds: false, record };
     }
+    const state = record.workers[claim.role]?.claim.state;
+    if (state === "failed") {
+      deps.log.debug("legion: the daemon has failed this claim; no reminder is sent", {
+        issue: claim.issue,
+        role: claim.role,
+      });
+      return { reminds: false, record };
+    }
     return { reminds: true, record };
   };
 
@@ -232,9 +300,10 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * D6: one Envoy message to the issue's architect, when a delivered reminder brought the count to
    * the threshold. `reportKey` is minted at the first attempt of a run of reminders and kept until
    * the count resets, so a publish that timed out after the listener accepted it is not delivered
-   * twice, and a failure leaves `reported` false for the next reminder to try again. The key also
-   * names the run an acceptance belongs to: one that lands after the run ended acknowledges
-   * nothing.
+   * twice, and a failure leaves `reported` false for the next reminder to try again. A kept answer
+   * from a listener that names no `keptUntil` clears it early, so the next attempt mints a new
+   * one (below). The key also names the run an acceptance belongs to: one that lands after the
+   * run ended acknowledges nothing.
    */
   const tellArchitect = async (record: LegionIssue | undefined): Promise<void> => {
     const claim = deps.claim();
@@ -254,14 +323,11 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
     const reminders = stall.count;
     try {
       // An issue whose own architect claim is live owns this worker; otherwise the tree's does.
-      const live =
-        record?.architect !== undefined &&
-        record.architect.state !== "retired" &&
-        record.architect.state !== "failed";
+      const live = architectLive(record);
       const topic =
         ROLE_TOPIC_PREFIX +
         roleToken(deps.project ?? "", live ? claim.issue : claim.tree, "architect");
-      await publish({
+      const answer = await publish({
         topic,
         message:
           `The ${claim.role} of ${claim.issue} has let ${reminders} phase reminders go unanswered: ` +
@@ -283,11 +349,31 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       // while it was in flight, and a later run may have begun. That run has a key of its own, or
       // none yet: this acceptance is not its notice.
       if (reportKey !== key) return;
+      // A kept answer (202, `PublishResult.kept`) means that no live session holds the architect
+      // role: the listener kept the notice on the role's kept lane for the next session that holds
+      // the role live, and its wake report can bring a released architect back. That has told no
+      // architect yet, and a copy no session takes in its hour is dropped, so the run's next
+      // reminder publishes the notice again. A listener that names `keptUntil` answers a repeat of
+      // the key with the copy it still holds, or keeps a new copy once the first one has been
+      // forwarded or its hour has ended, so the key stays. A listener of an earlier release names
+      // no time and answers a repeat inside its stream's duplicate window as the first copy, which
+      // it may have dropped already: the key is cleared, so the next attempt mints a new one.
+      if (answer.kept === true) {
+        if (answer.keptUntil === undefined) {
+          reportKey = undefined;
+          writeEntry();
+        }
+        deps.log.debug("legion: the listener kept the architect notice; telling it again later", {
+          issue: claim.issue,
+          reminders,
+        });
+        return;
+      }
       reported = true;
       writeEntry();
     } catch (error) {
       if (roleUnheld(error)) {
-        deps.log.debug("legion: no live session holds the architect role; telling it again later", {
+        deps.log.debug("legion: no session holds the architect role; telling it again later", {
           issue: claim.issue,
           reminders,
         });
@@ -341,6 +427,7 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    */
   const armReminder = (reminder: string, delayMs: number): void => {
     const armedAt = generation;
+    armed = { at: Date.now() + delayMs, generation: armedAt };
     deps.armTimer(async () => {
       if (generation !== armedAt || stall.state === "closed" || turnRunning) return;
       const check = await recordCheck();
@@ -378,25 +465,39 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       if (input.kind === "phase-closed") generation += 1;
       advance(input);
     },
-    settle: async (text, options) => {
+    settle: async (turn) => {
       turnRunning = false;
       generation += 1;
+      if (turn.kind === "refused") {
+        // The provider refused this turn, so the worker read nothing and said nothing: the state
+        // stands, and this settle returns no continuation, because the host would turn it into
+        // one more turn at once and the provider would refuse that one too. One timer is armed
+        // all the same: the task the refused turn carried ended with it, the daemon counts the
+        // turn rather than failing the claim while the run is short of `launch_failure_limit`,
+        // and nothing else would wake this worker, so a single transient refusal would leave its
+        // issue idle. By the time the timer fires the daemon has had every refusal of the run
+        // reported (`POST /legion/v1/claims/turn-outcome`): at the limit it has failed the claim,
+        // and the record check the timer runs drops the reminder, which is what stops the
+        // reminding of a session the provider refuses for ever — the whole of
+        // dispatch://INFRA-264.
+        advance(turn);
+        continued = false;
+        armReminder(reminderText(""), deps.limits.reminderMs);
+        return undefined;
+      }
+      const text = turn.lastAssistantText;
       // Only a phase that is not closed can earn the notice that quotes these words, so a closed
       // one records none: a finished worker's chatter writes nothing.
       if (stall.state !== "closed") lastMessage = text.slice(0, LAST_MESSAGE_LIMIT);
       const before = stall.count;
-      const reminder = advance({
-        kind: "settle",
-        lastAssistantText: text,
-        backgroundWork: options?.backgroundWork,
-      });
+      const reminder = advance(turn);
       // Every outcome but the continuation ends the run here, so the next one may continue again.
 
       // The wait a `ready_for_update` answer created is the daemon's to end, so nothing is armed
       // in it: the round replaces the pod, and the task it held behind the round reaches the
       // worker in the process that comes back on the new pod, while a reminder steered in
-      // meanwhile is the turn the daemon reads as the answer retracted (`awaiting-update` in
-      // `./phase-stall`).
+      // meanwhile starts a turn of work the replacement throws away, and before the round's bound
+      // a running turn holds that replacement back (`awaiting-update` in `./phase-stall`).
       if (stall.state === "awaiting-update") {
         continued = false;
         return undefined;
@@ -414,10 +515,10 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
         return undefined;
       }
       // The continuation is the first reminder of a run and the only one of it: the worker has
-      // been reminded already (`before`), has had this run's continuation (`continued`), or is on
-      // a host that cannot continue at all, and the reminder comes from a timer instead. The run
-      // then settles, the daemon sees the turn end, and the next reminder comes with its delay.
-      if (before !== 0 || continued || options?.canContinue === false) {
+      // been reminded already (`before`) or has had this run's continuation (`continued`), and
+      // the reminder comes from a timer instead. The run then settles, the daemon sees the turn
+      // end, and the next reminder comes with its delay.
+      if (before !== 0 || continued) {
         continued = false;
         armReminder(reminder, deps.limits.reminderMs);
         return undefined;
@@ -433,6 +534,12 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
     },
     sessionChanged: () => {
       generation += 1;
+    },
+    phaseWake: () => {
+      if (stall.state === "closed" || armed === undefined || armed.generation !== generation) {
+        return { nextReminderAt: null };
+      }
+      return { nextReminderAt: new Date(armed.at).toISOString() };
     },
   };
 }

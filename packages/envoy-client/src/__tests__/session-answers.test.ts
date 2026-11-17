@@ -3,15 +3,16 @@ import {
   existsSync,
   linkSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionAnswer } from "@legion/contracts";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { type FakeDispatchCall, fakeDispatchFetch } from "../../test/fake-dispatch";
+import { bearerCredential } from "../bearer";
 import type { ActiveDispatchConfig } from "../dispatch-config";
 import type * as SessionAnswersModule from "../session-answers";
 import {
@@ -20,8 +21,10 @@ import {
   renderSessionAnswerItem,
   renderSessionAnswers,
   renderSessionAnswersList,
+  SESSION_ANSWERS_DEADLINE_MS,
   SESSION_ANSWERS_MARKER,
   type SessionAnswersRead,
+  sessionAnswersChanged,
   sessionAnswersFailureLine,
   sessionAnswersSettled,
   sessionAnswersWords,
@@ -29,7 +32,9 @@ import {
 
 const NOW = Date.parse("2026-10-27T12:00:00.000Z");
 const hoursAgo = (hours: number) => new Date(NOW - hours * 3_600_000).toISOString();
-const stateDir = () => mkdtempSync(join(tmpdir(), "session-answers-"));
+/** Where a read at `NOW` starts its window: 72 hours before it. */
+const SINCE = hoursAgo(72);
+const stateDir = temporaryDirectories("session-answers");
 
 function message(id: string, at: string, text: string): SessionAnswer {
   return {
@@ -106,6 +111,29 @@ describe("renderSessionAnswers", () => {
         "Direct message m-1, on no issue",
         "Stop after the migration lands.",
       ].join("\n")
+    );
+  });
+
+  // An agent that answers for its person is recorded as the person, so the item names the agent
+  // beside them: a session reading its list must not take an agent's answer for the person's
+  // own words.
+  test("an item an agent wrote for its person names the agent beside the person", () => {
+    const throughSession = {
+      ...answer,
+      author: {
+        ...answer.author,
+        act: { session: "0123456789abcdef", scopes: ["person" as const] },
+      },
+    };
+    expect(renderSessionAnswerItem(throughSession)).toStartWith(
+      "2026-10-27T11:00:00Z · user ana@example.com, acting through session 0123456789abcdef · answered your ask"
+    );
+    const throughToken = {
+      ...answer,
+      author: { ...answer.author, act: { token_id: "token-1", token_name: "architect" } },
+    };
+    expect(renderSessionAnswerItem(throughToken)).toStartWith(
+      "2026-10-27T11:00:00Z · user ana@example.com, acting through token architect · answered your ask"
     );
   });
 
@@ -247,46 +275,82 @@ describe("renderSessionAnswers", () => {
   });
 });
 
-describe("sessionAnswersWords", () => {
-  const isNew = (before: readonly SessionAnswer[], after: readonly SessionAnswer[]) => {
-    const shown = new Set(sessionAnswersWords(before));
-    return sessionAnswersWords(after).some((word) => !shown.has(word));
-  };
+describe("sessionAnswersWords and sessionAnswersChanged", () => {
+  const changed = (
+    before: readonly SessionAnswer[],
+    after: readonly SessionAnswer[],
+    since = SINCE
+  ) => sessionAnswersChanged(sessionAnswersWords(before), sessionAnswersWords(after), since);
 
-  test("a new item, a changed answer or an edited comment is new", () => {
-    expect(isNew([comment, direct], [answer, comment, direct])).toBe(true);
+  test("a new item, a changed answer or an edited comment is a change", () => {
+    expect(changed([comment, direct], [answer, comment, direct])).toBe(true);
     const edited = {
       ...comment,
       edited_at: "2026-10-27T11:30:00Z",
       text: "Step 3 needs the production URL.",
     };
-    expect(isNew([comment, direct], [edited, direct])).toBe(true);
+    expect(changed([comment, direct], [edited, direct])).toBe(true);
     const replaced = {
       ...answer,
       at: "2026-10-27T11:40:00Z",
       selected: ["JSON"],
       replaced: true as const,
     };
-    expect(isNew([answer], [replaced])).toBe(true);
+    expect(changed([answer], [replaced])).toBe(true);
   });
 
-  test("the same items, fewer items, or a changed title or question is nothing new", () => {
-    expect(isNew([answer, comment, direct], [answer, comment, direct])).toBe(false);
-    expect(isNew([answer, comment, direct], [answer, direct])).toBe(false);
+  test("the same items, or a changed title or question, is no change", () => {
+    expect(changed([answer, comment, direct], [answer, comment, direct])).toBe(false);
     const retitled = {
       ...answer,
       owner: { issue: { key: "CORE-7", title: "A new title" } },
       ask: { id: "ask-1", question: "Which format, now?" },
     };
-    expect(isNew([answer], [retitled])).toBe(false);
+    expect(changed([answer], [retitled])).toBe(false);
   });
 
-  // The words are those of the items the list shows: an item the cap left out was never seen.
-  test("a read's words name only the items its list shows", async () => {
+  // An item a read no longer holds: its time tells one the window left behind from one a person
+  // retracted (an answer set back to none), or Dispatch removed, while the window still held it.
+  test("an item gone because the window left it behind is no change; one gone inside the window is", () => {
+    // The window starts after the oldest item (10:00), so that one aged out.
+    const later = "2026-10-27T10:15:00.000Z";
+    expect(changed([answer, comment, direct], [answer, comment], later)).toBe(false);
+    // The answer (11:00) is still inside the window, so it was retracted.
+    expect(changed([answer, comment, direct], [comment, direct], later)).toBe(true);
+    expect(changed([answer, comment, direct], [answer, direct])).toBe(true);
+  });
+
+  test("a read with no window start, or a string with no time, counts a gone item as a change", () => {
+    const words = sessionAnswersWords([answer, direct]);
+    expect(sessionAnswersChanged(words, words.slice(0, 1), undefined)).toBe(true);
+    expect(sessionAnswersChanged(["not a key", ...words], words, SINCE)).toBe(true);
+  });
+
+  // The key tells what the person wrote from what their agent wrote for them: the same answer
+  // under an act is a different item, so a host carries it rather than passing over it as one
+  // it has already shown.
+  test("the same answer with and without an act are two different keys", () => {
+    const throughToken = {
+      ...answer,
+      author: { ...answer.author, act: { token_id: "token-1", token_name: "architect" } },
+    };
+    const throughSession = {
+      ...answer,
+      author: { ...answer.author, act: { session: "0123456789abcdef" } },
+    };
+    expect(sessionAnswersWords([answer])).not.toEqual(sessionAnswersWords([throughToken]));
+    expect(sessionAnswersWords([throughToken])).not.toEqual(sessionAnswersWords([throughSession]));
+    expect(changed([answer], [throughToken])).toBe(true);
+  });
+
+  // The words are those of every item Dispatch sent inside the read's window: an item the cap
+  // leaves out is shown to nobody, and a host that compared only the items shown would never learn
+  // it was written.
+  test("a read's words name every item Dispatch sent inside its window, the ones its list leaves out included", async () => {
     const items = Array.from({ length: 12 }, (_, index) =>
       message(`item-${index}`, hoursAgo(index + 1), `${index}:${"w".repeat(1_000)}`)
     );
-    const { fetchImpl } = fakeDispatch(() => listed(items));
+    const { fetchImpl } = fakeDispatchFetch({ handler: () => listed(items) });
     const read = await readSessionAnswers({
       session: newSession(),
       dispatch: dispatchAt(),
@@ -297,15 +361,61 @@ describe("sessionAnswersWords", () => {
     const shown = items.filter((item) => read.text?.includes(item.text));
     expect(shown.length).toBeGreaterThan(0);
     expect(shown.length).toBeLessThan(items.length);
-    expect(read.words).toEqual(sessionAnswersWords(shown));
+    expect(read.words).toEqual(sessionAnswersWords(items));
+    expect(read.since).toBe(SINCE);
   });
 
-  test("a cached list's words are those its own text shows, and an edit to an item it leaves out changes none", async () => {
+  test("a newest item longer than the cap is shown to nobody, and is a change", async () => {
+    const older = message("m-older", hoursAgo(2), "Ship it.");
+    const longest = message("m-longest", hoursAgo(1), "w".repeat(9_000));
+    let items = [older];
+    const { fetchImpl } = fakeDispatchFetch({ handler: () => listed(items) });
+    const options = {
+      session: newSession(),
+      dispatch: dispatchAt(),
+      env: envAt(stateDir()),
+      fetchImpl,
+      now: () => NOW,
+    };
+    const first = await readSessionAnswers(options);
+    items = [longest, older];
+    const second = await readSessionAnswers(options);
+    expect(second.text).not.toContain(longest.text);
+    expect(second.text).not.toContain(older.text);
+    expect(sessionAnswersChanged(first.words ?? [], second.words ?? [], second.since)).toBe(true);
+  });
+
+  test("a comment an edit makes too long to fit is shown to nobody, and is a change", async () => {
+    const newer = message("m-newer", hoursAgo(1), "x".repeat(3_000));
+    const edited = {
+      ...comment,
+      edited_at: hoursAgo(0.5),
+      text: `Do not ship. ${"y".repeat(5_500)}`,
+    };
+    let items: SessionAnswer[] = [newer, comment];
+    const { fetchImpl } = fakeDispatchFetch({ handler: () => listed(items) });
+    const options = {
+      session: newSession(),
+      dispatch: dispatchAt(),
+      env: envAt(stateDir()),
+      fetchImpl,
+      now: () => NOW,
+    };
+    const first = await readSessionAnswers(options);
+    expect(first.text).toContain(comment.text);
+    items = [newer, edited];
+    const second = await readSessionAnswers(options);
+    expect(second.text).toContain(newer.text);
+    expect(second.text).not.toContain(edited.text);
+    expect(sessionAnswersChanged(first.words ?? [], second.words ?? [], second.since)).toBe(true);
+  });
+
+  test("a cached list's words name every item Dispatch sent inside its window, and an edit to an item it leaves out changes them", async () => {
     const items = Array.from({ length: 12 }, (_, index) =>
       message(`item-${index}`, hoursAgo(index + 1), `${index}:${"w".repeat(1_000)}`)
     );
     let answer = () => listed(items);
-    const { fetchImpl } = fakeDispatch(() => answer());
+    const { fetchImpl } = fakeDispatchFetch({ handler: () => answer() });
     const options = {
       session: newSession(),
       dispatch: dispatchAt(),
@@ -321,14 +431,14 @@ describe("sessionAnswersWords", () => {
     answer = () => listed(edited);
     const afterEdit = await readSessionAnswers(options);
     expect(afterEdit.text).toBe(fresh.text);
-    expect(afterEdit.words).toEqual(fresh.words);
+    const edits = sessionAnswersChanged(fresh.words ?? [], afterEdit.words ?? [], afterEdit.since);
+    expect(edits).toBe(true);
     // A failed read carries the cache under a longer header.
     answer = () => json({ code: "INTERNAL", error: "database is down" }, 500);
     const cached = await readSessionAnswers(options);
     expect(cached.source).toBe("cache");
-    expect(cached.words).toEqual(
-      sessionAnswersWords(edited.filter((item) => cached.text?.includes(item.text)))
-    );
+    expect(cached.words).toEqual(sessionAnswersWords(edited));
+    expect(cached.since).toBe(SINCE);
   });
 });
 
@@ -352,11 +462,6 @@ describe("renderSessionAnswersList", () => {
   });
 });
 
-interface FakeCall {
-  readonly url: URL;
-  readonly signal: AbortSignal | undefined;
-}
-
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -364,21 +469,15 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-function fakeDispatch(handler: (call: FakeCall) => Response | Promise<Response>) {
-  const calls: FakeCall[] = [];
-  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const call = { url: new URL(String(input)), signal: init?.signal ?? undefined };
-    calls.push(call);
-    return handler(call);
-  }) as typeof fetch;
-  return { calls, fetchImpl };
-}
-
 let dispatchCount = 0;
 /** A Dispatch of its own per test: the 404 back-off is process-wide, by URL. */
 function dispatchAt(): ActiveDispatchConfig {
   dispatchCount += 1;
-  return { enabled: true, url: `http://answers-${dispatchCount}.test`, token: "test-token" };
+  return {
+    enabled: true,
+    url: `http://answers-${dispatchCount}.test`,
+    credential: bearerCredential("test-token"),
+  };
 }
 let sessionCount = 0;
 /** A session of its own per test: the read state is process-wide, by session. */
@@ -415,7 +514,8 @@ const page = (status: number, body: string, statusText = "") =>
 
 /** Each way a read fails that keeps the failure line, with the reason it gives (a pattern for an
  *  answer Dispatch did not write, whose reason names the request's URL) and how long a request
- *  waits on it. */
+ *  waits on it. A reason a refusal carries a Dispatch code for opens with that code, since that
+ *  is the word the person and the agent branch on. */
 const failedReads: readonly {
   readonly kind: string;
   readonly reason: string | RegExp;
@@ -424,19 +524,19 @@ const failedReads: readonly {
 }[] = [
   {
     kind: "401",
-    reason: "token revoked",
+    reason: "UNAUTHORIZED: token revoked",
     deadlineMs: 2_000,
     respond: () => json({ code: "UNAUTHORIZED", error: "token revoked" }, 401),
   },
   {
     kind: "5xx",
-    reason: "database is down",
+    reason: "INTERNAL: database is down",
     deadlineMs: 2_000,
     respond: () => json({ code: "INTERNAL", error: "database is down" }, 500),
   },
   {
     kind: "Dispatch's own 503",
-    reason: "the database is unavailable",
+    reason: "UNAVAILABLE: the database is unavailable",
     deadlineMs: 2_000,
     respond: () => json({ code: "UNAVAILABLE", error: "the database is unavailable" }, 503),
   },
@@ -449,7 +549,7 @@ const failedReads: readonly {
   {
     kind: "a proxy's 404 page",
     reason:
-      /^GET \S+\/answers\?max_chars=8000 answered 404 Not Found with a body that is not Dispatch's error JSON \(.*\), which looks like a proxy or gateway page rather than Dispatch's own answer, so /,
+      /^HTTP_404: GET \S+\/answers\?since=[^&\s]+&max_chars=8000 answered 404 Not Found with a body that is not Dispatch's error JSON \(.*\), which looks like a proxy or gateway page rather than Dispatch's own answer, so /,
     deadlineMs: 2_000,
     respond: () =>
       page(404, "<html><body><h1>404 Not Found</h1><hr>nginx</body></html>", "Not Found"),
@@ -457,7 +557,7 @@ const failedReads: readonly {
   {
     kind: "a 404 with an empty body",
     reason:
-      /^GET \S+\/answers\?max_chars=8000 answered 404 with an empty body, which looks like a proxy or gateway page rather than Dispatch's own answer, so /,
+      /^HTTP_404: GET \S+\/answers\?since=[^&\s]+&max_chars=8000 answered 404 with an empty body, which looks like a proxy or gateway page rather than Dispatch's own answer, so /,
     deadlineMs: 2_000,
     respond: () => new Response("", { status: 404 }),
   },
@@ -495,7 +595,7 @@ const failedReads: readonly {
 
 /** Dispatch's own answer that it has no answers route, as its router answers a build older than
  *  the route. */
-const noRoute = (call: FakeCall) =>
+const noRoute = (call: FakeDispatchCall) =>
   json(
     {
       code: "NOT_FOUND",
@@ -521,11 +621,11 @@ function expectFailureLine(read: SessionAnswersRead, reason: string | RegExp): v
 }
 
 describe("readSessionAnswers", () => {
-  test("reads the list with max_chars, renders it, and keeps it in answers.json with its Dispatch URL", async () => {
+  test("reads the list from this host's 72 hours with max_chars, renders it, and keeps it in answers.json with its Dispatch URL", async () => {
     const root = stateDir();
     const session = newSession();
     const dispatch = dispatchAt();
-    const { calls, fetchImpl } = fakeDispatch(() => listed(recent));
+    const { paths, fetchImpl } = fakeDispatchFetch({ handler: () => listed(recent) });
     const read = await readSessionAnswers({
       session,
       dispatch,
@@ -538,9 +638,11 @@ describe("readSessionAnswers", () => {
       source: "fresh",
       readAt: new Date(NOW).toISOString(),
       words: sessionAnswersWords(recent),
+      since: SINCE,
     });
-    expect(calls.map((call) => call.url.pathname + call.url.search)).toEqual([
-      `/api/v1/agents/${session}/answers?max_chars=8000`,
+    // The window starts by this host's clock, which every render filters by too.
+    expect(paths).toEqual([
+      `/api/v1/agents/${session}/answers?since=${encodeURIComponent(SINCE)}&max_chars=8000`,
     ]);
     expect(JSON.parse(readFileSync(cacheFile(root, session), "utf-8"))).toEqual({
       dispatch_url: dispatch.url,
@@ -551,9 +653,9 @@ describe("readSessionAnswers", () => {
   });
 
   test("with no list ever read, a failed read carries the failure line naming why", async () => {
-    const { fetchImpl } = fakeDispatch(() =>
-      json({ code: "INTERNAL", error: "database is down" }, 500)
-    );
+    const { fetchImpl } = fakeDispatchFetch({
+      handler: () => json({ code: "INTERNAL", error: "database is down" }, 500),
+    });
     const read = await readSessionAnswers({
       session: newSession(),
       dispatch: dispatchAt(),
@@ -562,17 +664,19 @@ describe("readSessionAnswers", () => {
       now: () => NOW,
     });
     expect(read).toEqual({
-      text: "[Dispatch: people's answers from the last 72 hours could not be read (database is down); run `dispatch answers`.]",
+      text: "[Dispatch: people's answers from the last 72 hours could not be read (INTERNAL: database is down); run `dispatch answers`.]",
       source: "failure",
-      reason: "database is down",
+      reason: "INTERNAL: database is down",
     });
-    expect(read.text).toBe(sessionAnswersFailureLine("database is down"));
+    expect(read.text).toBe(sessionAnswersFailureLine("INTERNAL: database is down"));
   });
 
   test("a 200 whose body is no answers list is a failed read, not a cache and not a throw", async () => {
     const root = stateDir();
     const session = newSession();
-    const { fetchImpl } = fakeDispatch(() => json({ session_id: "s", topics: [] }));
+    const { fetchImpl } = fakeDispatchFetch({
+      handler: () => json({ session_id: "s", topics: [] }),
+    });
     const read = await readSessionAnswers({
       session,
       dispatch: dispatchAt(),
@@ -588,7 +692,9 @@ describe("readSessionAnswers", () => {
   for (const { kind, reason, deadlineMs, respond } of failedReads) {
     test(`after an empty read, a failed read (${kind}) carries the failure line naming why`, async () => {
       let fail = false;
-      const { fetchImpl } = fakeDispatch(() => (fail ? respond() : listed([])));
+      const { fetchImpl } = fakeDispatchFetch({
+        handler: () => (fail ? respond() : listed([])),
+      });
       const options = {
         session: newSession(),
         dispatch: dispatchAt(),
@@ -601,6 +707,7 @@ describe("readSessionAnswers", () => {
         source: "fresh",
         readAt: new Date(NOW).toISOString(),
         words: [],
+        since: SINCE,
       });
       fail = true;
       expectFailureLine(await readSessionAnswers({ ...options, deadlineMs }), reason);
@@ -608,7 +715,9 @@ describe("readSessionAnswers", () => {
 
     test(`after a non-empty read, a failed read (${kind}) carries the cached list, its header naming why`, async () => {
       let fail = false;
-      const { fetchImpl } = fakeDispatch(() => (fail ? respond() : listed(recent)));
+      const { fetchImpl } = fakeDispatchFetch({
+        handler: () => (fail ? respond() : listed(recent)),
+      });
       const options = {
         session: newSession(),
         dispatch: dispatchAt(),
@@ -628,6 +737,7 @@ describe("readSessionAnswers", () => {
         source: "cache",
         readAt,
         words: expect.any(Array),
+        since: new Date(later - 72 * 3_600_000).toISOString(),
         reason: failed,
       });
       expect(read.text?.split("\n")[0]).toBe(SESSION_ANSWERS_MARKER);
@@ -636,9 +746,9 @@ describe("readSessionAnswers", () => {
   }
 
   test("a proxy's 404 is a failed read like any other: Dispatch is asked again, and no notice", async () => {
-    const { calls, fetchImpl } = fakeDispatch(() =>
-      page(404, "<html><body><h1>404 Not Found</h1></body></html>", "Not Found")
-    );
+    const { calls, fetchImpl } = fakeDispatchFetch({
+      handler: () => page(404, "<html><body><h1>404 Not Found</h1></body></html>", "Not Found"),
+    });
     const options = {
       session: newSession(),
       dispatch: dispatchAt(),
@@ -654,7 +764,9 @@ describe("readSessionAnswers", () => {
 
   test("after an empty read, Dispatch's own no-route 404 adds no line and gives the host a notice", async () => {
     let missing = false;
-    const { fetchImpl } = fakeDispatch((call) => (missing ? noRoute(call) : listed([])));
+    const { fetchImpl } = fakeDispatchFetch({
+      handler: (call) => (missing ? noRoute(call) : listed([])),
+    });
     const dispatch = dispatchAt();
     const options = {
       session: newSession(),
@@ -675,13 +787,38 @@ describe("readSessionAnswers", () => {
     expect(read.text).toBeUndefined();
   });
 
+  // The notice is a line the host shows the session, so it names a Dispatch URL that carries a
+  // user and a password without them; the read itself goes to the URL as configured.
+  test("the no-route notice names the Dispatch URL without its user and password", async () => {
+    const user = "user-7f2a";
+    const secret = "pw-4c7e19";
+    const { calls, fetchImpl } = fakeDispatchFetch({ handler: noRoute });
+    const dispatch = {
+      ...dispatchAt(),
+      url: `http://${user}:${secret}@answers-userinfo-${dispatchCount}.test`,
+    };
+    const read = await readSessionAnswers({
+      session: newSession(),
+      dispatch,
+      env: envAt(stateDir()),
+      fetchImpl,
+      now: () => NOW,
+    });
+    expect(calls.map((call) => call.url.username)).toEqual([user]);
+    expect(read.notice).toBe(noRouteNotice(`http://answers-userinfo-${dispatchCount}.test`));
+    expect(read.notice).not.toContain(user);
+    expect(read.notice).not.toContain(secret);
+  });
+
   test("a cached list carried after Dispatch's no-route 404 never names `dispatch answers`, its left-out line included", async () => {
     // Twelve items of about 1,000 characters each: the cap leaves the oldest out.
     const items = Array.from({ length: 12 }, (_, index) =>
       message(`item-${index}`, hoursAgo(index + 1), `${index}:${"w".repeat(1_000)}`)
     );
     let missing = false;
-    const { fetchImpl } = fakeDispatch((call) => (missing ? noRoute(call) : listed(items)));
+    const { fetchImpl } = fakeDispatchFetch({
+      handler: (call) => (missing ? noRoute(call) : listed(items)),
+    });
     const options = {
       session: newSession(),
       dispatch: dispatchAt(),
@@ -710,9 +847,10 @@ describe("readSessionAnswers", () => {
 
   test("a failed read carries the failure line once every cached item is past 72 hours", async () => {
     let fail = false;
-    const { fetchImpl } = fakeDispatch(() =>
-      fail ? json({ code: "UNAUTHORIZED", error: "token revoked" }, 401) : listed(recent)
-    );
+    const { fetchImpl } = fakeDispatchFetch({
+      handler: () =>
+        fail ? json({ code: "UNAUTHORIZED", error: "token revoked" }, 401) : listed(recent),
+    });
     const options = {
       session: newSession(),
       dispatch: dispatchAt(),
@@ -723,9 +861,9 @@ describe("readSessionAnswers", () => {
     fail = true;
     const read = await readSessionAnswers({ ...options, now: () => NOW + 73 * 3_600_000 });
     expect(read).toEqual({
-      text: sessionAnswersFailureLine("token revoked"),
+      text: sessionAnswersFailureLine("UNAUTHORIZED: token revoked"),
       source: "failure",
-      reason: "token revoked",
+      reason: "UNAUTHORIZED: token revoked",
     });
   });
 
@@ -739,8 +877,10 @@ describe("readSessionAnswers", () => {
       cacheFile(root, session),
       JSON.stringify({ dispatch_url: dispatch.url, read_at: readAt, total: 2, items: recent })
     );
-    const { fetchImpl } = fakeDispatch(() => {
-      throw new TypeError("Unable to connect");
+    const { fetchImpl } = fakeDispatchFetch({
+      handler: () => {
+        throw new TypeError("Unable to connect");
+      },
     });
     const read = await readSessionAnswers({
       session,
@@ -765,16 +905,16 @@ describe("readSessionAnswers", () => {
     const b = dispatchAt();
     let aFails = false;
     const failure = () => json({ code: "INTERNAL", error: "database is down" }, 500);
-    const { fetchImpl } = fakeDispatch((call) =>
-      call.url.host === hostOf(a) && !aFails ? listed(recent) : failure()
-    );
+    const { fetchImpl } = fakeDispatchFetch({
+      handler: (call) => (call.url.host === hostOf(a) && !aFails ? listed(recent) : failure()),
+    });
     const options = { env: envAt(root), fetchImpl, now: () => NOW };
     const fromA = await readSessionAnswers({ ...options, session, dispatch: a });
     expect(fromA.source).toBe("fresh");
     const notCarried: SessionAnswersRead = {
-      text: sessionAnswersFailureLine("database is down"),
+      text: sessionAnswersFailureLine("INTERNAL: database is down"),
       source: "failure",
-      reason: "database is down",
+      reason: "INTERNAL: database is down",
     };
     expect(await readSessionAnswers({ ...options, session, dispatch: b })).toEqual(notCarried);
 
@@ -796,9 +936,9 @@ describe("readSessionAnswers", () => {
     const a = dispatchAt();
     const b = dispatchAt();
     const pendingA = deferred<Response>();
-    const { calls, fetchImpl } = fakeDispatch((call) =>
-      call.url.host === hostOf(a) ? pendingA.promise : listed([direct])
-    );
+    const { calls, fetchImpl } = fakeDispatchFetch({
+      handler: (call) => (call.url.host === hostOf(a) ? pendingA.promise : listed([direct])),
+    });
     const options = {
       session,
       env: envAt(stateDir()),
@@ -813,6 +953,7 @@ describe("readSessionAnswers", () => {
       source: "fresh",
       readAt: new Date(NOW).toISOString(),
       words: sessionAnswersWords([direct]),
+      since: SINCE,
     });
     expect(calls.map((call) => call.url.host)).toEqual([hostOf(a), hostOf(b)]);
     pendingA.resolve(listed(recent));
@@ -822,9 +963,10 @@ describe("readSessionAnswers", () => {
   test("a session id that is not one plain path segment keeps its list in memory only", async () => {
     const root = stateDir();
     let fail = false;
-    const { fetchImpl } = fakeDispatch(() =>
-      fail ? json({ code: "INTERNAL", error: "database is down" }, 500) : listed(recent)
-    );
+    const { fetchImpl } = fakeDispatchFetch({
+      handler: () =>
+        fail ? json({ code: "INTERNAL", error: "database is down" }, 500) : listed(recent),
+    });
     const options = {
       session: `../${newSession()}`,
       dispatch: dispatchAt(),
@@ -838,18 +980,24 @@ describe("readSessionAnswers", () => {
     expect((await readSessionAnswers(options)).source).toBe("cache");
   });
 
-  // The deadline is a real timer in the code under test, so this test waits on real time.
+  // The deadline is a real timer in the code under test, so this row waits on real time, but it
+  // reads no clock: the answer its two reads must not wait for never comes, and the second read's
+  // own deadline is 120 s, four times the row's 30 s limit, so a read that waited on either fails
+  // the row by that limit instead of by what the machine cost. The limit is that discriminator
+  // rather than a bound on work: measured in a 2-CPU pod the row costs 0.06 s idle and, under 16
+  // busy loops (8 x nproc), 0.45 s at most in a whole-suite run and 0.10 s with this file alone.
+  // The 30 s stays on the row rather than taking the suite's default, because the row's claim is
+  // that number. The second read's own reason says which path answered it: a read that answers by
+  // another path fails on that reason, and a read that waits still fails by the limit.
   test("waits at most the deadline, does not wait again on a read past it, and the late answer fills the cache", async () => {
     const session = newSession();
     const dispatch = dispatchAt();
     const hung = deferred<Response>();
     let respond: () => Response | Promise<Response> = () => hung.promise;
-    const { calls, fetchImpl } = fakeDispatch(() => respond());
+    const { calls, fetchImpl } = fakeDispatchFetch({ handler: () => respond() });
     const options = { session, dispatch, env: envAt(stateDir()), fetchImpl, now: () => NOW };
 
-    let started = performance.now();
     const first = await readSessionAnswers({ ...options, deadlineMs: 50 });
-    expect(performance.now() - started).toBeLessThan(500);
     expect(first).toEqual({
       text: sessionAnswersFailureLine("Dispatch did not answer within 50 ms"),
       source: "failure",
@@ -857,10 +1005,9 @@ describe("readSessionAnswers", () => {
     });
 
     // The read in flight already cost one request its deadline: the next does not wait on it.
-    started = performance.now();
-    const second = await readSessionAnswers({ ...options, deadlineMs: 2_000 });
-    expect(performance.now() - started).toBeLessThan(1_000);
+    const second = await readSessionAnswers({ ...options, deadlineMs: 120_000 });
     expect(second.source).toBe("failure");
+    expect(second.reason).toBe("an earlier read is still waiting on Dispatch");
     expect(calls).toHaveLength(1);
 
     // The background read answers, and the cache holds its list.
@@ -873,16 +1020,16 @@ describe("readSessionAnswers", () => {
     expect(third.text).toBe(
       renderSessionAnswers(recent, {
         now: NOW,
-        cached: { readAt: new Date(NOW).toISOString(), reason: "database is down" },
+        cached: { readAt: new Date(NOW).toISOString(), reason: "INTERNAL: database is down" },
       })
     );
-  });
+  }, 30_000);
 
   test("the request's own abort ends its wait at once, and the shared read goes on", async () => {
     const session = newSession();
     const hung = deferred<Response>();
     let respond: () => Response | Promise<Response> = () => hung.promise;
-    const { calls, fetchImpl } = fakeDispatch(() => respond());
+    const { calls, fetchImpl } = fakeDispatchFetch({ handler: () => respond() });
     const controller = new AbortController();
     const options = {
       session,
@@ -905,7 +1052,7 @@ describe("readSessionAnswers", () => {
     const session = newSession();
     const dispatch = dispatchAt();
     const pending = deferred<Response>();
-    const { calls, fetchImpl } = fakeDispatch(() => pending.promise);
+    const { calls, fetchImpl } = fakeDispatchFetch({ handler: () => pending.promise });
     // A query string loads a module of its own, as Oh My Pi loads each extension instance; this
     // test is of that loading boundary, so the import is dynamic.
     const source = "../session-answers.ts";
@@ -930,7 +1077,7 @@ describe("readSessionAnswers", () => {
 
   test("Dispatch's own no-route 404 adds no line, and that Dispatch is not asked again for 5 minutes", async () => {
     const dispatch = dispatchAt();
-    const { calls, fetchImpl } = fakeDispatch(noRoute);
+    const { calls, fetchImpl } = fakeDispatchFetch({ handler: noRoute });
     let clock = NOW;
     const options = { dispatch, env: envAt(stateDir()), fetchImpl, now: () => clock };
     const unavailable: SessionAnswersRead = {
@@ -949,12 +1096,37 @@ describe("readSessionAnswers", () => {
     expect(calls).toHaveLength(2);
   });
 
+  test("Dispatch's own no-route 404 is unavailable within the deadline, from one ask", async () => {
+    // On the request path the read's client asks once and lets that answer through: the read's
+    // own 5-minute back-off is its answer to a release rolling out, so no request waits out
+    // attempts of a route this Dispatch has not got. No fake clock and no fake sleep here.
+    const dispatch = dispatchAt();
+    const { calls, fetchImpl } = fakeDispatchFetch({ handler: noRoute });
+    const startedAt = Date.now();
+    const read = await readSessionAnswers({
+      session: newSession(),
+      dispatch,
+      env: envAt(stateDir()),
+      fetchImpl,
+    });
+    expect(read).toEqual({
+      text: undefined,
+      source: "unavailable",
+      reason: NO_ANSWERS_ROUTE_REASON,
+      notice: noRouteNotice(dispatch.url),
+    });
+    expect(Date.now() - startedAt).toBeLessThan(SESSION_ANSWERS_DEADLINE_MS);
+    expect(calls).toHaveLength(1);
+  });
+
   test("the no-route notice comes once per session and Dispatch URL, and again after the route answered", async () => {
     const session = newSession();
     const a = dispatchAt();
     const b = dispatchAt();
     let routed = false;
-    const { calls, fetchImpl } = fakeDispatch((call) => (routed ? listed([]) : noRoute(call)));
+    const { calls, fetchImpl } = fakeDispatchFetch({
+      handler: (call) => (routed ? listed([]) : noRoute(call)),
+    });
     let clock = NOW;
     const options = { env: envAt(stateDir()), fetchImpl, now: () => clock };
     const notices = async (dispatch: ActiveDispatchConfig, of = session) =>
@@ -984,7 +1156,9 @@ describe("readSessionAnswers", () => {
   test("within the no-route back-off, a list read earlier from that URL is still carried, its header naming the missing route", async () => {
     const session = newSession();
     let missing = false;
-    const { calls, fetchImpl } = fakeDispatch((call) => (missing ? noRoute(call) : listed(recent)));
+    const { calls, fetchImpl } = fakeDispatchFetch({
+      handler: (call) => (missing ? noRoute(call) : listed(recent)),
+    });
     const dispatch = dispatchAt();
     const options = { dispatch, env: envAt(stateDir()), fetchImpl, now: () => NOW };
     expect((await readSessionAnswers({ ...options, session })).source).toBe("fresh");
@@ -999,6 +1173,7 @@ describe("readSessionAnswers", () => {
       source: "cache",
       readAt,
       words: expect.any(Array),
+      since: SINCE,
       reason: NO_ANSWERS_ROUTE_REASON,
     };
     // The read that meets the 404, with the notice; then a request inside the back-off, which
@@ -1024,7 +1199,7 @@ describe("readSessionAnswers", () => {
   });
 
   test("Dispatch off with an error is a failed read with that reason; off with a notice reads nothing", async () => {
-    const { calls, fetchImpl } = fakeDispatch(() => listed(recent));
+    const { calls, fetchImpl } = fakeDispatchFetch({ handler: () => listed(recent) });
     const notRun =
       "/home/u/envoy.json: dispatch.token's command has not run in this process yet, and this read does not run it";
     const env = envAt(stateDir());
@@ -1055,7 +1230,7 @@ describe("readSessionAnswers", () => {
     const session = newSession();
     const a = dispatchAt();
     const b = dispatchAt();
-    const { fetchImpl } = fakeDispatch(() => listed(recent));
+    const { fetchImpl } = fakeDispatchFetch({ handler: () => listed(recent) });
     await readSessionAnswers({ session, dispatch: a, env, fetchImpl, now: () => NOW });
     const notRun = "dispatch.token's command has not run in this process yet";
     const off = { enabled: false, notice: null, error: notRun } as const;
@@ -1065,6 +1240,7 @@ describe("readSessionAnswers", () => {
       source: "cache",
       readAt,
       words: expect.any(Array),
+      since: expect.any(String),
       reason: notRun,
     };
     const failure: SessionAnswersRead = {
@@ -1108,7 +1284,7 @@ describe("readSessionAnswers", () => {
     writeFileSync(file, old);
     // A second name for the old file: a write in place would change what it reads too.
     linkSync(file, join(directory, "answers.old"));
-    const { fetchImpl } = fakeDispatch(() => listed(recent));
+    const { fetchImpl } = fakeDispatchFetch({ handler: () => listed(recent) });
     await readSessionAnswers({ session, dispatch, env: envAt(root), fetchImpl, now: () => NOW });
     expect(readFileSync(join(directory, "answers.old"), "utf-8")).toBe(old);
     expect(JSON.parse(readFileSync(file, "utf-8")).items).toEqual(recent);

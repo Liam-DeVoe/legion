@@ -10,10 +10,12 @@ import (
 	"go/token"
 	"go/types"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -144,7 +146,9 @@ func samples(t *testing.T) map[string][]Event {
 		"StreamHello":          {StreamHello{}},
 		"StreamTurnStart":      {StreamTurnStart{}},
 		"StreamTurnEnd":        {StreamTurnEnd{}},
+		"IssueTurnEnded":       {IssueTurnEnded{}},
 		"StreamPromptResult":   {StreamPromptResult{}},
+		"StreamToolStep":       {StreamToolStep{}},
 		"StreamClosed":         {StreamClosed{}},
 		"StreamLateRefusal":    {StreamLateRefusal{}},
 		"PromptAcked":          {PromptAcked{}},
@@ -152,6 +156,7 @@ func samples(t *testing.T) map[string][]Event {
 		"PodUpdateOpen":        {PodUpdateOpen{}},
 		"PodUpdateEnded":       {PodUpdateEnded{}},
 		"StalePlugin":          {StalePlugin{}},
+		"StallBackstop":        {StallBackstop{}},
 		"PodUpdateSignalled":   {PodUpdateSignalled{}},
 		"RequestSpawn":         {RequestSpawn{}},
 		"RequestRegister":      {RequestRegister{}},
@@ -168,6 +173,9 @@ func samples(t *testing.T) map[string][]Event {
 		"RequestForgetSession": {RequestForgetSession{}},
 		"RequestDeliver":       {RequestDeliver{}},
 		"RequestExit":          {RequestExit{}},
+		"RequestTurnOutcome":   {RequestTurnOutcome{}},
+		"RequestCompact":       {RequestCompact{}},
+		"CompactEnded":         {CompactEnded{}},
 	}
 	for _, kind := range timers {
 		byType["Timer"] = append(byType["Timer"], Timer{Kind: kind})
@@ -234,6 +242,19 @@ func TestNoTwoEventTypesShareAKind(t *testing.T) {
 	}
 }
 
+// States is the one list of every state that a test outside this package walks, such as record's
+// test of the states the role-holder publication counts live. Those tests cannot read this
+// package's source, so this test holds the list to the ClaimState constants the compiler sees here
+// (sealed): a state added to the const block and left out of the list fails here, rather than
+// passing every walk of the list. Each state is in the list once.
+func TestStatesIsEveryDeclaredStateOnce(t *testing.T) {
+	_, declared, _ := sealed(t)
+	listed := States()
+	if got, want := slices.Sorted(slices.Values(listed)), slices.Sorted(slices.Values(declared)); !slices.Equal(got, want) {
+		t.Fatalf("States() = %v, want each declared ClaimState once: %v", listed, want)
+	}
+}
+
 // fixture is a claim restored in state with everything an event needs to pass its fences: the
 // generation, a recorded session, a locator for the states that have a process, and a pending
 // delivery (confirmed while working, as a delivered turn leaves it).
@@ -281,10 +302,15 @@ func fenced(ev Event, c Claim) Event {
 		return StreamTurnStart{Claim: c.Token}
 	case StreamTurnEnd:
 		return StreamTurnEnd{Claim: c.Token}
+	case IssueTurnEnded:
+		return IssueTurnEnded{Claim: c.Token}
 	case StreamPromptResult:
 		return StreamPromptResult{Claim: c.Token, DeliveryID: c.Pending.ID, AgentInvoked: true}
 	case StreamClosed:
 		return StreamClosed{Claim: c.Token}
+	case StreamToolStep:
+		return StreamToolStep{Claim: c.Token, Tool: "bash", CallID: "toolu_turn1_0",
+			ArgsBytes: len(toolArgs), ArgsHash: toolArgsHash(toolArgs)}
 	case StreamLateRefusal:
 		return StreamLateRefusal{Claim: c.Token, DeliveryID: c.Pending.ID, Error: "busy"}
 	case PromptAcked:
@@ -295,10 +321,12 @@ func fenced(ev Event, c Claim) Event {
 		return Timer{Claim: c.Token, Kind: ev.Kind, Generation: c.Generation, Seq: 7777, DeliveryID: c.Pending.ID}
 	case StalePlugin:
 		return StalePlugin{Claim: c.Token}
+	case StallBackstop:
+		return StallBackstop{Claim: c.Token, Bound: time.Hour, Deadline: epoch.Add(-time.Hour)}
 	case PodUpdateSignalled:
 		return PodUpdateSignalled{Claim: c.Token, Generation: c.Generation, Session: session, Head: "deadbeef"}
 	case PodUpdateOpen:
-		return PodUpdateOpen{Claim: c.Token, Round: PodRound("a-pod-uid"), Reasons: "image", Task: UpdateTask(PodRound("a-pod-uid"), "image")}
+		return PodUpdateOpen{Claim: c.Token, Round: PodRound("a-pod-uid"), Reasons: "image"}
 	case PodUpdateEnded:
 		return PodUpdateEnded{Claim: c.Token}
 	case RequestSpawn:
@@ -325,6 +353,12 @@ func fenced(ev Event, c Claim) Event {
 		return RequestDeliver{Claim: c.Token, Task: "another task"}
 	case RequestExit:
 		return RequestExit{Claim: c.Token, Generation: c.Generation, Session: session, Reason: "done"}
+	case RequestTurnOutcome:
+		return RequestTurnOutcome{Claim: c.Token, Generation: c.Generation, Sequence: 1}
+	case RequestCompact:
+		return RequestCompact{Claim: c.Token}
+	case CompactEnded:
+		return CompactEnded{Claim: c.Token, Generation: c.Generation, Compacted: true}
 	}
 	panic("unhandled sample")
 }
@@ -355,6 +389,12 @@ func TestEveryNamedIgnoreChangesNothingAndRefusesARequest(t *testing.T) {
 					ev := fenced(sample, c)
 					if timer, ok := ev.(Timer); ok {
 						h.m.timers[timer.Kind] = armed{seq: timer.Seq, deliveryID: timer.DeliveryID}
+					}
+					if end, ok := ev.(CompactEnded); ok {
+						// The fence answers an end whose compaction the claim no longer holds
+						// before any row sees it (ownsCompaction), so the compaction it names is
+						// recorded here, as a timer's arming is.
+						h.m.compacting = &compacting{generation: end.Generation, back: c.State}
 					}
 					before := h.claim()
 					puts := len(h.store.history())
@@ -427,8 +467,8 @@ func TestAnEventForAnotherClaimIsAnError(t *testing.T) {
 func wantsRefusal(ev Event) bool {
 	switch ev.(type) {
 	case RequestSpawn, RequestRegister, RequestReady, RequestSuspend, RequestResume, RequestStop,
-		RequestRetry, RequestOperatorRetry, RequestForgetSession, RequestDeliver, RequestExit,
-		PodUpdateSignalled:
+		RequestRetry, RequestOperatorRetry, RequestForgetSession, RequestDeliver, RequestExit, RequestCompact,
+		RequestTurnOutcome, PodUpdateSignalled:
 		return true
 	}
 	return false

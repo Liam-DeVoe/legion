@@ -19,7 +19,9 @@ import {
 } from "../../theme/classes";
 import { GrantsSection } from "../credentials/GrantsSection";
 import { credentialPendingQuery } from "../credentials/pending";
+import { SignInsSection } from "../credentials/SignInsSection";
 import { DeliverySettingsForm } from "../delivery/DeliverySettingsForm";
+import { IssuePagePreference } from "../issue-page/IssuePagePreference";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AgentTokensSection } from "./AgentTokensSection";
@@ -105,6 +107,8 @@ export function SettingsPage(): ReactNode {
             variables.default ??
             (existing?.project === variables.project ? existing.default : false),
           project: variables.project,
+          // This page's write names no rename, so the stored one stands (`putRepoProject`).
+          renamed_to: existing?.renamed_to ?? null,
           repo: variables.repo,
         })
       );
@@ -181,7 +185,10 @@ export function SettingsPage(): ReactNode {
         <ProjectsSection />
         <AgentTokensSection />
         {credentialsAvailable.isPending || credentialsAvailable.data === null ? null : (
-          <GrantsSection />
+          <>
+            <GrantsSection />
+            <SignInsSection />
+          </>
         )}
         <section aria-labelledby="repository-projects-heading">
           <h2
@@ -347,6 +354,7 @@ export function SettingsPage(): ReactNode {
           </p>
           <DeliverySettingsForm />
         </section>
+        <IssuePagePreference />
       </div>
     </section>
   );

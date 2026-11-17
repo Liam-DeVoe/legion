@@ -13,6 +13,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/testtmp"
 )
 
 // testInstance is a placeholder connection name: this repository names no real instance.
@@ -120,25 +123,14 @@ func (f *fakeDialer) failWith(err error) {
 }
 
 // build is the Config.NewDialer a test passes: the proxy gets this very fake.
-func (f *fakeDialer) build(context.Context) (Dialer, error) { return f, nil }
+func (f *fakeDialer) build(context.Context, string) (Dialer, error) { return f, nil }
 
-// socketPath is a socket path under a short directory of its own (docs/testing.md): a path under
-// t.TempDir() passes the 107-byte unix socket bound once TMPDIR is long.
+// socketPath is this package's socket path: a socket named session.sock in a directory of the
+// test's own, placed by TMPDIR and falling back to /tmp for the socket path's length alone, so
+// that the bind holds within the 107 bytes a unix socket path takes (docs/testing.md).
 func socketPath(t *testing.T) string {
 	t.Helper()
-	return filepath.Join(shortTempDir(t), "session.sock")
-}
-
-// shortTempDir is a fresh directory directly under the system's temporary directory, removed
-// when the test ends.
-func shortTempDir(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("", "sp")
-	if err != nil {
-		t.Fatalf("make a short temporary directory: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return dir
+	return testtmp.Socket(t, "session.sock")
 }
 
 // startProxy starts a proxy and takes the connection Start's proof dial made, so that the next
@@ -326,7 +318,7 @@ func (s *stallingDialer) closeCount() int {
 	return s.closed
 }
 
-func (s *stallingDialer) build(context.Context) (Dialer, error) { return s, nil }
+func (s *stallingDialer) build(context.Context, string) (Dialer, error) { return s, nil }
 
 // A proof dial the instance never answers ends at ProofTimeout, however long the start's own
 // context lives: Start refuses with the instance and the bound named, the dial's deadline still
@@ -386,6 +378,36 @@ func TestStartRefusesAnUnboundedProofDial(t *testing.T) {
 	}
 	if _, err := os.Lstat(socket); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("a Start with no proof bound left something at the socket path: %v", err)
+	}
+}
+
+// An account that is no service account's email is refused, naming it, before Start binds
+// anything or builds a dialer. The login form, the account's email without .gserviceaccount.com, is
+// the likeliest slip, because the session database's user is that login.
+func TestStartRefusesAnAccountThatIsNoServiceAccountEmail(t *testing.T) {
+	const login = "legion-sessions@example-project.iam"
+	socket := socketPath(t)
+	built := 0
+
+	_, err := Start(context.Background(), Config{
+		Socket:                    socket,
+		Instance:                  testInstance,
+		ImpersonateServiceAccount: login,
+		ProofTimeout:              testProofTimeout,
+		NewDialer: func(context.Context, string) (Dialer, error) {
+			built++
+			return nil, errors.New("the dialer factory was called")
+		},
+	})
+	want := fmt.Sprintf("sessionproxy: ImpersonateServiceAccount %q is not a Google service account's email", login)
+	if err == nil || err.Error() != want {
+		t.Fatalf("Start = %v, want %q", err, want)
+	}
+	if built != 0 {
+		t.Fatalf("a Start with no service account's email called its dialer factory %d times", built)
+	}
+	if _, err := os.Lstat(socket); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a Start with no service account's email left something at the socket path: %v", err)
 	}
 }
 
@@ -788,15 +810,16 @@ func TestStartRefusesWhenItsContextHasEnded(t *testing.T) {
 // sibling's socket. The proxy's socket is left for its owner's removal of the directory, which
 // follows no link.
 func TestCloseUnlinksNoSocketThroughALinkedDirectory(t *testing.T) {
-	base := shortTempDir(t)
+	// The sockets bound here are g1/.s.PGSQL.5432 and the sibling's g2/.s.PGSQL.5432, of the
+	// same length, so that pair is the room the directory needs.
+	base := testtmp.Dir(t, filepath.Join("g1", ompsessions.SocketName))
 	own, sibling := filepath.Join(base, "g1"), filepath.Join(base, "g2")
 	for _, dir := range []string{own, sibling} {
 		if err := os.Mkdir(dir, 0o700); err != nil {
 			t.Fatalf("make %s: %v", dir, err)
 		}
 	}
-	const name = ".s.PGSQL.5432"
-	siblingListener, err := net.Listen("unix", filepath.Join(sibling, name))
+	siblingListener, err := net.Listen("unix", filepath.Join(sibling, ompsessions.SocketName))
 	if err != nil {
 		t.Fatalf("listen as the sibling: %v", err)
 	}
@@ -804,7 +827,7 @@ func TestCloseUnlinksNoSocketThroughALinkedDirectory(t *testing.T) {
 	defer siblingListener.Close()
 
 	up := newUpstream(t)
-	proxy := startProxy(context.Background(), t, up, &fakeDialer{addr: up.listener.Addr().String()}, filepath.Join(own, name))
+	proxy := startProxy(context.Background(), t, up, &fakeDialer{addr: up.listener.Addr().String()}, filepath.Join(own, ompsessions.SocketName))
 	// The agent's swap: its own directory moved aside, a link to the sibling's in its place.
 	moved := filepath.Join(base, "g1.moved")
 	if err := os.Rename(own, moved); err != nil {
@@ -816,17 +839,17 @@ func TestCloseUnlinksNoSocketThroughALinkedDirectory(t *testing.T) {
 	if err := proxy.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if _, err := os.Lstat(filepath.Join(sibling, name)); err != nil {
+	if _, err := os.Lstat(filepath.Join(sibling, ompsessions.SocketName)); err != nil {
 		t.Fatalf("the sibling's socket is gone after the proxy's Close: %v", err)
 	}
-	if _, err := os.Lstat(filepath.Join(moved, name)); err != nil {
+	if _, err := os.Lstat(filepath.Join(moved, ompsessions.SocketName)); err != nil {
 		t.Fatalf("the proxy's own socket is gone after Close, which should have left it to its owner: %v", err)
 	}
 	// The owner's removal of the generation's path takes the link, never what it points at.
 	if err := os.RemoveAll(own); err != nil {
 		t.Fatalf("remove %s: %v", own, err)
 	}
-	if _, err := os.Lstat(filepath.Join(sibling, name)); err != nil {
+	if _, err := os.Lstat(filepath.Join(sibling, ompsessions.SocketName)); err != nil {
 		t.Fatalf("the sibling's socket is gone after the generation's directory was removed: %v", err)
 	}
 }

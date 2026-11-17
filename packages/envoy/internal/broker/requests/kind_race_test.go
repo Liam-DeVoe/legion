@@ -41,12 +41,19 @@ func TestAPlainGrantRacingAKindRetagNeverReleasesWhatTheKindStores(t *testing.T)
 			if route == "approved" {
 				tier = policy.TierHuman
 			}
-			retag(t, machine, policytest.Secret("RACED_LOGIN", fixtureOperator, tier, "ordinary-value"))
+			// The stored value is one the google-login decoder reads, so the retag below is
+			// served as that kind at once: the policy refuses a kind secret whose value it cannot
+			// decode (policy.ReasonValueMalformed), and the race needs it served.
+			ordinary := policytest.KindValue(policy.KindGoogleLogin)
+			retag(t, machine, policytest.Secret("RACED_LOGIN", fixtureOperator, tier, ordinary))
 			minted := 0
 			machine.Minters = map[string]Minter{
-				policy.KindGoogleLogin: func(context.Context, secrets.MintRequest) (string, error) { minted++; return "access-token", nil },
+				policy.KindGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+					minted++
+					return secrets.Minted{Value: "access-token"}, nil
+				},
 			}
-			request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", "RACED_LOGIN"), "")
+			request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", "RACED_LOGIN"), "", nil)
 			if err != nil {
 				t.Fatalf("Create = %v", err)
 			}
@@ -58,7 +65,7 @@ func TestAPlainGrantRacingAKindRetagNeverReleasesWhatTheKindStores(t *testing.T)
 				}
 				grantID = *request.GrantID
 			case "reused":
-				reused, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read again", "RACED_LOGIN"), "")
+				reused, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read again", "RACED_LOGIN"), "", nil)
 				if err != nil || reused.GrantID == nil || request.GrantID == nil || *reused.GrantID != *request.GrantID {
 					t.Fatalf("second Create = %+v, %v; want the first request's grant reused", reused, err)
 				}
@@ -76,21 +83,21 @@ func TestAPlainGrantRacingAKindRetagNeverReleasesWhatTheKindStores(t *testing.T)
 			store := fixtureStore(machine)
 			var duringErr error
 			machine.Secrets = retagDuringRead{Reader: machine.Secrets, once: &sync.Once{}, err: &duringErr, during: func(ctx context.Context) error {
-				store.Put(policytest.KindSecret("RACED_LOGIN", fixtureOperator, tier, policy.KindGoogleLogin, "ordinary-value"))
+				store.Put(policytest.KindSecret("RACED_LOGIN", fixtureOperator, tier, policy.KindGoogleLogin, ordinary))
 				if err := machine.Policy.Refresh(ctx); err != nil {
 					return err
 				}
 				store.Put(policytest.KindSecret("RACED_LOGIN", fixtureOperator, tier, policy.KindGoogleLogin, canary))
 				return nil
 			}}
-			values, _, err := machine.Values(t.Context(), grantID, enrollmentID, nil)
+			release, err := machine.Values(t.Context(), grantID, enrollmentID, nil, ReleaseCall{})
 			if duringErr != nil {
 				t.Fatalf("the retag during the read: %v", duringErr)
 			}
 			if _, served := machine.Policy.Get().Secrets["RACED_LOGIN"]; !served {
 				t.Fatal("the retag during the read left RACED_LOGIN unserved; the race never ran")
 			}
-			for _, value := range values {
+			for _, value := range release.Values {
 				if strings.Contains(value, canary) {
 					t.Fatal("Values released the credential the secret stores once it is a kind")
 				}
@@ -98,8 +105,8 @@ func TestAPlainGrantRacingAKindRetagNeverReleasesWhatTheKindStores(t *testing.T)
 			if err != nil && strings.Contains(err.Error(), canary) {
 				t.Fatal("Values' error holds the credential the secret stores once it is a kind")
 			}
-			if !errors.Is(err, ErrGrantNotLive) || values != nil || minted != 0 {
-				t.Fatalf("Values across a retag to a kind = %d values, %v after %d mints; want ErrGrantNotLive and none", len(values), err, minted)
+			if !errors.Is(err, ErrGrantNotLive) || release.Values != nil || minted != 0 {
+				t.Fatalf("Values across a retag to a kind = %d values, %v after %d mints; want ErrGrantNotLive and none", len(release.Values), err, minted)
 			}
 			if by, audits := endedForGood(t, machine, grantID); by != GrantEndedActor || audits != 1 {
 				t.Fatalf("grant revoked_by %q with %d grant.revoked rows by it; want %s and 1", by, audits, GrantEndedActor)

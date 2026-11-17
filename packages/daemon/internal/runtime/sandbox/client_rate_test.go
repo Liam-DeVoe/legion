@@ -46,6 +46,10 @@ type fakeLimiter struct {
 	mu           sync.Mutex
 	// next is the next free slot, in modeled time since epoch.
 	next time.Duration
+	// held is how long, in wall-clock time, the limiter held the last Wait it did not refuse: the
+	// timer it set that caller, which is what a test asserting a request outlasted its queue reads
+	// rather than the span of the call itself.
+	held time.Duration
 }
 
 func newFakeLimiter(qps, speedup float64) *fakeLimiter {
@@ -64,6 +68,13 @@ func (l *fakeLimiter) backlog() time.Duration {
 	return max(l.next-l.now(), 0)
 }
 
+// heldLast is the wall-clock hold the limiter imposed on the last Wait it did not refuse.
+func (l *fakeLimiter) heldLast() time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.held
+}
+
 func (l *fakeLimiter) Wait(ctx context.Context) error {
 	l.mu.Lock()
 	now := l.now()
@@ -74,8 +85,10 @@ func (l *fakeLimiter) Wait(ctx context.Context) error {
 		return errors.New("rate: Wait(n=1) would exceed context deadline")
 	}
 	l.next = slot + time.Duration(float64(time.Second)/l.qps)
+	hold := time.Duration(float64(wait) / l.speedup)
+	l.held = hold
 	l.mu.Unlock()
-	timer := time.NewTimer(time.Duration(float64(wait) / l.speedup))
+	timer := time.NewTimer(hold)
 	defer timer.Stop()
 	select {
 	case <-timer.C:
@@ -307,7 +320,7 @@ func TestLaunchesInFlightAtARestartOutwaitTheReconnectingLaunchersReads(t *testi
 		go func() {
 			for {
 				sent.Add(1)
-				if handler, _ := accept(hello); handler != nil {
+				if handler, _, _ := accept(hello); handler != nil {
 					accepted.Add(1)
 					return
 				}
@@ -384,7 +397,7 @@ func TestAFailedLauncherCredentialReadHoldsOffTheNextForTheRetryInterval(t *test
 	accept := secondRuntime(t, g, func(*Options) {})().LauncherResolver()
 
 	for range 5 {
-		if handler, _ := accept(hello); handler != nil {
+		if handler, _, _ := accept(hello); handler != nil {
 			t.Fatal("the launcher was accepted while its Secret could not be read")
 		}
 	}
@@ -392,12 +405,12 @@ func TestAFailedLauncherCredentialReadHoldsOffTheNextForTheRetryInterval(t *test
 		t.Fatalf("five hellos read the Secret %d times, want once", got)
 	}
 	g.advance(credentialRetry - time.Second)
-	if handler, _ := accept(hello); handler != nil || reads.Load() != 1 {
+	if handler, _, _ := accept(hello); handler != nil || reads.Load() != 1 {
 		t.Fatalf("a hello inside the retry interval: accepted %t after %d reads, want refused without a read", handler != nil, reads.Load())
 	}
 	failing.Store(false)
 	g.advance(time.Second)
-	if handler, reason := accept(hello); handler == nil {
+	if handler, _, reason := accept(hello); handler == nil {
 		t.Fatalf("the first hello after the retry interval was refused: %s", reason)
 	}
 	if got := reads.Load(); got != 2 {
@@ -426,7 +439,7 @@ func TestAKeptPodsBindingCheckLiftsItsLaunchersHoldOff(t *testing.T) {
 	})
 	r2 := secondRuntime(t, g, func(*Options) {})()
 	accept := r2.LauncherResolver()
-	if handler, _ := accept(hello); handler != nil {
+	if handler, _, _ := accept(hello); handler != nil {
 		t.Fatal("the launcher was accepted while its Secret could not be read")
 	}
 	failing.Store(false)
@@ -438,7 +451,7 @@ func TestAKeptPodsBindingCheckLiftsItsLaunchersHoldOff(t *testing.T) {
 	if bound, err := r2.launcherBound(g.ctx, s, r2.storedPod(loc.Sandbox.Name), &kept); err != nil || !bound || kept.gitHubDefault != "sjawhar" {
 		t.Fatalf("launcherBound = %t, %v, default %q; want the kept pod bound with its Secret's default, sjawhar", bound, err, kept.gitHubDefault)
 	}
-	if handler, reason := accept(hello); handler == nil {
+	if handler, _, reason := accept(hello); handler == nil {
 		t.Fatalf("the kept pod's launcher was refused after its binding was read: %s", reason)
 	}
 }
@@ -593,7 +606,17 @@ func TestTheInformersWatchOnTheirClientsAndALaunchsRequestsGoThroughTheRequests(
 
 // A request's own timeout starts once the client's limiter lets it go (client-go's
 // Request.request), which is what lets a launch wait out a queue longer than apiTimeout: here the
-// limiter holds a request of the requests' client four times its timeout, and it succeeds.
+// limiter holds a request of the requests' client twice its timeout, and it succeeds. A timeout
+// that covered the queue would end the request where it stands, so the queue is what the row
+// reads — the hold the limiter itself imposed (heldLast), which must outlast the timeout for the
+// request's success to say anything — and not the span of the call, which also carries a loopback
+// round trip a loaded machine makes slow. The timeout is a second rather than the 50 ms it was
+// so that an ordinary round trip ends well inside it and only the queue can spend it. That is a
+// wider bound, not independence from the machine: it is the product's own timeout rather than a
+// wall clock this test chose, and it is proven at the load this row is sized for - two and eight
+// busy loops on these cores, 30 runs of 30 - while starvation past that (thirty-two loops, eight
+// times the cores) can still spend a second on the round trip, which is outside what the row
+// claims rather than a mode it rules out.
 func TestARequestsTimeoutStartsOnceTheClientsLimiterLetsItGo(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -601,21 +624,22 @@ func TestARequestsTimeoutStartsOnceTheClientsLimiterLetsItGo(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	requests := requestConfig(&rest.Config{Host: server.URL})
-	limit := newFakeLimiter(5, 1)
+	// One slot every two seconds: the Wait below takes the free one, and the request waits out the
+	// next.
+	limit := newFakeLimiter(0.5, 1)
 	if err := limit.Wait(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	requests.RateLimiter, requests.Timeout = limit, 50*time.Millisecond
+	requests.RateLimiter, requests.Timeout = limit, time.Second
 	kube, err := kubernetes.NewForConfig(requests)
 	if err != nil {
 		t.Fatal(err)
 	}
-	started := time.Now()
 	if _, err := kube.CoreV1().Secrets("legion").Get(context.Background(), "held", metav1.GetOptions{}); err != nil {
 		t.Fatalf("a request the limiter held past its client's timeout failed: %v", err)
 	}
-	if waited := time.Since(started); waited < 150*time.Millisecond {
-		t.Fatalf("the request went after %s, want it held about 200ms by the limiter", waited)
+	if held := limit.heldLast(); held <= requests.Timeout {
+		t.Fatalf("the limiter held the request %s, want longer than the %s timeout it is to outlast", held, requests.Timeout)
 	}
 }
 

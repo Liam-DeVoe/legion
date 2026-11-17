@@ -3,7 +3,7 @@ import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { api } from "../../api/client";
-import type { BroadcastCreated } from "../../api/types";
+import type { BroadcastCreated, DeliveryAttemptState } from "../../api/types";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
@@ -16,8 +16,9 @@ import {
   textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { deliveryOutcomeState } from "../conversation/delivery";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
-import { SendInterruptedError, SendStoppedError } from "../writes/keyed-write";
+import { SendExpiredError, SendInterruptedError, SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
 import { useWriteSelection, useWrites } from "../writes/write-store";
 import {
@@ -110,6 +111,35 @@ function agentCount(count: number): string {
   return `${count} ${count === 1 ? "agent" : "agents"}`;
 }
 
+/** How a made broadcast's deliveries stand, from each recipient's latest attempt (`undefined`
+ *  where it has none): delivering while any is pending, then not delivered to the failed ones,
+ *  then queued for the ones not running, else delivered. */
+function deliveriesText(states: readonly (DeliveryAttemptState | undefined)[]): string {
+  const count = (wanted: DeliveryAttemptState) => states.filter((state) => state === wanted).length;
+  const delivering = count("pending");
+  if (delivering > 0) return ` — delivering to ${agentCount(delivering)}…`;
+  const failed = count("failed");
+  if (failed > 0) return ` — not delivered to ${agentCount(failed)}`;
+  const queued = count("queued");
+  if (queued > 0) return ` — queued for ${agentCount(queued)} not running`;
+  return " — delivered";
+}
+
+/** Why sending to `count` ended, in the reader's words. Both named refusals extend
+ *  `SendStoppedError`, so each is read before it. */
+function endedReason(error: Error, count: string): string {
+  if (error instanceof SendInterruptedError) {
+    return error.message;
+  }
+  if (error instanceof SendExpiredError) {
+    return `Sending to ${count} ended: ${error.message}`;
+  }
+  if (error instanceof SendStoppedError) {
+    return `Stopped sending to ${count}: ${error.message}`;
+  }
+  return `Could not send to ${count}: ${error.message}`;
+}
+
 /**
  * The page's sends, one row each, newest press first so the send just pressed is in view: held
  * while the sender's sign-out in another tab is out, saying so; queued, on the wire, still being
@@ -118,7 +148,9 @@ function agentCount(count: number): string {
  * while any recipient's is still on its way, from the live feed, then delivered), or refused with
  * the server's reason - or stopped - with Retry and Restore draft. One a reload interrupted too
  * long ago to be sent on its own (`SendInterruptedError`) says so in the error's own words and
- * offers Discard beside them. A retried send keeps its row's place. The strip sits above the
+ * offers Discard beside them. One whose key Dispatch no longer holds (`SendExpiredError`) reads
+ * `Sending to N agents ended:` with the error's own words, which say a Retry of it is a new
+ * write, and offers Discard too. A retried send keeps its row's place. The strip sits above the
  * composer, outside it, because the composer goes whenever the selection empties - at every press
  * - and a send outlives it. Restore draft refuses, and says why under its row, while the host says
  * putting a draft back would replace one (`restoreRefusal`).
@@ -167,13 +199,7 @@ export function BroadcastSends({
                 ) : row.status === "late" ? (
                   `Still sending to ${count} — Dispatch has not confirmed it yet. It keeps trying, and the broadcast is made once.`
                 ) : row.status === "failed" ? (
-                  row.error instanceof SendInterruptedError ? (
-                    row.error.message
-                  ) : row.error instanceof SendStoppedError ? (
-                    `Stopped sending to ${count}: ${row.error.message}`
-                  ) : (
-                    `Could not send to ${count}: ${row.error.message}`
-                  )
+                  endedReason(row.error, count)
                 ) : (
                   <SentBroadcast created={row.created} />
                 )}
@@ -214,7 +240,8 @@ export function BroadcastSends({
                   >
                     Restore draft
                   </RefusableButton>
-                  {row.error instanceof SendInterruptedError ? (
+                  {row.error instanceof SendInterruptedError ||
+                  row.error instanceof SendExpiredError ? (
                     <button
                       className={secondaryButtonCompact}
                       onClick={() => onDiscard(row)}
@@ -247,8 +274,10 @@ export function BroadcastSends({
  * delivery itself, so the row reads the broadcast again as the live feed reports each delivery
  * (`["broadcast"]`, which every recipient's delivery event refreshes): delivering while any
  * recipient's attempt is still pending, then delivered - or not, to a recipient whose attempt
- * failed, which the broadcast's own page retries. The broadcast is made either way; nothing here
- * is a write still unconfirmed.
+ * failed, which the broadcast's own page retries, or queued, for a recipient the listener knows
+ * and that is not running, which gets the message when it runs again. A queued copy is counted on
+ * its own, because a message that waits is not a message delivered. The broadcast is made either
+ * way; nothing here is a write still unconfirmed.
  */
 function SentBroadcast({ created }: { created: BroadcastCreated }): ReactNode {
   const read = useQuery({
@@ -256,9 +285,11 @@ function SentBroadcast({ created }: { created: BroadcastCreated }): ReactNode {
     queryFn: () => api.getBroadcast(created.id),
     queryKey: ["broadcast", created.id],
   }).data;
-  const states = read.recipients.map((recipient) => recipient.message.deliveries.at(-1)?.state);
-  const delivering = states.filter((state) => state === "pending").length;
-  const failed = states.filter((state) => state === "failed").length;
+  const states = (read.recipients ?? []).map((recipient) => {
+    const state = (recipient.message.deliveries ?? []).at(-1)?.state;
+    return state === undefined ? undefined : deliveryOutcomeState(state);
+  });
+  const excluded = created.excluded ?? [];
   return (
     <>
       <Link
@@ -266,14 +297,10 @@ function SentBroadcast({ created }: { created: BroadcastCreated }): ReactNode {
         state={{ excluded: created.excluded }}
         to={`/agents/broadcasts/${created.id}`}
       >
-        Sent to {agentCount(created.recipients.length)}
+        Sent to {agentCount((created.recipients ?? []).length)}
       </Link>
-      {created.excluded.length === 0 ? null : `, ${created.excluded.length} excluded`}
-      {delivering > 0
-        ? ` — delivering to ${agentCount(delivering)}…`
-        : failed > 0
-          ? ` — not delivered to ${agentCount(failed)}`
-          : " — delivered"}
+      {excluded.length === 0 ? null : `, ${excluded.length} excluded`}
+      {deliveriesText(states)}
     </>
   );
 }

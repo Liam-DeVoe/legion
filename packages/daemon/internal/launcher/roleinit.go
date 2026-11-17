@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
@@ -57,6 +58,20 @@ type RoleInitConfig struct {
 // roleStatusFD is the descriptor role-init writes the shim's wait status to: the launcher's one
 // extra file, so the first descriptor after the standard three.
 const roleStatusFD = 3
+
+// roleNamespaceDrain bounds the wait role-init gives a role whose shim exited on its own: the
+// span between the SIGTERM it sends over the role's namespace and the SIGKILL that ends the
+// namespace, which is the only time anything the role left running has to finish what it was
+// doing. Two seconds, because what the wait is there for is a git or a jj whose index or
+// operation lock is held across a write of a few files, which it finishes in milliseconds, and
+// the wait ends the moment the namespace is empty, so the bound is paid only by a process that
+// ignores SIGTERM or hangs on it. It is a constant and no flag of role-init and no setting of the
+// pod, so no deployment can set it to a span that holds the launcher's next generation up.
+//
+// It costs the role's next generation nothing the daemon waits on: the launcher reads the status
+// pipe and only then waits on role-init (manager.wait), so the daemon learns the role's exit
+// before this wait begins, and only the generation's own teardown spends it.
+const roleNamespaceDrain = 2 * time.Second
 
 // RoleInitSetupFailedExit is the exit status `legion launcher role-init` uses for one thing alone:
 // it failed before it started the shim, setting up the role's namespaces or starting the shim
@@ -235,8 +250,12 @@ func (p *roleProcess) start() error {
 // parseStatus reads the wait status role-init wrote to its status pipe: the shim's own, so the
 // daemon is told the role's exit and not its namespace init's. It is nil when role-init wrote
 // none — it was killed before the shim ended, or never got that far.
+//
+// The pipe carries a wait status, which is 32 bits wide (syscall.WaitStatus), and reportStatus
+// writes exactly that: a line naming anything else is a line this protocol never produced, so it
+// is refused here rather than truncated into a status the role never had.
 func parseStatus(raw []byte) *syscall.WaitStatus {
-	value, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	value, err := strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 32)
 	if err != nil {
 		return nil
 	}

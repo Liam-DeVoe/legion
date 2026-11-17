@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -42,8 +43,13 @@ func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterAReopen(t *testi
 	waitForAskAuthor(t, service, artifactID, actor)
 }
 
-// The author persisted for a document that closes before its settlement also survives a process
-// restart between the close and the reopen, where the old service's room state is unavailable.
+// The author recorded for an ask block written just before its issue closes also survives a
+// process restart between the close and the reopen, where the old service's room state is
+// unavailable. The restarted service's resumption settles the document on the closed issue, unless
+// the old service's shutdown drain already did: either way the block gets no ask, the version
+// shows it resolved, and doc_ask_block_authors keeps its author (reconcileAskBlocks). The reopen
+// marks the document owed (MarkReopenOwedAskDocuments), and the resumption after it opens the
+// block's ask, credited to that recorded author.
 func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterRestartAndReopen(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour // the issue closes before the edit's own settlement runs
@@ -62,6 +68,24 @@ func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterRestartAndReopen
 			t.Errorf("shutdown restarted document service: %v", err)
 		}
 	})
+	if err := restarted.resumeOwedSettlements(ctx, 0); err != nil {
+		t.Fatalf("resume the closed issue's owed settlement: %v", err)
+	}
+	waitFor(t, roomWait(t), "the closed issue's document to settle on the restarted service", func() bool {
+		owed, err := settlementPending(ctx, restarted.store.Pool, artifactID)
+		return err == nil && !owed
+	})
+	if asks := asksOn(t, restarted, artifactID); asks != 0 {
+		t.Fatalf("the closed issue's settlement left %d asks on the document, want none while the issue is closed", asks)
+	}
+	const resolved = `#closing-ask urgency="med" multiple="false" state="resolved"`
+	if _, markdown, _ := latestDocumentVersion(t, restarted.store, artifactID); !strings.Contains(markdown, resolved) {
+		t.Fatalf("the closed issue's settlement left the latest version reading:\n%s\nwant the block saved resolved: %s", markdown, resolved)
+	}
+	if recorded := recordedAskAuthors(t, restarted.store, artifactID); recorded["closing-ask"] != actor {
+		t.Fatalf("doc_ask_block_authors after the closed issue's settlement = %+v, want closing-ask recorded as %+v", recorded, actor)
+	}
+
 	reopenTestIssue(t, restarted)
 	if err := restarted.resumeOwedSettlements(ctx, 0); err != nil {
 		t.Fatalf("resume the reopened document's settlement: %v", err)
@@ -194,9 +218,9 @@ func TestTwoCreditedWritersBothSurviveACrashRestart(t *testing.T) {
 	}
 }
 
-// The issue route closes an issue's rooms on its request's context, which the pool tracks as one
-// caller holding at most one connection. Every closing document still records its latest edit
-// source and releases its state, however many documents the issue has.
+// An issue's close reaches its rooms on the room-sync lane (issueOpenChanged), whose context the
+// pool tracks as one caller holding at most one connection. Every closing document still records
+// its latest edit source and releases its state, however many documents the issue has.
 func TestClosingAnIssueOnATrackedContextPersistsEveryDocumentsCredit(t *testing.T) {
 	for _, procs := range []int{4, 16} {
 		t.Run(fmt.Sprintf("GOMAXPROCS=%d", procs), func(t *testing.T) {
@@ -212,8 +236,8 @@ func TestClosingAnIssueOnATrackedContextPersistsEveryDocumentsCredit(t *testing.
 			if _, err := database.Pool.Exec(ctx, `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
 				t.Fatalf("close the documents' issue: %v", err)
 			}
-			// What PATCH /api/v1/issues/{key} hands it (api/issue_patch.go).
-			service.SetIssueClosed(context.WithoutCancel(store.WithTransactionTracking(ctx)), "DOC-1", true)
+			// What the room-sync lane hands it (roomSync.register).
+			service.issueOpenChanged(store.WithTransactionTracking(ctx), "DOC-1")
 
 			var persisted int
 			if err := database.Pool.QueryRow(ctx, `
@@ -686,7 +710,7 @@ func TestAnUploadsFullReleaseClearsTheDurableRowOfAPendingAuthorItWasNeverCredit
 	`, artifactID, nextNumber, "First.\n\nSecond, uploaded.\n", []model.Actor{uploader}); err != nil {
 		t.Fatalf("insert the upload's version row: %v", err)
 	}
-	ledger.WroteVersion(artifactID, model.Version{Number: nextNumber, Authors: []model.Actor{uploader}})
+	ledger.WroteVersion(artifactID, model.Version{Number: nextNumber, Authors: []model.Actor{uploader}}, "First.\n\nSecond, uploaded.\n")
 	if err := ledger.Commit(ctx); err != nil {
 		t.Fatalf("commit the upload transaction: %v", err)
 	}
@@ -744,7 +768,7 @@ func TestAnUploadsFullReleaseKeepsABrowserEditCreditedWhileItsTransactionWasOpen
 	`, artifactID, nextNumber, "First.\n\nSecond, uploaded.\n", []model.Actor{uploader}); err != nil {
 		t.Fatalf("insert the upload's version row: %v", err)
 	}
-	ledger.WroteVersion(artifactID, model.Version{Number: nextNumber, Authors: []model.Actor{uploader}})
+	ledger.WroteVersion(artifactID, model.Version{Number: nextNumber, Authors: []model.Actor{uploader}}, "First.\n\nSecond, uploaded.\n")
 	if err := ledger.Commit(ctx); err != nil {
 		t.Fatalf("commit the upload transaction: %v", err)
 	}
@@ -772,9 +796,16 @@ func newTestServiceInstance(t *testing.T, database *store.Store) (*Service, *htt
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
+	return service, newTestServer(t, service)
+}
+
+// newTestServer serves service's HTTP and document websocket for a test's browsers, until the
+// test ends.
+func newTestServer(t *testing.T, service *Service) *httptest.Server {
+	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(server.Close)
-	return service, server
+	return server
 }
 
 // versionAuthors is the authors artifactID's version number credits.
@@ -811,6 +842,11 @@ func TestABrowserEditAfterARoomReloadIsOwed(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
+	// The writes below publish into this room, which the test then reloads; a write to a document
+	// no room holds publishes into none (publishLiveWrite).
+	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
+		t.Fatalf("load the document's room: %v", err)
+	}
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -1077,7 +1113,7 @@ func creditOf(lastActor *model.Actor, authors ...model.Actor) *testCredit {
 }
 
 // appendCredited appends an update to artifactID through the store as a room's persistence does
-// (AppendUpdateWithCredit), with an in-flight credit for credited, or none when it is nil.
+// (AppendUpdatesWithCredit), with an in-flight credit for credited, or none when it is nil.
 func appendCredited(t *testing.T, service *Service, artifactID string, credited *testCredit) {
 	t.Helper()
 	appendCreditedTo(t, service, artifactID, credited, nil)
@@ -1085,9 +1121,9 @@ func appendCredited(t *testing.T, service *Service, artifactID string, credited 
 
 // appendCreditedTo is appendCredited for an update instance's room takes: its credit records the
 // stored version in that instance's hold (UpdateCredit.held), and the append carries the
-// instance's cursor, as a room's own append does (StoreUpdateContext), so the room takes the
-// version in and is not left behind the head. A nil instance is another process's append, which
-// this room neither holds nor takes in.
+// instance's cursor, as a room's own append does (withRoomCursor, BrowserAppend), so the room
+// takes the version in and is not left behind the head. A nil instance is another process's
+// append, which this room neither holds nor takes in.
 func appendCreditedTo(t *testing.T, service *Service, artifactID string, credited *testCredit, instance *roomInstance) {
 	t.Helper()
 	var credit *UpdateCredit
@@ -1109,7 +1145,7 @@ func appendCreditedTo(t *testing.T, service *Service, artifactID string, credite
 	}
 	doc := crdt.New()
 	doc.GetXmlFragment(fragmentName)
-	if _, err := service.persistence.AppendUpdateWithCredit(ctx, artifactID, crdt.EncodeStateAsUpdateV1(doc, nil), true, credit); err != nil {
+	if _, err := service.persistence.AppendUpdatesWithCredit(ctx, artifactID, []BrowserUpdate{{Update: crdt.EncodeStateAsUpdateV1(doc, nil), ContentChanged: true, Credit: credit}}); err != nil {
 		t.Fatalf("append the update: %v", err)
 	}
 }
@@ -1261,25 +1297,66 @@ func writeAskBeforeClose(t *testing.T, service *Service, artifactID string, acto
 	service.ScheduleSettlement(artifactID)
 }
 
+// closeTestIssue closes DOC-1 in the database and hands this service the notification that commit
+// sends, and waits until every room resident before the close has closed. It waits for those rooms
+// alone, by instance, not for the service to hold none: a room's last browser leaving runs the
+// settlement the document owes at once (settleLastPeer), on the closed issue as on an open one,
+// and its warm-up can load the document into a new room, which stays resident until it idles out
+// (roomIdleTimeout).
 func closeTestIssue(t *testing.T, service *Service) {
 	t.Helper()
 	ctx := context.Background()
+	resident := map[string]*crdt.Doc{}
+	for _, room := range service.srv.Rooms() {
+		resident[room] = service.srv.GetDoc(room)
+	}
 	if _, err := service.store.Pool.Exec(ctx, `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
 		t.Fatalf("close the issue: %v", err)
 	}
-	service.SetIssueClosed(ctx, "DOC-1", true)
-	waitFor(t, 30*time.Second, "the closed issue's room to close", func() bool {
-		return len(service.srv.Rooms()) == 0
+	service.issueOpenChanged(ctx, "DOC-1")
+	waitFor(t, 30*time.Second, "the closed issue's rooms to close", func() bool {
+		for room, live := range resident {
+			if live != nil && service.srv.GetDoc(room) == live {
+				return false
+			}
+		}
+		return true
 	})
 }
 
+// reopenTestIssue reopens DOC-1 as the API's reopen does (api.restoreIssueAsksTx): in one
+// transaction joined with Service.Join (joinedWrite), which holds the issue's row once it clears
+// closed_at, it marks owing a settlement each document of the issue whose ask blocks a settlement
+// after the reopen has to reconcile (MarkReopenOwedAskDocuments): one that holds an ask block no
+// settlement has indexed, the block document of an open ask, or one holding the block of an ask
+// a settlement retracted. It then follows the versions a settlement wrote while the issue was
+// closed (FollowClosedIssueVersions): it moves an open approval request to its document's latest
+// version, carries a standing approval to that version, and forgets the editor a closed issue's
+// settlement kept for each document that owes no settlement. It restores no ask: a test that
+// wants an ask the close withdrew open again writes its row itself. Once that commits, the events
+// the follow appended are published and the reopen is recorded on this service's rooms, as room
+// sync records it on the reopen's notification.
 func reopenTestIssue(t *testing.T, service *Service) {
 	t.Helper()
-	ctx := context.Background()
-	if _, err := service.store.Pool.Exec(ctx, `update issues set closed_at = null where key = 'DOC-1'`); err != nil {
-		t.Fatalf("reopen the issue: %v", err)
+	var followed []model.Event
+	if err := joinedWrite(service, func(ctx context.Context) error {
+		tx, _ := txFromContext(ctx)
+		if _, err := tx.Exec(ctx, `update issues set closed_at = null where key = 'DOC-1'`); err != nil {
+			return fmt.Errorf("clear the issue's closed_at: %w", err)
+		}
+		if err := service.MarkReopenOwedAskDocuments(ctx, "DOC-1"); err != nil {
+			return err
+		}
+		var err error
+		followed, err = service.FollowClosedIssueVersions(ctx, "DOC-1")
+		return err
+	}); err != nil {
+		t.Fatalf("reopen the issue, mark owed its documents whose ask blocks wait for the reopen and follow its closed versions: %v", err)
 	}
-	service.SetIssueClosed(ctx, "DOC-1", false)
+	for _, event := range followed {
+		service.events.Publish(event)
+	}
+	service.issueOpenChanged(context.Background(), "DOC-1")
 }
 
 func waitForAskAuthor(t *testing.T, service *Service, artifactID string, want model.Actor) {

@@ -18,15 +18,19 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
@@ -47,6 +51,13 @@ const (
 	registrarAccount = "system:serviceaccount:example-ns:example-daemon"
 	person           = "ada@example.com"
 	project          = "ACME"
+	// readerAccount is the account BROKER_EXCHANGE_READ_ACCOUNTS lists here: its pods are minted
+	// a token that only reads, naming readerService and the session readerSession the entry
+	// fixes, and readerPodUID is the pod of it this test drives.
+	readerAccount = "system:serviceaccount:example-ns:example-reader"
+	readerService = "example-reader"
+	readerSession = "example-reader-session"
+	readerPodUID  = "pod-uid-reader"
 	// enrolmentAudience is what a pod's enrolment token and a listed caller's own token carry;
 	// exchangeAudience is what a token presented to the exchange must carry, and workflowAudience
 	// what a GitHub workflow run's would. A token minted for one is not spendable at another.
@@ -69,7 +80,54 @@ const (
 	// the few seconds the renewal run is started with, so that proof waits seconds, not minutes.
 	longAccessSeconds  = 900
 	shortAccessSeconds = 2
+	// The two fleets the Google half of this test drives, each a placeholder: pinnedFleet's
+	// account is held to one Compute Engine project and one instance-name pattern and is given a
+	// person and a project, so its machines write as that person; poolFleet's is pinned to
+	// nothing and given neither, so its machines are its service and nothing else, which is what
+	// a token minted through a workload identity pool and a token from a pod's metadata server
+	// get. strangerFleet is listed nowhere.
+	pinnedFleetAccount = "example-fleet@example-project.iam.gserviceaccount.com"
+	poolFleetAccount   = "example-pool@example-project.iam.gserviceaccount.com"
+	strangerFleet      = "example-stranger@example-project.iam.gserviceaccount.com"
+	pinnedFleetService = "example-fleet"
+	poolFleetService   = "example-pool"
+	fleetCloudProject  = "example-project"
+	fleetInstanceGlob  = "example-vm-*"
+	fleetInstanceName  = "example-vm-7"
+	fleetProject       = "FLEET"
+	fleetPerson        = "grace@example.com"
+	// machineAudience is what a machine's Google identity token must carry here, its own beside
+	// the two above.
+	machineAudience = "https://broker.example/machines"
+	// The four secrets the machine half of this test asks for. personSecret is fleetPerson's
+	// own, which no machine gets without her sign-in; sharedSecret is shared and agent tier,
+	// which every session gets at once; pinnedFleetSecret and poolFleetSecret are the two
+	// fleets' services' own, each of which goes to that fleet's machines and to no one else.
+	personSecret      = "PERSON_SECRET"
+	sharedSecret      = "SHARED_SECRET"
+	pinnedFleetSecret = "PINNED_FLEET_SECRET"
+	poolFleetSecret   = "POOL_FLEET_SECRET"
+	// otherPersonSecret is person's own, nobody else's: what a signed-in person is refused on a
+	// box, so that a sign-in is read as that one person's authority and not as every person's.
+	otherPersonSecret = "OTHER_PERSON_SECRET"
+	// The values the fake store holds for them.
+	personSecretValue      = "person-secret-v1"
+	otherPersonSecretValue = "other-person-secret-v1"
+	sharedSecretValue      = "shared-secret-v1"
+	pinnedFleetSecretValue = "pinned-fleet-secret-v1"
+	poolFleetSecretValue   = "pool-fleet-secret-v1"
+	// secretKMSKey is the key the fake store records against each, a placeholder of the shape an
+	// ARN has.
+	secretKMSKey = "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
 )
+
+// fakeSecret is one row of the store the broker reads with BROKER_FAKE_SECRETS_FILE: its path,
+// the owner tag that decides who gets it, and its value. Its exposed name is the last path
+// element upper-cased with its hyphens turned to underscores, which is what a request asks for.
+func fakeSecret(path, owner, value string) string {
+	return `{"name": "` + path + `", "kms_key_id": "` + secretKMSKey +
+		`", "tags": {"owner": "` + owner + `", "tier": "agent"}, "value": "` + value + `"}`
+}
 
 // TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt is the live proof of the exchange: the
 // real binary on a fresh schema, a pod's projected token exchanged with a DPoP proof of a key this
@@ -104,15 +162,19 @@ func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
 	t.Run("the real binary boots on a fresh schema with its token exchange on", func(t *testing.T) {
 		// The binary logs the state of its exchange after the bind line startBroker synchronises
 		// on, so the boot is read once that line has arrived.
-		boot := broker.Await(t, "token exchange")
+		broker.AwaitRecord(t, "token exchange", nil)
+		boot := broker.Log()
 		t.Logf("the broker's own boot lines:\n%s", boot)
 		requireHealthy(t, addr)
-		for _, want := range []string{
-			"broker listening addr=" + addr,
-			"token exchange state=on kubernetes=true github=true accounts=2",
+		for _, want := range []struct {
+			message string
+			fields  map[string]any
+		}{
+			{"broker listening", map[string]any{"addr": addr}},
+			{"token exchange", map[string]any{"state": "on", "kubernetes": true, "github": true, "accounts": 2, "read_accounts": 1}},
 		} {
-			if !strings.Contains(boot, want) {
-				t.Fatalf("the boot log carries no %q; the real binary must log the address it bound — the one that just answered /healthz — and report its token exchange on, with both issuers and the two listed accounts:\n%s", want, boot)
+			if len(recordsWith(boot, want.message, want.fields)) == 0 {
+				t.Fatalf("the boot log has no %q line carrying %v; the real binary must log the address it bound — the one that just answered /healthz — and report its token exchange on, with both issuers, the two listed accounts and the one read entry:\n%s", want.message, want.fields, boot)
 			}
 		}
 	})
@@ -151,8 +213,8 @@ func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
 		}{
 			{"session", body["session"], heldSession, "the session the token's writes are recorded as"},
 			{"person", body["person"], person, "the person the entry gives that account"},
-			{"project", body["project"], project, "the project the entry gives that account"},
-			{"project_scope", body["project_scope"], oauthwire.ProjectScopeNamed, "that the project is the one named project it may write"},
+			{"projects", fmt.Sprint(body["projects"]), "[" + project + "]", "the one project the entry gives that account"},
+			{"project_scope", body["project_scope"], oauthwire.ProjectScopeNamed, "that the projects are the one its entry names"},
 			{"client_id", body["client_id"], oauthwire.ExchangeClientID, "the client the exchange issued it to"},
 			{"jkt", body["jkt"], jkt, "the thumbprint of this test's own key, which is what makes a stolen token useless"},
 		} {
@@ -375,19 +437,655 @@ func TestAPodWritesOnlyUnderASessionRegisteredForIt(t *testing.T) {
 	})
 }
 
+// TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads is the live proof of the read
+// entry, on the real binary and a fresh schema: a pod of the account BROKER_EXCHANGE_READ_ACCOUNTS
+// lists presents its projected token with a DPoP proof of its own key and no client credential,
+// naming no session and no scope, and is answered a token the listed API account reads back as
+// exactly the read entry's: the scope read, the project scope none, the entry's service and the
+// session it fixes, no person and no project, and this test's own key. Nothing was registered for
+// the pod, since the entry fixes the session. The same request naming the scope read is refused
+// invalid_scope, so the scope is the entry's to grant and never the request's.
+func TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads(t *testing.T) {
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	github.PublishKey(t, "github-key")
+	key := proofKey(t)
+	jkt, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+	broker := startBroker(t, brokerOptions{Env: exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds)})
+	broker.Await(t, "token exchange")
+	live := newLiveBroker(broker.Addr, key)
+	form := exchangeForm(mintPodToken(t, cluster, clusterKey, readerAccount, exchangeAudience, readerPodUID), "")
+	var token string
+
+	t.Run("a read entry's pod token mints a token with no session and no scope named", func(t *testing.T) {
+		status, body := live.exchange(t, form)
+		token, _ = body["access_token"].(string)
+		if status != http.StatusOK || token == "" || body["token_type"] != "DPoP" {
+			t.Fatalf("the exchange of %s's pod token = %d %v, want 200 with a DPoP-bound access token: the read entry fixes the session, so the pod names none and is registered for nothing", readerAccount, status, body)
+		}
+	})
+
+	t.Run("a listed service account introspects it as the read entry's token and nothing more", func(t *testing.T) {
+		if token == "" {
+			t.Fatal("the exchange minted no access token, so there is nothing to read back")
+		}
+		status, body := live.introspect(t, token, apiToken)
+		if status != http.StatusOK {
+			t.Fatalf("introspection by the listed API account %s = %d %v, want 200", apiAccount, status, body)
+		}
+		// Read back through the one declaration both ends of the route share, so the answer is
+		// compared whole: a person, a project or a second scope would each be a field the
+		// literal does not carry.
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var answer oauthwire.Introspection
+		if err := json.Unmarshal(raw, &answer); err != nil {
+			t.Fatalf("the introspection answer %s is not an introspection: %v", raw, err)
+		}
+		want := oauthwire.Introspection{Active: true, Scope: "read", ClientID: oauthwire.ExchangeClientID, Thumbprint: jkt, Session: readerSession, Service: readerService, ProjectScope: "none", ExpiresAt: answer.ExpiresAt}
+		if !reflect.DeepEqual(answer, want) {
+			t.Errorf("introspection answered %+v, want %+v: a read entry's token holds the scope read and the project scope none, names its service and the session it fixes, and names no person and no project", answer, want)
+		}
+		if answer.ExpiresAt <= time.Now().Unix() {
+			t.Errorf("introspection answered exp %d, which is not in the future", answer.ExpiresAt)
+		}
+	})
+
+	t.Run("the same request naming the scope read mints nothing", func(t *testing.T) {
+		status, body := live.exchange(t, with(form, "scope", oauthwire.ScopeRead))
+		if status != http.StatusBadRequest || body["error"] != "invalid_scope" || body["access_token"] != nil {
+			t.Fatalf("an exchange naming the scope %s = %d %v, want 400 invalid_scope and no access token: the exchange client is registered for %s alone, and the read entry grants read without being asked", oauthwire.ScopeRead, status, body, oauthwire.Scope)
+		}
+	})
+}
+
+// TestTheBinaryExchangesAMachinesGoogleIdentityToken is the live proof of the machine grant: the
+// real binary on a fresh schema, with an issuer of this test's own standing in for Google, a
+// machine presenting nothing but its Google identity token and a key of its own is answered a
+// DPoP-bound Dispatch access token; the listed API account reads that token back and finds the
+// person and project its fleet's entry gives it; a fleet listed with no person is answered a
+// token that names its service instead, which a machine carrying no Compute Engine claims at all
+// — a workload identity pool's token, and the one a pod's metadata server answers — also gets;
+// and each way in that must not work is refused with a message of its own.
+//
+// It is also the live proof of the bridge the same trade builds to the secrets routes: the
+// token answer names the launcher credential the exchange minted for the machine, that
+// credential's own key enrols a session at POST /v1/enrollments, and that session reads the
+// secrets its fleet's service owns and the shared agent-tier ones — the whole of what a machine
+// does, from a metadata token to a secret, with no step a person takes.
+//
+// Secret authority follows the access token, so a machine reads no person's secret: the fleet
+// whose entry names a person is answered a Dispatch token that says so, and its machine is still
+// refused that person's own secret, which waits for her approval. A fleet whose entry names
+// nobody enrols just the same and reads its own service's secrets: no enrolment is refused for
+// want of a person.
+//
+// Each machine here signs with a key of its own, as two real machines do: a launcher credential
+// is keyed on the key it holds, so one key cannot be two machines' credentials.
+// It skips when BROKER_TEST_DATABASE_URL is unset, as every Postgres-backed broker test does.
+func TestTheBinaryExchangesAMachinesGoogleIdentityToken(t *testing.T) {
+	databaseURL := storetest.URL(t)
+	// Three issuers the test controls: the cluster's, GitHub's, and the one standing in for
+	// Google, which BROKER_GOOGLE_OIDC_ISSUER points the broker at.
+	cluster, github, google := oidctest.New(t), oidctest.New(t), oidctest.New(t)
+	github.PublishKey(t, "github-key")
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	googleKey := google.PublishKey(t, "google-key")
+
+	key, poolKey := proofKey(t), proofKey(t)
+	jkt, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+
+	broker := startBroker(t, brokerOptions{Env: googleExchangeEnv(t, databaseURL, cluster, github, google, longAccessSeconds)})
+	live := newLiveBroker(broker.Addr, key)
+	poolLive := newLiveBroker(broker.Addr, poolKey)
+
+	t.Run("the real binary boots with the machine entries its Google settings make", func(t *testing.T) {
+		broker.AwaitRecord(t, "token exchange", nil)
+		boot := broker.Log()
+		t.Logf("the broker's own boot lines:\n%s", boot)
+		requireHealthy(t, broker.Addr)
+		for _, want := range []struct {
+			message string
+			fields  map[string]any
+		}{
+			{"token exchange", map[string]any{"state": "on", "kubernetes": true, "github": true, "accounts": 2, "read_accounts": 1, "workflows": 0, "machines": 2}},
+			{"google machine identity", map[string]any{"issuer": google.URL(), "audience": machineAudience,
+				"services": pinnedFleetService + "," + poolFleetService, "fleets": 2}},
+		} {
+			if len(recordsWith(boot, want.message, want.fields)) == 0 {
+				t.Fatalf("the boot log has no %q line carrying %v; the binary must report the Google issuer it trusts and the machine entries its settings make:\n%s", want.message, want.fields, boot)
+			}
+		}
+	})
+
+	var fleetToken, fleetCredential, poolCredential string
+	t.Run("a pinned machine's identity token and a proof of its own key mint an access token", func(t *testing.T) {
+		subject := mintMachineToken(t, google, googleKey, pinnedFleetAccount, machineAudience, true, fleetCloudProject, fleetInstanceName)
+		status, body := live.exchange(t, machineForm(subject, "example-machine-1"))
+		if status != http.StatusOK {
+			t.Fatalf("the exchange of %s's identity token = %d %v, want 200: a listed fleet's machine, presenting its Google identity token with a DPoP proof of its own key and no client credential, is answered a Dispatch access token", pinnedFleetAccount, status, body)
+		}
+		fleetToken, _ = body["access_token"].(string)
+		if fleetToken == "" || body["token_type"] != "DPoP" || body["issued_token_type"] != oauthwire.SubjectTokenTypeAccessToken {
+			t.Fatalf("the exchange answered token_type %v, issued_token_type %v and %d bytes of access token, want a DPoP-bound access token of type %s",
+				body["token_type"], body["issued_token_type"], len(fleetToken), oauthwire.SubjectTokenTypeAccessToken)
+		}
+		fleetCredential, _ = body[oauthwire.ExtraCredentialID].(string)
+		expires, _ := body[oauthwire.ExtraCredentialExpiresAt].(string)
+		if fleetCredential == "" || expires == "" {
+			t.Fatalf("the token answer carries %s %v and %s %v, want the launcher credential the exchange minted and its expiry: without it the machine reaches no secrets route",
+				oauthwire.ExtraCredentialID, body[oauthwire.ExtraCredentialID], oauthwire.ExtraCredentialExpiresAt, body[oauthwire.ExtraCredentialExpiresAt])
+		}
+		if _, err := time.Parse(time.RFC3339, expires); err != nil {
+			t.Errorf("%s = %q, which is no RFC 3339 time: %v", oauthwire.ExtraCredentialExpiresAt, expires, err)
+		}
+	})
+
+	t.Run("the listed caller reads it back as the person and project its fleet writes for", func(t *testing.T) {
+		if fleetToken == "" {
+			t.Fatal("the exchange minted no access token, so there is nothing to read back")
+		}
+		status, body := live.introspect(t, fleetToken, apiToken)
+		if status != http.StatusOK || body["active"] != true {
+			t.Fatalf("introspection of the machine's token = %d %v, want 200 with the token live", status, body)
+		}
+		for _, field := range []struct {
+			name      string
+			got, want any
+			proves    string
+		}{
+			{"session", body["session"], "example-machine-1", "the session the machine asked to write under"},
+			{"person", body["person"], fleetPerson, "the person BROKER_VM_EXCHANGE_ACCOUNTS gives that fleet"},
+			{"projects", fmt.Sprint(body["projects"]), "[" + fleetProject + "]", "the one project that entry gives it"},
+			{"project_scope", body["project_scope"], oauthwire.ProjectScopeNamed, "that the projects are the one its entry names"},
+			{"service", body["service"], nil, "no service, since this token names a person"},
+			{"client_id", body["client_id"], oauthwire.ExchangeClientID, "the client the exchange issued it to"},
+			{"jkt", body["jkt"], jkt, "the thumbprint of this test's own key"},
+		} {
+			if field.got != field.want {
+				t.Errorf("introspection answered %s %v, want %v: the answer must name %s", field.name, field.got, field.want, field.proves)
+			}
+		}
+	})
+
+	t.Run("a fleet listed with no person is answered a token naming its service", func(t *testing.T) {
+		// No Compute Engine claims at all, which is what a token minted through a workload
+		// identity pool carries and what a pod's metadata server answers on Google Kubernetes
+		// Engine; this fleet's entry pins neither a project nor an instance name, so it is taken.
+		subject := mintMachineToken(t, google, googleKey, poolFleetAccount, machineAudience, true, "", "")
+		status, body := poolLive.exchange(t, machineForm(subject, "example-pool-1"))
+		token, _ := body["access_token"].(string)
+		if status != http.StatusOK || token == "" {
+			t.Fatalf("the exchange of %s's identity token = %d %v, want 200: an entry that pins neither a project nor an instance name takes a token carrying no Compute Engine claims", poolFleetAccount, status, body)
+		}
+		poolCredential, _ = body[oauthwire.ExtraCredentialID].(string)
+		if poolCredential == "" {
+			t.Fatalf("the service-only token answer carries no %s; every machine the exchange answers holds a credential", oauthwire.ExtraCredentialID)
+		}
+		status, body = live.introspect(t, token, apiToken)
+		if status != http.StatusOK || body["active"] != true {
+			t.Fatalf("introspection of the service-only token = %d %v, want 200 with the token live", status, body)
+		}
+		for _, field := range []struct {
+			name      string
+			got, want any
+			proves    string
+		}{
+			{"session", body["session"], "example-pool-1", "the session the machine asked to write under"},
+			{"service", body["service"], poolFleetService, "the service BROKER_VM_SERVICES gives that fleet"},
+			{"person", body["person"], nil, "no person, since this fleet's entry names none"},
+			{"projects", body["projects"], nil, "no project, since a token naming no person names none"},
+			{"project_scope", body["project_scope"], oauthwire.ProjectScopePerson, "that no entry maps the token to a project"},
+		} {
+			if field.got != field.want {
+				t.Errorf("introspection answered %s %v, want %v: the answer must name %s", field.name, field.got, field.want, field.proves)
+			}
+		}
+	})
+
+	t.Run("the credential the exchange minted enrols a session with its fleet's authority", func(t *testing.T) {
+		if fleetCredential == "" {
+			t.Fatal("the exchange named no credential, so there is nothing to enrol under")
+		}
+		machine := podBroker{t: t, base: "http://" + broker.Addr}
+		session := machine.enrolMachine(key, fleetCredential, "example-machine-1")
+		for _, want := range []struct {
+			secret, value, proves string
+		}{
+			{secret: pinnedFleetSecret, value: pinnedFleetSecretValue, proves: "its own fleet's service owns it"},
+			{secret: sharedSecret, value: sharedSecretValue, proves: "a shared agent-tier secret goes to every session at once"},
+		} {
+			granted := machine.ask(session, want.secret)
+			if granted.State != "granted" || granted.GrantID == nil {
+				t.Fatalf("the machine's request for %s = %+v, want it granted at once: %s", want.secret, granted, want.proves)
+			}
+			if got := machine.values(session, *granted.GrantID)[want.secret]; got != want.value {
+				t.Fatalf("the machine read %s = %q, want %q", want.secret, got, want.value)
+			}
+		}
+		if denied := machine.ask(session, poolFleetSecret); denied.State != "denied" {
+			t.Fatalf("the machine's request for %s = %+v, want it denied: that secret is the other fleet's service's", poolFleetSecret, denied)
+		}
+	})
+
+	t.Run("a machine reads no person's secret, though its fleet entry names one", func(t *testing.T) {
+		// The whole point of the shape: this fleet's entry names fleetPerson, and the Dispatch
+		// token the same trade minted says so. Her secrets are still hers: the credential the
+		// exchange minted names no person, so the machine's session acts for its service, and
+		// asking for her secret opens an approval request to her rather than granting it.
+		machine := podBroker{t: t, base: "http://" + broker.Addr}
+		session := machine.enrolMachine(key, fleetCredential, "example-machine-person-check")
+		asked := machine.ask(session, personSecret)
+		if asked.State != "pending" || asked.GrantID != nil {
+			t.Fatalf("the machine's request for %s = %+v, want it pending with no grant: %s owns it and nobody has signed in on this machine", personSecret, asked, fleetPerson)
+		}
+	})
+
+	t.Run("a fleet that names no person enrols too, with its own service's authority", func(t *testing.T) {
+		if poolCredential == "" {
+			t.Fatal("the service-only exchange named no credential, so there is nothing to enrol under")
+		}
+		machine := podBroker{t: t, base: "http://" + broker.Addr}
+		session := machine.enrolMachine(poolKey, poolCredential, "example-pool-1")
+		granted := machine.ask(session, poolFleetSecret)
+		if granted.State != "granted" || granted.GrantID == nil {
+			t.Fatalf("the service-only machine's request for %s = %+v, want it granted at once: no enrolment is refused for want of a person", poolFleetSecret, granted)
+		}
+		if got := machine.values(session, *granted.GrantID)[poolFleetSecret]; got != poolFleetSecretValue {
+			t.Fatalf("the service-only machine read %s = %q, want %q", poolFleetSecret, got, poolFleetSecretValue)
+		}
+		if denied := machine.ask(session, pinnedFleetSecret); denied.State != "denied" {
+			t.Fatalf("the service-only machine's request for %s = %+v, want it denied: that secret is the other fleet's service's", pinnedFleetSecret, denied)
+		}
+	})
+
+	// The person half of the same shape: secret authority follows the access token, so what the
+	// machine was refused just above is exactly what a person signed in on that machine reaches,
+	// and nothing more. Each sign-in holds a box key of its own, as `agent-secrets login` makes
+	// one: a launcher credential is keyed on the key it holds.
+	graceBoxKey, graceSecondBoxKey := proofKey(t), proofKey(t)
+	graceBox := newLiveBroker(broker.Addr, graceBoxKey)
+	graceSecondBox := newLiveBroker(broker.Addr, graceSecondBoxKey)
+	signIn := func(live *liveBroker, account, session string) string {
+		t.Helper()
+		instance := fleetInstanceName
+		if account != pinnedFleetAccount {
+			instance = ""
+		}
+		status, body := live.exchange(t, signInForm(
+			mintPersonToken(t, google, googleKey, fleetPerson, deviceAudience, true, signInDomain),
+			mintMachineToken(t, google, googleKey, account, machineAudience, true, fleetCloudProject, instance), session))
+		credential, _ := body[oauthwire.ExtraCredentialID].(string)
+		if status != http.StatusOK || credential == "" {
+			t.Fatalf("%s's sign-in trade on %s = %d %v, want 200 with the launcher credential the sign-in holds", fleetPerson, account, status, body)
+		}
+		return credential
+	}
+
+	var graceCredential, graceSecondCredential string
+	var graceSessionPod, graceSecondPod pod
+	t.Run("a person signed in on a machine reads the secret that person owns", func(t *testing.T) {
+		graceCredential = signIn(graceBox, pinnedFleetAccount, "grace-box-1")
+		machine := podBroker{t: t, base: "http://" + broker.Addr}
+		graceSessionPod = machine.enrolMachine(graceBoxKey, graceCredential, "grace-box-1")
+		granted := machine.ask(graceSessionPod, personSecret)
+		if granted.State != "granted" || granted.GrantID == nil {
+			t.Fatalf("the signed-in person's request for %s = %+v, want it granted at once: %s owns it and she signed in on this box", personSecret, granted, fleetPerson)
+		}
+		if got := machine.values(graceSessionPod, *granted.GrantID)[personSecret]; got != personSecretValue {
+			t.Fatalf("the signed-in person read %s = %q, want %q", personSecret, got, personSecretValue)
+		}
+	})
+
+	t.Run("that session is still refused another person's secret", func(t *testing.T) {
+		machine := podBroker{t: t, base: "http://" + broker.Addr}
+		asked := machine.ask(graceSessionPod, otherPersonSecret)
+		if asked.State != "pending" || asked.GrantID != nil {
+			t.Fatalf("%s's session asking for %s = %+v, want it pending with no grant: that secret is %s's, and a sign-in is one person's authority", fleetPerson, otherPersonSecret, asked, person)
+		}
+	})
+
+	t.Run("the same person signs in on a second machine, under a box key of its own", func(t *testing.T) {
+		graceSecondCredential = signIn(graceSecondBox, poolFleetAccount, "grace-box-2")
+		if graceSecondCredential == graceCredential {
+			t.Fatalf("both boxes hold the credential %s, want one each: a sign-in is keyed on the person, the machine and the box key", graceCredential)
+		}
+		machine := podBroker{t: t, base: "http://" + broker.Addr}
+		graceSecondPod = machine.enrolMachine(graceSecondBoxKey, graceSecondCredential, "grace-box-2")
+		granted := machine.ask(graceSecondPod, personSecret)
+		if granted.State != "granted" || granted.GrantID == nil {
+			t.Fatalf("the second box's request for %s = %+v, want it granted: the person is signed in there too", personSecret, granted)
+		}
+	})
+
+	t.Run("revoking one sign-in ends its credential and its session, and leaves the other", func(t *testing.T) {
+		plain := newPlainBroker(broker.Addr)
+		status, body := plain.callAs(t, http.MethodGet, "/v1/person-signins?person="+url.QueryEscape(fleetPerson), apiToken, "", "")
+		if status != http.StatusOK {
+			t.Fatalf("GET /v1/person-signins = %d %v, want 200", status, body)
+		}
+		rows, _ := body["signins"].([]any)
+		var target string
+		for _, raw := range rows {
+			row, _ := raw.(map[string]any)
+			if row["machine"] == pinnedFleetAccount {
+				target, _ = row["signin_id"].(string)
+			}
+		}
+		if target == "" {
+			t.Fatalf("the list %v carries no sign-in on %s", body, pinnedFleetAccount)
+		}
+		if status, body := plain.callAs(t, http.MethodPost, "/v1/person-signins/"+target+"/revoke", apiToken,
+			"application/json", `{"person":"`+fleetPerson+`"}`); status != http.StatusOK || body["state"] != "revoked" {
+			t.Fatalf("the revoke = %d %v, want 200 revoked", status, body)
+		}
+		machine := podBroker{t: t, base: "http://" + broker.Addr}
+		if _, status, answer := machine.enrolSession(graceBoxKey, graceCredential, "grace-box-1-again"); status != http.StatusUnauthorized {
+			t.Fatalf("the revoked sign-in's credential enrolled = %d %s, want 401: no launcher proof signed with that box key authenticates again", status, answer)
+		}
+		if status, answer := machine.askRaw(graceSessionPod, personSecret); status == http.StatusOK {
+			t.Fatalf("the revoked sign-in's session read %s = %d %s, want it refused: the revoke ended every session that credential enrolled", personSecret, status, answer)
+		}
+		granted := machine.ask(graceSecondPod, personSecret)
+		if granted.State != "granted" || granted.GrantID == nil {
+			t.Fatalf("the person's second box asking for %s = %+v, want it granted: revoking one sign-in ends one", personSecret, granted)
+		}
+	})
+
+	// The negative controls on the machine grant, each the request that works but for one thing.
+	for _, refusal := range []struct {
+		name   string
+		form   url.Values
+		status int
+		code   string
+		says   string
+		proves string
+	}{
+		{
+			name:   "an unlisted service account mints nothing",
+			form:   machineForm(mintMachineToken(t, google, googleKey, strangerFleet, machineAudience, true, fleetCloudProject, fleetInstanceName), "example-unlisted"),
+			status: http.StatusBadRequest, code: "invalid_request",
+			says:   "no entry lists the Google account " + strangerFleet,
+			proves: "a sound, correctly-audienced identity token of an account no VM service lists is refused, naming the account",
+		},
+		{
+			name:   "an email the provider has not verified mints nothing",
+			form:   machineForm(mintMachineToken(t, google, googleKey, pinnedFleetAccount, machineAudience, false, fleetCloudProject, fleetInstanceName), "example-unverified"),
+			status: http.StatusBadRequest, code: "invalid_request",
+			says:   "email_verified is not true",
+			proves: "the broker checks email_verified itself, since a token for an address nobody verified proves no account",
+		},
+		{
+			name:   "a machine with no Compute Engine claims against a pinned entry mints nothing",
+			form:   machineForm(mintMachineToken(t, google, googleKey, pinnedFleetAccount, machineAudience, true, "", ""), "example-unpinned"),
+			status: http.StatusBadRequest, code: "invalid_request",
+			says:   "carrying no Compute Engine identity",
+			proves: "an entry that pins a project and an instance name refuses a token that says nothing at all about where it was minted",
+		},
+		{
+			name:   "a machine of another Compute Engine project mints nothing",
+			form:   machineForm(mintMachineToken(t, google, googleKey, pinnedFleetAccount, machineAudience, true, "other-project", fleetInstanceName), "example-other-project"),
+			status: http.StatusBadRequest, code: "invalid_request",
+			says:   "minted in the project other-project",
+			proves: "the entry's project pin is compared with the token's own google.compute_engine claims",
+		},
+		{
+			name:   "a machine whose instance name the pattern does not match mints nothing",
+			form:   machineForm(mintMachineToken(t, google, googleKey, pinnedFleetAccount, machineAudience, true, fleetCloudProject, "example-other-1"), "example-other-name"),
+			status: http.StatusBadRequest, code: "invalid_request",
+			says:   "minted on the instance example-other-1",
+			proves: "the entry's instance-name pattern is compared with the token's own instance name",
+		},
+		{
+			name:   "a token minted for another audience mints nothing",
+			form:   machineForm(mintMachineToken(t, google, googleKey, pinnedFleetAccount, enrolmentAudience, true, fleetCloudProject, fleetInstanceName), "example-wrong-audience"),
+			status: http.StatusBadRequest, code: "invalid_request",
+			says:   "not minted for " + machineAudience,
+			proves: "the fleet's own token, minted for another audience of this broker, is refused naming the audience the machine grant accepts",
+		},
+		{
+			name:   "a machine naming no session mints nothing",
+			form:   machineForm(mintMachineToken(t, google, googleKey, pinnedFleetAccount, machineAudience, true, fleetCloudProject, fleetInstanceName), ""),
+			status: http.StatusBadRequest, code: "invalid_request",
+			says:   "is listed with no session of its own",
+			proves: "a fleet whose entry fixes no session writes under a name its machine names, so a request naming none is refused",
+		},
+		{
+			name:   "a machine's token presented as a pod's mints nothing",
+			form:   exchangeForm(mintMachineToken(t, google, googleKey, pinnedFleetAccount, machineAudience, true, fleetCloudProject, fleetInstanceName), "example-as-a-pod"),
+			status: http.StatusBadRequest, code: "invalid_request",
+			proves: "each subject token type is checked against its own issuer, so a machine's token is not a pod's",
+		},
+	} {
+		t.Run(refusal.name, func(t *testing.T) {
+			status, body := live.exchange(t, refusal.form)
+			description, _ := body["error_description"].(string)
+			if status != refusal.status || body["error"] != refusal.code || body["access_token"] != nil {
+				t.Fatalf("that exchange = %d %v %q, want %d %s and no access token: %s",
+					status, body["error"], description, refusal.status, refusal.code, refusal.proves)
+			}
+			if refusal.says != "" && !strings.Contains(description, refusal.says) {
+				t.Fatalf("the refusal reads %q, which does not carry %q: %s", description, refusal.says, refusal.proves)
+			}
+		})
+	}
+}
+
+// The Dispatch the c-token-projects tests stand in for: PRIV is private, owned by carol and
+// listing bob; PUB is public. bob is a restricted member, carol and erin full ones, and alice is a
+// person Dispatch holds no row for, whom PRIV does not list.
+const (
+	privateProject = "PRIV"
+	publicProject  = "PUB"
+	listedNowhere  = "alice@example.com"
+	restricted     = "bob@example.com"
+	privateOwner   = "carol@example.com"
+	fullMember     = "erin@example.com"
+)
+
+// projectAccessStandIn serves Dispatch's two project-access routes over those rows.
+func projectAccessStandIn(t *testing.T) *projectaccesstest.Server {
+	t.Helper()
+	return projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
+		privateProject: {Visibility: "private", Owner: privateOwner, Listed: []string{restricted}},
+		publicProject:  {Visibility: "public", Owner: privateOwner},
+	}, map[string]string{restricted: projectaccess.MemberRestricted, privateOwner: projectaccess.MemberFull, fullMember: projectaccess.MemberFull})
+}
+
+// projectAccessEnv is exchangeEnv with the broker's project-access check pointed at server: its
+// URL, and a file holding the one bearer it takes, as a projected token is mounted.
+func projectAccessEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Issuer, server *projectaccesstest.Server) []string {
+	t.Helper()
+	tokenFile := filepath.Join(t.TempDir(), "dispatch-access-token")
+	if err := os.WriteFile(tokenFile, []byte(server.Token+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return append(exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds),
+		"BROKER_PROJECT_ACCESS_URL="+server.URL, "BROKER_PROJECT_ACCESS_TOKEN_FILE="+tokenFile)
+}
+
+// devBoxSession logs who's machine host in through the real binary under a key of its own, and
+// answers that machine's broker client and its login's access token.
+func devBoxSession(t *testing.T, addr, apiToken, who, host string) (*liveBroker, string) {
+	t.Helper()
+	key := proofKey(t)
+	live := newLiveBroker(addr, key)
+	access, _ := live.machineLoginAs(t, key, apiToken, who, host)
+	return live, access
+}
+
+// machineTrade is a dev box session's trade of its machine login's access token: the session it
+// writes under and, when projects is not empty, the projects it names.
+func machineTrade(accessToken, session, projects string) url.Values {
+	form := exchangeForm(accessToken, session)
+	form.Set("subject_token_type", oauthwire.SubjectTokenTypeAccessToken)
+	if projects != "" {
+		form.Set(oauthwire.FormProjects, projects)
+	}
+	return form
+}
+
+// projectsOf is an introspection answer's projects, nil when it names none.
+func projectsOf(t *testing.T, answer map[string]any) []string {
+	t.Helper()
+	raw, present := answer["projects"]
+	if !present {
+		return nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		t.Fatalf("the answer's projects are %#v, want a list", raw)
+	}
+	projects := make([]string, 0, len(list))
+	for _, item := range list {
+		key, ok := item.(string)
+		if !ok {
+			t.Fatalf("the answer's projects hold %#v, want strings", item)
+		}
+		projects = append(projects, key)
+	}
+	return projects
+}
+
+// TestATradeNamesOnlyProjectsItsPersonSees is c-token-projects against the real broker binary and
+// a Dispatch stand-in answering both project-access routes: a trade naming a project its person
+// may see is answered a token whose introspection lists exactly that project; a trade naming one
+// its person may not see is refused; a restricted member's trade naming none is refused; and a
+// full member's trade naming none, and the same trade while Dispatch cannot be reached, are
+// answered with no project, as today.
+func TestATradeNamesOnlyProjectsItsPersonSees(t *testing.T) {
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	github.PublishKey(t, "github-key")
+	apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+	dispatch := projectAccessStandIn(t)
+	broker := startBroker(t, brokerOptions{Env: projectAccessEnv(t, databaseURL, cluster, github, dispatch)})
+	broker.AwaitRecord(t, "project access check", map[string]any{"state": "on"})
+	trade := func(t *testing.T, who, host, session, projects string) (*liveBroker, int, map[string]any) {
+		t.Helper()
+		live, access := devBoxSession(t, broker.Addr, apiToken, who, host)
+		status, body := live.exchange(t, machineTrade(access, session, projects))
+		return live, status, body
+	}
+	introspected := func(t *testing.T, live *liveBroker, body map[string]any, who string) map[string]any {
+		t.Helper()
+		token, _ := body["access_token"].(string)
+		if token == "" {
+			t.Fatalf("%s's trade was answered %v, want an access token", who, body)
+		}
+		status, answer := live.introspect(t, token, apiToken)
+		if status != http.StatusOK || answer["active"] != true || answer["project_scope"] != oauthwire.ProjectScopePerson || answer["person"] != who {
+			t.Fatalf("introspection of %s's token = %d %v, want a live token acting as %s", who, status, answer, who)
+		}
+		return answer
+	}
+
+	t.Run("a trade naming a project its person may see is answered a token listing exactly that project", func(t *testing.T) {
+		live, _, body := trade(t, privateOwner, "example-host-carol-1", "carol-box-1", privateProject)
+		if got := projectsOf(t, introspected(t, live, body, privateOwner)); !slices.Equal(got, []string{privateProject}) {
+			t.Fatalf("%s's token names the projects %v, want exactly [%s]", privateOwner, got, privateProject)
+		}
+	})
+	t.Run("a trade naming a project its person may not see is refused", func(t *testing.T) {
+		live, status, body := trade(t, listedNowhere, "example-host-alice-1", "alice-box-1", privateProject)
+		if token, _ := body["access_token"].(string); token != "" {
+			_, answer := live.introspect(t, token, apiToken)
+			t.Fatalf("the broker answered %s's trade naming %s with a token naming %v; a trade naming a project its person may not see must be refused", listedNowhere, privateProject, projectsOf(t, answer))
+		}
+		description, _ := body["error_description"].(string)
+		if status != http.StatusBadRequest || body["error"] != "invalid_request" || !strings.Contains(description, "cannot see: "+privateProject) {
+			t.Fatalf("%s's trade naming %s = %d %v %q, want 400 invalid_request naming %s", listedNowhere, privateProject, status, body["error"], description, privateProject)
+		}
+	})
+	t.Run("a restricted member's trade naming none is refused", func(t *testing.T) {
+		_, status, body := trade(t, restricted, "example-host-bob-1", "bob-box-1", "")
+		description, _ := body["error_description"].(string)
+		if status != http.StatusBadRequest || body["error"] != "invalid_request" || body["access_token"] != nil || !strings.Contains(description, restricted+" is a restricted member") {
+			t.Fatalf("%s's trade naming no project = %d %v %q, want 400 invalid_request saying %s is a restricted member", restricted, status, body["error"], description, restricted)
+		}
+	})
+	t.Run("a full member's trade naming none is answered with no project, as today", func(t *testing.T) {
+		live, _, body := trade(t, privateOwner, "example-host-carol-2", "carol-box-2", "")
+		if got := projectsOf(t, introspected(t, live, body, privateOwner)); got != nil {
+			t.Fatalf("%s's token naming no project names %v, want none", privateOwner, got)
+		}
+	})
+	t.Run("the same trade while Dispatch cannot be reached is answered with no project, as today", func(t *testing.T) {
+		live, access := devBoxSession(t, broker.Addr, apiToken, fullMember, "example-host-erin-1")
+		dispatch.SetDown(true)
+		t.Cleanup(func() { dispatch.SetDown(false) })
+		before := dispatch.Calls()
+		_, body := live.exchange(t, machineTrade(access, "erin-box-1", ""))
+		if dispatch.Calls() == before {
+			t.Fatalf("the trade asked the stand-in nothing while it was down, so this case proves nothing about an outage")
+		}
+		if got := projectsOf(t, introspected(t, live, body, fullMember)); got != nil {
+			t.Fatalf("%s's token minted while Dispatch was down names %v, want none", fullMember, got)
+		}
+	})
+}
+
+// TestTheProjectsClaimSurvivesTheStore: the list a trade asks for comes back from the token's own
+// row, through the broker's Postgres-backed store and its introspection route, as that list. The
+// stored claim is a string because the session's extra claims return from the row as JSON, where a
+// list would read back as no projects at all.
+func TestTheProjectsClaimSurvivesTheStore(t *testing.T) {
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	github.PublishKey(t, "github-key")
+	apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+	broker := startBroker(t, brokerOptions{Env: projectAccessEnv(t, databaseURL, cluster, github, projectAccessStandIn(t))})
+	broker.Await(t, "project access check")
+	const session = "carol-store-1"
+	live, access := devBoxSession(t, broker.Addr, apiToken, privateOwner, "example-host-carol-store")
+	status, body := live.exchange(t, machineTrade(access, session, publicProject+" "+privateProject))
+	token, _ := body["access_token"].(string)
+	if status != http.StatusOK || token == "" {
+		t.Fatalf("the trade for the session %s = %d %v, want an access token", session, status, body)
+	}
+	status, answer := live.introspect(t, token, apiToken)
+	if got := projectsOf(t, answer); status != http.StatusOK || answer["active"] != true || !slices.Equal(got, []string{privateProject, publicProject}) {
+		t.Fatalf("the token of the session %s introspects through the broker's store with projects %v (%d %v), want [%s %s]: the claim must come back from its row as the list the trade asked for",
+			session, got, status, answer, privateProject, publicProject)
+	}
+}
+
 // exchangeEnv is what one broker run of this test needs beyond productionEnv: the fresh schema it
 // migrates and serves from, the cluster issuer with the audience a pod enrols with and the one it
 // exchanges with, the GitHub issuer, the two listed accounts with their projects and persons, the
-// two listed callers — dispatch, which reads a token back and ends one, and listener, which only
-// reads one back — the registrar that logs in as the deployment's daemon
-// and registers its pods' session names, and how long an access token it mints lasts.
-func exchangeEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Issuer, accessSeconds int) []string {
+// read entry with its service and the session it fixes, the two listed callers — dispatch, which
+// reads a token back and ends one, and listener, which only reads one back — the registrar that
+// logs in as the deployment's daemon and registers its pods' session names, and how long an
+// access token it mints lasts.
+func exchangeEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Issuer, accessSeconds int, extraSecrets ...string) []string {
 	t.Helper()
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
-	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
+	rows := append([]string{
+		fakeSecret("example/agent-secrets/person-secret", fleetPerson, personSecretValue),
+		fakeSecret("example/agent-secrets/other-person-secret", person, otherPersonSecretValue),
+		fakeSecret("example/agent-secrets/shared-secret", "shared", sharedSecretValue),
+	}, extraSecrets...)
+	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": [`+strings.Join(rows, ",\n")+`]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// The machine-login page is named here because the rows these brokers serve include a
+	// machine login's own device grant (token_revocation_test.go); it is optional, and the
+	// broker main_test.go's productionEnv starts serves none.
 	return []string{
+		"BROKER_MACHINE_LOGIN_URL=" + testMachineLoginURL,
 		"BROKER_DATABASE_URL=" + databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
@@ -396,12 +1094,119 @@ func exchangeEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Iss
 		"BROKER_K8S_OIDC_AUDIENCE=" + enrolmentAudience,
 		"BROKER_EXCHANGE_K8S_AUDIENCE=" + exchangeAudience,
 		"BROKER_EXCHANGE_ACCOUNTS=" + podAccount + "=" + project + "=" + person + " " + listedAccount + "=OTHER=mallory@example.com",
+		"BROKER_EXCHANGE_READ_ACCOUNTS=" + readerAccount + "=" + readerService + "=" + readerSession,
 		"BROKER_EXCHANGE_GITHUB_ISSUER=" + github.URL(),
 		"BROKER_EXCHANGE_GITHUB_AUDIENCE=" + workflowAudience,
 		"BROKER_API_ACCOUNTS=dispatch=" + apiAccount + " listener=" + listenerAccount,
 		"BROKER_SERVICE_LOGINS=legion-daemon=" + registrarAccount,
 		"BROKER_ACCESS_TOKEN_SECONDS=" + strconv.Itoa(accessSeconds),
 	}
+}
+
+// TestAPodsEntryNamingAPrivateProjectIsHeldToItsPerson is the credential the production path
+// makes for a private project: a pod's account listed in BROKER_EXCHANGE_ACCOUNTS with the
+// project PRIV and the person it acts for. Against a Dispatch stand-in that says the entry's
+// person sees PRIV, the pod's trade is answered a token whose introspection names exactly [PRIV]
+// under the named scope; against one that says they do not, the same trade is refused naming the
+// project and the person.
+func TestAPodsEntryNamingAPrivateProjectIsHeldToItsPerson(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		listed []string
+		minted bool
+	}{
+		{name: "the entry's person sees PRIV", listed: []string{person}, minted: true},
+		{name: "the entry's person does not see PRIV", listed: nil, minted: false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			databaseURL := storetest.URL(t)
+			cluster, github := oidctest.New(t), oidctest.New(t)
+			clusterKey := cluster.PublishKey(t, "cluster-key")
+			github.PublishKey(t, "github-key")
+			dispatch := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
+				privateProject: {Visibility: "private", Owner: privateOwner, Listed: c.listed},
+			}, map[string]string{person: projectaccess.MemberFull})
+			env := append(projectAccessEnv(t, databaseURL, cluster, github, dispatch),
+				"BROKER_EXCHANGE_ACCOUNTS="+podAccount+"="+privateProject+"="+person)
+			broker := startBroker(t, brokerOptions{Env: env})
+			broker.AwaitRecord(t, "project access check", map[string]any{"state": "on"})
+			live := newLiveBroker(broker.Addr, proofKey(t))
+			apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+			live.registered(t, mintPodToken(t, cluster, clusterKey, podAccount, enrolmentAudience, firstPodUID), heldSession,
+				accountToken(t, cluster, clusterKey, registrarAccount))
+
+			status, body := live.exchange(t, exchangeForm(mintPodToken(t, cluster, clusterKey, podAccount, exchangeAudience, firstPodUID), heldSession))
+			if !c.minted {
+				description, _ := body["error_description"].(string)
+				t.Logf("the refusal: %d %v %s", status, body["error"], description)
+				if status != http.StatusBadRequest || body["error"] != "invalid_request" || body["access_token"] != nil ||
+					!strings.Contains(description, "its entry names the project "+privateProject+", which its person "+person+" cannot see") {
+					t.Fatalf("the pod's trade = %d %v %q, want 400 invalid_request naming %s and %s", status, body["error"], description, privateProject, person)
+				}
+				return
+			}
+			token, _ := body["access_token"].(string)
+			if status != http.StatusOK || token == "" {
+				t.Fatalf("the pod's trade = %d %v, want an access token", status, body)
+			}
+			status, answer := live.introspect(t, token, apiToken)
+			t.Logf("introspection of the pod's token: %d %v", status, answer)
+			if got := projectsOf(t, answer); status != http.StatusOK || answer["active"] != true || answer["project_scope"] != oauthwire.ProjectScopeNamed ||
+				answer["person"] != person || !slices.Equal(got, []string{privateProject}) {
+				t.Fatalf("introspection = %d %v, want a live named token acting for %s naming exactly [%s]", status, answer, person, privateProject)
+			}
+		})
+	}
+}
+
+// googleExchangeEnv is exchangeEnv with the Google half configured: the issuer standing in for
+// Google's, the audience a machine's identity token must carry, the two fleets, the pins of the
+// first, and the person and project the first writes for. The second fleet is listed with no pin
+// and no person, which is what mints a token that names its service and nobody.
+func googleExchangeEnv(t *testing.T, databaseURL string, cluster, github, google *oidctest.Issuer, accessSeconds int) []string {
+	t.Helper()
+	return append(exchangeEnv(t, databaseURL, cluster, github, accessSeconds,
+		fakeSecret("example/agent-secrets/pinned-fleet-secret", pinnedFleetService, pinnedFleetSecretValue),
+		fakeSecret("example/agent-secrets/pool-fleet-secret", poolFleetService, poolFleetSecretValue)),
+		"BROKER_GOOGLE_OIDC_ISSUER="+google.URL(),
+		"BROKER_GOOGLE_OIDC_AUDIENCE="+machineAudience,
+		"BROKER_VM_SERVICES="+pinnedFleetService+"="+pinnedFleetAccount+" "+poolFleetService+"="+poolFleetAccount,
+		"BROKER_VM_PROJECTS="+pinnedFleetAccount+"="+fleetCloudProject,
+		"BROKER_VM_INSTANCES="+pinnedFleetAccount+"="+fleetInstanceGlob,
+		"BROKER_VM_EXCHANGE_ACCOUNTS="+pinnedFleetAccount+"="+fleetProject+"="+fleetPerson,
+		// The device-flow client a person signs in on one of those machines through, which is
+		// what turns the person half of the exchange on (person_signin_test.go).
+		"BROKER_SIGNIN_DEVICE_AUDIENCE="+deviceAudience,
+	)
+}
+
+// mintMachineToken is a Google identity token as a machine presents one: the account it was
+// minted for in its `email` claim, whether the address is verified, and the Compute Engine
+// instance it was minted on — none when instance is empty, which is what a token minted through a
+// workload identity pool, and the one a pod's metadata server answers, carry.
+func mintMachineToken(t *testing.T, google *oidctest.Issuer, key *oidctest.Key, account, audience string, verified any, cloudProject, instance string) string {
+	t.Helper()
+	claims := google.Claims(account, audience)
+	claims["email"] = account
+	claims["email_verified"] = verified
+	if instance != "" {
+		claims["google"] = map[string]any{"compute_engine": map[string]any{
+			"project_id":    cloudProject,
+			"zone":          "example-zone-a",
+			"instance_name": instance,
+			"instance_id":   "1234567890",
+		}}
+	}
+	return google.Mint(t, key, claims)
+}
+
+// machineForm is a complete RFC 8693 token exchange request as a machine makes it: the exchange
+// client with no credential of its own, the Google identity token it presents, and the session
+// name it asks to write under.
+func machineForm(subjectToken, session string) url.Values {
+	form := exchangeForm(subjectToken, session)
+	form.Set("subject_token_type", oauthwire.SubjectTokenTypeGoogle)
+	return form
 }
 
 // mintPodToken is a projected service-account token as the cluster's issuer mints one: the account
@@ -468,7 +1273,7 @@ func newPlainBroker(addr string) *liveBroker {
 // exchange judges a credential-less caller on.
 func newLiveBroker(addr string, key *ecdsa.PrivateKey) *liveBroker {
 	live := newPlainBroker(addr)
-	live.dpop = &http.Client{Transport: helper.NewDPoPTransport(key, http.DefaultTransport)}
+	live.dpop = &http.Client{Transport: brokerclient.NewDPoPTransport(key, http.DefaultTransport)}
 	return live
 }
 

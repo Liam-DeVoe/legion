@@ -18,6 +18,16 @@ export const LEGION_ROLES = [
 
 export type LegionRole = (typeof LEGION_ROLES)[number];
 
+/** The design-gate steps a Legion deployment can gate, each naming one document of a root issue
+ * a person must approve before the tree's work runs: `decisions` names the issue's decisions
+ * document, `criteria` its Verification document, `spec` its primary document.
+ *
+ * One tuple serves both wire contracts that carry these words — the daemon's own API
+ * (`legion-api.ts`) and the list it publishes onto its Dispatch project row
+ * (`dispatch-api.ts`) — so a step added here reaches both schemas and every message built from
+ * them rather than two lists kept in step by hand. */
+export const GATED_STEPS = ["decisions", "criteria", "spec"] as const;
+
 export interface ParsedRoleToken {
   project: string;
   issue: IssueKey;
@@ -37,10 +47,11 @@ export function isLegionRole(role: string): role is LegionRole {
 
 /**
  * The role that works a phase, the TypeScript mirror of the daemon's own table
- * (`packages/daemon/internal/workflow/effects.go`, `RoleFor`). A phase no role works —
- * `admitted`, `awaiting_merge`, `done`, `held`, `unrecorded` — has none, and so has any value
- * that is not a phase; `accepting` is the tree architect's, and `retro` is the implementer's
- * second turn on the issue it developed.
+ * (`packages/daemon/internal/phase/phase.go`, `RoleFor`). A phase no role works —
+ * `awaiting_person`, `done`, `held`, `unrecorded` — has none, and so has any value that is not
+ * a phase; `admitted` and `accepting` are the tree architect's, and `retro` is the implementer's
+ * second turn on the issue it developed. The one reader here, the phase reminder, runs for a
+ * phase worker alone, so the architect's two phases never remind anyone.
  */
 export function roleForPhase(phase: string): LegionRole | undefined {
   switch (phase) {
@@ -53,6 +64,7 @@ export function roleForPhase(phase: string): LegionRole | undefined {
       return "tester";
     case "reviewing":
       return "reviewer";
+    case "admitted":
     case "accepting":
       return "architect";
     case "merging":
@@ -67,8 +79,8 @@ export function isLegionProjectToken(project: string): boolean {
 }
 
 /** The one rule that turns the operator-written `project` (`legion.yaml`'s value, `LEGION_ID`,
- * `sjawhar/legion`) into the Legion project token every role token, secret file, and
- * `LEGION_PROJECT` carries (`sjawharlegion`): lowercased, every non-alphanumeric dropped — the Go
+ * `cybermonklabs/legion`) into the Legion project token every role token, secret file, and
+ * `LEGION_PROJECT` carries (`cybermonklabslegion`): lowercased, every non-alphanumeric dropped — the Go
  * daemon's `claim.ProjectToken` too. The TypeScript daemon, `legion controller start`'s
  * operator-side loader and the Go controller's plugin all apply it, so an operator's copied value
  * lands on the daemon's own controller token; a value that sanitizes to nothing is refused naming

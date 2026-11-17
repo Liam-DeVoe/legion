@@ -408,14 +408,30 @@ func TargetSpansBlocks(doc *Node, r Range) bool {
 
 // FindHeading finds the heading whose text, as a read serves it (TextContent), equals title
 // exactly. occurrence is zero-based; without it, repeated titles return ErrTargetAmbiguous.
+// It validates doc first: a nil tree wants a document, and one Validate refuses is Validate's
+// error. It validates the tree rather than the document (ValidateDocument), so a tree that is no
+// document is searched for its headings as it always was, and finds none.
 func FindHeading(doc *Node, title string, occurrence *int) (Range, error) {
 	if doc == nil {
-		return Range{}, fmt.Errorf("%w: FindHeading wants a document", ErrSchema)
+		return Range{}, wantsDocument("FindHeading")
 	}
 	if err := doc.Validate(); err != nil {
 		return Range{}, err
 	}
+	return findHeading(doc, title, occurrence)
+}
 
+// FindHeading is FindHeading over d's tree without validating it again; the zero ValidDocument
+// wants a document, as FindHeading's nil tree does.
+func (d ValidDocument) FindHeading(title string, occurrence *int) (Range, error) {
+	if d.doc == nil {
+		return Range{}, wantsDocument("FindHeading")
+	}
+	return findHeading(d.doc, title, occurrence)
+}
+
+// findHeading is the heading search itself, over a tree its caller has validated.
+func findHeading(doc *Node, title string, occurrence *int) (Range, error) {
 	var matches []Candidate
 	pos := 0
 	for _, child := range doc.Children {
@@ -865,42 +881,60 @@ func firstRunes(value string, count int) string {
 	return value
 }
 
+// findAllUnits is every position in haystack at which the UTF-16 units of needle begin, in
+// ascending order, and nil where there is none.
 func findAllUnits(haystack, needle []uint16) []int {
-	if len(needle) == 0 || len(needle) > len(haystack) {
-		return nil
-	}
-	matches := make([]int, 0)
-	for start := 0; start <= len(haystack)-len(needle); start++ {
-		if matched := true; matched {
-			for offset, unit := range needle {
-				if haystack[start+offset] != unit {
-					matched = false
-					break
-				}
-			}
-			if matched {
-				matches = append(matches, start)
-			}
-		}
-	}
-	return matches
+	return findAll(haystack, needle)
 }
 
+// findAllRunes is every position in haystack at which the runes of needle begin, in ascending
+// order, and nil where there is none.
 func findAllRunes(haystack, needle []rune) []int {
+	return findAll(haystack, needle)
+}
+
+// findAll is every position in haystack at which needle begins, in ascending order, overlapping
+// matches included, and nil where needle is empty, longer than haystack, or found nowhere.
+//
+// It is Knuth-Morris-Pratt: one pass over needle builds its borders, where borders[index] is the
+// length of the longest proper prefix of needle[:index+1] that is also its suffix, and one pass
+// over haystack reads each element once, falling back along those borders where an element
+// differs instead of comparing the needle again from the next start. The scan it replaced
+// compared the whole needle at every start, so a quote that almost matches everywhere cost the
+// length of the text times the length of the quote - half a second for a mebibyte of text and a
+// kibibyte of quote - where this costs the length of the text plus the length of the quote
+// whatever the two hold.
+//
+// The package searches two element types, a text's UTF-16 units and its normalized form's runes,
+// and the algorithm reads its elements only through ==, so it is written once over the element
+// type rather than twice over the same shape; findAllUnits and findAllRunes keep the names the
+// matchers call.
+func findAll[E comparable](haystack, needle []E) []int {
 	if len(needle) == 0 || len(needle) > len(haystack) {
 		return nil
 	}
-	matches := make([]int, 0)
-	for start := 0; start <= len(haystack)-len(needle); start++ {
-		matched := true
-		for offset, value := range needle {
-			if haystack[start+offset] != value {
-				matched = false
-				break
-			}
+	borders := make([]int, len(needle))
+	for index, length := 1, 0; index < len(needle); index++ {
+		for length > 0 && needle[index] != needle[length] {
+			length = borders[length-1]
 		}
-		if matched {
-			matches = append(matches, start)
+		if needle[index] == needle[length] {
+			length++
+		}
+		borders[index] = length
+	}
+	var matches []int
+	matched := 0
+	for index, element := range haystack {
+		for matched > 0 && element != needle[matched] {
+			matched = borders[matched-1]
+		}
+		if element == needle[matched] {
+			matched++
+		}
+		if matched == len(needle) {
+			matches = append(matches, index-len(needle)+1)
+			matched = borders[matched-1]
 		}
 	}
 	return matches
@@ -1288,7 +1322,7 @@ func (w *MarkWriter) Mark(txn *crdt.Transaction, r Range, mark Mark) error {
 	if txn == nil || w.frag == nil || r.From >= r.To {
 		return fmt.Errorf("%w: invalid mark range", ErrSchema)
 	}
-	if !markTypes[mark.Type] {
+	if !active.marks[mark.Type] {
 		return fmt.Errorf("%w: mark %q", ErrSchema, mark.Type)
 	}
 	if err := attrNestingError("mark", mark.Type, mark.Attrs, maxMarkAttrNesting); err != nil {
@@ -1484,7 +1518,7 @@ func Unmark(txn *crdt.Transaction, frag *crdt.YXmlFragment, markType, id string)
 	if txn == nil || frag == nil {
 		return fmt.Errorf("%w: Unmark requires transaction and fragment", ErrSchema)
 	}
-	if !markTypes[markType] {
+	if !active.marks[markType] {
 		return fmt.Errorf("%w: mark %q", ErrSchema, markType)
 	}
 
@@ -1528,29 +1562,17 @@ func markAttributeID(value any) string {
 	return id
 }
 
-// StripAnchorMarks returns a copy of doc with every mark the rendering does not write
-// (renderedMarkTypes) removed - Proof and Dispatch anchors - coalescing adjacent equal-mark text
-// runs.
+// StripAnchorMarks is a copy of node without the marks the rendering does not write
+// (renderedMarkTypes) - Proof and Dispatch anchors - and with adjacent text runs under equal
+// written marks merged into one that keeps the first run's attributes and children. That is what
+// the rendering reads (writtenTree), with lineBreaks false, so no line break is rewritten, and
+// before any U+0000 is written (nulsWrittenTree): the text and the attributes are node's own
+// bytes. The copy is the caller's, which cloneNode gives whether or not the rendering writes
+// anything otherwise, since callers own and change what they get (docs.asUploaded, the paragraph
+// a docs edit builds, spreadDifferences).
 func StripAnchorMarks(node *Node) *Node {
 	if node == nil {
 		return nil
 	}
-	out := &Node{Type: node.Type, Attrs: cloneAttrs(node.Attrs), Text: node.Text}
-	for _, mark := range node.Marks {
-		if renderedMarkTypes[mark.Type] {
-			out.Marks = append(out.Marks, Mark{Type: mark.Type, Attrs: cloneAttrs(mark.Attrs)})
-		}
-	}
-	for _, child := range node.Children {
-		clean := StripAnchorMarks(child)
-		if len(out.Children) > 0 {
-			previous := out.Children[len(out.Children)-1]
-			if previous.Type == "text" && clean.Type == "text" && marksEqual(previous.Marks, clean.Marks) {
-				previous.Text += clean.Text
-				continue
-			}
-		}
-		out.Children = append(out.Children, clean)
-	}
-	return out
+	return cloneNode(writtenTree(node, false))
 }

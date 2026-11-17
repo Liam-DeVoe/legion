@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -78,6 +79,11 @@ const (
 	ExchangeSession = "example-worker"
 )
 
+// The second account every Rig's BROKER_EXCHANGE_ACCOUNTS lists: its entry fixes no session, as
+// a Legion issue pod's does, so each pod of it trades only for a session a registrar registered for
+// that pod (POST /v1/oauth/exchange/pod-sessions), with the key the registration names.
+const ExchangeRolesAccount = "system:serviceaccount:example-ns:example-roles"
+
 // The one workflow every Rig's BROKER_EXCHANGE_WORKFLOWS lists and what a run of it may write. It
 // fixes no session, so a run names its own.
 const (
@@ -114,6 +120,14 @@ type Rig struct {
 	// Secrets is the secrets.Local standing in for Secrets Manager, which a test writes to as a
 	// person would, before asking the broker to reread a secret.
 	Secrets *secrets.Local
+	// Registry holds the policy's two metrics as cmd/broker/main.go builds them on its own
+	// registry: broker_policy_store_reads_total, counted from the first load on, and
+	// broker_unservable_secrets, registered once that load answered. A test reads them through
+	// Registry.Handler(), the scrape main serves.
+	Registry *metrics.Registry
+	// Policy is the broker's live policy, for a test that reloads it as the broker's five-minute
+	// reload does (Refresh): the rig's own reload runs once an hour, so never within a test.
+	Policy *policy.Current
 	// podIssuer and podKey back every token this Rig mints — a pod's enrolment token, a service
 	// account's login token, and a subject token for the exchange: a local OIDC issuer this Rig's
 	// own verifier (wired into its enroll.Service and its api.Deps by NewRig) trusts, and the
@@ -122,10 +136,6 @@ type Rig struct {
 	podKey    *oidctest.Key
 	// serviceLogins is the broker's live BROKER_SERVICE_LOGINS: DaemonAccount, as legion-daemon.
 	serviceLogins map[string]string
-	// vmIssuer and vmKey stand in for Google's issuer and the key it signs a VM's identity token
-	// with: nil unless WithVMFleet wired the broker to trust them.
-	vmIssuer *oidctest.Issuer
-	vmKey    *oidctest.Key
 }
 
 // Option changes how NewRig wires its broker.
@@ -135,29 +145,6 @@ type rigConfig struct {
 	lease    time.Duration
 	maxConns int
 	minters  map[string]requests.Minter
-	vmFleet  bool
-}
-
-// The one VM fleet WithVMFleet binds: VMAccount is its Google service account, bound to service
-// VMService in project VMProject for instances named VMInstances, and VMAudience the audience its
-// identity tokens carry. VMSecret is an agent-tier secret VMService owns, holding VMSecretValue.
-const (
-	VMAccount     = "example-fleet@example-project.iam.gserviceaccount.com"
-	VMService     = "example-fleet"
-	VMProject     = "example-project"
-	VMInstances   = "example-vm-*"
-	VMAudience    = "example-vm-audience"
-	VMSecret      = "TEST_VM_SECRET"
-	VMSecretValue = "test-vm-secret-v1"
-)
-
-// WithVMFleet makes the broker trust a local issuer standing in for Google's, for VMAudience, as
-// cmd/broker/main.go does when BROKER_GOOGLE_OIDC_AUDIENCE is set, with VMAccount bound to
-// VMService, VMProject and VMInstances (BROKER_VM_SERVICES, BROKER_VM_PROJECTS,
-// BROKER_VM_INSTANCES), and adds VMSecret, which VMService owns. MintVMToken mints the fleet's
-// identity tokens.
-func WithVMFleet() Option {
-	return func(c *rigConfig) { c.vmFleet = true }
 }
 
 // WithLease sets the enrollment lease the broker grants, an hour by default, for a test whose
@@ -184,8 +171,10 @@ func WithMinters(minters map[string]requests.Minter) Option {
 // which her own sessions get at once. It wires a real pod verifier (a local OIDC issuer trusted by
 // an enroll.K8sPodVerifier, mirroring cmd/broker/main.go's own wiring), which is also what
 // authenticates the listed caller of the routes Dispatch's server calls, and mounts api.Register
-// on an httptest.Server — wired exactly as cmd/broker/main.go and api_test.go's newTestServer
-// wire it. It skips t when BROKER_TEST_DATABASE_URL is unset (storetest.Open's own contract).
+// on an httptest.Server as cmd/broker/main.go and api_test.go's newTestServer mount it, but with
+// no answer recorder in front (answer.Middleware): its answers carry no answer id, and its
+// Registry counts none of them. It skips t when BROKER_TEST_DATABASE_URL is unset
+// (storetest.Open's own contract).
 func NewRig(t *testing.T, options ...Option) *Rig {
 	t.Helper()
 	config := rigConfig{lease: time.Hour}
@@ -202,13 +191,11 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		policytest.Secret("TEST_SECRET", operator, policy.TierHuman, "test-secret-v1"),
 		policytest.Secret("TEST_AUTO_SECRET", operator, policy.TierAgent, "test-auto-secret-v1"),
 	}
-	var services []string
-	if config.vmFleet {
-		fixtures = append(fixtures, policytest.Secret(VMSecret, VMService, policy.TierAgent, VMSecretValue))
-		services = append(services, VMService)
-	}
 	local := secrets.NewLocal(fixtures...)
-	cur := policytest.Current(t, local, services...)
+	// The policy's metrics as main wires them: the store-read counter before the first load,
+	// which NewCurrent takes, and the gauge of unservable secrets once NewCurrent has answered.
+	registry := metrics.New()
+	cur := policytest.MeteredCurrent(t, local, registry)
 
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
@@ -222,29 +209,23 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	}
 
 	serviceLogins := map[string]string{DaemonAccount: "legion-daemon"}
-	enr := &enroll.Service{Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier}, ServiceLogins: serviceLogins}
+	// BROKER_SERVICES: the account every pod MintPodToken mints a token for runs as, bound to the
+	// service DaemonAccount logs in as, which is what lets that login enrol those pods
+	// (enroll.Service.podUnderTokenLogin).
+	servicesByAccount := map[string]string{WorkerAccount: "legion-daemon"}
+	enr := &enroll.Service{Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier}, ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
-	var vmIssuer *oidctest.Issuer
-	var vmKey *oidctest.Key
-	if config.vmFleet {
-		vmIssuer = oidctest.New(t)
-		vmKey = vmIssuer.PublishKey(t, "vm-signing-key")
-		vmVerifier, err := oidc.New(context.Background(), vmIssuer.URL(), VMAudience)
-		if err != nil {
-			t.Fatalf("oidc.New(the VM issuer): %v", err)
-		}
-		enr.VM = enroll.GoogleVMVerifier{Verifier: vmVerifier}
-		enr.VMServicesByAccount = map[string]string{VMAccount: VMService}
-		enr.VMProjects = map[string]string{VMAccount: VMProject}
-		enr.VMInstancePatterns = map[string]string{VMAccount: VMInstances}
-	}
+	// A session name belongs to one principal here as it does on the real broker: the binder is
+	// a store on the same pool the OAuth provider's own store uses (NewOAuthProvider, built
+	// below), so a name the token exchange binds and a name an enrollment binds are the one
+	// table's.
+	enr.Sessions = oauthstore.New(st.Pool)
 
 	reqMachine := &requests.Machine{
 		Store: st, Policy: cur, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
 		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
-		VMServicesByAccount: enr.VMServicesByAccount, VMProjects: enr.VMProjects, VMInstancePatterns: enr.VMInstancePatterns,
 	}
-	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute)
+	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	provider := NewOAuthProvider(t, st, issuer)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,
@@ -277,9 +258,10 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		URL: srv.URL, Operator: operator, OperatorFile: operatorFile,
 		Store:     st,
 		Secrets:   local,
+		Registry:  registry,
+		Policy:    cur,
 		podIssuer: issuer, podKey: podKey,
 		serviceLogins: serviceLogins,
-		vmIssuer:      vmIssuer, vmKey: vmKey,
 	}
 	rig.UIToken = rig.MintAccountToken(t, APIAccount, time.Hour)
 	rig.ListenerToken = rig.MintAccountToken(t, ListenerAccount, time.Hour)
@@ -305,9 +287,9 @@ const MachineLoginURL = "https://dispatch.example/credentials/machine"
 // cmd/broker/main.go does: device codes live as long as a pending machine login, access tokens
 // fifteen minutes, refresh tokens as long as a launcher credential, and verification_uri is
 // MachineLoginURL. Its token exchange reads issuer for both kinds of subject token — a pod's, for
-// exchangeAudience, and a workflow run's, for githubAudience — and lists the one account and the
-// one workflow the Rig's constants name, so an exchange test has an identity to be and an unlisted
-// one to be refused as.
+// exchangeAudience, and a workflow run's, for githubAudience — and lists the two accounts and the
+// one workflow the Rig's constants name, so an exchange test has an identity to be, a registered
+// one, and an unlisted one to be refused as.
 func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *oauth.Provider {
 	t.Helper()
 	oauthStore := oauthstore.New(st.Pool)
@@ -317,8 +299,16 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 		t.Fatalf("OAuth secret: %v", err)
 	}
 	policy, err := exchange.NewSet(
-		[]exchange.AccountEntry{{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession}},
+		[]exchange.AccountEntry{
+			{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession},
+			{Account: ExchangeRolesAccount, Project: ExchangeProject, Person: ExchangePerson},
+		},
+		nil,
 		[]exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
+		nil,
+		// The rig lists no machine, so there is no box a person could have signed in on and no
+		// domain to hold one to.
+		"",
 	)
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
@@ -472,7 +462,7 @@ func (r *Rig) DecideMachineLogin(t *testing.T, code string, approve bool) (crede
 // internal/broker/enroll/enroll_test.go's own mintPodToken helper.
 func (r *Rig) MintPodToken(t *testing.T, podUID string) string {
 	t.Helper()
-	claims := r.podIssuer.Claims("system:serviceaccount:legion:worker", podAudience)
+	claims := r.podIssuer.Claims(WorkerAccount, podAudience)
 	raw, err := json.Marshal(claims)
 	if err != nil {
 		t.Fatalf("marshal claims: %v", err)
@@ -490,51 +480,10 @@ func (r *Rig) MintPodToken(t *testing.T, podUID string) string {
 // account does.
 const DaemonAccount = "system:serviceaccount:legion-system:legion-daemon-test"
 
-// VMIdentity is the VM a token MintVMToken mints names. Each field left zero takes the fleet's
-// default: VMAccount, VMProject, zone example-zone-a, instance example-vm-1 (which VMInstances
-// matches), instance id 1000000000000000001, VMAudience, and a lifetime of an hour, as Google's are.
-type VMIdentity struct {
-	Account, Project, Zone, Instance, InstanceID, Audience string
-	Lifetime                                               time.Duration
-}
-
-// MintVMToken mints a Compute Engine VM's identity token in Google's full format (email,
-// email_verified, and the google.compute_engine claims) for vm, signed by the issuer WithVMFleet
-// stands up in Google's place: what a VM's metadata server answers for
-// /instance/service-accounts/default/identity?audience=...&format=full. It expires vm.Lifetime from
-// now and was issued an hour before that, as Google's tokens live an hour; a negative lifetime mints
-// one already expired. It fails t on a Rig built without WithVMFleet.
-func (r *Rig) MintVMToken(t *testing.T, vm VMIdentity) string {
-	t.Helper()
-	if r.vmIssuer == nil {
-		t.Fatal("MintVMToken needs a Rig built WithVMFleet")
-	}
-	or := func(value, fallback string) string {
-		if value == "" {
-			return fallback
-		}
-		return value
-	}
-	account := or(vm.Account, VMAccount)
-	lifetime := vm.Lifetime
-	if lifetime == 0 {
-		lifetime = time.Hour
-	}
-	claims := r.vmIssuer.Claims("100000000000000000001", or(vm.Audience, VMAudience))
-	expires := time.Now().Add(lifetime)
-	claims["iat"] = expires.Add(-time.Hour).Unix()
-	claims["nbf"] = claims["iat"]
-	claims["exp"] = expires.Unix()
-	claims["email"] = account
-	claims["email_verified"] = true
-	claims["google"] = map[string]any{"compute_engine": map[string]any{
-		"project_id":    or(vm.Project, VMProject),
-		"zone":          or(vm.Zone, "example-zone-a"),
-		"instance_name": or(vm.Instance, "example-vm-1"),
-		"instance_id":   or(vm.InstanceID, "1000000000000000001"),
-	}}
-	return r.vmIssuer.Mint(t, r.vmKey, claims)
-}
+// WorkerAccount is the ServiceAccount the pods MintPodToken mints tokens for run as, which every
+// Rig's BROKER_SERVICES binds to the service DaemonAccount logs in as, as a Legion worker pod's
+// account is bound to legion-daemon.
+const WorkerAccount = "system:serviceaccount:legion:worker"
 
 // MintAccountToken mints a projected ServiceAccount token for account, expiring lifetime from now
 // (a negative lifetime mints one already expired), signed by this Rig's own local OIDC issuer for
@@ -545,6 +494,20 @@ func (r *Rig) MintAccountToken(t *testing.T, account string, lifetime time.Durat
 	now := time.Now()
 	claims["iat"] = now.Add(min(lifetime, 0) - 5*time.Second).Unix()
 	claims["exp"] = now.Add(lifetime).Unix()
+	return r.podIssuer.Mint(t, r.podKey, claims)
+}
+
+// MintAccountPodToken is MintAccountToken bound to podUID: the projected ServiceAccount token a
+// pod's own kubelet mounts, which names both the account it runs as and the pod it is. A service
+// that logs in with one of these logs in as that pod rather than as the account at large, which
+// is what lets several pods of one account hold logins at the same time.
+func (r *Rig) MintAccountPodToken(t *testing.T, account, podUID string, lifetime time.Duration) string {
+	t.Helper()
+	claims := r.podIssuer.Claims(account, podAudience)
+	now := time.Now()
+	claims["iat"] = now.Add(min(lifetime, 0) - 5*time.Second).Unix()
+	claims["exp"] = now.Add(lifetime).Unix()
+	claims["kubernetes.io"] = map[string]any{"pod": map[string]any{"uid": podUID}}
 	return r.podIssuer.Mint(t, r.podKey, claims)
 }
 

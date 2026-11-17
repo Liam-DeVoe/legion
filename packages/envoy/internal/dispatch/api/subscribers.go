@@ -1,14 +1,17 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"sort"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/routing"
@@ -16,18 +19,25 @@ import (
 
 // subscriber is a session whose persisted Envoy interests include an issue's
 // or unlinked document's topic family, enriched with its live registry state
-// when the session is currently connected. Removable is false when the only
+// when the session is currently registered. Removable is false when the only
 // matching topic is broader than this owner (e.g. "notifications.dispatch.>"):
 // removing that topic would silently unsubscribe the session from every
 // other issue and document too, so Unsubscribe refuses it; Via then names
 // one such topic for the header to explain why. LastSeen is the session's
-// last heartbeat: the live session's own, else the one the listener still
+// last heartbeat: the registered session's own, else the one the listener still
 // knows for the interest row, else the row's updated_at, which can lag that
 // heartbeat by up to the listener's interest refresh age.
+//
+// State is the registry's own state for the session, and Live is that state being `live`
+// alone. The listener's list carries the unresponsive sessions too, so a row's presence in it
+// is no longer what makes a subscriber live: a stalled session is listed, named unresponsive,
+// and still receives - its events wait for it - which is what a reader of this list needs to
+// tell from an ended one. State is empty for a session the registry holds no record of.
 type subscriber struct {
 	SessionID string   `json:"session_id"`
 	Title     string   `json:"title"`
 	Live      bool     `json:"live"`
+	State     string   `json:"state,omitempty"`
 	LastSeen  int64    `json:"last_seen"`
 	Topics    []string `json:"topics"`
 	Removable bool     `json:"removable"`
@@ -52,11 +62,15 @@ func documentSubscriberBase(project, slug string) string {
 // (routing.Match): a bare subject alone (no ".>") never matches, since NATS
 // only delivers a typed event like "<base>.issue.created" to a subscriber of
 // "<base>.>" or a broader wildcard, never to a subscriber of "<base>" alone.
+// A topic is read in every form a reader takes it in (contracts.TopicForms):
+// the listener filters a session's consumer on both forms of each topic, so a
+// session following an issue in the form naming its project receives that
+// issue's events and is its subscriber, as one following the old form is.
 func matchingTopics(topics []string, base string) []string {
 	candidate := base + ".marker"
 	matched := make([]string, 0, len(topics))
 	for _, topic := range topics {
-		if routing.Match(topic, candidate) {
+		if slices.ContainsFunc(contracts.TopicForms(topic), func(form string) bool { return routing.Match(form, candidate) }) {
 			matched = append(matched, topic)
 		}
 	}
@@ -64,14 +78,16 @@ func matchingTopics(topics []string, base string) []string {
 }
 
 // exactTopics returns the subset of topics scoped exactly to base (base
-// itself, or base+".>") — the only forms safe to remove without silently
-// unsubscribing the session from every other issue or document a broader
-// wildcard among its topics also happens to cover.
+// itself, or base+".>"), in either form of the name (contracts.TopicForms) —
+// the only forms safe to remove without silently unsubscribing the session
+// from every other issue or document a broader wildcard among its topics also
+// happens to cover. Each is returned as the session wrote it, which is how the
+// listener's unsubscribe finds it.
 func exactTopics(topics []string, base string) []string {
 	wildcard := base + ".>"
 	exact := make([]string, 0, len(topics))
 	for _, topic := range topics {
-		if topic == base || topic == wildcard {
+		if slices.ContainsFunc(contracts.TopicForms(topic), func(form string) bool { return form == base || form == wildcard }) {
 			exact = append(exact, topic)
 		}
 	}
@@ -79,14 +95,14 @@ func exactTopics(topics []string, base string) []string {
 }
 
 func (s *server) listIssueSubscribers(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireHuman(w, r); !ok {
+	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
 	s.writeSubscribers(w, r, issueSubscriberBase(r.PathValue("key")))
 }
 
 func (s *server) listArtifactSubscribers(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireHuman(w, r); !ok {
+	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
 	artifact, _, err := s.documentOwnerFromRequest(r.Context(), s.deps.Store.Pool, r)
@@ -112,9 +128,11 @@ func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, base s
 		s.writeEnvoyError(w, err)
 		return
 	}
-	live := make(map[string]envoy.Session, len(sessions))
+	// Every session the registry holds a record of, whatever its state; the row decides what
+	// the subscriber reads as, so this is no longer the list of the live ones.
+	registered := make(map[string]envoy.Session, len(sessions))
 	for _, session := range sessions {
-		live[session.SessionID] = session
+		registered[session.SessionID] = session
 	}
 
 	result := make([]subscriber, 0)
@@ -134,9 +152,10 @@ func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, base s
 		} else {
 			entry.Via = matched[0]
 		}
-		if session, ok := live[interest.SessionID]; ok {
+		if session, ok := registered[interest.SessionID]; ok {
 			entry.Title = session.Title
-			entry.Live = true
+			entry.State = session.State
+			entry.Live = session.State == envoy.StateLive
 			entry.LastSeen = session.LastSeen
 		}
 		result = append(result, entry)
@@ -151,7 +170,7 @@ func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, base s
 }
 
 func (s *server) unsubscribeIssueSession(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.requireHuman(w, r)
+	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
@@ -160,7 +179,7 @@ func (s *server) unsubscribeIssueSession(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *server) unsubscribeArtifactSession(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.requireHuman(w, r)
+	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
@@ -327,7 +346,7 @@ func (s *server) finishPendingRemoval(w http.ResponseWriter, r *http.Request, ow
 		return
 	}
 	if event != nil {
-		s.publish(*event)
+		s.publish(r.Context(), *event)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -412,15 +431,36 @@ func (s *server) unsubscribeSession(
 		return
 	}
 	if event != nil {
-		s.publish(*event)
+		s.publish(r.Context(), *event)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// writeEnvoyError answers a listener failure: the listener's refilling answer as 503
+// ENVOY_REFILLING (writeEnvoyRefilling), any other ErrUnavailable as 503 ENVOY_UNAVAILABLE.
 func (s *server) writeEnvoyError(w http.ResponseWriter, err error) {
+	var refilling *envoy.RefillingError
+	if errors.As(err, &refilling) {
+		writeEnvoyRefilling(w, refilling.RetryAfter)
+		return
+	}
 	if errors.Is(err, envoy.ErrUnavailable) {
 		writeError(w, "ENVOY_UNAVAILABLE", http.StatusServiceUnavailable, err.Error())
 		return
 	}
 	s.writeHandlerError(w, err)
+}
+
+// envoyRefillingRetryAfter is the Retry-After a refilling answer gives when the listener sent
+// none: the listener's own (cmd/listener listRefillingRetryAfter).
+const envoyRefillingRetryAfter = "5"
+
+// writeEnvoyRefilling answers a read that needed the listener's agent list while the listener
+// refused it as refilling (envoy.ErrRefilling): 503 ENVOY_REFILLING with the listener's
+// Retry-After passed through. Its own code, apart from ENVOY_UNAVAILABLE, because the listener
+// did answer and said the list will be back in a moment; either way a client must not read the
+// missing list as "no agents".
+func writeEnvoyRefilling(w http.ResponseWriter, retryAfter string) {
+	w.Header().Set("Retry-After", cmp.Or(retryAfter, envoyRefillingRetryAfter))
+	writeError(w, "ENVOY_REFILLING", http.StatusServiceUnavailable, "The agent list is refilling. Try again in a moment.")
 }

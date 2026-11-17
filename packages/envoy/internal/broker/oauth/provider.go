@@ -20,6 +20,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +30,7 @@ import (
 	"authelia.com/provider/oauth2"
 	"authelia.com/provider/oauth2/compose"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
@@ -48,7 +50,11 @@ type Config struct {
 	// run, so the setting is what lets a deployment trade how often a caller renews against how
 	// long a revoked credential's last token stays spendable.
 	AccessLifetime time.Duration
-	// VerificationURL is the page a person types the user code into.
+	// VerificationURL is the page a person types the user code into. Empty is a broker that
+	// serves no device grant at all (BROKER_MACHINE_LOGIN_URL unset, which is allowed): New then
+	// composes none of the RFC 8628 factories, DeviceGrant answers false, the token endpoint
+	// answers unsupported_grant_type for a device code, and the broker mounts no device
+	// authorization route and names no device code in its metadata document.
 	VerificationURL string
 	// ProofSkew is BROKER_PROOF_SKEW_SECONDS: a DPoP proof is accepted while the broker's clock is
 	// within this of its iat, as every other broker proof is (proof.Verifier.Skew), give or take
@@ -67,6 +73,17 @@ type Provider struct {
 	strategy *codeStrategy
 	// exchange is Config.Exchange, which the exchange's own step decides by.
 	exchange ExchangeConfig
+	// deviceGrant is whether Config.VerificationURL named a page, so the RFC 8628 factories are
+	// composed: what the broker mounts its device authorization route on, and what its metadata
+	// document says.
+	deviceGrant bool
+	// grantTypes is every grant type composed below, subjectTokenTypes every token type the
+	// exchange registered as a subject token, and dpopAlgorithms every algorithm a DPoP proof
+	// may be signed with. All three are read where the provider is composed, so the metadata
+	// document cannot name a grant, a token type or an algorithm this provider does not serve.
+	grantTypes        []string
+	subjectTokenTypes []string
+	dpopAlgorithms    []string
 	// reservations are the session names the exchange's entries fix, each mapped to the
 	// principal it belongs to, which reserveSessions holds before this provider's first exchange.
 	reservations map[string]string
@@ -76,10 +93,46 @@ type Provider struct {
 	reserving sync.Mutex
 }
 
+// DeviceGrant reports whether this provider serves the device authorization grant (RFC 8628),
+// which it does only when it was built with a verification URL. The broker mounts POST
+// /v1/oauth/device_authorization only when it does.
+func (p *Provider) DeviceGrant() bool { return p.deviceGrant }
+
+// GrantTypes is every grant type this provider serves, as RFC 8414's grant_types_supported
+// lists them, read off the factories New composed.
+func (p *Provider) GrantTypes() []string { return slices.Clone(p.grantTypes) }
+
+// SubjectTokenTypes is every token type this provider's RFC 8693 exchange takes as a subject
+// token, sorted: the types it registered, less the machine's actor token type, which is an actor
+// token and no subject. An issuer the broker was not told about registers no type, so this is
+// what this deployment accepts rather than what the broker could accept.
+func (p *Provider) SubjectTokenTypes() []string { return slices.Clone(p.subjectTokenTypes) }
+
+// DPoPSigningAlgorithms is every asymmetric algorithm a DPoP proof presented to this provider
+// may be signed with (RFC 9449's dpop_signing_alg_values_supported), read from the composed
+// configuration, so a client told one of these is told what the proof check will actually take.
+func (p *Provider) DPoPSigningAlgorithms() []string { return slices.Clone(p.dpopAlgorithms) }
+
 // ErrLoginEnded is the TokenHooks.Before error (wrapped or not) that refuses a token request
 // invalid_grant: the machine login has ended, so its client stops using it. Any other Before error
 // is a 500 server_error, which a client retries.
 var ErrLoginEnded = errors.New("the machine login has ended")
+
+// ErrMachineKeyTaken is the ExchangeConfig.MachineCredentials error (wrapped or not) that
+// refuses a machine's exchange invalid_grant: another live machine login already holds the key
+// the request's DPoP proof presented, and a launcher credential's key is one credential's.
+// Any other error from it is a 500 server_error.
+var ErrMachineKeyTaken = errors.New("another live machine login holds this key")
+
+// ErrSignInRevoked and ErrSignInMachineChanged are the two ExchangeConfig.PersonSignIns errors
+// (wrapped or not) that refuse a person's trade invalid_grant: that person has revoked the
+// sign-in this box key belongs to, and the sign-in this box key belongs to was made on another
+// machine. Either way the box signs in again with a key of its own. Any other error from it is
+// a 500 server_error.
+var (
+	ErrSignInRevoked        = errors.New("the person has revoked this machine's sign-in")
+	ErrSignInMachineChanged = errors.New("this sign-in was made on another machine")
+)
 
 // TokenHooks are the broker's own steps around a token request the library has validated.
 type TokenHooks struct {
@@ -93,8 +146,9 @@ type TokenHooks struct {
 }
 
 // Refusal is an onRequest error the device authorization endpoint answers as
-// {"error": "invalid_request", "error_description": "<Code>: <Message>"} with Status, and with
-// Retry-After when RetryAfter (seconds) is set. Any other onRequest error is a 500 server_error.
+// {"error": "invalid_request", "error_description": "<Code>: <Message>", "code": "<Code>"} with
+// Status, and with Retry-After when RetryAfter (seconds) is set. Any other onRequest error is a
+// 500 server_error.
 type Refusal struct {
 	Status     int
 	Code       string
@@ -109,12 +163,21 @@ func (r *Refusal) Error() string { return r.Code + ": " + r.Message }
 // request's proof names. It is the exchange's wiring too, so it sets the decision the store's
 // GetSubjectForTokenExchange calls (Store.ExchangeSubject): the store holds no policy of its
 // own, and the grant is composed here whether or not any issuer is.
+//
+// The device grant is the one part a deployment may leave out: Config.VerificationURL is the
+// page a person types the user code into, and with no page there is nowhere to send them, so a
+// provider built without one composes none of the RFC 8628 factories. An empty URL is therefore
+// accepted; any other URL that does not parse is still refused, since a page nobody can reach is
+// worse than no page at all.
 func New(c Config, store *oauthstore.Store) (*Provider, error) {
 	if len(c.Secret) < 32 {
 		return nil, fmt.Errorf("oauth: the secret is %d bytes, want at least 32", len(c.Secret))
 	}
-	if _, err := url.ParseRequestURI(c.VerificationURL); err != nil {
-		return nil, fmt.Errorf("oauth: verification URL: %w", err)
+	deviceGrant := c.VerificationURL != ""
+	if deviceGrant {
+		if _, err := url.ParseRequestURI(c.VerificationURL); err != nil {
+			return nil, fmt.Errorf("oauth: verification URL: %w", err)
+		}
 	}
 	if c.DeviceLifetime <= 0 || c.RefreshLifetime <= 0 || c.AccessLifetime <= 0 {
 		return nil, fmt.Errorf("oauth: the device lifetime (%v), refresh lifetime (%v) and access lifetime (%v) must all be positive", c.DeviceLifetime, c.RefreshLifetime, c.AccessLifetime)
@@ -127,9 +190,10 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 	}
 	// A deployment that has listed no identity gets the empty set rather than a nil one, so the
 	// exchange composes and refuses every caller by name instead of faulting on a map nobody
-	// built.
+	// built. Its sign-in domain is empty, which admits no person at all: a set nobody built
+	// lists no machine either, so there is no box a person could have signed in on.
 	if c.Exchange.Policy == nil {
-		policy, err := exchange.NewSet(nil, nil)
+		policy, err := exchange.NewSet(nil, nil, nil, nil, "")
 		if err != nil {
 			return nil, fmt.Errorf("oauth: the empty exchange policy: %w", err)
 		}
@@ -166,25 +230,46 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 	}
 	cfg.ClientAuthenticationStrategy = newExchangeClientAuth(store, cfg)
 	strategy := &codeStrategy{HMACCoreStrategy: compose.NewOAuth2HMACStrategy(cfg)}
+	// The RFC 8628 factories are composed only for a broker that serves the device grant, each
+	// in the place the full list had it, so every other handler is composed in the order it was.
+	//
 	// The RFC 8693 factories run in the order compose/compose_rfc8693.go states: the grant
 	// handler first, so the 'act' claim is on the session before a token-type handler issues
 	// anything, and the actor-token validation last, so the token-type handlers have put an actor
 	// token on the session for it to read. The ID token type is left out: this provider issues no
 	// ID tokens, and that factory asserts the composed strategy to an issuing interface
 	// codeStrategy has no reason to answer.
-	provider := compose.Compose(cfg, store, strategy,
-		compose.RFC8628DeviceAuthorizeFactory, compose.RFC8628UserAuthorizeFactory,
-		compose.RFC8628DeviceAuthorizeTokenFactory, compose.OAuth2RefreshTokenGrantFactory,
-		compose.OAuth2TokenRevocationFactory, compose.OAuth2TokenIntrospectionFactory,
-		compose.DPoPDeviceAuthorizeFactory, compose.DPoPTokenFactory,
+	var factories []compose.Factory
+	grantTypes := []string{string(oauth2.GrantTypeRefreshToken), string(oauth2.GrantTypeTokenExchange)}
+	if deviceGrant {
+		factories = append(factories, compose.RFC8628DeviceAuthorizeFactory, compose.RFC8628UserAuthorizeFactory,
+			compose.RFC8628DeviceAuthorizeTokenFactory)
+		grantTypes = append([]string{string(oauth2.GrantTypeDeviceCode)}, grantTypes...)
+	}
+	factories = append(factories, compose.OAuth2RefreshTokenGrantFactory,
+		compose.OAuth2TokenRevocationFactory, compose.OAuth2TokenIntrospectionFactory)
+	if deviceGrant {
+		factories = append(factories, compose.DPoPDeviceAuthorizeFactory)
+	}
+	factories = append(factories, compose.DPoPTokenFactory,
 		compose.RFC8693TokenExchangeGrantFactory, compose.RFC8693AccessTokenTypeFactory,
 		compose.RFC8693RefreshTokenTypeFactory, compose.RFC8693CustomJWTTypeFactory,
 		compose.RFC8693ActorTokenValidationFactory)
+	provider := compose.Compose(cfg, store, strategy, factories...)
 	reservations := map[string]string{}
 	for _, reservation := range c.Exchange.Policy.Reservations() {
 		reservations[reservation.Session] = reservation.Principal
 	}
-	p := &Provider{oauth: provider, store: store, strategy: strategy, exchange: c.Exchange, reservations: reservations}
+	p := &Provider{
+		oauth: provider, store: store, strategy: strategy, exchange: c.Exchange,
+		deviceGrant: deviceGrant, grantTypes: grantTypes,
+		subjectTokenTypes: subjectTokenTypes(cfg.RFC8693TokenTypes),
+		// Read from the configuration the provider was composed with rather than written down
+		// again here, so the document names what the proof check will take. The library's own
+		// configuration ignores the context this lookup takes.
+		dpopAlgorithms: cfg.GetDPoPAllowedJWSAlgorithms(context.Background()),
+		reservations:   reservations,
+	}
 	// A provider built with no store serves no request at all and is only ever inspected, as the
 	// broker's route wiring test inspects it, so there is nothing there to give the decision to.
 	if store != nil {
@@ -302,6 +387,7 @@ func (p *Provider) Token(w http.ResponseWriter, r *http.Request, hooks TokenHook
 		return
 	}
 	request, err := p.oauth.NewAccessRequest(ctx, r, &oauth2.DefaultSession{})
+	noteClient(ctx, request)
 	if err != nil {
 		p.writeError(ctx, w, request, err)
 		return
@@ -404,21 +490,24 @@ func (p *Provider) writeRevocationError(ctx context.Context, w http.ResponseWrit
 }
 
 // RegisterPodSession records that the pod podUID of the service account account may exchange
-// under the session name session, and answers when that registration runs out
-// (oauthstore.PodSessionRetention from now, extended by every later write). It is what
+// under the session name session, bound to the key whose thumbprint is jkt when jkt is set, as
+// the registrar's write of the given generation, and answers the registration as it stands after
+// this write, with whether the write set it and the key it replaced
+// (oauthstore.Store.RegisterPodSession): a write naming no key keeps the one a live row names,
+// and a write of a lower generation than the row's changes nothing. It is what
 // POST /v1/oauth/exchange/pod-sessions does once it has verified the pod's own token, and the
 // only way a row the exchange's gate reads is written.
 //
 // The policy decides what may be registered, in the same words the exchange refuses a pod with
 // (exchange.Set.Registration): a token bound to no pod, an account no entry lists and an entry
-// that fixes a session are each refused, the last because the name such an entry writes under is
-// the configuration's and its pods need no registration at all. A caller maps those sentinels
+// that fixes a session are each refused, the last because the name such an entry's tokens carry
+// is the configuration's and its pods need no registration at all. A caller maps those sentinels
 // onto its own refusals; anything else is the store's.
-func (p *Provider) RegisterPodSession(ctx context.Context, account, podUID, session string) (time.Time, error) {
+func (p *Provider) RegisterPodSession(ctx context.Context, account, podUID, session, jkt string, generation int64) (oauthstore.PodSessionRegistration, error) {
 	if err := p.exchange.Policy.Registration(account, podUID, session); err != nil {
-		return time.Time{}, err
+		return oauthstore.PodSessionRegistration{}, err
 	}
-	return p.store.RegisterPodSession(ctx, podUID, session)
+	return p.store.RegisterPodSession(ctx, podUID, session, jkt, generation)
 }
 
 // writeError answers err as the library's OAuth error JSON, logging a server error's cause.
@@ -429,13 +518,25 @@ func (p *Provider) writeError(ctx context.Context, w http.ResponseWriter, reques
 	p.oauth.WriteAccessError(ctx, w, request, err)
 }
 
+// noteClient names, as the caller of the answer's record, the OAuth client the library
+// authenticated for request, when it authenticated one (answer.Recorder.NoteCaller). It is one of
+// the two clients this provider registers, never text the caller chose. The class stays public:
+// the token route takes no credential of the broker's, and neither client presents a secret.
+func noteClient(ctx context.Context, request oauth2.AccessRequester) {
+	if request == nil || request.GetClient() == nil {
+		return
+	}
+	answer.FromContext(ctx).NoteCaller(answer.CallerPublic, request.GetClient().GetID())
+}
+
 // WriteRefusal answers refusal as an OAuth error a client's OAuth library parses: invalid_request,
-// its description naming the broker's code.
+// its description naming the broker's code, and that code again as the member code every other
+// refusal of the broker carries, which the answer's record reads.
 func WriteRefusal(w http.ResponseWriter, refusal *Refusal) {
 	if refusal.RetryAfter > 0 {
 		w.Header().Set("Retry-After", strconv.Itoa(refusal.RetryAfter))
 	}
-	writeOAuthJSON(w, refusal.Status, map[string]string{"error": "invalid_request", "error_description": refusal.Error()})
+	writeOAuthJSON(w, refusal.Status, map[string]string{"error": "invalid_request", "error_description": refusal.Error(), "code": refusal.Code})
 }
 
 // writeOAuthJSON answers status with body and the no-store headers RFC 6749 and RFC 8628 require.

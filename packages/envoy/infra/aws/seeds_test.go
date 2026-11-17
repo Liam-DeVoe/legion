@@ -14,6 +14,7 @@ import (
 
 	envoyaws "github.com/sjawhar/envoy/infra/aws"
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
+	envoynats "github.com/sjawhar/envoy/infra/nats"
 )
 
 // testSeed is nats-io's vector user seed (nkeys v0.4.15 README.md line 45); testPublicKey is its
@@ -188,6 +189,18 @@ func natsSeedRows() []seedRow[envoyaws.NatsServiceArgs] {
 			a.Authorization.NoAuthUser = pick(s, lowerSeed, "example-fallback")
 			return a.Authorization.NoAuthUser
 		}},
+		{input: "authorization.callout.issuer", set: func(a *A, s bool) string {
+			a.Authorization.Callout = &envoynats.AuthCalloutArgs{Issuer: pick(s, testSeed, calloutIssuer), XKey: calloutXKey, ServiceUser: "example-listener"}
+			return a.Authorization.Callout.Issuer
+		}},
+		{input: "authorization.callout.xkey", set: func(a *A, s bool) string {
+			a.Authorization.Callout = &envoynats.AuthCalloutArgs{Issuer: calloutIssuer, XKey: pick(s, lowerSeed, calloutXKey), ServiceUser: "example-listener"}
+			return a.Authorization.Callout.XKey
+		}},
+		{input: "authorization.callout.serviceUser", set: func(a *A, s bool) string {
+			a.Authorization.Callout = &envoynats.AuthCalloutArgs{Issuer: calloutIssuer, XKey: calloutXKey, ServiceUser: pick(s, splitSeed("-"), "example-daemon")}
+			return a.Authorization.Callout.ServiceUser
+		}},
 		{input: "configHeader[1]", set: func(a *A, s bool) string {
 			a.ConfigHeader[1] = "Public keys only, " + pick(s, splitSeed(" "), "today")
 			return a.ConfigHeader[1]
@@ -344,7 +357,6 @@ func listenerSeedRows() []seedRow[envoyaws.WebhookListenerArgs] {
 		{input: "cpu", set: func(a *A, s bool) string { a.Cpu = pick(s, testSeed, "512"); return a.Cpu }},
 		{input: "memory", set: func(a *A, s bool) string { a.Memory = pick(s, testSeed, "1024"); return a.Memory }},
 		{input: "listenHost", set: func(a *A, s bool) string { a.ListenHost = pick(s, splitSeed("."), "::"); return a.ListenHost }},
-		{input: "hostBridge", set: func(a *A, s bool) string { a.HostBridge = pick(s, lowerSeed, "127.0.0.2"); return a.HostBridge }},
 		{input: "mentionTrigger", set: func(a *A, s bool) string {
 			a.MentionTrigger = pulumi.StringRef("@" + pick(s, lowerSeed, "other"))
 			return *a.MentionTrigger

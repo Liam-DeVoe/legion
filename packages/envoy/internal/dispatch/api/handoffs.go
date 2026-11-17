@@ -26,10 +26,10 @@ var handoffPhasePattern = regexp.MustCompile(contracts.HandoffPhasePattern)
 // over beside the actor; the cap itself is checked on the decoded body.
 const handoffRequestLimit = 6*contracts.DispatchHandoffBodyMax + 4<<10
 
-// handoffWritePattern is the handoff write's route pattern, and handoffWriteRoute that route: the
-// one JSON route whose body limit is its own rather than maxJSONRequestBytes (routeBody), with
-// errHandoffTooLarge the refusal past it, so the drain, the keyed layer and createHandoff answer
-// a body too large for it alike.
+// handoffWritePattern is the handoff write's route pattern, and handoffWriteRoute that route:
+// with the markdown round trip, one of the two JSON routes whose body limit is its own rather
+// than maxJSONRequestBytes (routeBody), with errHandoffTooLarge the refusal past it, so the
+// drain, the keyed layer and createHandoff answer a body too large for it alike.
 const (
 	handoffWritePattern = "/api/v1/issues/{key}/handoffs/{phase}"
 	handoffWriteRoute   = http.MethodPost + " " + handoffWritePattern
@@ -43,7 +43,7 @@ const handoffColumns = `id::text, issue_key, phase, version, author, created_at`
 
 type createHandoffInput struct {
 	Actor *model.Actor `json:"actor"`
-	Body  *string      `json:"body"`
+	Body  *string      `json:"body" required:"true"`
 }
 
 // createHandoff records one phase handoff: POST /api/v1/issues/{key}/handoffs/{phase}. Only a
@@ -113,7 +113,7 @@ func (s *server) recordHandoff(ctx context.Context, issueKey, phase, body string
 		return model.HandoffSummary{}, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := s.requireOpenIssue(ctx, tx, issueKey); err != nil {
+	if err := s.requireOpenOwner(ctx, tx, issueOwner(issueKey)); err != nil {
 		return model.HandoffSummary{}, err
 	}
 	handoff, err := scanHandoff(tx.QueryRow(ctx, `
@@ -133,7 +133,7 @@ func (s *server) recordHandoff(ctx context.Context, issueKey, phase, body string
 	if err := tx.Commit(ctx); err != nil {
 		return model.HandoffSummary{}, err
 	}
-	s.publish(event)
+	s.publish(ctx, event)
 	return handoff, nil
 }
 

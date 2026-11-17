@@ -21,15 +21,18 @@ type API interface {
 	IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, error)
 	RebuildDocument(ctx context.Context, artifactID string, markdown *string, actor model.Actor) (RebuildReport, VersionResult, error)
 	InjectSchemaInvalidForTest(ctx context.Context, artifactID string) error
+	InjectUnknownElementForTest(ctx context.Context, artifactID string) error
 	Text(ctx context.Context, artifactID string) (string, error)
 	TextWithToken(ctx context.Context, artifactID string) (string, string, error)
 	Blocks(ctx context.Context, artifactID string) ([]model.ArtifactBlock, error)
 	TextWithBlocks(ctx context.Context, artifactID string) (string, []model.ArtifactBlock, error)
+	TextWithTokenAndBlocks(ctx context.Context, artifactID string) (string, string, []model.ArtifactBlock, error)
 	BlockPath(ctx context.Context, artifactID, blockID string) (model.BlockPath, error)
 	SnapshotVersion(ctx context.Context, artifactID string, actor model.Actor) (VersionResult, error)
-	SetIssueClosed(ctx context.Context, issueKey string, closed bool)
 	SettleIssueDocuments(ctx context.Context, issueKey string) error
 	WriteIssueAskStates(ctx context.Context, issueKey string, asks []model.Ask, actor model.Actor, markUnindexed bool) ([]BlockRef, error)
+	MarkReopenOwedAskDocuments(ctx context.Context, issueKey string) error
+	FollowClosedIssueVersions(ctx context.Context, issueKey string) ([]model.Event, error)
 	AcquireConditionalEdit(ctx context.Context, artifactID string) (func(), error)
 	ApplyOps(ctx context.Context, artifactID string, ops []model.EditOp, actor model.Actor, precondition *model.EditPrecondition) (EditOutcome, error)
 	SetBlockAttributes(ctx context.Context, artifactID, blockID string, attributes map[string]any, actor model.Actor) error
@@ -44,7 +47,9 @@ type API interface {
 	RejectSuggestion(ctx context.Context, artifactID, id string, actor model.Actor) error
 	ProjectMark(ctx context.Context, artifactID, markID string, record MarkRecord, actor model.Actor) error
 	Join(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger)
+	JoinWrite(ctx context.Context, artifactID string) error
 	NamedVersion(ctx context.Context, artifactID, summary string, actor model.Actor) (VersionResult, error)
+	Evict(ctx context.Context, artifactID string) error
 	Quiesce(ctx context.Context) error
 }
 
@@ -72,13 +77,16 @@ type VersionResult struct {
 // names each readable ask block the batch left in the document that it did not hold before, in
 // document order (addedAskBlocks). Settlement opens an ask for each, except a block written back
 // under the id of an ask the document already holds and settlement leaves closed: answered, or
-// resolved by a person.
+// resolved by a person. Written is what the batch wrote, read back off the tree it wrote
+// (editBatch.readBack), so a caller sees the markdown it left rather than only how many
+// operations landed.
 type EditOutcome struct {
 	Applied        int
 	Changed        bool
 	Unchanged      []int
 	Token          string
 	AddedAskBlocks []AddedAskBlock
+	Written        string
 }
 
 // AddedAskBlock is one ask block an edit added: its block id and its question as settlement reads

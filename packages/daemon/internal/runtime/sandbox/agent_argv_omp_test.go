@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
 )
 
@@ -47,11 +48,7 @@ func TestTheAgentArgvImportsTheRepositorysExtensionsHooksAndCommands(t *testing.
 		}
 	}
 	testbin.OMPHome(t, omp, home)
-	initialise := exec.Command("git", "init", "--quiet", repo)
-	initialise.Dir = repo
-	if out, err := initialise.CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v: %s", err, out)
-	}
+	fixturegit.Isolated(t, home).Run(repo, fixturegit.InitWorkTree(repo, "")...)
 	// A profile whose one model is an operator's provider that nothing listens on: RPC mode starts
 	// only on a profile with a model, and naming it keeps the test off any credential the machine
 	// carries (a devbox's instance role reaches Amazon Bedrock; a runner has none, and the metadata
@@ -71,7 +68,7 @@ func TestTheAgentArgvImportsTheRepositorysExtensionsHooksAndCommands(t *testing.
 	}
 	environ := []string{"HOME=" + home, "OMP_PROFILE=legion", "PATH=/usr/local/bin:/usr/bin:/bin", "AWS_EC2_METADATA_DISABLED=true"}
 
-	pod := launch{prompt: "The test's system prompt."}.agentArgv([]string{omp})
+	pod := withPromptFile(t, launch{}.agentArgv([]string{omp}), "The test's system prompt.")
 	for _, root := range []struct{ image, test string }{{envoyPlugin, envoy}, {legionPlugin, plugin}} {
 		at := slices.Index(pod, root.image)
 		if at < 0 {

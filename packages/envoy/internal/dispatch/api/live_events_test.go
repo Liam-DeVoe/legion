@@ -14,14 +14,59 @@ import (
 
 	gws "github.com/gorilla/websocket"
 
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// eventFeedWait bounds a wait for one frame of the event feed: a frame that never arrives fails the
-// test by name rather than holding it until the package's own timeout, which would take every other
-// test's result with it.
+// eventFeedWait bounds a wait on the server's own work that does not wait on the event horizon -
+// a heartbeat, a subscription's end, a replay sent out of what a subscription already read, the
+// hub's own reads - so a frame that never arrives fails the test by name rather than holding it
+// until the package's own timeout, which would take every other test's result with it. A wait for
+// work behind the horizon keys on the horizon instead (eventFeedFrame, horizontest.WaitInProcess).
 const eventFeedWait = 30 * time.Second
+
+// The event feed stands behind the event horizon: a subscription's events_start is the last thing
+// it sends, once the relay's first cursor has awaited the horizon (firstRelayCursor), and the relay
+// sends an event only once the horizon has passed its id. The horizon's proof is instance-wide, so
+// a frame of the feed is as late as the longest transaction open anywhere on the Postgres
+// instance, which CI shares between every package of the module, and no clock bounds the wait for
+// one: it keys on the horizon's own account of itself (internal/dispatch/horizontest). Every server
+// these tests build warns at horizontest.StallWarning (newRegisteredTestServer).
+
+// eventFeedFrame is the next frame but a heartbeat client is sent, which what names: a frame of
+// the event feed, so the wait for it is the horizon's (horizontest.WaitInProcess), on the store of
+// client's server.
+func eventFeedFrame(t *testing.T, client *socketClient, what string) any {
+	t.Helper()
+	if client.database == nil {
+		t.Fatalf("waiting for %s on a socket whose server's database no one named (servedBy)", what)
+	}
+	arrived := horizontest.WaitInProcess(t, what, client.arrival(), client.database)
+	if arrived.ended {
+		t.Fatalf("the socket ended (%v) waiting for %s", arrived.err, what)
+	}
+	return decodeSocketFrame(t, arrived.data)
+}
+
+// eventFeedEvent is client's next frame but a heartbeat, which must be one of sub's events.
+func eventFeedEvent(t *testing.T, client *socketClient, sub string) LiveEventFrame {
+	t.Helper()
+	frame := eventFeedFrame(t, client, "an event of "+sub)
+	event, ok := frame.(LiveEventFrame)
+	if !ok || event.Sub != sub {
+		t.Fatalf("frame = %+v, want an event of %s", frame, sub)
+	}
+	return event
+}
+
+// servedBy names database as the one the server behind c reads, for a wait on its event feed: a
+// socket a rig opens names the rig's, and one dialled to another process names that process's.
+func (c *socketClient) servedBy(database *store.Store) *socketClient {
+	c.database = database
+	return c
+}
 
 // eventHead is the newest committed event id: what a page resuming now would name as its since.
 func eventHead(t *testing.T, database *store.Store) int64 {
@@ -46,7 +91,7 @@ func subscribeEvents(t *testing.T, client *socketClient, sub string, since *int6
 func subscribeEventsStart(t *testing.T, client *socketClient, sub string, since *int64) LiveEventsStart {
 	t.Helper()
 	sendEventsSubscribe(t, client, sub, since)
-	return eventsStart(t, client, eventFeedWait, sub)
+	return eventsStart(t, client, sub)
 }
 
 // sendEventsSubscribe sends client's subscribe frame for sub, resuming after since when it is not
@@ -61,10 +106,10 @@ func sendEventsSubscribe(t *testing.T, client *socketClient, sub string, since *
 	client.send(t, liveSubscribe(sub, eventsView(), resume))
 }
 
-// eventsStart reads sub's events_start, the frame its subscription opens with, within within.
-func eventsStart(t *testing.T, client *socketClient, within time.Duration, sub string) LiveEventsStart {
+// eventsStart reads sub's events_start, the frame its subscription opens with.
+func eventsStart(t *testing.T, client *socketClient, sub string) LiveEventsStart {
 	t.Helper()
-	frame := client.next(t, within, "the events_start of "+sub)
+	frame := eventFeedFrame(t, client, "the events_start of "+sub)
 	start, ok := frame.(LiveEventsStart)
 	if !ok || start.Sub != sub {
 		t.Fatalf("the first frame of %s = %+v, want its events_start", sub, frame)
@@ -75,7 +120,7 @@ func eventsStart(t *testing.T, client *socketClient, within time.Duration, sub s
 // eventsStartID is the id sub's events_start names: the event its subscription starts after.
 func eventsStartID(t *testing.T, client *socketClient, sub string) int64 {
 	t.Helper()
-	start := eventsStart(t, client, eventFeedWait, sub)
+	start := eventsStart(t, client, sub)
 	id, err := strconv.ParseInt(start.Since, 10, 64)
 	if err != nil {
 		t.Fatalf("events_start.since = %q, not a decimal event id: %v", start.Since, err)
@@ -95,7 +140,7 @@ type feedEvent struct {
 // it carries, whose id must be the one the frame names.
 func nextEvent(t *testing.T, client *socketClient, sub string) (LiveEventFrame, feedEvent) {
 	t.Helper()
-	frame := client.event(t, eventFeedWait, sub)
+	frame := eventFeedEvent(t, client, sub)
 	var event feedEvent
 	if err := json.Unmarshal(frame.Event, &event); err != nil {
 		t.Fatalf("decode the event of %s's frame %+v: %v", sub, frame, err)
@@ -116,7 +161,7 @@ func nextEventID(t *testing.T, client *socketClient, sub string) int64 {
 // eventOfType reads sub's events until one is of eventType.
 func eventOfType(t *testing.T, client *socketClient, sub, eventType string) (LiveEventFrame, feedEvent) {
 	t.Helper()
-	for range maxEventReplay {
+	for range maxLiveReplay {
 		frame, event := nextEvent(t, client, sub)
 		if event.Type == eventType {
 			return frame, event
@@ -136,10 +181,10 @@ func renameIssue(t *testing.T, handler http.Handler, key, title string) {
 	}
 }
 
-// seedEvents writes count events of key's straight into the log, a backlog to page through, each
-// payload padded with pad bytes, and moves the issue's sequence past them so the API's next write
-// on it appends after them.
-func seedEvents(t *testing.T, database *store.Store, key string, count, pad int) {
+// seedEvents writes count events of key's straight into the log in one statement, a backlog to
+// replay, each payload padded with pad bytes, moves the issue's sequence past them so the API's
+// next write on it appends after them, and answers the log's head after them.
+func seedEvents(t *testing.T, database *store.Store, key string, count, pad int) int64 {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
@@ -154,6 +199,7 @@ func seedEvents(t *testing.T, database *store.Store, key string, count, pad int)
 	if _, err := database.Pool.Exec(ctx, `update issues set last_seq = last_seq + $2::int where key = $1`, key, count); err != nil {
 		t.Fatalf("move %s's sequence past the seeded events: %v", key, err)
 	}
+	return eventHead(t, database)
 }
 
 // createPlainIssue creates project and an issue in it with no spec, as alice, and answers the
@@ -250,30 +296,59 @@ func TestTheEventFeedSaysWhenItsReplayCoversTheGap(t *testing.T) {
 	}
 }
 
-func TestTheEventFeedPagesThroughCappedBacklogWithoutDisconnecting(t *testing.T) {
+// A resume exactly maxLiveReplay events behind is replayed every one of them, in order, says so
+// with replay_complete (its page then owes no refresh), and goes on to the live events, each once.
+func TestTheEventFeedReplaysAResumeAtTheBoundInFullThenStreamsLive(t *testing.T) {
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	issue := createPlainIssue(t, rig.handler, "TEST")
-	seedEvents(t, rig.database, issue, 1005, 0)
-	head := eventHead(t, rig.database)
-	if head-1 <= maxEventReplay {
-		t.Fatalf("a backlog of %d events after the first fits one page of %d", head-1, maxEventReplay)
-	}
+	since := eventHead(t, rig.database)
+	backlog := seedEvents(t, rig.database, issue, maxLiveReplay, 0)
 
-	// The backlog after event 1 is more than one capped page; one subscription pages through all of
-	// it without ever ending: a capped page that ended the subscription and sent the page to
-	// subscribe again would leave a gap where a low id committing between "read this page" and "the
-	// next subscription subscribes" could be lost for good.
 	client := rig.dial(t, withBearer("agent-token"))
-	subscribeEvents(t, client, "events", new(int64(1)))
-	for want := int64(2); want <= head; want++ {
+	if start := subscribeEventsStart(t, client, "events", &since); start != liveEventsStart("events", since, true) {
+		t.Fatalf("events_start = %+v on a resume %d events behind, want it complete from %d", start, maxLiveReplay, since)
+	}
+	for want := since + 1; want <= backlog; want++ {
 		if id := nextEventID(t, client, "events"); id != want {
-			t.Fatalf("paged replay sent event %d, want %d", id, want)
+			t.Fatalf("the replay sent event %d, want %d", id, want)
 		}
 	}
-	// The same subscription is still open afterwards: a live event reaches it with no resubscribe.
-	renameIssue(t, rig.handler, issue, "Renamed after paging")
-	if _, live := nextEvent(t, client, "events"); live.Type != "issue.updated" || !strings.Contains(string(live.Payload), `"title":"Renamed after paging"`) {
-		t.Fatalf("live event after the paged backlog = %+v", live)
+	// The same subscription is still open afterwards: the live events reach it, each once.
+	renameIssue(t, rig.handler, issue, "Renamed after the replay")
+	renameIssue(t, rig.handler, issue, "Renamed again")
+	last := eventHead(t, rig.database)
+	for want := backlog + 1; want <= last; want++ {
+		if id := nextEventID(t, client, "events"); id != want {
+			t.Fatalf("the live event %d followed the replay, want %d", id, want)
+		}
+	}
+}
+
+// A resume one event past maxLiveReplay behind, and one whose frames would total more than
+// maxLiveReplayBytes, are each replayed nothing: their events_start says replay_complete false,
+// which is the page's cue to refresh what it shows, and the subscription stays open for the live
+// events.
+func TestTheEventFeedSendsNoReplayPastItsBounds(t *testing.T) {
+	for name, backlog := range map[string]struct{ count, pad int }{
+		"past the event bound": {count: maxLiveReplay + 1},
+		"past the byte bound":  {count: maxLiveReplay, pad: maxLiveReplayBytes / maxLiveReplay},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rig := newLiveSocketRig(t, testServerOptions{}, nil)
+			issue := createPlainIssue(t, rig.handler, "TEST")
+			since := eventHead(t, rig.database)
+			head := seedEvents(t, rig.database, issue, backlog.count, backlog.pad)
+
+			client := rig.dial(t, withBearer("agent-token"))
+			if start := subscribeEventsStart(t, client, "events", &since); start != liveEventsStart("events", head, false) {
+				t.Fatalf("events_start = %+v on a resume %s, want nothing replayed from %d", start, name, head)
+			}
+			renameIssue(t, rig.handler, issue, "Renamed "+name)
+			live := eventHead(t, rig.database)
+			if id := nextEventID(t, client, "events"); id != live {
+				t.Fatalf("the first frame is event %d, want only the live %d and no replayed one", id, live)
+			}
+		})
 	}
 }
 
@@ -344,37 +419,6 @@ func TestTheEventFeedDoesNotResendAnEventAtOrBelowItsSince(t *testing.T) {
 	}
 }
 
-// TestTheEventFeedCappedCatchupDeliversACommitDuringPagingExactlyOnce: a catch-up that fills a page
-// keeps paging on the relay subscription it opened with. An event committing while it pages reaches
-// the page on a later catch-up page or live from the relay, whichever sees it first, and the live
-// loop's floor, max(since, published), is what keeps it from arriving on both. A capped page that
-// ended the subscription instead, sending the page to subscribe again, would leave a gap between
-// the last page and the new subscription for that commit to fall into.
-func TestTheEventFeedCappedCatchupDeliversACommitDuringPagingExactlyOnce(t *testing.T) {
-	rig := newLiveSocketRig(t, testServerOptions{}, nil)
-	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
-	since := eventHead(t, rig.database)
-	// Exactly maxEventReplay events after since, so the first catch-up page fills and a second runs.
-	seedEvents(t, rig.database, issue.Key, maxEventReplay, 0)
-	client := rig.dial(t, withBearer("agent-token"))
-	subscribeEvents(t, client, "events", new(since))
-
-	// Committed while that catch-up is still paging.
-	renameIssue(t, rig.handler, issue.Key, "Renamed")
-	live := eventHead(t, rig.database)
-	seen := map[int64]bool{}
-	for id := int64(0); id != live; {
-		id = nextEventID(t, client, "events")
-		if seen[id] {
-			t.Fatalf("event %d was delivered twice", id)
-		}
-		seen[id] = true
-		if len(seen) > maxEventReplay+100 {
-			t.Fatalf("the commit %d made during the catch-up was not delivered in %d frames", live, len(seen))
-		}
-	}
-}
-
 // TestTheEventFeedColdStartSendsNoBacklogAndDeliversTheNextCommit: a cold subscription (no since)
 // resolves its own head inside the subscription, after it has subscribed to the relay. It is sent
 // nothing already committed, which is the backlog it asked not to get, and everything committing
@@ -412,7 +456,7 @@ func TestAColdSubscriptionStartsAtTheRelaysPublishedCursor(t *testing.T) {
 	issue := createPlainIssue(t, rig.handler, "TEST")
 	client := rig.dial(t, withBearer("agent-token"))
 	start := subscribeEvents(t, client, "events", nil)
-	published, _ := rig.served.eventRelay.at()
+	published := relayPublished(rig.served.eventRelay)
 	if head := eventHead(t, rig.database); start != published || start > head {
 		t.Fatalf("a cold subscription starts after event %d, want the relay's published cursor %d, at or below the log's newest id %d", start, published, head)
 	}
@@ -439,7 +483,7 @@ func TestASinceAboveTheHeadStartsAtTheRelaysPublishedCursor(t *testing.T) {
 	client := rig.dial(t, withBearer("agent-token"))
 	head := eventHead(t, rig.database)
 	start := subscribeEvents(t, client, "events", new(head+1000))
-	if published, _ := rig.served.eventRelay.at(); start != published || start > head {
+	if published := relayPublished(rig.served.eventRelay); start != published || start > head {
 		t.Fatalf("a since of %d starts after event %d, want the relay's published cursor %d, at or below the log's newest id %d", head+1000, start, published, head)
 	}
 	renameIssue(t, rig.handler, issue, "Renamed above the head")
@@ -515,7 +559,7 @@ func (stream *gatedStream) SendWait(ctx context.Context, frame any) error {
 	}
 }
 
-func (stream *gatedStream) Human() bool { return false }
+func (stream *gatedStream) Holds(string) bool { return false }
 
 // next is the next frame the subscription sent, within eventFeedWait.
 func (stream *gatedStream) next(t *testing.T, what string) any {
@@ -529,17 +573,19 @@ func (stream *gatedStream) next(t *testing.T, what string) any {
 	}
 }
 
+// feedNext is the next frame an events subscription on database's server sent: a frame of the
+// event feed, which stands behind that server's event horizon, so the wait is the horizon's.
+func (stream *gatedStream) feedNext(t *testing.T, database *store.Store, what string) any {
+	t.Helper()
+	return horizontest.WaitInProcess(t, what, stream.frames, database)
+}
+
 // A subscription the relay drops, because it fell more than the relay holds for one subscriber
-// behind, ends with an ended frame (behind) rather than missing events in silence, and the page's
-// resubscribe from the last id it applied is served what it missed and what commits next. The
-// subscription here waits for room as a socket's does while its page reads nothing, so it drains
-// nothing of what the relay publishes into it.
-//
-// Its catch-up ends at the cursor the relay had published through when it subscribed, which the
-// seeded commit leaves far below the log's newest id; what it sends after that is what the relay
-// had buffered for it before it dropped it. So the end can come at any id, and what the page needs
-// is that every id it applied came in order and that its resubscribe is served the rest.
-func TestARelayDropEndsTheSubscriptionAsBehind(t *testing.T) {
+// behind, is caught up from the event log when what it missed is within the replay's bounds: it
+// sends what its channel still held and what it missed, each event once and in id order, and goes
+// on live on the subscription it made instead. The subscription here waits for room as a socket's
+// does while its page reads nothing, so it drains nothing of what the relay publishes into it.
+func TestARelayDropWithinTheBoundsCatchesTheSubscriptionUp(t *testing.T) {
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
 	ctx, err := store.ForConcurrentRead(store.WithTransactionTracking(t.Context()))
@@ -550,24 +596,74 @@ func TestARelayDropEndsTheSubscriptionAsBehind(t *testing.T) {
 	running := served.startEventsSubscription(ctx, stream, "feed", new(int64(0)))
 	t.Cleanup(running.stop)
 	relay := served.eventRelay
-	pollUntil(t, 5*time.Second, "the subscription subscribes to the relay", func() bool { return relay.stream.SubscriberCount() == 1 })
+	horizontest.PollInProcess(t, "the subscription subscribes to the relay", database, func() bool { return relaySubscribers(relay) == 1 })
 
-	// More events in one commit than the relay holds for one subscriber.
-	seedEvents(t, database, issue, 100, 0)
-	pollUntil(t, 5*time.Second, "the relay drops the subscription that fell behind", func() bool {
-		return relay.stream.SubscriberCount() == 0
+	// More events in one commit than the relay holds for one subscriber, and fewer than the
+	// replay's bound, so the catch-up covers the whole of what the drop lost.
+	head := seedEvents(t, database, issue, liveEventsBuffer+10, 0)
+	if head > maxLiveReplay {
+		t.Fatalf("the backlog of %d events is past the replay's bound of %d", head, maxLiveReplay)
+	}
+	horizontest.PollInProcess(t, "the relay drops the subscription that fell behind", database, func() bool {
+		return relaySubscribers(relay) == 0
 	})
 
-	// Once there is room again the subscription sends what it catches up on, in id order, and then
-	// its end.
+	// Once there is room again the subscription sends what it held and what it caught up on.
 	close(stream.gate)
-	if start, ok := stream.next(t, "feed's events_start").(LiveEventsStart); !ok || start.Sub != "feed" || start.Since != "0" {
+	if start, ok := stream.feedNext(t, database, "feed's events_start").(LiveEventsStart); !ok || start.Sub != "feed" || start.Since != "0" {
 		t.Fatalf("first frame = %+v, want feed's events_start from 0", start)
 	}
-	head := eventHead(t, database)
+	for last := int64(0); last < head; {
+		frame, ok := stream.feedNext(t, database, "feed's events").(LiveEventFrame)
+		if !ok {
+			t.Fatalf("frame = %+v, want feed's next event rather than its end: what it missed is within the replay's bounds", frame)
+		}
+		id := mustEventFrameID(t, frame)
+		if frame.Sub != "feed" || frame.ID != strconv.FormatInt(id, 10) || id <= last {
+			t.Fatalf("event frame %+v after %d, want feed's next", frame, last)
+		}
+		last = id
+	}
+
+	// And it goes on live on the subscription it made instead of the dropped one.
+	renameIssue(t, handler, issue, "Renamed after the drop")
+	frame, ok := stream.feedNext(t, database, "the rename").(LiveEventFrame)
+	if !ok || !strings.Contains(string(frame.Event), "Renamed after the drop") {
+		t.Fatalf("the caught-up subscription was sent %+v, want the rename committed after the drop", frame)
+	}
+}
+
+// A subscription the relay drops that missed more than the replay's bound is not caught up: it
+// sends what its channel still held and ends with an ended frame (behind) rather than missing
+// events in silence, and the page's resubscribe from the last id it applied is served what
+// commits next.
+func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	issue := createPlainIssue(t, handler, "TEST")
+	ctx, err := store.ForConcurrentRead(store.WithTransactionTracking(t.Context()))
+	if err != nil {
+		t.Fatalf("mark the subscription's context for the pool: %v", err)
+	}
+	stream := newGatedStream()
+	running := served.startEventsSubscription(ctx, stream, "feed", new(int64(0)))
+	t.Cleanup(running.stop)
+	relay := served.eventRelay
+	horizontest.PollInProcess(t, "the subscription subscribes to the relay", database, func() bool { return relaySubscribers(relay) == 1 })
+
+	// More events in one commit than the relay holds for one subscriber, and past the replay's
+	// bound, so nothing can catch the subscription up.
+	seedEvents(t, database, issue, liveEventsBuffer+maxLiveReplay+2, 0)
+	horizontest.PollInProcess(t, "the relay drops the subscription that fell behind", database, func() bool {
+		return relaySubscribers(relay) == 0
+	})
+
+	close(stream.gate)
+	if start, ok := stream.feedNext(t, database, "feed's events_start").(LiveEventsStart); !ok || start.Sub != "feed" || start.Since != "0" {
+		t.Fatalf("first frame = %+v, want feed's events_start from 0", start)
+	}
 	var last int64
 	for ended := false; !ended; {
-		switch frame := stream.next(t, "the end of feed").(type) {
+		switch frame := stream.feedNext(t, database, "the end of feed").(type) {
 		case LiveEventFrame:
 			id := mustEventFrameID(t, frame)
 			if frame.Sub != "feed" || frame.ID != strconv.FormatInt(id, 10) || id <= last {
@@ -583,35 +679,28 @@ func TestARelayDropEndsTheSubscriptionAsBehind(t *testing.T) {
 			t.Fatalf("frame = %+v, want feed's events and then its end", frame)
 		}
 	}
-	// Nothing says how far the drained subscription got: that is why its end sends the page back.
+	if head := eventHead(t, database); last >= head {
+		t.Fatalf("the subscription sent through %d before it ended, want less than the head %d it could not catch up to", last, head)
+	}
 	select {
 	case <-running.(*runningSubscription).done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the dropped subscription's goroutine was still running 5s after its end")
 	}
 
-	// The page's resubscribe, from the last id it applied, is served every event through the head
-	// it never reached, and then what commits next.
+	// The page's resubscribe, from the last id it applied, resolves its position - the backlog it
+	// missed is past the replay's bound, so it starts at the head and refreshes what it shows
+	// (replay_complete false) - and is served what commits next.
 	again := newGatedStream()
 	close(again.gate)
 	resubscribed := served.startEventsSubscription(ctx, again, "feed", new(last))
 	t.Cleanup(resubscribed.stop)
-	if start, ok := again.next(t, "the resubscribe's events_start").(LiveEventsStart); !ok || start.Since != strconv.FormatInt(last, 10) {
-		t.Fatalf("the resubscribe's first frame = %+v, want its events_start from %d", start, last)
-	}
-	for applied := last; applied < head; {
-		frame, ok := again.next(t, "the events the dropped subscription never reached").(LiveEventFrame)
-		if !ok {
-			t.Fatalf("frame = %+v, want feed's next event through the head %d", frame, head)
-		}
-		id := mustEventFrameID(t, frame)
-		if id <= applied {
-			t.Fatalf("the resubscribe was sent event %d after %d: a repeat, or ids out of order", id, applied)
-		}
-		applied = id
+	start, ok := again.feedNext(t, database, "the resubscribe's events_start").(LiveEventsStart)
+	if since, err := strconv.ParseInt(start.Since, 10, 64); !ok || err != nil || since < last || start.ReplayComplete {
+		t.Fatalf("the resubscribe's first frame = %+v, want its events_start at or above %d, not complete", start, last)
 	}
 	renameIssue(t, handler, issue, "Renamed after the drop")
-	frame, ok := again.next(t, "the rename").(LiveEventFrame)
+	frame, ok := again.feedNext(t, database, "the rename").(LiveEventFrame)
 	if !ok || !strings.Contains(string(frame.Event), "Renamed after the drop") {
 		t.Fatalf("the resubscribe was sent %+v, want the rename committed after the drop", frame)
 	}
@@ -658,19 +747,19 @@ func TestAnEventCommittedDuringTheCatchUpIsSentOnce(t *testing.T) {
 	stream := newGatedStream()
 	running := served.startEventsSubscription(ctx, stream, "feed", new(int64(0)))
 	t.Cleanup(running.stop)
-	pollUntil(t, 5*time.Second, "the subscription subscribes to the relay", func() bool {
-		return served.eventRelay.stream.SubscriberCount() == 1
+	horizontest.PollInProcess(t, "the subscription subscribes to the relay", database, func() bool {
+		return relaySubscribers(served.eventRelay) == 1
 	})
 
 	renameIssue(t, handler, issue, "Renamed during the catch-up")
 	head := eventHead(t, database)
 	close(stream.gate)
-	if start, ok := stream.next(t, "feed's events_start").(LiveEventsStart); !ok || start.Since != "0" {
+	if start, ok := stream.feedNext(t, database, "feed's events_start").(LiveEventsStart); !ok || start.Since != "0" {
 		t.Fatalf("first frame = %+v, want feed's events_start from 0", start)
 	}
 	seen := map[int64]bool{}
 	for last := int64(0); last < head; {
-		frame, ok := stream.next(t, "feed's events").(LiveEventFrame)
+		frame, ok := stream.feedNext(t, database, "feed's events").(LiveEventFrame)
 		if !ok {
 			t.Fatalf("frame = %+v, want feed's next event", frame)
 		}
@@ -699,10 +788,10 @@ func TestAStoppedEventsSubscriptionLeavesTheRelayWhileItsSocketStaysOpen(t *test
 
 	subscribeEvents(t, client, "feed", nil)
 	subscribeEvents(t, client, "feed", nil)
-	pollUntil(t, 5*time.Second, "the replaced subscription leaves the relay", func() bool { return relay.stream.SubscriberCount() == 1 })
+	pollUntil(t, 5*time.Second, "the replaced subscription leaves the relay", func() bool { return relaySubscribers(relay) == 1 })
 
 	client.send(t, LiveUnsubscribe{Type: "unsubscribe", Sub: "feed"})
-	pollUntil(t, 5*time.Second, "the unsubscribed subscription leaves the relay", func() bool { return relay.stream.SubscriberCount() == 0 })
+	pollUntil(t, 5*time.Second, "the unsubscribed subscription leaves the relay", func() bool { return relaySubscribers(relay) == 0 })
 	renameIssue(t, rig.handler, issue.Key, "Renamed after the unsubscribe")
 	client.quiet(t, 500*time.Millisecond, "after the page unsubscribed")
 	if !client.open() {
@@ -732,7 +821,7 @@ func TestAnEventsViewNamesOnlyItsKindAndItsSinceIsAnEventID(t *testing.T) {
 		client.refusal(t, 3*time.Second, test.frame.Sub, "INVALID_FRAME")
 	}
 	client.quiet(t, 300*time.Millisecond, "after every refused events view")
-	if subscribers := rig.served.eventRelay.stream.SubscriberCount(); subscribers != 0 {
+	if subscribers := relaySubscribers(rig.served.eventRelay); subscribers != 0 {
 		t.Fatalf("the relay holds %d subscriptions after every events view was refused", subscribers)
 	}
 	// The view and the resume each kind takes, which the refusals above differ from: these start.
@@ -768,7 +857,7 @@ func TestTheDisconnectHookSendsTheEventFeedThroughItsResume(t *testing.T) {
 	// The close frame reaches the page before the handler's deferred teardown has ended its
 	// subscriptions; the socket leaves the server's set only after that teardown, so wait for it.
 	rig.sockets(t, 0)
-	if subscribers := rig.served.eventRelay.stream.SubscriberCount(); subscribers != 0 {
+	if subscribers := relaySubscribers(rig.served.eventRelay); subscribers != 0 {
 		t.Fatalf("the relay holds %d subscriptions once the socket closed", subscribers)
 	}
 
@@ -798,36 +887,85 @@ func TestTheEventsRouteIsGone(t *testing.T) {
 	}
 }
 
-// liveFixtureEvent is the event fixtures/live/event.json's frame carries: a child's status move on
-// its parent, as the event log reads it back.
+// liveFixtureEventBody is the markdown liveFixtureEvent's comment stores, and the text its
+// frame's one tree is read from.
+const liveFixtureEventBody = "**Ship it** on Friday."
+
+// liveFixtureEvent is the event fixtures/live/event.json's frame carries: a comment written on an
+// issue, as the event log reads it back. Its payload stores markdown, so the frame carries the
+// tree of that body as every live event frame carries the trees of the texts it holds.
 func liveFixtureEvent() model.Event {
 	return model.Event{
 		ID:        42,
 		IssueKey:  new("ACME-1"),
 		Project:   "ACME",
 		Seq:       7,
-		Type:      "child.status",
+		Type:      "comment.created",
 		Actor:     model.Actor{Kind: "user", ID: "octocat@example.com"},
 		Notify:    true,
 		CreatedAt: time.Date(2026, 10, 14, 9, 30, 0, 0, time.UTC),
-		Payload:   json.RawMessage(`{"child_key":"ACME-2","from":"todo","to":"in_progress"}`),
+		Payload:   json.RawMessage(`{"id":"3f2b1c8e-5a44-4a1e-9c6f-0a1b2c3d4e5f","body":"` + liveFixtureEventBody + `"}`),
+	}
+}
+
+// liveFixtureBlockID is the block id the fixture event's body reads with: the display read mints
+// one for the paragraph it makes, and a fixture a test compares byte for byte cannot hold a new
+// one each run (pmdoc.SetBlockIDGenerator, which exists for exactly this).
+const liveFixtureBlockID = "1f1d4c7a-0b4e-4f1f-9f2b-6d0f0c0a0b01"
+
+// liveFixtureEventFrame is the frame fixtures/live/event.json holds, built with that one id. The
+// tree is read once per process and kept by its text (pmdoc.DisplayJSON), so every test that
+// builds this frame has to build it this way or the kept tree would carry a minted id.
+func liveFixtureEventFrame(t *testing.T) LiveEventFrame {
+	t.Helper()
+	pmdoc.SetBlockIDGenerator(func() string { return liveFixtureBlockID })
+	defer pmdoc.SetBlockIDGenerator(nil)
+	event := liveFixtureEvent()
+	encoded, err := encodeLiveEvent(event)
+	if err != nil {
+		t.Fatalf("encode the event frame: %v", err)
+	}
+	return liveEventFrame("events-1", relayedEvent{Event: event, Encoded: encoded})
+}
+
+// Every /ws/live event frame carries the display trees of the stored text its payload holds, in
+// the envelope's own `trees` map keyed by the payload field's path: a browser can set no header
+// on a socket, so the frame never waits to be asked. The tree is the one ReadForDisplay makes of
+// that text.
+func TestALiveEventFrameCarriesItsTrees(t *testing.T) {
+	frame := liveFixtureEventFrame(t)
+	var carried struct {
+		Trees map[string]json.RawMessage `json:"trees"`
+	}
+	if err := json.Unmarshal(frame.Event, &carried); err != nil {
+		t.Fatalf("decode the frame's event: %v", err)
+	}
+	tree, held := carried.Trees["payload.body"]
+	if !held {
+		t.Fatalf("the frame carries trees %v, want one at payload.body", carried.Trees)
+	}
+	want := pmdoc.DisplayJSON(liveFixtureEventBody, pmdoc.DisplayLatest)
+	if !bytes.Equal(tree, want) {
+		t.Errorf("payload.body tree\n\t%s\nwant ReadForDisplay's\n\t%s", tree, want)
+	}
+	if len(carried.Trees) != 1 {
+		t.Errorf("the frame carries %d trees, want only the body's", len(carried.Trees))
 	}
 }
 
 // An event frame's event is byte for byte the event's own encoding (json.Marshal of the event the
-// log reads back), so a page reads every event as it always has; the socket's writer keeps those
-// bytes; and fixtures/live/event.json, which the contracts' and the dashboard's tests read, is that
-// frame.
+// log reads back, its display trees among them), so a page reads every event as it always has;
+// the socket's writer keeps those bytes; and fixtures/live/event.json, which the contracts' and
+// the dashboard's tests read, is that frame.
 func TestAnEventFrameCarriesTheEventsOwnBytes(t *testing.T) {
 	event := liveFixtureEvent()
-	encoded, err := json.Marshal(event)
+	sent := event
+	sent.Trees = eventDisplayTrees(event)
+	encoded, err := json.Marshal(sent)
 	if err != nil {
 		t.Fatalf("encode the event: %v", err)
 	}
-	frame, err := liveEventFrame("events-1", event)
-	if err != nil {
-		t.Fatalf("build the event frame: %v", err)
-	}
+	frame := liveEventFrame("events-1", relayedEvent{Event: event, Encoded: encoded})
 	if frame.Type != "event" || frame.Sub != "events-1" || frame.ID != "42" {
 		t.Fatalf("frame = %+v, want events-1's event 42", frame)
 	}

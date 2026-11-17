@@ -8,40 +8,20 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/broker/wire"
 )
 
-// approverGrantResp is one grant in GET /v1/grants?approver=<login>: a grant on a session the login
-// operates, automatic or approved by anyone, or a grant the login approved on anyone's session.
-type approverGrantResp struct {
-	// The grant's id, which the revoke route takes.
-	GrantID string `json:"grant_id"`
-	// How the session got it: "automatic" (the policy gave it without asking) or "approval".
-	Granted string `json:"granted"`
-	// The credential-request record its approval rests on; null for an automatic grant.
-	RecordID *string `json:"record_id"`
-	// The session holding it.
-	Enrollment recordEnrollmentResp `json:"enrollment"`
-	// The secrets it covers.
-	Names []string `json:"names"`
-	// The person who approved it; null for an automatic grant.
-	Approver *string `json:"approver"`
-	// When it expires; null for a grant that lasts until its session ends.
-	ExpiresAt *time.Time `json:"expires_at"`
-	// When it was granted.
-	CreatedAt time.Time `json:"created_at"`
-}
-
-// approverGrantsResponse is GET /v1/grants's answer.
-type approverGrantsResponse struct {
-	// The live grants of the named person's sessions, and those the person approved, newest first.
-	Grants []approverGrantResp `json:"grants"`
-}
+// approverGrantsResponse is GET /v1/grants's answer: wire.ApproverGrantsResponse itself, named
+// here because the broker's generated HTTP reference documents a route's answer from a type this
+// package declares, as introspectionResponse names oauthwire.Introspection
+// (handlers_introspect.go).
+type approverGrantsResponse = wire.ApproverGrantsResponse
 
 // listGrantsForApprover lists the live grants of the person ?approver= names (writeApproverGrants).
 func (s *server) listGrantsForApprover(w http.ResponseWriter, r *http.Request, _ string) {
@@ -62,15 +42,16 @@ func (s *server) writeApproverGrants(w http.ResponseWriter, r *http.Request, app
 		writeInternal(w, "list grants for approver", err)
 		return
 	}
-	out := make([]approverGrantResp, len(rows))
+	out := make([]wire.ApproverGrantResp, len(rows))
 	for i, g := range rows {
 		names := g.Names
 		if names == nil {
 			names = []string{}
 		}
-		out[i] = approverGrantResp{
+		out[i] = wire.ApproverGrantResp{
 			GrantID: g.GrantID, Granted: g.Granted, RecordID: g.RecordID, Enrollment: enrollmentResp(g.Enrollment),
-			Names: names, Approver: strPtr(g.Approver), ExpiresAt: g.ExpiresAt, CreatedAt: g.CreatedAt,
+			Names: names, Approver: strPtr(g.Approver), DecidedBy: strPtr(g.DecidedBy),
+			ExpiresAt: g.ExpiresAt, CreatedAt: g.CreatedAt,
 		}
 	}
 	writeJSON(w, http.StatusOK, approverGrantsResponse{Grants: out})
@@ -102,7 +83,9 @@ func (s *server) revokeByApprover(w http.ResponseWriter, r *http.Request, caller
 	if !requireApprover(w, body.Approver) {
 		return
 	}
-	slog.Info("grant revocation relayed", "caller", callerName, "approver", body.Approver, "grant", id)
+	// The approver is the caller's word, of any length requireApprover takes, so the line cuts it
+	// (answer.ClipFields).
+	slog.Info("grant revocation relayed", answer.ClipFields([]any{"caller", callerName, "approver", body.Approver, "grant", id})...)
 	s.revokeGrantAs(w, r, id, body.Approver, record.HumanActor(body.Approver))
 }
 

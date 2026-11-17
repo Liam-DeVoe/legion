@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -10,12 +10,27 @@ import {
   SESSION_ANSWERS_MARKER,
   sessionAnswersFailureLine,
 } from "@legion/envoy-client/session-answers"
+import { buildBundles } from "../scripts/build"
 
-// The answers hook as Claude Code runs it: the committed bundle (hooks.json names
-// `dist/session-hook.js answers`), its whole environment given, its input on stdin. One stand-in
+// The answers hook as Claude Code runs it: the bundle `hooks.json` names
+// (`dist/session-hook.js answers`), its whole environment given, its input on stdin. One stand-in
 // plays Dispatch, whose answers route each case sets to answer with a list or to hang.
+// Nothing commits dist/, so the bundle is one fresh build of this tree, as in
+// tests/dist-fresh.test.ts.
 const packageRoot = resolve(import.meta.dir, "..")
-const bundle = join(packageRoot, "dist", "session-hook.js")
+let bundle = ""
+let bundleDirectory = ""
+
+beforeAll(async () => {
+  bundleDirectory = await mkdtemp(join(tmpdir(), "claude-envoy-answers-bundle-"))
+  await buildBundles(bundleDirectory)
+  bundle = join(bundleDirectory, "session-hook.js")
+}, 60_000)
+
+afterAll(async () => {
+  await rm(bundleDirectory, { recursive: true, force: true })
+})
+
 const SESSION = "11111111-2222-4333-8444-555555555555"
 
 const cleanup: (() => Promise<void>)[] = []
@@ -716,11 +731,13 @@ function processesWith(marker: string): string {
 }
 
 /** Whether no refresher of the session runs for the project directory `home` (its command line
- *  is `bun <bundle> answers-refresh <session> <directory>`) and none holds the lock. */
+ *  is `bun <bundle> answers-refresh <session> <directory>`) and none holds the lock. The lock is
+ *  a file test and the processes are a `pgrep` fork, so the lock decides first: both reads are
+ *  free of side effects, and a poll every 20 ms pays for the fork each time it runs. */
 function noRefresher(home: string, state: string): boolean {
   return (
-    processesWith(`answers-refresh ${SESSION} ${home}`) === "" &&
-    !existsSync(join(state, "sessions", SESSION, "answers-refresh.lock"))
+    !existsSync(join(state, "sessions", SESSION, "answers-refresh.lock")) &&
+    processesWith(`answers-refresh ${SESSION} ${home}`) === ""
   )
 }
 
@@ -823,7 +840,8 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
   // The refresher is shared by every hook of the session, whatever Dispatch each resolves. A
   // refresher started while envoy.json named `before` that finishes after a later hook, started
   // after envoy.json moved to `now`, began must not give that hook `before`'s list, the
-  // invariant the review asked for ("no list from another Dispatch URL").
+  // invariant the review asked for ("no list from another Dispatch URL"). `before` is named with
+  // a user and a password, which the request carries and the hook's reason leaves out.
   const before = standinDispatch()
   before.route = { kind: "list", items: [answer("ask-x", "Read from the Dispatch before.", 1)] }
   const now = standinDispatch()
@@ -832,13 +850,16 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
   const env = { HOME: home, DISPATCH_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, TMPDIR: tmp }
   const envoyJson = join(config, "envoy.json")
   const gate = join(home, "gate")
+  const user = "user-7f2a"
+  const secret = "pw-4c7e19"
+  const beforeUrl = before.base.replace("://", `://${user}:${secret}@`)
 
   // The first hook's refresher runs the command, which waits until the gate opens.
   await writeFile(
     envoyJson,
     JSON.stringify({
       dispatch: {
-        serverUrl: before.base,
+        serverUrl: beforeUrl,
         token: `!while [ ! -e '${gate}' ]; do sleep 0.02; done; printf before-token`,
       },
     }),
@@ -877,6 +898,8 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
       `the refresher read ${before.base}, not the Dispatch envoy.json names now`,
     ),
   )
+  expect(context).not.toContain(user)
+  expect(context).not.toContain(secret)
   // The refresher this hook started reads the Dispatch named now.
   await eventually(() => noRefresher(home, state), "the next refresher's end")
   expect(now.requests).toEqual([`Bearer now-token /api/v1/agents/${SESSION}/answers`])
@@ -1001,10 +1024,14 @@ test("a list read for the Dispatch envoy.json names stands in even when a refres
       },
     }),
   )
-  const since = Date.now()
+  // The refresher the hook below starts runs the gated command, so it outlives its hook: the case
+  // opens the gate and waits for it to end before its directories go, since a refresher that
+  // finishes after them writes its outcome back into a removed directory. The wait is the
+  // refresher's own end, not `refresherFinished`: the outcome planted above is dated a minute
+  // ahead, so that wait would hold at once on a refresher that had not even started.
   cleanup.push(async () => {
     await writeFile(gate, "")
-    await refresherFinished(state, since)
+    await eventually(() => noRefresher(home, state), "the refreshers' end")
   })
   const run = await runHook(env, sessionStart("resume", home))
   const context = contextOf(run, "SessionStart")

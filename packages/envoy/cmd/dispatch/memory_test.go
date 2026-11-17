@@ -19,22 +19,30 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
 	// requestMemoryBound is the most one request may raise a fresh server's resident memory above
 	// what it held idle, and concurrentMemoryBound the most two at once may (LEGION-481). Production
-	// runs one task of 4,096 MiB.
+	// runs one task of 4,096 MiB. Every measured server collects at GOGC=25 (memoryHarness.start),
+	// so what these hold is the memory a request holds plus the collector's margin at that
+	// setting, and not the resident memory production shows at Go's default GOGC=100, where the
+	// collector lets the heap grow to twice the live set before it collects and a request can
+	// raise resident memory by up to about twice what it holds. Neither number changes for it.
 	requestMemoryBound    = 256 << 20
 	concurrentMemoryBound = 512 << 20
 	documentCap           = 1 << 20
-	// documentReadBudgetForTest mirrors docs.documentReadBudget. The cache's test hook supplies
-	// each entry's real accounting weight, so this process can build two complete cache fills.
+	// documentReadBudgetForTest mirrors docs.documentReadBudget, the cold reads' cache budget of a
+	// process with no Go memory limit, which the server this test starts runs under and reports
+	// (TestColdReadCacheEvictionPlateaus reads it back). The cache's test hook supplies each
+	// entry's real accounting weight, so this process can build two complete cache fills.
 	documentReadBudgetForTest = 256 << 20
-	// marginEditAllowance is the most a margin filled to its bounds may add to what a cold edit of
-	// its document holds: two cold edits of one heaviest document, with a full margin and without,
-	// differed by -10 to +88 MiB over four runs (the four-column table the most), where a margin of
-	// ninety-six 900 KB suggestions adds over 300 MiB.
+	// marginEditAllowance is the most a margin filled to its bounds may add to the live heap a cold
+	// edit of its document holds (coldEditLiveHeap). Read that way on a 288-CPU host, two cold edits
+	// of one heaviest document, with a full margin and without, differed by -5 to +5 MiB over 42
+	// pairs; an injected defect holding 1,361,082 bytes of margin records 100 times (129.8 MiB) read
+	// +126 to +132 MiB, and 160 times (207.7 MiB) +206 to +213 MiB.
 	marginEditAllowance = 128 << 20
 )
 
@@ -210,6 +218,19 @@ func cloneColdReadArtifact(t *testing.T, memory *memoryHarness, sourceID string,
 	return artifactID
 }
 
+// The cold reads' cache stops growing at its budget. A first fill reads documents weighing twice
+// the budget into a fresh server, and a second fill reads as many others, which the cache takes in
+// place of the first. After each fill the cache's own figures (dispatch_rooms, on the server's
+// loopback profiler) hold it within two entries of its budget, so a cache that stores nothing
+// fails, and never past it, so a cache that never evicts fails; and the second fill's resident
+// peak is at most one request (requestMemoryBound) above the first's.
+//
+// What the first fill leaves resident above idle is not what the cache holds: the fill reuses the
+// free heap the server held at idle, which is what its boot left uncollected or not yet given back.
+// Read at once after /healthz, that was 240 to 256 MiB of heap not yet collected, or 125 to 185 MiB
+// of free pages, over six runs, so a cache holding the same 252 MiB left 148 to 312 MiB above idle
+// over eleven runs on one 4-CPU machine, and 127 MiB on CI (run 43990897490), under the floor of
+// half the budget this test held it to before (INFRA-3904).
 func TestColdReadCacheEvictionPlateaus(t *testing.T) {
 	memory := newMemoryHarness(t)
 	markdown := heaviestAdmitted(t, func(units int) string { return strings.Repeat("# a\n", units) })
@@ -233,18 +254,69 @@ func TestColdReadCacheEvictionPlateaus(t *testing.T) {
 	for index := range artifactIDs {
 		artifactIDs[index] = cloneColdReadArtifact(t, memory, upload.artifactID, index)
 	}
+	// The reader's profiler takes a port the kernel chooses, which the line it logs names
+	// (pprofListening). The server logs it before it serves, but its output reaches this test
+	// through a pipe the test copies on its own goroutine, so the line is waited for, until the
+	// server exits.
+	memory.env = []string{"DISPATCH_PPROF_PORT=0"}
 	reader := memory.start(t)
+	memory.env = nil
+	var listening []string
+	testwait.Holds(30*time.Second, 20*time.Millisecond, func() bool {
+		listening = pprofListening.FindStringSubmatch(reader.output.String())
+		select {
+		case <-reader.exited:
+			return true
+		default:
+			return listening != nil
+		}
+	})
+	if listening == nil {
+		t.Fatalf("the reader logged no line naming its profiler's address:\n%s", reader.outputTail())
+	}
+	cache := func() docs.ReadCacheFigures {
+		t.Helper()
+		response, err := http.Get("http://" + listening[1] + "/debug/vars")
+		if err != nil {
+			t.Fatalf("GET /debug/vars on the reader's profiler: %v", err)
+		}
+		defer response.Body.Close()
+		var vars struct {
+			Rooms *docs.RoomFigures `json:"dispatch_rooms"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&vars); err != nil || response.StatusCode != http.StatusOK || vars.Rooms == nil {
+			t.Fatalf("GET /debug/vars on the reader's profiler = %d (%v), want the process's expvar variables with dispatch_rooms", response.StatusCode, err)
+		}
+		return vars.Rooms.ReadCache
+	}
 	read := func(ids []string) {
 		for _, artifactID := range ids {
 			reader.get(t, "/api/v1/artifacts/"+artifactID+"/text")
 		}
 	}
 	firstPeak := reader.peakAboveIdle(t, func() { read(artifactIDs[:perFill]) })
-	retained := reader.resident(t, "VmRSS") - reader.idle
+	first := cache()
 	secondPeak := reader.peakAboveIdle(t, func() { read(artifactIDs[perFill:]) })
-	t.Logf("cache eviction: weight %d MiB, %d documents/fill, first peak %d MiB, second peak %d MiB, retained %d MiB", weight>>20, perFill, firstPeak>>20, secondPeak>>20, retained>>20)
-	if retained < documentReadBudgetForTest/2 {
-		t.Errorf("first cache fill retained %d MiB above idle, want at least %d MiB so a no-store cache cannot pass", retained>>20, (documentReadBudgetForTest/2)>>20)
+	second := cache()
+	t.Logf("cache eviction: weight %d MiB, %d documents/fill, budget %d MiB, idle %d MiB; first fill: %d entries of %d MiB, peak %d MiB above idle; second fill: %d entries of %d MiB, peak %d MiB above idle",
+		weight>>20, perFill, documentReadBudgetForTest>>20, reader.idle>>20, first.Entries, first.Bytes>>20, firstPeak>>20, second.Entries, second.Bytes>>20, secondPeak>>20)
+	for _, fill := range []struct {
+		name  string
+		cache docs.ReadCacheFigures
+	}{{"first", first}, {"second", second}} {
+		held := fill.cache
+		if held.Budget != documentReadBudgetForTest {
+			t.Fatalf("the server's cache budget is %d MiB, want documentReadBudget's %d MiB (documentReadBudgetForTest)", held.Budget>>20, documentReadBudgetForTest>>20)
+		}
+		// put drops the least recently read entries only until the cache is within its budget, so
+		// a fill of twice the budget leaves it within one entry of the budget. Two entries are
+		// allowed, since the clones' weights differ by their stamps' digits.
+		if held.Entries == 0 || held.Bytes <= held.Budget-2*(held.Bytes/int64(held.Entries)) {
+			t.Errorf("after the %s fill the cache holds %d entries of %d MiB, want within two entries of its %d MiB budget, so a cache that stores nothing cannot pass", fill.name, held.Entries, held.Bytes>>20, held.Budget>>20)
+		}
+		if held.Bytes > held.Budget {
+			t.Errorf("after the %s fill the cache holds %d entries of %d MiB, past its %d MiB budget", fill.name, held.Entries, held.Bytes>>20, held.Budget>>20)
+		}
 	}
 	if secondPeak > firstPeak+requestMemoryBound {
 		t.Errorf("second cache fill peaked %d MiB above idle after first peak %d MiB, want at most one request (%d MiB) more", secondPeak>>20, firstPeak>>20, requestMemoryBound>>20)
@@ -467,6 +539,9 @@ func TestAWriteCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T) {
 			if upload.status != http.StatusCreated {
 				t.Errorf("an upload of the document's own %d-byte text answered %d %.300s, want 201", len(text), upload.status, upload.body)
 			}
+			// The subtest after this one starts a server it measures, which must find this
+			// upload settled rather than settling it inside a measured window.
+			memory.waitForSettlement(t, upload)
 		})
 	}
 }
@@ -480,22 +555,25 @@ func refusedWithAdvice(answer response) bool {
 
 // An ask's text and its answer are written into its block, so they grow a document as an edit
 // does, and are held to what one upload may hold on a real Dispatch process as an edit is: edits of
-// the asks of one document, each giving an option a 900 KB description, are taken until one would
-// leave the document's markdown past 1 MiB, which is refused with 413 CAP_EXCEEDED, and so is every
-// one after it; answers of 900 KB to them are all taken, each the document has no room for kept on
-// its ask and left out of its block. Either way the document stays within the cap, still reads, and
-// a one-word edit on a server that has not loaded it holds at most the bound. Before the bound
-// reached these routes, thirty-two such edits grew one document to 28.8 MB, on which a one-word
-// edit held 1,204 MiB, and under the production task's 1,024 MiB the server was killed.
+// the asks of one document, each giving an option a 31,500-character description, are taken until
+// one would leave the document's markdown past 1 MiB, which is refused with 413 CAP_EXCEEDED, and
+// so is every one after it; answers of 31,500 characters to them are all taken, each the document
+// has no room for kept on its ask and left out of its block. Either way the document stays within
+// the cap, still reads, and a one-word edit on a server that has not loaded it holds at most the
+// bound. The 900 KB description this test grew a document with before is refused outright now,
+// for the 32,000 characters an ask's question and options may hold together (INFRA-370), so the
+// growth is written here in texts that bound holds.
 func TestAskEditsAndAnswersCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T) {
 	memory := newMemoryHarness(t)
-	const asks = 32
+	// Forty writes of 31,500 characters are 1.26 MB, so the document meets the 1 MiB cap partway
+	// through whichever route writes them.
+	const asks = 40
 	var spec strings.Builder
 	spec.WriteString("Before sentinel.\n")
 	for index := range asks {
 		fmt.Fprintf(&spec, "\n:::ask{#ask-%d urgency=\"med\" multiple=\"false\" state=\"open\"}\nQuestion %d?\n:::\n", index, index)
 	}
-	prose := strings.Repeat("word ", 180_000)
+	prose := strings.Repeat("word ", 6_300)
 	for _, route := range []struct {
 		name, method, path string
 		body               map[string]any
@@ -557,20 +635,29 @@ func TestAskEditsAndAnswersCannotGrowADocumentPastWhatOneUploadMayHold(t *testin
 }
 
 // An ask's question and options are plain text the server makes into markdown, so they are weighed
-// before they are rendered, on a real Dispatch process as in the route's tests: an option
-// description of 920 KB of `)_`, whose edit held 417 MiB before its text was weighed, and one of
-// 330,000 lines, whose edit did not answer within twenty minutes, are each refused with 413
-// CAP_EXCEEDED, naming the text's weight, within the bound and in seconds.
+// before they are rendered, on a real Dispatch process as in the route's tests. One write pays for
+// its whole wording, so the text is weighed against what the question it arrives with has already
+// made: a line of an escaped character weighs 5 elements (the line of text, its escape and the
+// hard break before it), so a question of 12,999 such lines makes 64,995 of the 65,536 elements
+// one write may make, and an option description beside it - 6,000 characters of `)_`, or 3,000
+// lines - passes that, and is refused with 413 CAP_EXCEEDED naming the text's weight, within the
+// bound and in seconds. The whole wording is 31,999 characters, inside the 32,000 an ask's
+// question and options may hold together (INFRA-370), which refuses a longer description - the
+// 920 KB one this test took before - before any of this.
 func TestAnAsksTextIsWeighedBeforeItIsRendered(t *testing.T) {
 	memory := newMemoryHarness(t)
 	server := memory.start(t)
 	issue := server.createIssue(t, "Ask text", "Before.\n\n:::ask{#ask-0 urgency=\"med\" multiple=\"false\" state=\"open\"}\nQuestion 0?\n:::\n")
 	askID := server.blockAsks(t, issue.Key, 1)[0]
+	question := strings.Repeat("_\n", 12_999)
 	for _, description := range []struct{ name, text string }{
-		{"920 KB of )_", strings.Repeat(")_", 460_000)},
-		{"330,000 lines", strings.Repeat("a\n", 330_000)},
+		{"6,000 characters of )_", strings.Repeat(")_", 3_000)},
+		{"3,000 lines", strings.Repeat("a\n", 3_000)},
 	} {
-		body, err := json.Marshal(map[string]any{"options": []map[string]string{{"label": "A", "description": description.text}}})
+		body, err := json.Marshal(map[string]any{
+			"question": question,
+			"options":  []map[string]string{{"label": "A", "description": description.text}},
+		})
 		if err != nil {
 			t.Fatalf("encode the edit: %v", err)
 		}
@@ -595,14 +682,19 @@ func TestAnAsksTextIsWeighedBeforeItIsRendered(t *testing.T) {
 
 // An answer is stored on its ask as well as in its block, and settlement writes it back into a block
 // that returns to the document, so returning blocks cannot grow a document past what one upload may
-// hold on a real Dispatch process either: twenty-four answers of 900 KB, each taken against a
-// document their deleted blocks had left small, then all twenty-four blocks returned in one edit,
-// leave the document within 1 MiB, the edit and its settlement hold at most the bound, and so does
-// each cold read of the document. Before settlement weighed what it writes back, they left a 21.6 MB
-// document whose cold text read held 373 MiB, and four at once over 1,000 MiB.
+// hold on a real Dispatch process either: forty answers of 32,000 characters, the most an answer
+// may hold (INFRA-370), each taken against a document their deleted blocks had left small, then all
+// forty blocks returned in one edit, leave the document within 1 MiB, the edit and its settlement
+// hold at most the bound, and so does each cold read of the document. An answer of 900,000
+// characters, which this test took before that bound, is refused with 400 CAP_EXCEEDED saying how
+// far over the bound it is, so no answer reaches a block longer than that. Before settlement
+// weighed what it writes back, twenty-four such answers left a 21.6 MB document whose cold text
+// read held 373 MiB, and four reads at once over 1,000 MiB.
 func TestReturnedAnswersCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T) {
 	memory := newMemoryHarness(t)
-	const asks = 24
+	// Forty answers of 32,000 characters are 1.28 MB, so returning their blocks would take the
+	// document past the 1 MiB cap if settlement wrote every one of them back.
+	const asks = 40
 	var spec, blocks strings.Builder
 	spec.WriteString("Before sentinel.\n")
 	for index := range asks {
@@ -610,13 +702,23 @@ func TestReturnedAnswersCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T
 		spec.WriteString(block)
 		blocks.WriteString(block)
 	}
-	body, err := json.Marshal(map[string]any{"text": strings.Repeat("word ", 180_000), "expected_edited_at": nil})
+	body, err := json.Marshal(map[string]any{"text": strings.Repeat("word ", 6_400), "expected_edited_at": nil})
 	if err != nil {
 		t.Fatalf("encode the answer: %v", err)
 	}
+	tooLong, err := json.Marshal(map[string]any{"text": strings.Repeat("word ", 180_000), "expected_edited_at": nil})
+	if err != nil {
+		t.Fatalf("encode the answer past the bound: %v", err)
+	}
 	server := memory.start(t)
 	issue := server.createIssue(t, "Returned answers", spec.String())
-	for index, askID := range server.blockAsks(t, issue.Key, asks) {
+	askIDs := server.blockAsks(t, issue.Key, asks)
+	refusal := server.send(t, http.MethodPost, "/api/v1/asks/"+askIDs[0]+"/answer", "application/json", bytes.NewReader(tooLong), http.Header{"X-Dispatch-User": {"alice"}})
+	t.Logf("a 900,000-character answer: %d %.200s", refusal.status, refusal.body)
+	if refusal.status != http.StatusBadRequest || !strings.Contains(string(refusal.body), `"code":"CAP_EXCEEDED"`) || !strings.Contains(string(refusal.body), "(900000/32000)") {
+		t.Errorf("a 900,000-character answer answered %d %.300s, want 400 CAP_EXCEEDED naming its length", refusal.status, refusal.body)
+	}
+	for index, askID := range askIDs {
 		if answer := server.send(t, http.MethodPost, "/api/v1/asks/"+askID+"/answer", "application/json", bytes.NewReader(body), http.Header{"X-Dispatch-User": {"alice"}}); answer.status != http.StatusOK {
 			t.Fatalf("answer %d: %d %.300s, want 200", index+1, answer.status, answer.body)
 		}
@@ -744,9 +846,11 @@ func TestTheMarginStaysWithinTheMemoryBound(t *testing.T) {
 // together - are each still read and loaded within the bound on a server that has not loaded them,
 // and a full margin adds at most marginEditAllowance to what a cold one-word edit of the document
 // held before it. The edit replaces a word with one as long, so it is weighed whole - its
-// rendering's elements and its trial load - and taken. What the edit holds without a margin is the
-// element limit's own (logged, and over the bound for the densest shapes: tables and inline HTML),
-// which the margin's bounds do not move.
+// rendering's elements and its trial load - and taken. Each edit is read by the most heap its
+// server's collections found live while it ran, above idle (coldEditLiveHeap): its resident memory
+// above idle moves by more than a margin adds (memory_live_heap_test.go).
+// What the edit holds without a margin is the element limit's own (logged), which the margin's
+// bounds do not move.
 func TestTheHeaviestDocumentsWithAFullMarginStayWithinTheMemoryBound(t *testing.T) {
 	memory := newMemoryHarness(t)
 	replacement := strings.Repeat("a", 255_000)
@@ -760,7 +864,7 @@ func TestTheHeaviestDocumentsWithAFullMarginStayWithinTheMemoryBound(t *testing.
 			}
 			memory.waitForSettlement(t, upload)
 			writer.stop(t)
-			alone := memory.coldEdit(t, shape.name+" with no margin", upload.artifactID, edit)
+			alone := memory.coldEditLiveHeap(t, shape.name+" with no margin", upload.artifactID, edit)
 			writer = memory.start(t)
 			taken := 0
 			for {
@@ -786,8 +890,8 @@ func TestTheHeaviestDocumentsWithAFullMarginStayWithinTheMemoryBound(t *testing.
 			t.Logf("%s: %d suggestions of %d bytes taken before the margin's bound", shape.name, taken, len(replacement))
 			name := shape.name + " with a full margin"
 			memory.coldReads(t, name, upload.artifactID)
-			if full := memory.coldEdit(t, name, upload.artifactID, edit); full-alone > marginEditAllowance {
-				t.Errorf("%s: a cold one-word edit held %d MiB above idle, %d MiB more than with no margin, want at most %d MiB more", name, full>>20, (full-alone)>>20, marginEditAllowance>>20)
+			if full := memory.coldEditLiveHeap(t, name, upload.artifactID, edit); full-alone > marginEditAllowance {
+				t.Errorf("%s: a cold one-word edit held %d MiB of live heap above idle, %d MiB more than with no margin, want at most %d MiB more", name, full>>20, (full-alone)>>20, marginEditAllowance>>20)
 			}
 		})
 	}

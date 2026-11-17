@@ -4,19 +4,23 @@ import type { LegionCapabilityReportBody, LegionCapabilityRow } from "@legion/co
 import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors";
 
 /**
- * The six live capability rows a Legion session measures as it boots and reports with
- * `claims/ready` (LEGION-663): what the daemon's `capabilities` table calls `subagents`,
- * `web-search`, `mcp`, `repository-extensions`, `dispatch-envoy-tools` and `github`. Each check
- * proves the capability from inside the session, the way the agent would use it: the `task` tool
- * resolving the agents the role's prompts dispatch, one real web search, the configured MCP servers
- * connecting, the repository's own extensions and skills loaded, the Envoy tools registered and
- * `dispatch read` answering, and the role's App login through `gh api graphql {viewer{login}}`.
+ * The six live capability rows a Legion session measures (LEGION-663): what the daemon's
+ * `capabilities` table calls `subagents`, `web-search`, `mcp`, `repository-extensions`,
+ * `dispatch-envoy-tools` and `github`. Each check proves the capability from inside the session,
+ * the way the agent would use it: the `task` tool resolving the agents the role's prompts
+ * dispatch, one real web search, the configured MCP servers connecting, the repository's own
+ * extensions and skills loaded, the Envoy tools registered and `dispatch read` answering, and the
+ * role's App login through `gh api graphql {viewer{login}}`.
+ *
+ * This module measures the rows; when a session measures them and sends them on a `claims/ready`
+ * of its own is `./capability-schedule`'s — an idle tick of the session's own 5 s interval, never
+ * its boot, which measures nothing (INFRA-927).
  *
  * The daemon renders the report and never refuses a session for it, so a failing check is a
- * failing row, never a stopped boot: `measureCapabilities` never throws. Every row's detail leaves
- * cleaned (`cleanDetail`), since a check quotes upstream errors and the report reaches the
- * daemon's unauthenticated state route. Every collaborator a check needs is behind
- * `CapabilityHost`, so a test fakes it; `ompCapabilityHost()` is the production one.
+ * failing row and never an error its caller has to handle: `measureCapabilities` never throws.
+ * Every row's detail leaves cleaned (`cleanDetail`), since a check quotes upstream errors and the
+ * report reaches the daemon's unauthenticated state route. Every collaborator a check needs is
+ * behind `CapabilityHost`, so a test fakes it; `ompCapabilityHost()` is the production one.
  */
 
 /** The budget of one check; a check still pending at it is a failing row. */
@@ -463,23 +467,45 @@ function truncateUtf8(text: string, max: number): string {
   return text.slice(0, end);
 }
 
+/** The value of the API-key and bare bearer rules, as the daemon's `labeledWord`, whose comment
+ * explains it: the word after the label up to the next space or quote, held markers included,
+ * whatever its shape, except a trailing run of backslashes, closing brackets and the punctuation
+ * `,;:.!?`, which stays outside the word where only a space, a quote or the line's end follows it.
+ * So a quoted value keeps its closing quote, a word keeps the punctuation of the sentence after it
+ * (`Bearer ***, retrying`), a header the Authorization rule masked keeps its closing bracket and
+ * the text after it where only that punctuation or a space follows the bracket (`): 401`), and a
+ * word made only of such characters is not masked. A run that any other character follows is
+ * masked with the word (a URL's `://`, `ab).x`, `ab).)x`), a masked header's bracket glued to
+ * anything else among them (`)\n401`), whose tail is then lost: where the word's end is in doubt
+ * the rule masks too much and never too little. Only the run's alternative takes a character of
+ * the run, and the run shares no character with the one that must follow it, so the word reads
+ * each run once, from the character that starts it: JavaScriptCore backtracks, where the daemon's
+ * RE2 does not, and an alternative that could start inside a run would read that run once per
+ * start. */
+const LABELED_WORD = String.raw`(?:[^ "'\\)\]}>,;:.!?]|[\\)\]}>,;:.!?]+[^ "'\\)\]}>,;:.!?])+`;
+
 /**
  * The credential shapes `cleanDetail` replaces, as the daemon's `credentialRules` in
- * `packages/daemon/internal/capabilities` and in its order, which its comment explains; the shared
- * fixture names each with an example. A value class runs across a `HELD_SEQUENCE`, and a separator
- * takes a space or `HELD`. The userinfo rule starts only where a run of scheme characters starts.
- * The JWT rule starts nowhere its first segment's class could have run on from: not after held, a
- * C1 introducer or a value character, and not after a held `[` and its parameters, followed by any
- * final byte or by a `\uXXXX` escape whose backslash is that final byte. Its one lookbehind for the
- * held prefix reads like the daemon's rule, which matches that prefix with `eyJ` and gives it back.
- * It may start after an opener, which its first segment does not run across, and right after a
- * percent or `\u` escape that no held sequence closes. It may also start right after held when its
- * first segment crosses no held character and no opener, only a C1 introducer, and right after a
- * held `[`, its parameters and an optional final byte or `\uXXXX` when its first segment holds a C1
- * introducer and crosses nothing else held, as the daemon's comment explains. These segments stop
- * at the next held character, and a first segment ends at its one dot, so no start reads another's
- * run: JavaScriptCore backtracks, where the daemon's RE2 does not, and a start inside a run its
- * first segment reads through would read that run once per start.
+ * `packages/daemon/internal/capabilities` and in its order, which its comment explains. The shared
+ * fixture is the fixed list of the shapes they cover, each with an example; a secret that no named
+ * pattern marks, such as a positional argument (`mysql -p hunter2`, `curl -u user:pw`), is not
+ * masked. A value class runs across a `HELD_SEQUENCE`, and a separator takes a space or `HELD`. The
+ * userinfo rule starts only where a run of scheme characters starts. After an API-key label or a
+ * bare `Bearer`, the word up to the next space or quote is masked (`LABELED_WORD`, which says what
+ * it leaves outside), whatever its shape, so a URL there reads `Bearer ***` with or without a
+ * userinfo. The JWT rule starts nowhere its first segment's class
+ * could have run on from: not after held, a C1 introducer or a value character, and not after a
+ * held `[` and its parameters, followed by any final byte or by a `\uXXXX` escape whose backslash
+ * is that final byte. Its one lookbehind for the held prefix reads like the daemon's rule, which
+ * matches that prefix with `eyJ` and gives it back. It may start after an opener, which its first
+ * segment does not run across, and right after a percent or `\u` escape that no held sequence
+ * closes. It may also start right after held when its first segment crosses no held character and
+ * no opener, only a C1 introducer, and right after a held `[`, its parameters and an optional final
+ * byte or `\uXXXX` when its first segment holds a C1 introducer and crosses nothing else held, as
+ * the daemon's comment explains. These segments stop at the next held character, and a first
+ * segment ends at its one dot, so no start reads another's run: JavaScriptCore backtracks, where
+ * the daemon's RE2 does not, and a start inside a run its first segment reads through would read
+ * that run once per start.
  */
 const CREDENTIAL_RULES: readonly (readonly [RegExp, string])[] = [
   [/(?<![a-z0-9+.-])([0-9+.-]*[a-z][a-z0-9+.-]*:\/\/)[^ /?#]+@/gi, "$1***@"],
@@ -497,7 +523,7 @@ const CREDENTIAL_RULES: readonly (readonly [RegExp, string])[] = [
   ],
   [
     new RegExp(
-      String.raw`((?:api-key|application-key|ocp-apim-subscription-key|x-subscription-token)\\?["']?[ \ufffe\uffff]*[:=][ \ufffe\uffff]*\\?["']?)(?:[A-Za-z0-9._~+/=*-]|${HELD_SEQUENCE})+`,
+      String.raw`((?:api-key|application-key|ocp-apim-subscription-key|x-subscription-token)\\?["']?[ \ufffe\uffff]*[:=][ \ufffe\uffff]*\\?["']?)${LABELED_WORD}`,
       "gi"
     ),
     "$1***",
@@ -506,13 +532,7 @@ const CREDENTIAL_RULES: readonly (readonly [RegExp, string])[] = [
     /(\\?["'](?:api_key|access_token)\\?["'][ \ufffe\uffff]*:[ \ufffe\uffff]*\\?["'])[^"'\\]+/gi,
     "$1***",
   ],
-  [
-    new RegExp(
-      String.raw`\b(bearer[ \ufffe\uffff]+)(?:[A-Za-z0-9._~+/=*-]|${HELD_SEQUENCE})+`,
-      "gi"
-    ),
-    "$1***",
-  ],
+  [new RegExp(String.raw`\b(bearer[ \ufffe\uffff]+)${LABELED_WORD}`, "gi"), "$1***"],
   [
     new RegExp(String.raw`\b(gh[pousr]_|github_pat_)(?:[A-Za-z0-9._-]|${HELD_SEQUENCE}){20,}`, "g"),
     "$1***",
@@ -607,8 +627,10 @@ export function cleanDetail(text: string): string {
   return cut;
 }
 
-/** `8 s` for a whole number of seconds, else the milliseconds. */
-function budgetLabel(ms: number): string {
+/** A budget as a message reads it: `8 s` for a whole number of seconds, else the milliseconds.
+ * Exported so the schedule's send bound writes its timeout the same way this module's checks
+ * write theirs (`./capability-schedule`). */
+export function budgetLabel(ms: number): string {
   return ms % 1_000 === 0 ? `${ms / 1_000} s` : `${ms} ms`;
 }
 

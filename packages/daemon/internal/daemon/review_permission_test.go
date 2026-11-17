@@ -15,13 +15,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // A review decides a round only from an account with write access or higher, which the daemon
@@ -204,8 +204,8 @@ type forgettingTokens struct {
 	forgot string
 }
 
-func (t *forgettingTokens) Token(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	lease, err := t.outboxTokens.Token(ctx, role, owner)
+func (t *forgettingTokens) Token(ctx context.Context, role appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
+	lease, err := t.outboxTokens.Token(ctx, role, repo)
 	lease.Minted = t.minted
 	return lease, err
 }
@@ -374,20 +374,21 @@ func TestAReviewOnAnOwnerTheReviewAppIsNotInstalledOnDecidesNothing(t *testing.T
 // appauth refuses one (appauth.ErrNotInstalled), counted.
 type notInstalledTokens struct{ calls int }
 
-func (t *notInstalledTokens) Token(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+func (t *notInstalledTokens) Token(_ context.Context, role appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
 	t.calls++
-	return appauth.Lease{}, fmt.Errorf("%w: %s not installed on %s", appauth.ErrNotInstalled, role, owner)
+	return appauth.Lease{}, fmt.Errorf("%w: %s not installed on %s", appauth.ErrNotInstalled, role, repo.Owner())
 }
 
-func (t *notInstalledTokens) ReadToken(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	return t.Token(ctx, role, owner)
+func (t *notInstalledTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string, _ []string) (appauth.Lease, error) {
+	t.calls++
+	return appauth.Lease{}, fmt.Errorf("%w: %s not installed on %s", appauth.ErrNotInstalled, role, owner)
 }
 
 // transientOnceTokens answers its first mint with appauth.TransientError and every one after with
 // a lease, so a test can tell a retried mint from one the hold should have skipped.
 type transientOnceTokens struct{ calls int }
 
-func (t *transientOnceTokens) Token(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
+func (t *transientOnceTokens) Token(context.Context, appauth.AppRole, ghrepo.Repository) (appauth.Lease, error) {
 	t.calls++
 	if t.calls == 1 {
 		return appauth.Lease{}, &appauth.TransientError{Err: errors.New("mint refused: GitHub's rate limit")}
@@ -395,15 +396,15 @@ func (t *transientOnceTokens) Token(context.Context, appauth.AppRole, string) (a
 	return appauth.Lease{Token: "token", ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
-func (t *transientOnceTokens) ReadToken(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	lease, err := t.Token(ctx, role, owner)
+func (t *transientOnceTokens) ReadToken(ctx context.Context, role appauth.AppRole, _ string, _ []string) (appauth.Lease, error) {
+	lease, err := t.Token(ctx, role, ghrepo.Repository{})
 	lease.Token += "-read"
 	return lease, err
 }
 
 // reviewPermissionPool is a store recording acme/widgets#42 for LEGION-208, and no other pull
 // request.
-func reviewPermissionPool(t *testing.T) *pgxpool.Pool {
+func reviewPermissionPool(t *testing.T) *store.Pool {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -416,14 +417,14 @@ func reviewPermissionPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-func reviewPermissionRuntime(pool *pgxpool.Pool, githubAPI string, log *slog.Logger) *workflowRuntime {
+func reviewPermissionRuntime(pool *store.Pool, githubAPI string, log *slog.Logger) *workflowRuntime {
 	return reviewPermissionRuntimeRenamed(pool, githubAPI, log, ghrepo.Renames{})
 }
 
 // reviewPermissionRuntimeRenamed is reviewPermissionRuntime under the deployment's repository
 // equivalence renames (repositories.renames): the one line of the runtime a configured rename
 // changes.
-func reviewPermissionRuntimeRenamed(pool *pgxpool.Pool, githubAPI string, log *slog.Logger, renames ghrepo.Renames) *workflowRuntime {
+func reviewPermissionRuntimeRenamed(pool *store.Pool, githubAPI string, log *slog.Logger, renames ghrepo.Renames) *workflowRuntime {
 	tokens := &forgettingTokens{}
 	return &workflowRuntime{pool: pool, records: projectRecords{Store: record.NewStore(), project: "LEGION"}, tokens: tokens, forget: tokens,
 		githubAPI: githubAPI, log: log, reviewAppLogin: "legion-reviewer[bot]", repositories: newRepositories("LEGION", renames)}
@@ -475,7 +476,7 @@ func TestAReviewNamingARenamedRepositoryReadsThePermissionOfTheRecordedPullReque
 // whose pull request was open when its repository was transferred, and no other pull request:
 // both the issue and the pull request keep the name they were recorded under for their whole
 // life, which after the transfer is the name the repository moved away from.
-func reviewPermissionTransferredPool(t *testing.T) *pgxpool.Pool {
+func reviewPermissionTransferredPool(t *testing.T) *store.Pool {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -564,7 +565,7 @@ func TestAReviewPublishedBeforeATransferIsReadOnTheRepositoryGitHubHoldsItUnderN
 			}{
 				{name: "the pair configured", renames: transferredLegion, asked: []string{caller.asked}},
 				{name: "no pair configured", renames: ghrepo.Renames{},
-					refused: "mint the review App token for sjawhar: no installation of the review App on sjawhar covers the repository"},
+					refused: "mint the review App token for sjawhar/legion: no installation of the review App on sjawhar covers the repository"},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					var asked []string

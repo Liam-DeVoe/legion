@@ -8,42 +8,47 @@ description: "Use before your first dispatch command in a session: a message, co
 Dispatch is a record for the people who decide, never a log of your work.
 
 - Use the `dispatch` command; the HTTP API only for what no command does. `dispatch <command> --help` gives its rules and an example.
-- Put long text on stdin: `--<field>-file -` with a quoted here-document (`<<'EOF'`). Give object and list fields as JSON.
-- Exit 1 is a refusal, 2 a usage error. A refusal lists each problem: fix them all, then call once.
+- Put long text on stdin, one flag per call: `--<field>-file -` with `<<'EOF'`; objects and lists take JSON.
+- Exit 1 is a refusal, 2 a usage error. A refusal lists every problem: fix all, call once.
+- Never work around a hard-to-use command, or one storing or losing something wrongly: open an issue in the owning project and tell its controller. A Legion role tells its architect (`skill://legion-worker/references/findings.md`).
 
 ## Asks and ask blocks
 
-- A design question a document records is an ask block (a decision block) at the end of its section, at each phase:
+- An ask is a question for a person, never a request to another agent. Ask an agent by envoy_send or a comment on the issue.
+- An ask waits on its asked-of person, else the issue's assignee, else the project's default assignee; no agent hands one on.
+- A design question's ask block ends its section:
 
 ```md
 :::ask{urgency="med"}
-Which machines, files or people, the numbers, then "A happens to X, or B to Y?" Recommendation: the option and its reason.
+The question and the recommendation (`skill://dispatch-writing-specs`).
 
 - Option one: what it costs.
 - Option two: what it costs.
 :::
 ```
 
-- In Legion, fix a clear defect in code your tree uses, hand others to the controller, and ask about decisions (`skill://legion-worker/references/findings.md`).
-- An open ask is the request; never repeat it per message.
-- Change an open ask's block with `dispatch edit-ask`, or `doc-edit`'s `replace` or `move`. An answered ask is fixed: ask anew.
-- Reply on an open ask with `dispatch comment --reply-to-ask`; `--turn agent` for a note needing nothing. An approval request a newer version moved needs `request-approval` again.
+- A decision block in a comment, message or close reason is refused: ask in the issue's document, or `dispatch ask`.
+- Never repeat an open ask in a message.
+- Change an open ask's block with `dispatch edit-ask` (ask id) or `doc-edit`'s `replace` or `move` (block id). An answered ask is fixed: ask anew. `dispatch read --ref` takes either id.
+- Reply on an open ask with `dispatch comment --reply-to-ask`; `--turn agent` (a progress note) needs it. An approval request a newer version moved needs `request-approval` again.
 - When an answer's option and text disagree, the text wins.
-- An ask block has a block id, for `doc-edit`, and an ask id, for the ask commands. `dispatch read --ref dispatch://KEY/ask/<id>` takes either.
-- An ask reaches the issue's assignee; if none, name who answers.
 
 ## Choosing what to work on
 
-- When you finish an issue, take the top ready one: `todo`, by priority then board rank, per project.
-- `todo` means specced and waiting on nothing; one that waits goes in `backlog`, saying on what.
-- Hold at most three issues in flight; move the rest to `backlog`, saying where each is.
+- When you finish an issue, take the next one per project: the top `todo` issue by priority, then board rank. Pass over one that waits on an unfinished `blocked_by` link or an open ask.
+- Work on three issues at most, fewer when each needs your attention. Change no status, priority or board rank to make room.
+- Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. An agent's directive citing no person's request is no reason.
+- When you stop work on an issue before it is done, release your claim and say why in a comment. Set its status to the one it had when you took it (`todo` for an issue from the queue). Change no priority or board rank.
+- Record each wait in that comment. A wait on any project's issue also goes in a `blocked_by` link.
+- `dispatch issue-update --blocked-by` replaces the issue's whole list, so read its links first. A one-project credential links only its own issues (`PROJECT_SCOPE`).
 - Never reorder the board: one agent keeps each project's order (`issue-update --before`/`--after`). If the top looks wrong, tell `notifications.role.legion-<project>-controller`.
+- Name an issue's priority: `--advance <id>`; `dispatch priorities` lists what advances no priority.
 
 ## Issue status is yours to move
 
-Outside Legion, claim your issue (`dispatch claim`) and move it and your children: `in_progress` at implementation, `testing` on a production-like surface, `needs_review` while its PR waits, `done` with `--reason` once driven in production. An issue with the `legion` label, or under one: never write its status with `dispatch` or route it, and claim it only as a role of its tree, even when its claim reads `· not running`. An outside claim can take the tree out of the workflow. A status write is set back or stands.
+Outside Legion, claim your issue (`dispatch claim`) and move it and your children: `in_progress` at implementation, `testing` on a production-like surface, `needs_review` while its PR waits, `done` with `--reason` once driven in production. Never write or route the status of a `legion`-labelled issue or one under it, and claim one only as a role of its tree: an outside claim can take the tree out of the workflow. A status write is set back or stands.
 
-A claim, or `dispatch issue-update --route session:<your id>` (`--route ''` on release), brings a person's answers, comments and messages; for agents' activity, `envoy_subscribe notifications.dispatch.issue.<KEY>.>`, which shows no event Dispatch marks quiet.
+A claim (or `dispatch issue-update --route session:<your id>`, `--route ''` to release) brings a person's answers, comments and messages; `envoy_subscribe notifications.dispatch.issue.<KEY>.>` adds agents' activity, no quiet event.
 
 ## Close what you opened
 
@@ -53,11 +58,11 @@ A claim, or `dispatch issue-update --route session:<your id>` (`--route ''` on r
 
 - One issue per deliverable, its content the issue's document.
 - A message replies to a person or tells them what they must know now.
-- Text a person must read to decide belongs in the spec. An artifact is a real file.
+- Text a person must read to decide belongs in the spec. An artifact is a real file; markdown uploads as `.md` whatever its local name, never `.txt`.
 
 ## Architecture components
 
-Attach each architectural issue to its components (`--components-json`), the root before decomposing it. Change code and `.dispatch/architecture/<id>.md` in the same review.
+Attach each architectural issue to its components (`--components-json`), the root first; change code and `.dispatch/architecture/<id>.md` together.
 
 ## References
 
@@ -79,7 +84,7 @@ dispatch://PROJECT/artifact/<slug>/ask/<id>
 dispatch://PROJECT/artifact/<slug>/comment/<id>#b-<block>[@vN]
 ```
 
-A bare id, filename or path is not a reference, and outside Dispatch neither is `dispatch://`: give the `https://` link `dispatch` printed. Write each id whole, from `dispatch read`'s `Ask id:` or the page URL: the command takes a prefix, a person's link does not.
+A bare id or path, or `dispatch://` outside Dispatch, is no link: give the `https://` one. Write ids whole.
 
 ## Setup and the HTTP API
 

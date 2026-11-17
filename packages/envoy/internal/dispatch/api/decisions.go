@@ -81,6 +81,10 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := r.PathValue("key")
+	// One reader for the whole answer: the open questions are the same ask rows the ask list
+	// answers, so a caller that asked for the trees is given each question's here too. The
+	// reader is nil for a caller that did not ask, and every call on it then does nothing.
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	answer := issueDecisions{OpenQuestions: []issueAskRow{}, Decisions: []model.Decision{}}
 	spec, specFound, err := s.issueSpecDocument(r.Context(), key)
 	if err != nil {
@@ -88,7 +92,7 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if specFound {
-		if answer.OpenQuestions, err = s.specOpenQuestions(r.Context(), key, spec.ID); err != nil {
+		if answer.OpenQuestions, err = s.specOpenQuestions(r.Context(), key, spec.ID, reader); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -99,6 +103,7 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !found {
+		reader.resolve()
 		WriteJSON(w, http.StatusOK, answer)
 		return
 	}
@@ -108,10 +113,11 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 	if specFound {
 		specID = spec.ID
 	}
-	if answer.Decisions, err = s.readDecisions(r.Context(), document, reference, specID); err != nil {
+	if answer.Decisions, err = s.readDecisions(r.Context(), document, reference, specID, reader); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	reader.resolve()
 	WriteJSON(w, http.StatusOK, answer)
 }
 
@@ -171,8 +177,13 @@ func artifactMissing(err error) bool {
 }
 
 // specOpenQuestions are the issue's open asks whose block is in its spec, oldest first, in the
-// shape every ask read has (askReadColumns, with the newest reply beside the row).
-func (s *server) specOpenQuestions(ctx context.Context, key, specID string) ([]issueAskRow, error) {
+// shape every ask read has (askReadColumns, with the newest reply beside the row). reader is the
+// answer's own, and each row registers its texts with it once the slice has stopped growing: a
+// shaping registers a pointer into the row, and an append that moved the backing array would
+// leave the reader filling trees into memory the answer no longer holds.
+func (s *server) specOpenQuestions(
+	ctx context.Context, key, specID string, reader *displayTreeReader,
+) ([]issueAskRow, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select `+askReadColumns+` `+askReadFrom+`
 		where a.issue_key = $1 and a.state = 'open' and a.block_artifact_id = $2::uuid
@@ -204,6 +215,9 @@ func (s *server) specOpenQuestions(ctx context.Context, key, specID string) ([]i
 	if err := attachAskBacklinkCounts(ctx, s.deps.Store.Pool, asks); err != nil {
 		return nil, err
 	}
+	for index := range questions {
+		questions[index].shape(reader)
+	}
 	return questions, nil
 }
 
@@ -211,7 +225,15 @@ func (s *server) specOpenQuestions(ctx context.Context, key, specID string) ([]i
 // own blocks, its links from the block graph (refs.BlockLinks), its asks from the block mentions
 // its blocks hold, and its keeps from decision_keeps. specID is "" when the issue has no spec, and
 // every decision then has no links.
-func (s *server) readDecisions(ctx context.Context, document model.Artifact, reference, specID string) ([]model.Decision, error) {
+//
+// reader is the answer's own, and each decision registers its text with it once the slice has
+// stopped growing, as the open questions beside them do (specOpenQuestions): a shaping registers
+// a pointer into the row, and an append that moved the backing array would leave the reader
+// filling a tree into memory the answer no longer holds. Keep reads the decisions to compare one
+// sum and answers none of them, so it passes no reader and no tree is read for it.
+func (s *server) readDecisions(
+	ctx context.Context, document model.Artifact, reference, specID string, reader *displayTreeReader,
+) ([]model.Decision, error) {
 	markdown, sections, err := s.decisionSections(ctx, document.ID)
 	if err != nil {
 		return nil, err
@@ -281,6 +303,9 @@ func (s *server) readDecisions(ctx context.Context, document model.Artifact, ref
 		decision.WaitingReview = decision.Kind == "agent" && !decision.Replaced &&
 			(decision.Kept == nil || decision.Kept.TextSHA256 != decision.TextSHA256)
 		decisions = append(decisions, decision)
+	}
+	for index := range decisions {
+		reader.text(&decisions[index].TextTree, decisions[index].Text)
 	}
 	if err := s.markStaleLinks(ctx, document.ID, markdown, decisions, keys); err != nil {
 		return nil, err
@@ -721,6 +746,11 @@ func decisionKeeps(ctx context.Context, q queryer, artifactID string) (map[strin
 	return keeps, rows.Err()
 }
 
+// keepDecisionInput is the body of POST /api/v1/artifacts/{id}/blocks/{block_id}/keep.
+type keepDecisionInput struct {
+	TextSHA256 string `json:"text_sha256" required:"true"`
+}
+
 // keepDecision is POST /api/v1/artifacts/{id}/blocks/{block_id}/keep {"text_sha256": "<sum>"}:
 // the caller agrees with the decision that heading block opens, as the text they read it at.
 // The sum is the `text_sha256` the view served them, and a decision whose text has changed
@@ -729,13 +759,11 @@ func decisionKeeps(ctx context.Context, q queryer, artifactID string) (map[strin
 // on. Any other block - one that is no decision heading, or a decision under `## Replaced`,
 // which is no longer the design - is 404 TARGET_NOT_FOUND.
 func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.requireHuman(w, r)
+	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
-	var input struct {
-		TextSHA256 string `json:"text_sha256"`
-	}
+	var input keepDecisionInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -794,7 +822,7 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(event)
+	s.publish(r.Context(), event)
 	WriteJSON(w, http.StatusOK, keep)
 }
 
@@ -814,7 +842,7 @@ func (s *server) keptDecision(ctx context.Context, document model.Artifact, bloc
 	if !found || decisionsDocument.ID != document.ID {
 		return model.Decision{}, notFound
 	}
-	decisions, err := s.readDecisions(ctx, document, artifactReference(document), "")
+	decisions, err := s.readDecisions(ctx, document, artifactReference(document), "", nil)
 	if err != nil {
 		return model.Decision{}, err
 	}
@@ -829,7 +857,7 @@ func (s *server) keptDecision(ctx context.Context, document model.Artifact, bloc
 // getDocumentRead is GET /api/v1/me/documents/{id}/read: the caller's last read version of the
 // document, null when they have read none. It is per-person state, as GET /api/v1/me/state is.
 func (s *server) getDocumentRead(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.requireHuman(w, r)
+	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
@@ -852,17 +880,20 @@ func (s *server) getDocumentRead(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, read)
 }
 
+// documentReadInput is the body of PUT /api/v1/me/documents/{id}/read.
+type documentReadInput struct {
+	Version *int `json:"version" required:"true"`
+}
+
 // putDocumentRead is PUT /api/v1/me/documents/{id}/read {"version": n}: the caller has read the
 // document through that version. It is the caller's own view state, written as PUT
 // /api/v1/me/issues/{key}/state is, and announces nothing.
 func (s *server) putDocumentRead(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.requireHuman(w, r)
+	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
-	var input struct {
-		Version *int `json:"version"`
-	}
+	var input documentReadInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return

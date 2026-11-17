@@ -1,16 +1,8 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import {
-  type Browser,
-  expect,
-  type Locator,
-  type Page,
-  type Request,
-  test,
-} from "@playwright/test";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 
 import type { ArtifactUploadResponse } from "../web/src/api/types";
+import { markdownWorkerThreshold } from "../web/src/features/refs/markdown-worker-threshold";
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
   baseUrl,
@@ -19,9 +11,11 @@ import {
   createIssue,
   createIssueArtifact,
   createMessage,
+  createPriority,
   createProject,
   createProjectDocument,
   dashboardOrigin,
+  patchIssue,
   publishAgentStreamFrame,
   putArchitectureSource,
   syncArchitectureSource,
@@ -32,13 +26,14 @@ import { connectedDot, documentEditor } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
 import {
   type DispatchProcess,
-  dispatchProcesses,
-  pinnedTo,
+  entryChunkOf,
   processPinCookie,
   processPinHeader,
+  webDistOf,
 } from "./harness-processes";
+import { withIssuePage } from "./issue-page-option";
 import { sql } from "./psql";
-import { resetDatabase } from "./seed";
+import { type Browser, expect, type Locator, type Page, type Request, test } from "./test";
 import { type LazyPiece, lazyPieces, type WalkRoutePath, walkRoutes } from "./two-builds-routes";
 import { signIn } from "./users";
 
@@ -52,15 +47,10 @@ import { signIn } from "./users";
  * stylesheet its build emitted. Then every file of both builds is fetched from both processes.
  */
 
-const envoyDirectory = fileURLToPath(new URL("../../envoy/", import.meta.url));
-
-/** Each process's web dist, read as e2e/run-server.sh hands it to the server: a path from
- *  packages/envoy, A's always `../dispatch/web/dist`, B's `DISPATCH_E2E_WEB_DIST_B` when set
- *  (e2e/harness-listeners.ts). */
-const webDists: Record<DispatchProcess, string> = {
-  a: resolve(envoyDirectory, "../dispatch/web/dist"),
-  b: resolve(envoyDirectory, process.env.DISPATCH_E2E_WEB_DIST_B || "../dispatch/web/dist"),
-};
+/** Each process's web dist, as e2e/run-server.sh serves it, and the entry chunk that dist's
+ *  `index.html` names: both from e2e/harness-processes.ts, so this spec and
+ *  e2e/cross-build.multiprocess.e2e.ts read one answer rather than two. */
+const webDists: Record<DispatchProcess, string> = { a: webDistOf("a"), b: webDistOf("b") };
 
 interface Build {
   readonly dist: string;
@@ -71,16 +61,11 @@ interface Build {
 }
 
 function readBuild(dist: string): Build {
-  const page = readFileSync(join(dist, "index.html"), "utf8");
-  const entry = /<script type="module" crossorigin src="(\/assets\/[^"]+\.js)"><\/script>/.exec(
-    page
-  )?.[1];
-  if (entry === undefined) throw new Error(`${dist}/index.html names no entry chunk`);
   const assets = readdirSync(join(dist, "assets"), { withFileTypes: true })
     .filter((entry) => entry.isFile())
     .map((entry) => entry.name)
     .sort();
-  return { assets, dist, entry };
+  return { assets, dist, entry: entryChunkOf(dist) };
 }
 
 let builds: Record<DispatchProcess, Build>;
@@ -106,18 +91,39 @@ test.beforeAll(() => {
   ).not.toEqual(builds.a.assets);
 });
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
+/** The machine the seeded session reports. It reports it as `machine_id` and no `host`, which
+ *  the fake Envoy answers as the session's host (e2e/fake-envoy.ts), so this is the machine
+ *  `/machines` lists and `/machines/:machine` draws. */
+const machine = "two-builds-host";
+
+/** The window `/machines/:machine` draws: a three-pane window as tmux 3.5a writes it, `%0` over
+ *  `%1` beside `%2`. The seeded session sits in `%0`, so the page draws a real window rather
+ *  than saying it has none, and the drawing runs the layout parser. Its narrowest pane is 39 of
+ *  80 columns and 11 of 24 rows, which the walk's window is wide enough to draw rather than list
+ *  (a pane under 96 px wide or 42 px tall makes the window a list, WindowDrawing.tsx): panes of
+ *  this window hold those at any drawing wider than 192 px. */
+const windowLayout = "b05b,80x24,0,0[80x12,0,0,0,80x11,0,13{40x11,0,13,1,39x11,41,13,2}]";
 
 const session: FakeSession = {
   capabilities: ["aside", "btw", "steer"],
   dir: "/workspaces/two-builds",
-  machine_id: "two-builds-host",
+  machine_id: machine,
   roles: ["planner"],
   // The live view's stream hook takes a session uuid only, as a real session id is.
   session_id: "019a2b3c-0559-7000-8000-000000000559",
   title: "Two builds planner",
+  tmux_place: {
+    layout: windowLayout,
+    pane_id: "%0",
+    pane_index: 0,
+    server_pid: "4242",
+    session_name: "main",
+    socket: "/tmp/tmux-1000/default",
+    window_id: "@1",
+    window_index: 1,
+    window_name: "agents",
+    zoomed: false,
+  },
 };
 
 /** The text each seeded thing shows, which its route's landmark finds. */
@@ -131,15 +137,27 @@ const shown = {
   spec: "Both builds serve every page.",
 };
 
-/** The list the issue message carries under its diagram, long enough that the page parses the
- *  message in the Markdown parse worker rather than on its own thread (`markdownWorkerThreshold`,
- *  features/refs/markdown-worker-threshold.ts). It rides the message rather than the comment
- *  because the Conversation draws a message's body whole, where a comment card shows a preview
- *  until its thread is opened. The walk asks for every chunk a build emits, the parse worker's
- *  among them, and a reader on a rolling deploy meets exactly this: a long body whose formatting
- *  arrives from a worker whose code one build served and whose page another did. */
+/** The list the issue message carries under its diagram, drawn from the tree the server read the
+ *  message into: a stored text is parsed nowhere, however long it is
+ *  (features/refs/markdown-engine.ts), and the walk's point here is that the whole of it is drawn
+ *  from a build's own chunks. It rides the message rather than the comment because the
+ *  Conversation draws a message's body whole, where a comment card shows a preview until its
+ *  thread is opened. */
 const longListItems = 300;
 const longList = "- a rollout step\n".repeat(longListItems);
+
+/** The notes the agent's turn carries under its first line, long enough that the page parses the
+ *  turn in the Markdown parse worker rather than on its own thread (`markdownWorkerThreshold`,
+ *  features/refs/markdown-worker-threshold.ts). They ride the live agent turn because it is one
+ *  of the three texts Dispatch does not store, and so one of the three the worker still parses:
+ *  every stored text arrives with the tree the server read it into. The walk asks for every chunk
+ *  a build emits, the parse worker's among them, and a reader on a rolling deploy meets exactly
+ *  this: a turn whose formatting arrives from a worker whose code one build served and whose page
+ *  another did. Derived from the threshold with a margin, so the turn stays the worker's wherever
+ *  that value is set. */
+const agentReplyNote = "- a release note\n";
+const agentReplyNotes = Math.ceil(markdownWorkerThreshold / agentReplyNote.length) + 50;
+const agentReply = `${shown.agentReply}\n\n${agentReplyNote.repeat(agentReplyNotes)}`;
 
 /** The issue message's flowchart, from one node to the other, which draws only once the Mermaid
  *  renderer's worker has run. */
@@ -179,12 +197,14 @@ interface Seeded {
   readonly document: string;
   readonly issue: string;
   readonly issueArtifact: string;
+  readonly priority: string;
 }
 
 /** What every route needs to show its own content rather than an empty or missing state: a
  *  project with an architecture source, an issue with a spec, a child, a comment, a message
  *  holding a Mermaid diagram and a document artifact, a project document, a live session with a
- *  broadcast, a replayed conversation and a picture, and the delivery timeline's runs. */
+ *  broadcast, a replayed conversation and a picture, a priority with a description and an issue
+ *  in flight that advances it, and the delivery timeline's runs. */
 async function seedEveryRoute(): Promise<Seeded> {
   await setLiveSessions([session]);
   await createProject({ key: "CORE", name: "Core" });
@@ -217,6 +237,16 @@ async function seedEveryRoute(): Promise<Seeded> {
     content: `# Handbook\n\n${shown.document}\n`,
     name: "handbook.md",
   });
+  // The priorities page draws its table only where a priority is written, and a priority's own
+  // page draws the work advancing it, so one priority is written with an issue in flight under
+  // it; the two fault lists of the page are drawn whatever they hold.
+  const priority = await createPriority({
+    description: "Every page is served from either build while a release overlaps the two.",
+    owner: "alice",
+    title: "Serve every page from both builds",
+  });
+  const advancing = await createIssue({ project: "CORE", title: "Pin assets to one process" });
+  await patchIssue(advancing.key, { advances: [priority.id], status: "in_progress" });
   const broadcast = await createBroadcast({
     body: "Report **status**.",
     delivery: "steer",
@@ -243,7 +273,7 @@ async function seedEveryRoute(): Promise<Seeded> {
           message: {
             at: 2_000,
             id: "a2000",
-            parts: [{ text: shown.agentReply, type: "text" }],
+            parts: [{ text: agentReply, type: "text" }],
             role: "assistant",
             streaming: false,
           },
@@ -264,6 +294,7 @@ async function seedEveryRoute(): Promise<Seeded> {
     document: document.artifact.slug,
     issue: issue.key,
     issueArtifact: issueArtifact.artifact.slug,
+    priority: priority.id,
   };
 }
 
@@ -274,6 +305,8 @@ interface Visit {
   readonly url: string;
   readonly shows: (page: Page) => readonly Locator[];
   readonly loads?: readonly LazyPiece[];
+  /** Runs before the visit's `goto`, and what it sets stays on the walk's one context. */
+  readonly prepare?: (page: Page) => Promise<void>;
 }
 
 function heading(page: Page, name: string): Locator {
@@ -309,14 +342,6 @@ function visits(seed: Seeded): readonly Visit[] {
       ],
       url: "/answers",
     },
-    {
-      route: "/replies",
-      shows: (page) => [
-        heading(page, "Replies"),
-        page.getByRole("region", { name: "Replies empty state" }),
-      ],
-      url: "/replies",
-    },
     { route: "/agents", shows: (page) => [heading(page, "Agents")], url: "/agents" },
     {
       // The preview is the headless renderer's: without it the bold is literal asterisks.
@@ -339,9 +364,20 @@ function visits(seed: Seeded): readonly Visit[] {
       url: `/agents/broadcasts/${seed.broadcast}`,
     },
     {
+      // The turn's notes are the parse worker's: the turn is longer than the worker's threshold
+      // and, as a live agent turn, one of the texts Dispatch does not store, so the page parses
+      // it rather than drawing a tree the server read it into (`agentReply`). The card holds the
+      // turn's own text at once and the notes as a list once the worker answers, which is why the
+      // landmark waits for the last of them: that worker's code comes from the build that did not
+      // serve this page, which is the walk's whole point.
+      loads: ["markdown-worker"],
       route: "/agents/:sessionId/live",
       shows: (page) => [
         page.getByTestId("agent-message-assistant").filter({ hasText: shown.agentReply }),
+        page
+          .getByTestId("agent-message-assistant")
+          .locator("li")
+          .nth(agentReplyNotes - 1),
       ],
       url: `${agent}/live`,
     },
@@ -353,6 +389,28 @@ function visits(seed: Seeded): readonly Visit[] {
       ],
       url: `${agent}/artifacts/${seed.agentArtifact}`,
     },
+    {
+      route: "/machines",
+      shows: (page) => [
+        heading(page, "Machines"),
+        page.locator(`[data-testid="machine-row"][data-machine="${machine}"]`),
+      ],
+      url: "/machines",
+    },
+    {
+      // The drawing is the point: a machine whose sessions are in no pane says so and draws
+      // nothing, which never runs the layout parser or the window drawing. The seeded session's
+      // place names a window of three panes, so the page draws that window and the pane box
+      // below is the session's own.
+      route: "/machines/:machine",
+      shows: (page) => [
+        heading(page, machine),
+        page
+          .getByTestId("window-layout")
+          .locator(`[data-testid="window-pane"][data-agent="${session.session_id}"]`),
+      ],
+      url: `/machines/${machine}`,
+    },
     { route: "/issues/:key/*", shows: (page) => [issueHeading(page, shown.issue)], url: issue },
     {
       loads: ["editor"],
@@ -361,11 +419,12 @@ function visits(seed: Seeded): readonly Visit[] {
       url: `${issue}/spec`,
     },
     {
-      // The message's diagram is the Mermaid worker's: without it the body shows its source. The
-      // message is also longer than the worker threshold, so its list is the parse worker's: the
-      // card holds the body's text at once and the list once the worker answers. Both workers'
-      // code comes from the build that did not serve this page, which is the walk's whole point.
-      loads: ["markdown-worker", "mermaid"],
+      // The message's diagram is the Mermaid worker's: without it the body shows its source. Its
+      // list is no worker's: a stored message arrives with the tree the server read it into and
+      // is parsed nowhere (`longList`), so what the list proves here is that the whole of a long
+      // stored body is drawn from the chunks of the build that did not serve this page, which is
+      // the walk's whole point.
+      loads: ["mermaid"],
       route: "/issues/:key/*",
       shows: (page) => [
         page.locator("#issue-conversation-panel").getByText(shown.comment),
@@ -398,6 +457,31 @@ function visits(seed: Seeded): readonly Visit[] {
       route: "/issues/:key/*",
       shows: (page) => [page.getByRole("list", { name: "Issue activity" })],
       url: `${issue}/activity`,
+    },
+    {
+      route: "/priorities",
+      shows: (page) => [
+        heading(page, "Priorities"),
+        page.locator('section[aria-label="Priorities"]'),
+        page.getByRole("table", { name: "Priorities table" }),
+        page.locator('section[aria-label="In flight under no priority"]'),
+        page.locator('section[aria-label="Priority work in backlog or icebox"]'),
+      ],
+      url: "/priorities",
+    },
+    {
+      // Three reads, each its own request: the priority itself, which the title and the owner
+      // are written in where they are read (alice is a person, and every priority write is the
+      // deployment's), the issues advancing it under them, and the history in the margin.
+      route: "/priorities/:id",
+      shows: (page) => [
+        page.getByRole("textbox", { name: "Title" }),
+        page.getByRole("combobox", { name: "Owner" }),
+        page.locator('section[aria-label="Description"]'),
+        page.locator('section[aria-label="Work advancing this priority"]'),
+        page.getByRole("complementary", { name: "Margin" }),
+      ],
+      url: `/priorities/${seed.priority}`,
     },
     {
       // A project with an architecture source opens on its Architecture tab.
@@ -458,6 +542,19 @@ function visits(seed: Seeded): readonly Visit[] {
     },
     { route: "/pipeline", shows: (page) => [heading(page, "Pipeline")], url: "/pipeline" },
     { route: "*", shows: (page) => [heading(page, "Page not found")], url: "/no-such-page" },
+    {
+      // Only a reader with the new issue page turned on loads its chunk (`IssueOutlinePage`), so
+      // no visit above loads it. This visit is last because the init script stays on the walk's
+      // one context: an issue visit after it would draw the new page rather than today's.
+      prepare: (page) => withIssuePage(page.context(), "alice"),
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page
+          .locator("[data-issue-page]")
+          .getByRole("heading", { exact: true, level: 1, name: shown.issue }),
+      ],
+      url: issue,
+    },
   ];
 }
 
@@ -551,6 +648,7 @@ async function walk(
       problems = [];
       const shows = visit.shows(page);
       try {
+        await visit.prepare?.(page);
         awaitingCommit = true;
         await page.goto(visit.url);
         // A failed asset ends the visit at once: the landmark it keeps from rendering would
@@ -593,7 +691,7 @@ async function walk(
 }
 
 // A walk opens about twenty-five pages, each waiting on its own content, so it outlasts the
-// suite's 30 s test timeout by design.
+// suite's 60 s test timeout (e2e/playwright.config.ts) by design.
 const walkTimeout = 300_000;
 
 test("every route renders with its page from Dispatch A and every asset from Dispatch B", async ({
@@ -608,32 +706,6 @@ test("every route renders with its page from Dispatch B and every asset from Dis
 }) => {
   test.setTimeout(walkTimeout);
   await walk(browser, "b", "a");
-});
-
-test("every file of both builds' assets answers 200 with its bytes from Dispatch A and from Dispatch B", async () => {
-  const wrong: string[] = [];
-  for (const target of dispatchProcesses) {
-    for (const build of [builds.a, builds.b]) {
-      await Promise.all(
-        build.assets.map(async (file) => {
-          const response = await fetch(new URL(`/assets/${file}`, baseUrl), {
-            headers: pinnedTo(target),
-          });
-          const where = `${build.dist}/assets/${file} from Dispatch ${target.toUpperCase()}`;
-          if (response.status !== 200) {
-            wrong.push(`${where} answered ${response.status}`);
-            await response.body?.cancel();
-            return;
-          }
-          const bytes = Buffer.from(await response.arrayBuffer());
-          if (!bytes.equals(readFileSync(join(build.dist, "assets", file)))) {
-            wrong.push(`${where} answered other bytes than the file's`);
-          }
-        })
-      );
-    }
-  }
-  expect(wrong.sort()).toEqual([]);
 });
 
 /** Opens the inbox in a signed-in tab whose page, API calls and sockets are all `process`'s (the

@@ -1,12 +1,31 @@
 # Envoy client
 
-Shared HTTP transport, tool contract, inbound delivery renderer, and missed-message replay for Envoy
+Shared HTTP transport, tool contract, inbound delivery renderer, and consumer delivery for Envoy
 hosts. pi-envoy and claude-envoy consume these modules rather than maintaining host-specific
 envelope parsers.
 
-This package has no release of its own: `.github/workflows/changelog-fold.yaml` folds its
-changelog fragments (`.changes/unreleased/`) into `CHANGELOG.md` under `main@<commit>` at the
-first fold run after they merge.
+This package has no release of its own, so nothing renders its changelog entries: each stays
+readable as the fragment file that holds it, under `.changes/unreleased/`. `CHANGELOG.md` is the
+history before that and stops where the fragments begin.
+
+## Running the suite
+
+`bun run test` runs the suite with `--timeout 30000`, because Bun's own per-test default is
+5,000 ms and nothing here wrote it, sized it or explained it. On a busy machine that default is a
+limit on a row's work rather than on a hang: measured in a 2-CPU pod under 16 busy loops
+(8 x nproc), `dispatch-cwd.test.ts`'s row that kills a child ignoring SIGTERM reached 5,000.89 ms
+and failed, where it costs 0.14 s idle and 0.31 s with its own file alone. A row that hangs still
+fails the suite; it takes 30 s to say so rather than 5 s.
+
+Bun reads that number from the command line alone. `bunfig.toml` has no `[test] timeout` key, a
+preload that calls `jest.setTimeout` governs the first test file of a run only, and
+`BUN_TEST_TIMEOUT` is not read, each of the three measured on Bun 1.4.4. So a bare `bun test` here
+still runs under Bun's 5,000 ms, and every row whose own work reaches half of that carries its own
+limit as the third argument to `test`, with what can hang and the two costs that sized it written
+beside it. Each row's comment is the record of its own number.
+
+A row whose limit is a bound on work rather than a hang guard says so beside its number, and a row
+whose limit must stay below something the row must not wait out says that too.
 
 ## Inbound delivery
 
@@ -29,7 +48,7 @@ only moved a version, or a version nobody named — before a host can steer or r
 inbox, as well as events authored by the reader's own session. It does not skip on `notify`,
 which answers whether to wake the owner's route and is false for every event an agent wrote: a
 session that subscribed to an issue's topic subscribed for exactly that activity. A frame with no
-`quiet` was published before Dispatch stated it and is judged by `notify`, so a replay of the 72
+`quiet` was published before Dispatch stated it and is judged by `notify`, so a frame from the 72
 hours the stream still holds shows no receipts.
 
 ## Consumer delivery
@@ -38,124 +57,102 @@ hours the stream still holds shows no receipts.
 listener's relay of its durable consumer ("Session consumers" in `packages/envoy/AGENTS.md`). A
 host makes one per session, subscribes its `subject` (`notifications.envoy.deliver.<session id>`)
 before it registers, passes `registration()` as the registration's `delivery` field, and gives the
-registration's answer and the topics it carried to `answered`, which returns `consumer` or `core`,
-records the stored topics the listener relays (`relays`, `relaying`) and puts the replay engine in
-or out of consumer mode. It hands `receive` each relay message. The delivery decodes the frame's
+registration's answer and the topics it carried to `answered`, which returns `consumer`, the one
+mode there is, and
+records the stored topics the listener relays (`relays`, `relaying`). It hands `receive` each relay message. The delivery decodes the frame's
 `Envoy-*` headers (`decodeRelayFrame`), answers `received` on the frame's reply subject before any
 host work, and hands the host the frames one at a time in stream order
 (`ConsumerDeliveryHost.deliver`): the next waits until `deliver` returns or the host calls
 `release`, `done` or `nak`. The host calls `done` once it wrote the frame, or skipped or refused
 it, and `nak` when the session cannot take it; `progress` goes out every 20 s until then. A frame
-whose `deliver` throws is answered `nak`, and from its third delivery `done`, with the replay
-ledger's `liveFailed` showing its failure notice instead. A frame the replay ledger holds, one on
-a subject no followed topic matches, and one stored more than 2 s before its topic was followed
-(`setFollowed`) whose subject no replay cursor on the frame's stream followed from below the
-frame's sequence either (`since`) are answered `done` and never handed over. A frame delivered
+whose `deliver` throws is answered `nak`, and from its third delivery the delivery ledger's
+`liveFailed` shows its failure notice instead; the frame is answered `done` when that notice
+reached somebody and `nak` when it did not, so a give-up nobody was told of waits on the stream
+for whoever takes the session next. A frame the ledger holds, one on
+a subject no followed topic matches, and one stored before its topic was followed (`setFollowed`)
+are answered `done` and never handed over. A frame delivered
 before, or stored before the current epoch began, is `late`, and a host runs no side turn for it.
 `beginEpoch` starts a new epoch for each new NATS connection. `resumePoint` is the stream id and
 the sequence below which the session holds nothing unwritten; `snapshot` and `restore` carry it
 and the follow times across a restart, and the `persist` option is offered a snapshot whenever it
-changed, so a host writes only changes. A session with no resume point of its own, one moving
-from the core path, registers the lowest cursor the replay ledger holds over its agent subject
-and the followed topics the stream stores: its first consumer starts there instead of at the
-stream's end, so nothing stored while it was away is acked away unshown. Such a session has no
-follow times either, so every topic it follows is stamped at the resume time; the replay cursors
-are what say it followed the topic before then, so its frames are shown and not dropped.
+changed, so a host writes only changes. A session with no resume point of its own has its first
+consumer created at the first message the stream holds on its own agent subject, and at the
+stream's end only when it holds none, so a message stored for it before it registered reaches it.
 A registration answer that reports a gap
 or names another stream, and a frame that carries `Envoy-Gap`, call the host's `gap` once. `close`
-answers every unsettled frame, and every later one, `nak`, and leaves consumer mode.
-`streamStores` (`@legion/envoy-client/stream-topics`) says whether the stream stores a topic, so a
-host knows which of its subscriptions the relay carries. On `core` a host runs the replay engine
-below, and `setConsumerMode(true)` stops its `POST /v1/replay` calls while the relay serves the
-session.
+answers every unsettled frame, and every later one, `nak`.
+`streamStores` (`@legion/envoy-client/stream-topics`) says whether the stream stores a topic; the
+listener refuses to register a `notifications.` topic it does not, so every followed topic is one
+the relay carries.
 
-## Missed messages
+## The delivery ledger
 
-`createReplayEngine` (`@legion/envoy-client/replay`) is the core fallback's recovery, for a
-listener that answers `core` and for a plugin of an earlier release: it shows a session, once,
-each message the notification stream stored on a subject it follows while its own NATS
-subscription was down. A
+`createDeliveryLedger` (`@legion/envoy-client/delivery-ledger`) is what keeps a frame from being
+shown twice: the session's consumer redelivers everything it has not acknowledged, and the ledger
+holds what the host already wrote. A
 host makes one per session process and hands it its live path's `createDeliveryDedupe`, the
-listener client and callbacks (`ReplayHost`): the session id, the followed subjects, how to show
-a stored frame (as a card that runs nothing), a failure notice and a one-time notice, and how to
-persist a change. `sweep()` asks the listener's `POST /v1/replay` for each followed subject's
-messages after its cursor, merges them by stream sequence and hands the host each frame neither
-path showed; it never rejects, and one runs at a time with at most one queued behind it. A
-subject with no cursor starts at the stream's end, so a new follow brings up no history. Role
-forwards are passed over: on this path, role messages stay live only.
+listener client and callbacks (`DeliveryLedgerHost`): the session id, the followed subjects, how
+to show a failure notice and a one-time notice, and how to
+persist a change. Role forwards reach a session as stored copies on its own subject, so they go
+through the ledger like any other frame.
 
 The ledger holds the identity of each frame the session finished with (its `event_id`, and its
-`dedupe_key` when that names its event, `replayLedgerIdentity`), each expiring 72 hours after it
-was recorded, at most 20,000, the oldest dropped first. A host's live path calls
-`recordDelivered` once the host wrote the frame to the session's record, before it settles the
+`dedupe_key` when that names its event, `ledgerIdentity`), each expiring 72 hours after it
+was recorded, at most 20,000, the oldest dropped first. A host calls
+`recordDelivered` once it wrote the frame to the session's record, before it settles the
 claim, and drops a frame `delivered` finds. A `createDeliveryDedupe` claim is settled (`settle()`)
 once the host is done with the frame, shown or not, or released as before; until then `pending()`
-reads it true, and a sweep leaves that frame's stored copy for a later sweep rather than show it
-beside the live one. A host that hands a stored frame, or a failure notice, on without having
+reads it true. A host that hands a frame, or a failure notice,
+on without having
 written it yet (Oh My Pi holds a card sent mid-turn until the turn takes it) claims the frame and
-answers `queued`: nothing is recorded and its subjects' cursors stay before it, so a process that
-ends first shows it after the restart, until the host calls `recordDelivered` and settles the
+answers `queued`: nothing is recorded, so a process that
+ends first is sent it again after the restart, until the host calls `recordDelivered` and settles the
 claim once written. `recordDeliveredFor(sessionID, frame)` records the same way for the session a
 frame was delivered in while the host shuts down: it writes while the host's optional
 `writeSessionID()` still names that session, once `sessionID()` already answers none, and the
 ledger holds the frame from the call on (Oh My Pi records every BTW's event id so, before its side
-turn and before any reply is posted).
+turn and before any reply is posted). It answers whether the write that keeps the record reached
+the host, so a caller told `false` - the host moved while the write waited behind the writes
+before it, or the write failed - reports the loss rather than settling the frame in silence.
 
-The state holds each followed subject's `since` and `after`, the stream's `id` (`stream_id`, the
-`envoy_stream_id` the listener answers as `stream.id`) and `created` time, and the one-time
-notices raised but not told yet (`notices`);
+The state holds the topics the session follows, so a host can follow them again after the
+listener reaped its interests;
 `restore(snapshot)` loads what a host persisted, dropping expired ledger entries and keeping the
-state at any age. A write carries the state only when it changed; a sweep that handled no message
-and only moved its cursors to the stream's end goes with the next write, or once the state last
-written is an hour old (`REPLAY_STATE_REFRESH_MS`). A frame the host fails to show is retried, and
-on its third failure the host shows a notice naming it instead (`showFailureNotice`); a host whose
-live path failed a frame calls `liveFailed(followed, envelope, error, receivedAt)`, which shows
-that notice at once unless a sweep will show the stream's copy, which it will not for a frame
-received before its subject's cursor started (a new follow, a new session, or a reset after a
-stream recreation), since that cursor can start past it. A host stamps `receivedAt` when the
-subscription yielded the frame: `readArrivals(subscription)` (`@legion/envoy-client/delivery`)
-reads a subscription as its messages arrive and yields each, in order, with that time, so a frame
-queued behind a slow delivery is not stamped late. A replayed removal closes a topic only
-when `followedBefore(topic, seq)`; `replaySuppressed` says which rendered frames a replay does
-not show, `replayedText`, `failureNoticeFields` and `replayNoticeFields` word the cards, and
+state at any age. A write carries the state only when it changed. A frame the host fails to show is answered `nak` and sent again, and
+on its third delivery the host shows a notice naming it instead (`showFailureNotice`); a host whose
+delivery path failed a frame outside the relay calls `liveFailed(sessionID, envelope, error)`,
+which shows that notice at once, to the session the frame was addressed to and to no other: a
+frame that failed because the host moved on names a session that is closed here now, and nothing
+is shown or recorded for it then. It answers whether the frame was reported, so the relay settles
+a give-up nobody was told of with `nak` rather than acking a message that then exists nowhere; a
+notice shown to the session it names is reported even where the host moved before it resolved,
+and only its record waits for a host that is still on that session. `failureNoticeFields` words
+that card, and
 `envoyNoticeText` renders a notice's fields under `envoy:` in TOON, so a sender's summary that
-holds a newline stays inside its own field. The session is
-told once when the stream was recreated, when it moved back, when its cursor fell behind the
-stream's oldest message (older than 72 hours), and when the listener does not replay (404) or
-cannot (503 `REPLAY_UNAVAILABLE`, 401, 403). A stream is recreated when its `id` differs from the
-stored one; a `created` that moved under the same id is a restore (or, after a clustered restore,
-a later leader election), not a recreation. An
-answer without an id (an older listener) is judged by `created`, and a state stored before ids
-takes the answer's id. A stream that is not recreated has moved back when any cursor's `after` is
-past the stream's `last_seq`: restored from a backup older than the cursors, or re-added empty
-from its exported configuration, which keeps the id, so its sequences restarted below them.
-Nothing tells which of its messages the session was shown, so every followed subject's `after`
-becomes `first_seq - 1` (each `since` stays) and the sweep reads everything the stream holds
-again: the ledger passes over what the session was already shown (a restore keeps event ids),
-what was published after the restore is shown, and the session is told once (`stream_moved_back`)
-that messages may be shown again and that any published between the backup and the restore are
-missing. A message may be shown twice; none is lost. A recreation's cursor reset, a moved-back
-stream's cursor rewind, and a retention gap's cursor move are written at once, with their notice
-in `notices`, which is dropped once told: a session that ends before telling it tells it once at
-its first sweep after the restart. Work started for one session stops, writing nothing, once
+holds a newline stays inside its own field. Work started for one session stops, writing nothing, once
 `sessionID()` names another.
 
-The host policy both plugins share sits beside the engine, so each host keeps only how it shows a
-card, how it warns, and how it persists. `replayFollowedSubjects(ownAgentSubject, topics,
-heldForRole?)` is what a host's `followedSubjects()` answers: its own agent subject and every
-topic it follows but a role lane, a subject it holds for a role, and a topic reaching a private
-stream subject (`reachesPrivateStreamSubject`, which a host's registration applies too: another
-session's agent subject, a failed-delivery lane on an agent subject, the Legion controller lane,
-or a wildcard reaching one, the listener's own rule, `privateStreamSubjects` and
-`ReachesPrivateStreamSubject` in `packages/envoy/internal/bus/stream.go`). `rememberedTopics(state)`
-is what a restore follows again from a persisted state: every
-subject but agent subjects and role lanes. `closeReplayedRemoval(frame, host)` acts on a replayed
-`subscription.removed` naming the session: it closes each topic the session followed before the
-frame was stored (`followedBefore`, through the host's `close`), then starts the host's
-`unregister` of the closed topics from the listener's registry and waits on it and on the host's
-`followedChanged`. `routeReplayNotice(notice, {warn, card})` sends a one-time notice where its kind
-belongs: `not_served` and `unavailable` are a warning, `stream_recreated`, `stream_moved_back` and
-`retention_gap` a card rendered by `envoyNoticeText`.
+The host policy both plugins share sits in `@legion/envoy-client/stream-topics`, so each host keeps
+only how it shows a card, how it warns, and how it persists. `replayFollowedSubjects(
+ownAgentSubject, topics, heldForRole?)` is what a host's `followedSubjects()` answers, which is
+what a restart follows again: its own agent subject and every topic it follows but a role lane, a
+subject it holds for a role, and a topic reaching a private stream subject.
+`reachesPrivateStreamSubject(ownAgentSubject, topic, roles?)` is the listener's own rule,
+`privateStreamSubjects` and `ReachesPrivateStreamSubject` in
+`packages/envoy/internal/bus/stream.go`, which a host's registration applies too: another session's
+agent subject, a failed-delivery lane on an agent subject or a team topic, a controller notice lane
+of a project whose controller role `roles` does not name, or a wildcard reaching one. A session
+holding that role registers its own project's lane, since its consumer is the only way the notice
+reaches it (`controllerNoticeRole` names the role a lane is for). `rememberedTopics(topics)` is what
+a restore follows again from a persisted state: every subject but agent subjects and role lanes.
+`streamDeliversNothing(topic)` is the topic a registration must not carry: a `notifications.` topic
+no stream subject captures and no role lane, which the listener leaves out of the row it stores,
+naming it in a warning. `refuseUncapturedTopics(sessionID, ownAgentSubject, topics)` throws that
+warning's own wording for every topic a caller named by hand that a host's subscribe tool refuses,
+which is such a topic unless it reaches a private stream subject, where the listener's own warning
+says so instead. The sentence is `@legion/contracts`'s `uncapturedTopicRefusal`:
+`packages/contracts/scripts/gen-go.ts` emits it as the `contracts.UncapturedTopicRefusal` the
+listener's warning returns, so a reword reaches both languages from one place.
 
 ## NATS connection
 
@@ -197,13 +194,48 @@ again (`/connz`), the session's `envoy_sessions` entry names a new epoch, and th
 during the freeze and one sent after it are each shown once, neither as a replay. A test that
 uses the stack runs only with `LEGION_E2E_ENVOY_STACK=1`.
 
+`@legion/envoy-client/test/dispatch-stack` (Bun only, not built, in `test/`) is the same shape for
+a real Dispatch server: it builds `./cmd/dispatch` with `go build` from `packages/envoy` into its
+own scratch directory, makes a database of its own on the server `DISPATCH_TEST_DATABASE_URL`
+names and drops it at the end, starts the server, which migrates that database as it boots, and
+answers its URL and the agent bearer token it minted for the run. Two tests run on it:
+`src/__tests__/design-gate-advice.live.test.ts`, which proves the design-gate clause end to end,
+and `src/__tests__/moved-approval-advice.live.test.ts`, which proves the moved-approval line of a
+document write's advice the same way; each is the real CLI entry `bin/dispatch.ts` writing to that
+server, the server's record and the client's sentence together. They share
+`@legion/envoy-client/test/dispatch-cli-live` (Bun only, not built, in `test/`), which holds the
+real CLI's `docEdit`, the person's and the machine's writes, and the issue and document a row
+writes about; each file keeps the constants and the sentences that are its own. A test that uses
+this stack runs only with `LEGION_E2E_DISPATCH_STACK=1`, and it needs `DISPATCH_TEST_DATABASE_URL`
+and `go` on `PATH`; with the variable set it fails rather than skips. So, to run them here:
+
+```sh
+cd packages/envoy-client
+LEGION_E2E_DISPATCH_STACK=1 DISPATCH_TEST_DATABASE_URL="$LEGION_TEST_PG_DSN" \
+  bun test src/__tests__/design-gate-advice.live.test.ts \
+  src/__tests__/moved-approval-advice.live.test.ts
+```
+
+CI runs both in `ci.yaml`'s `envoy-session-stall` job, which is the one lane of this package with
+both a PostgreSQL and a Go.
+
 ## HTTP transport
 
 `createEnvoyClient` sends and receives the listener's `/v1` JSON contracts. Send and publish
 accept optional `inReplyTo`, `supersedes`, `urgency`, `expectsReply`, and `expiresAt` metadata.
 Successful direct sends return both the envelope and listener-selected recipient, and
-`duplicate` when the listener already held a send under that target and idempotency key;
-publishes return the envelope and an optional role holder. Network failures, timeouts (5 s an
+`duplicate` when the listener already held a send under that target and idempotency key.
+A publish returns the envelope and an optional role holder. A role publish has three answers,
+told apart by status. 200 is a live holder that took the message, named by `holder`. 202 is a
+message the listener kept for one hour because no live session holds the role, with `kept`,
+`keptReason` (`unclaimed`, or `holder_lapsed` with the `holder`, its `holderState` and its
+`lastSeen` when the claim's holder is not live) and `keptUntil`, the end of that hour in epoch
+milliseconds. The next session to hold the role live before `keptUntil` is handed the message. If
+none does, the listener drops it and sends the publishing session a dead letter, when the publish
+named that session as its source and the listener did not drop it more than an hour late. A
+listener of an earlier release sends no `keptUntil`. 404 is nothing kept, thrown as an
+`EnvoyApiError`, and the sender's own fallback must run. A sender that
+keeps a queue of its own passes `keep: false` to get the 404. Network failures, timeouts (5 s an
 attempt, the answer's body included) and 5xx responses retry once after 250 ms, under the same
 idempotency key; a 4xx whose body does not arrive is still a refusal. A send any attempt of which
 got no answer, an unreadable 2xx or a 5xx throws `EnvoySendUnconfirmedError`, even when a later
@@ -217,29 +249,79 @@ refused with a 4xx on every attempt stays an `EnvoyApiError`. Listener error res
 `error` and optional `expected` fields. The listener's bearer is the `token` the client is given
 (`envoySettings`); without one it sends no `Authorization` header.
 
+Every call whose body names the session it acts for — `subscribe`, `unsubscribe`,
+`unregisterSession`, `setRole`, and a `send` or `publish` with a `sourceSessionID` —
+presents that session's own credential, since the listener holds such a write to the session its
+broker token names and answers 403 to any other. That is what lets a process that has switched
+sessions hand back a role the session it left still holds: the old session's credential is a
+client of its own and answers out of the token it already has. A read of another session's
+record (`getInterest`, `getRole`, `listSessions`) names no session and is answered the
+credential the client was built with. A bearer is the same header whichever session a call acts
+for.
+
 `subscribe` sends the host's `plugin` (`{name, version}`, required) as `plugin` and
 `plugin_version` on every registration, and exposes listener warnings, including a topic that has
 no event in the configured stream. It sends the client instance driving the session
 (`clientInstanceID`: one Oh My Pi Envoy extension instance, one Claude Code channel-server
 process, minted once when that instance starts) as `client_instance_id`, omitted when the host
 has none so an older listener sees an unchanged body; the listener stores it on the session's
-registry entry. `getRole` returns a role holder with its last-seen timestamp,
-and `listSessions` accepts optional directory and title filters; its rows carry `plugin` and
-`plugin_version` when the session registered them.
+registry entry and renews with it every role claim this session holds that names that same
+process, so each registration is the holder's answer for the roles it holds. It renews every such
+claim the listener has not marked handed back, whatever topics the registration carries: what
+says a role was given up is the mark a hand-back leaves on a claim it could not free, and a
+marked claim is renewed by nobody. A registration that
+states no instance renews the claims of its own session that name no process, and adopts none, so
+a claim standing at a deploy is kept by a client that cannot say which process it is.
+`getRole` returns a role holder with its last-seen timestamp and, where the
+claim names a process, the `client_instance_id` of that process; a claim that names none leaves
+the field out, on the 200 as on a lapsed holder's 404. It also returns `handed_back` where the
+claim carries the listener's hand-back mark, on both answers and left out where it carries none.
+`listSessions` accepts optional directory
+and title filters; its rows carry `plugin` and `plugin_version` when the session registered them.
 
-A `setRole` soft claim (`soft`) naming a predecessor (`previousSessionID`) takes the role from it
+`roleHeldBy(info, sessionID, clientInstanceID)` and `mayActOnRoleRecord(writer, clientInstanceID,
+holdsRole)` are exported beside `RoleInfo` as the two rules every client keeps over those ids:
+whether a role lookup's answer is this caller's own hold of the role — this session *and* this
+process, a claim naming no process read as this one's, and a claim the listener marked handed
+back no hold of anyone's — and whether a persisted role record, a
+transcript's claim entry or a channel server's role file, is this process's to act on, which a
+record another process wrote is only while this one holds no role. Both read an empty id as no
+process named, exactly as an absent one. The mark is why a holder an older client's hand-back
+reached claims its role again at its next heartbeat and has it back, the grant writing a fresh
+record that carries no mark, rather than reading the lookup as confirmation until the role claim
+reaper frees the role a live window and up to one reap interval later.
+
+`setRole` and `unsubscribe` take a `clientInstanceID` of their own, sent as `client_instance_id`
+and omitted from the wire when the caller states none: the listener records the claim's as the
+process holding the role, and frees on a release only the role claims naming the release's own,
+so a second process that resumed this session id can neither take the role nor hand it back, and
+a release naming no process frees no claim that names one, while it frees a claim that names
+none outright. `unsubscribe` answers in `removed` the topics that left the record rather than the
+ones it named: a role lane topic whose claim the release did not free stays in the record,
+because one interest record serves every process running under one session id and that topic is
+the interest half of a claim that still stands. Such a release,
+where it names that role's own lane topic, is a hand-back, and the listener marks the claim it
+could not free. A release the holder's own renewal beat under
+each of its three conditional deletes fails rather than answering success, so `unsubscribe`
+rejects and the caller sends the hand-back again rather than treating the role as given up. A
+`setRole` soft claim (`soft`) naming a predecessor (`previousSessionID`) takes the role from it
 only when that predecessor has no live registry entry, when its live entry carries this client
-instance's own instance id, or when either side carries no instance id; any other live holder
-keeps the role and is answered as `{claimed: false, holder}`. `unregisterSession({sessionID,
-clientInstanceID?})` deletes the session's registry entry: with an instance id the listener
-deletes it only when the entry carries the same id or none, so a departing client instance never
-deletes the registration a successor instance made under the same session id, and without one it
-deletes the entry as before. The answer says whether the entry stayed, and the call resolves
-`void` because no caller acts on it: a deregistering client has nothing to retry either way.
+instance's own instance id, or when either side carries no instance id. A soft claim of a role
+already held under the claimant's own session id is decided on the standing claim rather than on
+the session record: granted when that claim names this very process, granted when nobody renewed
+it inside the listener's live window, and otherwise `{claimed: false, holder}` naming that same
+session — which `getRole`'s `client_instance_id` tells apart from a different session holding
+the role. Any other live holder keeps the role and is answered as `{claimed: false, holder}`.
+`unregisterSession({sessionID, clientInstanceID?})` deletes the session's registry entry: with an
+instance id the listener deletes it only when the entry carries the same id or none, so a
+departing client instance never deletes the registration a successor instance made under the
+same session id, and without one it deletes the entry as before. The answer says whether the
+entry stayed, and the call resolves `void` because no caller acts on it: a deregistering client
+has nothing to retry either way.
 
-`replay` posts `POST /v1/replay` once, with no retry and a 10 s timeout, and returns the
-listener's answer in its wire shape; an error body's `code` (such as `REPLAY_UNAVAILABLE`) is on
-`EnvoyApiError.code`.
+`subscribe`'s answer carries the registration's `delivery` field; a registration the listener can
+give no consumer is refused by name, and its reason is on `EnvoyApiError`, under the one canonical
+list of them (`ErrorWireSchema.reason` in `src/transport.ts`).
 
 ## envoy.json
 
@@ -278,7 +360,7 @@ Pi sets it in `process.env` at load, Claude Code's `SessionStart` hook appends i
 
 The `dispatch` command reads the file its session's plugin chose: with `DISPATCH_HOST` set, the
 file `ENVOY_CONFIG_FILE` names, else its host's own rule (`envoyConfigPath(host)`). A Bash that
-lacks what the hook wrote, as a Claude Code subagent's can (anthropics/claude-code#46696), has
+lacks what the hook wrote, as a Claude Code subagent's can (Claude Code issue 46696), has
 `DISPATCH_HOST` unset and `CLAUDE_CODE_CHILD_SESSION=1`, which Claude Code sets in every Bash it
 runs; `dispatch` then takes host `claude` and Claude Code's rule, so `CLAUDE_CONFIG_DIR`, the
 session's own directory, comes ahead of any `ENVOY_CONFIG_FILE` an outer session exported.
@@ -525,8 +607,9 @@ A non-2xx answer is thrown as `DispatchServiceError`. Dispatch's own refusal, JS
 `error`, is the error's message under its `code` (`HTTP_<status>` when the server set none), with
 `fromDispatch` true. Any other body — a gateway's HTML page, an empty body, JSON of another shape —
 did not come from Dispatch, so it is a `DispatchGatewayError` (`fromDispatch` false) whose message
-names the method, the URL with its query (never the bearer, which is a header), the status and
-reason phrase, a one-line plain-text excerpt of the body, and what asking again can do. The excerpt
+names the method, the URL with its query and without the user and password it may carry (never
+the bearer, which is a header), the status and reason phrase, a one-line plain-text excerpt of the
+body, and what asking again can do. The excerpt
 drops scripts, styles and tags, reads at most the body's first 64 KiB in linear time, and, like the
 reason phrase, has the value after `Authorization:` or `Bearer` redacted, and every run of 8 or more
 of the client's bearer's characters (a shorter bearer only whole), so a copy cut short, split by
@@ -610,6 +693,135 @@ against it rather than the API's URL, which every call still goes to; a dashboar
 `ref` resolves on either address; and a value that is not an http or https URL disables Dispatch,
 naming it in `error`.
 
+With no bearer configured at all, the session's credential is traded at the secrets broker
+instead (`AGENT_SECRETS_URL` with `AGENT_SECRETS_MACHINE_IDENTITY`, `brokerCredential`). The
+credential is then a DPoP-bound access token presented under the `DPoP` scheme rather than a
+bearer. Every bearer source above is resolved first and unchanged, so a session that has one
+behaves exactly as it did. The machine's identity is one of three (`machineIdentity` in
+`@legion/broker-client/environment`). `kubernetes` reads a pod's projected token from
+`AGENT_SECRETS_MACHINE_TOKEN_FILE`. `metadata` asks the metadata server for a Compute Engine
+machine's Google identity token, for the audience `AGENT_SECRETS_MACHINE_AUDIENCE`. `pool` mints
+a Google identity token through a workload identity pool, as the Go client's `PoolIdentity`
+does (`pool-identity.ts`), for a machine with no Google service account of its own, such as an
+Azure box. `pool` needs all four of `AGENT_SECRETS_MACHINE_TOKEN_FILE`,
+`AGENT_SECRETS_MACHINE_AUDIENCE`, `AGENT_SECRETS_POOL_AUDIENCE` and `AGENT_SECRETS_POOL_ACCOUNT`.
+An identity with one of its variables missing is an error that names the variable.
+
+A pod writes under a session name only once its deployment has registered that name for the pod,
+and its trade can reach the broker first. The broker refuses that trade with a description
+beginning `pod_session_not_registered:`, and that refusal is never final (`podSessionUnregistered`
+in `@legion/broker-client/token-client`). With no live token in hand, the client trades again in
+the background, 15 s later, doubling to 5 minutes, until a trade lands, and a call that arrives
+meanwhile has it trade at once. Each Dispatch and Envoy call hands the credential its own
+deadline (`RequestCredential.headers`), so a call still waiting at that deadline fails with
+`RegistrationPendingError`, which names the session and says the trade is being retried; the
+next call takes the token once the registration lands. The client logs the wait through
+`console.warn` once, naming the session, and again every 30 minutes. A call made while a live
+token is in hand goes on with that token. Every other refusal fails the call as before.
+
+The identity the client trades depends on the sign-ins on the machine (`brokerTokenClient`). With
+no sign-in, the client trades the machine. The machine's identity is the subject, the DPoP key is
+one this process makes, and the session name is the caller's own session, else
+`AGENT_SECRETS_SESSION`. Where a person ran `agent-secrets login` on the machine, the client
+trades that person, as the Go client does:
+
+- The subject is the person's Google identity token. The client renews it at every trade, from
+  the refresh token the sign-in keeps, at the sign-in issuer (`person-identity.ts`).
+- The actor is the machine's identity token. The broker takes only a Google identity token as
+  the actor, so the machine's identity is `metadata` or `pool`. The broker refuses a `kubernetes`
+  actor in its own words.
+- The DPoP key is the sign-in's box key. So the broker records one sign-in for the box, and a
+  revoke of that sign-in stops the session's trades.
+- The session name is the caller's own session, else `signin-<person>-<thumbprint>`, where
+  `<thumbprint>` is the first 12 characters of the box key's thumbprint (Go's `SessionFor`). It
+  is never `AGENT_SECRETS_SESSION`: the machine trades under that name, and the broker gives a
+  name to one identity only.
+- The projects the token names are the ones `AGENT_SECRETS_PROJECTS` lists, project keys separated
+  by spaces (`tradeProjects`). The broker names them only when Dispatch says the person may see
+  each one, and refuses the trade naming the first they may not see. A person who signs in is of
+  the broker's sign-in domain, so the broker asks Dispatch no member kind for this trade. A value
+  that is no list fails the call naming the variable. The machine's own trade names no project.
+
+Dispatch gives the token that names a person the `person` and `approve` scopes, so the session
+writes as that person.
+
+The client reads the sign-ins as the Go client reads them (`signins.ts`). The directory is
+`AGENT_SECRETS_SIGNIN_DIR`, else `$XDG_STATE_HOME/agent-secrets/signins`, else
+`$HOME/.local/state/agent-secrets/signins`. With two or more people signed in,
+`AGENT_SECRETS_PERSON` names the person the session acts for. Without it, the client refuses and
+names the people. The renewal goes to the issuer `AGENT_SECRETS_SIGNIN_ISSUER` names
+(`https://accounts.google.com` when it is unset). It authenticates as the client
+`AGENT_SECRETS_SIGNIN_CLIENT_ID` names, with the secret in the file
+`AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE` names. A sign-in on a machine that sets neither client
+variable is an error that names both.
+
+While a sign-in record is on the machine, the client never trades the machine in its place. An
+error while it chooses, reads or trades the sign-in fails the call. Each refusal that a new
+sign-in cures names `agent-secrets login`. Some refusals are final (`isFinalRefusal`): the broker
+refused the sign-in, or the issuer answered `invalid_grant`. The process keeps a final refusal
+against that sign-in, the person and the box key's thumbprint, for the session it was refused to.
+A later call of that session in that process fails with the same words and sends nothing to the
+issuer or the broker. This stops when the store no longer holds that sign-in: a new
+`agent-secrets login` makes a new sign-in, with a new box key. A new process, such as the next
+`dispatch` command, keeps nothing and asks the broker again.
+
+The one exception is `PERSON_SIGNIN_TRADE=off` (`PERSON_TRADE_VAR` in `signins.ts`). A process
+sets it where its own credentials are a service's and never a person's. Under it, the client
+trades the machine as where nobody signed in, even where a sign-in record is on the machine, and
+it reads no sign-in at all. Unset or blank, the person trade is on. Any other value is refused
+with an error that names the variable. `legion controller start` sets it for the controller
+under every configuration. So the controller's own Dispatch credential, and its Envoy
+credential where no Envoy bearer is set, trade the machine even where the operator ran
+`agent-secrets login`, and no credential the controller trades at the broker acts in its
+operator's name. A bearer the controller is given is presented as it is at main: the token
+`dispatch_token_file` names, and an Envoy bearer from the operator's environment or from the
+`envoy.json` under the HOME the controller keeps, each of which resolves before the broker
+route. Only this client reads the setting, so the controller's `agent-secrets` secret reads are
+signed as they would be without it. Its name lies outside `AGENT_SECRETS_*` because
+`agent-secrets NAME -- <cmd>` strips most variables of that prefix from its child, so a
+`dispatch` command the controller runs under `agent-secrets NAME --` keeps it.
+
+Dispatch answers `401 BROKER_TOKEN_NOT_ACTIVE` for a token the broker no longer holds as live,
+such as one a revoke ended before it lapsed. `DispatchClient` then tells the credential
+(`stale`), presents the credential again, which trades at the broker, and sends the request one
+more time. A write goes again under the same `Idempotency-Key`. It does this once for each send:
+a second such answer is the call's refusal, but a request Dispatch answers with no route is sent
+again (a release may be rolling out), and each of those sends may be sent once more after such an
+answer of its own. If the broker refuses the new trade, the call fails in the broker's words.
+
+A sign-in reaches the sessions that start after it. The broker holds a session name for one
+identity for 90 days after the name's last token. So a session that traded as the machine cannot
+trade as the person under its own name: the broker refuses that trade and says that the name
+belongs to another identity. After `agent-secrets login`, start a new session rather than resume
+one that traded at the broker as the machine. A session that used a bearer did not trade at the
+broker, so you can resume it.
+
+Each person's trade costs one refresh at the issuer and one `launcher_credential.token_login`
+audit row at the broker. The broker writes that row for every person's trade, and it lets no
+person's trade decline the launcher credential (`personDeclinesNothing`). The client also reads
+the issuer's discovery document once. A broker access token lasts `BROKER_ACCESS_TOKEN_SECONDS`
+(900 seconds by default), and the client trades again five minutes before the token lapses
+(`DEFAULT_RENEW_BEFORE_MS`). So with the broker's default, a long-lived session that keeps
+calling trades about every ten minutes. Every `dispatch` command, Claude Code hook and
+`envoy-send` is a process of its own, so each one trades once.
+
+A revoke of the sign-in on Dispatch ends the tokens of that sign-in, and the next trade is
+refused with words that name `agent-secrets login`. The revoke does not end a personal agent
+token that an agent made with the person's `approve` scope before the revoke. It does not end a
+machine-login approval that an agent made with that scope before the revoke.
+
+`DISPATCH_TOKEN_BROKER=1` makes the broker route the only one. No bearer is read at all: not the
+variables, not the chosen file's `dispatch.token`, not a checkout's pair. A machine that can trade
+none leaves Dispatch disabled with an `error` naming the broker variable that is missing, rather
+than falling back to whatever bearer the box holds. The broker route includes a person's sign-in
+on the machine, as above. A deployment sets the variable on a session whose Dispatch credential
+must be traded at the broker. The controller that `legion controller start` launches under
+`dispatch_token_broker` is such a session. It runs in the operator's own HOME, where that
+person's envoy.json holds their `dispatch.token`. Any other value of the variable is refused,
+naming it: `DISPATCH_TOKEN_BROKER is "<value>" and takes 1 …`. The start also sets
+`PERSON_SIGNIN_TRADE=off` for the controller, so its broker route trades the machine and never
+the operator's sign-in (above).
+
 ### The `dispatch` command
 
 Agents reach Dispatch through one command, `dispatch <command> [flags]`, which each host plugin
@@ -621,13 +833,15 @@ hyphens for underscores (`issue-update`), one flag per field
 `--no-<field>` for a boolean, `--clear-<field>` for a nullable field or a list, a repeated
 singular flag for a list (`--label a --label b`, `--option "Label: what it costs"`, split at the
 first `: `; a label holding `: ` goes in `--options-json`, which the generated command line uses
-for such a list), and `--<field>-json` for any other object. `dispatch --help` lists the
-commands, `dispatch <command> --help` its flags and an example, and `--dry-run` runs the call's
-own argument check (`checkDispatchCall`: the owner, the strict schema, the cross-field checks and
-the picture files), refusing the arguments the call would refuse with the call's message, and
-otherwise prints the arguments as given, not as the call fills them (an issue from LEGION_ISSUE or
-the ref). It reads neither Dispatch nor this session's state, so it runs with Dispatch off too,
-and a call it passed can still stop on either.
+for such a list), and `--<field>-json` for any other object. Only one flag of a call may read
+stdin. For a string or enum field, the command refuses `--<field> -` and `--<field>=-` with exit 2,
+and its refusal names `--<field>-file`. The one exception is `dispatch artifact --path`, whose value
+names a local file. `dispatch --help` lists the commands, `dispatch <command> --help` its flags and
+an example, and `--dry-run` runs the call's own argument check (`checkDispatchCall`: the owner, the
+strict schema, the cross-field checks and the picture files), refusing the arguments the call would
+refuse with the call's message, and otherwise prints the arguments as given, not as the call fills
+them (an issue from LEGION_ISSUE or the ref). It reads neither Dispatch nor this session's state,
+so it runs with Dispatch off too, and a call it passed can still stop on either.
 
 `runDispatchCli` (`dispatch-cli.ts`) runs one call per process. The host plugin sets
 `DISPATCH_HOST` (`omp` or `claude`) and the session's id (`CLAUDE_CODE_SESSION_ID` under Claude
@@ -641,11 +855,12 @@ could not be read or used, each exiting 2. `DISPATCH_HOST` unset with
 `CLAUDE_CODE_CHILD_SESSION=1` is host `claude`. stdout carries what
 the model reads: the result, one `- picture: <path>` line per image (written under the session
 directory), the follow notice the first time a call follows an ask, and every refusal. It exits 0
-on success, 1 when Dispatch or the arguments refused the call, and 2 on a usage error, a corrupted
-`state.json` included. Under Claude Code the whole output stays under 25,000 characters: the
-result text is cut to fit, the full text written to a file the output names, and the picture lines
-and follow notice kept. When Dispatch took the call but the session's state (a picture, the
-ledger, the memory) could not be written, the result still prints, with one line saying so.
+on success, 1 when Dispatch or AskGate refused the call, and 2 on a usage error. A usage error
+includes every refusal of the flags or arguments before any request, and a corrupted `state.json`.
+Under Claude Code the whole output stays under 25,000 characters: the result text is cut to fit,
+the full text written to a file the output names, and the picture lines and follow notice kept.
+When Dispatch took the call but the session's state (a picture, the ledger, the memory) could not
+be written, the result still prints, with one line saying so.
 
 `dispatch-session-state.ts` keeps one directory per session under `DISPATCH_STATE_DIR` (default
 `<XDG_STATE_HOME or ~/.local/state>/dispatch/sessions/<id>`): `state.json` carries what a
@@ -662,7 +877,7 @@ prints its URL, for proving what a command shows when a gateway, not Dispatch, a
 
 ## Command specs
 
-`@legion/contracts` `src/dispatch-tools.ts` is the single source for the twenty-five
+`@legion/contracts` `src/dispatch-tools.ts` is the single source for the thirty-five
 Dispatch specs behind the `dispatch` command: each one's name, description, field schemas
 and example. `dispatch-command.ts` derives the command and its flags from them, and no host
 adds aliases or descriptions of its own.
@@ -675,7 +890,8 @@ replacing them, and an explicit empty list (`--clear-external-links`) clears eve
 above that issue, below it, or between the two — and go as the server's `rank` field on the same
 PATCH only when a neighbour is named, since a `rank` with neither neighbour ranks the issue last
 in its project. Closing an issue (`status: "done"`) requires `reason`, which it posts as an issue
-message before the PATCH, since a closed issue refuses messages; a failed post sends no PATCH, and
+message before the PATCH, so the close carries its note; an issue already closed when it is read
+is refused `ISSUE_CLOSED` before anything is posted. A failed post sends no PATCH, and
 a PATCH that fails after the post names the posted message. The result is one line —
 `KEY: status a -> b; priority -> P1; rank -> before KEY; linked <url> (N links)`, with
 `priority cleared` on a clear and `reason posted as message <id> (<ref>)` ahead of a close — and a
@@ -696,3 +912,35 @@ anything, a `delete` or `retype` by block id that would take an `ask` block out 
 (the block itself, or one inside a deleted block) while its ask is open: the edit would write its
 version at once and settlement would retract the ask without writing another, so the question
 would leave the human's Inbox unanswered and the approval refusal would find no block to judge.
+
+`dispatch review --issue <KEY> [--artifact <document>] --version <N> --verdict <verdict>
+[--reason <text>]` records a person's review of one version of an issue's document: what the
+document header's Approve and Request changes record (`reviewCommand`,
+`src/dispatch-commands/reviews.ts`). The verdict is `approved` or `changes_requested`. The
+document is the issue's spec unless `--artifact` names another, resolved as `dispatch doc-read`
+resolves it. `changes_requested` needs `--reason`, and the command refuses it without one before
+it sends anything. It posts `{state, reason?}` to
+`POST /api/v1/artifacts/{id}/versions/{number}/reviews` (`DispatchClient.reviewArtifact`), the
+review route that names the version in its path, and asks no other review route. A Dispatch route
+ignores a body member it does not declare, so a version sent in the body of the older
+`POST /api/v1/artifacts/{id}/reviews` would be dropped by a build that predates the guard, and
+the review recorded at a version that build chooses. A build without the versioned route answers
+no route instead: once the client's no-route retries are spent, the command fails `NOT_FOUND`,
+says that an answer of no route records no review, and names `GET /healthz`, whose `commit`
+member is the commit of the build that answers that probe where its image was stamped with one
+(`null` otherwise). The no-route answer does not name the build, and while a release rolls out
+the build that answers `/healthz` may not be the one that refused, so run the command again a
+minute later before reading the refusal as an older Dispatch. In a rollout, a send that a newer
+build took but whose answer was lost, and was then sent again to an older build, may still have
+recorded the review, at the version named: `dispatch doc-read` shows the document's approval.
+A review records an approval or a request for changes in the person's name, so it works only with
+a token that names a person who holds `approve`. A session gets such a token from a person's
+sign-in on the machine (above). Dispatch refuses any other token with `403 OAUTH_SCOPE_REQUIRED`
+or `403 SIGN_IN_REQUIRED`. `--version` is the version the caller read, and it must be the version
+the review would record: the document's latest settled version, or the version an open approval
+request names for the document. Dispatch refuses any other version with `409 REVIEW_VERSION_MOVED`,
+which names the version to read, and records nothing. With an approval request open, the review
+answers that request and records the same verdict on every document the request names, each at
+the version the request names. The output names the state, the version and the actor that
+Dispatch recorded, and says when the review also answered an open request. A refusal starts with
+Dispatch's code.

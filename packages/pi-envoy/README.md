@@ -9,36 +9,107 @@ phase worker or the controller with — is the separate plugin `@sjawhar/pi-legi
 beside this one in a Legion deployment; it reaches this plugin through the in-process interface
 described in `packages/pi-shared/AGENTS.md`.
 
-Normal topic subscriptions are direct NATS subscriptions owned by this extension. A role claim is
-different: the listener arbitrates the core-NATS role lane for the current live holder, then sends
-a receipt-backed request with the original role topic to the holder's direct agent subject.
+A topic subscription is an interest registered with the listener, which filters the session's own
+durable consumer on it; the session's NATS connection holds one subject, the relay the listener
+serves that consumer on. A role claim is
+different: the listener arbitrates the core-NATS role lane for the current live holder, then
+forwards the message with its original role topic to the holder's direct agent subject.
 `envoy_unsubscribe` manages only normal topic subscriptions; it does not relinquish a held role,
 and it keeps open, listing them as kept, the subscriptions another plugin holds for that role.
-The agent pump replies after accepting the envelope. A message sent through the listener's
-`POST /v1/messages/publish` waits for that reply: the listener forwards it again after two seconds
-without one, and answers the sender with an error once four seconds pass without a reply. A role
-topic published straight onto NATS is forwarded once, and a miss is a `receipt_timeout` exception.
-The same route forwards a team or other ad-hoc topic's message to each session registered on the
-topic that holds its own NATS connection, as this one does, other than its sender, and the sender's
-error names each session that did not reply. The stream stores each forward on the recipient's
-agent subject, and when the listener supports consumer delivery that session takes the stored copy
-once, also after a restart or a dropped connection (below). A role message is not kept for a later
-claimant, and on the core path a session does not recover one it missed.
+The stream captures every agent subject, so it stores each forward there, and the holder's own
+consumer delivers it once — also after a restart or a dropped connection (below). No session
+answers a receipt: a message sent through the listener's `POST /v1/messages/publish` waits only
+for the stream's acknowledgement that it stored the forward, and answers the sender with an error
+once four seconds pass without one. A role message no live holder can take is kept for one
+hour: the next session to hold the role live in that hour is handed it once, and the publish
+answers 202 with `kept_until`, the end of that hour. If no session takes it, the listener drops
+it and sends a dead letter, an Envoy card that names it, to the session the publish named as its
+source, unless it drops it more than an hour late. A `notifications.team.<name>` topic is stored
+like any other followed topic; every other `notifications.` topic the stream does not capture is
+refused by name, at publish and at subscribe, because no session would ever be delivered it.
 
-This extension claims the role for the session the host has open, and every automatic claim is
-soft: it names the session it continues, which is a fork's or branch's parent, or the session
-this process last held the role under. The listener moves the role off that predecessor only
-when the predecessor has no live registration, when its live registration carries this extension
-instance's own client instance id, or when either side carries no instance id. A predecessor
-another process still runs keeps the role, and the claim is refused naming that holder. A refused
-session keeps running and stays registered, without the role: it does not claim again at each
-heartbeat, and it takes the role on its next session event once the holder is gone. Each
-extension instance mints its client instance id when it starts and sends it on every registration
-and on the deregistration at shutdown, where the listener removes the registration only while it
-carries the same id or none. The queues, deadlines and shared role state behind all of this are
-`src/registration-state.ts`, beside the extension's other `src/` modules: a queued task acts
-through a handle that refuses every step past the task's deadline, or once its session is no
-longer the open session.
+This extension claims the role for the session the host has open, and every automatic claim but
+the launch role's (below) is soft: it names the session it continues, which is a fork's or
+branch's parent, or the session this process last held the role under. The listener moves the
+role off that predecessor only when the predecessor has no live registration, when its live
+registration carries this extension instance's own client instance id, or when either side
+carries no instance id. A predecessor another process still runs keeps the role, and the claim
+is refused naming that holder. A claim
+of a role already held under this session's own id is decided on the standing claim rather than
+on the registration: the listener grants it to the process that claim names, grants it once
+nobody renewed the claim inside its live window, and otherwise refuses it naming this very
+session. A session refused a role another live session holds keeps running and stays registered,
+without the role: it does not claim again at each heartbeat, and it takes the role on its next
+session event once the holder is gone. A refusal naming this session's own id is never recorded
+as one of those, since it is that other process's standing claim, which the listener grants the
+moment that process stops renewing it: nothing is said, and the next heartbeat claims again.
+Each healthy heartbeat also re-asserts a role this session already holds, and confirms it only
+when the lookup names this session and this process and reports no hand-back; a re-assertion the listener refuses naming
+this session's own id is that same standing claim, so the role stays held here, nothing is
+recorded, nothing is said, and the next heartbeat asks again, while a refusal naming a different
+session ends the role here. A lookup that answers `handed_back` is a role this process does not
+hold, however exactly it names this session and this process: a client built before a release
+stated its process hands a role's lane topic back under this session id without being able to
+free the claim, and the listener marks the claim rather than freeing it, after which no
+registration renews it. The pass that reads the mark claims the role again at once, and that
+grant writes a fresh record with no mark, so a hold marked this way is back before the role
+claim reaper could free it. Each extension instance mints its client instance id when it starts
+and sends it on every registration, on every claim and release, and on the deregistration at
+shutdown, where the listener removes the registration only while it carries the same id or none.
+A registration also renews every role claim this session holds that names this same instance,
+whatever topics it carries and unless the listener has marked that claim handed back;
+a release frees only the claims naming it, so a second process that resumed
+this session's id neither ends this one's role nor outlasts it. A hand-back the listener could
+not make — a release its own holder's renewal beat under each of its three conditional deletes,
+which fails the route rather than reporting a release it did not make — is sent again by the
+next heartbeat, so the role is not left standing while this process's registrations renew its
+claim. The transcript's `envoy-role-claim` entry names the session claimed for and this process
+too: a release another process wrote on the same transcript ends no role here, and a claim
+another process wrote is pressed only while this process holds none. The queues, deadlines and
+shared role state behind all of this are `src/registration-state.ts`, beside the extension's
+other `src/` modules: a queued task acts through a handle that refuses every step past the
+task's deadline, or once its session is no longer the open session.
+
+A session pod's launch names the role its session holds in `ENVOY_SESSION_ROLE`, and that
+session in `ENVOY_SESSION_ROLE_SESSION`: the id the pod starts the agent with (`omp
+--session-id`). agent-infra's sessions workload sets both once t-e-32 lands (it sets
+`AGENT_SESSION_ROLE` today). While the named session's own records name no other role, every
+pass that registers it — its start, each session event and each heartbeat — claims that role for
+it outright, last-claim-wins, under the session's own credential, which the listener holds to
+that very session. A holder that is another session is stale or wrong, such as an evicted pod's
+session the registry still lists as live for some minutes, so the role comes back to the live
+session at its next registration. The claim writes its transcript record once: a later claim the
+newest record already names writes none. A move the model makes with `envoy_role_set` is a
+record of its own, which no pass undoes. Without the variables no pass claims a role the
+session's records do not name.
+
+The role is that one session's alone, and each pass compares the session open then. Nothing
+takes the variables out of the environment, so every process the agent starts in the pod gets
+them, such as an `omp -p` review, whether it was started from the shell's environment or by a
+`Bun.spawn` that names no `env`; so does an ACP host's other session, another extension instance
+of the same process. Each of those is another session id, as is an id a `/new`, a `/fork` or a
+tree branch mints, and none of them claims the role by any path: not at a registration, not from
+the record of the claim a fork's or a branch's transcript copies, and not through `envoy_role_set`
+or the Legion plugin's claim, which refuse it. A session the process moves to from the named one
+hands the role back, and a resume of the named session claims it again. (A `task` subagent's
+instance registers nothing at all, so it never claims a role.) A launch that names the role and
+no session, or an empty one, names no holder, and no session claims it; an empty role names no
+role. The first time a session the process decides for is refused the role, the process logs one
+line, once for the process: `envoy: ENVOY_SESSION_ROLE <role> belongs to session <id or "none">;
+this session <id> claims nothing`. Each refused session also shows the person one notice on
+screen: `envoy: role <role> stays with the pod's session <id>; messages to the role are not
+delivered here. /resume <id> takes it back`, or, when the launch names no session, `envoy: role
+<role> is the pod's, but the pod names no session for it, so no session claims it; messages to
+the role are not delivered here`. A role name given to `envoy_role_set` or the Legion claim is read
+with the white space Go's `strings.TrimSpace` takes trimmed from both ends, as the listener reads
+it (U+0085 included), so a padded name is the same role.
+
+So a `/new`, a `/fork` or a tree branch in a pod moves the person off the role: its messages are
+not delivered to the new session. The process hands the role back when it leaves the named
+session, so nobody holds it until the named session runs again. The listener keeps a message sent
+to a role nobody holds for an hour, unless its sender set `keep: false`, and hands it to the next
+session that claims the role, so `/resume <id>` of the named session within that hour still gets
+them: that session's own record of the claim is acted on, and it claims the role again.
 
 `envoy_list()` shows the union of the local subscriptions and the listener's persisted interest
 registry. Each reported interest identifies whether it is `live`, `registry`, or `both`, so
@@ -59,35 +130,33 @@ details result, including subscriptions whose stream currently has no matching e
 The session's messages come from a durable consumer the listener keeps for it on Envoy's
 notification stream and relays on `notifications.envoy.deliver.<session id>`, which
 the session subscribes before it registers: its own agent subject, the stored copies of role
-messages to a role it holds, and every followed topic the stream stores, in stream order. The
+messages to a role it holds, and every followed topic, in stream order. No session receives from
+any other NATS subscription. The
 session answers each frame `received` as it decodes and `done` once Oh My Pi wrote the card or
 turn to the session file, so a frame not written when the session stops, or published while it
-was down or disconnected, comes again and is shown once, for up to 72 hours. Team and other
-ad-hoc topics, which the stream does not store, stay live only on the session's own
-subscription. "Consumer delivery" in `AGENTS.md` has the rules, and
+was down or disconnected, comes again and is shown once, for up to 72 hours. A
+`notifications.team.<name>` topic is stored and delivered like any other followed topic.
+"Consumer delivery" in `AGENTS.md` has the rules, and
 `packages/envoy/AGENTS.md`, "Session consumers", states them once for every host.
 
-The core path is the rollout fallback dispatch://INFRA-771 removes, for a listener that answers
-`core` and for a plugin of an earlier release. There a message
-published while the session's NATS connection or one of its subscriptions was down is
-recovered from Envoy's notification stream, which keeps messages for 72 hours: the session asks
-its listener (`POST /v1/replay`) for what the stream stored on its own agent subject and on each
-topic it follows, after the place it last read to, and shows each missed message once, as a card
-saying it was published while the connection was down. The session pings NATS every 10 seconds
+A message published while the session's NATS connection was down, or while the session was not
+running, waits in that consumer: nothing has to be fetched back. It is shown once when the
+session returns, as a card whose last line says it was published while the connection was down.
+The session pings NATS every 10 seconds
 and drops a connection that leaves two pings unanswered, so a connection that stops answering
-without closing is left within 30 seconds and redialed. It asks after it reconnects, after a
-subscription is reopened, when it starts or resumes, and on every heartbeat. A targeted Dispatch
-delivery recovered this way (BTW, Aside, Steer, a person's Send) is shown as that card only and
-runs nothing. Role messages are live only and are not recovered; a team or other ad-hoc topic is
-recovered only from the copy the listener forwarded to the session's agent subject while it was
-registered on the topic. Nor is anything older than 72 hours, published before the session
-followed the topic, or published before the session first ran this plugin. A message the session
+without closing is left within 30 seconds and redialed, and the listener restarts the relay at
+the consumer's ack floor. A targeted Dispatch
+delivery shown this way (BTW, Aside, Steer, a person's Send) is shown as that card only and
+runs nothing. What the consumer does not hold: anything older than 72 hours, anything published
+before the session followed the topic, and anything published before the session first
+registered. A message the session
 fails to show three times is replaced by one card naming it and saying how to read it. The
-session file keeps what it was shown and where it read to, so a restart skips nothing the stream
-still holds and shows nothing again (up to 20,000 messages shown in 72 hours); a crash between
-showing a message and recording it can show it twice, never lose it. Against a listener without
-the route, the session warns once that missed messages are not recovered, and live delivery goes
-on as before. "Missed messages" in `AGENTS.md` has the full rules.
+session file keeps what it was shown, so a restart shows nothing again (up to 20,000 messages
+shown in 72 hours); a crash between
+showing a message and recording it can show it twice, never lose it. A registration the listener
+can give no consumer is refused by name, and the session says once that Envoy inbound is
+unavailable and asks again at every heartbeat. "Each frame shown once" in `AGENTS.md` has the
+full rules.
 
 ## Session identity
 
@@ -112,7 +181,7 @@ threads, comments on its documents and routed issues, mentions, and messages, ne
 word for word. A subagent reads its parent's list. The list stays under 8,000 characters (at most 7,999): the oldest
 items that do not fit are left out, and its last line says how many and that `dispatch answers`
 prints them all. It is read on every request and waits at most 800 ms for Dispatch. Past that,
-or when the read fails, the request carries the last list read, with the time it was read and why
+or when the read fails, the read gives the last list read, with the time it was read and why
 this read failed, or, when no list read has an item from the last 72 hours, one line saying the
 list could not be read and why. A Dispatch build older than the answers route answers it with its
 own `404 NOT_FOUND` "no route for …". Against that Dispatch a request carries no such line, since
@@ -122,12 +191,31 @@ route; and that Dispatch is not asked again for 5 minutes. Any other answer, a p
 a 200 that is no answers list included, is a failed read.
 
 The list goes after the request's last message only on the request where it first shows an item,
-or new words in one. On every request after that it stays right after the message it followed
-there, so the request ends with its own last message and the model does not take a list with
-nothing new in it for a new turn; it keeps that place when it only loses items or its header
-changes. After a compaction summarizes that message, or in a new process, the list goes after the
-last message once more. It is never at the head, so a change in it costs only the bytes after it,
-and a list that keeps its place is inside the cached prefix of the next request.
+new words in one, or an item taken back. Items the 8,000-character limit leaves out count too: a
+new message longer than the limit, or a comment an edit made too long to fit, moves the list,
+whose last line then says how many items were left out. An answer a person retracted leaves the
+list while its time is still inside the 72 hours, and that moves the list too; an item that only
+aged out of the 72 hours does not. On every request after that the list stays right after the
+message it followed there, with the bytes it had then, so the request ends with its own last
+message and the model does not take a list with nothing new in it for a new turn. It keeps that
+place and those bytes when it only loses items to the 72 hours or names another read, so a kept
+list can name an older read than the request's own and still show an item that has since left
+the 72 hours. A list an older copy of the extension added keeps its place only when nothing but
+its read time and reason changed. A read with no list to give, the line saying the list could not
+be read, is never hidden behind a kept list: that line goes after the last message, and the list
+goes there again once a read gives it. A read that fails but still gives the last list read, with
+the same items, keeps the kept list's place and bytes, so that request does not say that its read
+failed, unless the kept bytes are that read's own text, which say it; otherwise the log says it
+instead, with the reason, on the first such request and not again until a read has answered, so a
+failure that lasts is one line. A read that finds nothing for the session takes a kept list out of
+the request when an item it shows was taken back inside the 72 hours, as when a person retracts
+the only answer, and leaves it where it is when its items only aged out; it takes a kept failure
+line out. A Dispatch with no answers route, when no list read before from it has an item from the
+last 72 hours (none was read, or every item of it has aged out), or no Dispatch at all, leaves a
+kept list where it is. Moving the list empties its old place.
+After a compaction summarizes the message it followed, or in a new process, the list goes after
+the last message once more. It is never at the head, so a change in it costs only the bytes from
+its place on, and a list that keeps its place is inside the cached prefix of the next request.
 
 Oh My Pi also builds requests that are not turns of the conversation from it; those carry the
 skill but no list, and wait on no read: a side turn (a Dispatch BTW, the stop-time self-check,
@@ -160,16 +248,20 @@ omp plugin install @sjawhar/pi-envoy
 ```
 
 A session that had the pre-split package installed (the one package that carried both entries
-until 7.x) uninstalls it and installs this one once; the `CHANGELOG.md` entry that renames the
-package `@sjawhar/pi-envoy` gives the two commands. A Legion deployment installs
+until 7.x) uninstalls it and installs this one once; `CHANGELOG.md`, this package's history, gives
+the two commands in the entry that renamed the package. A Legion deployment installs
 `@sjawhar/pi-legion` as well (`packages/pi-legion/README.md`); the daemon's boot gate refuses a
 pane that still loads the pre-split package beside the new ones.
 
 The tarball is self-contained: it ships `dist/envoy.js` — bundling every dependency except the OMP
 host packages (`@legion/pi-shared`, `@legion/contracts` and `@legion/envoy-client` are inlined) —
-`dist/THIRD_PARTY_NOTICES`, and the five skills every session with Dispatch reads, `asd-ste100`,
-`dispatch`, `dispatch-first`, `dispatch-writing-specs` and `envoy`, staged from the repository's `skills/` at
-`dist/skills`. The manifest declares `omp.skills: ["dist/skills"]` alongside `omp.extensions`:
+`dist/THIRD_PARTY_NOTICES`, and the eleven skills it ships: the eight every session with Dispatch
+reads, `agent-secrets`, `asd-ste100`, `dispatch`, `dispatch-first`, `dispatch-writing-specs`,
+`envoy`, `outside-message` and `plain-words`; `approval-review`, which only a session judging an
+approval request reads; and the reviewer's pair, `thermonuclear-code-quality` and
+`thermonuclear-deep-review`, which ships here so one copy of each rubric reaches both harnesses.
+All eleven are staged from the repository's `skills/` at `dist/skills`. The manifest declares
+`omp.skills: ["dist/skills"]` alongside `omp.extensions`:
 OMP's own plugin discovery only reads `skill://`-resolvable skills from `<plugin root>/skills` or
 from directories a manifest's `omp.skills` array names, and this package ships skills at
 `dist/skills` (not the plugin root itself), so the field is required for every session to see them
@@ -186,8 +278,9 @@ for `omp.extensions` (only `omp.skills` ships as committed, since `dist/skills` 
 a repo checkout after the prepack and the published tarball), while the committed manifest keeps
 the TypeScript entry for repo checkouts. In `.github/workflows/release.yaml`, the `pi_envoy_build`
 job rewrites the manifest before `bun pm pack` and uploads the tarball (its tree is discarded,
-nothing is restored); the `publish` job publishes that tarball and commits the version bump to the
-committed manifest, touching `.version` alone.
+nothing is restored); the `publish` job publishes that tarball, and nothing commits a version: the
+committed manifest's `.version` stays where it last was, and the `pi-envoy-v` tag the release makes
+is what records the release, with this release's changelog entries in its GitHub release notes.
 Packing with the committed source manifest is refused by the prepack, because such a tarball would
 point OMP at an extension file it does not contain.
 
@@ -246,7 +339,7 @@ messages; with Envoy on and no NATS server, or with its NATS seed refused (a see
 other servers, a failing `natsSeed` command, a seed variable that cannot be read), it keeps the
 tools and `/whoami`, takes no inbound messages, connects to no NATS server, and refuses
 `envoy_subscribe` and the Legion role claim with `inbound messages are off for this session: <why>`,
-the claim before any listener call, so a Legion process fails its boot rather than hold a role
+the claim before any listener call, so a Legion process stops rather than hold a role
 whose tasks reach nobody. When a
 section is off for a reason worth saying, the session says so once at its start:
 `envoy: no envoy.json at <path>: Dispatch and Envoy are off`, the lost `DISPATCH_URL` when
@@ -284,21 +377,25 @@ session's subscriptions, as the Envoy listener records them, covers that owner.
 The shared specs in `@legion/contracts` supply each command's description and flags:
 `@legion/envoy-client`'s `dispatch-command.ts` derives one command per spec and one flag per field.
 
-`dispatch artifact` takes exactly one upload source: a local `--path`, or inline `--content`. For
-example, an architect can post a specification directly, its text on stdin:
+`dispatch artifact` takes at most one upload source: a local `--path`, or inline `--content`.
+With neither, it makes an empty document under `--name`, which a person or an agent writes in
+afterwards with `dispatch doc-edit`. For example, an architect can post a specification directly,
+its text on stdin. Every issue is created with a `spec.md`, and the command refuses an upload
+under the name of a document the issue already holds, so this one carries `--force`, which writes
+the next version of it:
 
 ```sh
-dispatch artifact --issue LEGION-1 --name spec.md --content-file - <<'EOF'
+dispatch artifact --issue LEGION-1 --name spec.md --content-file - --force <<'EOF'
 # Design
 EOF
 ```
 
-Inline content is stored as a Markdown document, so `--content` and `--content-file` take only a
-`--name` that ends in `.md` or `.markdown` or has no extension. The command refuses any other name
-(`rows.jsonl`, `sizes.tsv`, `rows.jsonl.1`, `plan v1.2`) before it sends anything and names
-`--path`, which stores a file whose path does not end in `.md` or `.markdown` as its bytes,
-unchanged, under that name. A document title with a dot near its end takes `--content` once it
-ends in `.md`.
+Inline content is stored as a Markdown document, so `--content`, `--content-file` and a call with
+neither flag take only a `--name` that ends in `.md` or `.markdown` or has no extension. The
+command refuses any other name (`rows.jsonl`, `sizes.tsv`, `rows.jsonl.1`, `plan v1.2`) before it
+sends anything and names `--path`, which stores a file whose path does not end in `.md` or
+`.markdown` as its bytes, unchanged, under that name. A document title with a dot near its end
+takes `--content` once it ends in `.md`.
 
 `dispatch handoff-write --issue <KEY> --phase <phase> --body-file <path>` records a Legion phase
 handoff on its issue as this session: the file's text, one JSON object, is stored exactly as
@@ -348,10 +445,11 @@ a path that reaches a file descriptor of whichever process opens it (`/dev/stdin
 `/proc/self/fd/N`, `/proc/thread-self/fd/N`, `/proc/<n>/fd/N`, and any link to one): AskGate
 would open it in Oh My Pi's process and the command in its shell. For text from standard input,
 use `--<field>-file -` with a quoted here-document. For an upload, that is `--content-file -`:
-the CLI reads `--path -` as a file named `-`. The gate cuts all arguments at 64 KiB as one JSON
-block, so it reviews only part of a long document. It judges an upload against content failure
-10 alone: a plan or a report is long by nature. An upload of any other file is not reviewed. A
-`task` subagent is not reviewed.
+the CLI reads `--path -` as a file named `-`. Only one flag of a call may read standard input.
+The CLI refuses `--<field> -` for each text flag except an upload's `--path`. The gate cuts all
+arguments at 64 KiB as one JSON block, so it reviews only part of a long document. It judges an
+upload against content failure 10 alone: a plan or a report is long by nature. An upload of any
+other file is not reviewed. A `task` subagent is not reviewed.
 
 **A file a call of the same message writes.** Oh My Pi runs the gate for every call of a message
 before any call of that message runs. So the gate reads a file before an earlier call of the same
@@ -397,27 +495,46 @@ gated write only when it consumes one, so a write sent any other way is refused 
 
 - **The record.** While the gate is bound, pi-envoy keeps one owner-only file for its process in
   the `askgate/` directory of the CLI's state directory of each session id it binds
-  (`<state>/sessions/<id>/askgate/<pid>-<start>.json`, where `<state>` is `DISPATCH_STATE_DIR`,
-  else `$XDG_STATE_HOME/dispatch`, else `~/.local/state/dispatch`). It names the Oh My Pi process,
-  its Linux start time, and the process's owner-only marker store. Each process writes and removes
-  only its own file, so two processes that bind one session never drop each other. pi-envoy sets
+  (`<state>/sessions/<id>/askgate/<pid>-<start>-<ns>.json`, where `<state>` is
+  `DISPATCH_STATE_DIR`, else `$XDG_STATE_HOME/dispatch`, else `~/.local/state/dispatch`). It names
+  the Oh My Pi process, its Linux start time, its pid namespace (the inode `/proc/self/ns/pid`
+  names), and the process's owner-only marker store. Each process writes and removes only its own
+  file, so two processes that bind one session never drop each other. pi-envoy sets
   `DISPATCH_STATE_DIR` in the session's environment when it is not set, so a command that changes
   `HOME` or `XDG_STATE_HOME` still finds the record. A record of a session the process switched
   away from stays until the process exits, since a shell or an eval kernel started before the
   switch still acts as that session. A record whose process is gone, or whose pid another process
   now holds, is inert, and the CLI's session pruning keeps a directory whose record is live. A
   record pi-envoy cannot write is a notice in the session, at start or at a switch.
+- **Other pid namespaces.** One state directory can serve processes of several pid namespaces: the
+  host's and those of the containers that mount the host's state directory, each with a pid
+  namespace of its own. A pid and a start time name a process only in the namespace they were read
+  in, so the CLI looks up by pid only an owner of its own namespace. An owner of another one counts
+  live while its marker store changed within the last two hours; the process touches its store
+  every ten minutes while it keeps a record, so a live one never looks gone from another namespace.
+  The process also makes its store again, empty, before each write of its own file, so a store that
+  another process removed is back by the gate's next call. A record written by an older pi-envoy
+  names no namespace and is still looked up by pid in the reader's own. The pruning keeps a store
+  such a pi-envoy named for 14 days rather than two hours, since its process may be a live one of
+  another namespace, which touches its store only when it mints a marker, and it keeps a session
+  directory whose record names a store that is still there. A process of another namespace that
+  reads the record (the host's CLI, for a box's session) is never that session's own agent, whose
+  calls run in its process's namespace, so it reads such an owner live only by its store. Every
+  `dispatch` command that shares the state directory must be this release or later (pi-envoy's,
+  and the copy Claude Code sessions run): an earlier one reads a namespaced owner by pid, and its
+  pruning can still remove a box session's idle directory.
 - **The marker.** The gate mints one file in the store for each literal call it lets run, created
   owner-only and exclusively. It binds the exact argument vector the CLI receives and, behind a
   review or a deliberate pass (a rebuttal, a breaker trip), the digest of the arguments the dry
   run printed and the sha256 of each file the argv names, as the gate read it. A call no verdict
-  stands behind (a halt and another provider among them), and a `task` subagent's literal call,
+  stands behind (a halt and another account among them), and a `task` subagent's literal call,
   get a marker of the argument vector alone. Nothing of it is in the command the agent sees. A
   marker goes when its call ends, is refused or the session shuts down; a backgrounded call keeps
   its marker until
   shutdown, and a marker older than two hours, longer than any tool's time limit, is refused and
   removed. The process removes its store when it exits; the CLI's daily session pruning removes
-  the store of a process that is gone and that nothing changed for two hours.
+  the store of a process that is gone and that nothing changed for two hours, which for a process
+  of another pid namespace is how it is known to be gone.
 - **The check.** After `--help`, `--dry-run` and the session and Dispatch settings, and before a
   gated write posts, the CLI reads the session's record. With a live one it reads each file the
   argv names once and consumes one matching marker by unlinking it: exactly one process wins, so a
@@ -441,12 +558,12 @@ gated write only when it consumes one, so a write sent any other way is refused 
   help only: the gate refuses nothing for it.
 - **The unmarked write that carries an ask.** The `unmarked` entry reaches only this machine's
   disk. Where such a write carries at least one ask for a person, the CLI counts those asks from
-  the write's own text (`newAsks` in `@legion/envoy-client/askgate-new-asks`) and writes the count
-  into the session's ledger as `asksCarried`, and pi-envoy publishes one decision record for it on
-  Dispatch (below), with the tool, the mode and that count and no ask text. The count is of the
-  asks the write carries, so a re-upload of ask blocks the stored version already holds counts
-  them as carried: in `warn` mode the write has already posted when the ledger is read, so a read
-  of the stored version would see the new text and count nothing.
+  the write's own text (`newAskCount` in `@legion/envoy-client/askgate-new-asks`) and writes the
+  count into the session's ledger as `asksCarried`, and pi-envoy publishes one decision record
+  for it on Dispatch (below), with the tool, the mode and that count and no ask text.
+  The count is of the asks the write carries, so a re-upload of ask blocks the stored version
+  already holds counts them as carried: in `warn` mode the write has already posted when the
+  ledger is read, so a read of the stored version would see the new text and count nothing.
 
 The gated writes are the same list for the gate and the CLI (`gatedWrite` in
 `@legion/envoy-client/askgate-marker`): the six commands above, an `issue` with a spec and an
@@ -570,10 +687,33 @@ shows at its start.
 
 **The model.** Both checks ask the session's `askgate` model role (`modelRoles.askgate`). When that
 role is not set, they ask the `default` role. A model that answers with an error passes the request
-to the next model of that role's `retry.fallbackChains` chain, on the same provider. When neither
+to the next model of that role's `retry.fallbackChains` chain, on the gate model's own account.
+When neither
 role resolves, the gate refuses the write in both modes and names the two roles. A session whose
-main model is on another provider than the gate's model is not reviewed: its transcript stays on
-that provider.
+main model is billed to another account than the gate's model is not reviewed: its transcript
+stays on the account that paid for it.
+
+**The account.** The gate's rule is the billing account, not the vendor and not the provider id.
+One provider id is its own account. Two different provider ids are one account only where the
+machine says so, in omp's `askgate.sharedAccountProviders`: a list of provider ids that reach one
+account. A session whose provider and the gate model's provider are both in that list is
+reviewed, and so is a fallback model of the chain. Unset — what a machine that declares nothing
+leaves it — the list is empty and every comparison is the plain provider-id comparison this gate
+made before the setting existed. A list that names only one of two providers declares nothing
+about them, and so does a value that is not a list of strings, a list with one entry that is not
+a string included.
+
+**Where that list goes.** In an **operator** layer of omp's settings, and nowhere else: the
+global `config.yml` of the agent directory, a file named in `PI_CONFIG_FILES`, a `--config`
+overlay, or a runtime override. The gate reads it through `Settings.grantAuthority()`, the
+host's own operator view, which drops every project layer — so a repository's `.omp/config.yml`
+declares nothing, because the agent under review can write that file, and a declaration from
+there would be that agent choosing who may read its transcript. A host build whose settings
+offer no such view offers nothing safe to read, so there the list is empty whatever any layer
+holds. Which file of a machine ends up in those layers is that machine's launcher's business:
+omp reads the agent directory's own `config.yml` and whatever `PI_CONFIG_FILES` names, so a
+launcher that gives each profile its own overlay is how a profile billing another account
+declares — or declines to declare — for itself.
 
 **When a write posts unreviewed.** Each of these lets the write out, records an `advisor-gate`
 entry with its outcome, and hands the agent a note that says the write went out unreviewed and
@@ -585,7 +725,7 @@ why. The note reaches a headless session too:
 | `error` | the review failed: a model error, a handler exception, or a dry run that failed; a dry run that timed out twice, or once with no time left to run it again, gets a note that the machine was busy and that the agent should read back what the write posted |
 | `no-verdict` | the model answered with no verdict the gate could read |
 | `halted` | three calls in a row reached no verdict, and the gate is paused for the session |
-| `skipped` | the session's main model is on another provider than the gate's |
+| `skipped` | the session's main model is on a provider that does not bill the gate model's account |
 | `rebuttal` | the agent sent `--advisor-rebuttal <line>`, which is recorded and kept only as a shell comment, or `"advisor_rebuttal"`, which is recorded and removed |
 | `breaker` | the third attempt at one thing on one target, after the gate refused it twice there |
 | `unreadable` (warn mode) | a file the literal call names was missing or not a regular file when the gate ran |
@@ -761,9 +901,16 @@ documents and prints the day's refusals by rule, the refusals the agent overrode
 judged on part of their asks and those that judged none, the unmarked writes by mode with the asks
 they carried, and the rules-call error rate, each split by `source`, with the documents and lines
 it could not read, and the records it read twice, counted beside them. An unmarked write is in no
-rules-call count and in no override count: no check judged it. Its `asksCarried` counts every ask
-and ask block the write carries, so a re-upload of blocks a stored version already holds counts
-them as carried. The same script's `--sessions <dir>` mode still reports the entries on disk, the
+rules-call count and in no override count: no check judged it.
+Its `asksCarried` counts each ask and ask block the write carries as one, and groups none of them
+by id or by text, so two ask blocks that open with the same words count two.
+`newAskCount` reads a `doc-edit` `replace`'s `with` as every string the server might parse it as,
+and the server parses one of them, so a `replace` counts as the most asks any one of those
+readings opens.
+The count is taken before the write goes out, so it cannot know which reading the server takes,
+and the largest can only over-count.
+A re-upload of blocks a stored version already holds counts them as carried.
+The same script's `--sessions <dir>` mode still reports the entries on disk, the
 decision records not confirmed among them. Each flag is given once: the
 script refuses a flag given twice by name, rather than reading only its last value.
 

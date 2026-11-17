@@ -1,20 +1,21 @@
 # Legion documentation site
 
-The source of the site GitHub Pages serves this repository at, <https://sjawhar.github.io/legion/>
+The source of the site GitHub Pages serves this repository at, <https://cybermonklabs.github.io/legion/>
 today and derived from the repository the build runs in (`repo-paths.ts`, from
 `.github/scripts/repo-paths.sh`): an [Astro Starlight](https://starlight.astro.build/)
 site covering Legion, Dispatch and the Secrets Broker. The `docs` job of `.github/workflows/ci.yaml`
 builds it on every pull request and merge group whose change its `docs` filter matches.
-`.github/workflows/docs-pages.yaml` builds it on every push to `main` whose change the same list
+`.github/workflows/docs-pages.yaml` builds it on a push to `main` whose change the same list
 matches (its `paths:`, which `.github/scripts/check-ci-filters.sh` holds equal to the `docs` filter)
 and publishes that build to GitHub Pages.
 
-Docs-selecting pushes to `main` build and deploy in push order: the workflow's runs share one
-concurrency group, `pages`, which runs one at a time and queues the rest first in, first out. GitHub
-bounds that queue at 100 waiting runs, and a `paths:` filter skips a push whose diff holds more than
-3,000 files when none of the first 3,000 matches, so a push can go unbuilt. If a push is dropped or
-its build fails, the site stays at the last one published until the next docs-selecting push
-deploys it again.
+Of the docs-selecting pushes to `main` waiting at once, only the newest builds: the workflow's runs
+share one concurrency group keyed on the ref, which runs one at a time, keeps one run waiting and
+replaces that waiting run with the next arrival. The site loses nothing by that, since each build
+covers the whole tree and so ends at the newest docs-selecting commit. A `paths:` filter skips a
+push whose diff holds more than 3,000 files when none of the first 3,000 matches, so a push can go
+unbuilt. If a push is dropped or its build fails, the site stays at the last one published until
+the next docs-selecting push deploys it again.
 
 ## Run it
 
@@ -27,11 +28,17 @@ bun run docs:dev     # generate the reference pages, then serve with live reload
 bun run docs:build   # generate the reference pages, then build into docs/site/dist/
 ```
 
-In this directory, `bun run lint` and `bun run typecheck` are the checks CI runs before the build.
-After it, `.github/scripts/check-private-names.sh docs/site/dist` (from the repository root) fails
-on any built page, caption or file name that names the private deployment repository or the
-company, and on any built page or caption whose text names a private internal host or a Tailscale
-MagicDNS host.
+In this directory, `bun run typecheck` is the check CI runs before the build; `bun run lint`
+(Biome) is a person's to run, since the root `lint` job's `bunx biome check .` already covers
+these files and no CI job runs this script.
+That script is `biome check --error-on-warnings .`, while the root job runs plain
+`bunx biome check .`, which passes on a warning: so a Biome warning in this directory fails this
+script and no longer fails CI, which is the strictness dispatch://INFRA-1413 gave up when it
+deleted the duplicate lint step (measured first: these files carry no Biome diagnostic at all).
+After the build, `.github/scripts/check-private-names.sh docs/site/dist` (from the repository
+root) fails on any built page, caption or file name that names the private deployment repository
+or the company, and on any built page or caption whose text names a private internal host or a
+Tailscale MagicDNS host.
 
 ## Links between pages
 
@@ -56,5 +63,5 @@ refuses relative links (`errorOnRelativeLinks`, its default) or, with that off, 
 | `astro.config.mjs` | Site URL and base, sidebar, and plugins (Mermaid, the link validator, sidebar labels). |
 
 How to write a page, the generator contract and where media goes are on the published site's
-[Contributing to these docs](https://sjawhar.github.io/legion/contributing/) page, whose source is
+[Contributing to these docs](https://cybermonklabs.github.io/legion/contributing/) page, whose source is
 `src/content/docs/contributing.md`.

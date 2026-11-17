@@ -114,7 +114,7 @@ func requireIndexedWithoutLongIDs(t *testing.T, database *store.Store, service *
 // written in one starts at the innermost node holding it.
 func TestAVersionHoldingABlockIDPastTheBoundIsWrittenAndIndexed(t *testing.T) {
 	database, service := blockIndexService(t)
-	spec := createOwedDocument(t, database, service, "", "spec", boundSpec, "")
+	spec := createOwedDocument(t, database, service, "CORE-1", "", "spec", boundSpec, "")
 	long := giveLongBlockIDs(t, service, spec)
 
 	result, err := namedVersion(t, service, spec, "a version holding long block ids", model.Actor{Kind: "user", ID: "alice"})
@@ -135,7 +135,7 @@ func TestAVersionHoldingABlockIDPastTheBoundIsWrittenAndIndexed(t *testing.T) {
 // nodes, the long-id blocks none, and it is owed nothing more, so the next tick has nothing to do.
 func TestADocumentAlreadyHoldingABlockIDPastTheBoundIsIndexedAndLeavesOwed(t *testing.T) {
 	database, service := blockIndexService(t)
-	spec := createOwedDocument(t, database, service, "", "spec", boundSpec, "")
+	spec := createOwedDocument(t, database, service, "CORE-1", "", "spec", boundSpec, "")
 	settle(t, database, spec)
 	long := giveLongBlockIDs(t, service, spec)
 	version, _ := writeAsAnOlderBuild(t, database, service, spec, "Other paragraph.", "Other paragraph, edited.")
@@ -171,7 +171,7 @@ func TestAnAskBlockWhoseIDIsPastTheBoundSettles(t *testing.T) {
 		return tree
 	})
 	settleCurrentGeneration(t, service, original)
-	if line := logs.Lines("54000"); line != "" {
+	if line := logs.Lines("SQLSTATE 54000"); line != "" {
 		t.Fatalf("the settlement of the long-id ask block failed: %.400s", line)
 	}
 	if ask := blockAskOn(t, service, original, long); ask.State != "open" || ask.Question != "Ship on Monday?" {
@@ -197,7 +197,7 @@ func TestAnAskBlockWhoseIDIsPastTheBoundSettles(t *testing.T) {
 		t.Fatalf("the copy opened %d asks, want none", count)
 	}
 	requireCopiedStates(t, service, copied, copiedFrom(t, service, ask.ID, original))
-	if line := logs.Lines("54000"); line != "" {
+	if line := logs.Lines("SQLSTATE 54000"); line != "" {
 		t.Fatalf("a settlement failed on an index key past its limit: %.400s", line)
 	}
 }

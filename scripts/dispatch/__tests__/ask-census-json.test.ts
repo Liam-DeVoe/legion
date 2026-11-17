@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import type { Actor } from "../../../packages/contracts/src/dispatch-api";
 import {
   applyCodes,
@@ -24,6 +24,7 @@ import {
 } from "./approval-events.ts";
 
 const script = join(import.meta.dir, "..", "ask-census.ts");
+const makeDirectory = temporaryDirectories("ask-census-json");
 const servers: Array<{ stop: (force?: boolean) => void }> = [];
 
 afterEach(() => {
@@ -118,7 +119,7 @@ async function census(flags: readonly string[]): Promise<{
   exitCode: number;
 }> {
   const url = stubDispatch();
-  const codesPath = join(await mkdtemp(join(tmpdir(), "ask-census-json-")), "codes.csv");
+  const codesPath = join(makeDirectory(), "codes.csv");
   await writeFile(codesPath, CODES_CSV);
   return spawnCensus(
     [
@@ -266,8 +267,13 @@ describe("ask census --json", () => {
       ],
     ];
 
-    for (const [args, refusal] of refusals) {
-      const refused = await spawnCensus(args);
+    // Each refusal is a process of its own that exits on its arguments and reads nothing another
+    // writes, so they run at once: eight in a row outlast bun's 5-second test limit on a slow
+    // machine.
+    const answered = await Promise.all(
+      refusals.map(async ([args, refusal]) => ({ refusal, refused: await spawnCensus(args) }))
+    );
+    for (const { refusal, refused } of answered) {
       expect(refused.stderr).toContain(refusal);
       expect(refused.exitCode).toBe(1);
       expect(refused.stdout).toBe("");

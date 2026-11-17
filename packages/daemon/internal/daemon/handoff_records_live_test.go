@@ -14,15 +14,16 @@
 // repository mapping, the issue list, its status writes and messages, and the read of the record a
 // completion names - goes to the real routes. The worker side is the real `dispatch` CLI
 // (packages/envoy-client/bin/dispatch.ts under bun) run as each claim's registered session, and
-// the daemon's own routes: registration, grants and POST /legion/v1/handoff/complete. The import's
-// records are written by `legion handoffs import` itself (handoffimport.Run) against the running
-// daemon's state and the real Dispatch.
+// the daemon's own routes: registration, grants and POST /legion/v1/handoff/complete. The plugin
+// side a completion's commit comes from is the real `findHandoffReport`
+// (packages/pi-shared/src/handoff-record.ts), which the `completion head` step runs under bun
+// through scripts/e2e/completion-head.ts against this run's own Dispatch, as the pane's plugin
+// runs it.
 //
 // What is stood in for lies outside the records. The broker is a native nats-server the script
-// starts and names in LEGION_E2E_NATS_URL. GitHub is two REST stand-ins: the daemon's
-// (mergedRootWaitsGitHub, which answers each repository with default branch main and nothing
-// else), and the import's (handoffRecordsGitHub), one branch carrying `.legion/<KEY>/`, which the
-// import reads through GitHub's contents API and, its issue in testing, leaves as it is. The Apps'
+// starts and names in LEGION_E2E_NATS_URL. GitHub is the daemon's own REST stand-in
+// (handoffRecordsDaemonGitHub, which answers each repository with default branch main, lists the
+// one open pull request of the branch that completes rounds here, and nothing else). The Apps'
 // tokens are workflowTokenRecorder's placeholders, Envoy's listener is the package's
 // noticeListener, and no
 // agent runs: each claim is launched by the package's fake runtime, which provisions its workspace
@@ -37,7 +38,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -59,21 +59,16 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
-	"github.com/sjawhar/legion/daemon/internal/handoffimport"
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
-
-// handoffRecordsRootEnv names the checkout the script runs from, whose packages/envoy the driver
-// builds Dispatch from and whose packages/envoy-client holds the CLI. The script exports it: the
-// driver binary runs from the caller's directory, not the package's. Unset (a plain `go test
-// -tags e2e`, which runs in the package directory), the checkout is four directories up.
-const handoffRecordsRootEnv = "LEGION_E2E_REPO_ROOT"
 
 // handoffRecordsUser is the person the driver sets Dispatch up as: the project, its repository
 // mapping and the issues, through the trusted identity header the scratch server takes.
@@ -91,11 +86,12 @@ type handoffRecordsLive struct {
 	root     string
 	dispatch *handoffDispatch
 	github   string
-	importGH *handoffRecordsGitHub
 	cliHome  string
-	// a6 is the issue A6 writes to, on Dispatch alone; a3 and a10 are in planning, a7 in testing
-	// with its branch carrying `.legion/`, and renew implementing, the HANDOFF_NOT_NEW step's.
-	a6, a3, a7, renew, a10 string
+	// a6 is the issue A6 writes to, on Dispatch alone; a3 and a10 are in planning, a7 in testing,
+	// and renew implementing, the HANDOFF_NOT_NEW step's. headNamed and headNone are the
+	// `completion head` step's, on Dispatch alone too: the records of the first name a head, the
+	// records of the second name none.
+	a6, a3, a7, renew, a10, headNamed, headNone string
 	// claimants is each registered claim, by token.
 	claimants map[claim.Token]*handoffClaimant
 	// a10Existing is the record the A10 completion names while Dispatch is stopped.
@@ -105,13 +101,15 @@ type handoffRecordsLive struct {
 // TestHandoffRecordsLive drives the proof's steps against one booted daemon and one Dispatch.
 // A10 runs last, since it stops Dispatch under the daemon.
 func TestHandoffRecordsLive(t *testing.T) {
+	fixtureenv.Live(t)
 	r := newHandoffRecordsLive(t)
 	r.step("a6-a-40kb-handoff-reads-back-byte-identical-two-writes-are-versions-1-and-2", r.a6RoundTrip)
 	r.step("a6-control-a-body-one-byte-over-the-cap-is-refused", r.a6OverCap)
 	r.step("a3-a-record-another-session-wrote-is-refused-at-completion", r.a3Refused)
 	r.step("a3-control-the-planners-own-record-moves-the-issue-to-implementing", r.a3Accepted)
-	r.step("a7-the-imports-record-is-refused-the-tester-writes-it-again-and-the-reviewer-is-told-it", r.a7Import)
+	r.step("a7-a-record-the-daemons-session-wrote-is-refused-the-tester-writes-it-again-and-the-reviewer-is-told-it", r.a7DaemonSessionRecord)
 	r.step("handoff-not-new-the-implementers-round-1-record-is-refused-in-round-2", r.notNew)
+	r.step("completion head", r.completionHead)
 	r.step("a10-control-with-dispatch-up-the-first-write-succeeds", r.a10Up)
 	r.step("a10-with-dispatch-stopped-the-write-fails-and-the-completion-is-refused", r.a10Down)
 	r.step("a10-dispatch-restarted-the-retried-write-and-the-completion-land", r.a10Restarted)
@@ -131,7 +129,11 @@ func newHandoffRecordsLive(t *testing.T) *handoffRecordsLive {
 	if proof.project, err = claim.ProjectToken(proof.cfg.Project); err != nil {
 		t.Fatal(err)
 	}
-	root := os.Getenv(handoffRecordsRootEnv)
+	// testbuild.RootEnv names the checkout the script runs from, whose packages/envoy the driver
+	// builds Dispatch from and whose packages/envoy-client holds the CLI. The script exports it:
+	// the driver binary runs from the caller's directory, not the package's. Unset (a plain `go
+	// test -tags e2e`, which runs in the package directory), the checkout is four directories up.
+	root := os.Getenv(testbuild.RootEnv)
 	if root == "" {
 		root = filepath.Join("..", "..", "..", "..")
 	}
@@ -152,7 +154,6 @@ func newHandoffRecordsLive(t *testing.T) *handoffRecordsLive {
 	}
 	r.cfg.DispatchURL = r.dispatch.base
 	r.setUpDispatch()
-	r.importGH = newHandoffRecordsGitHub(t, r.a7)
 	r.seed()
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
@@ -165,7 +166,8 @@ func newHandoffRecordsLive(t *testing.T) *handoffRecordsLive {
 
 // setUpDispatch creates the run's project on Dispatch, maps liveRepo to it as its default, and
 // creates the issues. The workflow's issues are in progress and carry the legion label, as a
-// running daemon leaves them; A6's issue is no Legion issue and sits in the backlog.
+// running daemon leaves them; A6's issue and the two the `completion head` step reads are no
+// Legion issues and sit in the backlog.
 func (r *handoffRecordsLive) setUpDispatch() {
 	t := r.t
 	t.Helper()
@@ -184,9 +186,13 @@ func (r *handoffRecordsLive) setUpDispatch() {
 	}
 	r.a6 = create("A6: a 40 KB handoff round trip", "backlog", []string{})
 	r.a3 = create("A3: the planner's handoff under another session", "in_progress", []string{"legion"})
-	r.a7 = create("A7: a tester mid-phase at the import", "in_progress", []string{"legion"})
+	r.a7 = create("A7: a tester on a record the daemon's session wrote", "in_progress", []string{"legion"})
 	r.renew = create("HANDOFF_NOT_NEW: the implementer's second round", "in_progress", []string{"legion"})
 	r.a10 = create("A10: Dispatch stops under a completion", "in_progress", []string{"legion"})
+	// Dispatch refuses a second issue whose title shares most of a first one's words as a possible
+	// duplicate, so the step's two issues are titled apart.
+	r.headNamed = create("completion head: records naming the commit their work was done against", "backlog", []string{})
+	r.headNone = create("the control for bodies carrying no such field", "backlog", []string{})
 }
 
 // seed records the four workflow issues as the daemon would hold them: each the root of its own
@@ -203,7 +209,7 @@ func (r *handoffRecordsLive) seed() {
 	}
 	// The implementer's completion of implementing reads GitHub for the open pull request on its
 	// branch, so GitHub lists the one the record holds for the issue that completes rounds here.
-	r.github = mergedRootWaitsGitHub(t, "legion/"+r.renew, int(number)+2)
+	r.github = handoffRecordsDaemonGitHub(t, "legion/"+r.renew, int(number)+2)
 	type seeded struct {
 		key   string
 		phase phase.Phase
@@ -288,9 +294,10 @@ func (r *handoffRecordsLive) a6RoundTrip() {
 	}
 }
 
-// Step A6's control. A body of the cap plus one byte is refused: the CLI refuses it before it
-// sends anything, and Dispatch itself, sent it raw, answers 413 CAP_EXCEEDED. The issue still
-// holds two versions.
+// Step A6's control. A body of the cap plus one byte is refused, by Dispatch, which owns every
+// bound: the CLI sends it and exits non-zero carrying the server's 413 CAP_EXCEEDED (contracts'
+// handoffProblem checks no length of its own), and Dispatch itself, sent the same body raw,
+// answers 413 CAP_EXCEEDED. The issue still holds two versions.
 func (r *handoffRecordsLive) a6OverCap() {
 	t := r.t
 	const session = "ses_a6_writer"
@@ -298,8 +305,8 @@ func (r *handoffRecordsLive) a6OverCap() {
 	file := r.bodyFile("over-cap", body)
 	out, code := r.cli(session, "handoff-write", "--issue", r.a6, "--phase", "implement", "--body-file", file)
 	over := fmt.Sprintf("1 bytes over the %d-byte limit", handoffBodyMax)
-	if code == 0 || !strings.Contains(out, "was not called") || !strings.Contains(out, over) {
-		t.Fatalf("handoff-write of %d bytes exited %d: %q, want a refusal before the call naming %q", len(body), code, out, over)
+	if code == 0 || !strings.Contains(out, "CAP_EXCEEDED") || !strings.Contains(out, over) {
+		t.Fatalf("handoff-write of %d bytes exited %d: %q, want a refusal naming CAP_EXCEEDED and %q", len(body), code, out, over)
 	}
 	r.note("handoff-write of a %d-byte body exited %d: %s", len(body), code, strings.Join(strings.Fields(out), " "))
 	status, answer := r.dispatch.agentPost("/api/v1/issues/"+r.a6+"/handoffs/implement", map[string]any{
@@ -358,75 +365,58 @@ func (r *handoffRecordsLive) a3Accepted() {
 	r.note("read back: %s is in %s", r.a3, got.Phase)
 }
 
-// Step A7. `legion handoffs import` writes the files on a7's branch as its records under the
-// daemon's session and, a7 being in testing under the records' daemon, defers the removal of
-// `.legion/` and writes nothing to the branch; the tester's completion naming the imported test
-// record is refused 403 HANDOFF_SESSION_MISMATCH; the tester reads it with `dispatch
-// handoff-read`, writes it again under its own session, and completes; and the reviewer the pass
-// starts is told that record in its task, the version its command reads.
-func (r *handoffRecordsLive) a7Import() {
+// Step A7. A test record written under the daemon's own session, as the issues carry from before
+// handoffs moved to Dispatch, is refused at the tester's completion 403
+// HANDOFF_SESSION_MISMATCH; the tester reads it with `dispatch handoff-read`, writes it again
+// under its own session, and completes; and the reviewer the pass starts is told that record in
+// its task, the version its command reads.
+func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 	t := r.t
 	tester := r.claimant(claim.RoleTester, r.a7, "ses_a7_tester")
-	var stdout, stderr bytes.Buffer
-	state := func(ctx context.Context) ([]byte, error) {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, r.cfg.DaemonURL+"/legion/v1/state", nil)
-		if err != nil {
-			return nil, err
-		}
-		response, err := http.DefaultClient.Do(request)
-		if err != nil {
-			return nil, err
-		}
-		defer response.Body.Close()
-		if response.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("GET /legion/v1/state answered %d", response.StatusCode)
-		}
-		return io.ReadAll(response.Body)
+	body := r.smallBody(r.a7, "test", "written under the daemon's session before handoffs moved to Dispatch")
+	// The seed goes to Dispatch's own route with the daemon's session as its actor, the author of
+	// the records the issues carry from before handoffs moved to Dispatch: the `dispatch` CLI is
+	// this harness's worker side and refuses a session id with a colon in it, which
+	// legion-daemon:<PROJECT> has, so that nothing speaks as the daemon by setting a variable.
+	daemonSession := dispatch.DaemonSession(r.a7)
+	status, answer := r.dispatch.agentPost("/api/v1/issues/"+r.a7+"/handoffs/test", map[string]any{
+		"actor": map[string]string{"kind": "session", "id": daemonSession}, "body": string(body),
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("the write of %s's test handoff under %s = %d %s, want 201", r.a7, daemonSession, status, answer)
 	}
-	code := handoffimport.Run(context.Background(), handoffimport.Options{
-		Project: r.cfg.Project, State: state, GitHubAPI: r.importGH.server.URL,
-		Tokens: &workflowTokenRecorder{}, Dispatch: dispatch.New(r.dispatch.base, r.dispatch.token),
-	}, &stdout, &stderr)
-	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
-		r.note("legion handoffs import: %s", line)
+	r.note("POST /api/v1/issues/%s/handoffs/test as session %s: %d", r.a7, daemonSession, status)
+	daemonRecord := r.dispatch.latest(r.a7, "test")
+	if daemonRecord.Author.Kind != "session" || daemonRecord.Author.ID != daemonSession || daemonRecord.Body != string(body) {
+		t.Fatalf("the test record of %s = %+v, want the body written under %s", r.a7, daemonRecord, daemonSession)
 	}
-	if code != 0 {
-		t.Fatalf("legion handoffs import exited %d: %s%s", code, stdout.String(), stderr.String())
-	}
-	deferred := r.a7 + ": removal deferred: " + r.a7 + " is in testing; run the import again once the phase ends"
-	for _, want := range []string{r.a7 + " plan: imported v1", r.a7 + " implement: imported v1", r.a7 + " test: imported v1", deferred} {
-		if !strings.Contains(stdout.String(), want) {
-			t.Fatalf("the import printed %q, want a line %q", stdout.String(), want)
-		}
-	}
-	r.importGH.heldNoRemoval(t, r)
-	imported := r.dispatch.latest(r.a7, "test")
-	if imported.Author.Kind != "session" || imported.Author.ID != dispatch.DaemonSession(r.a7) || imported.Body != r.importGH.files["test.json"] {
-		t.Fatalf("the imported test record = %+v, want the branch's test.json under %s", imported, dispatch.DaemonSession(r.a7))
-	}
-	r.note("Dispatch's test record of %s: version %d (id %s) by session %s, the branch's test.json byte for byte", r.a7, imported.Version, imported.ID, imported.Author.ID)
+	r.note("Dispatch's test record of %s: version %d (id %s) by session %s, the body written byte for byte", r.a7, daemonRecord.Version, daemonRecord.ID, daemonRecord.Author.ID)
 
-	status, failure := tester.complete(api.HandoffCompleteRequest{Summary: "tested", Verdict: "pass", HandoffID: imported.ID, HandoffVersion: imported.Version})
+	status, failure := tester.complete(api.HandoffCompleteRequest{Summary: "tested", Verdict: "pass", HandoffID: daemonRecord.ID, HandoffVersion: daemonRecord.Version})
 	if status != http.StatusForbidden || failure.Code != "HANDOFF_SESSION_MISMATCH" ||
-		!strings.Contains(failure.Error, dispatch.DaemonSession(r.a7)) || !strings.Contains(failure.Error, tester.session) {
-		t.Fatalf("the tester's completion naming the imported record = %d %+v, want 403 HANDOFF_SESSION_MISMATCH naming %s and %s",
-			status, failure, dispatch.DaemonSession(r.a7), tester.session)
+		!strings.Contains(failure.Error, daemonSession) || !strings.Contains(failure.Error, tester.session) {
+		t.Fatalf("the tester's completion naming the daemon session's record = %d %+v, want 403 HANDOFF_SESSION_MISMATCH naming %s and %s",
+			status, failure, daemonSession, tester.session)
 	}
-	r.note("POST /legion/v1/handoff/complete as %s naming the imported record: %d %s: %s", tester.session, status, failure.Code, failure.Error)
+	r.note("POST /legion/v1/handoff/complete as %s naming the daemon session's record: %d %s: %s", tester.session, status, failure.Code, failure.Error)
 	r.holdPhase(r.a7, phase.Testing)
 
 	meta, body := r.read(tester.session, r.a7, "test")
 	r.note("handoff-read as %s: %s", tester.session, meta)
 	rewritten := r.write(tester.session, r.a7, "test", body)
 	r.note("handoff-write as %s of the body it read: %s", tester.session, rewritten.line)
-	if again := r.dispatch.latest(r.a7, "test"); again.Body != imported.Body || again.Author.ID != tester.session {
-		t.Fatalf("the rewritten test record = %+v, want the imported body under %s", again, tester.session)
+	if again := r.dispatch.latest(r.a7, "test"); again.Body != daemonRecord.Body || again.Author.ID != tester.session {
+		t.Fatalf("the rewritten test record = %+v, want the same body under %s", again, tester.session)
 	}
 	status, failure = tester.complete(api.HandoffCompleteRequest{Summary: "tested", Verdict: "pass", HandoffID: rewritten.id, HandoffVersion: rewritten.version})
 	if status != http.StatusOK {
 		t.Fatalf("the tester's completion naming its own record = %d %+v, want 200", status, failure)
 	}
 	r.note("POST /legion/v1/handoff/complete as %s naming %s (verdict pass): %d", tester.session, rewritten.id, status)
+	// The tester's turn ends with its completion, as a worker's does. Main's supervision holds a
+	// phase task while another role of the issue is in a turn, since the two would share the
+	// working copy (supervise's sendPending), so the reviewer is prompted only once it has.
+	tester.endTurn()
 	got := r.waitPhase(r.a7, phase.Reviewing)
 	r.note("read back: %s is in %s", r.a7, got.Phase)
 
@@ -458,6 +448,9 @@ func (r *handoffRecordsLive) notNew() {
 		t.Fatalf("the implementer's round-1 completion = %d %+v, want 200", status, failure)
 	}
 	r.note("POST /legion/v1/handoff/complete as %s naming %s: %d", implementer.session, first.id, status)
+	// The implementer's turn ends with its completion, as the tester's does below: the tester's
+	// task is held while another role of the issue is in a turn (supervise's sendPending).
+	implementer.endTurn()
 	r.waitPhase(r.renew, phase.Testing)
 	r.note("read back: %s is in testing", r.renew)
 
@@ -494,6 +487,53 @@ func (r *handoffRecordsLive) notNew() {
 	r.note("control: POST /legion/v1/handoff/complete as %s naming %s: %d", implementer.session, second.id, status)
 	r.waitPhase(r.renew, phase.Testing)
 	r.note("read back: %s is in testing again", r.renew)
+}
+
+// Step `completion head`. What a file-backed role's `handoff_complete` reports beside its summary
+// is the real `findHandoffReport` (packages/pi-shared/src/handoff-record.ts), run under bun by
+// scripts/e2e/completion-head.ts against this run's own Dispatch with this session's own
+// credential: for the tester, the planner and the reviewer alike, the completion it would send
+// carries the commit the newest record of that role's phase names under `head`, beside that
+// record's own id and version. The three read one issue, each the record of its own phase and
+// each naming a head of its own, so a report that read another phase's record would carry another
+// commit.
+//
+// The control is those same three against records naming no head - the body every other step of
+// this proof writes, and the body every role wrote before the head moved into the record: the
+// completion carries no commit at all, and the daemon refuses such a completion
+// HANDOFF_STALE_ENTRY when it is of an earlier phase entry, since it says nothing about a head.
+func (r *handoffRecordsLive) completionHead() {
+	t := r.t
+	roles := []struct{ phase, word, role, session string }{
+		{"testing", "test", "tester", "ses_head_tester"},
+		{"planning", "plan", "planner", "ses_head_planner"},
+		{"reviewing", "review", "reviewer", "ses_head_reviewer"},
+	}
+	for _, each := range roles {
+		head := headCommit(r.headNamed, each.word)
+		written := r.write(each.session, r.headNamed, each.word, headBody(r.headNamed, each.word, head))
+		r.note("handoff-write as %s: %s, its body naming head %s", each.session, written.line, head)
+		line, report := r.completionReport(each.session, r.headNamed, each.phase, each.role)
+		r.note("the completion findHandoffReport would send as the %s of %s in %s: %s", each.role, r.headNamed, each.phase, line)
+		if report.Commit == nil || *report.Commit != head {
+			t.Fatalf("the %s's completion of %s is %s, want its commit to be the head its %s record names, %s", each.role, r.headNamed, line, each.word, head)
+		}
+		if report.HandoffID != written.id || report.HandoffVersion != written.version {
+			t.Fatalf("the %s's completion of %s is %s, want it to name record %s version %d", each.role, r.headNamed, line, written.id, written.version)
+		}
+	}
+	for _, each := range roles {
+		written := r.write(each.session, r.headNone, each.word, r.smallBody(r.headNone, each.word, "a record naming no head"))
+		r.note("control: handoff-write as %s: %s, its body naming no head", each.session, written.line)
+		line, report := r.completionReport(each.session, r.headNone, each.phase, each.role)
+		r.note("control: the completion findHandoffReport would send as the %s of %s in %s: %s", each.role, r.headNone, each.phase, line)
+		if report.Commit != nil || strings.Contains(line, "commit") {
+			t.Fatalf("the %s's completion of %s, whose %s record names no head, is %s, want no commit in it at all", each.role, r.headNone, each.word, line)
+		}
+		if report.HandoffID != written.id || report.HandoffVersion != written.version {
+			t.Fatalf("the %s's completion of %s is %s, want it to name record %s version %d", each.role, r.headNone, line, written.id, written.version)
+		}
+	}
 }
 
 // Step A10's control. With Dispatch up, the planner's first write succeeds.
@@ -659,17 +699,24 @@ func (r *handoffRecordsLive) cli(session string, args ...string) (string, int) {
 }
 
 // cliOut runs `bun packages/envoy-client/bin/dispatch.ts args...` as an omp session's shell runs
-// `dispatch`: DISPATCH_HOST omp, DISPATCH_SESSION_ID the session, and Dispatch named by
-// DISPATCH_URL and DISPATCH_TOKEN. Nothing else of the caller's environment reaches it but PATH:
-// its home, its configuration file (absent, so the variables are the whole of its Dispatch
-// settings) and its session state are the run's own, so no operator's file or session is read.
+// `dispatch`.
 func (r *handoffRecordsLive) cliOut(session string, args ...string) (cliOutput, int) {
+	r.t.Helper()
+	return r.bun(session, nil, filepath.Join(r.root, "packages", "envoy-client", "bin", "dispatch.ts"), args...)
+}
+
+// bun runs `bun program args...` as an omp session's shell runs a program of its pane's:
+// DISPATCH_HOST omp, DISPATCH_SESSION_ID the session, Dispatch named by DISPATCH_URL and
+// DISPATCH_TOKEN, and extra after them. Nothing else of the caller's environment reaches it but
+// PATH: its home, its configuration file (absent, so the variables are the whole of its Dispatch
+// settings) and its session state are the run's own, so no operator's file or session is read.
+func (r *handoffRecordsLive) bun(session string, extra []string, program string, args ...string) (cliOutput, int) {
 	r.t.Helper()
 	home := filepath.Join(r.cliHome, "home")
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		r.t.Fatal(err)
 	}
-	command := exec.Command("bun", append([]string{filepath.Join(r.root, "packages", "envoy-client", "bin", "dispatch.ts")}, args...)...)
+	command := exec.Command("bun", append([]string{program}, args...)...)
 	command.Dir = r.cliHome
 	command.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
@@ -685,6 +732,7 @@ func (r *handoffRecordsLive) cliOut(session string, args ...string) (cliOutput, 
 		"DISPATCH_URL=" + r.dispatch.base,
 		"DISPATCH_TOKEN=" + r.dispatch.token,
 	}
+	command.Env = append(command.Env, extra...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	err := command.Run()
@@ -692,11 +740,39 @@ func (r *handoffRecordsLive) cliOut(session string, args ...string) (cliOutput, 
 	if err != nil {
 		exit, ok := err.(*exec.ExitError)
 		if !ok {
-			r.t.Fatalf("run the dispatch CLI: %v", err)
+			r.t.Fatalf("run %s under bun: %v", program, err)
 		}
 		code = exit.ExitCode()
 	}
 	return cliOutput{stdout: stdout.Bytes(), stderr: stderr.Bytes()}, code
+}
+
+// completionHeadReport is the completion a `handoff_complete` would send, as
+// scripts/e2e/completion-head.ts prints the real findHandoffReport's answer: a report carrying no
+// commit prints no `commit` field at all, and Commit stays nil.
+type completionHeadReport struct {
+	Commit         *string `json:"commit"`
+	HandoffID      string  `json:"handoffId"`
+	HandoffVersion int     `json:"handoffVersion"`
+}
+
+// completionReport runs scripts/e2e/completion-head.ts under bun as session, with issue in
+// LEGION_ISSUE as a pane carries it, and answers the one line it printed and the completion that
+// line holds: what the real findHandoffReport would have a completion of phase by role carry,
+// read from this run's own Dispatch.
+func (r *handoffRecordsLive) completionReport(session, issue, phase, role string) (string, completionHeadReport) {
+	r.t.Helper()
+	out, code := r.bun(session, []string{"LEGION_ISSUE=" + issue},
+		filepath.Join(r.root, "scripts", "e2e", "completion-head.ts"), phase, role)
+	line := strings.TrimSpace(string(out.stdout))
+	if code != 0 || line == "" {
+		r.t.Fatalf("completion-head.ts %s %s on %s exited %d: %s%s", phase, role, issue, code, out.stdout, out.stderr)
+	}
+	var report completionHeadReport
+	if err := json.Unmarshal([]byte(line), &report); err != nil {
+		r.t.Fatalf("decode the completion %q that completion-head.ts printed: %v", line, err)
+	}
+	return line, report
 }
 
 // bigBody is a handoff of at least 40 KB for issue, distinct per n: a JSON object with today's
@@ -719,6 +795,22 @@ func (r *handoffRecordsLive) bigBody(issue string, n int) []byte {
 // smallBody is a short handoff of issue's phase word, its summary what.
 func (r *handoffRecordsLive) smallBody(issue, word, what string) []byte {
 	return []byte(fmt.Sprintf("{\"schemaVersion\": 1, \"phase\": %q, \"issue\": %q, \"summary\": %q, \"proof\": [{\"criterion\": \"live\", \"observed\": %q}]}\n", word, issue, what, what))
+}
+
+// headBody is a handoff of issue's phase word as a file-backed role writes one now: smallBody's
+// fields and `head`, the commit the work it reports was done against.
+func headBody(issue, word, head string) []byte {
+	return []byte(fmt.Sprintf("{\"schemaVersion\": 1, \"phase\": %q, \"issue\": %q, \"summary\": %q, \"head\": %q, \"proof\": [{\"criterion\": \"live\", \"observed\": %q}]}\n",
+		word, issue, "worked against "+head, head, "the head this record names"))
+}
+
+// headCommit is the commit a record of word on issue names as its head: 40 lower-case hexadecimal
+// characters, the shape every role's prompt asks for, derived from this run's own issue key and
+// the phase's word, so no two records of the run name one commit and no constant of this file can
+// be read back as a head.
+func headCommit(issue, word string) string {
+	sum := sha256.Sum256([]byte(issue + " " + word))
+	return hex.EncodeToString(sum[:])[:40]
 }
 
 // capBody is a JSON object of exactly size bytes.
@@ -1022,80 +1114,24 @@ func (d *handoffDispatch) latest(key, word string) handoffRecord {
 	return latest
 }
 
-// handoffRecordsGitHub is GitHub's REST API as `legion handoffs import` reads it for one branch,
-// legion/<key> on liveRepo, whose head carries `.legion/<key>/{plan,implement,test}.json`: the
-// ref, and the contents API's listings and files. Every request is recorded, so a write the import
-// must not make is seen; every other path, and every other branch, is 404, which the import
-// reports as no branch.
-type handoffRecordsGitHub struct {
-	server   *httptest.Server
-	key      string
-	files    map[string]string
-	mu       sync.Mutex
-	requests []string
-}
-
-// handoffGitHead is the commit the stand-in branch names.
-const handoffGitHead = "1111111111111111111111111111111111111111"
-
-func newHandoffRecordsGitHub(t *testing.T, key string) *handoffRecordsGitHub {
+// handoffRecordsDaemonGitHub is GitHub's REST API as the daemon reads it through this proof: every
+// repository has default branch main, and the open pull requests of branch are the one numbered
+// number, which the implementer's completion of implementing reads before it moves its issue on.
+// Every other route is a 404: nothing else of GitHub is read here.
+func handoffRecordsDaemonGitHub(t *testing.T, branch string, number int) string {
 	t.Helper()
-	g := &handoffRecordsGitHub{key: key, files: map[string]string{
-		"plan.json":      fmt.Sprintf("{\n  \"schemaVersion\": 1,\n  \"phase\": \"plan\",\n  \"issue\": %q,\n  \"plan\": \"committed before the cutover\"\n}\n", key),
-		"implement.json": fmt.Sprintf("{\n  \"schemaVersion\": 1,\n  \"phase\": \"implement\",\n  \"issue\": %q,\n  \"proof\": [{\"criterion\": \"A7\", \"observed\": \"committed before the cutover\"}]\n}\n", key),
-		"test.json":      fmt.Sprintf("{\n  \"schemaVersion\": 1,\n  \"phase\": \"test\",\n  \"issue\": %q,\n  \"verdict\": \"pass\",\n  \"implementerProof\": [\"A7\"]\n}\n", key),
-	}}
-	g.server = httptest.NewServer(http.HandlerFunc(g.serve))
-	t.Cleanup(g.server.Close)
-	return g
-}
-
-func (g *handoffRecordsGitHub) serve(w http.ResponseWriter, r *http.Request) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.requests = append(g.requests, r.Method+" "+r.URL.Path)
-	w.Header().Set("Content-Type", "application/json")
-	repo := "/repos/" + liveRepo
-	path := strings.TrimPrefix(r.URL.Path, repo)
-	answer := func(value any) { _ = json.NewEncoder(w).Encode(value) }
-	notFound := func() { w.WriteHeader(http.StatusNotFound); _, _ = io.WriteString(w, `{"message":"Not Found"}`) }
-	ref := r.URL.Query().Get("ref")
-	legion := ".legion/" + g.key
-	switch {
-	case r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, repo+"/"):
-		notFound()
-	case path == "/git/ref/heads/legion/"+g.key:
-		answer(map[string]any{"object": map[string]string{"sha": handoffGitHead}})
-	case path == "/contents/.legion" && ref == handoffGitHead:
-		answer([]map[string]string{{"name": g.key, "type": "dir"}})
-	case path == "/contents/"+legion && ref == handoffGitHead:
-		var entries []map[string]string
-		for name := range g.files {
-			entries = append(entries, map[string]string{"name": name, "type": "file"})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/")
+		switch parts := strings.Split(rest, "/"); {
+		case r.Method == http.MethodGet && isRepository && len(parts) == 2:
+			_, _ = io.WriteString(w, `{"full_name":"`+parts[0]+"/"+parts[1]+`","default_branch":"main"}`)
+		case r.Method == http.MethodGet && isRepository && len(parts) == 3 && parts[2] == "pulls":
+			_, _ = fmt.Fprintf(w, `[{"number":%d,"state":"open","head":{"ref":%q,"sha":"head-child"},"base":{"ref":"main"},"updated_at":"2026-10-28T00:00:00Z"}]`, number, branch)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"message":"Not Found"}`)
 		}
-		answer(entries)
-	case strings.HasPrefix(path, "/contents/"+legion+"/") && ref == handoffGitHead:
-		text, ok := g.files[strings.TrimPrefix(path, "/contents/"+legion+"/")]
-		if !ok {
-			notFound()
-			return
-		}
-		answer(map[string]string{"encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(text))})
-	default:
-		notFound()
-	}
-}
-
-// heldNoRemoval holds that the import, deferring the removal of an issue in testing, wrote nothing
-// to the branch: every request it made of GitHub was a read.
-func (g *handoffRecordsGitHub) heldNoRemoval(t *testing.T, r *handoffRecordsLive) {
-	t.Helper()
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	for _, request := range g.requests {
-		if !strings.HasPrefix(request, http.MethodGet+" ") {
-			t.Fatalf("the import sent %s to GitHub, want only reads while the removal is deferred", request)
-		}
-	}
-	r.note("GitHub stand-in received %d reads and no write: %v", len(g.requests), g.requests)
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
 }

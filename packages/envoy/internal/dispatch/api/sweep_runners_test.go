@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // sweepRunnerSchedule is the pace a sweep's runners keep here: a short gap, so a pass that is
@@ -31,11 +32,7 @@ const (
 // sweepLeases is the pool a leased loop takes its lease on, the one cmd/dispatch gives it.
 func sweepLeases(t *testing.T, database *store.Store) *pgxpool.Pool {
 	t.Helper()
-	leases, err := database.Pool.Leases()
-	if err != nil {
-		t.Fatalf("open the leases pool: %v", err)
-	}
-	return leases
+	return storetest.Leases(t, database.Pool)
 }
 
 // countLeaseLines counts the lease lines carrying message for lease.
@@ -97,12 +94,8 @@ func runSweep(t *testing.T, run func(ctx context.Context)) {
 // waitUntil polls condition until it holds, failing the test after within.
 func waitUntil(t *testing.T, within time.Duration, what string, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for !condition() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out after %v waiting for %s", within, what)
-		}
-		time.Sleep(10 * time.Millisecond)
+	if !testwait.Holds(within, 10*time.Millisecond, condition) {
+		t.Fatalf("timed out after %v waiting for %s", within, what)
 	}
 }
 

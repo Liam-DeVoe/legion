@@ -92,6 +92,30 @@ func parseOptionalRFC3339(query url.Values, name string, fallback time.Time) (ti
 	return parsed, nil
 }
 
+// parseOptionalWindow is a record route's [from, to) window: each bound an RFC3339 time, nil when
+// the query leaves it out or blank, and from before to when both are given. Its error is the text
+// of the route's 400 INVALID_QUERY. The loop's variable is not `name`: the query-key walk
+// (routes_query_keys_test.go) resolves a read by the variable a file ranges over a literal list
+// with, and parseOptionalRFC3339 reads its own `name` parameter, which that walk pins as a read it
+// cannot resolve.
+func parseOptionalWindow(query url.Values) (from, to *time.Time, err error) {
+	bounds := [2]*time.Time{}
+	for index, bound := range []string{"from", "to"} {
+		if strings.TrimSpace(query.Get(bound)) == "" {
+			continue
+		}
+		parsed, err := parseOptionalRFC3339(query, bound, time.Time{})
+		if err != nil {
+			return nil, nil, err
+		}
+		bounds[index] = &parsed
+	}
+	if bounds[0] != nil && bounds[1] != nil && !bounds[0].Before(*bounds[1]) {
+		return nil, nil, errors.New("from must be before to")
+	}
+	return bounds[0], bounds[1], nil
+}
+
 // deliverySettings reads the timeline's configuration record, answering 404
 // DELIVERY_NOT_CONFIGURED (or the store's error) and false when it cannot.
 func (s *server) deliverySettings(w http.ResponseWriter, r *http.Request) (delivery.DeliverySettings, bool) {
@@ -780,7 +804,7 @@ func (s *server) firstToWarn(ctx context.Context, key warnedProductionRun, jobNa
 
 // deliveryIssue is what the timeline reads of one issue a pull request names: its project, title,
 // priority, and effective components (qualified `<project>/<id>`, resolved as every issue read
-// resolves them: the nearest issue on its parent chain that chose, through issueComponentsLateral).
+// resolves them: the nearest issue on its parent chain that chose, through issueComponentsTerms).
 type deliveryIssue struct {
 	project    string
 	title      string
@@ -788,17 +812,24 @@ type deliveryIssue struct {
 	components []string
 }
 
+// deliveryIssueFactsQuery is the pull-request timeline's read of the issues a delivery names,
+// with their components. The text is built once, at start, for the reason issueRowStatement
+// gives.
+var deliveryIssueFactsQuery = `
+		with recursive subjects as (select i.key from issues i where i.key = any($1)),
+		` + issueComponentsTerms + `
+		select i.key, i.project_key, i.title, i.priority, coalesce(comp.ids, '{}'::text[])
+		from issues i
+		` + issueComponentsJoin + `
+		where i.key = any($1)
+	`
+
 func (s *server) deliveryIssueFacts(ctx context.Context, keys []string) (map[string]deliveryIssue, error) {
 	issues := make(map[string]deliveryIssue, len(keys))
 	if len(keys) == 0 {
 		return issues, nil
 	}
-	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select i.key, i.project_key, i.title, i.priority, coalesce(comp.ids, '{}'::text[])
-		from issues i
-		`+issueComponentsLateral+`
-		where i.key = any($1)
-	`, keys)
+	rows, err := s.deps.Store.Pool.Query(ctx, deliveryIssueFactsQuery, keys)
 	if err != nil {
 		return nil, err
 	}

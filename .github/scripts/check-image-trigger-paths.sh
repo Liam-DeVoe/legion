@@ -15,14 +15,49 @@
 #     same rules recursively, and a local action that is not composite is as opaque as a remote
 #     one — `docker/build-push-action` is itself a JavaScript action — so `using: docker`,
 #     `using: node*` and a missing `using` are all refused unless NON_BUILDING_ACTIONS names
-#     it. A job-level `uses:` must be a `./.github/workflows/` call, which triggers_for traces.
+#     it. A local `./<dir>/<rest>` whose `<dir>` is the `path:` of an `actions/checkout` step
+#     of the same job (checkout_paths) is this repository's own action at another commit, so
+#     the file READ is this tree's `<rest>/action.yml`. A second checkout of this same
+#     repository holds this same repository's actions, and it can introduce no image builder
+#     this check does not already read at `<rest>`, because `<rest>` is where every other
+#     caller uses it; ci.yaml's `tool-fallback` job runs the merge base's seven installs that
+#     way. A step counts only where it checks out this same repository: one that names no
+#     `repository:`, or names this one. A checkout of another repository writes that
+#     repository's tree at `<dir>`, and the action it holds there is one this check never
+#     reads, so `./<dir>/<rest>` under it is refused as any other unknown path is. The rule
+#     refuses what it always did besides: a local `uses:` into a directory no checkout
+#     of the job creates, and one whose `<rest>` names no action of this tree. That typo is
+#     what the refusal exists to catch. A job-level `uses:` must be a `./.github/workflows/`
+#     call, which triggers_for traces.
 #   * The build action's `with:` keys are an ALLOWLIST (BUILD_ACTION_INPUTS). A key this check
 #     has not read may name another tree the build receives — `build-contexts`, `secret-files`
 #     — which the trigger would then owe, so an unlisted key is refused. `cache-from` is
 #     listed but also read, since `type=local,src=…` is a local tree.
+#   * A file COMPUTED INTO a build's inputs is DATA (COMPUTED_BUILD_INPUTS). A `with:` value
+#     may be a step's output rather than a literal — browser-image.yaml's `labels:` is the
+#     recipe hash its row step computes — and the file that computes it decides the bytes the
+#     build pushes while no `COPY` names it and no key of the step holds its path. Such a file
+#     is listed by (workflow, job, path, the argument for it) and then read like a file of the
+#     context: the trigger owes it coverage, and the reverse check below does not call it a
+#     path no image build reads. Nothing is inferred — a file no entry names is not read — and
+#     an entry that reaches no build of a tree holding its workflow, or whose path that tree
+#     has not got, fails rather than rotting.
 #   * GATES are an ALLOWLIST: unknown means refused, never ungated. A gate resolves to
 #     `dorny/paths-filter` outputs tested `== 'true'` and joined by `||`, to event terms, or to
-#     terms that cannot narrow by path, or it is refused. GitHub compares case-insensitively,
+#     terms that cannot narrow by path, or it is refused. The `changes` output such a test names
+#     is read WHOLE, never searched for a `steps.<id>.outputs.<name>` inside it: a reference a
+#     term this check has not read decides reaches the job narrower than its filter, and
+#     crediting the job with the filter's whole coverage would assert a build the gate does not
+#     start. Two shapes are read (output_filter): the PLAIN one, where the reference is a `||`
+#     disjunct of its own — `${{ steps.filter.outputs.x }}`, and ci.yaml's `${{ github.event_name
+#     == 'workflow_dispatch' && 'true' || steps.filter.outputs.x }}`, whose earlier disjunct can
+#     only hand the job the string 'true' — and the NARROWED one, where the reference is the last
+#     `&&` conjunct of its disjunct, `${{ <term> && steps.filter.outputs.x || 'false' }}`,
+#     ci.yaml's `full-ci` outputs. A narrowed output runs the job on fewer changes than its
+#     filter selects, so it is admitted only for a job whose every `docker/build-push-action`
+#     step publishes nothing (step_publishes): there a change the filter selects publishes no
+#     image either way, so no pin can name the commit it skipped. Every other shape is refused.
+#     GitHub compares case-insensitively,
 #     so this check does too. A filter is read under its step's `predicate-quantifier`: under
 #     `some` (the default) a file matches when any pattern does, and a `!` pattern, which
 #     there matches every file outside it, is refused; under `some-with-excludes` a file
@@ -51,6 +86,14 @@
 #     else an `inputs.` term is refused: in a step's `if:`, in a workflow without
 #     `workflow_call` or whose `workflow_call` does not declare that input as such a string,
 #     and in any shape but `== ''`.
+#     One gate of one job is admitted as DATA rather than as a shape, the way
+#     NOT_A_BUILD_STEPS admits one run step: PINNED_IMAGE_GATES below lists a gate by
+#     (workflow, job, the term's exact text) with the argument that makes it sound, and a
+#     term that matches an entry is passed over where every other term of that shape is
+#     refused. It is not a shape anyone can spell their way into: another workflow wanting
+#     the same thing writes its own entry and gets read by a person, and an entry that
+#     excuses no gate fails this check rather than rotting. Its own comment says what such
+#     an argument must prove.
 #   * A build in a `run:` step is DETECTED, and EVERY detection is refused - there is no
 #     pattern that can excuse one. The detector judges ONE COMMAND at a time and is drawn
 #     broad: a container-CLI word followed later on the command by `build`, `bake` or `b`, the
@@ -114,15 +157,19 @@
 #   6. the other direction: a pull request trigger path that starts an image build and nothing
 #      else, yet matches a file no build it starts reads, since each push to a pull request
 #      touching only such files then builds an image for nothing. That is (a) a `pull_request`
-#      or `pull_request_target` trigger of a workflow whose every job builds, calls a workflow
-#      that only builds, or needs a job that does, with no paths-filter filter selecting the
+#      or `pull_request_target` trigger of a workflow whose every job only builds or needs a job
+#      that does, with no paths-filter filter selecting the
 #      build; and (b) a path that paths-filter filters select, where each of those filters
 #      decides only jobs that only build — a building job with nothing beside its build but
-#      checkout, buildx and registry steps, or a call of a workflow that only builds — and the
+#      checkout, buildx and registry steps, or a call of a workflow whose jobs pass that same
+#      test — and the
 #      job's gates admit a pull request event. There the event's paths AND the filters must
 #      match only files the builds read, or the workflows involved (the building one and the
 #      caller). A `push` or `merge_group` trigger, a filter that also decides a job doing more,
 #      and a workflow with other jobs are left alone: what they start reads more than an image.
+#      One test for a job wherever its steps are: ci.yaml's jobs each hold theirs in a called
+#      workflow of their own, so a job that builds an image and then runs a suite against it is
+#      a job doing more whether its steps are in ci.yaml or in the file ci.yaml calls.
 #
 # Files are discovered by walking the tree, not by asking git, so an unsnapshotted change cannot
 # read green locally.
@@ -172,10 +219,17 @@ EQUALS_TRUE = re.compile(r"needs\.([\w-]+)\.outputs\.([\w-]+)\s*==\s*'true'")
 # only widens, so gate_outputs looks for it only among the neutral conjuncts. Their opposites
 # (`github.event.pull_request.draft`, `== true`, `github.event.action == 'closed'`) skip every
 # build a deployment pins, so they stay refused.
+#
+# `github.run_attempt == '1'` is neutral in the same sense: a re-run attempt runs on the commit
+# attempt 1 ran on, so a term that admits attempt 1 alone narrows by attempt and never by path,
+# and every change still reaches the build on its first attempt. ci.yaml's merge-group runs carry
+# it (the comment above its `changes` job says why a re-run of a group must do nothing). Only
+# that one comparison is admitted: `github.run_attempt` against any other value, or against
+# nothing at all, can skip the first attempt of a change, so it stays refused.
 DRAFT = re.compile(r"!\s*github\.event\.pull_request\.draft", re.I)
 NEUTRAL = re.compile(
     r"always\(\)|success\(\)|!\s*cancelled\(\)|needs\.[\w-]+\.result(\s*[=!]=\s*'[A-Za-z_]+')?"
-    rf"|{DRAFT.pattern}|github\.event\.action\s*!=\s*'closed'",
+    rf"|{DRAFT.pattern}|github\.event\.action\s*!=\s*'closed'|github\.run_attempt\s*==\s*'1'",
     re.I,
 )
 # The activity types a `pull_request` or `pull_request_target` trigger without `types` runs on.
@@ -459,6 +513,99 @@ NOT_A_BUILD_STEPS: list[tuple[str, str, str, tuple[str, ...], str]] = [
     # (workflow file, job id, step id, the step's exact hitting commands, why it builds nothing)
 ]
 
+# THE ONE DATA HATCH FOR A GATE. Every gate this check reads as a shape answers one question:
+# which CHANGES reach the build. A gate that answers another question is refused, because a
+# build a trigger does not cover is a commit no pin can name — and that refusal is right for
+# every gate but one kind, the kind that reads the published image itself and skips the build
+# only where the image a pin names was already built from the inputs the trigger covers. Such
+# a gate cannot hide a changed input: the input is what it reads. This check cannot tell that
+# kind from any other by its shape, so it is admitted as data, one entry per gate, like
+# NOT_A_BUILD_STEPS above.
+#
+# An entry is (workflow file, job id, the term's exact text, the argument for it). The term is
+# matched whole, with runs of whitespace collapsed, against one top-level `&&` conjunct of the
+# `if:` of that job or of a step of it — never against a part of a term, and never against
+# another job's or another workflow's `if:`, so a second holder of the same term writes its own
+# entry and is read by a person. Every other conjunct beside it is read by the rules above, so
+# the filter gate of a job that has one stays readable and stays checked.
+#
+# AN ENTRY'S ARGUMENT MUST PROVE THREE THINGS, in its own words, for a later reader:
+# what the term reads, that the thing the trigger exists to guarantee is already true wherever
+# the term is false, and which other gate catches the case where it is not. An entry that
+# excuses no gate fails this check rather than rotting into an exemption nobody reviews again.
+PINNED_IMAGE_GATES: list[tuple[str, str, str, str]] = [
+    # (workflow file, job id, the gate term's exact text, the argument for it)
+    (
+        ".github/workflows/browser-image.yaml",
+        "build",
+        "steps.decide.outputs.publish == 'true'",
+        "that job's decide step reads the image at the digest .github/ci-images.yaml's row "
+        "pins and compares its legion.browser-image.source-sha256 label with the sha256 of "
+        "this build's whole recipe as this tree holds it — every file of the build context "
+        "directory .github/docker and .github/workflows/browser-image.yaml itself, hashed by "
+        ".github/scripts/ci_images.py's recipe_sha256 — and the term is false only where the "
+        "two are equal, that is, only where the package already serves, under the digest every "
+        "consumer pins, an image built from this very recipe. Every path ci.yaml's "
+        "`browser_image` filter selects that can change the image's bytes is therefore inside "
+        "what the term reads: the filter names .github/docker/**, which is the context "
+        "directory, and .github/workflows/browser-image.yaml, which holds the build step, its "
+        "`labels:`, `outputs:`, `platforms:`, `provenance:` and build-args and the pins of the "
+        "action and of the BuildKit image it runs in. The filter's third path, "
+        ".github/workflows/ci.yaml, is the file the filter itself lives in: it decides whether "
+        "this job runs and hands it one input, ci-ok-changes, which reaches the ci-ok report "
+        "and nothing the build receives. What the trigger exists to guarantee, that a change "
+        "to a build input produces the image the row pins, is therefore already true wherever "
+        "the build is skipped, and this gate cannot hide a changed input, because the hash of "
+        "every input is the thing it reads. The other half of the argument is rule 10 of "
+        ".github/scripts/check-ci-images.sh: it refuses a `built:` row whose published image "
+        "carries any other sha256 than the tree's recipe, so a head whose recipe moved while "
+        "its build was skipped — a read of the registry that answered wrongly, say — is "
+        "refused by that gate rather than merging quietly. Any failure of that read leaves "
+        "the term true and the build runs.",
+    ),
+]
+gate_excusals: list[str] = []
+gate_matches: dict[tuple[str, str, str, str], set[str]] = {}
+
+# A file of this tree that decides what a build pushes and that no Dockerfile names: a build
+# step's `with:` values are not all literals, and a step that computes one reads files. Such a
+# file is an input of that build like a file of its context — a change to it changes the image
+# — so this list holds it to both halves of this check: the trigger must cover it, and the
+# reverse check below counts it as read rather than calling it a path no build reads. It is
+# DATA, by (workflow file, job id, the path, the argument for it), so a file joins the reading
+# of a build only where a reviewer wrote down which build computes what from it, and an entry
+# naming no build of a tree that holds its workflow fails rather than rotting.
+COMPUTED_BUILD_INPUTS: list[tuple[str, str, str, str]] = [
+    (
+        ".github/workflows/browser-image.yaml",
+        "build",
+        ".github/scripts/ci_images.py",
+        "that job's build step writes one label, "
+        "legion.browser-image.source-sha256=<the row step's `source` output>, and the row "
+        "step computes that output with this file's recipe_sha256, so this file's bytes "
+        "decide a label of the image the build pushes as surely as a `RUN` line does. They "
+        "decide the publish gate too: the decide step compares that same hash with the label "
+        "the package serves. A change here that no build followed would leave the published "
+        "image carrying a hash this file no longer computes, which rule 10 of "
+        ".github/scripts/check-ci-images.sh refuses, so the build this trigger starts is the "
+        "only way the row can move onto an image that gate admits.",
+    ),
+]
+computed_matches: dict[tuple[str, str, str, str], bool] = {}
+
+
+def excused_gate_terms(workflow: Path, job_name: str) -> dict[str, tuple[str, str, str, str]]:
+    """The gate terms PINNED_IMAGE_GATES admits for this holder, by their text with runs of
+    whitespace collapsed. Empty for a holder no entry names — so a gate is excused only where a
+    reviewer wrote down the workflow and the job it is in. The job is always known: a job's
+    `if:` is read under its own name and a step's under the job it is a step of."""
+    return {
+        " ".join(entry[2].split()): entry
+        for entry in PINNED_IMAGE_GATES
+        if entry[0] == str(workflow) and entry[1] == job_name
+    }
+
+
 # Before the subcommand, an option may take a value. Only a flag whose value can itself read
 # as a subcommand has to be named: `docker --context build pull` is a context called build, and
 # VALUED is that list - a container CLI's own documented globals, few and stable. Any other
@@ -641,6 +788,8 @@ NON_BUILDING_ACTIONS = {
     "docker/setup-buildx-action",
     "docker/setup-qemu-action",
     "dorny/paths-filter",
+    "github/codeql-action/analyze",
+    "github/codeql-action/init",
     "oven-sh/setup-bun",
 }
 # `docker/build-push-action` inputs this check has read and found to add no build input, so a
@@ -672,6 +821,36 @@ BUILD_ACTION_INPUTS = {
     "tags",  # names on the result
     "target",  # which stage to stop at; narrows what is read, never widens
 }
+# The `outputs` exporters that write the result somewhere other than a registry: BuildKit's
+# exporters are image, registry, local, tar, oci, docker and cacheonly, and the first two are
+# the ones that publish.
+LOCAL_EXPORTERS = {"cacheonly", "docker", "local", "oci", "tar"}
+
+
+def step_publishes(options: dict) -> bool:
+    """True unless a `docker/build-push-action` step provably publishes nothing, read from the
+    two of its inputs that say where the result goes: `push`, false or unset, and `outputs`,
+    whose every exporter must write somewhere other than a registry. Anything this check cannot
+    read — an expression in `push`, an exporter it does not name — counts as publishing, the
+    safe side: a narrowed gate (output_filter) is admitted only on a job whose builds publish
+    nothing, so reading one wrongly would hide a published image behind a gate narrower than
+    its filter."""
+    if str(options.get("push", "false")).strip().lower() != "false":
+        return True
+    for exporter in str(options.get("outputs", "")).splitlines():
+        fields = {}
+        for field in exporter.split(","):
+            name, _, value = field.strip().partition("=")
+            if name:
+                fields[name] = value.strip()
+        if not fields:
+            continue
+        if fields.get("type", "") not in LOCAL_EXPORTERS:
+            return True
+        if fields.get("push", "false").lower() != "false":
+            return True
+    return False
+
 # A context this check can resolve to a repository path: no expression, no URL, no named
 # context.
 PLAIN_CONTEXT = re.compile(r"[\w.][\w./-]*\Z")
@@ -783,8 +962,10 @@ def unwrap(expression: str) -> str:
 
 
 def gate_outputs(
-    condition: str, modes: dict[str, str | None]
-) -> tuple[list[tuple[str, str]], set[str], bool]:
+    condition: str,
+    modes: dict[str, str | None],
+    excused_terms: dict[str, tuple[str, str, str, str]],
+) -> tuple[list[tuple[str, str]], set[str], bool, list[tuple[str, str, str, str]]]:
     """(job, output) for each paths-filter output an `if:` is gated on, the trigger events it
     admits, and whether it skips a draft.
 
@@ -796,21 +977,35 @@ def gate_outputs(
     other `||` terms there only widen, so they are allowed); or made entirely of terms that do
     not narrow by path — `always()`, `success()`, `!cancelled()`, `needs.<job>.result`, the
     two event terms `!github.event.pull_request.draft` and `github.event.action != 'closed'`,
-    and a CALL_MODE comparison on an input `modes` admits; or an event term —
-    `github.event_name == '<event>'` tests joined by `||`, which admits only those events, or
-    one `github.event_name != '<event>'`, which excludes that event; or it is refused, quoting
+    `github.run_attempt == '1'`, and a CALL_MODE comparison on an input `modes` admits; or an
+    event term — `github.event_name == '<event>'` tests joined by `||`, which admits only those
+    events, or one `github.event_name != '<event>'`, which excludes that event, and which,
+    ||-joined with such neutral terms, excludes none of them; or it is refused, quoting
     the term. The `if:` skips a draft when one of those neutral conjuncts holds the draft term;
     in the filters clause the draft term only widens. gating_filters admits that skip only
     under triggers that list `ready_for_review`; the comment above NEUTRAL says why. `modes`
     is empty unless the `if:` is a job's, in a workflow whose `workflow_call` declares inputs
-    call_inputs returns."""
+    call_inputs returns. `excused_terms` are the PINNED_IMAGE_GATES terms this holder may
+    carry: a conjunct whose whole text is one of them is passed over rather than read, and the
+    entries passed over are returned, so the caller can say where each was used and refuse one
+    that was used nowhere."""
     admitted = set(PATH_EVENTS)
     skips_draft = False
+    taken: list[tuple[str, str, str, str]] = []
     if not condition.strip():
-        return [], admitted, skips_draft
+        return [], admitted, skips_draft, taken
     conjuncts = [unwrap(part) for part in split_top(unwrap(condition), "&&")]
-    clauses = [part for part in conjuncts if NEEDS_OUTPUT.search(part)]
+    # An excused conjunct is out of the reading altogether, the filters clause included: it is
+    # neither a filter this job is gated on nor a term to refuse.
+    kept = []
     for part in conjuncts:
+        entry = excused_terms.get(" ".join(part.split()))
+        if entry is None:
+            kept.append(part)
+        else:
+            taken.append(entry)
+    clauses = [part for part in kept if NEEDS_OUTPUT.search(part)]
+    for part in kept:
         if part in clauses:
             continue
         terms = [unwrap(term).strip() for term in split_top(part, "||")]
@@ -821,8 +1016,17 @@ def gate_outputs(
         if all(match and match.group(1) == "==" for match in named):
             admitted &= {match.group(2).lower() for match in named}
             continue
-        if len(terms) == 1 and named[0] and named[0].group(1) == "!=":
-            admitted.discard(named[0].group(2).lower())
+        # One `github.event_name != '<event>'`, alone or ||-joined with neutral terms. Alone it
+        # excludes that event. Beside a neutral term — ci.yaml's `github.event_name !=
+        # 'merge_group' || github.run_attempt == '1'` — the named event still reaches the job
+        # whenever the neutral term holds, so no event is excluded and, since no term of the
+        # disjunct narrows by path, nothing is. A term that is neither leaves the disjunct
+        # refused, as `github.event_name == 'pull_request' || vars.RUN_IT == 'true'` is.
+        rest = [term for term in terms if not neutral(term, modes)]
+        excluded = EVENT_TERM.fullmatch(rest[0]) if len(rest) == 1 else None
+        if excluded and excluded.group(1) == "!=":
+            if len(rest) == len(terms):
+                admitted.discard(excluded.group(2).lower())
             continue
         spoiled = [modes[name.lower()] for name in CALL_MODE.findall(part) if modes.get(name.lower())]
         if spoiled:
@@ -848,10 +1052,10 @@ def gate_outputs(
             f"(`always()`, `success()`, `!cancelled()`, a `needs.<job>.result` comparison that "
             f"still admits `skipped`, `github.event_name == '<event>'` tests joined by ||, one "
             f"`github.event_name != '<event>'`, `!github.event.pull_request.draft`, "
-            f"`github.event.action != 'closed'`) beside it{hint}"
+            f"`github.event.action != 'closed'`, `github.run_attempt == '1'`) beside it{hint}"
         )
     if not clauses:
-        return [], admitted, skips_draft
+        return [], admitted, skips_draft, taken
     if len(clauses) > 1:
         raise Unreadable(
             "tests needs.*.outputs in more than one &&-joined clause, so no single filter's "
@@ -869,26 +1073,42 @@ def gate_outputs(
                 f"tests an output as `{' '.join(term.split())}`, not as "
                 f"`needs.<job>.outputs.<name> == 'true'` joined by ||; write it that way"
             )
-    return outputs, admitted, skips_draft
+    return outputs, admitted, skips_draft, taken
 
 
 def gating_filters(
-    workflow: Path, describe: str, holder: dict, modes: dict[str, str | None] | None = None
-) -> tuple[list[tuple[str, PathsFilter]], set[str]]:
-    """The dorny/paths-filter filters an `if:` is gated on, and the trigger events it admits.
-    The holder is a job that builds an image, a job that calls a workflow which does, a job
-    either of those needs, or the build step itself, in `workflow`; `modes` are the CALL_MODE
-    inputs its `if:` may test, none for a step. A gate this check cannot evaluate is reported,
-    never ignored, since ignoring it would treat a gated build as one that runs on every
-    change. So is a draft term under a trigger that does not build the head once the draft is
-    marked ready (the comment above NEUTRAL)."""
+    workflow: Path,
+    describe: str,
+    holder: dict,
+    modes: dict[str, str | None] | None,
+    job_name: str,
+) -> tuple[list[tuple[str, PathsFilter, str]], set[str]]:
+    """The dorny/paths-filter filters an `if:` is gated on, each with the refusal its narrowing
+    term earns ("" when the output hands the filter's value unnarrowed), and the trigger events
+    the `if:` admits. The holder is a job that builds an image, a job that calls a workflow which
+    does, a job either of those needs, or the build step itself, in `workflow`; `modes` are the
+    CALL_MODE inputs its `if:` may test, none for a step. Whether a narrowed output is a fault
+    depends on whether the build the gate decides is published, which only the build loop knows,
+    so the refusal is written here and reported there (narrowed_refusals). A gate this check
+    cannot evaluate is reported, never ignored, since ignoring it would treat a gated build as
+    one that runs on every change. So is a draft term under a trigger that does not build the
+    head once the draft is marked ready (the comment above NEUTRAL). `job_name` is the job the
+    `if:` decides — the holder itself for a job, the job it is a step of for a step — and is
+    what a PINNED_IMAGE_GATES entry is keyed to beside the workflow and the term. It and `modes`
+    carry no default, because every caller has both to hand and a gate read without the job it
+    is in could excuse no term at all."""
     document = documents[workflow]
     condition = str(holder.get("if", ""))
     try:
-        outputs, admitted, skips_draft = gate_outputs(condition, modes or {})
+        outputs, admitted, skips_draft, taken = gate_outputs(
+            condition, modes or {}, excused_gate_terms(workflow, job_name)
+        )
     except Unreadable as error:
         problems.append(f"::error::{describe} builds or calls an image, and its if: {error}")
         return [], set(PATH_EVENTS)
+    for entry in taken:
+        gate_matches.setdefault(entry, set()).add(describe)
+        gate_excusals.append(f"{workflow}: {describe} if: `{entry[2]}`")
     if skips_draft:
         for trigger, event in unready_triggers(workflow):
             problems.append(
@@ -917,6 +1137,17 @@ def gating_filters(
                 f"this check can read; make that output a paths-filter filter, or drop the gate"
             )
             continue
+        narrowing = reference[2]
+        refusal = "" if not narrowing else (
+            f"::error::{describe} builds or calls an image its job publishes, and is gated "
+            f"on needs.{needed}.outputs.{output}, which hands it "
+            f"steps.{reference[0]}.outputs.{reference[1]} only while "
+            f"`{' '.join(narrowing.split())}` holds, so a change that filter selects "
+            f"publishes no image and no pin can name that commit; drop the narrowing term "
+            f"from that output, which leaves the filter deciding the job, or keep the "
+            f"narrowed output for a job whose every docker/build-push-action step publishes "
+            f"nothing (no push:, and outputs: exporters that write no registry)"
+        )
         name = reference[1]
         # A filter of the same name in another paths-filter step of the job reads like the gate,
         # while the output reads only one of them.
@@ -965,7 +1196,7 @@ def gating_filters(
                 f"`[...]` and literal characters"
             )
             continue
-        found.append((filter_label(needed, name), PathsFilter(patterns, quantifier)))
+        found.append((filter_label(needed, name), PathsFilter(patterns, quantifier), refusal))
     return found, admitted
 
 
@@ -973,12 +1204,58 @@ def filter_label(needed: str, name: str) -> str:
     return f"jobs.{needed} filter {name}"
 
 
-def output_filter(document: dict, needed: str, output: str) -> tuple[str, str] | None:
-    """(step id, filter name) that `needs.<needed>.outputs.<output>` reads, or None when the
-    output is not a step output."""
+def output_filter(document: dict, needed: str, output: str) -> tuple[str, str, str] | None:
+    """(step id, filter name, narrowing term) for the paths-filter output
+    `needs.<needed>.outputs.<output>` hands the job, or None when the whole expression is in
+    neither shape this check reads.
+
+    The expression is read WHOLE, never searched: a `steps.<id>.outputs.<name>` inside a term
+    this check has not read can reach the job narrower than its filter. GitHub's `&&` binds
+    tighter than `||`, so an expression is a `||` of disjuncts, each a `&&` of conjuncts, and
+    exactly one disjunct may hold the reference. Two shapes are read:
+
+      * PLAIN, the reference being the whole disjunct: `${{ steps.filter.outputs.x }}`, and
+        `${{ <term> && 'true' || steps.filter.outputs.x }}`, the shape ci.yaml's
+        workflow_dispatch term writes. An earlier disjunct may only widen, which `widening`
+        holds it to: `||` yields the first truthy operand, so one whose own last conjunct is
+        the literal `'true'` either falls through to the reference or hands the job 'true',
+        and the filter's match reaches the job's `if:` unnarrowed either way. The term is "".
+      * NARROWED, the reference being the LAST conjunct of its disjunct:
+        `${{ <term> && steps.filter.outputs.x || 'false' }}`, ci.yaml's `full-ci` shape, whose
+        <term> is every conjunct beside it. The job then runs on fewer changes than its filter
+        selects, which the build loop admits only for a build that publishes nothing
+        (narrowed_refusals). A
+        disjunct after the reference may only be the literal `'false'`, the fallback that
+        shape writes.
+
+    Anything else is refused by returning None, which gating_filters reports as an output it
+    cannot read: the reference in two disjuncts, a conjunct beside it that is not last, a
+    widening disjunct this check cannot prove yields 'true', any other fallback."""
     upstream = (document.get("jobs") or {}).get(needed) or {}
-    reference = STEP_OUTPUT.search(str((upstream.get("outputs") or {}).get(output, "")))
-    return (reference.group(1), reference.group(2)) if reference else None
+    expression = str((upstream.get("outputs") or {}).get(output, "")).strip()
+    if not (expression.startswith("${{") and expression.endswith("}}")):
+        return None
+    disjuncts = [unwrap(part) for part in split_top(unwrap(expression), "||")]
+    holders = [index for index, part in enumerate(disjuncts) if STEP_OUTPUT.search(part)]
+    if len(holders) != 1:
+        return None
+    index = holders[0]
+    if not all(widening(part) for part in disjuncts[:index]):
+        return None
+    if any(part != "'false'" for part in disjuncts[index + 1 :]):
+        return None
+    conjuncts = split_top(disjuncts[index], "&&")
+    reference = STEP_OUTPUT.fullmatch(unwrap(conjuncts[-1]))
+    if not reference or any(STEP_OUTPUT.search(part) for part in conjuncts[:-1]):
+        return None
+    return reference.group(1), reference.group(2), " && ".join(conjuncts[:-1])
+
+
+def widening(disjunct: str) -> bool:
+    """True when a `||` disjunct before the reference can only widen the output: its value,
+    when truthy, is the string 'true', which the job's `if:` tests for. `<term> && 'true'`
+    (ci.yaml's workflow_dispatch term) and a bare `'true'` are the two."""
+    return unwrap(split_top(disjunct, "&&")[-1]) == "'true'"
 
 
 def paths_filter_steps(job: dict) -> list[dict]:
@@ -1054,17 +1331,28 @@ def deciding_jobs(document: dict, job_name: str) -> list[str]:
     return order
 
 
-def inherited_gates(workflow: Path, job_name: str) -> list[tuple[str, list[tuple[str, PathsFilter]], set[str]]]:
+def inherited_gates(
+    workflow: Path, job_name: str
+) -> list[tuple[str, list[tuple[str, PathsFilter, str]], set[str]]]:
     """(label, filters, admitted events) for every gate that decides whether `job_name` runs:
-    the `if:` of each of its deciding_jobs, in `workflow`."""
+    the `if:` of each of its deciding_jobs, in `workflow`. Each filter carries the refusal a
+    narrowed output earns, which narrowed_refusals reads for a published build."""
     document = documents[workflow]
     modes = call_inputs(document)
     gates = []
     for name in deciding_jobs(document, job_name):
         job = (document.get("jobs") or {}).get(name) or {}
-        found, admitted = gating_filters(workflow, f"jobs.{name}", job, modes)
+        found, admitted = gating_filters(workflow, f"jobs.{name}", job, modes, name)
         gates.append((f"jobs.{name}.if", found, admitted))
     return gates
+
+
+def narrowed_refusals(gates: list) -> list[str]:
+    """The refusal of every narrowed output among `gates`. A narrowed output hands its job the
+    filter's value only while another term holds, so the job runs on fewer changes than the
+    filter selects: that is a fault only where the build those gates decide is published, and
+    the caller is what knows it."""
+    return [refusal for _, found, _ in gates for _, _, refusal in found if refusal]
 
 
 def apply_gates(triggers: list, gates: list, workflow: Path) -> list:
@@ -1078,35 +1366,38 @@ def apply_gates(triggers: list, gates: list, workflow: Path) -> list:
         triggers = [trigger for trigger in triggers if trigger[1] in admitted]
         if not found:
             continue
-        names = " or ".join(label for label, _ in found)
-        either = AnyOf([f for _, f in found])
+        names = " or ".join(label for label, _, _ in found)
+        either = AnyOf([f for _, f, _ in found])
         triggers = [
             (
                 f"{label} + {gate_label} ({names})",
                 event,
                 filters + [either],
                 origin,
-                selectors + tuple((workflow, name) for name, _ in found),
+                selectors + tuple((workflow, name) for name, _, _ in found),
             )
             for label, event, filters, origin, selectors in triggers
         ]
     return triggers
 
 
-def triggers_for(workflow: Path) -> list[tuple[str, str, list, Path, tuple]]:
+def triggers_for(workflow: Path) -> tuple[list[tuple[str, str, list, Path, tuple]], list[str]]:
     """(label, event, filters that must all cover an input, the workflow whose trigger it is,
-    the paths-filter filters that select it) for every trigger that runs `workflow`. A called
-    workflow's `github.event_name` is its caller's event, so a caller's trigger carries the
-    caller's event."""
+    the paths-filter filters that select it) for every trigger that runs `workflow`, and the
+    refusals the callers' gates earn for a published build. A called workflow's
+    `github.event_name` is its caller's event, so a caller's trigger carries the caller's
+    event."""
     document = documents[workflow]
     found = [
         (f"{workflow} {label}", event, [f], workflow, ())
         for event, label, f in event_filters(workflow, document)
     ]
+    refusals = []
     for caller, caller_document, job_name in calling_jobs(workflow):
         # The calling job is gated by its own `if:` and by every job it transitively needs,
         # exactly as a building job is.
         gates = inherited_gates(caller, job_name)
+        refusals += narrowed_refusals(gates)
         base = [
             (f"{caller} {label}", event, [caller_filter], caller, ())
             for event, label, caller_filter in event_filters(caller, caller_document)
@@ -1116,18 +1407,55 @@ def triggers_for(workflow: Path) -> list[tuple[str, str, list, Path, tuple]]:
             (label if filtered else f"{label} (jobs.{job_name})", *rest)
             for label, *rest in apply_gates(base, gates, caller)
         ]
-    return found
+    return found, refusals
 
 
 builds = []
 
 
-def scan_step(workflow, job_name, step: dict, gate_step: dict, origin: str, depth: int, prefix: str | None = None) -> None:
+# The two spellings of this repository a checkout may name: the context that resolves to the
+# repository the run is of, and the slug itself (.github/scripts/repo-paths.sh's own default).
+THIS_REPOSITORY = re.compile(r"\$\{\{\s*github\.repository\s*\}\}|cybermonklabs/legion", re.I)
+
+
+def checks_out_this_repository(step: dict) -> bool:
+    """Whether this checkout step writes this repository's own tree.
+
+    A step that names no `repository:` checks out the repository the run is of, and so does one
+    that names it. Anything else — another repository, or a value this check cannot resolve —
+    writes a tree whose files this check never reads."""
+    repository = step["with"].get("repository")
+    if repository is None:
+        return True
+    return isinstance(repository, str) and bool(THIS_REPOSITORY.fullmatch(repository.strip()))
+
+
+def checkout_paths(job: dict) -> set[str]:
+    """The directories this job checks this repository out into, normalised.
+
+    A checkout writes `path:` as `base`, `./base` or `base/`, and all three name one directory,
+    so both sides of the comparison in scan_local_action go through posixpath.normpath. The
+    root checkout, which has no `path:` or writes `.`, is left out: `./x` already names this
+    tree. A checkout of another repository is left out too: `./x` under it is that repository's
+    file and not this tree's, whatever `ref:` either of them names."""
+    return {
+        posixpath.normpath(step["with"]["path"])
+        for step in job.get("steps") or []
+        if isinstance(step, dict)
+        and str(step.get("uses", "")).split("@", 1)[0] == "actions/checkout"
+        and isinstance(step.get("with"), dict)
+        and isinstance(step["with"].get("path"), str)
+        and checks_out_this_repository(step)
+    } - {"."}
+
+
+def scan_step(workflow, job_name, step: dict, gate_step: dict, origin: str, depth: int, checkouts: set[str], prefix: str | None = None) -> None:
     """Classify one step: a build this check reads, an action it trusts, or a refusal.
 
     `gate_step` is the step whose `if:` gates the build — the step itself at job level, and the
     CALLING step when this one came out of a local composite action, since that is what decides
-    whether the composite runs at all. `origin` names the file the step lives in."""
+    whether the composite runs at all. `origin` names the file the step lives in. `checkouts` is
+    the job's checkout_paths, which scan_local_action resolves a `./` action against."""
     uses = str(step.get("uses", ""))
     action = uses.split("@", 1)[0]
     where = step.get("name") or "an unnamed step"
@@ -1169,13 +1497,22 @@ def scan_step(workflow, job_name, step: dict, gate_step: dict, origin: str, dept
             return
         context = posixpath.normpath(raw)
         dockerfile = str(options.get("file", posixpath.join(context, "Dockerfile")))
-        builds.append((workflow, job_name, gate_step, context, posixpath.normpath(dockerfile)))
+        builds.append(
+            (
+                workflow,
+                job_name,
+                gate_step,
+                context,
+                posixpath.normpath(dockerfile),
+                step_publishes(options),
+            )
+        )
         return
     if uses:
         if action in NON_BUILDING_ACTIONS:
             return
         if action.startswith("./"):
-            scan_local_action(workflow, job_name, action, gate_step, place, depth, step_id)
+            scan_local_action(workflow, job_name, action, gate_step, place, depth, checkouts, step_id)
             return
         problems.append(
             f"::error file={workflow}::{place} uses {uses}, which this check cannot tell apart "
@@ -1266,19 +1603,36 @@ def scan_step(workflow, job_name, step: dict, gate_step: dict, origin: str, dept
         f"NOT_A_BUILD_STEPS in this script in a reviewed PR"
     )
 
-def scan_local_action(workflow, job_name, action: str, gate_step: dict, place: str, depth: int, prefix: str) -> None:
+def scan_local_action(workflow, job_name, action: str, gate_step: dict, place: str, depth: int, checkouts: set[str], prefix: str) -> None:
     """A `./` action is read, not trusted: a composite's steps get the same rules recursively.
 
     Anything else is refused. A container action's image comes from a Dockerfile this check
     never sees, and a JavaScript action is as opaque as a remote one — `docker/build-push-
     action` is itself JavaScript — so a local `using: node*`, an unknown `using`, and a missing
-    `runs.using` are all refused unless NON_BUILDING_ACTIONS names the action."""
+    `runs.using` are all refused unless NON_BUILDING_ACTIONS names the action.
+
+    `./<dir>/<rest>` under a `<dir>` of `checkouts` is read as this tree's `<rest>`: that
+    directory holds this same repository at another commit, and the action it holds there is
+    the one this tree keeps at `<rest>`. A `./` path under no checkout of the job, and a
+    `<rest>` naming no action of this tree, are refused the same way a typo always was."""
     if depth > 5:
         problems.append(f"::error file={workflow}::{place} nests local actions too deeply to read; flatten the "
         f"chain to five levels or fewer")
         return
+    # The path as written, then the same path with a checkout directory of this job taken off
+    # its front: `./base/.github/actions/x` under a checkout at `base` is this tree's
+    # `.github/actions/x`.
+    relative = posixpath.normpath(action[2:])
+    candidates = [relative] + [
+        relative[len(checkout) + 1 :] for checkout in sorted(checkouts) if relative.startswith(checkout + "/")
+    ]
     definition = next(
-        (p for p in (Path(action[2:]) / "action.yml", Path(action[2:]) / "action.yaml") if p.is_file()),
+        (
+            p
+            for candidate in candidates
+            for p in (Path(candidate) / "action.yml", Path(candidate) / "action.yaml")
+            if p.is_file()
+        ),
         None,
     )
     if definition is None:
@@ -1293,7 +1647,7 @@ def scan_local_action(workflow, job_name, action: str, gate_step: dict, place: s
     if using == "composite":
         for inner in (runs or {}).get("steps") or []:
             if isinstance(inner, dict):
-                scan_step(workflow, job_name, inner, gate_step, str(definition), depth + 1, prefix)
+                scan_step(workflow, job_name, inner, gate_step, str(definition), depth + 1, checkouts, prefix)
         return
     problems.append(
         f"::error file={workflow}::{place} uses {action}, a local `using: {using or 'unset'}` "
@@ -1315,9 +1669,10 @@ for workflow, document in documents.items():
                 f"a ./.github/workflows/ workflow instead"
             )
             continue
+        checkouts = checkout_paths(job)
         for step in job.get("steps") or []:
             if isinstance(step, dict):
-                scan_step(workflow, job_name, step, step, str(workflow), 0)
+                scan_step(workflow, job_name, step, step, str(workflow), 0, checkouts)
 
 if not builds:
     problems.append(
@@ -1330,8 +1685,16 @@ if not builds:
 # is, the paths-filter filters that select it, and every file the builds it starts read: the
 # reverse check below reads them.
 PULL_REQUEST_EVENTS = ("pull_request", "pull_request_target")
+# One gate decides every build of its job, so the allowance for a narrowed output is the job's:
+# it holds only while EVERY docker/build-push-action step of the job publishes nothing.
+publishing_jobs = {
+    (workflow, job_name)
+    for workflow, job_name, _, _, _, published in builds
+    if published
+}
 started: dict[str, tuple[list, Path, tuple, set[str]]] = {}
-for workflow, job_name, step, context, dockerfile in builds:
+for workflow, job_name, step, context, dockerfile, _ in builds:
+    publishes = (workflow, job_name) in publishing_jobs
     if not Path(dockerfile).is_file():
         problems.append(f"::error file={workflow}::{workflow} builds {dockerfile}, which is missing; add the "
         f"Dockerfile, or correct the step's file:")
@@ -1348,6 +1711,13 @@ for workflow, job_name, step, context, dockerfile in builds:
     ]
     if ignore_file:
         inputs.append((ignore_file, [ignore_file]))
+    # The files a reviewer wrote down as computed into this build's own inputs, read like the
+    # context's: the trigger owes them coverage, and they are not paths "no image build reads".
+    for entry in COMPUTED_BUILD_INPUTS:
+        if entry[0] != str(workflow) or entry[1] != job_name:
+            continue
+        computed_matches[entry] = True
+        inputs.append((f"{entry[2]} (computed into this build's inputs)", [entry[2]]))
     for line, instruction in joined_lines(Path(dockerfile).read_text()):
         command = instruction.split(maxsplit=1)[0].upper() if instruction else ""
         try:
@@ -1372,9 +1742,14 @@ for workflow, job_name, step, context, dockerfile in builds:
     if str(step.get("if", "")):
         where = step.get("name") or "an unnamed step"
         describe = f"jobs.{job_name} step '{where}'"
-        found, admitted = gating_filters(workflow, describe, step)
+        found, admitted = gating_filters(workflow, describe, step, None, job_name)
         gates.append((f"{describe} if", found, admitted))
-    triggers = apply_gates(triggers_for(workflow), gates, workflow)
+    reached, caller_refusals = triggers_for(workflow)
+    # Whether a narrowed gate is a fault is this loop's to say: the narrowing costs a published
+    # image for a change its filter selects, and nothing at all where the job publishes none.
+    if publishes:
+        problems += caller_refusals + narrowed_refusals(gates)
+    triggers = apply_gates(reached, gates, workflow)
     read = {path for _, files in inputs for path in files}
     for label, event, filters, origin, selectors in triggers:
         if event in PULL_REQUEST_EVENTS:
@@ -1401,7 +1776,11 @@ for workflow, job_name, *_ in builds:
     building_jobs.setdefault(workflow, set()).add(job_name)
 
 # The steps a job may run and still have an image build as its only purpose: the build itself,
-# and steps that prepare or publish it and read no file of the tree.
+# and steps that prepare or publish it and read no file of the tree. The exception is the
+# router's own report step, which every job ci.yaml runs ends with
+# (.github/actions/ci-ok-report): it reports the job's result rather than doing work of the
+# job's, and the files it reads are its own action and ci.yaml, which is the origin of every
+# trigger that could owe a pattern for it.
 BUILD_PLUMBING = {
     "actions/checkout",
     "docker/build-push-action",
@@ -1409,7 +1788,97 @@ BUILD_PLUMBING = {
     "docker/metadata-action",
     "docker/setup-buildx-action",
     "docker/setup-qemu-action",
+    "./.github/actions/ci-ok-report",
 }
+
+# The `run:` steps such a job may hold too: plumbing of that same image build, which a step's
+# own text cannot say and this list does. Keyed like NOT_A_BUILD_STEPS, by (workflow, job,
+# step `id:`) — a step's name is neither required nor unique — and pinning the full text of
+# every command the step runs, line by line as the step writes it (run_lines). An entry
+# matching no step or more than one fails, and so does one whose step's commands are no
+# longer the pinned ones, so a
+# step that grows work of its own is refused here rather than riding its entry.
+#
+# What may be listed: a step that prepares or publishes the image and reads no file of the
+# tree, or none that the job's trigger would owe a pattern for. What may not: work of the
+# job's own, which is what makes the job do more than build — the filter gating it then owes
+# that work's files, and rule 6's other direction must leave that trigger alone.
+BUILD_PLUMBING_STEPS: list[tuple[str, str, str, tuple[str, ...], str]] = [
+    # (workflow file, job id, step id, the step's exact commands, why it is the build's plumbing)
+    (
+        ".github/workflows/worker-image.yaml", "build", "image",
+        (
+            'image=$(.github/scripts/repo-paths.sh worker_image)',
+            'echo "IMAGE=$image" >> "$GITHUB_ENV"',
+        ),
+        "derives the repository this build pushes to and hands it to the build and push steps "
+        "through $GITHUB_ENV; .github/scripts/repo-paths.sh is the one file of the tree it "
+        "reads, and no pattern of the worker_image filter matches that script, so the step "
+        "justifies no breadth of the trigger",
+    ),
+    (
+        ".github/workflows/worker-image.yaml", "build", "meta",
+        (
+            'short="${BUILT_SHA::12}"',
+            'version_label="sha-$short"',
+            'if [ "$GITHUB_REF" = "refs/heads/main" ] && [ -n "$LEGION_VERSION" ]; then',
+            'version_label="$LEGION_VERSION"',
+            'fi',
+            '{',
+            'echo "built_sha=$BUILT_SHA"',
+            'echo "version_label=$version_label"',
+            'echo "tags=${IMAGE}:sha-${short}"',
+            '} >> "$GITHUB_OUTPUT"',
+        ),
+        "computes the image's tags and labels from the built commit and the caller's "
+        "legion_version input, and writes them to $GITHUB_OUTPUT for the push: it reads the "
+        "event context and no file at all",
+    ),
+    (
+        ".github/workflows/worker-image.yaml", "build", "record",
+        (
+            'test -n "$DIGEST"',
+            'REF="${IMAGE}@${DIGEST}"',
+            '{',
+            'echo "image=$IMAGE"',
+            'echo "digest=$DIGEST"',
+            'echo "ref=$REF"',
+            '} >> "$GITHUB_OUTPUT"',
+            '{',
+            'echo "### Worker image"',
+            'echo',
+            'echo "\\`$REF\\`"',
+            'echo',
+            'echo "Tag: \\`$TAG\\`"',
+            'echo',
+            'echo "Pin \\`runtime.kubernetes.image\\` to the digest reference above; the daemon refuses a tag."',
+            '} >> "$GITHUB_STEP_SUMMARY"',
+        ),
+        "publishes what the push produced — the digest the build step output, as this job's "
+        "outputs and as the run's summary: it reads earlier steps' outputs and no file at all",
+    ),
+]
+
+PINNED_PLUMBING = {(w, j, i): texts for w, j, i, texts, _ in BUILD_PLUMBING_STEPS}
+
+
+def run_lines(script: str) -> tuple[str, ...]:
+    """A `run:` step's commands as the step writes them: its lines, comments and blank ones
+    aside, each stripped. The text a BUILD_PLUMBING_STEPS entry pins is this, not the
+    detector's reading of it, whose quoted strings and substitutions are blanked."""
+    return tuple(line.strip() for line in strip_comments(script).splitlines() if line.strip())
+
+
+def plumbing_step(workflow: Path, job_name: str, step) -> bool:
+    """True for a step of a building job that is the build's own plumbing: an action of
+    BUILD_PLUMBING, or a `run:` step BUILD_PLUMBING_STEPS pins, while it runs exactly the
+    commands the entry holds."""
+    if not isinstance(step, dict):
+        return False
+    if str(step.get("uses", "")).split("@", 1)[0] in BUILD_PLUMBING:
+        return True
+    pinned = PINNED_PLUMBING.get((str(workflow), job_name, str(step.get("id", "")))) if step.get("id") else None
+    return pinned is not None and "run" in step and run_lines(str(step["run"])) == tuple(pinned)
 
 
 def local_call(job: dict) -> Path | None:
@@ -1419,15 +1888,15 @@ def local_call(job: dict) -> Path | None:
 
 
 def only_builds(workflow: Path, seen: frozenset = frozenset()) -> bool:
-    """True when every job of the workflow builds an image, calls a workflow that only builds,
-    or transitively needs a job that does either, so whatever starts the workflow starts an
-    image build and nothing else."""
+    """True when every job of the workflow is a job whose only purpose is an image build
+    (builds_only), or transitively needs one, so whatever starts the workflow starts an image
+    build and nothing else. It is builds_only's test and not a looser one of its own, because a
+    job is the same job wherever its steps are written: ci.yaml's jobs hold their steps in a
+    called workflow each (.github/workflows/ci-job-<id>.yaml), so a workflow whose one job
+    builds an image and then runs a suite against it would read as building only, and its
+    caller's filter - which owes that suite's files - would be refused for matching them."""
     jobs = documents[workflow].get("jobs") or {}
-    building = set(building_jobs.get(workflow, set()))
-    for name, job in jobs.items():
-        target = local_call(job)
-        if target and target not in seen | {workflow} and only_builds(target, seen | {workflow}):
-            building.add(name)
+    building = {name for name in jobs if builds_only(workflow, name, seen | {workflow})}
 
     def reaches(name: str, path: frozenset) -> bool:
         if name in building:
@@ -1439,20 +1908,18 @@ def only_builds(workflow: Path, seen: frozenset = frozenset()) -> bool:
     return bool(jobs) and all(reaches(name, frozenset()) for name in jobs)
 
 
-def builds_only(workflow: Path, job_name: str) -> bool:
+def builds_only(workflow: Path, job_name: str, seen: frozenset = frozenset()) -> bool:
     """True for a job whose only purpose is an image build: a call of a workflow that only
-    builds, or a building job whose every step is in BUILD_PLUMBING. A run step or any other
-    action may read files no build reads, so a job with one does more."""
+    builds, or a building job whose every step is in BUILD_PLUMBING or pinned in
+    BUILD_PLUMBING_STEPS. Any other action, and any `run:` step that list does not hold, may
+    read files no build reads, so a job with one does more."""
     job = (documents[workflow].get("jobs") or {}).get(job_name) or {}
     target = local_call(job)
     if target:
-        return only_builds(target)
+        return target not in seen and only_builds(target, seen)
     if job_name not in building_jobs.get(workflow, set()):
         return False
-    return all(
-        isinstance(step, dict) and str(step.get("uses", "")).split("@", 1)[0] in BUILD_PLUMBING
-        for step in job.get("steps") or []
-    )
+    return all(plumbing_step(workflow, job_name, step) for step in job.get("steps") or [])
 
 
 def jobs_selected_by(workflow: Path, label: str) -> list[str]:
@@ -1543,6 +2010,83 @@ for entry in NOT_A_BUILD_STEPS:
         f"::error file={entry[0]}::NOT_A_BUILD_STEPS names {entry[0]} job {entry[1]} step id "
         f"{entry[2]!r}, which matches {len(found)} steps that build; an entry must name exactly "
         f"one, so remove it or correct the id"
+    )
+
+# The same discipline for BUILD_PLUMBING_STEPS: an entry names exactly one step of that job,
+# and that step runs exactly the commands it pins. Zero means the step was deleted, renamed or
+# re-keyed; more than one means the key does not identify a step; different commands mean the
+# step does something the entry's reason was not written for, and that refusal prints the
+# reason, which is where a reader meets it. Each fails, so the list cannot go
+# on excusing a step that has moved on. An entry naming a workflow the tree has not got excuses
+# nothing there and is passed over, which is what lets this check run over a tree of its own.
+for workflow_path, job_name, step_id, pinned, reason in BUILD_PLUMBING_STEPS:
+    document = documents.get(Path(workflow_path))
+    if document is None:
+        continue
+    found = [
+        step
+        for step in ((document.get("jobs") or {}).get(job_name) or {}).get("steps") or []
+        if isinstance(step, dict) and str(step.get("id", "")) == step_id and "run" in step
+    ]
+    if len(found) != 1:
+        problems.append(
+            f"::error file={workflow_path}::BUILD_PLUMBING_STEPS names {workflow_path} job "
+            f"{job_name} step id {step_id!r}, which matches {len(found)} run steps; an entry "
+            f"must name exactly one, so remove it or correct the id"
+        )
+        continue
+    ran = run_lines(str(found[0]["run"]))
+    if ran != tuple(pinned):
+        problems.append(
+            f"::error file={workflow_path}::BUILD_PLUMBING_STEPS pins {workflow_path} job "
+            f"{job_name} step id {step_id!r} to {list(pinned)}, and it runs {list(ran)}: the "
+            f"entry says the step is the image build's own plumbing ({reason}), so update the "
+            f"entry's commands and its reason, or drop the entry and let the job read as doing more"
+        )
+
+# Every gate this run excused is printed with the `if:` it was read in, and an entry that
+# excused none fails: a gate that was reworded, moved to another job or taken out again leaves
+# an entry that stands for nothing, which is how a reviewed exemption becomes a standing one.
+# An entry whose workflow this tree has not got is passed over rather than refused: this script
+# is run from the root of whatever tree holds it, the miniature ones its own tests build among
+# them, and an entry for a workflow that tree does not hold says nothing about that tree.
+for excusal in dict.fromkeys(gate_excusals):
+    print(f"listed in PINNED_IMAGE_GATES: {excusal}")
+
+for entry in PINNED_IMAGE_GATES:
+    if gate_matches.get(entry) or Path(entry[0]) not in documents:
+        continue
+    problems.append(
+        f"::error file={entry[0]}::PINNED_IMAGE_GATES names {entry[0]} job {entry[1]} term "
+        f"{entry[2]!r}, which gates no image build there: no `if:` of that job, and none of a "
+        f"step of it, has that term as a whole &&-joined conjunct. Correct the term, or remove "
+        f"the entry"
+    )
+
+# Every file this run read into a build because a reviewer wrote it down is printed with the
+# argument for it, so the list is audited against what it admitted; and an entry that reached
+# no build of a tree that holds its workflow fails, for the reason the gate list's does. A file
+# the tree has not got fails too: an entry standing for nothing would quietly stop asking the
+# trigger for a path, which is the whole of what it is here to ask.
+for entry in COMPUTED_BUILD_INPUTS:
+    if computed_matches.get(entry):
+        print(
+            f"listed in COMPUTED_BUILD_INPUTS: {entry[0]}: jobs.{entry[1]} reads {entry[2]} - "
+            f"{entry[3]}"
+        )
+        if not Path(entry[2]).is_file():
+            problems.append(
+                f"::error file={entry[0]}::COMPUTED_BUILD_INPUTS names {entry[2]}, which this "
+                f"tree has not got, as an input {entry[0]} jobs.{entry[1]} computes; correct "
+                f"the path, or remove the entry"
+            )
+        continue
+    if Path(entry[0]) not in documents:
+        continue
+    problems.append(
+        f"::error file={entry[0]}::COMPUTED_BUILD_INPUTS names {entry[0]} job {entry[1]}, "
+        f"which builds no image there, as the reader of {entry[2]}; name the job that builds, "
+        f"or remove the entry"
     )
 
 problems = list(dict.fromkeys(problems))

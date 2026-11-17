@@ -1,5 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { join } from "node:path";
+import { bearerCredential } from "../../../packages/envoy-client/src/bearer.ts";
 import {
   DISPATCH_TOOL_DEADLINE_MS,
   DispatchClient,
@@ -11,6 +12,7 @@ import {
   excludeSessionAsks,
   fetchIssueEvents,
   filterAsksInWindow,
+  get,
   ISSUE_CONCURRENCY,
   parseCodes,
   summarizeApprovalRounds,
@@ -32,6 +34,7 @@ import {
   recordedRounds,
   reply,
 } from "./approval-events.ts";
+import { holdDeadlines } from "./held-deadlines.ts";
 
 // One request since #1671, when an approval request began following its document's versions:
 // opened at version 1, moved to version 2 by a new version, reworded and handed back at 2,
@@ -215,7 +218,11 @@ describe("ask census", () => {
     };
 
     const fetched = await fetchIssueEvents(
-      new DispatchClient("https://dispatch.example", "token", fetchImpl as typeof fetch),
+      new DispatchClient(
+        "https://dispatch.example",
+        bearerCredential("token"),
+        fetchImpl as typeof fetch
+      ),
       "LEGION-470"
     );
 
@@ -370,7 +377,7 @@ describe("ask census", () => {
     try {
       const started = performance.now();
       const census = await censusIssues(
-        { url: `http://127.0.0.1:${server.port}`, token: "token" },
+        { url: `http://127.0.0.1:${server.port}`, credential: bearerCredential("token") },
         issues,
         {
           from: recordedAt(0),
@@ -388,4 +395,17 @@ describe("ask census", () => {
       timeout.mockRestore();
     }
   });
+});
+
+test("ask-census's own read hands its credential the request's deadline", async () => {
+  const held = holdDeadlines(() => Response.json([]));
+  try {
+    await get(
+      { url: "http://dispatch.test", credential: held.credential },
+      "/api/v1/issues?project=ACME"
+    );
+    held.expectEachRequestBoundByItsDeadline("ask-census's read");
+  } finally {
+    held.restore();
+  }
 });

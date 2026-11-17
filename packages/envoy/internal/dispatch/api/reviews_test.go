@@ -6,11 +6,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -249,9 +252,11 @@ func TestApprovalRequestSummaryAndARepeatWithANewSummary(t *testing.T) {
 		}
 	}
 	// "Approve spec.md (version 9999999999)?", the question at the longest version a request can
-	// reach, and the space after it leave the rest of the ask cap for the summary; each "é" is one
-	// UTF-16 unit and two bytes, and the padding around a summary is not part of it.
-	room := maxAskQuestion16 - len16(docs.ApprovalQuestion("spec.md", maxApprovalVersion, "")) - 1
+	// reach, the space after it and the fixed options leave the rest of the ask bound for the
+	// summary; each "é" is one UTF-16 unit and two bytes, and the padding around a summary is
+	// not part of it.
+	room := contracts.DispatchEventBodyMax -
+		docs.AskWordingUnits(docs.ApprovalQuestion(approvalOf("spec.md", maxApprovalVersion), ""), approvalAskOptions) - 1
 	over := strings.Repeat("é", room+1)
 	overCap := "summary is 1 characters over the " + strconv.Itoa(room) + "-character limit (" + strconv.Itoa(room+1) + "/" + strconv.Itoa(room) + ")"
 	if refused := request(issue.PrimaryArtifactID, &over); refused.Code != http.StatusBadRequest || !strings.Contains(refused.Body.String(), `"code":"CAP_EXCEEDED"`) || !strings.Contains(refused.Body.String(), overCap) {
@@ -275,7 +280,7 @@ func TestApprovalRequestSummaryAndARepeatWithANewSummary(t *testing.T) {
 	// reading: it is refused, and the card keeps its question and its revision.
 	other := "A different summary."
 	reworded := request(issue.PrimaryArtifactID, &other)
-	if reworded.Code != http.StatusConflict || !strings.Contains(reworded.Body.String(), `"code":"APPROVAL_WAITS_ON_HUMAN"`) || !strings.Contains(reworded.Body.String(), "a different summary would rewrite the card they are reading") {
+	if reworded.Code != http.StatusConflict || !strings.Contains(reworded.Body.String(), `"code":"APPROVAL_WAITS_ON_HUMAN"`) || !strings.Contains(reworded.Body.String(), "a different summary or another document would rewrite the card they are reading") {
 		t.Fatalf("a different summary while the request waits on the human: status=%d body=%s", reworded.Code, reworded.Body.String())
 	}
 	if shown := readAskDetail(t, handler, opened.ID); shown.Question != opened.Question || shown.EditedAt != nil || shown.WaitingOn != "human" {
@@ -305,40 +310,47 @@ func TestApprovalRequestSummaryAndARepeatWithANewSummary(t *testing.T) {
 	}
 }
 
+// approvalOf is the one-document list an approval request names, for the question tests.
+func approvalOf(name string, version int) []model.AskApprovalDocument {
+	return []model.AskApprovalDocument{{ArtifactID: "artifact-1", Name: name, Version: version, RequestedVersion: version}}
+}
+
 // A version move rebuilds an approval request's question at the document's new version without
 // asking again, so the summary is budgeted against the longest version a request can reach: the
-// longest summary the route accepts keeps the question within the ask cap however many digits the
-// version gains, and that budget is the tightest that does.
-func TestTheLongestAcceptedSummaryFitsTheCapAtEveryVersion(t *testing.T) {
+// longest summary the route accepts keeps the ask's question and options within the ask bound
+// however many digits the version gains, and that budget is the tightest that does.
+func TestTheLongestAcceptedSummaryFitsTheBoundAtEveryVersion(t *testing.T) {
 	for _, name := range []string{"spec.md", "a", strings.Repeat("n", 100)} {
 		for _, requested := range []int{1, 9, 12345} {
-			limit := 0
-			for length := 1; length <= maxAskQuestion16; length++ {
-				if _, err := approvalQuestion(name, requested, strings.Repeat("é", length)); err != nil {
-					break
-				}
-				limit = length
-			}
+			// The longest summary approvalQuestion accepts, by binary search over its verdict:
+			// it accepts every length up to that one and refuses every length past it.
+			refused := sort.Search(contracts.DispatchEventBodyMax+2, func(length int) bool {
+				_, err := approvalQuestion(approvalOf(name, requested), strings.Repeat("é", length))
+				return err != nil
+			})
+			limit := refused - 1
 			summary := strings.Repeat("é", limit)
-			if _, err := approvalQuestion(name, requested, summary+"é"); err == nil || !strings.Contains(err.Error(), "summary is 1 characters over") {
+			if _, err := approvalQuestion(approvalOf(name, requested), summary+"é"); err == nil || !strings.Contains(err.Error(), "summary is 1 characters over") {
 				t.Fatalf("%s at version %d: one past the %d-unit limit = %v, want CAP_EXCEEDED", name, requested, limit, err)
 			}
 			// A move to the first version of each digit count, then to the longest of all.
 			for boundary := 9; boundary < maxApprovalVersion; boundary = boundary*10 + 9 {
-				if length := len16(docs.ApprovalQuestion(name, boundary+1, summary)); length > maxAskQuestion16 {
-					t.Fatalf("%s requested at version %d, moved to %d: question is %d units, past the %d cap", name, requested, boundary+1, length, maxAskQuestion16)
+				moved := docs.ApprovalQuestion(approvalOf(name, boundary+1), summary)
+				if units := docs.AskWordingUnits(moved, approvalAskOptions); units > contracts.DispatchEventBodyMax {
+					t.Fatalf("%s requested at version %d, moved to %d: question and options are %d units, past the %d bound", name, requested, boundary+1, units, contracts.DispatchEventBodyMax)
 				}
 			}
-			if length := len16(docs.ApprovalQuestion(name, maxApprovalVersion, summary)); length != maxAskQuestion16 {
-				t.Fatalf("%s requested at version %d, moved to the longest version: question is %d units, want exactly the %d cap", name, requested, length, maxAskQuestion16)
+			longest := docs.ApprovalQuestion(approvalOf(name, maxApprovalVersion), summary)
+			if units := docs.AskWordingUnits(longest, approvalAskOptions); units != contracts.DispatchEventBodyMax {
+				t.Fatalf("%s requested at version %d, moved to the longest version: question and options are %d units, want exactly the %d bound", name, requested, units, contracts.DispatchEventBodyMax)
 			}
 		}
 	}
 }
 
-// The longest summary the route accepts at version 1 still fits the ask cap once a version move
-// rebuilds the question at version 10, whose number is one character longer.
-func TestAVersionMoveKeepsTheLongestAcceptedSummaryWithinTheAskCap(t *testing.T) {
+// The longest summary the route accepts at version 1 still fits the ask bound once a version
+// move rebuilds the question at version 10, whose number is one character longer.
+func TestAVersionMoveKeepsTheLongestAcceptedSummaryWithinTheAskBound(t *testing.T) {
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
@@ -351,7 +363,7 @@ func TestAVersionMoveKeepsTheLongestAcceptedSummaryWithinTheAskCap(t *testing.T)
 			"/api/v1/artifacts/"+issue.PrimaryArtifactID+"/approval-requests",
 			map[string]any{"actor": sessionActor(), "summary": summary})
 	}
-	refused := request(strings.Repeat("é", maxAskQuestion16))
+	refused := request(strings.Repeat("é", contracts.DispatchEventBodyMax))
 	match := regexp.MustCompile(`the (\d+)-character limit`).FindStringSubmatch(refused.Body.String())
 	if refused.Code != http.StatusBadRequest || match == nil {
 		t.Fatalf("summary past the cap: status=%d body=%s, want CAP_EXCEEDED naming the limit", refused.Code, refused.Body.String())
@@ -389,8 +401,8 @@ func TestAVersionMoveKeepsTheLongestAcceptedSummaryWithinTheAskCap(t *testing.T)
 	if moved.Question != "Approve spec.md (version 10)? "+summary {
 		t.Fatalf("moved question = %q, want version 10 with the summary unchanged", moved.Question)
 	}
-	if length := len16(moved.Question); length > maxAskQuestion16 {
-		t.Fatalf("moved question is %d units, past the %d-unit ask cap", length, maxAskQuestion16)
+	if units := docs.AskWordingUnits(moved.Question, approvalAskOptions); units > contracts.DispatchEventBodyMax {
+		t.Fatalf("the moved question and its options are %d units, past the %d-unit ask bound", units, contracts.DispatchEventBodyMax)
 	}
 }
 
@@ -458,6 +470,289 @@ func TestHeaderChangesRequestedAnswersTheOpenApprovalAskAndNeedsAReason(t *testi
 	log := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")
 	if !strings.Contains(log.Body.String(), `"type":"artifact.changes_requested"`) || !strings.Contains(log.Body.String(), `"reason":"Name the rollback path."`) {
 		t.Fatalf("events = %s, want artifact.changes_requested with the reason", log.Body.String())
+	}
+}
+
+// specMovedToVersionTwo answers a handler, and the key of an issue there and the id of its spec,
+// which has two settled versions, the second an agent's written while a person read the first.
+func specMovedToVersionTwo(t *testing.T) (http.Handler, string, string) {
+	t.Helper()
+	var documentService *docs.Service
+	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
+		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		return documentService
+	})
+	issue := createInteractionIssue(t, handler, "TEST", "Review a version", "A spec")
+	if _, err := replaceDocumentText(database, documentService, issue.PrimaryArtifactID, "A revised spec", model.Actor{Kind: "session", ID: "session-0123456789abcdef"}); err != nil {
+		t.Fatalf("revise document: %v", err)
+	}
+	if named := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/versions", map[string]string{"summary": "revised"}, "alice"); named.Code != http.StatusCreated {
+		t.Fatalf("settle revised version: status=%d body=%s", named.Code, named.Body.String())
+	}
+	return handler, issue.Key, issue.PrimaryArtifactID
+}
+
+// versionReviewPath is the review route that names the version its caller read, as number
+// spells it in the path.
+func versionReviewPath(artifactID, number string) string {
+	return "/api/v1/artifacts/" + artifactID + "/versions/" + number + "/reviews"
+}
+
+// approvalShown is a document's approval as its read serves it, encoded, so a refused review can
+// be held to leaving it exactly as it was.
+func approvalShown(t *testing.T, handler http.Handler, artifactID string) string {
+	t.Helper()
+	encoded, err := json.Marshal(readApproval(t, handler, artifactID).Approval)
+	if err != nil {
+		t.Fatalf("encode the approval: %v", err)
+	}
+	return string(encoded)
+}
+
+// A review that names the version its reviewer read records it only when it is the version the
+// review would record, which with no approval request open is the latest settled version. A
+// version the document has moved past is refused 409 REVIEW_VERSION_MOVED, naming the version to
+// read, and nothing is written - no review, no event, the approval as it was - so `dispatch
+// review --version 1` never records version 2 in a person's name.
+func TestAReviewNamingAVersionRecordsOnlyTheVersionTheReviewWouldRecord(t *testing.T) {
+	handler, issueKey, artifactID := specMovedToVersionTwo(t)
+	reviewEvents := func() []string {
+		t.Helper()
+		var written []string
+		for _, event := range issueEvents(t, handler, issueKey) {
+			if event.Type != "artifact.approved" && event.Type != "artifact.changes_requested" {
+				continue
+			}
+			var payload struct {
+				ArtifactID string `json:"artifact_id"`
+				Version    int    `json:"version"`
+			}
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatalf("decode %s payload: %v", event.Type, err)
+			}
+			if payload.ArtifactID == artifactID {
+				written = append(written, event.Type+" at version "+strconv.Itoa(payload.Version))
+			}
+		}
+		return written
+	}
+	approvalBefore := approvalShown(t, handler, artifactID)
+	eventsBefore := len(issueEvents(t, handler, issueKey))
+
+	for _, review := range []struct {
+		state  string
+		reason string
+	}{
+		{state: "approved"},
+		{state: "changes_requested", reason: "Name the rollback path."},
+	} {
+		moved := dispatchRequest(t, handler, http.MethodPost, versionReviewPath(artifactID, "1"), map[string]any{"state": review.state, "reason": review.reason}, "alice")
+		code, text := refusalOf(t, moved)
+		if moved.Code != http.StatusConflict || code != "REVIEW_VERSION_MOVED" ||
+			text != "the review would record version 2 of spec.md, not version 1: read version 2 and review it" {
+			t.Fatalf("%s naming version 1 of a document at version 2: status=%d body=%s, want 409 REVIEW_VERSION_MOVED naming version 2", review.state, moved.Code, moved.Body.String())
+		}
+	}
+	if reviews := listReviews(t, handler, artifactID); len(reviews) != 0 {
+		t.Fatalf("reviews after the refusals = %#v, want none", reviews)
+	}
+	if appended := len(issueEvents(t, handler, issueKey)) - eventsBefore; appended != 0 {
+		t.Fatalf("the refused reviews appended %d events, want none", appended)
+	}
+	if approval := approvalShown(t, handler, artifactID); approval != approvalBefore {
+		t.Fatalf("approval after the refusals = %s, want it unchanged from %s", approval, approvalBefore)
+	}
+
+	matched := dispatchRequest(t, handler, http.MethodPost, versionReviewPath(artifactID, "2"), map[string]any{"state": "approved"}, "alice")
+	if matched.Code != http.StatusCreated {
+		t.Fatalf("review naming version 2: status=%d body=%s", matched.Code, matched.Body.String())
+	}
+	if review := decodeBody[model.ArtifactReview](t, matched); review.Version != 2 || review.State != "approved" || review.Actor.ID != "alice" || review.AskID != nil {
+		t.Fatalf("review = %#v, want alice's approval of version 2 answering no ask", review)
+	}
+	if reviews := listReviews(t, handler, artifactID); len(reviews) != 1 || reviews[0].Version != 2 || reviews[0].State != "approved" {
+		t.Fatalf("reviews = %#v, want the one approval of version 2", reviews)
+	}
+	if written := reviewEvents(); len(written) != 1 || written[0] != "artifact.approved at version 2" {
+		t.Fatalf("review events = %v, want the one artifact.approved at version 2", written)
+	}
+	if got := readApproval(t, handler, artifactID); got.Approval == nil || got.Approval.State != "approved" || got.Approval.Version == nil || *got.Approval.Version != 2 {
+		t.Fatalf("approval = %#v, want approved at version 2", got.Approval)
+	}
+}
+
+// A {number} that is no version of any document, whether zero, a negative number or a word, is
+// refused 400 INVALID_REVIEW before the document is read, and nothing is written.
+func TestAReviewNamingNoVersionOfTheDocumentIsRefusedWithNothingWritten(t *testing.T) {
+	handler, issueKey, artifactID := specMovedToVersionTwo(t)
+	approvalBefore := approvalShown(t, handler, artifactID)
+	eventsBefore := len(issueEvents(t, handler, issueKey))
+
+	for _, number := range []string{"0", "-1", "two"} {
+		refused := dispatchRequest(t, handler, http.MethodPost, versionReviewPath(artifactID, number), map[string]any{"state": "approved"}, "alice")
+		if code, _ := refusalOf(t, refused); refused.Code != http.StatusBadRequest || code != "INVALID_REVIEW" {
+			t.Fatalf("review naming version %q: status=%d body=%s, want 400 INVALID_REVIEW", number, refused.Code, refused.Body.String())
+		}
+	}
+	if reviews := listReviews(t, handler, artifactID); len(reviews) != 0 {
+		t.Fatalf("reviews after the refusals = %#v, want none", reviews)
+	}
+	if appended := len(issueEvents(t, handler, issueKey)) - eventsBefore; appended != 0 {
+		t.Fatalf("the refused reviews appended %d events, want none", appended)
+	}
+	if approval := approvalShown(t, handler, artifactID); approval != approvalBefore {
+		t.Fatalf("approval after the refusals = %s, want it unchanged from %s", approval, approvalBefore)
+	}
+}
+
+// The version a review names is read only once the credential is known to be that of a person who
+// may review (recordArtifactReview), so a caller who may not review is told that, and never that
+// its {number} is no version. A credential without the person scope - a machine's broker token
+// that names no person, or a personal token holding no scope - is refused 403
+// OAUTH_SCOPE_REQUIRED by the row's scope gate (gateRouteScopes), which runs before the handler.
+// A person's broker token whose session parameter names another session than the one it proved
+// passes that gate and is refused 403 ACTOR_SESSION_MISMATCH by actingPerson: that row holds the
+// handler's own order, and reads 400 INVALID_REVIEW in a handler that reads the number first. The
+// same token naming no other session is refused that 400, so the number check is live for the
+// caller the 403 turned away. None of them writes a review.
+func TestAReviewByACallerWhoMayNotReviewIsRefusedForItsCredentialBeforeItsNumber(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const personToken = "a-person-token-that-reviews"
+	person := liveNamedToken(caller.jkt)
+	person.ProjectScope, person.Projects = brokertoken.ProjectScopePerson, nil
+	rig.broker.Says(personToken, person)
+	const machineToken = "a-machine-token-naming-no-person"
+	rig.broker.Says(machineToken, serviceOnlyToken(caller.jkt))
+	unscoped := personalTokenOwnedBy(t, rig.database, brokerTestPerson)
+
+	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{
+		"key": "REV", "name": "Reviews",
+	}); created.Code != http.StatusCreated {
+		t.Fatalf("create the project: status=%d body=%s", created.Code, created.Body.String())
+	}
+	issue := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "REV", "title": "Reviewed by callers who may not review", "spec": "# Spec\n\nA passage.",
+	})
+	if issue.Code != http.StatusCreated {
+		t.Fatalf("create the issue: status=%d body=%s", issue.Code, issue.Body.String())
+	}
+	artifactID := decodeBody[struct {
+		PrimaryArtifactID string `json:"primary_artifact_id"`
+	}](t, issue).PrimaryArtifactID
+	body := map[string]any{"state": "approved"}
+
+	for _, number := range []string{"0", "two"} {
+		path := versionReviewPath(artifactID, number)
+		for _, row := range []struct {
+			caller string
+			send   func() *httptest.ResponseRecorder
+			code   string
+		}{
+			{
+				caller: "a machine's broker token naming no person",
+				send: func() *httptest.ResponseRecorder {
+					return rig.serve(caller.presenting(t, http.MethodPost, path, machineToken, body))
+				},
+				code: codeScopeRequired,
+			},
+			{
+				caller: "a personal token holding no scope",
+				send: func() *httptest.ResponseRecorder {
+					return agentRequest(t, rig.handler, http.MethodPost, path, body, unscoped)
+				},
+				code: codeScopeRequired,
+			},
+			{
+				caller: "a person's broker token whose session parameter names another session",
+				send: func() *httptest.ResponseRecorder {
+					return rig.serve(caller.presenting(t, http.MethodPost, path+"?session=session-someone-else", personToken, body))
+				},
+				code: "ACTOR_SESSION_MISMATCH",
+			},
+		} {
+			refused := row.send()
+			if code, _ := refusalOf(t, refused); refused.Code != http.StatusForbidden || code != row.code {
+				t.Fatalf("%s reviewing version %q: status=%d body=%s, want 403 %s", row.caller, number, refused.Code, refused.Body.String(), row.code)
+			}
+		}
+		live := rig.serve(caller.presenting(t, http.MethodPost, path, personToken, body))
+		if code, _ := refusalOf(t, live); live.Code != http.StatusBadRequest || code != "INVALID_REVIEW" {
+			t.Fatalf("the person's own token reviewing version %q: status=%d body=%s, want 400 INVALID_REVIEW", number, live.Code, live.Body.String())
+		}
+	}
+	if reviews := listReviews(t, rig.handler, artifactID); len(reviews) != 0 {
+		t.Fatalf("reviews after the refusals = %#v, want none", reviews)
+	}
+}
+
+// With an approval request open, the review answers it at the version the request names for the
+// document, so that is the version a review naming one must name. Every route that writes a
+// version moves the open request to it (TestANewVersionMovesTheOpenApprovalAsk), so the two part
+// only for a version written straight into artifact_versions, as an older build wrote one; that
+// row holds them apart here, and the review is held to the request's version, not the latest. A
+// refused review leaves the request open and unanswered, writes no review and appends no event.
+func TestAReviewUnderAnOpenRequestMustNameTheVersionTheRequestNames(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Review under a request", "A spec")
+	requested := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/approval-requests", map[string]any{"actor": sessionActor()})
+	if requested.Code != http.StatusCreated {
+		t.Fatalf("request approval: status=%d body=%s", requested.Code, requested.Body.String())
+	}
+	askID := decodeBody[struct {
+		Ask struct {
+			ID string `json:"id"`
+		} `json:"ask"`
+	}](t, requested).Ask.ID
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into artifact_versions (artifact_id, number, markdown, authors)
+		select artifact_id, 2, markdown, authors from artifact_versions where artifact_id = $1 and number = 1
+	`, issue.PrimaryArtifactID); err != nil {
+		t.Fatalf("write version 2 as an older build would: %v", err)
+	}
+	askState := func() string {
+		t.Helper()
+		return decodeBody[struct {
+			Ask struct {
+				State string `json:"state"`
+			} `json:"ask"`
+		}](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/asks/"+askID, nil, "alice")).Ask.State
+	}
+	approvalBefore := approvalShown(t, handler, issue.PrimaryArtifactID)
+	eventsBefore := len(issueEvents(t, handler, issue.Key))
+
+	latest := dispatchRequest(t, handler, http.MethodPost, versionReviewPath(issue.PrimaryArtifactID, "2"), map[string]any{"state": "approved"}, "alice")
+	code, text := refusalOf(t, latest)
+	if latest.Code != http.StatusConflict || code != "REVIEW_VERSION_MOVED" ||
+		text != "the review would record version 1 of spec.md, not version 2: read version 1 and review it" {
+		t.Fatalf("review naming the latest version under a request for version 1: status=%d body=%s, want 409 REVIEW_VERSION_MOVED naming version 1", latest.Code, latest.Body.String())
+	}
+	if reviews := listReviews(t, handler, issue.PrimaryArtifactID); len(reviews) != 0 {
+		t.Fatalf("reviews after the refusal = %#v, want none", reviews)
+	}
+	if state := askState(); state != "open" {
+		t.Fatalf("approval request after the refusal is %s, want it still open", state)
+	}
+	if appended := len(issueEvents(t, handler, issue.Key)) - eventsBefore; appended != 0 {
+		t.Fatalf("the refused review appended %d events, want none", appended)
+	}
+	if approval := approvalShown(t, handler, issue.PrimaryArtifactID); approval != approvalBefore {
+		t.Fatalf("approval after the refusal = %s, want it unchanged from %s", approval, approvalBefore)
+	}
+
+	answered := dispatchRequest(t, handler, http.MethodPost, versionReviewPath(issue.PrimaryArtifactID, "1"), map[string]any{"state": "approved"}, "alice")
+	if answered.Code != http.StatusCreated {
+		t.Fatalf("review naming the request's version: status=%d body=%s", answered.Code, answered.Body.String())
+	}
+	if review := decodeBody[model.ArtifactReview](t, answered); review.Version != 1 || review.State != "approved" || review.AskID == nil || *review.AskID != askID {
+		t.Fatalf("review = %#v, want an approval of version 1 answering %s", review, askID)
+	}
+	if state := askState(); state != "answered" {
+		t.Fatalf("approval request after the review is %s, want it answered", state)
+	}
+	if counts := askEventCounts(t, handler, issue.Key, askID); counts["ask.answered"] != 1 || counts["artifact.approved"] != 1 {
+		t.Fatalf("events of the request after the review = %#v, want it answered once and one approval carrying it", counts)
 	}
 }
 
@@ -580,7 +875,7 @@ func TestTheApprovalReadNamesTheReviewThatCommittedLast(t *testing.T) {
 	// The production writer, so no time or sequence is fabricated.
 	reason := "And name who runs the restore."
 	second, event, err := docs.WriteReview(ctx, delayed, deps.Events, artifact, first.Version, "changes_requested",
-		model.Actor{Kind: "user", ID: "alice"}, &reason, nil)
+		docs.ReviewKindPerson, model.Actor{Kind: "user", ID: "alice"}, &reason, nil)
 	if err != nil {
 		t.Fatalf("write the delayed review: %v", err)
 	}

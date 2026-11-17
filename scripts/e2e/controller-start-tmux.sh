@@ -134,7 +134,9 @@ pg_port=$(docker port "$pg_container" 5432/tcp | head -1 | sed 's/.*://')
 until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" pg_isready -h 127.0.0.1 -p 5432 -U legion -d legion
 dsn="postgres://legion:$(cat "$work/postgres-password")@127.0.0.1:${pg_port}/legion?sslmode=disable"
 
-docker run -d --name "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 nats:2.10 -js >/dev/null
+# shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
+. "$root/scripts/e2e/lib/nats-image.sh"
+docker run -d --name "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
 until_true 90 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
 nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/envoy-token" &&
@@ -182,6 +184,12 @@ nats_urls:
   - $nats_url
 envoy_token_file: $work/envoy-token
 probe_interval_seconds: 5
+# The wake pacing off (INFRA-976): this proof starts roles and waits on bounded times, and at the
+# default of 8 wakes a minute every wake after the first would spend those waits queueing. The two
+# wake keys add no line to legion start --check-config, which prints the renames, the open
+# capability rows and, under Kubernetes alone, the pod lines (checkStartConfig in cmd/legion):
+# check-config-passes below compares everything after the OK line with a fixed string.
+worker_wakes_per_minute: 0
 EOF
 printf 'Always answer in one sentence.\n' >"$work/instructions.md"
 cat >"$work/controller.yaml" <<EOF
@@ -199,7 +207,9 @@ EOF
 # ---- --check-config --------------------------------------------------------------------------------
 begin check-config-passes
 out=$(legion start --check-config --config "$work/legion.yaml")
-[ "$(head -1 <<<"$out")" = "Config OK: project=$project" ] || fail "got $out"
+# The OK line names the design-gate steps the file resolved to; this file sets no gates key, which
+# is the single step spec.
+[ "$(head -1 <<<"$out")" = "Config OK: project=$project design-gate-steps=spec" ] || fail "got $out"
 # After the OK line, one line per deployment capability the file alone leaves open, in boot's words
 # (LEGION-578): under tmux the secrets and resource-limits rows, each ending with the legion.yaml
 # line that records a decision. A report, so the exit stayed 0.

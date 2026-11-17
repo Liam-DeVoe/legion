@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -31,26 +32,68 @@ var ErrSchema = errors.New("outside Proof schema")
 // inline HTML only.
 var ErrBlockHTML = fmt.Errorf("%w: block HTML is not accepted by Proof", ErrSchema)
 
-var nodeTypes = map[string]bool{
-	"doc": true, "paragraph": true, "heading": true, "blockquote": true, "bullet_list": true,
-	"ordered_list": true, "list_item": true, "code_block": true, "hr": true, "hardbreak": true,
-	"image": true, "html": true, "table": true, "table_header_row": true, "table_row": true,
-	"table_cell": true, "table_header": true, "footnote_definition": true,
-	"footnote_reference": true, "frontmatter": true, "text": true,
+// ErrUnknownElement marks a schema refusal (ErrSchema) of an element this build does not know: a
+// node, mark or typed block its manifest does not name, an attribute a typed block does not
+// declare, or a value an enum attribute does not list. Two builds serve one database during a
+// release, so a newer build can have written it. A reader tells it from a known element in a
+// broken shape, which is ErrSchema alone.
+var ErrUnknownElement = errors.New("element this build does not know")
+
+// unknownElementError is a refusal of an element this build does not know: err, which names it,
+// is also ErrUnknownElement, and keeps its own message. elements names those elements as data, so
+// a caller reads them without parsing the message (UnknownElements). It is used by pointer: a
+// struct holding a slice cannot be compared, and a caller that compares two errors with == (as
+// docs.askRefusalInstead's caller does) would panic on two values of it.
+type unknownElementError struct {
+	err      error
+	elements []string
 }
 
-var markTypes = map[string]bool{
-	"strong": true, "emphasis": true, "inlineCode": true, "link": true, "strike_through": true,
-	"proofSuggestion": true, "proofComment": true, "proofFlagged": true, "proofApproved": true,
-	"proofAuthored": true, "dispatchAsk": true,
+func (e *unknownElementError) Error() string { return e.err.Error() }
+
+func (e *unknownElementError) Is(target error) bool { return target == ErrUnknownElement }
+
+func (e *unknownElementError) Unwrap() error { return e.err }
+
+// unknownElement marks err as a refusal of an element this build does not know
+// (ErrUnknownElement), carrying names, the names of those elements, as data (UnknownElements).
+func unknownElement(err error, names ...string) error {
+	return &unknownElementError{err: err, elements: names}
+}
+
+// UnknownElements names the elements a refusal of an element this build does not know
+// (ErrUnknownElement) is of: the type of the node, mark or typed block the manifest does not
+// name, the attributes a typed block does not declare, or the value an enum attribute does not
+// list. It is empty for every other error.
+//
+// It is there for a caller that records what a document holds without recording the refusal
+// itself: an error's message carries whatever the chain that answered the request wrapped it in,
+// the caller's own identity among it, and these names carry the document and nothing else.
+func UnknownElements(err error) []string {
+	var unknown *unknownElementError
+	if errors.As(err, &unknown) {
+		return unknown.elements
+	}
+	return nil
 }
 
 // sortMarks puts marks in one order whatever order they arrive in: by type, then, for two marks of
 // one type (the record marks, which may overlap: anchorMarkTypes), by id, and by their attributes
 // only when the ids tie. Every positional comparison of two mark sets (marksEqual, run joining)
-// relies on it.
+// relies on it, and so does every reading of marks in writing order (visibleMarks). The sort is
+// unstable, which no output can see: two marks markLess orders neither way are equal in type, in
+// id and in the JSON of their canonical attributes, so each stands for the other wherever a mark
+// is read.
 func sortMarks(marks []Mark) {
-	sort.Slice(marks, func(i, j int) bool { return markLess(marks[i], marks[j]) })
+	slices.SortFunc(marks, func(left, right Mark) int {
+		switch {
+		case markLess(left, right):
+			return -1
+		case markLess(right, left):
+			return 1
+		}
+		return 0
+	})
 }
 
 func markLess(left, right Mark) bool {
@@ -124,17 +167,17 @@ func validateNode(n *Node, depth int) error {
 	if err := treeDepthError(depth); err != nil {
 		return err
 	}
-	if !nodeTypes[n.Type] {
+	if !active.nodes[n.Type] {
 		if _, typed := typedBlock(n.Type); !typed {
-			return fmt.Errorf("%w: node %q", ErrSchema, n.Type)
+			return unknownElement(fmt.Errorf("%w: node %q", ErrSchema, n.Type), n.Type)
 		}
 	}
 	if n.Type != "text" && len(n.Marks) != 0 {
 		return fmt.Errorf("%w: node %q cannot have marks", ErrSchema, n.Type)
 	}
 	for _, m := range n.Marks {
-		if !markTypes[m.Type] {
-			return fmt.Errorf("%w: mark %q", ErrSchema, m.Type)
+		if !active.marks[m.Type] {
+			return unknownElement(fmt.Errorf("%w: mark %q", ErrSchema, m.Type), m.Type)
 		}
 		if err := attrNestingError("mark", m.Type, m.Attrs, maxMarkAttrNesting); err != nil {
 			return err
@@ -211,10 +254,10 @@ func validateNode(n *Node, depth int) error {
 
 // undeclaredAttributes is the refusal for a typed block holding attributes its schema does not
 // declare, naming every one of them in sorted order, or nil when it declares them all.
-func undeclaredAttributes(typeName string, attrs Attrs, declared map[string]BlockAttributeSchema) error {
+func undeclaredAttributes(typeName string, attrs Attrs, declared BlockAttributes) error {
 	var names []string
 	for name := range attrs {
-		if _, ok := declared[name]; !ok && name != BlockIDAttr {
+		if !declared.Has(name) && name != BlockIDAttr {
 			names = append(names, name)
 		}
 	}
@@ -222,13 +265,14 @@ func undeclaredAttributes(typeName string, attrs Attrs, declared map[string]Bloc
 	case 0:
 		return nil
 	case 1:
-		return fmt.Errorf("%w: typed block %q does not declare attribute %q", ErrSchema, typeName, names[0])
+		return unknownElement(fmt.Errorf("%w: typed block %q does not declare attribute %q", ErrSchema, typeName, names[0]), names[0])
 	}
 	sort.Strings(names)
+	quoted := make([]string, len(names))
 	for index, name := range names {
-		names[index] = fmt.Sprintf("%q", name)
+		quoted[index] = fmt.Sprintf("%q", name)
 	}
-	return fmt.Errorf("%w: typed block %q does not declare attributes %s", ErrSchema, typeName, strings.Join(names, ", "))
+	return unknownElement(fmt.Errorf("%w: typed block %q does not declare attributes %s", ErrSchema, typeName, strings.Join(quoted, ", ")), names...)
 }
 
 func validateTypedBlock(n *Node, typ BlockTypeSchema) error {
@@ -268,22 +312,16 @@ func validateTypedBlock(n *Node, typ BlockTypeSchema) error {
 			}
 			continue
 		}
-		definition := typ.Attributes[name]
+		definition := typ.Attributes.Get(name)
 		if value == nil && definition.Default == nil {
 			continue
 		}
 		if err := validateAttributeValue(definition, value); err != nil {
-			return fmt.Errorf("%w: typed block %q attribute %q: %v", ErrSchema, n.Type, name, err)
+			return fmt.Errorf("%w: typed block %q attribute %q: %w", ErrSchema, n.Type, name, err)
 		}
 	}
-	for name, definition := range typ.Attributes {
-		if definition.Default == nil {
-			continue
-		}
-		if _, present := n.Attrs[name]; !present {
-			return fmt.Errorf("%w: typed block %q is missing attribute %q", ErrSchema, n.Type, name)
-		}
-	}
+	// A block an earlier build wrote may lack an attribute added since: it reads with the
+	// attribute's default (writtenDefault), so the attribute is not required here.
 	return nil
 }
 
@@ -292,7 +330,26 @@ func validateTypedBlock(n *Node, typ BlockTypeSchema) error {
 // lets an ask hold other blocks, since concurrent browser edits can leave one there, the browser
 // keeps it, and settlement marks the ask `invalid`; markdown written in whole is held to the rule,
 // as the browser editor's parser holds it.
+//
+// An ask whose question a person's edit emptied keeps the rule, options and all: the document
+// service keeps such a block and repairs it through its question (refuseEmptyQuestionEdit,
+// docs/ask_block_text.go), and a refusal of this check must not name it. Markdown that writes a
+// question nowhere is AskWrittenContentError's to refuse.
 func AskContentError(node *Node) error {
+	return askContentError(node, false)
+}
+
+// AskWrittenContentError is AskContentError over markdown written in whole - an upload, a
+// replacement, a repair - where an ask written with its options and no question is refused too.
+// Both parsers read such markdown holding the empty paragraph the Proof schema fills in ahead of
+// the options (emptyParagraphFirst), so the content rule itself no longer catches what, before
+// that paragraph was read, it refused as a bullet list before the question; the write is refused
+// here instead, by what is wrong with it.
+func AskWrittenContentError(node *Node) error {
+	return askContentError(node, true)
+}
+
+func askContentError(node *Node, written bool) error {
 	var found error
 	walk(node, func(ask *Node, _ []int, _, _ int) bool {
 		if found != nil {
@@ -303,6 +360,11 @@ func AskContentError(node *Node) error {
 		}
 		broken := askContentBreak(ask.Children)
 		if broken == "" {
+			if written && askWritesNoQuestion(ask.Children) {
+				id, _ := ask.Attrs[BlockIDAttr].(string)
+				found = fmt.Errorf("ask block %q holds its options and no question, which no one can answer, where its content rule, %s, reads the question as the paragraph before them; write it on the line under the block's opening fence, above its options", id, BlockContentParagraphsOptionalBulletList)
+				return false
+			}
 			return true
 		}
 		id, _ := ask.Attrs[BlockIDAttr].(string)
@@ -335,6 +397,26 @@ func openingWords(text string) string {
 		return text
 	}
 	return strings.TrimRight(string(runes[:opening]), " ") + "…"
+}
+
+// askWritesNoQuestion reports whether these children are an ask's whose markdown wrote its
+// options and no question: one or more paragraphs that hold nothing - the one the Proof schema
+// fills in ahead of a list (emptyParagraphFirst), and any the author wrote out of inlines that
+// write no bytes, a link with no text among them - and then that list. A question emptied by a
+// person's edit leaves the same shape, which the document service keeps and repairs through its
+// question (refuseEmptyQuestionEdit, docs/ask_block_text.go), so only markdown written in whole
+// is held to this (AskWrittenContentError).
+func askWritesNoQuestion(children []*Node) bool {
+	last := len(children) - 1
+	if last < 1 || children[last] == nil || children[last].Type != "bullet_list" {
+		return false
+	}
+	for _, child := range children[:last] {
+		if child == nil || child.Type != "paragraph" || len(child.Children) != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // askContentBreak names the first child that breaks the content rule paragraph+ bullet_list? -
@@ -506,7 +588,7 @@ func attrsEqualOutsideServerState(nodeType string, a, b Attrs) bool {
 	if !typed {
 		return attrsEqual(a, b)
 	}
-	return attrsEqualBut(a, b, func(name string) bool { return !IsAnswerAttribute(name) && typ.Attributes[name].Server })
+	return attrsEqualBut(a, b, func(name string) bool { return !IsAnswerAttribute(name) && typ.Attributes.Get(name).Server })
 }
 
 // equalNode compares n and o, their content and structure, holding each node's attributes to

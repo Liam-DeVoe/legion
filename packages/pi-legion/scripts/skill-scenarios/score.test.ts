@@ -1,9 +1,10 @@
-import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { beforeAll, expect, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
-import { checkouts, specWork, TestHandoff } from "./score";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
 // profile's gateway key command runs past its budget) says nothing about the skill under test: the
@@ -11,13 +12,31 @@ import { checkouts, specWork, TestHandoff } from "./score";
 // then did nothing the scenario asks is a failure.
 
 // score.ts reads each label's checkout from <work>/profiles/<label>/checkout, beside <work>/runs.
-const work = mkdtempSync(path.join(tmpdir(), "skill-scenarios-score-"));
+const work = temporaryDirectory("skill-scenarios-score");
 const runs = path.join(work, "runs");
-afterAll(() => rmSync(work, { recursive: true, force: true }));
-for (const label of ["head", "base", "cross", "on", "off"]) {
-  mkdirSync(path.join(work, "profiles", label), { recursive: true });
-  writeFileSync(path.join(work, "profiles", label, "checkout"), `/checkouts/${label}\n`);
-}
+// The repository the pushed-code run below is cloned from. Reserved here, above the hook that
+// drains the stagings: Bun runs a scope's `beforeAll` hooks in the order they were registered,
+// so a reservation made further down would be made after that drain had already run.
+const pushWork = temporaryDirectory("skill-scenarios-push");
+
+/**
+ * Every run this file's body stages, as a function the `beforeAll` below calls rather than a
+ * write at the call. `work` is reserved at module scope and made by the hook that reservation
+ * registered, so nothing exists to write into until then — and a `bun test -t <pattern>` that
+ * selects no row of this file runs no hook of it, where a module body that staged its world
+ * would leave every file of it behind.
+ */
+const stagings: (() => void)[] = [];
+
+beforeAll(() => {
+  for (const label of ["head", "base", "cross", "on", "off"]) {
+    mkdirSync(path.join(work, "profiles", label), { recursive: true });
+    writeFileSync(path.join(work, "profiles", label, "checkout"), `/checkouts/${label}\n`);
+  }
+  // A staging may queue another (the pushed-code run below queues its scenario once the
+  // repository is built), so the queue is drained until it is empty rather than in one pass.
+  for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
+});
 
 /** Oh My Pi's transcript header entries: what a session writes before its first model request. */
 const header = [
@@ -37,18 +56,20 @@ const noKey = "error: No API key found for anthropic.\nexit=1\n";
 const dispatchRecord = (database: string, postgres = "pg-1") =>
   JSON.stringify({ postgres, database, port: 20000, url: "http://127.0.0.1:20000" });
 
-/** A run directory holding `files` (by default a dispatch.json naming the run's own database, or
- * none when `files` gives it null) and `transcript`. */
+/** Stages a run directory holding `files` (by default a dispatch.json naming the run's own
+ * database, or none when `files` gives it null) and `transcript`, when the hook above runs. */
 function run(name: string, files: Record<string, string | null>, transcript: object[]) {
-  const dir = path.join(runs, name);
-  mkdirSync(path.join(dir, "sessions"), { recursive: true });
-  const own = dispatchRecord(`run_${name.replaceAll("-", "_")}`);
-  for (const [file, text] of Object.entries({ "dispatch.json": own, ...files }))
-    if (text !== null) writeFileSync(path.join(dir, file), text);
-  writeFileSync(
-    path.join(dir, "sessions", "2026-09-30T14-51-17-651Z_01a0f2cc.jsonl"),
-    transcript.map((entry) => `${JSON.stringify(entry)}\n`).join("")
-  );
+  stagings.push(() => {
+    const dir = path.join(runs, name);
+    mkdirSync(path.join(dir, "sessions"), { recursive: true });
+    const own = dispatchRecord(`run_${name.replaceAll("-", "_")}`);
+    for (const [file, text] of Object.entries({ "dispatch.json": own, ...files }))
+      if (text !== null) writeFileSync(path.join(dir, file), text);
+    writeFileSync(
+      path.join(dir, "sessions", "2026-09-30T14-51-17-651Z_01a0f2cc.jsonl"),
+      transcript.map((entry) => `${JSON.stringify(entry)}\n`).join("")
+    );
+  });
 }
 
 const head = "099b05dc19f7f7e5058e791d16ae05f0b123a2cc";
@@ -72,7 +93,8 @@ const implementRecord = {
   created_at: "2026-09-30T17:20:00.123456Z",
   body: JSON.stringify({ schemaVersion: 1, phase: "implement", issue: "LWEVAL-1" }),
 };
-/** A test handoff the skill's rule asks for: verified, no failures, a proof at `sha`. */
+/** A test handoff the skill's rule asks for: the implementer's results verified, no failures. What
+ * the tester ran is a result on the issue's check, not a field of the handoff. */
 const testBody = (sha: string) => ({
   schemaVersion: 1,
   phase: "test",
@@ -80,16 +102,6 @@ const testBody = (sha: string) => ({
   implementerProof: { verdict: "verified", how: `ran bun greet.ts Ada at ${sha.slice(0, 12)}` },
   failures: [],
   failed: 0,
-  proof: [
-    {
-      criterion: "bun greet.ts Ada prints Hello, Ada! and exits 0",
-      surface: "the CLI",
-      command: "bun greet.ts Ada",
-      observed: "Hello, Ada! exit 0",
-      headSha: sha,
-      negativeControl: "bun greet.ts → exit 2, usage on stderr",
-    },
-  ],
 });
 /** A test record on the run's issue: by default this run's session (the transcript header's
  * 01a0f2cc) wrote it at 17:29:11.031234, a valid body at the PR's head. */
@@ -168,13 +180,14 @@ const calls = (records: object[]) =>
   records.map((record) => `${JSON.stringify(record)}\n`).join("");
 /** The bun stand-in's record of `"$BUN" greet.ts Ada`, before the record was written. */
 const ranGreet = { at: "2026-09-30T17:27:33.658Z", as: "bun", argv: ["greet.ts", "Ada"], exit: 0 };
-/** The gh stand-in's record of the PR body edit whose `E2E (tester)` line names `sha`. */
+/** The gh stand-in's record of the PR body edit whose check line, the one `dispatch result`
+ * printed for the tester, names `sha`. */
 const bodyEdit = (sha: string) => ({
   at: "2026-09-30T17:29:30.000Z",
   as: "gh",
   argv: ["pr", "edit", "1001", "--body-file", "body.md"],
   exit: 0,
-  body: `**E2E (implementer):** the CLI.\n\n**E2E (tester):** the CLI — ran \`bun greet.ts Ada\` at head ${sha.slice(0, 12)}, observed Hello, Ada! exit 0.\n\n**Production:** pending the merge.`,
+  body: `**Checks:**\n- Check k1 (before_merge): pass at ${sha.slice(0, 12)}, recorded by implementer. The CLI greets by name.\n- Check k1 (before_merge): pass at ${sha.slice(0, 12)}, recorded by tester. The CLI greets by name.`,
 });
 /** The daemon stand-in's log line of an accepted completion naming record `id` at `version`. */
 const accepted = (id: string, version: number) =>
@@ -247,42 +260,43 @@ function recordRun(name: string, files: Record<string, string>) {
 }
 // Followed the rule: drove the CLI, recorded its own test record, then completed naming it.
 recordRun("tester-proof-rec-1", {});
-// Completed naming a record another session wrote (the import's, under the daemon's session).
+// Completed naming a record another session wrote (one carried from before handoffs moved to the
+// Dispatch issue, under the daemon's session).
 recordRun("tester-proof-rec-2", {
   "handoffs.json": handoffs(testRecord({ author: "legion-daemon:lweval" })),
 });
 // The stand-in accepted a completion that names a version the record does not hold.
 recordRun("tester-proof-rec-3", { "daemon.log": accepted("h-test", 2) });
-// Pushed a change to the code under the PR's head before completing.
-{
-  const dir = mkdtempSync(path.join(tmpdir(), "skill-scenarios-push-"));
+// Pushed a change to the code under the PR's head before completing. The repository is staged
+// with every other run, in the hook above: `git init` here would make it whether or not a row of
+// this file runs.
+stagings.push(() => {
   const git = (...args: string[]) => {
     const result = Bun.spawnSync(
-      ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", dir, ...args],
+      ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", pushWork, ...args],
       { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } }
     );
     if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
     return result.stdout.toString().trim();
   };
   git("init", "-q", "-b", "legion/LWEVAL-1");
-  writeFileSync(path.join(dir, "greet.ts"), "export const greet = 1;\n");
+  writeFileSync(path.join(pushWork, "greet.ts"), "export const greet = 1;\n");
   git("add", "-A");
   git("commit", "-qm", "code");
   const code = git("rev-parse", "HEAD");
-  writeFileSync(path.join(dir, "greet.ts"), "export const greet = 2;\n");
+  writeFileSync(path.join(pushWork, "greet.ts"), "export const greet = 2;\n");
   git("commit", "-qam", "changed");
   const pushed = git("rev-parse", "HEAD");
   const remote = path.join(runs, "tester-proof-rec-4", "remote.git");
   mkdirSync(path.dirname(remote), { recursive: true });
-  git("clone", "-q", "--bare", dir, remote);
-  rmSync(dir, { recursive: true, force: true });
+  git("clone", "-q", "--bare", pushWork, remote);
   recordRun("tester-proof-rec-4", {
     "world.json": worldOf(code),
     "calls.jsonl": calls([ranGreet, bodyEdit(code)]),
     "handoffs.json": handoffs(testRecord({ sha: code })),
     "pushes.log": `2026-09-30T17:29:20.000Z refs/heads/legion/LWEVAL-1 ${code} ${pushed}\n`,
   });
-}
+});
 
 /** A measure-before-ask run that opened one ask: its question and the options' labels. */
 function measured(name: string, question: string, labels: string[]) {
@@ -1039,7 +1053,9 @@ function outlined({ problem = "The CLI prints no greeting.", design = "", summar
     "",
     "## Requirements",
     "",
-    "- **R1.** The CLI prints a greeting with the name. From: your answer on the greeting.",
+    ":::requirement{#r1}",
+    "**R1.** The CLI prints a greeting with the name. From: your answer on the greeting.",
+    ":::",
     "",
     "## Design",
     "",
@@ -1051,10 +1067,6 @@ function outlined({ problem = "The CLI prints no greeting.", design = "", summar
     "### Plain text output",
     "",
     "The CLI prints plain text. Reason: scripts read it. Options: plain text or JSON. Parts: Design.",
-    "",
-    "## Acceptance",
-    "",
-    "- **A1.** `greet Ada` prints `Hello, Ada.` (R1)",
     "",
   ].join("\n");
 }
@@ -1266,11 +1278,18 @@ const cleanJudges: Record<string, object> = {
   "proposal.json": { rows: [{ item: "the greeting word", verdict: "proposed", ask: null }] },
   "shared-runs.json": { rows: [] },
 };
+/** A question the run asked the person, opened and answered before the earliest version any
+ *  fixture here writes (`conversationOrder`: a question before the first version, an answer
+ *  before the version that states a design). A fixture that means to fail `asked` or `grew`
+ *  passes its own times. */
 const openAsk = (id: string) => ({
   id,
   question: "Which name should the example use?",
   options: [{ label: "Ada" }, { label: "Grace" }],
   multiple: false,
+  // `second(1)` and `second(2)`, written out: this runs at module scope, above that helper.
+  created_at: "2026-10-24T10:00:01.000Z",
+  answer: { at: "2026-10-24T10:00:02.000Z" },
 });
 const approvedStates = [
   { turn: 1, open_asks: [openAsk("ask-1")], approval: null },
@@ -1394,44 +1413,46 @@ function specRun(name: string, fixture: SpecFixture = {}) {
     },
     entries
   );
-  const dir = path.join(runs, name);
-  for (const sub of ["source", "documents", "spec-versions"])
-    mkdirSync(path.join(dir, sub), { recursive: true });
-  writeFileSync(path.join(dir, "source", "title.txt"), "Greet a person by name\n");
-  writeFileSync(path.join(dir, "source", "messages.md"), personMessages);
-  writeFileSync(path.join(dir, "source", "asks.json"), JSON.stringify(sourceAsks));
-  for (const index of (fixture.versions ?? [120, 180]).keys())
-    writeFileSync(path.join(dir, "spec-versions", `${index + 2}.md`), spec);
-  for (const [file, text] of Object.entries(fixture.documents ?? {}))
-    writeFileSync(path.join(dir, "documents", file), text);
-  const subagents = path.join(dir, "sessions", "2026-09-30T14-51-17-651Z_01a0f2cc");
-  for (const [agent, transcript] of Object.entries(fixture.subagents ?? {})) {
-    mkdirSync(subagents, { recursive: true });
+  stagings.push(() => {
+    const dir = path.join(runs, name);
+    for (const sub of ["source", "documents", "spec-versions"])
+      mkdirSync(path.join(dir, sub), { recursive: true });
+    writeFileSync(path.join(dir, "source", "title.txt"), "Greet a person by name\n");
+    writeFileSync(path.join(dir, "source", "messages.md"), personMessages);
+    writeFileSync(path.join(dir, "source", "asks.json"), JSON.stringify(sourceAsks));
+    for (const index of (fixture.versions ?? [120, 180]).keys())
+      writeFileSync(path.join(dir, "spec-versions", `${index + 2}.md`), spec);
+    for (const [file, text] of Object.entries(fixture.documents ?? {}))
+      writeFileSync(path.join(dir, "documents", file), text);
+    const subagents = path.join(dir, "sessions", "2026-09-30T14-51-17-651Z_01a0f2cc");
+    for (const [agent, transcript] of Object.entries(fixture.subagents ?? {})) {
+      mkdirSync(subagents, { recursive: true });
+      writeFileSync(
+        path.join(subagents, `${agent}.jsonl`),
+        transcript.map((entry) => `${JSON.stringify(entry)}\n`).join("")
+      );
+    }
+    // The default findings judge (cleanJudges) gives check 1 its row; every other check the run's
+    // transcript holds is clean, so the file covers each check as coverage requires.
+    if (fixture.judges?.["findings.json"] === undefined) {
+      const fixtureJson = { issue: "LWEVAL-7", spec_artifact: "art-spec" };
+      const checks = specWork(dir, checkouts(work), fixtureJson).checks.length;
+      writeFileSync(
+        path.join(dir, "findings.json"),
+        JSON.stringify({
+          rows: checks > 0 ? [{ check: 1, finding: "R1 names no check.", verdict: "fixed" }] : [],
+          clean: Array.from({ length: Math.max(0, checks - 1) }, (_, index) => index + 2),
+        })
+      );
+    }
+    if (fixture.ledger === false) return;
+    const state = path.join(ledgerDir(name));
+    mkdirSync(state, { recursive: true });
     writeFileSync(
-      path.join(subagents, `${agent}.jsonl`),
-      transcript.map((entry) => `${JSON.stringify(entry)}\n`).join("")
+      path.join(state, "results.jsonl"),
+      ledger.map((line) => `${JSON.stringify(line)}\n`).join("")
     );
-  }
-  // The default findings judge (cleanJudges) gives check 1 its row; every other check the run's
-  // transcript holds is clean, so the file covers each check as coverage requires.
-  if (fixture.judges?.["findings.json"] === undefined) {
-    const fixtureJson = { issue: "LWEVAL-7", spec_artifact: "art-spec" };
-    const checks = specWork(dir, checkouts(work), fixtureJson).checks.length;
-    writeFileSync(
-      path.join(dir, "findings.json"),
-      JSON.stringify({
-        rows: checks > 0 ? [{ check: 1, finding: "R1 names no check.", verdict: "fixed" }] : [],
-        clean: Array.from({ length: Math.max(0, checks - 1) }, (_, index) => index + 2),
-      })
-    );
-  }
-  if (fixture.ledger === false) return;
-  const state = path.join(ledgerDir(name));
-  mkdirSync(state, { recursive: true });
-  writeFileSync(
-    path.join(state, "results.jsonl"),
-    ledger.map((line) => `${JSON.stringify(line)}\n`).join("")
-  );
+  });
 }
 /** Where the dispatch CLI keeps a run's ledger: the run's HOME's state directory, under the
  * session id the transcript's header names (dispatch-session-state.ts sessionDirectory). */
@@ -2110,7 +2131,7 @@ specRun("spec-writing-head-99", {
     NoReport: subagentTranscript(`Read this spec alone.\n\n${outlined()}`, 6.2, 6.8, ""),
   },
 });
-// A review of a sibling issue's spec: its assignment holds the seven headings too, but no 8-word
+// A review of a sibling issue's spec: its assignment holds the six headings too, but no 8-word
 // run of it is in a version the session wrote, so it checks no write of this run.
 const siblingSpec = [
   "## Summary",
@@ -2124,7 +2145,9 @@ const siblingSpec = [
   "Goals: invoices arrive on time. Non-goals: a new payment provider or tax rules.",
   "## Requirements",
   "",
-  "- **R1.** The queue retries a stalled invoice within ten minutes of the stall. From: the ticket.",
+  ":::requirement{#r1}",
+  "**R1.** The queue retries a stalled invoice within ten minutes of the stall. From: the ticket.",
+  ":::",
   "## Design",
   "",
   "A watchdog process restarts the mail worker whenever its heartbeat stops for two minutes.",
@@ -2133,9 +2156,6 @@ const siblingSpec = [
   "### Restart rather than replace the worker",
   "",
   "Restarting keeps the existing worker code and its tested retry logic in place for now.",
-  "## Acceptance",
-  "",
-  "- **A1.** A stalled test invoice arrives within fifteen minutes of the stall. (R1)",
   "",
 ].join("\n");
 specRun("spec-writing-head-120", {
@@ -2312,6 +2332,21 @@ specRun("spec-writing-head-100", {
     finish
   ),
   versions: [8.5, 12.5, 16.5],
+});
+// The one-shot draft the conversation rule forbids: the spec's first version at second 120, the
+// question to the person opened at 150 and answered at 170. Every other score passes, so the row
+// fails on `asked` and `grew` alone.
+specRun("spec-writing-head-140", {
+  asks: [
+    {
+      kind: "question",
+      ...openAsk("ask-1"),
+      state: "answered",
+      created_at: second(150),
+      answer: { at: second(170) },
+    },
+    { id: "appr-1", kind: "approval", question: "Approve spec.md v3?", options: [] },
+  ],
 });
 // A check between them: it counts for the helper's write.
 specRun("spec-writing-head-101", {
@@ -3044,11 +3079,18 @@ for (const [n, faults] of [2, 4, 3].entries())
     judges: { "faults.json": faultsFile({ "The reader cannot follow a sentence": faults }) },
   });
 
-const scored = Bun.spawnSync(["bun", path.join(import.meta.dir, "score.ts"), "runs", runs]);
-const out = scored.stdout.toString();
+/** What `score.ts runs` printed over the staged world, and the code it exited with. Both are
+ *  read in a hook, below the one that stages that world. */
+let out = "";
+let scoredExitCode: number | null = null;
+beforeAll(() => {
+  const scored = Bun.spawnSync(["bun", path.join(import.meta.dir, "score.ts"), "runs", runs]);
+  out = scored.stdout.toString();
+  scoredExitCode = scored.exitCode;
+});
 
 test("a run whose agent never got a model turn is a rig error, not a failure", () => {
-  expect(scored.exitCode).toBe(0);
+  expect(scoredExitCode).toBe(0);
   for (const name of ["tester-proof-head-1", "ask-on-message-head-1"]) {
     expect(out).toContain(`${name}\trig error: `);
     expect(out).not.toContain(`${name}\tpass=`);
@@ -3467,13 +3509,8 @@ test("askgate: the counts are per case and label", () => {
 const liveRun = path.join(work, "live-read");
 const liveSkills = path.join(work, "live-skills");
 const liveLogs = path.join(work, "live-logs");
-mkdirSync(path.join(liveRun, "sessions"), { recursive: true });
-mkdirSync(path.join(liveSkills, "demo", "references"), { recursive: true });
-mkdirSync(liveLogs, { recursive: true });
 const skillText = "---\nname: demo\n---\n\n# Demo\n\nRead the notes.\n";
 const notesText = "# Notes\n\nOne line of notes.\n";
-writeFileSync(path.join(liveSkills, "demo", "SKILL.md"), skillText);
-writeFileSync(path.join(liveSkills, "demo", "references", "notes.md"), notesText);
 const skillHeader = "[Skill file: /profiles/s1/agent/skills/demo";
 /** A `read` tool's result, answering the call `toolCallId` names. */
 const readResult = (toolCallId: string, text: string) => ({
@@ -3483,26 +3520,35 @@ const readResult = (toolCallId: string, text: string) => ({
 const skillWhole = skillText.replace(/\n$/, "");
 const notesWhole = notesText.replace(/\n$/, "");
 const otherHeader = `[Read: references/notes.md]\n${notesWhole}`;
-writeFileSync(
-  path.join(liveRun, "sessions", "2026-10-24T10-00-00-000Z_01a0f2cc.jsonl"),
-  [
-    ...header,
-    // The header, then the whole file: whole.
-    toolCall("read-1", "read", { path: "skill://demo" }),
-    readResult("read-1", `${skillHeader}/SKILL.md]\n${skillWhole}`),
-    // The header, then the file cut short: not whole.
-    toolCall("read-2", "read", { path: "skill://demo/references/notes.md" }),
-    readResult("read-2", `${skillHeader}/references/notes.md]\n${notesWhole.slice(0, -5)}`),
-    // No header, the whole file: whole, as before.
-    toolCall("read-3", "read", { path: "skill://demo" }),
-    readResult("read-3", skillWhole),
-    // Another header, then the whole file: that header counts, so not whole.
-    toolCall("read-4", "read", { path: "skill://demo/references/notes.md" }),
-    readResult("read-4", otherHeader),
-  ]
-    .map((entry) => `${JSON.stringify(entry)}\n`)
-    .join("")
-);
+// Staged in a hook, as every fixture of this file is: these three directories live under `work`,
+// which the hook at the top of the file makes.
+beforeAll(() => {
+  mkdirSync(path.join(liveRun, "sessions"), { recursive: true });
+  mkdirSync(path.join(liveSkills, "demo", "references"), { recursive: true });
+  mkdirSync(liveLogs, { recursive: true });
+  writeFileSync(path.join(liveSkills, "demo", "SKILL.md"), skillText);
+  writeFileSync(path.join(liveSkills, "demo", "references", "notes.md"), notesText);
+  writeFileSync(
+    path.join(liveRun, "sessions", "2026-10-24T10-00-00-000Z_01a0f2cc.jsonl"),
+    [
+      ...header,
+      // The header, then the whole file: whole.
+      toolCall("read-1", "read", { path: "skill://demo" }),
+      readResult("read-1", `${skillHeader}/SKILL.md]\n${skillWhole}`),
+      // The header, then the file cut short: not whole.
+      toolCall("read-2", "read", { path: "skill://demo/references/notes.md" }),
+      readResult("read-2", `${skillHeader}/references/notes.md]\n${notesWhole.slice(0, -5)}`),
+      // No header, the whole file: whole, as before.
+      toolCall("read-3", "read", { path: "skill://demo" }),
+      readResult("read-3", skillWhole),
+      // Another header, then the whole file: that header counts, so not whole.
+      toolCall("read-4", "read", { path: "skill://demo/references/notes.md" }),
+      readResult("read-4", otherHeader),
+    ]
+      .map((entry) => `${JSON.stringify(entry)}\n`)
+      .join("")
+  );
+});
 
 test("live-read compares a skill read's text after Oh My Pi's `[Skill file: …]` header line", () => {
   const read = Bun.spawnSync([
@@ -3534,7 +3580,18 @@ function rowOf(name: string): string {
   const end = all.findIndex((line, index) => index > start && !line.startsWith("  "));
   return all.slice(start, end < 0 ? undefined : end).join("\n");
 }
-const SCORES = ["outline", "checked", "refusals", "plan", "routed", "chat", "quoted", "self"];
+const SCORES = [
+  "outline",
+  "checked",
+  "refusals",
+  "plan",
+  "routed",
+  "chat",
+  "quoted",
+  "self",
+  "asked",
+  "grew",
+];
 /** The scores of a spec run's row, by name. */
 function scoresOf(name: string): Record<string, string> {
   const row = rowOf(name);
@@ -3873,11 +3930,11 @@ test("checked: a check started from an eval cell counts from its own transcript,
   // A review of a sibling issue's spec, outline and all, checks no write of this run.
   expect(scoresOf("spec-writing-head-120")).toEqual({ ...allPass, checked: "false" });
   expect(rowOf("spec-writing-head-120")).toContain(
-    "check SiblingCheck (transcript SiblingCheck.jsonl) for spec write 1 does not count: its spec is not this issue's: spec 1 of 1 it pastes covers at most 1% of the 5-word runs of any version the session wrote"
+    "check SiblingCheck (transcript SiblingCheck.jsonl) for spec write 1 does not count: its spec is not this issue's: spec 1 of 1 it pastes covers at most 3% of the 5-word runs of any version the session wrote"
   );
   expect(scoresOf("spec-writing-head-125")).toEqual(allPass);
   expect(rowOf("spec-writing-head-125")).toContain(
-    "check BothCheck (transcript BothCheck.jsonl) for spec write 1 counts, but its findings are not judged: it pastes a sibling issue's spec beside this one (spec 2 of 2 it pastes covers at most 1% of the 5-word runs of any version the session wrote)"
+    "check BothCheck (transcript BothCheck.jsonl) for spec write 1 counts, but its findings are not judged: it pastes a sibling issue's spec beside this one (spec 2 of 2 it pastes covers at most 3% of the 5-word runs of any version the session wrote)"
   );
   // The row says so on its first line, and is flagged.
   expect(rowOf("spec-writing-head-125").split("\n")[0]).toContain(" unjudged=1");
@@ -3938,6 +3995,48 @@ test("checked: a version Dispatch recorded for the session that no shown write m
   expect(rowOf("spec-writing-head-101").split("\n")[0]).toContain(" writes_seen=2 versions=3");
   // A run whose shown writes match its recorded versions carries no flag.
   expect(rowOf("spec-writing-head-1")).not.toContain("writes_seen=");
+});
+
+test("asked and grew: a run that writes the spec before it asks fails, however short the draft", () => {
+  // The one-shot draft: the question comes after the first version, and the version that states a
+  // design comes before any answer.
+  expect(scoresOf("spec-writing-head-140")).toEqual({
+    ...allPass,
+    asked: "false",
+    grew: "false",
+  });
+  expect(rowOf("spec-writing-head-140")).toContain(
+    `conversation: version 2 (${second(120)}) states a design, and the run had asked the person nothing by then (${second(150)})`
+  );
+  expect(rowOf("spec-writing-head-140")).toContain(
+    `conversation: version 2 (${second(120)}) states a design, and the person had answered nothing by then (${second(170)})`
+  );
+  // Asking first and answering first is the pass, which `spec-writing-head-1` already shows.
+  expect(scoresOf("spec-writing-head-1").asked).toBe("true");
+  expect(scoresOf("spec-writing-head-1").grew).toBe("true");
+});
+
+// The review of 2026-11-05 measured several ways past the first definition, which looked for
+// three literal heading strings in the version's text. Four of the six rows below are refused by
+// that definition and held by `statesDesign`, which reads the text's own structure: the two
+// spaces, the design under `## Summary`, the empty sections and the fenced example. The other
+// two, the closing hash and the plain no-design spec, both definitions agree on, and they are
+// here as guards rather than as evidence.
+test("statesDesign: a design is found by what the version holds, not by three literal headings", () => {
+  const design = "**R1.** The broker answers in 100 ms. From: dispatch://ACME-1/ask/1\n";
+  // Spacing and a closing hash are the author's, not the test's: `##  Requirements` is a
+  // Requirements section, and the old `text.includes("## Requirements")` missed it.
+  expect(statesDesign(`##  Requirements\n\nThe broker answers in 100 ms.\n`)).toBe(true);
+  expect(statesDesign(`## Design ##\n\nOne table, keyed by run.\n`)).toBe(true);
+  // A design written out before the conventional headings arrive is still a design.
+  expect(statesDesign(`## Summary\n\n${design}`)).toBe(true);
+  // An empty section states nothing: the old definition failed a run for writing the headings.
+  expect(statesDesign(`## Requirements\n\n## Design\n\n## Acceptance\n`)).toBe(false);
+  expect(statesDesign(`## Summary\n\nNotices are lost today.\n\n## Problem\n\nThey are.\n`)).toBe(
+    false
+  );
+  // A heading or a requirement inside a fenced example belongs to the example.
+  expect(statesDesign("## Summary\n\n```md\n## Design\n\nOne table.\n```\n")).toBe(false);
 });
 
 test("quoted: a copied 30-word passage is one run, with its context in both texts", () => {

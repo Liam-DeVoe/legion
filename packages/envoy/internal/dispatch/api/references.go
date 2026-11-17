@@ -23,31 +23,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// replaceReferences is refs.ReplaceCounted bound to this server's URL, which is all an API
-// write path needs to say the same thing about what it moved as every other producer.
-func (s *server) replaceReferences(
-	ctx context.Context,
-	tx pgx.Tx,
-	fromKind, fromID, body string,
-) (model.ReferenceChanges, error) {
-	return refs.ReplaceCounted(ctx, tx, fromKind, fromID, body, s.deps.ServerURL)
-}
-
-// replaceEditedReferences is refs.ReplaceCountedEdit bound to this server's URL: an edit of an
-// ask's question from previous to body. A comment's edit goes through refs.ReplaceCountedItemEdit,
-// which indexes its blocks as well.
-func (s *server) replaceEditedReferences(
-	ctx context.Context,
-	tx pgx.Tx,
-	fromKind, fromID, previous, body string,
-) (model.ReferenceChanges, error) {
-	return refs.ReplaceCountedEdit(ctx, tx, fromKind, fromID, previous, body, s.deps.ServerURL)
-}
-
-// indexAskParts is refs.IndexAskPartsCounted bound to this server's URL: the parts of the ask
-// this write just wrote - its question, its options and its answer - indexed in the same
-// transaction, written at `at`, with what they moved merged into beside, the counted changes the
-// same write already holds, so the event it appends names them all.
+// indexAskParts is refs.IndexAskPartsCounted for a write that holds the ask's parts alone: the
+// parts of the ask this write just wrote - its question, its options and its answer - indexed in
+// the same transaction through a reader of their own (refs.NewReader), written at `at`, with
+// what they moved merged into beside, the counted changes the same write already holds, so the
+// event it appends names them all. A write that reconciles the ask's question as well builds the
+// one reader itself and passes it to both (refs.ReplaceCounted, refs.IndexAskPartsCounted).
 func (s *server) indexAskParts(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -55,7 +36,7 @@ func (s *server) indexAskParts(
 	at time.Time,
 	beside model.ReferenceChanges,
 ) (model.ReferenceChanges, error) {
-	return refs.IndexAskPartsCounted(ctx, tx, ask, s.deps.ServerURL, at, beside)
+	return refs.IndexAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, s.deps.ServerURL), ask, at, beside)
 }
 
 // referencesSinceWait bounds how long a since read waits for the safe horizon to pass every event
@@ -71,7 +52,9 @@ const referencesSinceWait = time.Second
 // structural edges. Cross-project by design: no project filter. A block reference names a
 // block node carrying its whole current text; one pinned to a version of its document, or a
 // revision of its ask's parts or of its comment, also reads the block as that version or revision
-// recorded it (blockReferenceNode, itemBlockReferenceNode).
+// recorded it (blockReferenceNode, itemBlockReferenceNode). A ?kind= this build does not emit - a
+// newer build's, during a release - has no edges here, and the answer lists it in unknown_kinds
+// rather than refusing the read.
 //
 // A since read keeps only mentions whose event is at or below the safe horizon
 // (events.Horizon), at or below which every event is final. A poller passes the highest
@@ -82,14 +65,34 @@ const referencesSinceWait = time.Second
 // back past referencesSinceWait: so a since read answers every mention committed before it, the
 // caller's own included, and one held back answers the mentions at or below the horizon and
 // leaves the rest to a later read.
+//
+// A ?to= reference whose item id or block id is written short is read as the one item of the
+// owner the reference names that carries it (wholeReference), so the node answered carries the
+// whole id and the page behind it reads its record under that. The owner decides a prefix and
+// nothing else: a whole id is read whatever owner the reference names, as this route has always
+// read one (refs.loadAskNodes filters on the id alone). That asymmetry is deliberate. A whole id
+// already names one row, so an owner that disagrees with it says nothing this read needs; a
+// prefix names a row only within some set, and the set the reference itself names is the one its
+// writer meant and the only one that can be answered without guessing.
 func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	_, human, err := s.optionalActor(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
 		return
 	}
-	query, ref, err := parseReferencesQuery(r, s.deps.ServerURL)
+	query, ref, unknownKinds, err := parseReferencesQuery(r, s.deps.ServerURL)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	if query.Direction == "in" {
+		resolved, ok := s.wholeReference(w, r, ref, refs.Viewer{Human: human})
+		if !ok {
+			return
+		}
+		ref = resolved
+		target, _ := refs.TargetOf(ref)
+		query.Kind, query.ID = target.Kind, target.ID
 	}
 	var node model.GraphNode
 	if ref.Kind == "block" {
@@ -104,7 +107,11 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		}
 		if node.Pin != nil && node.Pin.State == "removed" {
 			// The graph lists no link to a block no current version holds.
-			WriteJSON(w, http.StatusOK, model.GraphReferences{Node: node, Edges: []model.GraphEdge{}})
+			reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+			answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: []model.GraphEdge{}, UnknownKinds: unknownKinds}
+			answer.Node.shape(reader)
+			reader.resolve()
+			WriteJSON(w, http.StatusOK, answer)
 			return
 		}
 	} else {
@@ -129,18 +136,23 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if query.Since != nil {
-		safe, err := s.sinceHorizon(r.Context())
+	// When this build knows none of the kinds the caller named, no edge is of them; refs.Edges
+	// with no Kinds would read every kind.
+	edges := []model.GraphEdge{}
+	if len(query.Kinds) > 0 || len(unknownKinds) == 0 {
+		if query.Since != nil {
+			safe, err := s.sinceHorizon(r.Context())
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			query.Through = &safe
+		}
+		edges, err = refs.Edges(r.Context(), s.deps.Store.Pool, query)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		query.Through = &safe
-	}
-	edges, err := refs.Edges(r.Context(), s.deps.Store.Pool, query)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
 	}
 	if query.Direction == "in" {
 		if err := s.documentMentionExcerpts(r.Context(), query, edges); err != nil {
@@ -148,7 +160,138 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	WriteJSON(w, http.StatusOK, model.GraphReferences{Node: node, Edges: edges})
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: edges, UnknownKinds: unknownKinds}
+	answer.Node.shape(reader)
+	reader.resolve()
+	WriteJSON(w, http.StatusOK, answer)
+}
+
+// wholeReference is ref with its item id, or its block id, written whole where the request
+// wrote it short: the one item of the owner the reference names that carries the prefix. ok is
+// false once it has written the answer itself, the 409 of a prefix two items or more carry.
+//
+// Which owner, and so which set the prefix names one of, is read from the reference by the one
+// rule the index-time resolver reads it by (refs.PrefixScope): an ask's, a comment's or a
+// message's within its issue, an ask's or a comment's written on a project document within that
+// document, and a document block's among the blocks of the document the reference names, at the
+// version it pins. A reference whose owner no scope holds is left as written: a block of an ask,
+// a comment or a message, whose blocks are numbered (`b2`) and are no id a prefix shortens. A
+// prefix nothing carries is left as written too, and the read answers the 404 it always did for
+// a node it has no edge of.
+func (s *server) wholeReference(w http.ResponseWriter, r *http.Request, ref text.Ref, viewer refs.Viewer) (text.Ref, bool) {
+	block := ref.Kind == "block" && ref.Item == ""
+	kind, scope, written, ok := refs.PrefixScope(text.Prefix{Ref: ref, Block: block})
+	if !ok || !text.IsIDPrefix(written) {
+		return ref, true
+	}
+	// A prefix nothing carries is "" and no error, which this route leaves as written.
+	whole, err := s.wholeID(r.Context(), kind, scope, written, viewer)
+	if err != nil {
+		s.writeIDPrefixError(w, err)
+		return ref, false
+	}
+	if whole == "" {
+		return ref, true
+	}
+	if block {
+		ref.Block = whole
+	} else {
+		ref.ID = whole
+	}
+	return ref, true
+}
+
+// referenceQuestions is the question map GET /api/v1/references/questions answers: the document
+// one reference source's text belongs to, and the ask each question block of that document
+// declares, which is what a `#id` written in that text names.
+type referenceQuestions struct {
+	Document  string              `json:"document"`
+	Questions []referenceQuestion `json:"questions"`
+}
+
+// referenceQuestion is one question block of the document: the block id a `#id` writes, the
+// whole id of the ask settlement made for it, and that ask's `dispatch://` address, the one the
+// `#id`'s own edge is stored under (refs.AskRef). The address is empty for an ask no address
+// names - one on an agent conversation's document - which a reader can name by its id alone.
+type referenceQuestion struct {
+	BlockID   string `json:"block_id"`
+	Ask       string `json:"ask"`
+	Reference string `json:"reference"`
+}
+
+// questionSourceKinds are the reference sources whose text belongs to a document, the kinds
+// refs.ScopeOf reads: a document version, an ask, a comment and an issue message.
+var questionSourceKinds = []string{"artifact", "ask", "comment", "message"}
+
+// getReferenceQuestions answers the question map a `#id` in one source's text resolves against:
+// refs.ScopeOf for the document that text belongs to, then refs.QuestionMap for that document's
+// question blocks. The page that renders a text reads it once for the whole text, as the
+// indexing resolver does, rather than once per `#id`.
+//
+// ?id= takes a whole uuid or an id written short, resolved among every source of its kind, as
+// the routes that take an id in their path do (resolveIDPrefixes): one match is read, a prefix
+// two sources or more carry is 409 ID_AMBIGUOUS, and one nothing carries is the 404 of a source
+// whose text belongs to no document, which is also the answer for a direct message and for any
+// source that is on no document. The id arrives in the query string, which the prefix layer
+// does not touch: that layer rewrites path values alone, so a prefix is resolved here. A whole
+// uuid written in one of uuid.Parse's other spellings is canonicalized by the read itself
+// (refs.ScopeOf, canonicalUUID), which is the one place it is canonicalized, so this route
+// hands on what it was given and `urn:uuid:<uuid>` answers as the canonical id answers.
+func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
+	_, human, err := s.optionalActor(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
+		return
+	}
+	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
+	if !slices.Contains(questionSourceKinds, kind) {
+		s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_KIND",
+			"kind %q is not one of %s", kind, strings.Join(questionSourceKinds, ", ")))
+		return
+	}
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_QUERY", "id is required"))
+		return
+	}
+	if text.IsIDPrefix(id) {
+		// A prefix nothing carries is left as written, and the read below answers this route's
+		// own 404 for a source whose text belongs to no document.
+		whole, err := s.wholeID(r.Context(), kind, refs.Scope{}, id, refs.Viewer{Human: human})
+		if err != nil {
+			s.writeIDPrefixError(w, err)
+			return
+		}
+		if whole != "" {
+			id = whole
+		}
+	}
+	document, err := refs.ScopeOf(r.Context(), s.deps.Store.Pool, kind, id)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if document == "" {
+		s.writeHandlerError(w, errorf(http.StatusNotFound, "NOT_FOUND",
+			"the text of %s %s belongs to no document", kind, id))
+		return
+	}
+	questions, err := refs.QuestionMap(r.Context(), s.deps.Store.Pool, document)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	answer := referenceQuestions{Document: document, Questions: make([]referenceQuestion, 0, len(questions))}
+	for blockID, ask := range questions {
+		answer.Questions = append(answer.Questions, referenceQuestion{
+			BlockID: blockID, Ask: ask.ID, Reference: refs.AskRef(ask),
+		})
+	}
+	slices.SortFunc(answer.Questions, func(left, right referenceQuestion) int {
+		return strings.Compare(left.BlockID, right.BlockID)
+	})
+	WriteJSON(w, http.StatusOK, answer)
 }
 
 // sinceHorizon is the horizon a since read caps at: H once an observation taken after the call is
@@ -332,11 +475,12 @@ func pinsAMessageBlock(raw, serverURL string) bool {
 // item id for the from side (the caller swaps an artifact's ref_key for its uuid). The reference
 // is read by text.ParseRef, so a node is read whatever the length of its name: the target bound
 // decides only what text indexes, and a node no index holds an edge to simply has fewer edges.
-func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.Ref, error) {
+// It returns apart the ?kind= values that are no edge kind of this build.
+func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.Ref, []string, error) {
 	values := r.URL.Query()
 	to, from := strings.TrimSpace(values.Get("to")), strings.TrimSpace(values.Get("from"))
 	if (to == "") == (from == "") {
-		return refs.Query{}, text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "exactly one of to or from is required")
+		return refs.Query{}, text.Ref{}, nil, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "exactly one of to or from is required")
 	}
 	raw, direction := to, "in"
 	if from != "" {
@@ -345,24 +489,22 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 	ref, ok := text.ParseRef(raw, serverURL)
 	if !ok {
 		if pinsAMessageBlock(raw, serverURL) {
-			return refs.Query{}, text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q pins a block of a message, which never changes; name the block without @v<N>", raw)
+			return refs.Query{}, text.Ref{}, nil, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q pins a block of a message, which never changes; name the block without @v<N>", raw)
 		}
-		return refs.Query{}, text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, or component", raw)
+		return refs.Query{}, text.Ref{}, nil, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, or component", raw)
 	}
 	// The node as graph_edges stores it: an ask's part and a comment's or message's block under
 	// its storage kind.
 	target, _ := refs.TargetOf(ref)
 	query := refs.Query{Direction: direction, Kind: target.Kind, ID: target.ID}
+	var unknownKinds []string
 	if kinds := strings.TrimSpace(values.Get("kind")); kinds != "" {
 		linkKinds := pmdoc.LinkKinds()
 		for _, kind := range strings.Split(kinds, ",") {
 			kind = strings.TrimSpace(kind)
 			if !slices.Contains(model.GraphEdgeKinds, kind) && !slices.Contains(linkKinds, kind) {
-				declared := "none"
-				if len(linkKinds) > 0 {
-					declared = strings.Join(linkKinds, ", ")
-				}
-				return refs.Query{}, text.Ref{}, errorf(http.StatusBadRequest, "INVALID_KIND", "kind %q is not one of %s, nor a block[] attribute the block schema declares (%s)", kind, strings.Join(model.GraphEdgeKinds, ", "), declared)
+				unknownKinds = append(unknownKinds, kind)
+				continue
 			}
 			query.Kinds = append(query.Kinds, kind)
 		}
@@ -385,11 +527,11 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 	if since := strings.TrimSpace(values.Get("since")); since != "" {
 		value, err := strconv.ParseInt(since, 10, 64)
 		if err != nil || value < 0 {
-			return refs.Query{}, text.Ref{}, errorf(http.StatusBadRequest, "INVALID_SINCE", "since must be an event id")
+			return refs.Query{}, text.Ref{}, nil, errorf(http.StatusBadRequest, "INVALID_SINCE", "since must be an event id")
 		}
 		query.Since = &value
 	}
-	return query, ref, nil
+	return query, ref, unknownKinds, nil
 }
 
 // documentMentionExcerpts replaces the excerpt of every mention written by a document with the

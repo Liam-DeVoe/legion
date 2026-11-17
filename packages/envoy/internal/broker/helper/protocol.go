@@ -34,7 +34,7 @@ type Request struct {
 	WaitSeconds     int      `json:"wait_seconds,omitempty"`     // register: wait up to this long for the enrollment, unless the helper holds no launcher credential
 	RuntimeID       string   `json:"runtime_id,omitempty"`       // enroll-session-key: the session's runtime id on this machine
 	Thumbprint      string   `json:"thumbprint,omitempty"`       // enroll-session-key: the session key's thumbprint
-	SessionID       *string  `json:"session_id,omitempty"`       // enroll-session-key: optional registry session id
+	SessionID       *string  `json:"session_id,omitempty"`       // enroll-session-key: optional registry session id; register: the omp session id this session is to be known by
 	EnrollmentID    string   `json:"enrollment_id,omitempty"`    // unenroll-session-key: which enrollment to end
 }
 
@@ -146,14 +146,30 @@ const (
 	// or changed while the helper was identifying it.
 	CodeUnidentified = "PEER_UNIDENTIFIED"
 	// CodeLoginFailed answers a login the helper could not start with the broker; the error says
-	// why.
+	// why. When the helper does not know the outcome (the request may have reached the broker and
+	// no answer the helper could read came back, or the login did not end within the helper's
+	// bound), the error says that the outcome is unknown and that `agent-secrets machine login` is
+	// safe to run again: no confirmation code was shown, so nobody can approve a login the broker
+	// may hold, and it expires by itself.
 	CodeLoginFailed = "LOGIN_FAILED"
-	// CodeEnrollFailed answers an enroll-session-key the broker refused or could not be asked;
-	// the error says why.
+	// CodeEnrollFailed answers an enroll-session-key whose outcome is known: the broker refused it,
+	// or the helper never asked the broker (it holds no launcher credential, could not read a
+	// sign-in, or could not send the request). This request made no enrollment; the error says why.
 	CodeEnrollFailed = "ENROLL_FAILED"
-	// CodeUnenrollFailed answers an unenroll-session-key the broker refused or could not be
-	// asked; the error says why.
+	// CodeEnrollUnknown answers an enroll-session-key whose outcome the helper does not know: the
+	// request may have reached the broker and no answer the helper could read came back, or the
+	// operation did not end within the helper's bound. So the broker may have made the enrollment.
+	// The same enroll again answers the enrollment the broker made, if it made one; the error says
+	// why the outcome is unknown.
+	CodeEnrollUnknown = "ENROLL_OUTCOME_UNKNOWN"
+	// CodeUnenrollFailed answers an unenroll-session-key whose outcome is known: the broker refused
+	// it, or the helper never asked the broker. This request revoked nothing; the error says why.
 	CodeUnenrollFailed = "UNENROLL_FAILED"
+	// CodeUnenrollUnknown answers an unenroll-session-key whose outcome the helper does not know:
+	// the request may have reached the broker and no answer the helper could read came back, or the
+	// operation did not end within the helper's bound. So the broker may have revoked the
+	// enrollment. An unenroll is safe to run again; the error says why the outcome is unknown.
+	CodeUnenrollUnknown = "UNENROLL_OUTCOME_UNKNOWN"
 	// CodeKeygen answers a register the helper could not make the new session's signing key for;
 	// the error says why.
 	CodeKeygen = "KEYGEN"
@@ -191,8 +207,166 @@ func UnitPath(getenv func(string) string) string {
 	return filepath.Join(dir, "systemd", "user", UnitName)
 }
 
+// LegacyStatePath is where the helper's session records used to live: beside socket, the socket
+// THIS helper is configured to listen on, which is the one `install` wrote into its unit where
+// a machine names one (AGENT_SECRETS_HELPER_SOCK) and DefaultSocket otherwise. That directory
+// is the user's runtime dir, which is tmpfs and goes at a reboot — exactly the event a named
+// session's records must survive (dispatch://INFRA-1167) — so StatePath replaces it and
+// MigrateStateFile moves what it finds there. Reading the configured socket rather than the
+// default is what makes a helper installed with a socket of its own migrate its OWN old
+// records, and no other helper's.
+func LegacyStatePath(socket string) string {
+	return filepath.Join(filepath.Dir(socket), "sessions.json")
+}
+
+// StatePath is where the helper keeps its session records when AGENT_SECRETS_STATE_FILE names
+// no file: sessions.json beside machineFile, the machine login this helper's sessions enrol
+// under (AGENT_SECRETS_MACHINE_FILE, default $HOME/.config/agent-secrets/machine.json), so a
+// helper with nothing set keeps its records at $HOME/.config/agent-secrets/sessions.json,
+// where one upgraded in place on its default socket finds them.
+//
+// Durable, and not in the runtime directory the socket is in: a named session's record holds
+// that session's signing key, and the identity that key stands for must outlive a reboot, while
+// the runtime directory is tmpfs and goes with one.
+//
+// Beside the machine login, and not at one path every helper on the machine shares: the records
+// now hold named sessions' signing keys, so one helper writing another's records would cost
+// that helper every session it holds. The machine file is what keeps them apart, because a
+// helper refuses to start while another holds that file (claimMachineFile in
+// cmd/agent-secrets-helper), so two helpers that can run at once have machine files of their
+// own and, through this, records of their own. A second helper started with a socket of its own
+// and no machine file of its own does not reach the records at all: the claim refuses it first.
+func StatePath(machineFile string) string {
+	return filepath.Join(filepath.Dir(machineFile), "sessions.json")
+}
+
+// writeFileOwnerOnly writes data to path so that nothing but this user can read it, and
+// atomically: it makes path's directory 0700, writes the bytes to path+".tmp" 0600, and renames
+// that over path, so a reader finds either the whole old file or the whole new one. Both the
+// session records and the file MigrateStateFile leaves hold session signing keys, and both are
+// written through here.
+//
+// Both chmods are needed, though the call above each already names the same mode. MkdirAll
+// leaves an EXISTING directory's mode alone, so a directory that was there already — the one the
+// machine login lives in, made by an older release or by hand — could stay group- or
+// world-readable while holding a session's signing key; it is corrected on every write, so no
+// write lands in a directory anyone else can list. And WriteFile applies its mode only when it
+// CREATES the file, so a .tmp left behind by an interrupted write with a wider mode is corrected
+// before these bytes go into it.
+//
+// O_EXCL through CreateTemp-like semantics is not needed here: the name is this writer's own and
+// the directory is 0700.
+func writeFileOwnerOnly(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// MigrateStateFile moves a records file left at the old runtime-directory path to the durable
+// one, once, when the durable path has none: a helper upgraded in place keeps the sessions it
+// had rather than revoking them all at its first start. A rename across filesystems (tmpfs to
+// the home disk) is expected to fail, so it copies and removes instead, writing the copy through
+// writeFileOwnerOnly, the owner-only atomic write the records file is saved with. Anything that
+// goes wrong is returned and only logged: a lost record costs the sessions it names their
+// continuity, never the helper its start.
+func MigrateStateFile(from, to string) error {
+	if from == "" || to == "" || from == to {
+		return nil
+	}
+	if _, err := os.Stat(to); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	data, err := os.ReadFile(from)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := writeFileOwnerOnly(to, data); err != nil {
+		return err
+	}
+	return os.Remove(from)
+}
+
+// BrokerCallWait is how long a client waits for the answer of a broker-call op: login,
+// enroll-session-key or unenroll-session-key, the three ops whose answer is the outcome of a
+// broker call the helper makes while the client waits. It is the timeout a client gives Call, so
+// the dial is inside it. 30 s is what `agent-secrets enroll` and `agent-secrets unenroll` already
+// waited in every release that has them.
+const BrokerCallWait = 30 * time.Second
+
+// DefaultBrokerCallBound is how long the helper lets one broker-call op run before it answers
+// (Server.BrokerCallBound): 20 s, set from BrokerCallWait so that the answer reaches every client
+// inside that wait. A client spends up to 2 s on the dial (Call). The op then runs for at most
+// the bound, and the helper writes its answer within 5 s of the bound, the allowance every op has
+// for its read and its write: the op's requests end with its context at the bound, and the helper
+// answers at the bound plus 1 s whatever the op is doing. 2 s + 20 s + 5 s is 27 s, under 30 s.
+// A released agent-secrets that asks enroll-session-key and unenroll-session-key (every release
+// from legion-envoy-v10.0.0) also waits 30 s for them (BrokerCallWait), so it gets this helper's
+// answer and not an empty reply. Its machine login waits 10 s, so a broker slower than about 8 s
+// can still outlast it. A healthy broker answers in a fraction of a second
+// (DefaultFirstConfirmBound); the slow answers that were measured took 5 s and 8 s.
+const DefaultBrokerCallBound = BrokerCallWait - 10*time.Second
+
+// InstallRestartTimeout bounds the `systemctl --user restart` of the helper that
+// `agent-secrets-helper install` runs after a drain. The restart's stop sends the running helper
+// SIGTERM, and that helper exits once every broker-call op it accepted has answered, at most
+// DefaultBrokerCallBound plus 1 s, or a connection still being read reaches its 5 s read deadline
+// (Server.Serve): 21 s at the most. The start is done once systemd has forked the helper, since
+// the unit runs it in the foreground. 30 s is that stop with 9 s for systemd to queue and fork on
+// a loaded machine. A restart still running at the bound is one install stops waiting for, and
+// systemd keeps its job: install reads the unit's main process, and sends undrain when the helper
+// it drained is still that process and no job for the unit is queued. While one is, the drain
+// ends with that restart or at DefaultDrainBound.
+const InstallRestartTimeout = DefaultBrokerCallBound + 10*time.Second
+
+// DefaultDrainBound is how long a drain holds before the helper ends it by itself
+// (Server.SetDrainBound): twice InstallRestartTimeout, a minute. Install sends SIGTERM through its
+// restart within moments of the drain's answer and waits at most InstallRestartTimeout for that
+// restart, then undoes a drain the restart did not end; the second half is room for the reads of
+// the unit's main process and the undrain around it. A helper still running and still draining
+// at the bound has a drain no install will end: the install that sent it died between the drain
+// and the restart, or its restart reached no process of this helper's (a test rig's systemctl, a
+// unit that runs another helper). Draining on, it would refuse every registration on the machine
+// until something restarts it, as one did for 36 minutes on 2026-11-16 (dispatch://INFRA-3950).
+const DefaultDrainBound = 2 * InstallRestartTimeout
+
+// ErrNoReply is in every Call error that comes after the helper was sent the whole request: the
+// helper gave no reply the client could read. No line came before the connection closed or the
+// timeout passed, or the line is not one JSON object. So the client does not know what the helper
+// did with the request: for a broker-call op, the broker may have acted on it. Test for it with
+// errors.Is. The error's text stays the failure's own.
+var ErrNoReply = errors.New("the helper gave no reply")
+
+// noReplyError is a Call failure that comes after the whole request was written. It reads as the
+// failure it wraps, so every message made from it reads as before. It unwraps to that failure and
+// to ErrNoReply, so errors.As on the failure and errors.Is(err, ErrNoReply) both hold.
+type noReplyError struct{ err error }
+
+func (e *noReplyError) Error() string { return e.err.Error() }
+
+func (e *noReplyError) Unwrap() []error { return []error{e.err, ErrNoReply} }
+
 // Call sends one request and reads one reply, all within timeout, the dial included (the dial
-// alone also gives up after 2 s). A register with wait_seconds needs that much plus slack.
+// alone also gives up after 2 s). A register with wait_seconds needs that much plus slack. An
+// error after the whole request was written (no reply line within the timeout, or a reply that
+// is not one JSON object) also matches ErrNoReply, because the helper may have acted on the
+// request. A failed dial, marshal or write does not: the helper did not get the whole request.
 func Call(sock string, req Request, timeout time.Duration) (Response, error) {
 	deadline := time.Now().Add(timeout)
 	conn, err := (&net.Dialer{Timeout: 2 * time.Second, Deadline: deadline}).Dial("unix", sock)
@@ -210,11 +384,11 @@ func Call(sock string, req Request, timeout time.Duration) (Response, error) {
 	}
 	line, err := bufio.NewReaderSize(conn, maxLine).ReadBytes('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
-		return Response{}, err
+		return Response{}, &noReplyError{err: err}
 	}
 	var resp Response
 	if err := json.Unmarshal(line, &resp); err != nil {
-		return Response{}, fmt.Errorf("helper reply is not one JSON object: %w", err)
+		return Response{}, &noReplyError{err: fmt.Errorf("helper reply is not one JSON object: %w", err)}
 	}
 	return resp, nil
 }

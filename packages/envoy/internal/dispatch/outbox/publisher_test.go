@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // answered is a channel already holding err, the outcome of a test publisher that answers each
@@ -38,6 +39,10 @@ type publishOnly struct{}
 
 func (publishOnly) Request(subject string, _ contracts.Envelope, _ bus.RequestOptions) <-chan error {
 	return answered(fmt.Errorf("test publisher serves no Request (to %q)", subject))
+}
+
+func (publishOnly) PublishStoredAsync(subject string, _ contracts.Envelope, _ string) <-chan error {
+	return answered(fmt.Errorf("test publisher serves no stored publish (to %q)", subject))
 }
 
 func (publishOnly) Probe(time.Duration) error { return nil }
@@ -72,14 +77,22 @@ func (w deadlineWindow) Request(subject string, item contracts.Envelope, opts bu
 	return w.Sender.Request(subject, item, opts)
 }
 
+func (w deadlineWindow) PublishStoredAsync(subject string, item contracts.Envelope, msgID string) <-chan error {
+	if w.passed() {
+		return answered(fmt.Errorf("test window: %w", bus.ErrWindowDeadline))
+	}
+	return w.Sender.PublishStoredAsync(subject, item, msgID)
+}
+
 // unfenced is a publisher hold whose deadline never comes, for a test that scans without one. The
 // record's back-offs need the hold's row too (recordBatch): holding gives an outbox one.
 type unfenced struct{}
 
 func (unfenced) Deadline() time.Time { return time.Now().Add(time.Hour) }
 
-// errMentionPending is what publish returns when the event's destinations held a mentioned
-// session's copy back for a mention still being sent (destinations.leftToMention), and nothing
+// errMentionPending is what publish returns when the event's destinations held a copy back for a
+// mention still being sent - a mentioned session's own (destinations.leftToMention), or a role
+// route's copy waiting for the mention its key comes from (resolveRoleHolders) - and nothing
 // else kept the event from finishing: the batch blocks such an event for mentionPendingDelay
 // (settleEvent).
 var errMentionPending = errors.New("a mention's delivery is still undecided")
@@ -96,23 +109,40 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 	if err != nil {
 		return err
 	}
+	single := &batchEvent{
+		pendingEvent: pendingEvent{event: event, slug: slug, routing: routing},
+		item:         item,
+		delivered:    delivered,
+	}
 	want := newWanted()
-	_, _, _ = eventDestinations(event, item.Topic, routing, want)
+	_, _, _ = eventDestinations(ctx, deps, single, want)
 	found, err := loadLookups(ctx, deps.Store.Pool, want)
 	if err != nil {
 		return err
 	}
-	list, mentionPending, resolveErr := eventDestinations(event, item.Topic, routing, found)
-	single := &batchEvent{item: item, destinationsOf: list}
-	resolveRoleHolders(ctx, deps, []*batchEvent{single})
+	// As a batch does before it reads any destination, and the roles it resolved there are the
+	// ones its own role routes read (resolveDestinations, resolveRoleHolders).
+	resolvedRoles := resolveUnpinnedRoleMentions(ctx, deps, found.readings()...)
+	list, mentionPending, resolveErr := eventDestinations(ctx, deps, single, found)
+	single.destinationsOf, single.mentionPending = list, mentionPending
+	resolveRoleHolders(ctx, deps, []*batchEvent{single}, resolvedRoles)
 	sender := deps.Publisher.WindowUntil(nil)
 	var failures []error
 	for _, dest := range single.destinationsOf {
 		if _, ok := delivered[dest.subject]; ok {
 			continue
 		}
+		if dest.waiting {
+			// A role copy waiting on a mention sends nothing this read, as a batch's own plan
+			// sends nothing for it (destination.waiting, planChains); it holds its key there,
+			// which one event has nothing to hold.
+			continue
+		}
 		routed := item
 		routed.Topic = dest.subject
+		if dest.dedupeKey != "" {
+			routed.DedupeKey = dest.dedupeKey
+		}
 		var answer <-chan error
 		switch {
 		case dest.forward == nil:
@@ -122,7 +152,7 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 		case dest.forward.err != nil:
 			answer = failedAnswer(dest.forward.err)
 		default:
-			answer = dest.forward.send(sender, routed)
+			answer = dest.forward.send(ctx, deps, sender, routed, newKeptHandovers())
 		}
 		if err := <-answer; err != nil && !errors.Is(err, bus.ErrRefused) {
 			failures = append(failures, fmt.Errorf("%s %q: %w", dest.label, dest.id, err))
@@ -131,24 +161,25 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 	if err := errors.Join(append(failures, resolveErr)...); err != nil {
 		return err
 	}
-	if mentionPending {
+	if single.mentionPending {
 		return errMentionPending
 	}
 	return nil
 }
 
 // routeTopics runs add, one of an event's route rules, over event with the followers and authors
-// it asks for read as a batch reads them, and returns the subjects it added.
-func routeTopics(t *testing.T, database *store.Store, event model.Event, add func(model.Event, lookup, *destinations) error) []string {
+// it asks for read as a batch reads them, and returns the subjects it added. The event's issue
+// has no route and no claimant here (routing), as none of these events' issues is claimed.
+func routeTopics(t *testing.T, database *store.Store, event model.Event, add func(model.Event, routing, lookup, *destinations) error) []string {
 	t.Helper()
 	want := newWanted()
-	_ = add(event, want, &destinations{seen: map[string]struct{}{}})
+	_ = add(event, routing{}, want, &destinations{seen: map[string]struct{}{}})
 	found, err := loadLookups(context.Background(), database.Pool, want)
 	if err != nil {
 		t.Fatalf("read the lookups: %v", err)
 	}
 	d := &destinations{seen: map[string]struct{}{}}
-	if err := add(event, found, d); err != nil {
+	if err := add(event, routing{}, found, d); err != nil {
 		t.Fatalf("add the routes: %v", err)
 	}
 	topics := []string{}
@@ -199,9 +230,10 @@ func (p *recordingPublisher) PublishAsync(item contracts.Envelope) <-chan error 
 }
 
 // Request takes a role forward to roleHolder's subject under the forward's dedupe key as the
-// holder's receipt would answer it, recording the envelope, whose topic is still the role's.
+// stream's acknowledgement of the copy it stored answers it, recording the envelope, whose topic
+// is still the role's.
 func (p *recordingPublisher) Request(subject string, item contracts.Envelope, _ bus.RequestOptions) <-chan error {
-	if subject != contracts.AgentSubject(roleHolder) || !strings.HasPrefix(item.DedupeKey, contracts.RoleForwardDedupePrefix) {
+	if subject != contracts.LegacyAgentSubject(roleHolder) || !strings.HasPrefix(item.DedupeKey, contracts.RoleForwardDedupePrefix) {
 		return answered(fmt.Errorf("a Request to %q with dedupe key %q is no role forward to %s", subject, item.DedupeKey, roleHolder))
 	}
 	return answered(p.Publish(item))
@@ -536,7 +568,7 @@ func TestPublishPreviousClaimantTellsTheSessionThatLostTheClaim(t *testing.T) {
 			database := storetest.Open(t)
 			seedIssue(t, database, "T-1", nil)
 			event := model.Event{Type: tc.eventType, Actor: tc.actor, Payload: tc.payload}
-			previousClaimant := func(event model.Event, _ lookup, d *destinations) error {
+			previousClaimant := func(event model.Event, _ routing, _ lookup, d *destinations) error {
 				addPreviousClaimant(event, d)
 				return nil
 			}
@@ -1179,6 +1211,77 @@ func TestRunRoutesAskResolutionToTheAskerAndHumanResolutionToTheRoute(t *testing
 	}
 }
 
+// A person who declines an ask closes it like any other resolution, so the decline takes the same
+// road out: the issue topic, the issue's route, and every session following the ask on its own
+// topic, the asker among them. Each copy names the ask it answers, and carries the four sentences
+// Dispatch writes (model.DeclineDispatchWords) and the person's note in parts of their own, so the
+// reader never has to cut one out of the other.
+func TestADeclineTellsEveryFollowingSessionInDispatchsOwnWords(t *testing.T) {
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	route := "role:legion-controller-x"
+	seedIssue(t, database, "T-1", &route)
+	askID := seedAsk(t, database, "T-1", model.Actor{Kind: "session", ID: "session-asker"}, "Ship it?")
+	seedFollower(t, database, askID, "session-replier")
+	person := model.Actor{Kind: "user", ID: "alice"}
+	note := "The vendor owns that date; I do not."
+	event := appendEvent(t, database, broker, model.Event{
+		IssueKey: new("T-1"),
+		Type:     "ask.resolved",
+		Actor:    person,
+		Payload: model.Ask{
+			ID: askID, IssueKey: new("T-1"), Question: "Ship it?", State: "resolved",
+			Resolution: &model.AskResolution{
+				Kind:          "declined",
+				Reason:        note,
+				DispatchWords: model.DeclineDispatchWords,
+				Actor:         person,
+				At:            time.Unix(1, 0).UTC(),
+			},
+		},
+	})
+	wantTopics := []string{
+		"notifications.dispatch.issue.T-1.ask.resolved",
+		"notifications.role.legion-controller-x",
+		"notifications.agent.session-asker",
+		"notifications.agent.session-replier",
+	}
+	publisher := &recordingPublisher{}
+	stop := run(t, database, publisher, broker)
+	defer stop()
+
+	waitFor(t, time.Second, "decline publication", func() bool {
+		return len(publisher.all()) == len(wantTopics) && publishedAt(t, database, event.ID) != nil
+	})
+	items := publisher.all()
+	if topics := topicsOf(items); !reflect.DeepEqual(topics, wantTopics) {
+		t.Fatalf("published to %#v, want %#v", topics, wantTopics)
+	}
+	for index, item := range items {
+		if item.InReplyTo != askID {
+			t.Fatalf("publication %d (%s) in_reply_to = %q, want the declined ask %q", index, item.Topic, item.InReplyTo, askID)
+		}
+		var payload struct {
+			Payload struct {
+				Resolution model.AskResolution `json:"resolution"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal([]byte(item.Payload), &payload); err != nil {
+			t.Fatalf("decode event payload %s: %v", item.Payload, err)
+		}
+		resolution := payload.Payload.Resolution
+		if resolution.Kind != "declined" {
+			t.Fatalf("publication %d (%s) resolution kind = %q, want declined", index, item.Topic, resolution.Kind)
+		}
+		if resolution.DispatchWords != model.DeclineDispatchWords {
+			t.Fatalf("publication %d (%s) dispatch_words = %q, want %q", index, item.Topic, resolution.DispatchWords, model.DeclineDispatchWords)
+		}
+		if resolution.Reason != note {
+			t.Fatalf("publication %d (%s) reason = %q, want the person's note %q alone", index, item.Topic, resolution.Reason, note)
+		}
+	}
+}
+
 func TestRunAddsBoundRoutePublication(t *testing.T) {
 	for _, tc := range []struct {
 		name, route, wantTopic string
@@ -1713,6 +1816,38 @@ func TestRunMarksIssueLessTargetedMessagesPublishedWithoutRepublishing(t *testin
 	}
 }
 
+// A priority's write appends an event with no owner (api/priorities.go priorityEvent): the outbox
+// finds no destination for it, sends nothing, and settles it published.
+func TestRunSettlesAPriorityEventPublishedWithoutASend(t *testing.T) {
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	created := appendEvent(t, database, broker, model.Event{
+		Type: "priority.updated", Actor: alice,
+		Payload: model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityCreated},
+	})
+	deleted := appendEvent(t, database, broker, model.Event{
+		Type: "priority.updated", Actor: alice,
+		Payload: model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityDeleted},
+	})
+	for _, event := range []model.Event{created, deleted} {
+		if event.Notify || event.IssueKey != nil || event.ArtifactID != nil || event.ProjectKey != nil {
+			t.Fatalf("priority event %d = notify %t owner %v/%v/%v, want no owner and no wake",
+				event.ID, event.Notify, event.IssueKey, event.ArtifactID, event.ProjectKey)
+		}
+	}
+	publisher := &recordingPublisher{}
+	stop := run(t, database, publisher, broker)
+	defer stop()
+
+	waitFor(t, time.Second, "ownerless priority event publication settlement", func() bool {
+		return publishedAt(t, database, created.ID) != nil && publishedAt(t, database, deleted.ID) != nil
+	})
+	if items := publisher.all(); len(items) != 0 {
+		t.Fatalf("priority events published %d NATS envelopes, want 0: %#v", len(items), items)
+	}
+}
+
 // run runs an outbox on database, publishing through publisher, until the returned func stops it.
 func run(t *testing.T, database *store.Store, publisher Publisher, broker *events.Broker) func() {
 	t.Helper()
@@ -1756,7 +1891,7 @@ func appendEvent(t *testing.T, database *store.Store, broker *events.Broker, eve
 
 func seedIssue(t *testing.T, database *store.Store, key string, route *string) {
 	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(), `insert into projects (key, name) values ('TT', 'Test')`); err != nil {
+	if _, err := database.Pool.Exec(context.Background(), `insert into projects (key, name, default_assignee) values ('TT', 'Test', 'alice')`); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -1837,14 +1972,7 @@ func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
 func waitFor(t *testing.T, timeout time.Duration, what string, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if condition() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
+	testwait.WithinPolling(t, timeout, testwait.Poll, what, condition)
 }
 
 func TestRunRoutesChangedDocumentAskAnswerToFollower(t *testing.T) {

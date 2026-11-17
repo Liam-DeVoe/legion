@@ -1,28 +1,31 @@
 // Package testpg gives a test that brings its own servers, as a natslive test does with testnats,
-// an empty Postgres database and the URL to hand a binary. The caller migrates it itself. A test
-// of Dispatch's store against a server CI provides uses internal/dispatch/store/storetest instead,
-// which hands back a migrated store rather than a URL.
+// an empty Postgres database and the URL to hand a binary. The caller migrates it itself. URL is
+// the helper for a test that may have no server: it takes the one DISPATCH_TEST_DATABASE_URL
+// names, or starts a container when that variable is unset. A test that already holds the URL of
+// the server it runs on calls internal/testpg/testdb's DatabaseOn instead, which reads no variable,
+// starts nothing and links no testcontainers package. A test of Dispatch's store that wants a
+// migrated store rather than a URL calls internal/dispatch/store/storetest instead.
 package testpg
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
+	"errors"
 	"net/url"
 	"os"
 	"testing"
 
 	"github.com/docker/docker/api/types/container"
-	"github.com/jackc/pgx/v5"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
+
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // Image is the pgvector server image CI uses for Dispatch's Postgres service: pgvector 0.8.7 on
-// PostgreSQL 18 (tag 0.8.7-pg18), as ghcr.io/sjawhar/legion/ci holds it, the copy of
+// PostgreSQL 18 (tag 0.8.7-pg18), as ghcr.io/cybermonklabs/legion/ci holds it, the copy of
 // pgvector/pgvector (.github/ci-images.yaml). The envoy-infra-go job pulls it before the natslive
 // tests run, so a test does not fetch it in the middle of a lane.
-const Image = "ghcr.io/sjawhar/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11"
+const Image = "ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11"
 
 // databaseURLEnv names the Postgres server a test may be given instead of starting one. It is
 // spelled here rather than taken from internal/dispatch/store/storetest, which declares the same
@@ -55,47 +58,17 @@ func URL(t testing.TB) string {
 }
 
 // databaseOn creates a database of this test's own on the server raw names, and drops it when the
-// test ends. The name is random because every test of every package sharing that server takes one.
+// test ends: testdb.DatabaseOn over that server's postgres database, as storetest's admin
+// connection uses it.
 func databaseOn(t testing.TB, raw string) string {
 	t.Helper()
 	server, err := url.Parse(raw)
 	if err != nil {
-		t.Fatalf("parse %s: %v", databaseURLEnv, err)
+		// url.Parse's own error quotes the URL it was given, so only the error it wraps is printed.
+		t.Fatalf("parse %s: %v", databaseURLEnv, errors.Unwrap(err))
 	}
-	var suffix [8]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
-		t.Fatalf("random database name: %v", err)
-	}
-	name := "testpg_" + hex.EncodeToString(suffix[:])
-	admin := databaseURL(*server, "postgres")
-	// A copy of template1's files: created the default way, through the write-ahead log, an empty
-	// database costs 4.4 MB of log (docs/testing.md, "A database a Go test creates").
-	adminExec(t, admin, "create database "+name+" strategy file_copy")
-	// `with (force)` ends any connection the test left open, so one leaked pool cannot keep a
-	// database on a shared server for the rest of the run.
-	t.Cleanup(func() { adminExec(t, admin, "drop database "+name+" with (force)") })
-	return databaseURL(*server, name)
-}
-
-// adminExec runs one statement on the server's postgres database over a connection of its own:
-// neither create database nor drop database may run inside a transaction or against the database
-// it names.
-func adminExec(t testing.TB, admin, statement string) {
-	t.Helper()
-	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, admin)
-	if err != nil {
-		t.Fatalf("connect to the Postgres %s names: %v", databaseURLEnv, err)
-	}
-	defer conn.Close(ctx)
-	if _, err := conn.Exec(ctx, statement); err != nil {
-		t.Fatalf("%s: %v", statement, err)
-	}
-}
-
-func databaseURL(server url.URL, database string) string {
-	server.Path = "/" + database
-	return server.String()
+	server.Path = "/postgres"
+	return testdb.DatabaseOn(t, server.String(), "testpg")
 }
 
 // containerURL starts Image, waits for Postgres to finish its first initialization and be ready

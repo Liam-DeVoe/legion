@@ -23,6 +23,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 	ygws "github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
@@ -40,24 +41,44 @@ func headerIdentity(database *store.Store) identity.HeaderIdentity {
 	return identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)}
 }
 
-func newTestService(t *testing.T) (*Service, string) {
-	t.Helper()
-	database := storetest.Open(t)
-	artifactID := createDocument(t, database, "# First")
-	service := New(Deps{
+// testServiceDeps are the dependencies every document service of this package's tests is built
+// with, on database. A caller that builds a service with them owns its shutdown:
+// newTestServiceOn registers one, and a caller that shuts its service down by hand (a seeding
+// service a test ends before it swaps the manifest, newAdmissionServer) builds New with these
+// directly.
+func testServiceDeps(database *store.Store) Deps {
+	return Deps{
 		Store:     database,
 		Events:    events.NewBroker(),
 		Identity:  headerIdentity(database),
 		ServerURL: "https://dispatch.example",
 		Settle:    20 * time.Millisecond,
-	})
+	}
+}
+
+// newTestServiceOn builds a document service on database and shuts it down when the test ends.
+// Where that shutdown runs among the test's other cleanups matters to a test that swaps the
+// schema manifest: pmdoc's readers do not lock it, so the swap's restore must run after this
+// shutdown has stopped the service's room, settlement and flush goroutines, which read it.
+// Cleanups run last in first out, so such a test registers its restore before it calls this.
+func newTestServiceOn(t *testing.T, database *store.Store) *Service {
+	t.Helper()
+	service := New(testServiceDeps(database))
 	t.Cleanup(func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
-	return service, artifactID
+	return service
 }
+
+func newTestService(t *testing.T) (*Service, string) {
+	t.Helper()
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "# First")
+	return newTestServiceOn(t, database), artifactID
+}
+
 func TestRepairingAnUnreadableAskBlockCountsTheAskItOpens(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
@@ -463,10 +484,8 @@ func TestSettlementRepairsServerOwnedAskAttributesOncePerVersion(t *testing.T) {
 	`, askID, answerJSON); err != nil {
 		t.Fatalf("answer indexed ask: %v", err)
 	}
-	editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
-		tree.Children[0].Attrs["state"] = "open"
-		return tree
-	})
+	// The block still reads state="open" while its row is answered: a browser's edit setting it to
+	// open again would change nothing, and a transaction that changes nothing commits nothing.
 	settleCurrentGeneration(t, service, artifactID)
 	waitForDocumentText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"answered\" answered_by=\"alice\" answered_at=\""+answer.At.Format(time.RFC3339Nano)+"\" selected=\"[]\"}\nShip it?\n:::\n")
 	var repaired int
@@ -1112,7 +1131,7 @@ func TestEditAskOfAnEmptyQuestionNamesTheStep(t *testing.T) {
 			` (paragraph) reads "![a photo](/photo.png)"; no document edit writes a paragraph into a decision, ` +
 			`so none reaches this block - upload the document again as a new version ` +
 			`with the question written beside that paragraph (dispatch artifact --issue <KEY>, or ` +
-			`--project <KEY> for a project's document, --name <the document> --content-file -), or write the ` +
+			`--project <KEY> for a project's document, --name <the document> --content-file - --force), or write the ` +
 			`question beside it in the document editor; ` +
 			`either keeps what the paragraph holds`
 		if err == nil || err.Error() != want {
@@ -2205,6 +2224,12 @@ func followAskRefusal(t *testing.T, service *Service, artifactID, blockID string
 			}
 		}
 		kept = remaining
+		// The step the refusal names where its deletes drop a decision: "a decision among them
+		// whose ask is still open cannot be deleted by a document edit, so answer or resolve
+		// that ask, or repair the decision in the document editor, before this delete"
+		// (askRepairStep). The server refuses such an edit too (refuseBatchDroppedAskBlocks), so
+		// the follow resolves each of those asks, as the ask route resolves one.
+		resolveOpenAsksUnder(t, service, artifactID, ask, deletes)
 		if _, applyErr := joinedApplyOps(service, artifactID, ops, model.Actor{Kind: "user", ID: "alice"}, nil); applyErr != nil {
 			t.Fatalf("one document edit deleting %q, as the refusal names: %v\nrefusal: %v", deletes, applyErr, err)
 		}
@@ -3456,6 +3481,38 @@ func TestSettlementMarksAnAskWithAParagraphAfterItsOptionsInvalid(t *testing.T) 
 	})
 }
 
+// A browser edit reaches a document through the Yjs room and settlement, where no ask route's
+// check runs, so the bound an ask's question and options share (askWordingTooLong) is
+// settlement's too: a decision one unit over is marked invalid, with a block.invalid event
+// naming the bound, and its row is left open as it was. Were that wording stored, the ask
+// would take no PATCH at all - an urgency-only edit included - because every ask route holds
+// the merged ask to the same bound. Shortening the question by one unit repairs it.
+func TestSettlementMarksADecisionOverTheWordingBoundInvalid(t *testing.T) {
+	const blockID = "ask-wording"
+	options := []model.AskOption{{Label: "Ship", Description: "Release it"}, {Label: "Hold", Description: "Wait for review"}}
+	// The options the seed wrote spend their own units of the bound; the question fills the
+	// rest of it and one unit more.
+	question := strings.Repeat("a", contracts.DispatchEventBodyMax+1-AskWordingUnits("", options))
+	service, artifactID := seedIndexedShipAsk(t, blockID)
+	setQuestion := func(text string) {
+		t.Helper()
+		editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
+			ask := firstAsk(tree)
+			ask.Children[0] = parsedBlock(t, text+"\n")
+			return tree
+		})
+		settleCurrentGeneration(t, service, artifactID)
+	}
+
+	setQuestion(question)
+	reason := fmt.Sprintf("ask block %q is 1 characters over the %d-character limit on its question and options (%d/%d)",
+		blockID, contracts.DispatchEventBodyMax, contracts.DispatchEventBodyMax+1, contracts.DispatchEventBodyMax)
+	assertAskMarkedInvalidAndKept(t, service, artifactID, blockID, reason)
+
+	setQuestion(question[:len(question)-1])
+	assertAskRepaired(t, service, artifactID, blockID, question[:len(question)-1], options)
+}
+
 // seedIndexedShipAsk is a document holding one ask, "Should we ship?" with the options Ship and
 // Hold, which settlement has indexed as an open ask row. Its settlements run only when the test
 // runs them.
@@ -3539,6 +3596,34 @@ func blockAskRow(t *testing.T, service *Service, artifactID, blockID string) (st
 		t.Fatalf("decode ask row options: %v", err)
 	}
 	return state, question, options
+}
+
+// resolveOpenAsksUnder resolves the open ask of every decision the named blocks of ask hold,
+// themselves included: the step the refusal names before a delete of theirs, which the server
+// refuses while such an ask is open (refuseDroppedAskBlocks). It writes the row as the ask
+// route's resolve writes it, a resolution beside the state the table holds them to.
+func resolveOpenAsksUnder(t *testing.T, service *Service, artifactID string, ask *pmdoc.Node, blocks []string) {
+	t.Helper()
+	for _, id := range blocks {
+		pmdoc.WalkAskBlocks(blockByID(ask, id), func(decision string) {
+			if decision == "" {
+				return
+			}
+			if _, err := service.store.Pool.Exec(context.Background(), `
+				update asks
+				set state = 'resolved', answer = null,
+				    resolution = jsonb_build_object(
+				      'kind', 'resolved',
+				      'reason', 'repaired by the delete the refusal names',
+				      'actor', jsonb_build_object('kind', 'user', 'id', 'alice'),
+				      'at', now()
+				    )
+				where block_artifact_id = $1 and block_id = $2 and state = 'open'
+			`, artifactID, decision); err != nil {
+				t.Fatalf("resolve the open ask of the decision %q the delete drops: %v", decision, err)
+			}
+		})
+	}
 }
 
 // firstAsk is the document's first top-level ask.
@@ -4332,7 +4417,7 @@ func TestBackfillStampsClosedIssueDocument(t *testing.T) {
 	if _, err := database.Pool.Exec(context.Background(), `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
 		t.Fatalf("close document issue: %v", err)
 	}
-	service.SetIssueClosed(context.Background(), "DOC-1", true)
+	service.issueOpenChanged(context.Background(), "DOC-1")
 
 	reports, err := service.BackfillBlockIDs(context.Background())
 	if err != nil {
@@ -4366,7 +4451,7 @@ func TestAClosedIssuesDocumentReadsItsBlocksWithoutFailingItsRoom(t *testing.T) 
 	if _, err := database.Pool.Exec(context.Background(), `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
 		t.Fatalf("close document issue: %v", err)
 	}
-	service.SetIssueClosed(context.Background(), "DOC-1", true)
+	service.issueOpenChanged(context.Background(), "DOC-1")
 
 	markdown, blocks, err := service.TextWithBlocks(context.Background(), artifactID)
 	if err != nil {
@@ -4393,7 +4478,7 @@ func TestBackfillDoesNotBypassClosedIssueForConcurrentApplyOps(t *testing.T) {
 	if _, err := database.Pool.Exec(context.Background(), `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
 		t.Fatalf("close document issue: %v", err)
 	}
-	service.SetIssueClosed(context.Background(), "DOC-1", true)
+	service.issueOpenChanged(context.Background(), "DOC-1")
 
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -4843,15 +4928,85 @@ func snapshotAndCommitVersion(t *testing.T, service *Service, artifactID string,
 // settlement after a quiet settle delay does; settleNow settles the room as it stands.
 func settleCurrentGeneration(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
-		t.Fatalf("wait for live updates to reach persistence: %v", err)
-	}
-	if err := service.waitForDurableAppends(ctx, artifactID); err != nil {
-		t.Fatalf("wait for live updates to become durable: %v", err)
-	}
+	awaitRoomAppends(t, service, artifactID, "reach persistence", service.waitForPendingUpdates)
+	awaitRoomAppends(t, service, artifactID, "become durable", service.waitForDurableAppends)
 	settleNow(service, artifactID)
+}
+
+// appendStall is how long awaitRoomAppends lets the service land no append at all, while the room
+// it waits for still counts one, before it fails: three times the longest such stall measured, as
+// docs/testing.md asks of a bound. With this bound lifted to 10 min, the package as CI runs it, on
+// a 288-CPU machine at a load of 230 when it began (2026-11-16), had 927 of these waits go more
+// than 1 s with no append landing and the room's counts unchanged, 231 more than 3 s and 22 5 s
+// or more; the longest went 5.363 s.
+const appendStall = 16 * time.Second
+
+// awaitRoomAppends waits until room's live updates have reached its persistence or landed, by
+// wait - the service's waitForPendingUpdates or waitForDurableAppends, which the room's idle
+// signal wakes - and fails the test if they do not. It puts no span on the wait: a room's appends
+// queue behind every other room's on the service's room-appends pool, so how long they take grows
+// with how many rooms the test drives at once, one per CPU for a test whose subtests run in
+// parallel, and with the machine's load. It fails on appends that have stopped instead: no append
+// landed anywhere in the service and the room's own counts unchanged for appendStall, or the run's
+// deadline 30 s away, so that the failure names this wait rather than the binary's timeout.
+func awaitRoomAppends(t *testing.T, service *Service, room, what string, wait func(context.Context, string) error) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	waited := make(chan error, 1)
+	go func() { waited <- wait(ctx, room) }()
+	type progress struct {
+		landed  uint64
+		pending int
+		durable int64
+	}
+	read := func() progress {
+		pending, durable := roomAppendCounts(service, room)
+		return progress{landed: service.appendFigures.batches.Load(), pending: pending, durable: durable}
+	}
+	last, movedAt := read(), time.Now()
+	deadline, bounded := t.Deadline()
+	check := time.NewTicker(100 * time.Millisecond)
+	defer check.Stop()
+	for {
+		select {
+		case err := <-waited:
+			if err != nil {
+				t.Fatalf("wait for live updates to %s: %v", what, err)
+			}
+			return
+		case now := <-check.C:
+			if current := read(); current != last {
+				last, movedAt = current, now
+			}
+			var why string
+			switch {
+			case now.Sub(movedAt) >= appendStall:
+				why = fmt.Sprintf("no append landed in the service for %s", appendStall)
+			case bounded && deadline.Sub(now) < 30*time.Second:
+				why = "the run's deadline is 30 s away"
+			default:
+				continue
+			}
+			cancel()
+			<-waited
+			t.Fatalf("wait for live updates to %s: %s, and the room counts %d updates its persistence has not taken and %d appends that have not landed",
+				what, why, last.pending, last.durable)
+		}
+	}
+}
+
+// roomAppendCounts is what room's record counts: updates its persistence has not taken, and
+// durable appends that have not landed. A room with no record counts neither.
+func roomAppendCounts(service *Service, room string) (pending int, durable int64) {
+	value, ok := service.rooms.Load(room)
+	if !ok {
+		return 0, 0
+	}
+	state := value.(*roomState)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.pendingUpdates, state.durableAppends.Load()
 }
 
 // settleNow runs the room's settlement at its current generation at once, whatever the room has not
@@ -5373,14 +5528,14 @@ func TestIssueReopenRestoresLiveWrites(t *testing.T) {
 	if _, err := service.store.Pool.Exec(context.Background(), `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
 		t.Fatalf("close document issue: %v", err)
 	}
-	service.SetIssueClosed(context.Background(), "DOC-1", true)
+	service.issueOpenChanged(context.Background(), "DOC-1")
 	if _, err := joinedReplaceText(service, artifactID, "closed", model.Actor{Kind: "user", ID: "alice"}); !errors.Is(err, ErrIssueClosed) {
 		t.Fatalf("write to closed issue = %v, want ErrIssueClosed", err)
 	}
 	if _, err := service.store.Pool.Exec(context.Background(), `update issues set closed_at = null where key = 'DOC-1'`); err != nil {
 		t.Fatalf("reopen document issue: %v", err)
 	}
-	service.SetIssueClosed(context.Background(), "DOC-1", false)
+	service.issueOpenChanged(context.Background(), "DOC-1")
 	service.events.Publish(model.Event{IssueKey: new("DOC-1"), Type: "issue.closed"})
 	if got := service.events.SubscriberCount(); got != 0 {
 		t.Fatalf("stale issue.closed event gained %d subscriptions, want none", got)
@@ -5553,11 +5708,11 @@ func (s failingVersionedStore) AppendUpdate(ctx context.Context, room string, up
 	return s.VersionedStore.AppendUpdate(ctx, room, update)
 }
 
-func (s failingVersionedStore) AppendUpdateWithCredit(ctx context.Context, room string, update []byte, contentChanged bool, credit *UpdateCredit) (persistence.Version, error) {
+func (s failingVersionedStore) AppendUpdatesWithCredit(ctx context.Context, room string, updates []BrowserUpdate) (persistence.Version, error) {
 	if s.appendErr != nil {
 		return 0, s.appendErr
 	}
-	return s.VersionedStore.AppendUpdateWithCredit(ctx, room, update, contentChanged, credit)
+	return s.VersionedStore.AppendUpdatesWithCredit(ctx, room, updates)
 }
 
 func (s failingVersionedStore) AppendRoomFlush(ctx context.Context, room string, flush *RoomFlush, through uint64, credit *UpdateCredit) (persistence.Version, error) {
@@ -5602,12 +5757,12 @@ func (s *blockingFirstAppendStore) AppendUpdate(ctx context.Context, room string
 	return s.VersionedStore.AppendUpdate(ctx, room, update)
 }
 
-func (s *blockingFirstAppendStore) AppendUpdateWithCredit(ctx context.Context, room string, update []byte, contentChanged bool, credit *UpdateCredit) (persistence.Version, error) {
+func (s *blockingFirstAppendStore) AppendUpdatesWithCredit(ctx context.Context, room string, updates []BrowserUpdate) (persistence.Version, error) {
 	if s.blocked.CompareAndSwap(false, true) {
 		close(s.entered)
 		<-s.release
 	}
-	return s.VersionedStore.AppendUpdateWithCredit(ctx, room, update, contentChanged, credit)
+	return s.VersionedStore.AppendUpdatesWithCredit(ctx, room, updates)
 }
 
 func (s *blockingFirstAppendStore) AppendRoomFlush(ctx context.Context, room string, flush *RoomFlush, through uint64, credit *UpdateCredit) (persistence.Version, error) {
@@ -5627,8 +5782,12 @@ func (s *Service) room(name string) *roomState {
 }
 
 // recordActor makes actor a pending author of room's next version, and its latest editor, as a
-// landed browser edit does: a durable pending author, written under the document's advisory lock
-// (AppendUpdateWithCredit), and the room's latest edit source.
+// landed browser edit does. Under the document's advisory lock (AppendUpdatesWithCredit) it makes
+// the writes such an append makes: a durable pending author, and a pending-settlement row saying
+// the document owes a settlement from that edit and naming actor as its latest edit source
+// (updateOwedStatement). It then names actor on the room's record, where a
+// settlement on this process reads the source while that row stands. A test staging a document
+// that owes no settlement deletes the row after this call (clearPendingSettlementRow).
 func (s *Service) recordActor(t *testing.T, room string, actor model.Actor) {
 	t.Helper()
 	ctx := context.Background()
@@ -5643,8 +5802,17 @@ func (s *Service) recordActor(t *testing.T, room string, actor model.Actor) {
 	if err := upsertPendingAuthors(ctx, tx, room, pendingAuthorsAt(map[string]model.Actor{actorKey(actor): actor}, 0)); err != nil {
 		t.Fatalf("record %s as a pending author: %v", actor.ID, err)
 	}
+	var owed owedUpdates
+	owed.credit(&actor, actor.Kind == "user")
+	statement, err := updateOwedStatement(room, owed)
+	if err != nil {
+		t.Fatalf("the statement recording %s's edit as owed: %v", actor.ID, err)
+	}
+	if err := statement.exec(ctx, tx); err != nil {
+		t.Fatalf("record the document as owing a settlement from %s's edit: %v", actor.ID, err)
+	}
 	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit %s as a pending author: %v", actor.ID, err)
+		t.Fatalf("commit %s's recorded edit: %v", actor.ID, err)
 	}
 	state := s.lockState(room)
 	// Every recorder of an edit source moves creditSeq (creditContentChange, Ledger.creditRooms),
@@ -6034,13 +6202,15 @@ func TestTreeOfRefusesAnUnloadedDocument(t *testing.T) {
 
 // A room evicted after settleRoom's generation check but before it reads the live document
 // (an Evict whose timer Stop misses the timer that already fired) must not make the settle
-// dereference a nil document and crash the server. The settle ends quietly and the next
-// write to the room settles on its own.
+// dereference a nil document and crash the server. The settle stops short, and since the
+// eviction moved the room's generation its retry arms nothing: the next write to the room settles
+// on its own.
 func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
 	var evicted atomic.Int32
+	reached := make(chan struct{})
 	service.afterSettleWarm = func(room string) {
 		if room != artifactID || !evicted.CompareAndSwap(0, 1) {
 			return
@@ -6048,13 +6218,16 @@ func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
 		if err := service.Evict(ctx, room); err != nil {
 			t.Errorf("evict mid-settle: %v", err)
 		}
+		close(reached)
 	}
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
-	deadline := time.Now().Add(3 * time.Second)
-	for evicted.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if evicted.Load() == 0 {
+	// The settlement runs on a timer of its own, so this waits for the hook itself rather than
+	// polling a clock: a box running several packages at once took longer than the three seconds
+	// a poll allowed and failed a row whose subject is not timing at all. The ceiling is a
+	// ceiling, not a duration - a settlement that lands at once ends the wait at once.
+	select {
+	case <-reached:
+	case <-time.After(30 * time.Second):
 		t.Fatal("settlement never reached the hook")
 	}
 	// The hook is one-shot through the CAS above; leaving it in place avoids racing the settle
@@ -6073,6 +6246,51 @@ func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
 	}
 	if markdown != "later\n" {
 		t.Fatalf("version %d markdown = %q, want %q", version.Number, markdown, "later\n")
+	}
+}
+
+// A settlement whose room a close retires between its warm-up and its read of the room, a close
+// that moves no room generation - ygo's idle sweep, the close of the room at its issue's reopen, a
+// repeated close of a record that already reads closed; the test closes the room through ygo
+// (CloseRoom), which moves none - has no room to settle from, and no load of the document follows
+// to arm its settlement again: the timer that ran it was its only arming. It stops short
+// (errRoomReplaced), and its retry warms the room again and settles the document. An eviction
+// moves the generation, so its settlement is not retried and the document is left to the reload
+// (TestSettleSurvivesEvictionBetweenWarmAndTreeRead).
+func TestASettlementWhoseRoomACloseRetiredBeforeItsReadIsArmedAgain(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	seedServiceText(t, service, artifactID, "before")
+	settleCurrentGeneration(t, service, artifactID)
+	versions := latestVersionNumber(t, service, artifactID)
+	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
+	waitForLandedAppends(t, service, artifactID)
+	var closed atomic.Bool
+	service.afterSettleWarm = func(room string) {
+		if room != artifactID || !closed.CompareAndSwap(false, true) {
+			return
+		}
+		if err := service.srv.CloseRoom(room, true); err != nil {
+			t.Errorf("close the room between the settlement's warm-up and its read: %v", err)
+		}
+	}
+	// The hook stays in place, one-shot through the CAS, so nothing races the settlement that
+	// reads it. The delay is written once, before the settlement it arms.
+	service.settle = 20 * time.Millisecond
+	service.scheduleSettle(artifactID)
+	waitFor(t, roomWait(t), "the document whose room closed under its settlement to settle", func() bool {
+		owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
+		return err == nil && !owed
+	})
+	if !closed.Load() {
+		t.Fatal("no settlement reached the window between its warm-up and its read of the room")
+	}
+	if latest := latestVersionNumber(t, service, artifactID); latest != versions+1 {
+		t.Fatalf("latest version = %d, want %d: the retried settlement wrote no version", latest, versions+1)
+	}
+	requireLatestVersionMarkdown(t, service, artifactID, "after\n")
+	if err := service.roomFailure(artifactID); err != nil {
+		t.Fatalf("the document's room failed: %v", err)
 	}
 }
 

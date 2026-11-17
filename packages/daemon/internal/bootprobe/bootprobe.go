@@ -51,6 +51,11 @@ type Outcome struct {
 	// is logged with that detail and run again after the policy's longest wait, and counts against
 	// no attempt budget: it said nothing about the probed thing, and no number of them is a verdict.
 	Waiting string
+	// Pending is set when the attempt's work is still running past the attempt's bound and goes on
+	// by itself — a token command whose grant waits on a person's approval — and says what it waits
+	// on. Such an attempt is logged with that detail and run again after the policy's first wait,
+	// which joins the work still running, and counts against no attempt budget.
+	Pending string
 	Detail  string
 }
 
@@ -81,6 +86,10 @@ func Run(ctx context.Context, name string, retry Retry, log *slog.Logger, attemp
 			delay = retry.Max
 			log.Warn("boot probe is waiting on capacity; running it again",
 				"probe", name, "detail", outcome.Waiting, "retryIn", delay.String())
+		case outcome.Pending != "":
+			delay = retry.Initial
+			log.Warn("boot probe's work is still running; waiting for it",
+				"probe", name, "detail", outcome.Pending, "retryIn", delay.String())
 		case retry.Attempts > 0 && transients+1 >= retry.Attempts:
 			message := fmt.Sprintf("the %s probe never completed within its retry budget (%d attempts)", name, retry.Attempts)
 			if outcome.Detail != "" {
@@ -293,10 +302,13 @@ func NATSUser(output string) string {
 }
 
 // RoleConfigFilesFlag is the `legion probe-image` flag the daemon's probe Sandbox passes once per
-// role `role_config_files` names, its value RoleConfigFilesValue: the probe reads that role's
-// PI_CONFIG_FILES as the role's Oh My Pi will start with it, the probe pod's own overlays then the
-// role's, and refuses with a RoleOverlaysRefusedLine when one is missing or Oh My Pi refuses them.
-// Passed only for a role that names overlays, so a deployment that names none probes with the
+// role per whole PI_CONFIG_FILES tail that role starts on — its own `role_config_files`, and
+// those files with the overlays of one arm of one declared experiment after them — its value
+// RoleConfigFilesValue: the probe reads each value as that role's Oh My Pi will start with it,
+// the probe pod's own overlays then the value's, and refuses with a RoleOverlaysRefusedLine when
+// one is missing or Oh My Pi refuses them. A role may be named by more than one occurrence, and
+// each is read on its own, since the union of two arms is a configuration no launch produces.
+// Passed only for a value that names a file, so a deployment that names none probes with the
 // command it always had.
 const RoleConfigFilesFlag = "--role-config-files"
 

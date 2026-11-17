@@ -25,6 +25,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/config"
+	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -94,6 +95,9 @@ func (f approvalFixture) baseEnv(databaseURL, publicURL string) []string {
 		"BROKER_K8S_OIDC_ISSUER=" + f.issuer.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE=" + approvalPodAudience,
 		"BROKER_SERVICE_LOGINS=" + approvalLauncherService + "=" + approvalLauncherAccount,
+		// The account this fixture's pods run as, bound to the service its launcher logs in as:
+		// what lets that login enrol them (enroll.Service.podUnderTokenLogin).
+		"BROKER_SERVICES=" + approvalLauncherService + "=" + approvalPodAccount,
 		"BROKER_API_ACCOUNTS=dispatch=" + approvalDispatchAccount,
 		// A stopped broker exits at once rather than draining requests no row leaves in flight.
 		"BROKER_DRAIN_SECONDS=0",
@@ -373,27 +377,32 @@ func TestTheBinaryApprovesASecretOnItsOwnPage(t *testing.T) {
 		})
 	})
 
-	t.Run("A1: the page says what Approve gives and what Deny and the expiry do, and a request with no reason says so", func(t *testing.T) {
+	t.Run("A1: the page says what Approve gives and what Deny and the expiry do, and a request with no reason never reaches it", func(t *testing.T) {
 		pods := f.pods(t, base)
 		podD := pods.Enroll(launch, "pod-d", approvalPodAccount)
-		reply := pods.AskWithReason(podD, approvalSecretName, "")
+		reply := pods.Ask(podD, approvalSecretName)
 		if reply.State != "pending" || reply.RecordID == nil {
-			t.Fatalf("pod-d's request with no reason = %+v, want pending on a record", reply)
+			t.Fatalf("pod-d's request = %+v, want pending on a record", reply)
 		}
-		silent := *reply.RecordID
+		asked := *reply.RecordID
 		b := newBrowser(t)
-		b.SignIn(t, silent, brokertest.Person(ada))
-		block := brokertest.PageText(t, brokertest.RecordBlock(t, b.Page(t, silent).Body, silent))
-		t.Logf("ada's block for pod-d's request, which named no reason, reads: %s", block)
+		b.SignIn(t, asked, brokertest.Person(ada))
+		block := brokertest.PageText(t, brokertest.RecordBlock(t, b.Page(t, asked).Body, asked))
+		t.Logf("ada's block for pod-d's request reads: %s", block)
 		for _, want := range []string{
-			"Reason No reason given",
-			"Lasts once approved until the session ends",
-			"Approve gives this session the value of these secrets until the session ends.",
+			"Reason pod-d needs " + approvalSecretName,
+			"Lasts once approved for 15m0s",
+			"Approve gives this session the value of these secrets for 15m0s.",
 			"Deny refuses them, and so does leaving the request until it expires.",
 		} {
 			if !strings.Contains(block, want) {
 				t.Fatalf("the block does not say %q:\n%s", want, block)
 			}
+		}
+
+		silent := pods.AskWithReason(podD, approvalSecretName, "")
+		if silent.State != "denied" || silent.RecordID != nil || !strings.Contains(silent.Detail, policy.ReasonNoReason) {
+			t.Fatalf("pod-d's request with no reason = %+v, want it denied with no record, saying %q", silent, policy.ReasonNoReason)
 		}
 	})
 
@@ -613,9 +622,10 @@ func TestTheBinaryApprovesASecretOnItsOwnPage(t *testing.T) {
 		if res.Status != http.StatusSeeOther || res.Header.Get("Location") != "/approve/"+recordC || res.Cookie(sessionCookieName) == nil {
 			t.Fatalf("process #2's callback = %d to %q, want 303 to /approve/%s with a session:\n%s", res.Status, res.Header.Get("Location"), recordC, res.Body)
 		}
-		const signedIn = "approval sign-in login=" + ada
-		if !strings.Contains(second.Log(), signedIn) || strings.Contains(first.Log(), signedIn) {
-			t.Fatalf("process #2 logged the sign-in %t, process #1 %t; want #2 alone", strings.Contains(second.Log(), signedIn), strings.Contains(first.Log(), signedIn))
+		signedIn := map[string]any{"login": ada}
+		if len(recordsWith(second.Log(), "approval sign-in", signedIn)) == 0 || len(recordsWith(first.Log(), "approval sign-in", signedIn)) != 0 {
+			t.Fatalf("process #2 logged the sign-in %v, process #1 %v; want #2 alone",
+				recordsWith(second.Log(), "approval sign-in", signedIn), recordsWith(first.Log(), "approval sign-in", signedIn))
 		}
 
 		for _, process := range []*brokerProcess{first, second} {
@@ -627,7 +637,7 @@ func TestTheBinaryApprovesASecretOnItsOwnPage(t *testing.T) {
 		third := f.start(t, shared, replicas.URL, f.signInEnv()...)
 		replicas.route(t, third)
 		b.Decide(t, recordC, true)
-		if !strings.Contains(third.Log(), "approval page decision login="+ada+" record="+recordC) {
+		if decided := (map[string]any{"login": ada, "record": recordC}); len(recordsWith(third.Log(), "approval page decision", decided)) == 0 {
 			t.Fatalf("process #3 did not log ada's decision of %s:\n%s", recordC, third.Log())
 		}
 		granted := pods.State(p, reply.RequestID)

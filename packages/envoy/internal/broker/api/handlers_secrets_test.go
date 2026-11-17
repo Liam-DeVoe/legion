@@ -93,13 +93,66 @@ func TestSettingsAnswersTheGCPStore(t *testing.T) {
 	}
 }
 
+// TestSettingsNameTheGoogleExchangeAudienceOnEitherStore pins the exchange audience GET
+// /v1/settings answers beside the store, on either store: the audience a machine's Google identity
+// token must carry (BROKER_GOOGLE_OIDC_AUDIENCE), so a machine's `agent-secrets` finds the
+// identity it can trade with no setting of its own, beside that store's own key field. A broker
+// that accepts no machine identity names no audience at all, and none ever names a Kubernetes one.
+func TestSettingsNameTheGoogleExchangeAudienceOnEitherStore(t *testing.T) {
+	for _, store := range []struct{ name, kind, prefix, key, keyField string }{
+		{"aws", secrets.StoreAWS, policytest.Prefix, policytest.KeyARN, "kms_key_arn"},
+		{"gcp", secrets.StoreGCP, "projects/000000000000/secrets/agent-secrets-", "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets", "kms_key_name"},
+	} {
+		t.Run(store.name, func(t *testing.T) {
+			read := func(t *testing.T, google string) (map[string]any, string) {
+				t.Helper()
+				cur, err := policy.NewCurrent(t.Context(), policytest.Loader(secrets.NewLocal()), time.Hour)
+				if err != nil {
+					t.Fatal(err)
+				}
+				mux := http.NewServeMux()
+				api.Register(mux, api.Deps{Policy: cur, SecretsStore: store.kind, SecretsPrefix: store.prefix, SecretsKMSKey: store.key,
+					GoogleExchangeAudience: google})
+				srv := httptest.NewServer(mux)
+				t.Cleanup(srv.Close)
+				resp, err := http.Get(srv.URL + "/v1/settings")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer resp.Body.Close()
+				body, _ := io.ReadAll(resp.Body)
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("status %d: %s", resp.StatusCode, body)
+				}
+				return decode[map[string]any](t, body), string(body)
+			}
+
+			got, body := read(t, "agent-secrets-vm")
+			if got["google_exchange_audience"] != "agent-secrets-vm" {
+				t.Fatalf("settings = %s; want google_exchange_audience agent-secrets-vm", body)
+			}
+			if got["store"] != store.kind || got[store.keyField] != store.key {
+				t.Fatalf("settings = %s; want the store %s and its %s beside the audience", body, store.kind, store.keyField)
+			}
+
+			_, body = read(t, "")
+			for _, field := range []string{"google_exchange_audience", "kubernetes_exchange_audience"} {
+				if strings.Contains(body, field) {
+					t.Fatalf("a broker that accepts no machine identity names %s: %s", field, body)
+				}
+			}
+		})
+	}
+}
+
 // rereadsFreely is the broker-wide bucket a row about what a reread *answers* mounts, so that
-// row never meets the production sizing of a bucket it is not about. The production figure
-// (api.DefaultRereadOverallLimit) is a burst of ten refilled one a second, sized for the fleet
-// rather than for a test: a row driving several rereads back to back, and any row that later
-// drives one more, would be answered by a limiter rather than by the handler it is testing, and
-// would go red on a sizing change that was correct. The rows that *are* about the limiter inject
-// a bucket of their own in the same way, with no tokens left in it.
+// row never meets the production sizing of a bucket it is not about. The production figure is
+// the store's whole fleet budget divided by the pods the process counts (api.RereadOverallFor):
+// a burst of ten refilled one a second at two pods, and slower above that. It is sized for the
+// fleet rather than for a test: a row driving several rereads back to back, and any row that
+// later drives one more, would be answered by a limiter rather than by the handler it is
+// testing, and would go red on a sizing change that was correct. The rows that *are* about the
+// limiter inject a bucket of their own in the same way, with no tokens left in it.
 var rereadsFreely = ratelimit.Limit{Every: time.Millisecond, Burst: 100}
 
 func TestRereadServesANewSecretAndDropsADeletedOne(t *testing.T) {
@@ -138,7 +191,7 @@ func TestARereadNamesTheKindItServes(t *testing.T) {
 		t.Fatalf("reread of a stored secret = %s, want served with no kind", body)
 	}
 	for _, kind := range policy.Kinds {
-		ts.Secrets.Put(policytest.KindSecret("PLAIN_KEY", testApprover, policy.TierAgent, kind, "v1"))
+		ts.Secrets.Put(policytest.KindSecret("PLAIN_KEY", testApprover, policy.TierAgent, kind, policytest.KindValue(kind)))
 		_, body = ts.req(t, http.MethodPost, "/v1/secrets/PLAIN_KEY/reread", nil, nil)
 		if r := decode[wireReread](t, body); !r.Served || r.Kind != kind {
 			t.Fatalf("reread once the kind is %s = %s, want served as %s", kind, body, kind)
@@ -152,33 +205,69 @@ func TestARereadNamesTheKindItServes(t *testing.T) {
 }
 
 // TestARereadWhoseRequestEndedLogsNoError pins that a reread whose request ended before it
-// finished - its caller went away, or its deadline passed - is answered without the ERROR line
-// "broker: reread secret failed" that an operator's alert counts, as the miss path logs nothing for
-// one, while a reread Secrets Manager itself fails for a caller still waiting is still that 500 and
-// that line.
+// finished - its caller went away, or its deadline passed - is answered 503 REQUEST_ENDED without
+// the ERROR line "broker: reread secret failed" that an operator's alert counts, as the miss path
+// logs nothing for one, while a reread Secrets Manager itself fails for a caller still waiting is
+// still that 500 and that line. A request that ends during the value read of a kind secret's
+// version the pod has not decoded, once the metadata read has served the secret, ended before the
+// reread finished too: it is that 503, not a 200 answering for a value nobody checked. That
+// reread has merged the tags it read into this pod's policy, though, so the other pods are told
+// to reread the name as on a 200, on a context of the handler's own; one whose request ended
+// during its metadata read merged nothing and tells nobody, nor does the 500.
 func TestARereadWhoseRequestEndedLogsNoError(t *testing.T) {
+	// route is the reread route over a policy of local whose Secrets Manager calls client makes,
+	// telling the other pods through notifier.
+	route := func(local *secrets.Local, client secrets.SecretsManagerAPI, notifier *recordingNotifier) *http.ServeMux {
+		loader := policytest.Loader(local)
+		loader.Store = policytest.StoreThrough(local, client)
+		cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mux := http.NewServeMux()
+		api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN, NotifyReread: notifier.notify})
+		return mux
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	local := secrets.NewLocal()
-	loader := policytest.Loader(local)
-	loader.Store = policytest.StoreThrough(local, abandoningDescriber{SecretsManagerAPI: local, cancel: cancel})
-	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mux := http.NewServeMux()
-	api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN})
+	local, notifier := secrets.NewLocal(), &recordingNotifier{}
+	mux := route(local, abandoningDescriber{SecretsManagerAPI: local, cancel: cancel}, notifier)
+	valueCtx, cancelValue := context.WithCancel(context.Background())
+	defer cancelValue()
+	valueLocal, valueNotifier := secrets.NewLocal(), &recordingNotifier{}
+	valueMux := route(valueLocal, abandoningReader{SecretsManagerAPI: valueLocal, cancel: cancelValue}, valueNotifier)
+	valueLocal.Put(policytest.KindSecret("APP_KEY", testApprover, policy.TierAgent, policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)))
 	logged := policytest.CaptureLog(t)
 
-	mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/secrets/NEW_KEY/reread", nil))
-	if strings.Contains(logged.String(), "reread secret failed") {
-		t.Fatalf("a reread whose caller went away logged:\n%s", logged.String())
+	for _, ended := range []struct {
+		during   string
+		mux      *http.ServeMux
+		ctx      context.Context
+		name     string
+		notifier *recordingNotifier
+		// notified is what the other pods were told: nothing for a reread that merged nothing.
+		notified []string
+	}{
+		{"its metadata read", mux, ctx, "NEW_KEY", notifier, nil},
+		{"its value read", valueMux, valueCtx, "APP_KEY", valueNotifier, []string{"APP_KEY"}},
+	} {
+		answer := httptest.NewRecorder()
+		ended.mux.ServeHTTP(answer, httptest.NewRequestWithContext(ended.ctx, http.MethodPost, "/v1/secrets/"+ended.name+"/reread", nil))
+		if answer.Code != http.StatusServiceUnavailable || decode[wireError](t, answer.Body.Bytes()).Code != "REQUEST_ENDED" || strings.Contains(logged.String(), "reread secret failed") {
+			t.Fatalf("a reread whose caller went away during %s: %d %s, logged %q; want 503 REQUEST_ENDED and no line", ended.during, answer.Code, strings.TrimSpace(answer.Body.String()), logged.String())
+		}
+		if got := ended.notifier.recorded(); !slices.Equal(got, ended.notified) {
+			t.Fatalf("a reread whose caller went away during %s notified %q, want %q", ended.during, got, ended.notified)
+		}
 	}
 
 	failed := httptest.NewRecorder()
 	mux.ServeHTTP(failed, httptest.NewRequest(http.MethodPost, "/v1/secrets/NEW_KEY/reread", nil))
 	if failed.Code != http.StatusInternalServerError || !strings.Contains(logged.String(), "ERROR broker: reread secret failed") {
 		t.Fatalf("a reread Secrets Manager failed for a live caller: %d, logged %q; want 500 and the ERROR line", failed.Code, logged.String())
+	}
+	if got := notifier.recorded(); len(got) != 0 {
+		t.Fatalf("a reread Secrets Manager failed notified %q, want nobody", got)
 	}
 }
 
@@ -196,6 +285,19 @@ func (d abandoningDescriber) DescribeSecret(ctx context.Context, _ *secretsmanag
 		return nil, fmt.Errorf("operation error Secrets Manager: DescribeSecret, %w", err)
 	}
 	return nil, errors.New("operation error Secrets Manager: DescribeSecret, ThrottlingException")
+}
+
+// abandoningReader is a caller that goes away while the reread's value read is in flight, its
+// DescribeSecret answered: it ends that caller's context and fails as the AWS SDK does once a
+// context has ended.
+type abandoningReader struct {
+	secrets.SecretsManagerAPI
+	cancel context.CancelFunc
+}
+
+func (r abandoningReader) GetSecretValue(ctx context.Context, _ *secretsmanager.GetSecretValueInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+	r.cancel()
+	return nil, fmt.Errorf("operation error Secrets Manager: GetSecretValue, %w", ctx.Err())
 }
 
 // postReread sends one reread of name with headers, answering the status, headers and body: the
@@ -244,18 +346,21 @@ func TestRereadIsRateLimitedPerAddress(t *testing.T) {
 // and by enough that holding it down takes more than one address: the rule is that the address
 // bucket refills at half the rate of the shared bucket THIS PROCESS MOUNTS.
 //
-// It has to be the mounted bucket and not a constant, because cmd/broker mounts
-// api.GCPRereadOverallLimit only under gcp-secret-manager and api.DefaultRereadOverallLimit
-// otherwise: an address limit derived from the Google figure alone makes every AWS deployment
-// pay a fourfold tightening for a Secret Manager quota it never touches, and one derived from
-// the default figure alone leaves a single address able to hold a Secret Manager fleet's budget
-// at zero.
+// It has to be the mounted bucket and not a constant, because no constant is what a process
+// mounts: cmd/broker divides the Secret Manager fleet budget under gcp-secret-manager and the
+// default one otherwise, and each pod divides whichever it has by the pods it counts. An
+// address limit derived from the Google figure alone makes every AWS deployment pay a fourfold
+// tightening for a Secret Manager quota it never touches, one derived from the default figure
+// alone leaves a single address able to hold a Secret Manager fleet's budget at zero, and one
+// derived at a fixed replica count drifts from the bucket the process really runs as the count
+// moves.
 //
 // Retry-After is the observable: it carries the refusing bucket's own Every
 // (ratelimit.RetryAfterSeconds, which every bucket refusal of that package carries), so it says
 // which bucket refused and at what rate, which nothing else in the answer does. The mounted
 // shared bucket is given a depth no row here can reach, so the only refusal this can meet is the
-// address's own.
+// address's own. The two rates it drives are the two stores' sizings at two pods; the relation
+// is the same at every count, since RereadRate moves both buckets together.
 func TestOneAddressNeverOutlastsTheSharedRereadBucket(t *testing.T) {
 	for _, shared := range []time.Duration{time.Second, 4 * time.Second} {
 		t.Run(shared.String(), func(t *testing.T) {
