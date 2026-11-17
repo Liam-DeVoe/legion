@@ -392,6 +392,54 @@ func TestAttemptCountsWithinTaskStepAndKind(t *testing.T) {
 	}
 }
 
+// Within one generation a run whose start never arrived comes before every run whose start did,
+// runs with one start, or with none, follow their ids, and a later generation follows the
+// earlier whatever its start and id: the read answers the runs, and counts their attempts, in that
+// order. The ids run against the order of the keys before them wherever they can.
+func TestTheReadOrdersAnUnknownStartFirstThenTheStartThenTheID(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	run := func(id string, generation int64, started *time.Time) StepWrite {
+		write := implementer(id)
+		write.Generation, write.StartedAt = new(generation), started
+		return write
+	}
+	type listed struct {
+		id      string
+		attempt int
+	}
+	want := []listed{
+		{"aaaaaaaa-0000-4000-8000-000000000000", 1}, // no start
+		{"bbbbbbbb-0000-4000-8000-000000000000", 2}, // no start
+		{"ffffffff-0000-4000-8000-000000000000", 3}, // minute 1
+		{"11111111-0000-4000-8000-000000000000", 4}, // minute 2
+		{"cccccccc-0000-4000-8000-000000000000", 5}, // minute 3
+		{"dddddddd-0000-4000-8000-000000000000", 6}, // minute 3
+		{"00000000-0000-4000-8000-000000000000", 7}, // generation 2, minute 0
+	}
+	written := []StepWrite{
+		run(want[0].id, 1, nil),
+		run(want[1].id, 1, nil),
+		run(want[2].id, 1, new(minute(1))),
+		run(want[3].id, 1, new(minute(2))),
+		run(want[4].id, 1, new(minute(3))),
+		run(want[5].id, 1, new(minute(3))),
+		run(want[6].id, 2, new(minute(0))),
+	}
+	// Written last first, so the order the read answers comes from the records and not from the
+	// order they were written in.
+	for index := len(written) - 1; index >= 0; index-- {
+		put(t, pool, written[index], minute(10))
+	}
+
+	var got []listed
+	for _, step := range issueSteps(t, pool, "LEG-1") {
+		got = append(got, listed{step.ID, step.Attempt})
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("the read answers\n%v\nwant\n%v", got, want)
+	}
+}
+
 // Nothing a write does updates or deletes a tuple: each write appends, above every seq before it,
 // and every row an earlier write appended is still there with every column as it was.
 func TestEveryWriteAppendsOnlyTuples(t *testing.T) {
