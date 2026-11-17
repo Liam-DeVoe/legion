@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { REDIRECT_CODES, redirectServers } from "@legion/test-fixtures/redirect-servers";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { isYes, main, QUESTIONS } from "./label-comments";
 
@@ -517,4 +518,60 @@ test("missing credentials or a missing model route stop the run before any read"
     "label-comments: Dispatch is not configured: DISPATCH_URL is set and no token is"
   );
   expect(sent).toEqual([]);
+});
+
+// fetch would send the model key's `x-api-key` header on to the origin a redirect names, and a
+// 307's or 308's comment with it (it drops `Authorization` alone), so a model call follows no
+// redirect: the 3xx is the answer, and the comment gets no label, its line naming the status.
+test("a redirect to another origin is refused naming its status, and that origin receives no request", async () => {
+  const command = path.join(dir("redirected-gateway"), "key-command");
+  writeFileSync(command, "#!/bin/sh\necho made-up-model-key\n");
+  chmodSync(command, 0o700);
+  // Dispatch answers at the same origin as the gateway: only the model call is redirected.
+  const servers = redirectServers({
+    redirects: (pathname) => pathname === "/v1/messages",
+    direct: (request) => {
+      const { pathname } = new URL(request.url);
+      if (pathname === "/api/v1/issues") return json([{ key: "ACME-1" }]);
+      if (pathname !== "/api/v1/issues/ACME-1/comments") return json({ error: "not found" }, 404);
+      return json([
+        {
+          id: "c1",
+          issue_key: "ACME-1",
+          author: person("alice@example.com"),
+          body: "A made-up comment.",
+          anchor: null,
+          created_at: "2026-10-17T00:00:00Z",
+        },
+      ]);
+    },
+    atElsewhere: () => reply("jargon: no"),
+  });
+  try {
+    for (const code of REDIRECT_CODES) {
+      servers.code = code;
+      const out = path.join(dir(`redirected-${code}`), "labels");
+      const run = io((url, init) => fetch(url, init));
+      const exit = await main(
+        [
+          ...["--since", SINCE, "--until", UNTIL, "--out", out],
+          ...["--gateway", servers.origin, "--key-command", command],
+        ],
+        {
+          ...run.io,
+          env: { HOME: scratch, DISPATCH_URL: servers.origin, DISPATCH_TOKEN: "made-up-bearer" },
+        }
+      );
+      expect(servers.received, `the other origin after a ${code}`).toEqual([]);
+      expect({ exit, stderr: run.stderr }).toEqual({
+        exit: 1,
+        stderr: [
+          `label-comments: no label for ACME-1 comment c1: the model at ${servers.origin} answered ${code}, redirecting to ${servers.elsewhere}, and a model call follows no redirect, since it carries the key: give --gateway the gateway's own address`,
+          `label-comments: 1 of 1 comments got no label. The run did not write ${path.join(out, "labels.jsonl")}.`,
+        ],
+      });
+    }
+  } finally {
+    servers.stop();
+  }
 });

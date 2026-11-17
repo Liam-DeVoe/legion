@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { bearerCredential } from "@legion/envoy-client/bearer";
+import { REDIRECT_CODES, redirectServers } from "@legion/test-fixtures/redirect-servers";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import {
   checkoutAbove,
@@ -251,4 +252,38 @@ test("a read hands the credential the deadline its request runs on", async () =>
   await dispatch.comments("ACME-1");
   expect(given[0], "the read handed its credential no deadline").toBeInstanceOf(AbortSignal);
   expect(sent[0]?.init.signal).toBe(given[0]);
+});
+
+// fetch would send a broker credential's DPoP proof on to the origin a redirect names (it drops
+// `Authorization` alone), so a read follows no redirect: the 3xx is the answer, a refusal naming
+// it, and the read is not tried again.
+test("a redirect to another origin is refused naming its status, and that origin receives no request", async () => {
+  const servers = redirectServers({ atElsewhere: () => json([]) });
+  const broker = {
+    scheme: "DPoP" as const,
+    headers: () => ({ Authorization: "DPoP made-up-access-token", DPoP: "made-up-dpop-proof" }),
+    stale: () => {},
+    secret: () => "made-up-access-token",
+  };
+  const dispatch = new ProductionDispatch(
+    { url: servers.origin, credential: broker },
+    (url, init) => fetch(url, init),
+    noSleep
+  );
+  try {
+    for (const code of REDIRECT_CODES) {
+      servers.code = code;
+      const refusal = await dispatch.issues().then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      expect(servers.received, `the other origin after a ${code}`).toEqual([]);
+      expect(refusal, `the read after a ${code}`).toBeInstanceOf(Error);
+      expect((refusal as Error).message).toBe(
+        `GET /api/v1/issues answered ${code}, redirecting to ${servers.elsewhere}, and a read follows no redirect, since it carries the Dispatch credential: set the Dispatch URL (DISPATCH_URL, or envoy.json's dispatch.serverUrl) to Dispatch's own address`
+      );
+    }
+  } finally {
+    servers.stop();
+  }
 });

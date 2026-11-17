@@ -25,7 +25,8 @@
  * again. The key goes in the `x-api-key` header. --key-file is a 0600 file that holds an Anthropic
  * key, read again for each call, and the call goes to https://api.anthropic.com. --key-command is a
  * program that prints the gateway key, run again for each call, and the call goes to
- * <gateway>/v1/messages. A 429 or 5xx answer is tried again after a wait.
+ * <gateway>/v1/messages. A 429 or 5xx answer is tried again after a wait. A 3xx is never followed,
+ * since the call carries the key: the comment gets no label, and the line names where it points.
  *
  * It writes <out>/labels.jsonl: one row for each comment, oldest first. Stdout gets the counts.
  * Stdout names no person and quotes no comment, so a pull request can carry it as printed. The
@@ -37,7 +38,8 @@
 import { mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Comment } from "@legion/contracts";
-import { messageFor } from "@legion/envoy-client/errors";
+import { messageFor, withoutUserinfo } from "@legion/envoy-client/errors";
+import { redirectOrigin } from "@legion/envoy-client/redirect";
 import {
   backoffMs,
   byCreatedAt,
@@ -191,10 +193,12 @@ function stateMessage(issue: string, comment: Comment): string {
 const USAGE =
   "usage: label-comments.ts --since <RFC 3339> --until <RFC 3339> --out <dir> (--gateway <url> --key-command <file> | --key-file <file>)";
 
-/** Where the model calls go, and how each call gets its key. */
+/** Where the model calls go, how each call gets its key, and whether a person named the URL with
+ * --gateway. */
 interface ModelRoute {
   readonly url: string;
   readonly key: () => Promise<string>;
+  readonly gateway: boolean;
 }
 
 /** One comment of the set. */
@@ -280,6 +284,7 @@ async function label(
     try {
       response = await fetchImpl(`${route.url}/v1/messages`, {
         method: "POST",
+        redirect: "manual",
         headers: {
           "x-api-key": await route.key(),
           "anthropic-version": ANTHROPIC_VERSION,
@@ -293,6 +298,17 @@ async function label(
     } catch (error) {
       last = `the model call failed: ${messageFor(error)}`;
       continue;
+    }
+    // No model call follows a redirect, since fetch would send the key's `x-api-key` header, and a
+    // 307's or 308's comment, on to the origin it names: a 3xx is the answer, a refusal naming
+    // where it points (`@legion/envoy-client/redirect`), and it is not asked again.
+    if (response.status >= 300 && response.status <= 399) {
+      const target = redirectOrigin(response, `${route.url}/v1/messages`);
+      const where = target === undefined ? "" : `, redirecting to ${target}`;
+      const fix = route.gateway ? ": give --gateway the gateway's own address" : "";
+      throw new Error(
+        `the model at ${withoutUserinfo(route.url)} answered ${response.status}${where}, and a model call follows no redirect, since it carries the key${fix}`
+      );
     }
     if (!response.ok) {
       last = modelError(response.status, text);
@@ -466,7 +482,7 @@ function modelRoute(args: Arguments): ModelRoute | string {
     if ((mode & 0o077) !== 0) {
       return `--key-file ${keyFile} can be read by its group or by others. Make it 0600.`;
     }
-    return { url: ANTHROPIC_URL, key: () => readKeyFile(keyFile) };
+    return { url: ANTHROPIC_URL, key: () => readKeyFile(keyFile), gateway: false };
   }
   if (gateway === undefined || keyCommand === undefined) return refusal;
   let url: URL;
@@ -478,7 +494,11 @@ function modelRoute(args: Arguments): ModelRoute | string {
   if (url.protocol !== "https:" && url.protocol !== "http:") {
     return `--gateway ${gateway} is not an http or https URL`;
   }
-  return { url: gateway.replace(/\/+$/, ""), key: () => runKeyCommand(keyCommand) };
+  return {
+    url: gateway.replace(/\/+$/, ""),
+    key: () => runKeyCommand(keyCommand),
+    gateway: true,
+  };
 }
 
 /** The whole run. Returns the exit status: 0, 1 (a read or a label failed) or 2 (refused). */

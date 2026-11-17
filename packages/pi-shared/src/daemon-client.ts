@@ -34,6 +34,7 @@ import {
 } from "@legion/contracts/legion-api";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { messageFor } from "@legion/envoy-client/errors";
+import { redirectOrigin } from "@legion/envoy-client/redirect";
 import type { z } from "zod";
 
 /**
@@ -412,6 +413,7 @@ export function createLegionDaemonClient(
     signal?: AbortSignal
   ): Promise<{ readonly status: number; readonly text: string }> => {
     const response = await fetchFn(`${endpoint}${path}`, {
+      redirect: "manual",
       ...(body === undefined
         ? {}
         : {
@@ -423,6 +425,19 @@ export function createLegionDaemonClient(
     });
     const text = await response.text();
     if (response.ok) return { status: response.status, text };
+    // No call follows a redirect, since fetch would send a 307's or 308's body, which carries the
+    // pane's boot token or the claim's secret, on to the origin it names: a 3xx is a refusal naming
+    // where it points (`@legion/envoy-client/redirect`).
+    if (response.status >= 300 && response.status <= 399) {
+      const target = redirectOrigin(response, `${endpoint}${path}`);
+      throw new LegionDaemonApiError(
+        method,
+        path,
+        response.status,
+        undefined,
+        `${target === undefined ? "a redirect" : `redirecting to ${target}`}, and a call to the daemon follows no redirect: LEGION_DAEMON_URL must name the daemon's own address`
+      );
+    }
     const refusal = parseBody(LegionErrorResponse, text);
     if ("value" in refusal) {
       throw new LegionDaemonApiError(

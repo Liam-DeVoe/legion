@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { REDIRECT_CODES, redirectServers } from "@legion/test-fixtures/redirect-servers";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { postSlackReply, SLACK_BOT_TOKEN_SECRET } from "../slack-post";
 
@@ -415,6 +416,17 @@ describe("postSlackReply", () => {
           Response.json({ ok: true, channel: authorization, ts: "1700000000.000200" }),
         "chat.postMessage answered ok with a ts or channel that is not Slack's: the reply may have been posted",
       ],
+      [
+        // The Location is the answer's too: a host it names that is not the API URL's own is
+        // never named back, since a lower-cased host can carry the token past the redaction.
+        "as a redirect's host",
+        (authorization) =>
+          new Response(null, {
+            status: 302,
+            headers: { Location: `https://${authorization.split(" ")[1]}.example/api` },
+          }),
+        "chat.postMessage answered HTTP 302, redirecting to another host, and slack_post follows no redirect",
+      ],
     ];
     for (const [name, answer, want] of cases) {
       test(name, async () => {
@@ -440,6 +452,27 @@ describe("postSlackReply", () => {
       const slack = fakeSlack({ ok: false, error: code });
       const { env } = brokerEnvironment("granted", slack.url);
       expect(await outcome(env)).toBe(`Slack refused chat.postMessage: ${code}`);
+    }
+  }, 30_000);
+
+  // fetch drops `Authorization` on a redirect to another origin, so the token stays behind, but it
+  // sends a 307's or 308's reply on, and a post that follows takes the other origin's answer as
+  // Slack's. No post follows a redirect: the 3xx is the answer, which names where it points, and
+  // the other origin receives nothing. The 30 s limit is the hang guard of the test above: five
+  // posts, each through the broker's stand-in and a `bun -e` poster.
+  test("a redirect to another origin is refused naming its status, and that origin receives no request", async () => {
+    const servers = redirectServers({
+      atElsewhere: () => Response.json({ ok: true, channel: "C00000000", ts: "1700000000.000200" }),
+    });
+    cleanups.push(() => servers.stop());
+    const { env } = brokerEnvironment("granted", `${servers.origin}/api`);
+    for (const code of REDIRECT_CODES) {
+      servers.code = code;
+      const said = await outcome(env);
+      expect(servers.received, `the other origin after a ${code}`).toEqual([]);
+      expect(said).toBe(
+        `chat.postMessage answered HTTP ${code}, redirecting to ${servers.elsewhere}, and slack_post follows no redirect, since the post carries the bot token: nothing was sent there; SLACK_POST_API_URL must name the Web API's own address, or be unset for Slack's`
+      );
     }
   }, 30_000);
 });

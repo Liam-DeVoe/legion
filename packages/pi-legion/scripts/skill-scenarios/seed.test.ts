@@ -2,6 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
+import { REDIRECT_CODES, redirectServers } from "@legion/test-fixtures/redirect-servers";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type * as seedModule from "./seed";
 
@@ -1126,3 +1127,83 @@ describe("tester-proof", () => {
     ]);
   });
 });
+
+// fetch drops `Authorization` on a redirect to another origin, so the agent bearer stays behind,
+// but it sends a 307's or 308's body on, and a seed that follows takes the other origin's answer as
+// the scratch Dispatch's. No request of the agent bearer follows a redirect: the 3xx is the answer,
+// and the mode fails naming it. Each mode runs as rig.sh's seed_ts runs it, `bun seed.ts <mode>`
+// with DISPATCH_E2E_PORT naming the server, since e2e/api.ts reads that port when it loads; the
+// 60 s limit is a hang guard over fifteen such runs. spec-rewrite reaches the blocks read of
+// specBlockAsks, capture-handoffs a read of the bearer and implement-handoff its write.
+test("a redirect to another origin is refused naming its status, and that origin receives no request", async () => {
+  const blocks = "/api/v1/artifacts/art-1/blocks";
+  const handoffs = "/api/v1/issues/ACME-1/handoffs";
+  const results = "/api/v1/issues/ACME-1/results";
+  const servers = redirectServers({
+    redirects: (pathname) => [blocks, handoffs, results].includes(pathname),
+    // What the scratch Dispatch answers before the request each mode is refused at: the person's
+    // dev sign-in and the issue spec-rewrite files, and the handoff implement-handoff records.
+    direct: (request) => {
+      const { pathname } = new URL(request.url);
+      if (pathname === "/auth/_dev/signin") {
+        return new Response(null, {
+          status: 302,
+          headers: { Location: "/", "Set-Cookie": "dsession=2.made-up.0.0.made-up-mac; Path=/" },
+        });
+      }
+      if (pathname === "/api/v1/issues") {
+        return Response.json({ key: "ACME-1", primary_artifact_id: "art-1" }, { status: 201 });
+      }
+      return Response.json({ id: "h1", version: 1 }, { status: 201 });
+    },
+    atElsewhere: (request) =>
+      request.method === "GET" ? Response.json([]) : Response.json({}, { status: 201 }),
+  });
+  const dir = freshDir("redirected");
+  const file = path.join(dir, "fixture.json");
+  writeFileSync(path.join(dir, "implement.json"), JSON.stringify({ phase: "implement" }));
+  const source = path.join(dir, "source");
+  mkdirSync(source);
+  writeFileSync(path.join(source, "title.txt"), "A made-up title\n");
+  writeFileSync(path.join(source, "messages.md"), "");
+  writeFileSync(path.join(source, "asks.json"), "[]");
+  writeFileSync(path.join(source, "old-spec.md"), "## Problem\n\nA made-up spec.\n");
+  const run = async (...args: string[]) => {
+    writeFileSync(file, JSON.stringify({ issue: "ACME-1" }));
+    const child = Bun.spawn(["bun", path.join(import.meta.dir, "seed.ts"), ...args], {
+      cwd: dir,
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: dir,
+        DISPATCH_E2E_PORT: new URL(servers.origin).port,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exit, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+    return { exit, stderr };
+  };
+  try {
+    for (const code of REDIRECT_CODES) {
+      servers.code = code;
+      for (const [method, route, args] of [
+        ["GET", blocks, ["spec-rewrite", file, source]],
+        ["GET", handoffs, ["capture-handoffs", file, dir]],
+        [
+          "POST",
+          results,
+          ["implement-handoff", file, path.join(dir, "implement.json"), "1".repeat(40)],
+        ],
+      ] as const) {
+        const { exit, stderr } = await run(...args);
+        expect(servers.received, `the other origin after a ${code} of ${route}`).toEqual([]);
+        expect(exit, stderr).toBe(1);
+        expect(stderr).toContain(
+          `${method} ${route} failed: ${code}, redirecting to ${servers.elsewhere}, and seed.ts follows no redirect, since it carries the agent bearer: DISPATCH_E2E_PORT must name the port of rig.sh's scratch Dispatch itself`
+        );
+      }
+    }
+  } finally {
+    servers.stop();
+  }
+}, 60_000);

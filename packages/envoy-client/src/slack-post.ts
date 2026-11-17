@@ -102,8 +102,13 @@ const SLACK_ERROR_CODES = [
  * and prints one JSON line and nothing else, to stdout alone: `{ts, channel}` for a posted reply,
  * each shaped as Slack's ids are; `{refused}` with one of Slack's own error codes, or `{refused:
  * null}` for any other; `{unanswered: true}` when Slack did not answer (the reply may have been
- * posted); `{invalid}`, a fixed description, for an answer that is not Slack's. No part of a
- * response body crosses, and the line has the token cut out of it before it is written. */
+ * posted); `{invalid}`, a fixed description, for an answer that is not Slack's; `{redirected, to}`
+ * for a 3xx, which it does not follow, since fetch would send the reply on to the origin its
+ * `Location` names and take that origin's answer as Slack's: its status, and `to`, that origin
+ * when it is on the API URL's own host, `another host` when it is elsewhere (a host the answer
+ * chose, lower-cased by the URL parser, could carry the token past the cut below), or empty when
+ * the header names no http(s) origin. No part of a response body crosses, and the line has the
+ * token cut out of it before it is written. */
 const POSTER = `
 const codes = ${JSON.stringify(Object.fromEntries(SLACK_ERROR_CODES.map((code) => [code, true])))};
 const token = process.env.LEGION_SLACK_BOT_TOKEN || "";
@@ -126,11 +131,24 @@ try {
     sent = true;
     const response = await fetch(base + "/chat.postMessage", {
       method: "POST",
+      redirect: "manual",
       headers: { Authorization: "Bearer " + token, "Content-Type": "application/json; charset=utf-8" },
       body: JSON.stringify({ channel: input.channel, thread_ts: input.thread_ts, text: input.text }),
       signal: AbortSignal.timeout(10000),
     });
     status = response.status;
+    if (status >= 300 && status <= 399) {
+      const location = response.headers.get("Location");
+      let to = "";
+      try {
+        const target = location === null ? undefined : new URL(location, base + "/chat.postMessage");
+        if (target && (target.protocol === "http:" || target.protocol === "https:")) {
+          to = target.hostname === new URL(base).hostname ? target.origin : "another host";
+        }
+      } catch {}
+      out({ redirected: status, to });
+      process.exit(0);
+    }
     raw = await response.text();
   } catch {
     out({ unanswered: true });
@@ -177,6 +195,8 @@ interface PosterLine {
   readonly refused?: string | null;
   readonly unanswered?: true;
   readonly invalid?: string;
+  readonly redirected?: number;
+  readonly to?: string;
 }
 
 const MAY_HAVE_POSTED =
@@ -383,6 +403,12 @@ export async function postSlackReply(
     const detail = beforeInjection === "" ? "" : ` (${beforeInjection})`;
     throw new Error(
       `slack_post's poster exited ${code} without an answer${detail}: ${MAY_HAVE_POSTED}`
+    );
+  }
+  if (line.redirected !== undefined) {
+    const where = line.to === undefined || line.to === "" ? "" : `, redirecting to ${line.to}`;
+    throw new Error(
+      `chat.postMessage answered HTTP ${Number(line.redirected)}${where}, and slack_post follows no redirect, since the post carries the bot token: nothing was sent there; ${SLACK_POST_API_URL_VARIABLE} must name the Web API's own address, or be unset for Slack's`
     );
   }
   if (line.refused === null) {

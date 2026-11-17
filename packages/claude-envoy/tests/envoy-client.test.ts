@@ -1,6 +1,7 @@
 import { afterAll, expect, test } from "bun:test"
 import { writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
+import { REDIRECT_CODES, redirectServers } from "@legion/test-fixtures/redirect-servers"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { sendEnvoyMessage } from "../src/envoy-client"
 
@@ -144,4 +145,78 @@ test("envoy-send with no Envoy configured refuses, saying why, and sends nothing
     `Claude Envoy send failed: Envoy is off: no envoy.json at ${missing}: Envoy is off\n`,
   )
   expect(requests).toEqual([])
+})
+
+/** A broker credential as a send presents one: a made-up access token and DPoP proof. */
+const madeUpBroker = {
+  scheme: "DPoP" as const,
+  headers: () => ({ Authorization: "DPoP made-up-access-token", DPoP: "made-up-dpop-proof" }),
+  stale: () => {},
+  secret: () => "made-up-access-token",
+}
+
+// fetch would send the broker's DPoP proof on to the origin a redirect names, and a 307's or 308's
+// message with it (it drops `Authorization` alone), so a send follows no redirect: the 3xx is the
+// answer, and the send fails naming it.
+test("a redirect to another origin is refused naming its status, and that origin receives no request", async () => {
+  const servers = redirectServers({ atElsewhere: () => new Response(null, { status: 202 }) })
+  try {
+    for (const code of REDIRECT_CODES) {
+      servers.code = code
+      const refusal = await sendEnvoyMessage({
+        baseUrl: servers.origin,
+        credential: madeUpBroker,
+        targetSession: "ses_receiver",
+        message: "a made-up message",
+      }).then(
+        () => undefined,
+        (error: unknown) => error,
+      )
+      expect(servers.received, `the other origin after a ${code}`).toEqual([])
+      expect(refusal, `the send after a ${code}`).toBeInstanceOf(Error)
+      expect((refusal as Error).message).toBe(
+        `POST ${servers.origin}/v1/messages/send answered ${code}, redirecting to ${servers.elsewhere}, and a send follows no redirect: set the Envoy URL (ENVOY_URL, or envoy.json's envoy.url) to the listener's own address`,
+      )
+    }
+  } finally {
+    servers.stop()
+  }
+})
+
+// A redirect the send followed printed "Sent" and exited 0 with the other origin's answer: a
+// false success. A 3xx fails the command, naming the status and where it pointed.
+test("envoy-send answered with a redirect exits 1 naming it, and prints no Sent", async () => {
+  const servers = redirectServers({ atElsewhere: () => new Response(null, { status: 202 }) })
+  const file = join(scratch, "redirected-envoy.json")
+  writeFileSync(
+    file,
+    JSON.stringify({ envoy: { enabled: true, url: servers.origin, token: "made-up-bearer" } }),
+  )
+  try {
+    for (const code of REDIRECT_CODES) {
+      servers.code = code
+      const send = Bun.spawn(
+        ["bun", resolve(import.meta.dir, "../bin/envoy-send.ts"), "ses_receiver", "redirected"],
+        {
+          cwd: scratch,
+          env: { PATH: process.env["PATH"] ?? "", HOME: scratch, ENVOY_CONFIG_FILE: file },
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      )
+      const [exit, stdout, stderr] = await Promise.all([
+        send.exited,
+        new Response(send.stdout).text(),
+        new Response(send.stderr).text(),
+      ])
+      expect(servers.received, `the other origin after a ${code}`).toEqual([])
+      expect({ exit, stdout, stderr }).toEqual({
+        exit: 1,
+        stdout: "",
+        stderr: `Claude Envoy send failed: POST ${servers.origin}/v1/messages/send answered ${code}, redirecting to ${servers.elsewhere}, and a send follows no redirect: set the Envoy URL (ENVOY_URL, or envoy.json's envoy.url) to the listener's own address\n`,
+      })
+    }
+  } finally {
+    servers.stop()
+  }
 })

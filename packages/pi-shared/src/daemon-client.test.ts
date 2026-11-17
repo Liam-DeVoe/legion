@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { LegionReadyRequest } from "@legion/contracts/legion-api";
+import { REDIRECT_CODES, redirectServers } from "@legion/test-fixtures/redirect-servers";
 import {
   createLegionDaemonClient,
   daemonUnreachable,
@@ -643,4 +644,54 @@ test("a 502 refusal keeps its stable code through a key no schema names, and is 
   expect(retried).toMatchObject({ status: 502, code: "DISPATCH_FAILED" });
   expect(attempts).toBe(1);
   expect(waits).toEqual([]);
+});
+
+// fetch would send a 307's or 308's body on to the origin a redirect names, and the body of a
+// registration carries the pane's boot token, the body of an exit the claim's token and secret. So
+// no call follows a redirect: the 3xx is the answer, a refusal naming it, which is never retried,
+// and the call fails rather than taking the other origin's answer as the daemon's.
+test("a redirect to another origin is refused naming its status, and that origin receives no request", async () => {
+  const servers = redirectServers({
+    atElsewhere: (request) =>
+      new URL(request.url).pathname.endsWith("/register")
+        ? Response.json(daemonFixture("register.json"))
+        : new Response(null, { status: 204 }),
+  });
+  const client = createLegionDaemonClient(servers.origin);
+  try {
+    for (const code of REDIRECT_CODES) {
+      servers.code = code;
+      const calls = [
+        [
+          "/legion/v1/claims/register",
+          () => client.register({ ...registration, bootToken: "made-up-boot-token" }),
+        ],
+        [
+          "/legion/v1/claims/exit",
+          () =>
+            client.exit({
+              claimToken: "made-up-claim-token",
+              sessionId: "ses_architect_208",
+              secret: "made-up-claim-secret",
+              generation: 1,
+              reason: "a made-up exit",
+            }),
+        ],
+      ] as const;
+      for (const [route, call] of calls) {
+        const refusal = await call().then(
+          () => undefined,
+          (error: unknown) => error
+        );
+        expect(servers.received, `the other origin after a ${code} of ${route}`).toEqual([]);
+        expect(refusal, `${route} after a ${code}`).toBeInstanceOf(LegionDaemonApiError);
+        expect((refusal as LegionDaemonApiError).message).toBe(
+          `POST ${route} failed with ${code}: redirecting to ${servers.elsewhere}, and a call to the daemon follows no redirect: LEGION_DAEMON_URL must name the daemon's own address`
+        );
+        expect(daemonUnreachable(refusal)).toBeUndefined();
+      }
+    }
+  } finally {
+    servers.stop();
+  }
 });

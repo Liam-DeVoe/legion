@@ -24,6 +24,7 @@ import type { RequestCredential } from "@legion/envoy-client/bearer";
 import { type DispatchEnvironment, dispatchSettings } from "@legion/envoy-client/dispatch-config";
 import { envoyConfigPath, readEnvoyConfig } from "@legion/envoy-client/envoy-config";
 import { messageFor } from "@legion/envoy-client/errors";
+import { redirectOrigin } from "@legion/envoy-client/redirect";
 
 /** The HTTP call this module and the tools make. The global `fetch` is one. */
 export type Fetch = (url: string, init: RequestInit) => Promise<Response>;
@@ -166,7 +167,9 @@ export class ProductionDispatch {
 
   /** One GET, tried again after a 429, a 5xx or a failed connection, the body's arrival included:
    * a connection that fails after the headers is a failed connection too. Its errors name the
-   * path and the query, never the server or the token. */
+   * path and the query, never the server or the token. It follows no redirect, since fetch would
+   * send a broker credential's DPoP proof on to the origin it names: a 3xx is a refusal naming
+   * that origin (`@legion/envoy-client/redirect`), and it is not tried again. */
   async #get<T>(segments: readonly string[], query?: Record<string, string>): Promise<T> {
     const shown = describe(segments, query);
     const url = new URL(`${this.#base}${shown}`);
@@ -181,6 +184,7 @@ export class ProductionDispatch {
         const deadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
         response = await this.#fetch(url.toString(), {
           method: "GET",
+          redirect: "manual",
           headers: {
             Accept: "application/json",
             ...(await this.#credential.headers("GET", url.toString(), undefined, deadline)),
@@ -198,6 +202,12 @@ export class ProductionDispatch {
         } catch {
           throw new Error(`GET ${shown} answered ${response.status} with a body that is not JSON`);
         }
+      }
+      if (response.status >= 300 && response.status <= 399) {
+        const target = redirectOrigin(response, url.toString());
+        throw new Error(
+          `GET ${shown} answered ${response.status}${target === undefined ? "" : `, redirecting to ${target}`}, and a read follows no redirect, since it carries the Dispatch credential: set the Dispatch URL (DISPATCH_URL, or envoy.json's dispatch.serverUrl) to Dispatch's own address`
+        );
       }
       if (transient(response.status)) {
         last = `answered ${response.status}`;
