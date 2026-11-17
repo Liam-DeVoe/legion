@@ -12,12 +12,16 @@
 //	pane                     reads a paneRequest (JSON) on stdin, writes the claim's gh bundle
 //	                         under its LEGION_GH_OWNERS_DIR, and prints its paneResponse (JSON);
 //	                         it refuses the system prompt of a tree architect (systemPromptArgument)
-//	prompt <role> <root|child>
+//	prompt <role> <root|child> [--plan-guidance <file>]
 //	                         prints the system prompt a launch of the role starts with
 //	                         (rolePrompt), byte for byte as the daemon writes its prompt file, for
 //	                         the rig's claim on the root issue of its tree or on a child under it;
 //	                         a root architect's prompt ends with the design gate steps of a
-//	                         deployment that sets no `gates.design`, as such a launch's does
+//	                         deployment that sets no `gates.design`, as such a launch's does; with
+//	                         --plan-guidance, an owner's prompt (ownsPlan) then ends with the
+//	                         daemon's copy of that file (planGuidanceCopy), as the prompt of a
+//	                         deployment whose `plan_guidance` names it, and a checkout whose daemon
+//	                         has no key plan_guidance refuses the flag
 package main
 
 import (
@@ -46,7 +50,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-const usage = "usage: daemon-pane phase <role> | pane < request.json | prompt <role> <root|child>"
+const usage = "usage: daemon-pane phase <role> | pane < request.json | prompt <role> <root|child> [--plan-guidance <file>]"
 
 func main() {
 	args := os.Args[1:]
@@ -57,7 +61,9 @@ func main() {
 	case len(args) == 1 && args[0] == "pane":
 		err = pane()
 	case len(args) == 3 && args[0] == "prompt" && (args[2] == "root" || args[2] == "child"):
-		err = printPrompt(claim.Role(args[1]), args[2] == "root")
+		err = printPrompt(claim.Role(args[1]), args[2] == "root", "")
+	case len(args) == 5 && args[0] == "prompt" && (args[2] == "root" || args[2] == "child") && args[3] == "--plan-guidance" && args[4] != "":
+		err = printPrompt(claim.Role(args[1]), args[2] == "root", args[4])
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -68,13 +74,41 @@ func main() {
 	}
 }
 
-// handoffWords is the word of the handoff each handoff phase ends with: this program's one
-// restatement of the daemon, and its own copy rather than the daemon's phase table because one
-// program runs against each label's checkout of the daemon module, and that table has had more
-// than one name (phase.HandoffFile, then phase.Handoff). Every other answer here is the daemon's
-// own function (daemon-pane.ts).
+// handoffWords is the word of the handoff each handoff phase ends with. It is this program's own
+// copy rather than the daemon's phase table because one program runs against each label's
+// checkout of the daemon module, and that table has had more than one name (phase.HandoffFile,
+// then phase.Handoff). The program's other copies of the daemon, each carried for the same reason
+// and each saying so, are realGH, the join of rolePrompt, the write of systemPromptArgument,
+// ownsPlan and planGuidanceCopy; every other answer here is the daemon's own function
+// (daemon-pane.ts).
 var handoffWords = map[phase.Phase]string{
 	phase.Planning: "plan", phase.Implementing: "implement", phase.Testing: "test", phase.Reviewing: "review",
+}
+
+// ownsPlan is whether c's launch is an owner's, the launch whose prompt carries the deployment's
+// plan guidance: this program's own copy of daemon.OwnsPlan, which a checkout before the plan
+// guidance lacks. daemon-pane_test.go holds it to the daemon's at this checkout.
+func ownsPlan(c supervise.Claim) bool {
+	return c.Role == claim.RoleArchitect
+}
+
+// planGuidanceCopy is the text of the daemon's copy of a deployment's plan guidance, the file an
+// owner's prompt reads: this program's own copy of what config.WritePlanGuidance writes, which a
+// checkout before the plan guidance lacks. daemon-pane_test.go holds it to the daemon's at this
+// checkout.
+func planGuidanceCopy(project string, guidance []byte) string {
+	return "# Plan guidance of this deployment (" + project + ")\n\nLegion requires none of this guidance and refuses no plan for a step it lacks.\n\n" + string(guidance)
+}
+
+// planGuidanceKeyed is whether this checkout's daemon reads the key plan_guidance
+// (config.ConfigReference), without which no launch of it carries a plan guidance.
+func planGuidanceKeyed() bool {
+	for _, key := range config.ConfigReference() {
+		if key.Name == "plan_guidance" {
+			return true
+		}
+	}
+	return false
 }
 
 func printPhase(role claim.Role) error {
@@ -98,8 +132,22 @@ const (
 
 // printPrompt prints the system prompt a launch of role starts with (rolePrompt), for the rig's
 // claim on the root issue of its tree (root) or on a child issue under it, and nothing else: no
-// newline is added, so the output is the text of the claim's prompt file.
-func printPrompt(role claim.Role, root bool) error {
+// newline is added, so the output is the text of the claim's prompt file. A guidanceFile that is
+// not "" is the deployment's plan guidance: an owner's prompt then ends with a blank line and the
+// daemon's copy of it, its trailing newlines dropped, as runtime.ComposePrompt joins it after the
+// addressing, and any other role's prompt is unchanged. It is refused, before the file is read,
+// by a checkout whose daemon has no key plan_guidance, since no launch of that daemon carries one.
+func printPrompt(role claim.Role, root bool, guidanceFile string) error {
+	var guidance []byte
+	if guidanceFile != "" {
+		if !planGuidanceKeyed() {
+			return errors.New("this checkout's daemon has no key plan_guidance, so no launch of it carries a plan guidance")
+		}
+		var err error
+		if guidance, err = os.ReadFile(guidanceFile); err != nil {
+			return fmt.Errorf("read the plan guidance: %w", err)
+		}
+	}
 	issue := rigChild
 	if root {
 		issue = rigRoot
@@ -113,11 +161,13 @@ func printPrompt(role claim.Role, root bool) error {
 		return err
 	}
 	defer os.RemoveAll(stateDir)
-	prompt, err := rolePrompt(stateDir, rigProject, supervise.Claim{
-		Token: token, Project: rigProject, Tree: rigRoot, Issue: issue, Role: role, Generation: 1,
-	})
+	c := supervise.Claim{Token: token, Project: rigProject, Tree: rigRoot, Issue: issue, Role: role, Generation: 1}
+	prompt, err := rolePrompt(stateDir, rigProject, c)
 	if err != nil {
 		return err
+	}
+	if guidanceFile != "" && ownsPlan(c) {
+		prompt += "\n\n" + strings.TrimRight(planGuidanceCopy(rigProject, guidance), "\n")
 	}
 	_, err = io.WriteString(os.Stdout, prompt)
 	return err

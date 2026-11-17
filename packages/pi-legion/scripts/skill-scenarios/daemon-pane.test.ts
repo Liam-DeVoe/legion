@@ -3,10 +3,17 @@ import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { composeRolePrompt, DAEMON_MODULE, RIG_GH_TOKEN, workerPane } from "./daemon-pane";
+import {
+  composeRolePrompt,
+  DAEMON_MODULE,
+  goInDaemonModule,
+  RIG_GH_TOKEN,
+  workerPane,
+} from "./daemon-pane";
 
 // Every row below asks the daemon's own functions for a pane environment or a role's prompt, which
-// `go run` compiles and runs, so a host with no go runs none of them.
+// `go run` compiles and runs, or holds the program's copies of the daemon to them with `go test`,
+// so a host with no go runs none of them.
 const skip = skipWithout("go");
 
 // The run directory: the daemon's pane environment makes the pane's home and the claim's gh
@@ -261,6 +268,54 @@ test.skipIf(skip)(
     for (const prompt of [child, reviewer]) {
       expect(prompt).toMatch(/\n\nLegion addressing: your role topic is [^\n]*\.$/);
     }
+  },
+  600_000
+);
+
+// A deployment's plan guidance reaches an owner's prompt alone: the architect's, at a tree's root
+// and at a child, is its prompt without the file, a blank line, then the daemon's copy of the file,
+// as the daemon composes it after the addressing; any other role's prompt is the same with the
+// file as without it.
+test.skipIf(skip)(
+  "composes an owner's prompt with a plan guidance file after its addressing, and no other role's",
+  () => {
+    const guidance = path.join(rig, "plan-guidance.md");
+    writeFileSync(guidance, "Plant 7f3a.\n");
+    const header = "\n\n# Plan guidance of this deployment (";
+    const end =
+      "Legion requires none of this guidance and refuses no plan for a step it lacks.\n\nPlant 7f3a.";
+    for (const root of [true, false]) {
+      const plain = composeRolePrompt(DAEMON_MODULE, "architect", root);
+      const guided = composeRolePrompt(DAEMON_MODULE, "architect", root, {
+        planGuidance: guidance,
+      });
+      expect(guided.slice(0, plain.length + header.length)).toBe(plain + header);
+      expect(guided.slice(-end.length)).toBe(end);
+    }
+    expect(composeRolePrompt(DAEMON_MODULE, "reviewer", false, { planGuidance: guidance })).toBe(
+      composeRolePrompt(DAEMON_MODULE, "reviewer", false)
+    );
+  },
+  600_000
+);
+
+// daemon-pane.go's own copies of the daemon's plan guidance, its rule of an owner's launch and its
+// copy of the guidance file, are held to the daemon's at this checkout by daemon-pane_test.go,
+// compiled with the program inside this daemon module. A test binary exits 0 on a -test.run that
+// selects no test, so the row reads the test's own PASS line.
+test.skipIf(skip)(
+  "holds the tool's restatement of the plan guidance to the daemon's at this checkout",
+  () => {
+    const out = goInDaemonModule(
+      DAEMON_MODULE,
+      {
+        "main.go": path.join(import.meta.dir, "daemon-pane.go"),
+        "main_test.go": path.join(import.meta.dir, "daemon-pane_test.go"),
+      },
+      "test",
+      ["-test.run", "^TestTheToolRestatesTheDaemonsPlanGuidance$", "-test.v"]
+    );
+    expect(out).toContain("\n--- PASS: TestTheToolRestatesTheDaemonsPlanGuidance ");
   },
   600_000
 );

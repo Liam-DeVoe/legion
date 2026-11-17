@@ -2292,8 +2292,9 @@ jobs:
               - 'scripts/pi-plugin-prepack.sh'
               - 'scripts/third-party-notices.ts'
               # src/skills-guard.test.ts:24,144 reads the daemon's prompts and sweeps
-              # packages/daemon/internal, and scripts/skill-scenarios/daemon-pane.ts:27 runs
-              # daemon-pane.go inside the daemon module in workspace mode.
+              # packages/daemon/internal, and scripts/skill-scenarios/daemon-pane.ts:53,60
+              # compiles daemon-pane.go and daemon-pane_test.go inside the daemon module in
+              # workspace mode.
               - 'packages/daemon/internal/**'
               # daemon-pane.go compiles the daemon module, which reaches these envoy packages:
               # the migration identifier rule, the generated session timings the daemon reads
