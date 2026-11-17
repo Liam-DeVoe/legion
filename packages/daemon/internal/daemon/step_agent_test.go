@@ -26,28 +26,36 @@ func TestTheDaemonReadsAStepsAgentFromItsClaimsMachine(t *testing.T) {
 		t.Fatalf("the agent read before attach = %+v, want nothing", got)
 	}
 	w.attach(&supervision{supervisor: sup, log: quietLogger()})
-	supervised := func(token claim.Token, role claim.Role, session string) *supervise.Machine {
+	// Each claim works at a launch of its own, as a working claim always does, and the stream
+	// stamps each answer with the generation of the launch that read it (stream.Answered).
+	supervised := func(token claim.Token, role claim.Role, session string, generation uint64) *supervise.Machine {
 		t.Helper()
 		machine, _, err := sup.Create(ctx, supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208",
-			Role: role, State: supervise.StateWorking, Session: session}, "")
+			Role: role, State: supervise.StateWorking, Session: session, Generation: generation}, "")
 		if err != nil {
 			t.Fatalf("create the %s's claim: %v", role, err)
 		}
+		if got := machine.Claim().Generation; got != generation {
+			t.Fatalf("the %s's claim is at generation %d, want %d", role, got, generation)
+		}
 		return machine
 	}
-	answered := func(machine *supervise.Machine, token claim.Token, model string) {
+	answered := func(machine *supervise.Machine, token claim.Token, model string, generation uint64) {
 		t.Helper()
-		if err := machine.Handle(ctx, supervise.StreamAnswered{Claim: token, Model: model}); err != nil {
+		if err := machine.Handle(ctx, supervise.StreamAnswered{Claim: token, Model: model, Generation: generation}); err != nil {
 			t.Fatalf("the answer of %s: %v", token, err)
 		}
 	}
-	testerMachine := supervised(tester, claim.RoleTester, "ses_tester")
+	testerMachine := supervised(tester, claim.RoleTester, "ses_tester", 3)
 	if got := w.stepAgent(tester); got != (workflow.StepAgent{Session: "ses_tester"}) {
 		t.Fatalf("the agent read before any answer = %+v, want its session and no model", got)
 	}
-	reviewerMachine := supervised(reviewer, claim.RoleReviewer, "ses_reviewer")
-	answered(testerMachine, tester, "second/tester-model")
-	answered(reviewerMachine, reviewer, "second/reviewer-model")
+	reviewerMachine := supervised(reviewer, claim.RoleReviewer, "ses_reviewer", 5)
+	answered(testerMachine, tester, "second/tester-model", 3)
+	answered(reviewerMachine, reviewer, "second/reviewer-model", 5)
+	// An answer read at a launch the tester's claim has not reached (the reviewer's generation) is
+	// not the tester's model.
+	answered(testerMachine, tester, "second/not-the-testers-launch", 5)
 	for token, want := range map[claim.Token]workflow.StepAgent{
 		tester:   {Session: "ses_tester", Model: "second/tester-model"},
 		reviewer: {Session: "ses_reviewer", Model: "second/reviewer-model"},
