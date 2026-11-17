@@ -48,7 +48,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
@@ -59,6 +58,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -733,9 +733,7 @@ type mergeWaitPull struct {
 func newMergeWaitGitHub(t *testing.T) *mergeWaitGitHub {
 	t.Helper()
 	g := &mergeWaitGitHub{t: t, pulls: map[int]*mergeWaitPull{}}
-	server := httptest.NewServer(g)
-	t.Cleanup(server.Close)
-	g.url = server.URL
+	g.url = githubtest.Server(t, githubtest.Spec{Handle: g.ServeHTTP})
 	return g
 }
 
@@ -802,7 +800,6 @@ func (g *mergeWaitGitHub) pull(number int) *mergeWaitPull {
 func (g *mergeWaitGitHub) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	w.Header().Set("Content-Type", "application/json")
 	if req.Method == http.MethodPost && req.URL.Path == "/graphql" {
 		_, _ = io.WriteString(w, `{"data":{"repository":{"pullRequest":null}}}`)
 		return

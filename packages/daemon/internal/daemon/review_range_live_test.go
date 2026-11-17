@@ -31,7 +31,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,6 +40,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
@@ -322,9 +322,7 @@ func newReviewRangeGitHub(t *testing.T, issues ...*reviewRangeIssue) *reviewRang
 	for _, issue := range issues {
 		g.pulls[claim.IssueBranch(issue.key)] = &reviewRangePull{number: issue.number, head: issue.first}
 	}
-	server := httptest.NewServer(g)
-	t.Cleanup(server.Close)
-	g.url = server.URL
+	g.url = githubtest.Server(t, githubtest.Spec{Handle: g.ServeHTTP})
 	return g
 }
 
