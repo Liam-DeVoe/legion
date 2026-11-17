@@ -506,7 +506,8 @@ func TestProjectPlansListsTwoIssuesClosedAtOneMomentWhole(t *testing.T) {
 
 // The plan is the newest node of the issue, the one of the highest generation, whatever order the
 // plans were made in and however their generations sort as text, and every retro's rating is
-// listed, in the order the retros ran.
+// listed, in the order the retros ran: three, whose scores and reasons are each in neither
+// ascending nor descending order that way, so no sort of the ratings by either is the run order.
 func TestProjectPlansTakesTheNewestPlanAndEveryRating(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	closed := t0.Add(5 * time.Hour)
@@ -523,8 +524,9 @@ func TestProjectPlansTakesTheNewestPlanAndEveryRating(t *testing.T) {
 		ID: uuid.NewString(), Issue: "LEG-1", Generation: new(int64(2)), Source: new(PlanSourceOwner),
 		Document: &PlanDocument{ArtifactID: uuid.NewString(), Version: 1}, Tasks: []PlanTask{{ID: "api", Steps: []string{"implementer"}}},
 	}, minute(50))
-	second := ratedRetro(t, pool, "LEG-1", 2, minute(120), minute(121), 2, "Two tasks were one.")
-	first := ratedRetro(t, pool, "LEG-1", 1, minute(20), minute(22), 3, "The plan was late.")
+	third := ratedRetro(t, pool, "LEG-1", 9, minute(200), minute(201), 4, "Two tasks were one.")
+	second := ratedRetro(t, pool, "LEG-1", 2, minute(120), minute(121), 1, "The plan was late.")
+	first := ratedRetro(t, pool, "LEG-1", 1, minute(20), minute(22), 3, "The review came late.")
 
 	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{})
 	if err != nil {
@@ -540,10 +542,11 @@ func TestProjectPlansTakesTheNewestPlanAndEveryRating(t *testing.T) {
 	}
 	want := IssuePlan{Issue: "LEG-1", Title: "Title of LEG-1", ClosedAt: closed, Plan: &newest,
 		Ratings: []Rating{
-			{Rating: 3, Reason: "The plan was late.", StepID: first, EndedAt: new(minute(22))},
-			{Rating: 2, Reason: "Two tasks were one.", StepID: second, EndedAt: new(minute(121))},
+			{Rating: 3, Reason: "The review came late.", StepID: first, EndedAt: new(minute(22))},
+			{Rating: 1, Reason: "The plan was late.", StepID: second, EndedAt: new(minute(121))},
+			{Rating: 4, Reason: "Two tasks were one.", StepID: third, EndedAt: new(minute(201))},
 		},
-		StartedAt: new(minute(20)), EndedAt: new(minute(121))}
+		StartedAt: new(minute(20)), EndedAt: new(minute(201))}
 	if got := issuePlanText(read[0]); got != issuePlanText(want) {
 		t.Fatalf("the read lists\n%s\nwant each retro's own rating, reason and end, in the order they ran\n%s", got, issuePlanText(want))
 	}
