@@ -387,6 +387,10 @@ function DetailsDrawer({
         }}
         role={isPhoneViewport ? "dialog" : undefined}
         style={isPhoneViewport ? undefined : { width: `${width}px` }}
+        // On the phone the sheet is a modal dialog, so a press on its text keeps the focus in it:
+        // with no focusable box there the press moves the focus to the body, and the sheet's own
+        // `Shift+M` above, which acts only while the focus is inside, no longer closes it.
+        tabIndex={isPhoneViewport ? -1 : undefined}
       >
         {isPhoneViewport ? null : (
           <DetailsResizeHandle onWidthChange={onWidthChange} width={width} />

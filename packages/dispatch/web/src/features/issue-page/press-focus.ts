@@ -17,7 +17,8 @@ export interface PressFocus<T> {
 
 /**
  * The focus a press gives a row, taken once the press is over (dispatch://INFRA-1196 R7, the
- * architect's decision 141): the outline's (`IssueTree.tsx`) and every list drawn in its place.
+ * architect's decision 141): the outline's press (`IssueTree.tsx`), and part Q's Decisions list,
+ * which decision 141 hands the hook to.
  *
  * A press focuses what it lands on as it goes down, before it ends, so the row taking the focus
  * would open its body and draw its acts, and the row the focus left would close its own, while

@@ -917,12 +917,20 @@ test("at 390 px a focus that enters the view row leaves a scrolled page where it
 // page's `main`, which takes the focus on a page change, holds it in the row's place. A count is
 // its button's `<label>`, whose own activation focuses the button at the click: with it, this
 // row fails on "a press on Verification's count took the focus".
+// SLOW(>=2s): a seeded frame, a load waited on until part I's outline puts the focus on the
+// address's row, then three presses each waited on until the view's address moves.
 test("from an address that names a node, a press on Spec, on Decisions and on Verification's count moves to each view's address, one history entry each, and leaves the focus where it was", async ({
   browser,
 }) => {
   await phase(browser, seedFrame, async (page, { key }) => {
     await gotoIssue(page, `/issues/${key}#b-r1`);
     await expect(page).toHaveURL(new RegExp(`/issues/${key}#b-r1$`));
+    // Under part I the page opens with the focus on the row the address names, and takes it back
+    // from what holds the outline until the reader acts (I's R19 and R7), so the opening is
+    // waited out and the reader acts first - a Shift, which no key of the page binds - or the
+    // page would take the focus from `main` below.
+    await expect(page.locator("[data-node-row]:focus"), "the page focused no row").toHaveCount(1);
+    await page.keyboard.press("Shift");
     const holder = page.getByRole("main");
     await holder.focus();
     await expect(holder, "the page's main took no focus").toBeFocused();
@@ -948,6 +956,34 @@ test("from an address that names a node, a press on Spec, on Decisions and on Ve
       before + 3
     );
     await expect(holder, "a press on Verification's count took the focus").toBeFocused();
+  });
+});
+
+// On the phone, Details is a modal dialog, so a press on its text keeps the focus inside it, and
+// the sheet's own `Shift+M`, which acts only while the focus is inside, still closes it (decision
+// 168 of INFRA-1196's parts). With no focusable box in the sheet, the press moves the focus to
+// the body, and this row fails on "a press on Details' text took the focus out of the sheet".
+test("at 390 px a press on Details' text keeps the focus in the sheet, and Shift+M then closes it", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    await page.setViewportSize(viewportAt(390));
+    await gotoIssue(page, `/issues/${key}`);
+    await focusNothing(page);
+    await page.keyboard.press("Shift+M");
+    const phoneDetails = page.getByRole("dialog", { exact: true, name: "Details" });
+    await expect(phoneDetails, "Shift+M did not open the phone's Details").toBeVisible();
+    await expect(detailsClose(page)).toBeFocused();
+    await phoneDetails.getByRole("heading", { exact: true, name: "Details" }).click();
+    expect(
+      await phoneDetails.evaluate((sheet) => sheet.contains(document.activeElement)),
+      "a press on Details' text took the focus out of the sheet"
+    ).toBe(true);
+    await page.keyboard.press("Shift+M");
+    await expect(
+      phoneDetails,
+      "Shift+M after a press on Details' text did not close the sheet"
+    ).toBeHidden();
   });
 });
 
