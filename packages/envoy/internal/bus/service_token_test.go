@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/natscallout"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/natscred"
@@ -116,27 +116,30 @@ func TestAServiceTokenClientReconnectsBeforeItsTokenLapses(t *testing.T) {
 }
 
 // natscredGoroutines is how many goroutines run natscred's code, a keeper or the watcher of its
-// connection's close, and how many of those are a service's keeper (serviceCredential.Keep), read
-// from every goroutine's stack.
+// connection's close, and how many of those are a service's keeper (serviceCredential.Keep).
 func natscredGoroutines() (all, keepers int) {
-	stacks := make([]byte, 1<<20)
-	for {
-		n := runtime.Stack(stacks, true)
-		if n < len(stacks) {
-			stacks = stacks[:n]
-			break
-		}
-		stacks = make([]byte, 2*len(stacks))
-	}
-	for _, goroutine := range strings.Split(string(stacks), "\n\n") {
-		if strings.Contains(goroutine, "github.com/sjawhar/envoy/natscred.") {
+	for _, trace := range goroutinetest.Traces() {
+		if strings.Contains(trace, "github.com/sjawhar/envoy/natscred.") {
 			all++
 		}
-		if strings.Contains(goroutine, "github.com/sjawhar/envoy/natscred.(*serviceCredential).Keep(") {
+		if strings.Contains(trace, "github.com/sjawhar/envoy/natscred.(*serviceCredential).Keep(") {
 			keepers++
 		}
 	}
 	return all, keepers
+}
+
+// requireNoNatscredGoroutine waits up to five seconds for no natscred goroutine to run, and fails
+// naming how many still do, and how many of those are service keepers, when.
+func requireNoNatscredGoroutine(t *testing.T, when string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for all, keepers := natscredGoroutines(); all != 0; all, keepers = natscredGoroutines() {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d natscred goroutines, %d of them service keepers, still run %s, want none", all, keepers, when)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // A replacement connection the client discards leaves no keeper running. The discard closes the
@@ -149,14 +152,7 @@ func natscredGoroutines() (all, keepers int) {
 // control is the keeper stopped by ClosedCB alone, as at ac2334299e: one keeper is left.
 func TestADiscardedReplacementConnectionLeavesNoKeeperRunning(t *testing.T) {
 	unsetNkeyEnvironment(t)
-	settled := func(want int, when string) {
-		t.Helper()
-		testwait.WithinPolling(t, 5*time.Second, 50*time.Millisecond, when, func() bool {
-			all, keepers := natscredGoroutines()
-			return all == want && keepers == want
-		})
-	}
-	settled(0, "no natscred goroutine left by an earlier test")
+	requireNoNatscredGoroutine(t, "before the test, left by an earlier one")
 	tokenFile := filepath.Join(t.TempDir(), "token")
 	require.NoError(t, os.WriteFile(tokenFile, []byte(unsignedToken(time.Now().Add(50*time.Minute))), 0o600))
 	environment := map[string]string{bus.ServiceTokenFileEnvVar: tokenFile, bus.AllowRemoteEnvVar: "1"}
@@ -173,16 +169,10 @@ func TestADiscardedReplacementConnectionLeavesNoKeeperRunning(t *testing.T) {
 		return keepers == 1
 	})
 	nc.Close()
-	settled(0, "no natscred goroutine once that connection closed")
+	requireNoNatscredGoroutine(t, "after that connection closed")
 
 	closedConnectionIsReplacedOnce(t, func(string) []bus.ConnectOption {
 		return []bus.ConnectOption{bus.WithEnvironment(lookup)}
 	})
-	deadline := time.Now().Add(5 * time.Second)
-	for all, keepers := natscredGoroutines(); all != 0 || keepers != 0; all, keepers = natscredGoroutines() {
-		if time.Now().After(deadline) {
-			t.Fatalf("%d natscred goroutines, %d of them service keepers, still run after the discard and the client's Close, want none", all, keepers)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	requireNoNatscredGoroutine(t, "after the discard and the client's Close")
 }

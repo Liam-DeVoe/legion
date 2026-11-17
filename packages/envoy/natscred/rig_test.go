@@ -1,7 +1,6 @@
 package natscred_test
 
 import (
-	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
@@ -16,7 +15,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/natscallout"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -33,29 +32,12 @@ import (
 // daemonAccount is the service account the rig's service tokens name, listed as a daemon.
 const daemonAccount = "system:serviceaccount:example-ns:example-daemon"
 
-// lockedBuffer is the service's log, which its reporter writes while a test reads it.
-type lockedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
 // rig is a hub behind the real auth service, whose broker answers are the test's own.
 type rig struct {
 	url    string
 	server *testnats.Server
-	log    *lockedBuffer
+	// log is the service's log, which its reporter writes while a test reads it.
+	log *logtest.Buffer
 	// registry counts the service's decisions (natscallout.NewMetrics), which a test reads to see
 	// why a connection was refused: the log has only one line a minute of them.
 	registry *metrics.Registry
@@ -82,7 +64,7 @@ func newRig(t *testing.T, introspect func(context.Context, string) (oauthwire.In
 	}
 	services, err := natscallout.ParseServices("daemon/-/*=" + daemonAccount)
 	require.NoError(t, err)
-	log := &lockedBuffer{}
+	log := &logtest.Buffer{}
 	registry := metrics.New()
 	r := &rig{
 		url: url, server: server, log: log, registry: registry,
