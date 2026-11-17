@@ -362,6 +362,44 @@ func TestAPluginAboveTheRatingContractMustRateToo(t *testing.T) {
 	}
 }
 
+// The rating is left out of the completion's key, as the summary is: the first completion is what
+// the workflow took. So the retro's completion sent again after it was taken, with the same rating
+// and reason, another rating, or another reason, is answered HANDOFF_ALREADY_RECORDED and applies
+// nothing, and the one fact applied carries the first rating and reason.
+func TestARatedRetroSentAgainKeepsItsFirstRating(t *testing.T) {
+	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	seedIssueAt(t, h, "LEGION-208", phase.Retro)
+	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	const reason = "The plan left out a step the tester needed."
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee",
+		PlanRating: new(2), PlanReason: new(reason)}))
+
+	for _, again := range []struct {
+		name   string
+		rating int
+		reason string
+	}{
+		{name: "the same rating and reason", rating: 2, reason: reason},
+		{name: "another rating", rating: 5, reason: reason},
+		{name: "another reason", rating: 2, reason: "The plan fit the work."},
+	} {
+		t.Run(again.name, func(t *testing.T) {
+			message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee",
+				PlanRating: new(again.rating), PlanReason: new(again.reason)}), http.StatusConflict, "HANDOFF_ALREADY_RECORDED")
+			if !strings.Contains(message, "was already received; this call changed nothing") {
+				t.Fatalf("the refusal = %q, want it to say the call changed nothing", message)
+			}
+		})
+	}
+	got := facts.recorded()
+	if len(got) != 1 {
+		t.Fatalf("facts after the retries = %#v, want the first completion's alone", got)
+	}
+	if fact := lastCompletion(t, facts); fact.PlanRating != 2 || fact.PlanReason != reason {
+		t.Fatalf("the retro's fact = %+v, want the first rating, 2, with its reason", fact)
+	}
+}
+
 // A plugin of the release before PlanRatingContract never sends a rating. Where the daemon serves
 // its claim — here a claim in a turn, which the stale-caller rule serves so the turn can push what
 // it holds (staleClaim) — its retro's completion is taken with no rating, and the fact carries
