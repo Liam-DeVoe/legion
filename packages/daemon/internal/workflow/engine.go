@@ -280,6 +280,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.closeRoot(ctx, tx, fact)
 	case intake.TaskStopped:
 		return e.taskStopped(ctx, tx, fact)
+	case intake.PlanGiven:
+		return e.planGiven(ctx, tx, fact)
 	case intake.LingerExpired:
 		return e.lingerExpired(ctx, tx, fact)
 	case intake.DaemonBooted:

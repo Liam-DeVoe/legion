@@ -5,11 +5,13 @@
 -- plan document (source owner, given_by the claim token of the owner that gave it), or the
 -- project's default steps (source default, version 0, no document and no giver). The highest
 -- version of a generation is the plan in force. plan_tasks holds each task of the plan, what its
--- block says, where it stands (state, running_kind, position) and its counts of returns, which an
--- issue with no plan rows keeps on its implementer's phases row. plan_steps holds each step of a
--- task by its place from 1. The count of starts of a step is not here: step_starts keeps it by
--- place alone (20261117004117_step_starts). No table names an issues row, because an owner can give
--- a plan before the daemon records its issue, which is written at generation 0.
+-- block says (steps_by_default: the block names no step, so the task's steps are the default steps
+-- it runs, and a later version is compared with a block that names none), where it stands (state,
+-- running_kind, position) and its counts of returns, which an issue with no plan rows keeps on its
+-- implementer's phases row. plan_steps holds each step of a task by its place from 1. The count of
+-- starts of a step is not here: step_starts keeps it by place alone (20261117004117_step_starts).
+-- No table names an issues row, because an owner can give a plan before the daemon records its
+-- issue, which is written at generation 0.
 --
 -- phases.step_task and phases.step_place are record.PhaseRow.StepTask and StepPlace, the step a
 -- role's row runs for an issue with plan rows, and pull_requests.task is record.PullRequest.Task.
@@ -58,6 +60,7 @@ create table plan_tasks (
   part_of text not null default '',
   owner_role text not null default '',
   merges boolean not null default false,
+  steps_by_default boolean not null default false,
   state text not null constraint plan_tasks_state_check check (state in ('waiting', 'running', 'done', 'stopped', 'left')),
   stopped_reason text not null default '',
   running_kind text not null default '' constraint plan_tasks_running_kind_check check (running_kind in ('', 'step', 'retro', 'merge')),
