@@ -1544,6 +1544,14 @@ jobs:
               - '.github/workflows/ci-job-test.yaml'
               - 'scripts/priorities-seed-check.test.sh'
               - 'scripts/priorities-seed-check.sh'
+              # The check loads the seed's priorityId and rowKeys through bun at run time
+              # (priorities-seed-check.sh:349-350), so this step reads the seed and every module
+              # the seed loads: its contracts and envoy-client imports, and @legion/broker-client
+              # with envoy-client (ci_job_reads.py's envoy_client_dep).
+              - 'scripts/priorities-seed.ts'
+              - 'packages/contracts/src/**'
+              - 'packages/envoy-client/src/**'
+              - 'packages/broker-client/**'
             check_ci_filters_test: &check_ci_filters_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1667,9 +1675,14 @@ jobs:
               - 'scripts/third-party-notices.ts'
               - 'scripts/semantic-line-breaks.ts'
               - 'scripts/semantic-line-breaks.test.ts'
-              # The priorities seed's Bun test, which runs on every run of this job.
+              # The priorities seed's Bun test, which runs on every run of this job, and the
+              # shared list of the priority id rule's cases, which that test reads by path
+              # (scripts/priorities-seed.test.ts:28). The seed and its test import
+              # packages/contracts/src/dispatch-api-limits.ts by relative path, which
+              # claude_envoy_build's 'packages/contracts/src/**' above already selects.
               - 'scripts/priorities-seed.ts'
               - 'scripts/priorities-seed.test.ts'
+              - 'packages/contracts/fixtures/priority-ids.json'
               # `bun test scripts/e2e/lib` scans scripts/e2e/*.sh (lib/script-functions.test.ts:101-104),
               # and its tests read the daemon sources and fixtures named below. The e2e
               # libraries and the census script import contracts and envoy-client, which
@@ -2557,6 +2570,9 @@ jobs:
               # with every comment added above it, and one entry's line number took four values in
               # two rounds that way.
               - 'packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json'
+              # The shared list of the priority id rule's cases, which the long-title row of
+              # e2e/priorities.e2e.ts reads by path (:44) rather than importing it.
+              - 'packages/contracts/fixtures/priority-ids.json'
               # What stood here was the file store's own image declaration and the
               # pull-test-images action: no job of this suite pulls an image or runs a docker
               # command now, since a job inside a container can do neither. The shard job starts
@@ -2830,6 +2846,9 @@ jobs:
               # at run time, through a path built relative to the test binary; the guard step
               # compiles it with the rest of that package.
               - 'packages/contracts/schemas/dispatch-openapi.json'
+              # internal/dispatch/api/priority_id_fixture_test.go:50 reads the shared list of the
+              # priority id rule's cases; the guard step compiles it with the rest of that package.
+              - 'packages/contracts/fixtures/priority-ids.json'
             # `go test -tags memory ./cmd/dispatch`. memory_profile_test.go reads four guides only
             # when DISPATCH_EDIT_PROFILE_OUT is set (its line 126), which CI never sets, so they are
             # not here. cmd/dispatch/nats_unreachable_test.go, which carries no tag, starts the
@@ -3709,6 +3728,8 @@ jobs:
               - 'packages/contracts/schemas/dispatch-openapi.json'
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011.
               - 'packages/contracts/fixtures/live/**'
+              # internal/dispatch/api/priority_id_fixture_test.go:50.
+              - 'packages/contracts/fixtures/priority-ids.json'
               # The step that sizes this job's Postgres runs this script, which runs
               # internal/dispatch/store/cmd/connections (and so testlimits and the store, above).
               - '.github/scripts/pg-connection-ceiling.sh'
