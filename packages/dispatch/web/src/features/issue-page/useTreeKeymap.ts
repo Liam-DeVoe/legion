@@ -3,6 +3,7 @@ import { type RefObject, useRef } from "react";
 import { useKeymap } from "../shell/keymap";
 import { focusOnDocument } from "../shell/roving";
 import { type RowAction, rowActionSelector } from "./DecisionActions";
+import { bringOnScreen } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
 import { type OutlineWriter, replyItemOf, takesAnswer } from "./outline-writer";
 import { KEY_REPORTS } from "./page-structure";
@@ -178,12 +179,17 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     );
     return [...chips, ...rest.filter((link) => !chips.includes(link)), ...controls];
   };
-  /** Moves to the row `index`, clamped to the tree's ends, and clears whatever a key reported. */
+  /** Moves to the row `index`, clamped to the tree's ends, and clears whatever a key reported.
+   *  A move that lands on the row already holding the focus - Home on the first row, End on the
+   *  last - moves no focus, so the row's own placing never runs, and a row the reader scrolled
+   *  off would stay off: that row is brought on screen here (decision 177). */
   const moveTo = (index: number): void => {
     const { elements } = drawn();
     if (elements.length === 0) return;
     tree.onReport("");
-    elements[Math.min(Math.max(index, 0), elements.length - 1)]?.focus();
+    const target = elements[Math.min(Math.max(index, 0), elements.length - 1)];
+    if (target !== undefined && target === document.activeElement) bringOnScreen(target);
+    target?.focus();
   };
   /** Takes the reader to `id`, unfolding whatever stands between them and it. */
   const goTo = (id: string): void => {
