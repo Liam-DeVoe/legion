@@ -6,6 +6,7 @@ import (
 	"os"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -494,8 +495,9 @@ func TestTwoEndsOfAStartedRunAtOneTimeKeepTheFirst(t *testing.T) {
 
 // The attempt is the place of a record among the records of the same task, step and kind,
 // ordered by generation, then start (a record with no start first), then id. The retro and the
-// merge are both step 0 and count apart, by their kind; two tasks whose runs interleave at one
-// place count them apart, and so do two issues.
+// merge are both step 0 and count apart, by their kind; two places of one task that a plan gives
+// one role count apart, by their place; two tasks whose runs interleave at one place count them
+// apart, and so do two issues.
 func TestAttemptCountsWithinTaskStepAndKind(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	ofKind := func(kind string, place int, role string, generation int64) StepWrite {
@@ -514,6 +516,8 @@ func TestAttemptCountsWithinTaskStepAndKind(t *testing.T) {
 		startOf(ofKind(StepKindStep, 2, "implementer", 1), minute(1)),
 		inTask("docs", startOf(ofKind(StepKindStep, 2, "implementer", 1), minute(1).Add(30*time.Second))),
 		startOf(ofKind(StepKindStep, 3, "tester", 1), minute(2)),
+		// A plan may name one role at two places: each place counts its own runs.
+		startOf(ofKind(StepKindStep, 4, "tester", 1), minute(2).Add(30*time.Second)),
 		startOf(ofKind(StepKindRetro, 0, "implementer", 1), minute(3)),
 		startOf(ofKind(StepKindMerge, 0, "merger", 1), minute(4)),
 		// The merge returned the task.
@@ -540,16 +544,17 @@ func TestAttemptCountsWithinTaskStepAndKind(t *testing.T) {
 	attempts := map[string][]int{}
 	var order []string
 	for _, step := range issueSteps(t, pool, "LEG-1") {
-		key := step.Task + "/" + step.Kind + "/" + step.Role
+		key := step.Task + "/" + step.Kind + "/" + strconv.Itoa(step.Place)
 		attempts[key] = append(attempts[key], step.Attempt)
 		order = append(order, step.ID)
 	}
 	want := map[string][]int{
-		"default/step/implementer":  {1, 2, 3},
-		"docs/step/implementer":     {1, 2},
-		"default/step/tester":       {1, 2},
-		"default/retro/implementer": {1, 2},
-		"default/merge/merger":      {1, 2},
+		"default/step/2":  {1, 2, 3},
+		"docs/step/2":     {1, 2},
+		"default/step/3":  {1, 2},
+		"default/step/4":  {1},
+		"default/retro/0": {1, 2},
+		"default/merge/0": {1, 2},
 	}
 	if !reflect.DeepEqual(attempts, want) {
 		t.Errorf("the attempts read %v, want %v", attempts, want)
