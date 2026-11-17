@@ -166,12 +166,17 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 	number := func(name string, value int64) {
 		stated = append(stated, attribute{name, value, strconv.FormatInt(value, 10)})
 	}
-	moment := func(name string, value *time.Time) {
+	moment := func(name string, value *time.Time) error {
 		if value == nil {
-			return
+			return nil
 		}
-		formatted := value.UTC().Format(time.RFC3339Nano)
+		utc := value.UTC()
+		if year := utc.Year(); year < 0 || year > 9999 {
+			return inputError("%s cannot be represented in UTC: its year must be between 0 and 9999", name)
+		}
+		formatted := utc.Format(time.RFC3339Nano)
 		stated = append(stated, attribute{name, formatted, formatted})
+		return nil
 	}
 
 	text(AttributeProject, write.Project)
@@ -209,7 +214,9 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 	text(AttributeAgent, write.Agent)
 	text(AttributeSession, write.Session)
 	text(AttributeModel, write.Model)
-	moment(AttributeStartedAt, write.StartedAt)
+	if err := moment(AttributeStartedAt, write.StartedAt); err != nil {
+		return "", nil, err
+	}
 
 	result := text(AttributeResult, write.Result)
 	if result != "" && !slices.Contains(stepResults, result) {
@@ -221,7 +228,9 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 		}
 		return "", nil, inputError("result %s is written with ended_at, the moment the run ended, and this write names none", result)
 	}
-	moment(AttributeEndedAt, write.EndedAt)
+	if err := moment(AttributeEndedAt, write.EndedAt); err != nil {
+		return "", nil, err
+	}
 	if write.ReturnedTo != nil {
 		returned := *write.ReturnedTo
 		if returned < 0 {

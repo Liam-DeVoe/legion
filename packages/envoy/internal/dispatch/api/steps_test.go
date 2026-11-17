@@ -341,6 +341,10 @@ func TestAStepWriteRefusesItsBadValues(t *testing.T) {
 		{"a report that is no uuid", "", with(start, map[string]any{"result": "passed", "ended_at": stepEnd, "report": "plan-1"}), "report"},
 		{"a task that is no task id", "", with(start, map[string]any{"task": "Default"}), "task"},
 		{"an id that is no uuid", "not-a-uuid", start, "id"},
+		{"a start before the UTC year range", "", with(start, map[string]any{"started_at": "0000-01-01T00:00:00+01:00"}), "started_at"},
+		{"a start after the UTC year range", "", with(start, map[string]any{"started_at": "9999-12-31T23:59:59-01:00"}), "started_at"},
+		{"an end before the UTC year range", "", with(start, map[string]any{"result": "failed", "ended_at": "0000-01-01T00:00:00+01:00"}), "ended_at"},
+		{"an end after the UTC year range", "", with(start, map[string]any{"result": "failed", "ended_at": "9999-12-31T23:59:59-01:00"}), "ended_at"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			id := cmp.Or(row.id, uuid.NewString())
@@ -363,6 +367,34 @@ func TestAStepWriteRefusesItsBadValues(t *testing.T) {
 	}
 	if steps := stepsOf(t, handler, issue); len(steps) != 0 {
 		t.Fatalf("the refused writes left %d records, want none", len(steps))
+	}
+}
+
+// Normalizing an offset must keep a moment readable at either end of the JSON timestamp range.
+func TestAStepMomentAtTheUTCYearBoundsIsReadable(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
+	for _, row := range []struct{ input, want string }{
+		{"0000-01-01T01:00:00+01:00", "0000-01-01T00:00:00Z"},
+		{"9999-12-31T22:59:59-01:00", "9999-12-31T23:59:59Z"},
+	} {
+		id := uuid.NewString()
+		written := putStepOK(t, handler, issue, id, with(implementerStart(daemonSession("LEG")), map[string]any{"started_at": row.input}))
+		if written.StartedAt == nil || written.StartedAt.Format(time.RFC3339Nano) != row.want {
+			t.Fatalf("the write of %s answers %s, want start %s", row.input, stepJSON(t, written), row.want)
+		}
+		found := false
+		for _, step := range stepsOf(t, handler, issue) {
+			if step.ID == id {
+				found = true
+				if step.StartedAt == nil || step.StartedAt.Format(time.RFC3339Nano) != row.want {
+					t.Fatalf("the read lists %s, want start %s", stepJSON(t, step), row.want)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("the read does not list the run %s", id)
+		}
 	}
 }
 
