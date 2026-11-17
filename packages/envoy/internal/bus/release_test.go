@@ -404,11 +404,14 @@ func TestDrainSubscriptionWhileTheConnectionIsLiveStillDrains(t *testing.T) {
 	awaitPushBound(t, client, consumer, true, "the durable to take the subscription's binding")
 	publishReleaseProbe(t, client, "notifications.github.test.released")
 	// The drain hands the handler what the client has buffered and nothing new, so the message must
-	// have left the server before the drain's UNSUB reaches it. The consumer's own count of what it
-	// delivered is the last thing a test can read before the message is the client's.
-	waitFor(t, busWait, "the durable to deliver the message", func() bool {
-		info, err := client.JS().ConsumerInfo(bus.Stream, consumer)
-		return err == nil && info.Delivered.Consumer >= 1
+	// have reached the client before the drain's UNSUB reaches the server. The consumer's own count
+	// of what it delivered does not show that: run 43994173269 (job 133746719727) waited for it,
+	// drained, and the handler was handed nothing. The subscription's count of what it holds and
+	// has handed on is the client's own, so the drain waits for that.
+	waitFor(t, busWait, "the message to reach the client", func() bool {
+		pending, _, err := sub.Pending()
+		delivered, deliveredErr := sub.Delivered()
+		return err == nil && deliveredErr == nil && int64(pending)+delivered >= 1
 	})
 
 	drained, err := client.DrainSubscription(sub)
