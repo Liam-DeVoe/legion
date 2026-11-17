@@ -347,6 +347,9 @@ func TestAGrantNamingASystemSubjectIsRefused(t *testing.T) {
 	}{
 		{"a subscribe to the authorization subject", []string{"_INBOX.>", "$SYS.REQ.USER.AUTH"}, "grant names a system subject: $SYS.REQ.USER.AUTH"},
 		{"a subscribe to every system subject", []string{"_INBOX.>", "$SYS.>"}, "grant names a system subject: $SYS.>"},
+		// nats-server reads the entry as > in the auth service's queue group, splitting at the tab
+		// (strings.Fields, server/client.go splitSubjectQueue).
+		{"every subject in the auth service's queue group, after a tab", []string{"_INBOX.>", ">\tenvoy-auth"}, "grant names a system subject: >\tenvoy-auth"},
 		{"control: the same grant without one", []string{"_INBOX.>"}, ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {
