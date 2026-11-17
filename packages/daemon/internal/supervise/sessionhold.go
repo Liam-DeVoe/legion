@@ -205,42 +205,55 @@ func RecordedHolds(session, sessionFile string) []Hold {
 	return holds
 }
 
-// checkSessionNames refuses a registration whose session id, or whose session file's base name, is
-// longer than claim.MaxSessionNameBytes (claim.SessionNameTooLong), or whose session file is not
-// the clean path it names (claim.SessionFileNotClean): such a name could not be held, or would hold
-// another name than the file's, and no real session has one.
-func checkSessionNames(session, sessionFile string) error {
+// invalidName is one name of a session that no hold can cover, with the refusal a registration of
+// it answers.
+type invalidName struct {
+	hold    Hold
+	refusal claim.Refusal
+}
+
+// invalidSessionNames is the one rule for a session name no hold can cover, in the order a
+// registration is refused by them: a session id longer than claim.MaxSessionNameBytes, a session
+// file that is not the clean path it names (whose base name is not the file's, so the file-name hold
+// would hold another name), and a file whose base name is longer than the bound. A registration is
+// refused by the first (checkSessionNames); a claim a daemon from before the hold recorded under any
+// of them takes nothing under it (UnholdableNames).
+func invalidSessionNames(session, sessionFile string) []invalidName {
+	var invalid []invalidName
 	if len(session) > claim.MaxSessionNameBytes {
-		return claim.SessionNameTooLong("session id", len(session))
+		invalid = append(invalid, invalidName{Hold{Kind: HoldSessionID, Name: session}, claim.SessionNameTooLong("session id", len(session))})
 	}
-	if sessionFile != "" && filepath.Clean(sessionFile) != sessionFile {
-		return claim.SessionFileNotClean(sessionFile)
+	if sessionFile == "" {
+		return invalid
 	}
-	if base := filepath.Base(sessionFile); sessionFile != "" && len(base) > claim.MaxSessionNameBytes {
-		return claim.SessionNameTooLong("session file's name", len(base))
+	if filepath.Clean(sessionFile) != sessionFile {
+		return append(invalid, invalidName{Hold{Kind: HoldFileName, Name: sessionFile}, claim.SessionFileNotClean(sessionFile)})
+	}
+	if base := filepath.Base(sessionFile); len(base) > claim.MaxSessionNameBytes {
+		invalid = append(invalid, invalidName{Hold{Kind: HoldFileName, Name: base}, claim.SessionNameTooLong("session file's name", len(base))})
+	}
+	return invalid
+}
+
+// checkSessionNames refuses a registration of a session name no hold can cover, with the first
+// refusal invalidSessionNames gives: no real session has one.
+func checkSessionNames(session, sessionFile string) error {
+	if invalid := invalidSessionNames(session, sessionFile); len(invalid) > 0 {
+		return invalid[0].refusal
 	}
 	return nil
 }
 
 // UnholdableNames is every name of a claim's record of session and sessionFile that no hold can
-// cover: a session id or a file's base name longer than claim.MaxSessionNameBytes, and a file that
-// is not the clean path it names, whose base name is not the file's (checkSessionNames refuses all
-// three at registration, so only a daemon from before the hold recorded one). Each is treated as
-// held for no claim: holdRecorded refuses the claim that records it, and the daemon's boot names
-// it and suspends that claim (store.SessionConflicts).
+// cover (invalidSessionNames), which checkSessionNames refuses at registration, so only a daemon
+// from before the hold recorded one. Each is treated as held for no claim: holdRecorded refuses the
+// claim that records it, and the daemon's boot names it and suspends that claim
+// (store.SessionConflicts).
 func UnholdableNames(session, sessionFile string) []Hold {
-	var names []Hold
-	if len(session) > claim.MaxSessionNameBytes {
-		names = append(names, Hold{Kind: HoldSessionID, Name: session})
-	}
-	if sessionFile == "" {
-		return names
-	}
-	if filepath.Clean(sessionFile) != sessionFile {
-		return append(names, Hold{Kind: HoldFileName, Name: sessionFile})
-	}
-	if base := filepath.Base(sessionFile); len(base) > claim.MaxSessionNameBytes {
-		names = append(names, Hold{Kind: HoldFileName, Name: base})
+	invalid := invalidSessionNames(session, sessionFile)
+	names := make([]Hold, len(invalid))
+	for i, n := range invalid {
+		names[i] = n.hold
 	}
 	return names
 }
