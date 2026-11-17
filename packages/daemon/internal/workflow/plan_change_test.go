@@ -505,3 +505,129 @@ func TestARefusedVersionIsTakenWhenGivenAgainAfterTheStop(t *testing.T) {
 		t.Fatalf("the steps of a after version 2 = %v, want version 2's", got)
 	}
 }
+
+// seedDefaultPlan writes the plan key's run holds at generation when its owner gave none (R5): the
+// project's default steps as version 0 of the source default, with no document and no giver, and
+// one task default whose block names no steps and so runs the default steps, each with the type of
+// its role, waiting at no act.
+func seedDefaultPlan(t *testing.T, pool *pgxpool.Pool, key string, generation uint64) {
+	t.Helper()
+	defaults, err := defaultPlanSteps()
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := record.PlanVersion{Issue: key, Generation: generation, Version: 0, Source: record.PlanSourceDefault, GivenAt: stepClock}
+	task := record.PlanTask{Issue: key, Generation: generation, Task: plan.DefaultTask, BlockText: "The project's default steps.",
+		StepsByDefault: true, State: record.TaskWaiting}
+	steps := make([]record.PlanStep, len(defaults))
+	for i, step := range defaults {
+		steps[i] = record.PlanStep{Issue: key, Generation: generation, Task: plan.DefaultTask, Position: i + 1, Role: step.Role,
+			AgentKey: step.Key, Type: string(builtinDeployment.Roles[step.Role].Type)}
+	}
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		return record.NewStore().PutPlan(t.Context(), tx, version, []record.PlanTask{task}, steps)
+	})
+}
+
+// A version that replaces the stopped task of the default steps starts the new task (C2-2; R5,
+// R16). An issue on the project's default steps runs its planner. While the task default runs, a
+// version whose one block is a, which removes default, is refused naming default and writes
+// nothing. The owner stops default: the issue is held from planning for the stopped task, and the
+// planner's process is stopped. The same version given again is taken: the default version stays
+// beside the owner's, the task default and its steps are gone, a alone holds the version's steps
+// and runs at step 1 with every count 0 (a new task, so no pass is raised and no pair or round is
+// counted), the hold is cleared, the planner's start the issue still owed gives way to the
+// implementer's, and the implementer is started at a raised entry and told which version started
+// it. A version that keeps default and adds a is a plan of two tasks, which the route refuses
+// (api's TestRegisterPlanTakesAPlanAndRefusesWithReasons), so the workflow never takes it. The
+// twin (R20): an issue with no plan rows that stands in planning takes no plan, and stays where it
+// stands.
+func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T) {
+	t.Run("the stopped task default is replaced by a, which starts at its first step", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		apply := applyFacts(t, pool, engine)
+		root := stepRoot(t, pool, phase.Admitted)
+		key, gen := root.Key, root.Generation
+		seedDefaultPlan(t, pool, key, gen)
+		move(t, pool, engine, key, TriggerGateOpened, "", record.PhaseRow{})
+		if issue := issueOf(t, pool, engine, key); issue.Phase != phase.Planning {
+			t.Fatalf("%s on the default steps after its gate opened stands in %s, want planning", key, issue.Phase)
+		}
+		id, version1 := planID(key, gen, 1), ownersPlan(t, key, gen, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
+
+		before := planStandingOf(t, pool, engine, key, gen)
+		reason := "task default is running: stop it with stop_task before you change it."
+		assertPlanRefusal(t, pool, engine, key, gen, id, apply(id, version1), &intake.Refusal{Status: 409, Code: "PLAN_REFUSED",
+			Message: "Legion refused this plan and recorded nothing: " + reason, Reasons: []plan.Refusal{{Task: plan.DefaultTask, Reason: reason}}}, before)
+
+		if result := apply("stop", ownersStop(t, key, plan.DefaultTask)); result.Refusal != nil {
+			t.Fatalf("the owner's stop of default was refused: %+v", result.Refusal)
+		}
+		held := issueOf(t, pool, engine, key)
+		if held.Phase != phase.Held || held.Hold == nil || *held.Hold != (record.Hold{From: phase.Planning, Reason: record.HoldTaskStopped}) {
+			t.Fatalf("%s after the stop stands in %s with hold %+v, want held from planning for the stopped task", key, held.Phase, held.Hold)
+		}
+		if stops := superviseRowsOf(t, pool, key, "step_stop"); len(stops) != 1 || stops[0].Role != claim.RolePlanner || stops[0].Generation != gen {
+			t.Fatalf("the step stops = %+v, want one of the planner", stops)
+		}
+		if planners := startsOf(t, pool, key, claim.RolePlanner); len(planners) != 1 {
+			t.Fatalf("the planner's starts before version 1 = %+v, want the one the gate's opening wrote, still owed: no outbox ran", planners)
+		}
+		prompts := len(hookPrompts(t, pool))
+
+		mustTake(t, "version 1 given again after the stop", apply(id, version1))
+
+		after := planStandingOf(t, pool, engine, key, gen)
+		if !reflect.DeepEqual(after.versions, []string{"0 default", "1 owner"}) {
+			t.Fatalf("the versions of %s = %v, want the default version 0 and the owner's version 1", key, after.versions)
+		}
+		task := after.task(t)
+		if task.Task != "a" || task.PlanVersion != 1 || task.State != record.TaskRunning || task.StoppedReason != "" ||
+			task.Place != (record.TaskPlace{Kind: record.PlaceStep, Position: 1}) || !sameReturnCounts(task.Counts, record.ReturnCounts{}) {
+			t.Fatalf("the one task after version 1 = %+v, want a of version 1, running at step 1 with every count 0", task)
+		}
+		if got := stepsOfTask(after.plan, "a"); !slices.Equal(got, []string{"implementer/implementation", "reviewer/review"}) {
+			t.Fatalf("the steps of a = %v, want the implementer and the reviewer, each with its role's type", got)
+		}
+		var leftOfDefault int
+		if err := pool.QueryRow(t.Context(), `select (select count(*) from plan_tasks where issue = $1 and task = 'default')
+			+ (select count(*) from plan_steps where issue = $1 and task = 'default')`, key).Scan(&leftOfDefault); err != nil || leftOfDefault != 0 {
+			t.Fatalf("rows of the task default after version 1 = %d (%v), want none", leftOfDefault, err)
+		}
+		if after.issue.Phase != phase.Implementing || after.issue.Hold != nil {
+			t.Fatalf("%s after version 1 stands in %s with hold %+v, want implementing, the phase of a's step 1, with no hold", key, after.issue.Phase, after.issue.Hold)
+		}
+		row := roleRowOf(t, pool, engine, key, claim.RoleImplementer)
+		const told = "Reason: the owner gave version 1 of the plan while task default was stopped."
+		if row.Entry != 1 || !strings.Contains(row.EntryTask, told) {
+			t.Fatalf("the implementer's row has entry %d and task %q, want entry 1, raised, whose task holds %q", row.Entry, row.EntryTask, told)
+		}
+		if starts := startsOf(t, pool, key, claim.RoleImplementer); len(starts) != 1 || starts[0].Phase != phase.Implementing || starts[0].Entry != row.Entry {
+			t.Fatalf("the starts of the implementer = %+v, want one, of implementing at entry %d", starts, row.Entry)
+		}
+		// The start of a's step 1 takes the place of the planner's start the issue still owed
+		// (Store.EnqueueStart): the step of the removed task never starts.
+		if planners := startsOf(t, pool, key, claim.RolePlanner); len(planners) != 0 {
+			t.Fatalf("the planner's starts after version 1 = %+v, want none: the task default is gone", planners)
+		}
+		if got := len(hookPrompts(t, pool)); got != prompts {
+			t.Fatalf("version 1 fired %d hook prompts, want none: no step failed", got-prompts)
+		}
+	})
+
+	t.Run("the twin: an issue with no plan rows in planning takes no plan", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		before := planStandingOf(t, pool, engine, root.Key, root.Generation)
+		if before.issue.Phase != phase.Planning || before.plan != nil {
+			t.Fatalf("%s with no plan stands in %s with the plan %+v, want planning with no plan rows", root.Key, before.issue.Phase, before.plan)
+		}
+		id := planID(root.Key, root.Generation, 1)
+		assertPlanRefusal(t, pool, engine, root.Key, root.Generation, id,
+			applyFacts(t, pool, engine)(id, ownersPlan(t, root.Key, root.Generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))),
+			intake.PlanRefused([]plan.Refusal{intake.StartedBeforePlans(root.Key)}), before)
+	})
+}

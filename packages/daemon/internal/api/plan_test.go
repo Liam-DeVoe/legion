@@ -115,6 +115,7 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 	statuses.givePlan(planDoc, 3, taskBlock("a", "implementer reviewer"), taskBlock("b", "implementer prober"))
 	statuses.givePlan(planDoc, 4, taskBlock("a", "implementer reviewer"))
 	statuses.givePlan(planDoc, 5, taskBlock("a", ""))
+	statuses.givePlan(planDoc, 6, taskBlock(plan.DefaultTask, ""), taskBlock("a", "implementer reviewer"))
 
 	assertFailure(t, registerPlan(h, worker.grant(t), "LEGION-208", planDoc, 4), http.StatusForbidden, "ARCHITECT_REQUIRED")
 	assertRefusalText(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 10), http.StatusConflict, "VERSION_NOT_IN_DISPATCH",
@@ -125,6 +126,10 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 		PlanReason{Task: "a", Reason: "step 2 of task a names the role prober, which neither the deployment nor the plan defines."})
 	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 3), twoTasks,
 		PlanReason{Task: "b", Reason: "step 2 of task b names the role prober, which neither the deployment nor the plan defines."})
+	// A version that keeps the task of the default steps and adds a second is a plan of two tasks
+	// like any other: the route refuses it, so the workflow never takes it.
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 6),
+		PlanReason{Reason: "the plan has 2 tasks (default, a), and this release runs one task for each issue. This release of Legion does not carry it out yet."})
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("refused registrations recorded %#v, want nothing", got)
 	}
