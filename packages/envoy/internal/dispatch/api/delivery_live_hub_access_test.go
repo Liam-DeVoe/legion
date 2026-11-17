@@ -77,29 +77,7 @@ func TestADeliveryViewIsReadAgainForItsReaderOnAnAccessChange(t *testing.T) {
 	for {
 		select {
 		case frame := <-conn.frames:
-			raw, _ := json.Marshal(frame)
-			var answer struct {
-				Body  json.RawMessage `json:"body"`
-				Items map[string]struct {
-					Upsert []struct {
-						ID string `json:"id"`
-					} `json:"upsert"`
-				} `json:"items"`
-			}
-			_ = json.Unmarshal(raw, &answer)
-			var timeline struct {
-				PRs []struct {
-					ID string `json:"id"`
-				} `json:"prs"`
-			}
-			_ = json.Unmarshal(answer.Body, &timeline)
-			ids := []string{}
-			for _, pr := range timeline.PRs {
-				ids = append(ids, pr.ID)
-			}
-			for _, pr := range answer.Items["prs"].Upsert {
-				ids = append(ids, pr.ID)
-			}
+			ids, raw := framePullRequests(frame)
 			if slices.Contains(ids, "acme/secret#7") {
 				t.Fatalf("dave, no longer on PRIV's list, was sent acme/secret#7, a pull request of PRIV: %.300s", raw)
 			}
@@ -108,6 +86,117 @@ func TestADeliveryViewIsReadAgainForItsReaderOnAnAccessChange(t *testing.T) {
 			}
 		case <-deadline:
 			t.Fatal("no frame dave's page was sent within 10s named acme/widgets#8, a pull request of PUB he sees")
+		}
+	}
+}
+
+// framePullRequests is the id of every pull request a delivery frame names, a snapshot's body's
+// and a delta's upserts, with the frame's JSON for a failure to show.
+func framePullRequests(frame any) ([]string, []byte) {
+	raw, _ := json.Marshal(frame)
+	var answer struct {
+		Body  json.RawMessage `json:"body"`
+		Items map[string]struct {
+			Upsert []struct {
+				ID string `json:"id"`
+			} `json:"upsert"`
+		} `json:"items"`
+	}
+	_ = json.Unmarshal(raw, &answer)
+	var timeline struct {
+		PRs []struct {
+			ID string `json:"id"`
+		} `json:"prs"`
+	}
+	_ = json.Unmarshal(answer.Body, &timeline)
+	ids := []string{}
+	for _, pr := range timeline.PRs {
+		ids = append(ids, pr.ID)
+	}
+	for _, pr := range answer.Items["prs"].Upsert {
+		ids = append(ids, pr.ID)
+	}
+	return ids, raw
+}
+
+// TestASubscribeThatRacesAReaderRecheckIsReadAgain: a subscribe resolves its reader before it
+// takes the hub's lock, so a re-check of every sub's reader can begin, and walk the subs, between
+// the two; the sub joins with a reader that re-check never read. The hub resolves that sub's reader
+// again after the re-check. The racing subscribe here resolves a reader that sees PRIV, as one
+// resolved before an access change would, and a re-check runs to its end before the subscribe
+// joins; resolved again, the reader sees PRIV no more, and the page is sent a snapshot that names
+// no pull request of acme/secret, PRIV's repository.
+//
+// Control: the hub does not resolve a sub's reader again when its subscribe raced a re-check; the
+// page holds the snapshot read for the reader that saw PRIV, and the test fails.
+func TestASubscribeThatRacesAReaderRecheckIsReadAgain(t *testing.T) {
+	seed := seedPrivateProject(t)
+	seedHubSettings(t, seed.database)
+	if _, err := seed.database.Pool.Exec(t.Context(), `
+		insert into repo_projects (repo, project, created_by) values
+			('acme/widgets', 'PUB', '{"kind":"user","id":"operator"}'),
+			('acme/secret', 'PRIV', '{"kind":"user","id":"operator"}')
+	`); err != nil {
+		t.Fatalf("map the two repositories: %v", err)
+	}
+	clock := newNoonHubClock()
+	secret := hubPR(7, clock.Now().Add(-time.Hour))
+	secret.Repo, secret.URL = "acme/secret", "https://github.com/acme/secret/pull/7"
+	upsertPR(t, seed.database, secret)
+	saw, err := seed.server.readerFor(t.Context(), model.BrowserActor(seedCarol))
+	if err != nil {
+		t.Fatalf("resolve a reader that sees PRIV: %v", err)
+	}
+	sees, err := seed.server.readerFor(t.Context(), model.BrowserActor(seedAlice))
+	if err != nil {
+		t.Fatalf("resolve a reader that does not see PRIV: %v", err)
+	}
+	rig := hubOn(t, seed.handler, seed.database, seed.deps, clock, nil)
+
+	// A first page starts the generation; the re-check the listener's connection runs is over
+	// before the race below.
+	first := newFakeLiveConn()
+	rig.hub.Subscribe(first, deliverySubscription{Sub: "t", View: presetView(deliveryLiveTimeline, 7, ""), Resolve: func(context.Context) (model.Actor, error) { return sees, nil }})
+	first.snapshot(t, 5*time.Second, "t")
+	rig.waitListening(t)
+	rig.waitFor(t, 0, 5*time.Second, "the re-check after the listener connected", func(note deliveryHubNote) bool {
+		return note.what == "readers rechecked"
+	})
+
+	resolved := 0
+	resolve := func(context.Context) (model.Actor, error) {
+		resolved++
+		if resolved > 1 {
+			return sees, nil
+		}
+		start := rig.mark()
+		rig.hub.mu.Lock()
+		g := rig.hub.generation
+		rig.hub.mu.Unlock()
+		g.readersStale.Store(true)
+		signal(g.wakeWork)
+		rig.waitFor(t, start, 5*time.Second, "the re-check the subscribe races", func(note deliveryHubNote) bool {
+			return note.what == "readers rechecked"
+		})
+		return saw, nil
+	}
+	conn := newFakeLiveConn()
+	if !rig.hub.Subscribe(conn, deliverySubscription{Sub: "t", View: presetView(deliveryLiveTimeline, 7, ""), Resolve: resolve}) {
+		t.Fatal("the racing subscribe was refused")
+	}
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case frame := <-conn.frames:
+			snapshot, ok := frame.(DeliveryLiveSnapshot)
+			if !ok {
+				continue
+			}
+			if ids, _ := framePullRequests(snapshot); !slices.Contains(ids, "acme/secret#7") {
+				return
+			}
+		case <-deadline:
+			t.Fatal("no snapshot within 10s was read for the reader the racing subscribe has now: each names acme/secret#7")
 		}
 	}
 }
