@@ -152,8 +152,7 @@ function carriesCheck(node: TreeNode, checks: readonly CheckReading[]): boolean 
   // overtaken node, covers no statement. The coverage read's count below still counts a proposed
   // check: leaving it out there is the server's.
   if (outOfCounts(node)) return false;
-  const counted = inCounts(checks);
-  if (counted.length < checks.length) return carriesCheck(node, counted);
+  checks = inCounts(checks);
   return checks.length > 0 || (node.counts?.checks ?? 0) > 0;
 }
 
@@ -199,8 +198,7 @@ export function statementStandings(
 export function statementState(checks: readonly CheckReading[]): StatementState {
   // A proposed check, and one at or under an overtaken node, serves no statement: it is neither
   // evidence for it nor against it.
-  const counted = inCounts(checks);
-  if (counted.length < checks.length) return statementState(counted);
+  checks = inCounts(checks);
   if (checks.length === 0) return "unknown";
   if (checks.every((check) => check.state === "passed" && check.atNamedCommit)) return "met";
   if (checks.some((check) => check.state === "failed" && check.atNamedCommit)) return "not_met";
@@ -212,8 +210,7 @@ export function statementCounts(
   statements: readonly StatementReading[]
 ): Readonly<Record<StatementState, number>> {
   // A proposed statement, and one at or under an overtaken node, is in none of the three.
-  const counted = inCounts(statements);
-  if (counted.length < statements.length) return statementCounts(counted);
+  statements = inCounts(statements);
   const counts: Record<StatementState, number> = { met: 0, not_met: 0, unknown: 0 };
   for (const statement of statements) counts[statement.state] += 1;
   return counts;
@@ -221,7 +218,7 @@ export function statementCounts(
 
 /** What a count reads of `readings`: each one but those whose node is a proposed statement or
  *  check or sits at or under an overtaken node (`outOfCounts`). */
-function inCounts<Reading extends { readonly node: TreeNode }>(
+export function inCounts<Reading extends { readonly node: TreeNode }>(
   readings: readonly Reading[]
 ): readonly Reading[] {
   return readings.filter((reading) => !outOfCounts(reading.node));

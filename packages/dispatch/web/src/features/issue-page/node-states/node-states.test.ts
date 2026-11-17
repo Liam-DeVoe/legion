@@ -62,8 +62,8 @@ import { planOrder } from "../plan-filter/plan-order";
 import { presetView } from "../presets";
 import { ReferenceNamesProvider } from "../reference-names";
 import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
-import { coverageRead, issueDetails, statement } from "../spec-filter/spec-fixtures";
-import { NOTHING_OPENED, type OpenedBranches, type OvertakenRow, pathTo } from "../tree-fold";
+import { answerNode, coverageRead, issueDetails, statement } from "../spec-filter/spec-fixtures";
+import { type OvertakenRow, pathTo } from "../tree-fold";
 import { statesOfRead } from "../tree-read/tree-nodes";
 import {
   issueTreeKey,
@@ -132,16 +132,6 @@ function chip(ref: string): NodeChip {
   return { answered: true, gone: false, name: ref, ref };
 }
 
-/** The node `id` under `root`, wherever it sits. */
-function nodeOf(root: TreeNode, id: string): TreeNode | undefined {
-  if (root.id === id) return root;
-  for (const child of root.children) {
-    const found = nodeOf(child, id);
-    if (found !== undefined) return found;
-  }
-  return undefined;
-}
-
 /** `root` with `states` put on it by the read's own id, as the page puts the tree read's on it.
  *  A node built by another file's helper carries no read id, so each node is read as the node of
  *  the tree read whose id is its own where it names none. */
@@ -176,19 +166,19 @@ test("no node at or under an overtaken one draws a gap", () => {
   ]);
   const tree = stamped(root, { "spec#b-r1": { life: "overtaken" } });
 
-  expect(nodeOf(root, "spec#b-r1")?.gaps).toEqual(["no_check"]);
-  expect(nodeOf(root, "plan-md#b-t1")?.gaps).toEqual(["nobody_asked"]);
-  expect(nodeOf(tree, "spec#b-r1")?.gaps).toEqual([]);
-  expect(nodeOf(tree, "verification-md#b-c1")?.gaps).toEqual([]);
-  expect(nodeOf(tree, "result-1")?.gaps).toEqual([]);
-  expect(nodeOf(tree, "plan-md#b-t1")?.gaps).toEqual([]);
+  expect(pathTo(root, "spec#b-r1")?.at(-1)?.gaps).toEqual(["no_check"]);
+  expect(pathTo(root, "plan-md#b-t1")?.at(-1)?.gaps).toEqual(["nobody_asked"]);
+  expect(pathTo(tree, "spec#b-r1")?.at(-1)?.gaps).toEqual([]);
+  expect(pathTo(tree, "verification-md#b-c1")?.at(-1)?.gaps).toEqual([]);
+  expect(pathTo(tree, "result-1")?.at(-1)?.gaps).toEqual([]);
+  expect(pathTo(tree, "plan-md#b-t1")?.at(-1)?.gaps).toEqual([]);
   for (const id of ["spec#b-r1", "verification-md#b-c1", "result-1", "plan-md#b-t1"]) {
-    expect(nodeOf(tree, id)?.closed, id).toBe(true);
+    expect(pathTo(tree, id)?.at(-1)?.closed, id).toBe(true);
   }
   // Only the overtaken node is itself overtaken; what sits under it is closed by it.
-  expect(nodeOf(tree, "spec#b-r1")?.life).toBe("overtaken");
-  expect("life" in (nodeOf(tree, "plan-md#b-t1") ?? {})).toBe(false);
-  expect(nodeOf(tree, "spec#b-r2")).toStrictEqual(nodeOf(root, "spec#b-r2"));
+  expect(pathTo(tree, "spec#b-r1")?.at(-1)?.life).toBe("overtaken");
+  expect("life" in (pathTo(tree, "plan-md#b-t1")?.at(-1) ?? {})).toBe(false);
+  expect(pathTo(tree, "spec#b-r2")?.at(-1)).toStrictEqual(pathTo(root, "spec#b-r2")?.at(-1));
 });
 
 // A node at or under an overtaken one waits on nobody, since a later node took its
@@ -206,10 +196,10 @@ test("no node at or under an overtaken one waits on the reader", () => {
   });
 
   for (const id of ["ask-1", "ask-2"]) {
-    expect(nodeOf(tree, id)?.waiting, id).toBe(false);
-    expect(nodeOf(tree, id)?.question, id).toBe(true);
+    expect(pathTo(tree, id)?.at(-1)?.waiting, id).toBe(false);
+    expect(pathTo(tree, id)?.at(-1)?.question, id).toBe(true);
   }
-  expect(nodeOf(tree, "ask-3")).toStrictEqual(nodeOf(root, "ask-3"));
+  expect(pathTo(tree, "ask-3")?.at(-1)).toStrictEqual(pathTo(root, "ask-3")?.at(-1));
 });
 
 // A node's marks are its entry's and no other. A settled node's entry holds none, and a
@@ -226,12 +216,12 @@ test("a live or settled node has no mark", () => {
   const tree = stamped(root, { "spec#b-r1": {}, "spec#b-r3": { life: "proposed" } });
 
   for (const id of ["spec#b-r1", "verification-md#b-c1", "spec#b-r2"]) {
-    const found = nodeOf(tree, id);
+    const found = pathTo(tree, id)?.at(-1);
     expect(
       ["closed", "life", "onlyYou"].filter((key) => key in (found ?? {})),
       id
     ).toEqual([]);
-    expect(found, id).toStrictEqual(nodeOf(root, id));
+    expect(found, id).toStrictEqual(pathTo(root, id)?.at(-1));
   }
 });
 
@@ -252,11 +242,11 @@ test("a proposed node draws no gap the page made", () => {
   );
 
   for (const id of proposed) {
-    expect(nodeOf(tree, id)?.life, id).toBe("proposed");
-    expect(nodeOf(tree, id)?.gaps, id).toEqual([]);
-    expect("closed" in (nodeOf(tree, id) ?? {}), id).toBe(false);
+    expect(pathTo(tree, id)?.at(-1)?.life, id).toBe("proposed");
+    expect(pathTo(tree, id)?.at(-1)?.gaps, id).toEqual([]);
+    expect("closed" in (pathTo(tree, id)?.at(-1) ?? {}), id).toBe(false);
   }
-  expect(nodeOf(tree, "plan-md#b-t2")?.gaps).toEqual(["nobody_asked"]);
+  expect(pathTo(tree, "plan-md#b-t2")?.at(-1)?.gaps).toEqual(["nobody_asked"]);
 });
 
 // A chip names a node by its reference, whatever version it pins, and a parent line by
@@ -283,18 +273,18 @@ test("a chip and a parent line carry the marks of the node they name", () => {
     "spec#b-r7": { life: "proposed", onlyYou: true },
   });
 
-  const decision = nodeOf(tree, "decisions-md#b-d1");
+  const decision = pathTo(tree, "decisions-md#b-d1")?.at(-1);
   expect(decision?.chips).toStrictEqual([
     { ...chip(marked), life: "proposed", onlyYou: true },
     { ...chip(pinned), life: "proposed", onlyYou: true },
     chip(plain),
   ]);
   expect(decision?.alsoUnder).toStrictEqual([{ ...chip(marked), life: "proposed", onlyYou: true }]);
-  expect(nodeOf(tree, "verification-md#b-c1")?.parentLine).toStrictEqual({
+  expect(pathTo(tree, "verification-md#b-c1")?.at(-1)?.parentLine).toStrictEqual({
     ...line("ask-1"),
     life: "proposed",
   });
-  expect(nodeOf(tree, "verification-md#b-c2")?.parentLine).toStrictEqual(line("ask-2"));
+  expect(pathTo(tree, "verification-md#b-c2")?.at(-1)?.parentLine).toStrictEqual(line("ask-2"));
   const states = statesByReference(tree);
   expect([...states]).toStrictEqual([[marked, { life: "proposed", onlyYou: true }]]);
   expect(marksAt(states, pinned)).toStrictEqual({ life: "proposed", onlyYou: true });
@@ -325,7 +315,7 @@ test("a parent's overtaken children are one row of its held count", () => {
   });
 
   expect(tree.held).toBe(3);
-  expect(nodeOf(tree, "spec#b-r2")?.held).toBe(2);
+  expect(pathTo(tree, "spec#b-r2")?.at(-1)?.held).toBe(2);
   expect(stamped(root, { "spec#b-r3": { life: "overtaken" } }).held).toBe(6);
 });
 
@@ -339,19 +329,17 @@ test("a path opens the line of each overtaken node it runs through, and none for
   const root = node(KEY, "issue", [
     node("spec", "document", [node("spec#b-r7", "requirement"), outer]),
   ]);
-  const opened: OpenedBranches = { ...NOTHING_OPENED, overtaken: new Set(["elsewhere"]) };
+  const opened: ReadonlySet<string> = new Set(["elsewhere"]);
 
   expect(overtakenLineOf(pathTo(root, "comment-2"))).toBe("spec");
-  const both = withLine(opened, pathTo(root, "comment-2"));
-  expect([...(both.overtaken ?? [])]).toEqual(["elsewhere", "spec", "spec#b-r8"]);
-  expect(both.branches).toBe(opened.branches);
-  expect(both.closed).toBe(opened.closed);
-  expect(both.deeper).toBe(opened.deeper);
-  expect([...(withLine(NOTHING_OPENED, pathTo(root, "spec#b-r8")).overtaken ?? [])]).toEqual([
+  expect([...(withLine(opened, pathTo(root, "comment-2")) ?? [])]).toEqual([
+    "elsewhere",
     "spec",
+    "spec#b-r8",
   ]);
+  expect([...(withLine(undefined, pathTo(root, "spec#b-r8")) ?? [])]).toEqual(["spec"]);
   // The set the reader's own lines are held in is a new one, never the one they had.
-  expect(opened.overtaken).toEqual(new Set(["elsewhere"]));
+  expect(opened).toEqual(new Set(["elsewhere"]));
 
   expect(overtakenLineOf(pathTo(root, "spec#b-r7"))).toBeUndefined();
   expect(withLine(opened, pathTo(root, "spec#b-r7"))).toBe(opened);
@@ -1626,7 +1614,7 @@ function lensTree(): TreeNode {
  *  given and under no provider where it is not. */
 function drawChain(states: ReadonlyMap<string, NodeStates> | undefined) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const lens = nodeOf(lensTree(), "lens/2222");
+  const lens = pathTo(lensTree(), "lens/2222")?.at(-1);
   if (lens === undefined) throw new Error("the tree holds no pre-mortem");
   const chain = createElement(LensChain, { node: lens, tabStops: false });
   return render(
@@ -1770,26 +1758,15 @@ test("the lens a cut-short chain stopped at carries the tree's marks", async () 
   }
 });
 
-/** One node of the tree read's answer as the contract gives it: live and visible to every reader
- *  unless the case says otherwise, under the issue unless it names another parent. */
+/** One node of the tree read's answer as the contract gives it (`answerNode`): live and visible
+ *  to every reader unless the case says otherwise, under the issue unless it names another
+ *  parent, with words of its own. */
 function readNode(
   id: string,
   supertag: string,
   extra: Partial<TreeAnswerNode> = {}
 ): TreeAnswerNode {
-  return {
-    attributes: {},
-    author: null,
-    id,
-    made_at: "2026-11-05T00:00:00Z",
-    parent: KEY,
-    rank: null,
-    state: "live",
-    supertag,
-    text: `Words of ${id}.`,
-    visibility: "project",
-    ...extra,
-  };
+  return answerNode(id, supertag, { text: `Words of ${id}.`, ...extra });
 }
 
 /** A typed block of the issue's document `slug`, at `position` in it, which the tree draws by a
@@ -2431,7 +2408,7 @@ test("the Plan view opens the line of an overtaken task an address or the words 
   readWide();
   const user = userEvent.setup();
   const root = planWithOvertaken();
-  const replaced = nodeOf(root, T2);
+  const replaced = pathTo(root, T2)?.at(-1);
   if (replaced === undefined) throw new Error("the plan holds task 2");
   // The chain the outline gives the address: the issue, the statement the task serves, the task.
   const addressed = [root, node("spec#b-r1", "requirement"), replaced];

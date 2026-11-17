@@ -1,6 +1,6 @@
 import { overtakenLineOf } from "../issue-address";
 import type { NodeChip, NodeLife, TreeNode } from "../issue-tree";
-import { isOvertaken, isProposed, type OpenedBranches } from "../tree-fold";
+import { isOvertaken, isProposed } from "../tree-fold";
 import { withoutVersion } from "../tree-keys";
 import { nodeStatesOf } from "../tree-read/tree-nodes";
 import type { TreeAnswer } from "../tree-read/tree-read";
@@ -12,6 +12,9 @@ import type { TreeAnswer } from "../tree-read/tree-read";
  * puts them on every placement of that node and on every chip and parent line that names it, and
  * closes each overtaken node with every node under it, so the rows, the fold and the counts all
  * read one tree.
+ *
+ * The views that fold their own lines of overtaken nodes (Spec, Verification) hold which of
+ * them the reader opened or closed by the one rule here (`OvertakenLines`, `toggledLines`).
  *
  * `issue-tree.ts` passes the tree it assembles through this module, so this module imports no
  * value of that one, which Biome's `noImportCycles` would refuse: its caller hands it `heldBy`,
@@ -30,8 +33,9 @@ export interface NodeStates {
 }
 
 /** The marks `from` holds, each only where it holds one, so whatever is given them carries no
- *  key it has no value for; undefined where it holds none. */
-function marksOf(from: NodeStates | undefined): NodeStates | undefined {
+ *  key it has no value for; undefined where it holds none, so it says whether `from` carries a
+ *  mark at all. */
+export function marksOf(from: NodeStates | undefined): NodeStates | undefined {
   if (from?.life === undefined && from?.onlyYou === undefined) return undefined;
   return {
     ...(from.life === undefined ? {} : { life: from.life }),
@@ -138,19 +142,11 @@ export function closeOvertaken(
 ): TreeNode {
   const states = nodeStatesOf(answer);
   if (outline === undefined) return stampStates(root, states, heldBy);
-  const fromOutline = new Map<string, NodeStates>();
-  const indexOutline = (node: TreeNode): void => {
-    const marks = marksOf(node);
-    if (node.readId !== undefined && marks !== undefined) fromOutline.set(node.readId, marks);
-    for (const child of node.children) indexOutline(child);
-  };
-  indexOutline(outline);
+  // The read id of each node and parent line of `root` that the view's answer holds no node for.
   const held = new Set(answer.nodes.map((node) => node.id));
-  const merged = new Map(states);
+  const missing = new Set<string>();
   const take = (readId: string | undefined): void => {
-    if (readId === undefined || held.has(readId)) return;
-    const marks = fromOutline.get(readId);
-    if (marks !== undefined) merged.set(readId, marks);
+    if (readId !== undefined && !held.has(readId)) missing.add(readId);
   };
   const walk = (node: TreeNode): void => {
     take(node.readId);
@@ -158,6 +154,17 @@ export function closeOvertaken(
     for (const child of node.children) walk(child);
   };
   walk(root);
+  if (missing.size === 0) return stampStates(root, states, heldBy);
+  // Each of those takes the marks of the outline's last node of that read id that carries any.
+  const merged = new Map(states);
+  const indexOutline = (node: TreeNode): void => {
+    const marks = marksOf(node);
+    if (node.readId !== undefined && marks !== undefined && missing.has(node.readId)) {
+      merged.set(node.readId, marks);
+    }
+    for (const child of node.children) indexOutline(child);
+  };
+  indexOutline(outline);
   return stampStates(root, merged, heldBy);
 }
 
@@ -188,21 +195,21 @@ export function marksAt(
 }
 
 /**
- * `opened` with the line of every overtaken node `path` runs through opened, so the node
- * at its end is drawn as a row: an address, a chip, a Contents entry, `q` or `w` that names an
- * overtaken node or a node under one opens the line that holds it. An overtaken node under
- * another is behind two lines, and both open. `opened` itself where the path runs through no
- * overtaken node.
+ * `opened`, the lines of overtaken nodes the reader opened (`OpenedBranches`'s `overtaken`), with
+ * the line of every overtaken node `path` runs through opened, so the node at its end is drawn as
+ * a row: an address, a chip, a Contents entry, `q` or `w` that names an overtaken node or a node
+ * under one opens the line that holds it. An overtaken node under another is behind two lines,
+ * and both open. `opened` itself where the path runs through no overtaken node.
  */
 export function withLine(
-  opened: OpenedBranches,
+  opened: ReadonlySet<string> | undefined,
   path: readonly TreeNode[] | undefined
-): OpenedBranches {
+): ReadonlySet<string> | undefined {
   const line = overtakenLineOf(path);
   if (line === undefined || path === undefined) return opened;
   // The rest of the path from the line's own node, which may stand above another line.
   const below = path.slice(path.findIndex((node) => node.id === line) + 1);
-  return withLine({ ...opened, overtaken: new Set(opened.overtaken).add(line) }, below);
+  return withLine(new Set(opened).add(line), below);
 }
 
 /** The id of each node of `root` that holds an overtaken child, in reading order: each node a
@@ -217,4 +224,42 @@ export function linesIn(root: TreeNode): readonly string[] {
   };
   walk(root);
   return parents;
+}
+
+/** The lines of overtaken nodes a view folds by itself, which the reader opened, and those they
+ *  closed while the words filter held words, which stay closed while it does: each by the key
+ *  the view gives it. */
+export interface OvertakenLines {
+  readonly closed: ReadonlySet<string>;
+  readonly open: ReadonlySet<string>;
+}
+
+/** No line opened or closed by the reader, which is how a view is first drawn. */
+export const NO_LINES: OvertakenLines = { closed: new Set(), open: new Set() };
+
+/** Whether the line `key` names is drawn open: where the reader opened it, and, while the words
+ *  filter holds words (`words`), where they did not close it under them. */
+export function lineIsOpen(lines: OvertakenLines, words: boolean, key: string): boolean {
+  return lines.open.has(key) || (words && !lines.closed.has(key));
+}
+
+/** `held` with the line `key` opened (`open`) or closed: an opened line is open and no longer
+ *  held closed; a closed one is no longer open, and, while the words filter holds words
+ *  (`words`), is held closed until the reader opens it again. */
+export function toggledLines(
+  held: OvertakenLines,
+  key: string,
+  open: boolean,
+  words: boolean
+): OvertakenLines {
+  const opened = new Set(held.open);
+  const closed = new Set(held.closed);
+  if (open) {
+    opened.add(key);
+    closed.delete(key);
+  } else {
+    opened.delete(key);
+    if (words) closed.add(key);
+  }
+  return { closed, open: opened };
 }

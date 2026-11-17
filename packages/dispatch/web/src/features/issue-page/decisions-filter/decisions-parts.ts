@@ -12,6 +12,7 @@ import {
   type TreeAsk,
   type TreeNode,
 } from "../issue-tree";
+import { marksOf } from "../node-states/node-states";
 import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
 
 /**
@@ -407,8 +408,7 @@ function placements(root: TreeNode): ReadonlyMap<string, Placement> {
                 line: lineOf(above),
                 type: above.type,
                 // The parent's marks, which its line draws.
-                ...(above.life === undefined ? {} : { life: above.life }),
-                ...(above.onlyYou === undefined ? {} : { onlyYou: above.onlyYou }),
+                ...marksOf(above),
               },
             }),
       });

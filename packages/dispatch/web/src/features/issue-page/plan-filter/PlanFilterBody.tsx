@@ -34,7 +34,8 @@ import { drawnLine, firstLineOf, heldBy, lineWords, type TreeNode } from "../iss
 import { useRowOnScreen } from "../NodeRow";
 import { chipWords } from "../node-row-chip";
 import { NodeMarks } from "../node-states/NodeMarks";
-import { useFilterWords } from "../node-states/settle-write";
+import { overtakenCount, togglesLine } from "../node-states/OvertakenLine";
+import { useHoldsWords } from "../node-states/settle-write";
 import { authorText, pageChrome } from "../page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES, PLAN_WORDS, PRESET_NAMES } from "../page-words";
 import { isOvertaken } from "../tree-fold";
@@ -472,7 +473,7 @@ function PlanChart({
   // opens it. While the words filter holds words the view holds only its matches, so the line holds
   // one and is drawn open, less a line the reader closed under them, which stays closed until they
   // open it again, as the outline's lines do (`IssueTree.tsx`'s `linesOpen`).
-  const holdsWords = useFilterWords().trim() !== "";
+  const holdsWords = useHoldsWords();
   const [fold, setFold] = useState({ closed: false, open: false });
   const lineOpen = fold.open || (holdsWords && !fold.closed);
   // The line, and each task's row it holds open, take the chart's one tab stop as a row does:
@@ -483,13 +484,11 @@ function PlanChart({
     ...(lineOpen ? overtaken.map((task) => `${OVERTAKEN_KEY}${task.id}`) : []),
   ];
   const lineStop =
-    overtaken.length === 0
-      ? undefined
-      : stop !== undefined && lined.includes(stop)
-        ? stop
-        : tabStop === undefined
-          ? OVERTAKEN_KEY
-          : undefined;
+    overtaken.length > 0 && stop !== undefined && lined.includes(stop)
+      ? stop
+      : overtaken.length > 0 && tabStop === undefined
+        ? OVERTAKEN_KEY
+        : undefined;
 
   // The focused row gives its task to Details (`focused-node.tsx`) as the outline gives a focused
   // node, by the outline's own facts of it (`focusedNodeOf`: who wrote it, the item it is, its
@@ -983,15 +982,9 @@ function OvertakenTasks({
         onClick={onToggle}
         onFocus={onStop}
         onKeyDown={(event) => {
-          // Its own keys alone: a key with Ctrl, Alt or Meta is the browser's or another
-          // binding's, and every key it does not take here is the chart's (`useKeymap`).
-          if (event.target !== event.currentTarget) return;
-          if (event.altKey || event.ctrlKey || event.metaKey) return;
-          const toggles =
-            event.key === "Enter" ||
-            event.key === "ArrowRight" ||
-            (event.key === "ArrowLeft" && open);
-          if (!toggles) return;
+          // Its own keys alone (`togglesLine`): every key it does not take here is the chart's
+          // (`useKeymap`).
+          if (!togglesLine(event, open)) return;
           event.preventDefault();
           onToggle();
         }}
@@ -1000,7 +993,7 @@ function OvertakenTasks({
         role="treeitem"
         tabIndex={tabStop === OVERTAKEN_KEY ? 0 : -1}
       >
-        <span {...pageChrome}>{`${tasks.length} ${CONTROL_LABELS.overtaken_count}`}</span>
+        <span {...pageChrome}>{overtakenCount(tasks.length)}</span>
       </div>
       {open
         ? tasks.map((task) => (

@@ -828,7 +828,7 @@ export type BlockedByRefusalWords = keyof typeof BLOCKED_BY_REFUSALS;
 /**
  * What Settle says while its write is out, and the one sentence it draws after itself when
  * Dispatch refuses the write, in place of the server's message: the act reads the refusal's status
- * and code, never its text. It is the fifth table `ANSWER_SOURCES` gathers.
+ * and code, never its text. One of the tables `ANSWER_SOURCES` gathers.
  */
 export const SETTLE_ANSWERS = freeze({
   /** Every refusal the three below do not name: a refusal of any other status or code. */
@@ -1541,6 +1541,8 @@ function phrasesIn(value: unknown): readonly string[] {
   }
   return [];
 }
+
+export { phrasesIn };
 
 /**
  * What the page says unasked: every name, state, label and empty line it may draw on load. None

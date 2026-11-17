@@ -30,6 +30,7 @@ import {
   useRowOnScreen,
 } from "../NodeRow";
 import { NodeMarks } from "../node-states/NodeMarks";
+import { marksOf } from "../node-states/node-states";
 import { shortDay } from "../node-time";
 import { type ThreadMark, ThreadReadMark } from "../outline-thread-read";
 import { useOutlineWriter } from "../outline-writer";
@@ -516,7 +517,7 @@ function RowMargin({
       </div>
       {/* The node's marks stand where its state stands, on a line of their own where it has
           none, as the outline's row draws them (`NodeRow.tsx`'s `RowMargin`). */}
-      {standing === undefined && !unsure && (node.life !== undefined || node.onlyYou === true) ? (
+      {standing === undefined && !unsure && marksOf(node) !== undefined ? (
         <div className={NODE_ROW_LAYOUT.marginState}>
           <NodeMarks marks={node} />
         </div>

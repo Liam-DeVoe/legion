@@ -8,7 +8,7 @@ import { issueCoverageQuery } from "../../../api/queries";
 import type { IssueDetails } from "../../../api/types";
 import { type IssueRoute, parseNodeReference } from "../../refs/routes";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
-import { issueAddress, pathToTarget, presetPath } from "../issue-address";
+import { type AddressTarget, issueAddress, pathToTarget, presetPath } from "../issue-address";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { CONTROL_LABELS } from "../page-words";
 import { issueTreeQuery } from "../tree-read/tree-read";
@@ -24,7 +24,7 @@ import { issueTreeQuery } from "../tree-read/tree-read";
  *  names, under the issue `key`. `{id}` is the node's whole address, scheme and all, which
  *  `routeUrl` percent-encodes as one path segment. It carries no body: a cookie proves a person,
  *  so the settle names no actor. */
-export function settleRequest(key: string, reference: string) {
+function settleRequest(key: string, reference: string) {
   return writeRequest("post", "/api/v1/issues/{key}/nodes/{id}/settle", { id: reference, key });
 }
 
@@ -67,13 +67,13 @@ export function useSettle(key: string, reference: string, landed: () => void) {
   });
 }
 
-/** The words the words filter holds, as the page's address carries them (`?q=`): the same value
- *  `issue-address.ts`'s `issueAddress` reads into `IssueAddress.filter` from the location's
- *  search, which `slots/body.tsx` narrows the outline's view by (`presets.ts`'s `presetView`,
- *  which trims them). `""` for an address that narrows nothing. */
-export function useFilterWords(): string {
+/** Whether the words filter holds words, as the page's address carries them (`?q=`): the same
+ *  value `issue-address.ts`'s `issueAddress` reads into `IssueAddress.filter` from the location's
+ *  search, which `slots/body.tsx` narrows the outline's view by (`presets.ts`'s `presetView`),
+ *  trimmed as that view trims it. False for an address that narrows nothing. */
+export function useHoldsWords(): boolean {
   const [search] = useSearchParams();
-  return search.get("q") ?? "";
+  return (search.get("q") ?? "").trim() !== "";
 }
 
 /**
@@ -107,8 +107,16 @@ export function useOvertakenTarget(issue: IssueDetails, route: IssueRoute): void
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
   const targeted = address.preset === "decisions" && address.target !== undefined;
   const root = useHeldTree(issue.key, targeted ? issue : undefined);
-  const path = root === undefined ? undefined : pathToTarget(root, address.target);
-  const closed = path?.[path.length - 1]?.closed === true;
+  // The target by its own fields, so a render that changes neither them nor the tree walks none.
+  const target = address.target;
+  const kind = target?.kind;
+  const id = target?.id;
+  const slug = target?.kind === "block" ? target.document : undefined;
+  const closed = useMemo(() => {
+    if (root === undefined || kind === undefined || id === undefined) return false;
+    const named: AddressTarget = kind === "block" ? { document: slug, id, kind } : { id, kind };
+    return pathToTarget(root, named)?.at(-1)?.closed === true;
+  }, [id, kind, root, slug]);
   useEffect(() => {
     if (!closed) return;
     navigate({ hash, pathname: presetPath(issue.key, "conversation"), search }, { replace: true });

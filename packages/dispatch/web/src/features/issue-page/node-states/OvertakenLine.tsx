@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties, KeyboardEvent, ReactNode } from "react";
 
 import { pageGuideLineBg, pageMutedText, pageQuietText } from "../../../theme/classes";
 import { pageChrome } from "../page-structure";
@@ -62,7 +62,7 @@ export function OvertakenLine({
         />
       ))}
       <span className="font-medium" {...pageChrome}>
-        {`${row.held} ${CONTROL_LABELS.overtaken_count}`}
+        {overtakenCount(row.held)}
       </span>
       {report === undefined ? null : (
         <p
@@ -76,4 +76,19 @@ export function OvertakenLine({
       )}
     </div>
   );
+}
+
+/** What a line of overtaken nodes says: how many it holds, in one text node ("1 overtaken"). */
+export function overtakenCount(held: number): string {
+  return `${held} ${CONTROL_LABELS.overtaken_count}`;
+}
+
+/** Whether a key pressed on a view's own line of overtaken nodes, which is `open` or closed,
+ *  opens or closes it: Enter and the right arrow, and the left arrow on an open one, pressed on
+ *  the line itself, since a key on a row it holds is that row's own, and with no Ctrl, Alt or
+ *  Meta, since such a key is the browser's or another binding's. */
+export function togglesLine(event: KeyboardEvent<HTMLElement>, open: boolean): boolean {
+  if (event.target !== event.currentTarget) return false;
+  if (event.altKey || event.ctrlKey || event.metaKey) return false;
+  return event.key === "Enter" || event.key === "ArrowRight" || (event.key === "ArrowLeft" && open);
 }

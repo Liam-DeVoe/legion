@@ -9,7 +9,7 @@ import {
   type ParentLine,
   type TreeNode,
 } from "./issue-tree";
-import { closeOvertaken } from "./node-states/node-states";
+import { closeOvertaken, marksOf } from "./node-states/node-states";
 import {
   type FILTER_SIGNAL_WORDS,
   NODE_TYPE_NAMES,
@@ -463,8 +463,7 @@ function lineOfParent(node: TreeNode): ParentLine {
     line: parentLineOf(node),
     // The parent's marks, as the outline's stamp left them on it, so a filter's parent line says
     // what its row would.
-    ...(node.life === undefined ? {} : { life: node.life }),
-    ...(node.onlyYou === true ? { onlyYou: true as const } : {}),
+    ...marksOf(node),
     ...(node.readId === undefined ? {} : { readId: node.readId }),
     // The parent's own address, which makes its line the link a reader follows to it (R18, and
     // R26: a step's row reaches the statement it serves).

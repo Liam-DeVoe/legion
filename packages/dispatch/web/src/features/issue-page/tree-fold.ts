@@ -323,9 +323,13 @@ export function treeRows(
       return;
     }
     const below = [...trail, node.id];
-    const overtaken = node.children.filter(isOvertaken);
-    const others = node.children.filter((child) => !isOvertaken(child));
-    for (const child of others) walk(child, level + 1, below);
+    // One pass: each other child is walked in its order, and each overtaken one is kept for
+    // the line after them.
+    const overtaken: TreeNode[] = [];
+    for (const child of node.children) {
+      if (isOvertaken(child)) overtaken.push(child);
+      else walk(child, level + 1, below);
+    }
     if (overtaken.length === 0) return;
     const open = opened.overtaken?.has(node.id) === true;
     rows.push({

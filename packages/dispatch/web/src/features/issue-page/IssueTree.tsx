@@ -15,8 +15,8 @@ import { pathToTarget } from "./issue-address";
 import { drawnLine, firstLineOf, lineWords, type TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { NodeStatesProvider } from "./node-states/NodeMarks";
-import { linesIn, statesByReference, withLine } from "./node-states/node-states";
-import { useFilterWords } from "./node-states/settle-write";
+import { linesIn, marksOf, statesByReference, withLine } from "./node-states/node-states";
+import { useHoldsWords } from "./node-states/settle-write";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { threadMarks } from "./outline-thread-read";
 import { conversationItem, useOutlineWriter } from "./outline-writer";
@@ -211,11 +211,13 @@ export function IssueTree({
   // matches and the chain above each, so each such line holds a match - less a line the reader
   // closed under the filter, which stays closed (`toggleOvertaken`), and with every line the
   // reader or an address opened. With no words, the lines the reader opened are the ones open.
-  const holdsWords = useFilterWords().trim() !== "";
+  const holdsWords = useHoldsWords();
+  // The lines the view holds, read again only as the tree or the words change.
+  const viewLines = useMemo(() => (holdsWords ? linesIn(rooted) : []), [holdsWords, rooted]);
   const linesOpen = holdsWords
     ? new Set([
         ...(opened.overtaken ?? []),
-        ...linesIn(rooted).filter((id) => !opened.closed.has(closedLine(id))),
+        ...viewLines.filter((id) => !opened.closed.has(closedLine(id))),
       ])
     : opened.overtaken;
   // What a filter opens: every branch of the view it left, since the view holds only its
@@ -243,7 +245,7 @@ export function IssueTree({
           ),
           deeper: new Set([...filtered.deeper, ...path.map((above) => above.id)]),
           // The line of each overtaken node the path runs through, so the node it names is a row.
-          overtaken: withLine(filtered, path).overtaken,
+          overtaken: withLine(filtered.overtaken, path),
         };
   // The fold is seeded with the path the breadcrumb holds, so a row is keyed by its path from
   // the issue whether or not the reader has zoomed: a body they pinned, the row they are
@@ -442,7 +444,7 @@ export function IssueTree({
         closed: new Set([...held.closed].filter((one) => !above.includes(one))),
         deeper: new Set([...held.deeper, ...above]),
         // The line of each overtaken node on the way, so the node is a row.
-        overtaken: withLine(held, pathTo(root, id)).overtaken,
+        overtaken: withLine(held.overtaken, pathTo(root, id)),
       }));
       // Where the tree is read one node at a time, the only rows are the zoomed node and what
       // it holds (`zoomedRows`), so a key that takes the reader to a node zooms to that node's
@@ -930,8 +932,7 @@ export function focusedNodeOf(node: TreeNode): FocusedNode {
     ...(node.author === undefined ? {} : { author: node.author }),
     id: node.id,
     ...(item === undefined ? {} : { item }),
-    ...(node.life === undefined ? {} : { life: node.life }),
-    ...(node.onlyYou === undefined ? {} : { onlyYou: node.onlyYou }),
+    ...marksOf(node),
     ...(node.reference === undefined ? {} : { reference: node.reference }),
     ...(node.state === undefined ? {} : { state: nodeStateWord(node.state) }),
     title: line === "" ? NODE_TYPE_NAMES[node.type] : line,

@@ -52,6 +52,7 @@ import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
 import { chipWords } from "./node-row-chip";
 import { NodeMarks } from "./node-states/NodeMarks";
+import { marksOf } from "./node-states/node-states";
 import { SettleAct } from "./node-states/SettleAct";
 import { shortDay } from "./node-time";
 import { type ThreadMark, ThreadReadMark } from "./outline-thread-read";
@@ -781,9 +782,7 @@ export function RowMargin({
       </div>
       {/* A node's marks stand where a state stands, on its own line where it has no state, so a
           proposed statement's mark is never drawn between its bullet and its words. */}
-      {node.state === undefined &&
-      node.unsure !== true &&
-      (node.life !== undefined || node.onlyYou === true) ? (
+      {node.state === undefined && node.unsure !== true && marksOf(node) !== undefined ? (
         <div className={NODE_ROW_LAYOUT.marginState}>
           <NodeMarks marks={node} />
         </div>

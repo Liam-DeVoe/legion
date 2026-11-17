@@ -39,6 +39,14 @@ import { NodeFacts } from "../NodeFacts";
 import { NodeGlyph } from "../NodeGlyph";
 import { chipWords } from "../node-row-chip";
 import { NodeMarks } from "../node-states/NodeMarks";
+import {
+  lineIsOpen,
+  marksOf,
+  NO_LINES,
+  type OvertakenLines,
+  toggledLines,
+} from "../node-states/node-states";
+import { overtakenCount, togglesLine } from "../node-states/OvertakenLine";
 import { shortDay } from "../node-time";
 import { authorText, pageChrome } from "../page-structure";
 import {
@@ -59,6 +67,7 @@ import { RowText } from "../RowText";
 import { isOvertaken, outOfCounts } from "../tree-fold";
 import {
   type CheckReading,
+  inCounts,
   STATEMENT_STATES,
   type StatementReading,
   shortCommit,
@@ -281,18 +290,7 @@ export function VerificationFilterBody({
     ) {
       setRovingId(lineRow(id));
     }
-    setLines((held) => {
-      const open = new Set(held.open);
-      const closed = new Set(held.closed);
-      if (opening) {
-        open.add(id);
-        closed.delete(id);
-      } else {
-        open.delete(id);
-        if (holdsWords) closed.add(id);
-      }
-      return { closed, open };
-    });
+    setLines((held) => toggledLines(held, id, opening, holdsWords));
   };
   /** The line of overtaken nodes under the node `id`, as its row draws it, where `id` is the
    *  issue's and it holds any overtaken row, or a statement's that holds an overtaken check. */
@@ -699,24 +697,6 @@ function foldOvertaken(
   return { held, view: held.size === 0 ? view : { ...view, children } };
 }
 
-/** The lines of overtaken nodes the reader opened, and those they closed while the words filter
- *  held words, which stay closed while it does: each by the id of the node whose overtaken
- *  children it folds. */
-interface OvertakenLines {
-  readonly closed: ReadonlySet<string>;
-  readonly open: ReadonlySet<string>;
-}
-
-/** No line opened or closed by the reader, which is how the body is first drawn. */
-const NO_LINES: OvertakenLines = { closed: new Set(), open: new Set() };
-
-/** Whether the line of overtaken nodes under the node `id` is drawn open: where the reader
- *  opened it, and, while the words filter holds words (`words`), where they did not close it
- *  under them. */
-function lineIsOpen(lines: OvertakenLines, words: boolean, id: string): boolean {
-  return lines.open.has(id) || (words && !lines.closed.has(id));
-}
-
 /** The id of the line of overtaken nodes under the node `id` among the tree's rows (`rows`),
  *  which its element carries as `data-verification-row`: no node's id and no check row's
  *  (`checkRowId`) begins so. */
@@ -917,13 +897,11 @@ function Summary({
   reading = useMemo(
     () => ({
       ...drawn,
-      loose: drawn.loose.filter((check) => !outOfCounts(check.node)),
-      statements: drawn.statements
-        .filter((statement) => !outOfCounts(statement.node))
-        .map((statement) => ({
-          ...statement,
-          checks: statement.checks.filter((check) => !outOfCounts(check.node)),
-        })),
+      loose: inCounts(drawn.loose),
+      statements: inCounts(drawn.statements).map((statement) => ({
+        ...statement,
+        checks: inCounts(statement.checks),
+      })),
     }),
     [drawn]
   );
@@ -1441,7 +1419,7 @@ function Check({
         )}
         {/* A check whose state the page has not read draws no state line, so its marks stand on
             a line of their own where that line would. */}
-        {check.state === undefined && (node.life !== undefined || node.onlyYou === true) ? (
+        {check.state === undefined && marksOf(node) !== undefined ? (
           <p className="flex items-center gap-1.5 text-xs leading-5">
             <NodeMarks marks={node} />
           </p>
@@ -1790,15 +1768,8 @@ function OvertakenFold({
         line.onToggle(event.currentTarget);
       }}
       onKeyDown={(event) => {
-        // A key on a row it holds is that row's own, and a key with Ctrl, Alt or Meta is the
-        // browser's or another binding's.
-        if (event.target !== event.currentTarget) return;
-        if (event.altKey || event.ctrlKey || event.metaKey) return;
-        const toggles =
-          event.key === "Enter" ||
-          event.key === "ArrowRight" ||
-          (event.key === "ArrowLeft" && line.open);
-        if (!toggles) return;
+        // Its own keys alone (`togglesLine`): a key on a row it holds is that row's own.
+        if (!togglesLine(event, line.open)) return;
         event.preventDefault();
         line.onToggle(event.currentTarget);
       }}
@@ -1806,7 +1777,7 @@ function OvertakenFold({
       tabIndex={line.tabIndex}
     >
       <p className={`${CELL} text-xs leading-5 font-medium ${pageQuietText}`} {...pageChrome}>
-        {`${line.held} ${CONTROL_LABELS.overtaken_count}`}
+        {overtakenCount(line.held)}
       </p>
       {line.open ? (
         // biome-ignore lint/a11y/useSemanticElements: a treeitem owns its child rows through a group, and a fieldset groups form fields.
