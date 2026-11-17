@@ -19,6 +19,8 @@ import { closeDetails, gotoIssue, phase } from "./issue-page";
 import { withIssuePage } from "./issue-page-option";
 import {
   actionsMenuDrop,
+  approvalChip,
+  approvalEntry,
   asAgent,
   badgeValue,
   DESKTOP,
@@ -144,8 +146,8 @@ async function pressOutOfTheEdit(
   await page.mouse.up();
 }
 
-// c-header (1): the header's half of the checkpoint's "every property with a value is visible at
-// every width @phone" (`e2e/issue-layout.e2e.ts:2988`), on the measured title and 20 labels.
+// Row (1): the header draws every property with a value at every width, on the measured title
+// and 20 labels.
 // On the phone it reads what the 390 px viewport decides, a layout claim "Phone acceptance" in
 // `packages/dispatch/AGENTS.md` tags `@phone` for: the header's height limit there, the 24 px
 // targets, the page no wider than the window, the navigation's control first on row one and the
@@ -569,8 +571,8 @@ test("the header holds its list and its limits at every width @phone", async ({ 
   });
 });
 
-// c-header (2): the checkpoint's "the approval entries stay in the identity block and read the
-// node each step approves" (`e2e/issue-layout.e2e.ts:3641`).
+// Row (2): a gated root's approval entries stay in the header, and each reads the document its
+// step approves.
 test("the approval entries stay in the header and read the document each step approves", async ({
   browser,
 }) => {
@@ -601,10 +603,13 @@ test("the approval entries stay in the header and read the document each step ap
           )
       )
       .toEqual(["decisions", "criteria", "spec"]);
-    const entry = (step: string) => steps.locator(`[data-approval-step="${step}"]`);
-    await expect(entry("decisions").getByRole("button", { name: "Approved v1" })).toBeVisible();
-    await expect(entry("criteria")).toContainText(CONTROL_LABELS.not_requested);
-    await expect(entry("spec").getByRole("button", { name: "Awaiting approval" })).toBeVisible();
+    await expect(
+      approvalEntry(page, "decisions").getByRole("button", { name: "Approved v1" })
+    ).toBeVisible();
+    await expect(approvalEntry(page, "criteria")).toContainText(CONTROL_LABELS.not_requested);
+    await expect(
+      approvalEntry(page, "spec").getByRole("button", { name: "Awaiting approval" })
+    ).toBeVisible();
     // The approval the request asks for pins a version of the spec, and that version is the
     // spec's own text. The version is the request's own: the document's approval names one only
     // once someone has reviewed it, and nobody has reviewed this spec.
@@ -617,13 +622,13 @@ test("the approval entries stay in the header and read the document each step ap
     ).toContain("The plan.");
     // The request waits on the reader, so the spec's entry carries Approve in the header,
     // and the approval it records reads back.
-    await entry("spec").getByRole("button", { exact: true, name: "Approve" }).click();
+    await approvalEntry(page, "spec").getByRole("button", { exact: true, name: "Approve" }).click();
     await expect
       .poll(async () => (await getArtifact(root.primary_artifact_id ?? "")).approval?.state)
       .toBe("approved");
-    await expect(entry("spec").getByRole("button", { exact: true, name: "Approve" })).toHaveCount(
-      0
-    );
+    await expect(
+      approvalEntry(page, "spec").getByRole("button", { exact: true, name: "Approve" })
+    ).toHaveCount(0);
     await expect(
       issueHeader(page).getByRole("button", { exact: true, name: "Request changes" }),
       "the header draws Request changes with no request waiting"
@@ -642,12 +647,12 @@ test("the approval entries stay in the header and read the document each step ap
     await expectHeaderDrawn(page);
     for (const action of ["Approve", "Request changes"]) {
       await expect(
-        entry("criteria").getByRole("button", { exact: true, name: action }),
+        approvalEntry(page, "criteria").getByRole("button", { exact: true, name: action }),
         "the Verification document's entry carries no Approve while its request waits"
       ).toBeVisible();
     }
     await expect(
-      reviewActions(entry("spec")),
+      reviewActions(approvalEntry(page, "spec")),
       "the spec's entry carries actions though no request of it waits"
     ).toHaveCount(0);
     await expect(waitingCount(page)).toHaveText("Waiting on you (1)");
@@ -657,7 +662,9 @@ test("the approval entries stay in the header and read the document each step ap
         page.evaluate(() => document.activeElement?.getAttribute("data-approval-artifact"))
       )
       .toBe(verification.artifact.id);
-    await entry("criteria").getByRole("button", { exact: true, name: "Approve" }).click();
+    await approvalEntry(page, "criteria")
+      .getByRole("button", { exact: true, name: "Approve" })
+      .click();
     await expect
       .poll(async () => (await getArtifact(verification.artifact.id)).approval?.state)
       .toBe("approved");
@@ -759,10 +766,10 @@ test("the approval entries stay in the header and read the document each step ap
   });
 });
 
-// c-header (3): the checkpoint's "the header holds its rule when the typeface does not load
-// @phone" (`e2e/issue-layout.e2e.ts:5714`), less its readings of the typeface's file and its
-// licence, which are not the header's. On the phone it reads what the 390 px viewport decides in
-// the fallback, as row (1) reads it in the face, a layout claim "Phone acceptance" in
+// Row (3): the header holds its limits in the typeface and, with every request for the
+// typeface's file refused, in the fallback. What the file holds and its licence are not the
+// header's, and the row reads neither. On the phone it reads what the 390 px viewport decides
+// in the fallback, as row (1) reads it in the face, a layout claim "Phone acceptance" in
 // `packages/dispatch/AGENTS.md` tags `@phone` for: the header's height limit and the 24 px
 // targets at 390 px, and the page no wider than the window at 390 and 320 px.
 test("the header holds its limits when the typeface does not load @phone", async ({ browser }) => {
@@ -855,10 +862,9 @@ test("the header holds its limits when the typeface does not load @phone", async
   });
 });
 
-// c-header (4): the count's half of the checkpoint's "the count of what waits on the reader
-// opens the first thing that waits @phone" (`e2e/issue-layout.e2e.ts:3275`). The node the press
-// reaches is drawn outside the header, and other rows read it. On the phone every press of the
-// count is a tap of the touch screen, a touch claim "Phone acceptance" in
+// Row (4): the count of what waits on the reader opens the first thing that waits. The node the
+// press reaches is drawn outside the header, and other rows read it. On the phone every press
+// of the count is a tap of the touch screen, a touch claim "Phone acceptance" in
 // `packages/dispatch/AGENTS.md` tags `@phone` for, and each opens what the mouse's click opens on
 // `chromium`.
 test("the count of what waits is a control that opens the Decisions address @phone", async ({
@@ -954,7 +960,7 @@ test("the count of what waits is a control that opens the Decisions address @pho
     await expectHeaderDrawn(page);
     await expect(waitingCount(page)).toHaveText("Waiting on you (1)");
     await expect(
-      issueHeader(page).locator(`[data-approval-artifact="${spec}"]`),
+      approvalChip(page, spec),
       "the header draws no chip of the approved spec"
     ).toBeVisible();
     await press(waitingCount(page), pointer);
@@ -1004,9 +1010,8 @@ test("the count of what waits is a control that opens the Decisions address @pho
   });
 });
 
-// c-header (5): the checkpoint's "the count of what waits holds only what waits on the reader"
-// (`e2e/issue-layout.e2e.ts:3368`). A question waits on the person the server resolves it to -
-// whoever it was handed to, else the issue's assignee.
+// Row (5): the count of what waits holds only what waits on the reader. A question waits on the
+// person the server resolves it to - whoever it was handed to, else the issue's assignee.
 test("the count of what waits holds only what waits on the reader", async ({ browser }) => {
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (alice) => {
@@ -1062,8 +1067,7 @@ test("the count of what waits holds only what waits on the reader", async ({ bro
   });
 });
 
-// c-header (6): the checkpoint's "a press on the status straight out of the title's editor lands
-// on the status" (`e2e/issue-layout.e2e.ts:3416`).
+// Row (6): a press on the status straight out of the title's editor lands on the status.
 test("a press on the status straight out of the title's editor lands on the status", async ({
   browser,
 }) => {
@@ -1167,9 +1171,9 @@ test("a press on the status straight out of the title's editor lands on the stat
   });
 });
 
-// c-header (7): `e2e/issue.e2e.ts:1016` at 750e2716, "issue header delivers the click that ends
-// a title edit to the control under the pointer @phone": ending the edit of a title of two or
-// three lines must not move the control under it between the mousedown and the mouseup. On the
+// Row (7): ending the edit of a title of two or three lines must not move the control under it
+// between the mousedown and the mouseup, as `e2e/issue.e2e.ts:1016` at 750e2716 ("issue header
+// delivers the click that ends a title edit to the control under the pointer @phone") reads. On the
 // phone the press is a tap of the touch screen, a touch claim "Phone acceptance" in
 // `packages/dispatch/AGENTS.md` tags `@phone` for. A tap's mouse events come after its touch
 // events: the order `IssueTitleRow.tsx` holds the title's height by until the press is
@@ -1248,8 +1252,8 @@ test("the press that ends a title edit reaches the control under it @phone", asy
   });
 });
 
-// c-header (8): the header's steps of `e2e/keyboard-issue.e2e.ts`'s rows at lines 61, 258 and
-// 306 at the checkpoint, and of `main`'s `e2e/keyboard-palette.e2e.ts`.
+// Row (8): the header's keys and the palette's rows reach the header's controls: the header's
+// steps of the rows of `e2e/keyboard-issue.e2e.ts` and `e2e/keyboard-palette.e2e.ts`.
 test("the header's keys and the palette reach their controls", async ({ browser }) => {
   test.setTimeout(150_000);
   await phase(browser, seedHeader, async (page, seeded) => {
@@ -1476,8 +1480,7 @@ async function openScrollingPage(page: Page, key: string, width: number): Promis
   });
 }
 
-// c-header (9): the header's half of the checkpoint's "the identity and the title stay when the
-// page scrolls, and on a phone the filter control @phone" (`e2e/issue-layout.e2e.ts:3472`). On
+// Row (9): the band, which holds the identity and the title, stays when the page scrolls. On
 // the phone it reads what the 390 px viewport decides, a layout claim "Phone acceptance" in
 // `packages/dispatch/AGENTS.md` tags `@phone` for: the title's 20 px type and its 362 px words
 // with no clamp, and the whole header scrolling off the screen with the page, where the band
@@ -2122,12 +2125,6 @@ test("the header's menu gives the focus back to its control on Escape and after 
   });
 });
 
-/** The header's approval chip of the document `artifactId`, a server-made id that holds no `"`:
- *  the issue's own chip, or the chip of a gated root's entry. */
-function approvalChip(page: Page, artifactId: string): Locator {
-  return issueHeader(page).locator(`[data-approval-artifact="${artifactId}"]`);
-}
-
 /** The documents the page sends a review of, in the order it sends them: each `POST` of
  *  `/api/v1/artifacts/{id}/reviews`, the write Approve and Request changes make. */
 function reviewsSent(page: Page): string[] {
@@ -2267,17 +2264,25 @@ test("an approval entry's a approves that entry's document and no other", async 
       const reviewed = reviewsSent(page);
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expectHeaderDrawn(page);
-      const steps = issueHeader(page).getByTestId("issue-approval-steps");
-      const entry = (step: string) => steps.locator(`[data-approval-step="${step}"]`);
       await expect(waitingCount(page)).toHaveText("Waiting on you (2)");
       for (const step of ["criteria", "spec"]) {
-        await expect(
-          entry(step).getByRole("button", { name: /^Approve\b/ }),
-          `the ${step} entry carries no Approve while its request waits`
-        ).toBeVisible();
+        for (const [words, name] of [
+          ["Approve", /^Approve\b/],
+          ["Request changes", /^Request changes\b/],
+        ] as const) {
+          await expect(
+            approvalEntry(page, step).getByRole("button", { name }),
+            `the ${step} entry carries no ${words} while its request waits`
+          ).toBeVisible();
+        }
       }
 
-      const chip = entry("criteria").locator(`[data-approval-artifact="${seeded.verification}"]`);
+      // The Verification document's chip is the one its own entry draws.
+      const chip = approvalEntry(page, "criteria").locator("[data-approval-artifact]");
+      await expect(
+        chip,
+        "the Verification document's entry draws another document's chip"
+      ).toHaveAttribute("data-approval-artifact", seeded.verification);
       await chip.focus();
       await expect(chip).toBeFocused();
       await page.keyboard.press("a");
@@ -2294,10 +2299,19 @@ test("an approval entry's a approves that entry's document and no other", async 
         "a on the Verification document's entry answered the spec's request"
       ).toBe("awaiting");
       await expect(waitingCount(page)).toHaveText("Waiting on you (1)");
-      await expect(reviewActions(entry("criteria"))).toHaveCount(0);
       await expect(
-        entry("spec").getByRole("button", { exact: true, name: "Approve" }),
+        approvalEntry(page, "criteria").getByRole("button", {
+          name: /^(Approve|Request changes)\b/,
+        }),
+        "the Verification document's entry still draws an action"
+      ).toHaveCount(0);
+      await expect(
+        approvalEntry(page, "spec").getByRole("button", { exact: true, name: "Approve" }),
         "the spec's entry lost its Approve while its request waits"
+      ).toBeVisible();
+      await expect(
+        approvalEntry(page, "spec").getByRole("button", { exact: true, name: "Request changes" }),
+        "the spec's entry lost its Request changes while its request waits"
       ).toBeVisible();
       await expect(chip, "the approval left the focus off the entry's chip").toBeFocused();
     }

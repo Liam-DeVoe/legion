@@ -38,8 +38,6 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
   const [open, setOpen] = useState(false);
   const panelId = useId();
   const wrapper = useRef<HTMLDivElement>(null);
-  // The group's control, which takes the focus back as the group closes on Escape or after one
-  // of its actions.
   const control = useRef<HTMLButtonElement>(null);
   // A press outside the group, or Escape, closes it: an open group would otherwise cover the
   // page's own first row until the reader pressed the control again.
@@ -52,8 +50,6 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
     };
     // The press is the open group's alone, as a menu's is: the page's own Escape - which closes
     // a document opened in place of the outline (`OpenedDocument.tsx`) - waits for the next one.
-    // The focus goes back to the control, since the group hides the action that held it as it
-    // closes.
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
@@ -106,9 +102,8 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
               disabled={action.disabled}
               key={action.id}
               onClick={() => {
-                // An action pressed from the open group gives the focus back to the control, since
-                // the group hides the action as it closes. `Shift+P` presses the hidden pin while
-                // the group is shut (`useHeaderKeys.ts`): that press moves no focus.
+                // `Shift+P` presses the hidden pin while the group is shut (`useHeaderKeys.ts`):
+                // that press moves no focus.
                 const fromTheMenu = open;
                 setOpen(false);
                 action.run();

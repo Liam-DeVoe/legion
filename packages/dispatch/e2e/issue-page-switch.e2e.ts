@@ -103,9 +103,9 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   // Reads the whole page: a chooser that drew both pages fails here (R4: in place of today's page).
   await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
   await expect(newPage.getByRole("tab")).toHaveCount(0);
-  // The part that fills a slot changes these two: the header (`[data-issue-header]`) and the view
-  // row (`[data-filter-row]`) are filled, and each other slot drawn so far adds no text or
-  // control.
+  // A part that fills another slot adds its selector here: so far the header
+  // (`[data-issue-header]`) and the view row (`[data-filter-row]`) are filled, and each other
+  // slot adds no text or control.
   const header = newPage.locator("[data-issue-header]");
   const row = newPage.locator("[data-filter-row]");
   await expect(header).toHaveCount(1);

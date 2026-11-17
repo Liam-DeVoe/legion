@@ -207,14 +207,13 @@ function IssueScope(): null {
   return null;
 }
 
-/** `issueScope` pushes the scope the header's keys fire in, for a case that presses them. */
-function renderHeader(path = "/issues/CORE-1", queryClient = headerClient(), issueScope = false) {
+function renderHeader(path = "/issues/CORE-1", queryClient = headerClient()) {
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
   return render(
     <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
-          {issueScope ? <IssueScope /> : null}
+          <IssueScope />
           <Routes>
             <Route path="/issues/:key/*" element={<HeaderAlone />} />
           </Routes>
@@ -610,7 +609,7 @@ test("the approval chip's keys press its own actions, and only while those take 
   const createArtifactReview = spyOn(api, "createArtifactReview").mockImplementation(
     () => answered.promise
   );
-  const view = renderHeader("/issues/CORE-1", headerClient(), true);
+  const view = renderHeader();
   // Whether each of the two keys applies now, as the key card reads it (`appKeymap.describe`).
   const bothApply = () =>
     ["approve", "request-changes"].map(

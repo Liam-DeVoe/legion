@@ -374,6 +374,21 @@ export function badgeValue(page: Page, label: string): Locator {
   );
 }
 
+/** The header's approval chip of the document `artifactId`: the issue's own chip, or the chip of
+ *  a gated root's entry. */
+export function approvalChip(page: Page, artifactId: string): Locator {
+  return issueHeader(page).locator(`[data-approval-artifact="${cssValue(artifactId)}"]`);
+}
+
+/** The entry of a gated root's step `step` among the header's approval steps: the approval of the
+ *  document that step approves - its chip, or `Not requested` - and, while that document's
+ *  request waits on the reader, its actions. */
+export function approvalEntry(page: Page, step: string): Locator {
+  return issueHeader(page)
+    .getByTestId("issue-approval-steps")
+    .locator(`[data-approval-step="${cssValue(step)}"]`);
+}
+
 /**
  * Every element the header draws that a reader reads or presses, by what it is: its test id, or
  * its tag with the name a reader hears; and every run of words drawn outside those, as

@@ -117,10 +117,10 @@ function outsideInputsAndAskCards(): boolean {
 }
 
 /**
- * The header's keys, the ones today's header binds, each with its target on the new header: `s`
+ * The header's keys: the ones today's header binds, each with its target on the new header (`s`
  * focuses the status and `p` the priority, `0` to `3` set the priority, `e` puts the caret in the
- * title, `Shift+P` pins and unpins, `a` approves and `Shift+R` opens Request changes on the
- * focused approval chip or entry, and Escape leaves a focused status or priority.
+ * title, `Shift+P` pins and unpins, and Escape leaves a focused status or priority), and `a` and
+ * `Shift+R`, which approve and open Request changes on the focused approval chip or entry.
  *
  * They register into the `issue` scope the view row pushes (`useIssueKeymap.ts`); this hook
  * pushes none. The digits go through the header's one priority write, the one its picker and the
@@ -167,12 +167,10 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       run: () => usableControl(PIN_TOGGLE)?.click(),
       when: () => usableControl(PIN_TOGGLE) !== null && outsideInputsAndAskCards(),
     },
-    // One key does one act on both issue pages. Today's header takes `a` and `Shift+R` from
-    // anywhere but a turn, an ask card or a text field; on this page `a` answers and `r` replies
-    // on the focused row, so here the two keys are the approval's only while the focus is on the
-    // chip or entry of a document whose request waits on the reader, or on one of its two
-    // actions, and anywhere else they are left to the row. Each presses the action that chip
-    // draws, so a key is taken exactly while that action would take a click.
+    // `a` and `Shift+R` are the approval's only while the focus is on the chip or entry of a
+    // document whose request waits on the reader, or on one of its two actions; anywhere else
+    // they are left to other bindings of the page. Each presses the action that chip draws, so a
+    // key is taken exactly while that action would take a click.
     //
     // Each is a palette row too, offered on the same focus, as a focused row's own actions are
     // (`agents/keyboard.ts`'s pin, `IssueBoard.tsx`'s `o`): the palette reads its rows while the
