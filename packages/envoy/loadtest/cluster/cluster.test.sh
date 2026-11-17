@@ -1019,6 +1019,29 @@ await_gone() {
   done
 }
 
+# daemon_pids NAME RUN: each live process of RUN's NAME daemon, on one line, found as cluster.sh's
+# daemon_alive finds one, by the command line start_daemon gives it (`cluster.sh _NAME --namespace
+# NS --run RUN`, which its subshells carry too), and never by its pidfile. A daemon removes that
+# file as it stops, and under the fast sleep it stops the moment the last command of its run ends:
+# on a loaded machine that is before the case's next line, and a case that read the file there
+# failed on a daemon that had done just what it must.
+daemon_pids() {
+  pgrep -d ' ' -f -- "_$1 --namespace $ns --run $2" || true
+}
+
+# daemon_stopped NAME RUN NAPS: no process of RUN's NAME daemon is alive within NAPS naps of 0.1 s
+# (daemon_pids). daemon_seen holds the pids it last saw alive, for a failure to name.
+daemon_stopped() {
+  local i
+  for ((i = 0; i < $3; i++)); do
+    daemon_seen=$(daemon_pids "$1" "$2")
+    [ -n "$daemon_seen" ] || return 0
+    sleep 0.1
+  done
+  daemon_seen=$(daemon_pids "$1" "$2")
+  [ -z "$daemon_seen" ]
+}
+
 # logged_steps PREFIX: the step names, in argument order, of the last loadgen call that started
 # with PREFIX.
 logged_steps() {
@@ -2349,14 +2372,10 @@ export LOADTEST_CLUSTER_ROOT=$tmp/root-orphan FAKE_FAST_SLEEP=60
 run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
 ((RC == 0)) || fail "up exited $RC"
 orphan_dir=$(find "$LOADTEST_CLUSTER_ROOT" -mindepth 1 -maxdepth 1 -type d)
-orphan_hb=$(<"$orphan_dir/heartbeat.pid")
 # up has returned, so no cluster.sh command of this run is alive any more.
-for ((i = 0; i < 50; i++)); do
-  kill -0 "$orphan_hb" 2>/dev/null || break
-  sleep 0.1
-done
-orphan_alive=no
-kill -0 "$orphan_hb" 2>/dev/null && orphan_alive=yes
+orphan_alive=yes
+daemon_stopped heartbeat "${orphan_dir##*/}" 50 && orphan_alive=no
+orphan_hb=$daemon_seen
 orphan_patches=$(grep -c "patch configmap dispatch-loadtest-lock" "$fake/kubectl.log" || true)
 sleep 1
 orphan_patches_after=$(grep -c "patch configmap dispatch-loadtest-lock" "$fake/kubectl.log" || true)
@@ -2429,16 +2448,10 @@ export LOADTEST_CLUSTER_ROOT=$tmp/root-sampler-stop FAKE_FAST_SLEEP=60
 run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
 ((RC == 0)) || fail "up exited $RC"
 sampler_dir=$LOADTEST_CLUSTER_ROOT/$(jq -r .data.run "$fake/lock.json")
-sampler_pid=$(<"$sampler_dir/sampler.pid")
 # up has returned, so no command of this run is alive: its heartbeat stops, and the sampler with it.
 sampler_alive=yes
-for ((i = 0; i < 200; i++)); do
-  kill -0 "$sampler_pid" 2>/dev/null || {
-    sampler_alive=no
-    break
-  }
-  sleep 0.1
-done
+daemon_stopped sampler "${sampler_dir##*/}" 200 && sampler_alive=no
+sampler_pid=$daemon_seen
 sampler_lines=$(wc -l <"$sampler_dir/cgroup.jsonl" 2>/dev/null || echo 0)
 sleep 6
 sampler_lines_after=$(wc -l <"$sampler_dir/cgroup.jsonl" 2>/dev/null || echo 0)
@@ -2477,6 +2490,9 @@ run_cluster hold --namespace "$ns" --for 1h
 ((RC == 0)) || fail "cluster.sh hold exited $RC: $(cat "$tmp/out")"
 [ -f "$hold_dir/hold-until" ] || fail "hold wrote no hold-until in $hold_dir: $(cat "$tmp/out")"
 hold_hb=$(<"$hold_dir/heartbeat.pid")
+# The control of daemon_pids, which (o), (r) and (ee) wait on: it finds the live held heartbeat.
+[[ " $(daemon_pids heartbeat "$hold_run") " == *" $hold_hb "* ]] ||
+  fail "daemon_pids finds '$(daemon_pids heartbeat "$hold_run")' for the held heartbeat, not the pid $hold_hb its pidfile names: a wait on it would call a live daemon gone"
 hold_patches=$(grep -c "patch configmap dispatch-loadtest-lock" "$fake/kubectl.log" || true)
 # Wait on events, not on time: the fake sleep makes each 60 s cycle return at once, so a held
 # heartbeat patches again and again; three more patches after hold returned, with no command of
@@ -3057,6 +3073,9 @@ for daemon in heartbeat sampler; do
     fail "no $daemon started: it writes its pidfile only after a lock read that nothing retries ($(cat "$lockread_dir/logs/$daemon.log" 2>/dev/null))"
   kill -0 "$(<"$lockread_dir/$daemon.pid")" 2>/dev/null ||
     fail "the $daemon of run ${lockread_dir##*/} is not running: $(cat "$lockread_dir/logs/$daemon.log" 2>/dev/null)"
+  # The control of daemon_pids, which (o), (r) and (ee) wait on: it finds each live daemon of this run.
+  [[ " $(daemon_pids "$daemon" "${lockread_dir##*/}") " == *" $(<"$lockread_dir/$daemon.pid") "* ]] ||
+    fail "daemon_pids finds '$(daemon_pids "$daemon" "${lockread_dir##*/}")' for the $daemon of run ${lockread_dir##*/}, not the pid $(<"$lockread_dir/$daemon.pid") its pidfile names: a wait on it would call a live daemon gone"
   ! grep -q 'could not read ConfigMap' "$lockread_dir/logs/$daemon.log" ||
     fail "the $daemon read the lock before it wrote its pidfile: $(cat "$lockread_dir/logs/$daemon.log")"
 done
@@ -3685,13 +3704,9 @@ step_took=$((EPOCHSECONDS - step_at))
   fail "the step command took $step_took s to end, past its wait's deadline and the graces of its stop: $(cat "$unreach_step")"
 # The heartbeat ends with the command, as (o) has it for a run whose command is gone: the lock
 # it renewed every 60 s is renewed no more, so it ages and up calls it stale.
-unreach_hb=$(<"$LOADTEST_CLUSTER_ROOT/$unreach_run/heartbeat.pid")
-for ((i = 0; i < 50; i++)); do
-  kill -0 "$unreach_hb" 2>/dev/null || break
-  sleep 0.1
-done
-unreach_hb_alive=no
-kill -0 "$unreach_hb" 2>/dev/null && unreach_hb_alive=yes
+unreach_hb_alive=yes
+daemon_stopped heartbeat "$unreach_run" 50 && unreach_hb_alive=no
+unreach_hb=$daemon_seen
 unreach_patches=$(grep -c "patch configmap dispatch-loadtest-lock" "$fake/kubectl.log" || true)
 sleep 1
 unreach_patches_after=$(grep -c "patch configmap dispatch-loadtest-lock" "$fake/kubectl.log" || true)
