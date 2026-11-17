@@ -625,3 +625,51 @@ func TestErrorPrintsAPrintablesTextOnlyDirectlyOverATrustedAnswer(t *testing.T) 
 		})
 	}
 }
+
+// TestARedactedErrorRedactedAgainBesideACleanAddressPrintsNoTextTheFirstWithheld: Error and Cause
+// beside an address that carries a credential print the broker's answer as its class, because
+// whoever answers there can repeat the credential. What they return still unwraps to that answer,
+// so a caller that redacts the result again - beside a clean address, as another layer does with
+// an address of its own - must not find the answer under it and print it then. Every second
+// redaction, of each first one alone, under a caller's %w and in a call, prints a class and never
+// the echoed credential.
+func TestARedactedErrorRedactedAgainBesideACleanAddressPrintsNoTextTheFirstWithheld(t *testing.T) {
+	const (
+		dirty  = "http://demouser7q:demopass9z-not-a-secret@127.0.0.1:1"
+		clean  = "http://127.0.0.1:1"
+		echoed = "demopass9z-not-a-secret"
+	)
+	answer := &oauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusBadRequest},
+		ErrorCode: "invalid_request", ErrorDescription: "echo of " + echoed}
+	inCall := &url.Error{Op: "Post", URL: dirty + "/v1/oauth/token", Err: answer}
+	firsts := map[string]error{
+		"Error of the answer":                Error(answer, dirty),
+		"Cause of the answer":                Cause(answer, dirty),
+		"Error of the call":                  Error(inCall, dirty),
+		"Cause of the call":                  Cause(inCall, dirty),
+		"Error of the answer under a caller": fmt.Errorf("step: %w", Error(answer, dirty)),
+		"Cause of the call under a caller":   fmt.Errorf("step: %w", Cause(inCall, dirty)),
+		"Error of the answer, in a new call": &url.Error{Op: "Post", URL: clean + "/v1/oauth/token", Err: Error(answer, dirty)},
+		"Cause of the answer, in a new call": &url.Error{Op: "Post", URL: clean + "/v1/oauth/token", Err: Cause(answer, dirty)},
+	}
+	for name, first := range firsts {
+		t.Run(name, func(t *testing.T) {
+			// The premise: the first redaction withheld the answer, and the answer is still under it.
+			var reached *oauth2.RetrieveError
+			if strings.Contains(first.Error(), echoed) || !errors.As(first, &reached) || reached != answer {
+				t.Fatalf("the first redaction is %q; want the class, with the answer under it", first)
+			}
+			for what, got := range map[string]error{"Error": Error(first, clean), "Cause": Cause(first, clean)} {
+				if strings.Contains(got.Error(), echoed) {
+					t.Errorf("%s beside a clean address = %q, which holds the credential the first redaction withheld", what, got)
+				}
+				if !strings.HasSuffix(got.Error(), "the broker answered HTTP 400") {
+					t.Errorf("%s beside a clean address = %q, want it to end with the answer's class", what, got)
+				}
+				if !errors.Is(got, first) {
+					t.Errorf("errors.Is(%s = %q, the first redaction) = false", what, got)
+				}
+			}
+		})
+	}
+}

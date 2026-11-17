@@ -19,7 +19,10 @@
 // error's own text: words a caller wrapped around the failure or the *url.Error, with
 // fmt.Errorf's %w or an error type of its own, are no part of what was checked, so they never
 // print. The one error type whose words print over a trusted answer is one that vouches for them
-// (Printable): its text is fixed words and that answer's fields alone.
+// (Printable): its text is fixed words and that answer's fields alone. Nothing under an error
+// this package already put in words is checked again: what Error and Cause return keeps the
+// failure they withheld reachable for errors.As, so a second Error or Cause of it, beside any
+// URL and under any wrapper, prints as its class, never the answer the first one withheld.
 package redact
 
 import (
@@ -240,6 +243,11 @@ func Cause(err error, raw string) error {
 // printable answers the *url.Error err holds, if any, the text of the failure under it that may
 // print, given raw (Error), and whether any may. All of these must hold:
 //   - raw is clean;
+//   - err holds no error this package already put in words (classified): what Error and Cause
+//     return still unwraps to the failure they withheld, beside an address that may carry a
+//     credential, so checking that failure again beside a clean one would print the very text
+//     they withheld - the broker's answer echoing the credential, say. Such an error prints as
+//     its class;
 //   - the URL the *url.Error names is raw followed by a plain path (callClean): net/http names a
 //     redirect's target there, which can sit on another host or path and carry a query;
 //   - the error the *url.Error wraps (err itself, with none) is one whose text names no URL, or
@@ -257,6 +265,10 @@ func printable(err error, raw string) (ue *url.Error, text string, ok bool) {
 		ue = nil
 	}
 	if raw == "" || !clean(raw) {
+		return ue, "", false
+	}
+	var worded *classified
+	if errors.As(err, &worded) {
 		return ue, "", false
 	}
 	inner := err
@@ -365,8 +377,10 @@ func transport(err error) bool {
 // trustedAnswer reports whether err itself, not an error it wraps, is an OAuth error answer whose
 // text is the broker's error code and error_description alone: an *oauth2.RetrieveError with a
 // nonempty ErrorCode and an empty ErrorURI. printable asks only beside a clean base and a request
-// URL Call prints, and there those two fields print whole, trusted rather than checked, since they
-// are the broker's reason for a refusal and the only part a person can act on. Any other OAuth
+// URL Call prints, and only on a chain that holds no error this package already put in words
+// (classified), so an answer an earlier Error or Cause withheld beside a URL that carries a
+// credential is never one: there those two fields print whole, trusted rather than checked, since
+// they are the broker's reason for a refusal and the only part a person can act on. Any other OAuth
 // answer is not one, so it prints as its class alone ("the broker answered HTTP <n>"): an
 // error_uri is a URL by RFC 6749, which may carry a credential or point anywhere, and for an
 // answer with no error code x/oauth2's text is the response body it kept, up to 1 MiB with its
