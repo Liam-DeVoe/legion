@@ -41,29 +41,27 @@ func privateProjectsSetting(value string) ([]string, error) {
 	return slices.Compact(keys), nil
 }
 
-// reportPrivateProjects is the boot's report of what the state's first read (state) and the store
-// say of private projects, right after every project has an owner. It makes no read of the private
-// projects of its own. It reports and never refuses: Dispatch runs as one process, so a boot that
-// exited would stop every project, and the owner's repair through the API with it, while each
-// condition here fails closed for its own projects alone.
+// reportPrivateProjects is the boot's report of what the state's first read (state) says of
+// private projects, right after every project has an owner. It makes no read of its own. It
+// reports and never refuses: Dispatch runs as one process, so a boot that exited would stop every
+// project, and the owner's repair through the API with it, while each condition here fails closed
+// for its own projects alone.
 //   - Each project the database holds private that the list does not name is one ERROR line
 //     naming it and both repairs (api.LogUnprovisionedPrivateProjects). It stays private, and only
 //     its owner's switch to public changes its visibility.
 //   - The keys on the list that no private project holds, provisioned but not private yet, are one
 //     INFO line.
-//   - With a list, a store a private project's reads would answer wrongly is one ERROR line naming
-//     its first rows and the command that repairs it (api.StoreIncomplete); each switch to private
-//     is refused until it is complete.
-func reportPrivateProjects(ctx context.Context, database *store.Store, state *privateProjectsState) {
+//
+// The store's own check, with a list, is the maintenance loop's as it starts and then hourly
+// (api.RunMaintenanceSweep): it reads every project-owned table, so the boot serves without
+// waiting for it, and its first line is not repeated a pass later.
+func reportPrivateProjects(state *privateProjectsState) {
 	api.LogUnprovisionedPrivateProjects(state.Unprovisioned())
 	if len(state.list) == 0 {
 		return
 	}
 	if notPrivate := state.provisionedNotPrivate(); len(notPrivate) > 0 {
 		slog.Info("dispatch: private projects provisioned but not private yet", "projects", strings.Join(notPrivate, ","))
-	}
-	if err := api.StoreIncomplete(store.WithTransactionTracking(ctx), database.Pool); err != nil {
-		slog.Error("dispatch: private projects: the store cannot hold a private project yet; every switch to private is refused until it can", "error", err)
 	}
 }
 

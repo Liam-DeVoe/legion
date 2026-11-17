@@ -9,17 +9,17 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
-// The boot reports what the provisioned list and the store say of private projects, and stays up
-// whatever it finds: a project the database holds private that the list does not name is one
-// ERROR line naming it and both repairs; a listed key that is no private project yet is one INFO
-// line; and, with a list, a store a private project's reads would answer wrongly is one ERROR line
-// naming its first rows and the command that repairs it.
+// The boot reports what the provisioned list says of private projects, and stays up whatever it
+// finds: a project the database holds private that the list does not name is one ERROR line
+// naming it and both repairs; a listed key that is no private project yet is one INFO line. The
+// store's own check is not the boot's (TestAProcessServesOverAnUnprovisionedPrivateProject).
 func TestABootReportsAnUnprovisionedPrivateProjectAndStaysUp(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -37,7 +37,7 @@ func TestABootReportsAnUnprovisionedPrivateProjectAndStaysUp(t *testing.T) {
 		if err != nil {
 			t.Fatalf("the first read of the private projects with the list %v: %v", list, err)
 		}
-		reportPrivateProjects(ctx, database, state)
+		reportPrivateProjects(state)
 		return logged.String()
 	}
 	unprovisioned := "dispatch: private project not provisioned: PRIV is private but DISPATCH_PRIVATE_PROJECTS does not name it"
@@ -61,17 +61,18 @@ func TestABootReportsAnUnprovisionedPrivateProjectAndStaysUp(t *testing.T) {
 			t.Fatalf("the boot's report names NEW, provisioned and no private project, with no INFO line naming it alone:\n%s", logged)
 		}
 	})
-	t.Run("an incomplete store", func(t *testing.T) {
-		// PRIV-1 is an issue a build before the node writers stored with no node.
+	t.Run("an incomplete store is not the boot's to read", func(t *testing.T) {
+		// PRIV-1 is an issue a build before the node writers stored with no node: the store's
+		// check names it (api.TestTheStoreReportNamesEveryBackfillNotRun), and the boot serves
+		// without waiting for that read.
 		if _, err := database.Pool.Exec(ctx, `
 			insert into issues (key, project_key, number, title, created_by, rank)
 			values ('PRIV-1', 'PRIV', 1, 'One', '{"kind":"user","id":"alice@example.com"}', 'U');
 		`); err != nil {
 			t.Fatalf("seed PRIV-1 with no node: %v", err)
 		}
-		logged := report(t, []string{"PRIV"})
-		if line := lineHolding(logged, "issue PRIV-1: missing"); !strings.Contains(line, "level=ERROR") || !strings.Contains(line, "envoy-dispatch backfill-graph-store") {
-			t.Fatalf("the boot's report over an incomplete store has no ERROR line naming PRIV-1 and its repair:\n%s", logged)
+		if logged := report(t, []string{"PRIV"}); strings.Contains(logged, "PRIV-1") {
+			t.Fatalf("the boot's report read the store's census:\n%s", logged)
 		}
 	})
 }
@@ -88,8 +89,9 @@ func lineHolding(logged, substring string) string {
 
 // A process given DISPATCH_PRIVATE_PROJECTS serves over a private project its list does not name
 // and over an incomplete store: it logs both, the project's key in the log, and answers /healthz
-// 200, ok, degraded for it, naming no key. The whole wiring of main: the setting's read, the
-// boot's report and the probe's cached read.
+// 200, ok, degraded for it, naming no key. The store's ERROR line comes once as the maintenance
+// loop starts and then hourly, so the loop's next passes repeat it nowhere. The whole wiring of
+// main: the setting's read, the boot's report, the loop's check and the probe's cached read.
 func TestAProcessServesOverAnUnprovisionedPrivateProject(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -98,16 +100,33 @@ func TestAProcessServesOverAnUnprovisionedPrivateProject(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("seed the private project PRIV: %v", err)
 	}
-	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{Env: map[string]string{"DISPATCH_PRIVATE_PROJECTS": "OTHER"}})
+	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{Env: map[string]string{
+		"DISPATCH_PRIVATE_PROJECTS":                "OTHER",
+		"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL": "250ms",
+	}})
 	process.waitHealthy(t)
+	// Two passes of the maintenance loop have run once two `leased pass ran` lines name its lease:
+	// one process runs them one after another.
+	const storeLine, maintenancePass = "the store cannot hold a private project yet",
+		`msg="dispatch duty: leased pass ran" lease=suggestion-outcomes`
+	for deadline := time.Now().Add(60 * time.Second); strings.Count(process.Output.String(), maintenancePass) < 2 ||
+		!strings.Contains(process.Output.String(), storeLine); time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for the store's line and two passes of the maintenance loop:\n%s", process.Output.String())
+		}
+	}
 	output := process.Output.String()
 	for _, want := range []string{
 		"private project not provisioned: PRIV is private",
 		"session_projects_filled holds no row",
 	} {
 		if !strings.Contains(output, want) {
-			t.Errorf("the boot's log holds no line naming %q:\n%s", want, output)
+			t.Errorf("the process's log holds no line naming %q:\n%s", want, output)
 		}
+	}
+	if got := strings.Count(output, storeLine); got != 1 {
+		t.Errorf("the process logged %d lines saying %q over its start and %d passes of the maintenance loop, want 1:\n%s",
+			got, storeLine, strings.Count(output, maintenancePass), output)
 	}
 	response, err := http.Get(process.url("/healthz"))
 	if err != nil {

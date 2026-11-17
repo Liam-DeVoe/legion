@@ -29,22 +29,22 @@ const MaintenanceSweepInterval = time.Minute
 // new name would not.
 const maintenanceLease = "suggestion-outcomes"
 
-// StoreCompletenessInterval is how often a process's maintenance passes check, where the
-// deployment names private projects, that the store can hold one (StoreIncomplete). A switch to
-// private is refused until the project's own rows are complete; this names a row stored without
-// its node afterwards. The read covers every project-owned table, so it runs hourly and not every
-// pass.
-const StoreCompletenessInterval = time.Hour
+// storeCompletenessInterval is how often a process's maintenance passes check, where the
+// deployment names private projects, that the store can hold one (storeIncomplete), after the
+// check the loop makes when it starts. A switch to private is refused until the project's own rows
+// are complete; this names a row stored without its node afterwards. The read covers every
+// project-owned table, so it runs hourly and not every pass.
+const storeCompletenessInterval = time.Hour
 
 // incompleteRowsNamed is how many of the incomplete rows a report names, the census's count
 // (envoy-dispatch census --store names the same rows).
 const incompleteRowsNamed = 20
 
-// StoreIncomplete answers nil when a private project's reads would answer no row wrongly: every
-// row a project owns has a node naming its project (graphcensus.ProjectComplete), and
-// session_projects_filled holds its row. Otherwise it answers why, naming the first rows and the
-// command that repairs it.
-func StoreIncomplete(ctx context.Context, q graphstore.Queryer) error {
+// storeIncomplete answers nil when a private project's reads would answer no row wrongly: every
+// row a project owns has a node naming its project (graphcensus.ProjectComplete), and both
+// backfills a switch to private waits for have run (backfillMarkersMissing). Otherwise it answers
+// why, naming the first rows and the command that repairs it.
+func storeIncomplete(ctx context.Context, q graphstore.Queryer) error {
 	incomplete, err := graphcensus.ProjectComplete(ctx, q)
 	if err != nil {
 		return err
@@ -52,7 +52,7 @@ func StoreIncomplete(ctx context.Context, q graphstore.Queryer) error {
 	if len(incomplete) > 0 {
 		return incompleteRowsError(incomplete, "a project owns")
 	}
-	return sessionProjectsFilled(ctx, q)
+	return backfillMarkersMissing(ctx, q)
 }
 
 // incompleteRowsError says how many rows, those whose names ("a project owns", "of PRIV"), have no
@@ -61,6 +61,18 @@ func incompleteRowsError(incomplete []string, whose string) error {
 	return fmt.Errorf("%d rows %s have no node naming their project, so a private project's reads would answer them wrongly (%s): "+
 		"envoy-dispatch backfill-graph-store writes their nodes, and envoy-dispatch census --store names them",
 		len(incomplete), whose, strings.Join(incomplete[:min(len(incomplete), incompleteRowsNamed)], ", "))
+}
+
+// backfillMarkersMissing answers nil when both backfills a switch to private waits for have
+// written their marker row - backfill-session-projects (sessionProjectsFilled), then
+// scrub-access-events (accessEventsScrubbed) - and otherwise why, naming the first one missing and
+// its command. It is the one marker check of the store's report, at a process's start and hourly
+// (storeIncomplete), and of the switch's 409 PRIVATE_PROJECTS_INCOMPLETE.
+func backfillMarkersMissing(ctx context.Context, q graphstore.Queryer) error {
+	if err := sessionProjectsFilled(ctx, q); err != nil {
+		return err
+	}
+	return accessEventsScrubbed(ctx, q)
 }
 
 // sessionProjectsFilled answers nil when session_projects_filled holds its row: every older event's
@@ -76,18 +88,38 @@ func sessionProjectsFilled(ctx context.Context, q graphstore.Queryer) error {
 	return nil
 }
 
-// ReportUnprovisionedPrivateProjects logs one ERROR line for each project the database holds
+// accessEventsScrubbed answers nil when access_events_scrubbed holds its row: no stored
+// project.access_changed event carries a project's access list any more.
+func accessEventsScrubbed(ctx context.Context, q graphstore.Queryer) error {
+	var scrubbed bool
+	if err := q.QueryRow(ctx, `select exists (select 1 from access_events_scrubbed)`).Scan(&scrubbed); err != nil {
+		return fmt.Errorf("read access_events_scrubbed: %w", err)
+	}
+	if !scrubbed {
+		return fmt.Errorf("access_events_scrubbed holds no row, so project.access_changed events stored before this release may still carry a project's access list: run envoy-dispatch scrub-access-events")
+	}
+	return nil
+}
+
+// logStoreIncomplete logs one ERROR line when the store cannot yet hold a private project
+// (storeIncomplete), naming why and the command that repairs it.
+func logStoreIncomplete(ctx context.Context, q graphstore.Queryer) {
+	if err := storeIncomplete(ctx, q); err != nil {
+		slog.Error("dispatch: private projects: the store cannot hold a private project yet; every switch to private is refused until it can", "error", err)
+	}
+}
+
+// reportUnprovisionedPrivateProjects logs one ERROR line for each project the database holds
 // private that list, the projects the deployment has provisioned as private, does not name
-// (access.PrivateOffList), with both repairs, and answers their keys. Such a project stays
-// private: its reads keep their rule, and only its owner's switch to public changes its
-// visibility (patchProjectAccess).
-func ReportUnprovisionedPrivateProjects(ctx context.Context, q access.Querier, list []string) ([]string, error) {
+// (access.PrivateOffList), with both repairs. Such a project stays private: its reads keep their
+// rule, and only its owner's switch to public changes its visibility (patchProjectAccess).
+func reportUnprovisionedPrivateProjects(ctx context.Context, q access.Querier, list []string) error {
 	keys, err := access.PrivateOffList(ctx, q, list)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	LogUnprovisionedPrivateProjects(keys)
-	return keys, nil
+	return nil
 }
 
 // LogUnprovisionedPrivateProjects logs one ERROR line for each of keys, projects the database holds
@@ -108,9 +140,11 @@ func LogUnprovisionedPrivateProjects(keys []string) {
 // (resumeDeliveries, the server's resumeOwedDeliveries). resumeDeliveries is nil where nothing
 // delivers. Every pass also logs an ERROR line for each project the database holds private that
 // privateProjects, the projects the deployment has provisioned as private, does not name
-// (ReportUnprovisionedPrivateProjects); where privateProjects names any, its first pass and then
-// one pass an hour log an ERROR line when the store cannot yet hold a private project
-// (StoreIncomplete). It stops when ctx is done.
+// (reportUnprovisionedPrivateProjects). Where privateProjects names any, it logs an ERROR line
+// when the store cannot yet hold a private project (storeIncomplete) once as it starts, before
+// its first tick and on no lease, so each process reports its own start, and then in one pass an
+// hour: the start's check is the boot's report, read beside the serving process rather than
+// before it. It stops when ctx is done.
 //
 // It is a timer and not a woken loop (duty.RunWoken), the shape every other sweep of this server
 // took, because no commit announces any of its work: a key and a proof record pass their windows
@@ -134,6 +168,10 @@ func RunMaintenanceSweep(
 	resumeDeliveries func(context.Context) error, privateProjects []string,
 ) {
 	var storeChecked time.Time
+	if len(privateProjects) > 0 {
+		storeChecked = time.Now()
+		logStoreIncomplete(store.WithTransactionTracking(ctx), pool)
+	}
 	duty.RunLeased(ctx, leases, maintenanceLease, interval, duty.TickAfterInterval, func(ctx context.Context) {
 		if err := sweepRequestKeys(ctx, pool); err != nil {
 			slog.Warn("dispatch: idempotency key sweep failed", "error", err)
@@ -144,14 +182,12 @@ func RunMaintenanceSweep(
 		if err := sweepGoingRequests(ctx, pool); err != nil {
 			slog.Warn("dispatch: going request sweep failed", "error", err)
 		}
-		if _, err := ReportUnprovisionedPrivateProjects(ctx, pool, privateProjects); err != nil {
+		if err := reportUnprovisionedPrivateProjects(ctx, pool, privateProjects); err != nil {
 			slog.Warn("dispatch: private projects", "error", err)
 		}
-		if len(privateProjects) > 0 && time.Since(storeChecked) >= StoreCompletenessInterval {
+		if len(privateProjects) > 0 && time.Since(storeChecked) >= storeCompletenessInterval {
 			storeChecked = time.Now()
-			if err := StoreIncomplete(ctx, pool); err != nil {
-				slog.Error("dispatch: private projects: the store cannot hold a private project yet", "error", err)
-			}
+			logStoreIncomplete(ctx, pool)
 		}
 		if resumeDeliveries == nil {
 			return
