@@ -4901,8 +4901,8 @@ it says `Phase: reviewing.` and names the tester's handoff of that round by its 
 
 The proof's own control: with the call that gives the transition's `task` the reviewed part taken out of `internal/workflow/engine.go`, `round-2-names-the-commit-of-round-1` fails, its task naming test version 2 and no commit.
 With the write of `phases.reviewed_head` taken out of `internal/workflow/review.go` and the step before it left out, `control-no-record-no-commit` fails before its clear, the column reading empty where it should hold the first head.
-With `internal/workflow/review.go` judging who decides a round by the session of the claim the reviewer's phases row names, while the write of `phases.reviewed_head` still reads the session of the claim the daemon starts the reviewer under, `other-session-records-no-commit` fails: that row names no claim before the reviewer's first completion, so the login decides, and the issue is in `implementing` after the other session's review.
-With the write reading the row's claim too, `round-2-names-the-commit-of-round-1` fails first, its task naming test version 2 and no commit, since no session is found in round 1 and no review then moves the column.
+With `internal/workflow/review.go` judging who decides a round by the session of the claim the reviewer's phases row names, `round-2-names-the-commit-of-round-1` fails first, timing out while it waits for the issue in `implementing`: that row names no claim before the reviewer's first completion, so no session is found, and the reviewer's own `REQUEST_CHANGES` waits and decides nothing (`workflow: a review of the review App waits` in the daemon's log).
+It fails the same way with the write of `phases.reviewed_head` reading the row's claim too, since that review never reaches the write.
 What the proof stands in for:
 the broker is a native `nats-server`; GitHub is one REST stand-in (`reviewRangeGitHub`: each repository with default branch `main`, and each issue's branch listing its one open pull request at the head the step last set, which the implementer's completion reads);
 the Apps' tokens are placeholders; Envoy's listener is the package's `noticeListener`;
