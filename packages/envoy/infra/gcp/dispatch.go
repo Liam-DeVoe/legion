@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 
@@ -327,6 +328,15 @@ type DispatchArgs struct {
 	// listens.
 	PprofPort *int `pulumi:"pprofPort,optional"`
 
+	// ApiV1End is the instant Dispatch's /api/v1 ends, an RFC 3339 time such as
+	// 2027-01-01T00:00:00Z: DISPATCH_API_V1_END on the envoy-dispatch container alone, as
+	// written. While it is ahead every /api/v1 answer carries a Sunset header naming it; once it
+	// has passed every /api/v1 path answers 410 API_V1_ENDED, pointing to GET /api/v2. A value
+	// Dispatch could not parse is refused here, since Dispatch refuses it at boot. Unset, nothing
+	// is rendered and /api/v1 has no end. An input of its own, so a deployment arms the end with
+	// an envoy-infra release and no Dispatch one.
+	ApiV1End string `pulumi:"apiV1End,optional"`
+
 	// PriorityClassName is the priorityClassName of every pod of the three Deployments (the app,
 	// the front door and the listener), the name of a PriorityClass that already exists in the
 	// cluster, which this component reads once but never creates: a missing class fails the
@@ -433,6 +443,7 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		{"appId", args.AppId},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName},
 		{"appPrivateKeySecretKey", args.AppPrivateKeySecretKey},
+		{"apiV1End", args.ApiV1End},
 	} {
 		if bus.HoldsSeed(value.value) {
 			return value.input, true
@@ -529,7 +540,8 @@ type Dispatch struct {
 // renders no second origin.
 // oidcIssuer is "" when its input is unset and oidcAudience is set, where the issuer rendered is
 // the cluster's own, which only the cluster half knows (dispatchCluster.issuer) and so is no
-// field here.
+// field here. apiV1End is "" when its input is unset, where the component renders no end of
+// /api/v1.
 type dispatchSettings struct {
 	clusterOnly                                 bool
 	frontDoor, signInOn                         bool
@@ -553,6 +565,7 @@ type dispatchSettings struct {
 	signingKeyGenerations                       []int
 	appResources                                dispatchAppResources
 	pprofPort                                   int
+	apiV1End                                    string
 	disruption                                  dispatchDisruption
 	azure                                       dispatchAzure
 	answerer                                    dispatchAnswerer
@@ -878,6 +891,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"appEphemeralStorage", args.AppEphemeralStorage != nil},
 		{"proxyEphemeralStorage", args.ProxyEphemeralStorage != nil},
 		{"pprofPort", args.PprofPort != nil},
+		{"apiV1End", args.ApiV1End != ""},
 		{"priorityClassName", args.PriorityClassName != nil},
 		{"appPdbMinAvailable", args.AppPdbMinAvailable != nil},
 		{"frontDoorPdbMinAvailable", args.FrontDoorPdbMinAvailable != nil},
@@ -1331,6 +1345,9 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	if s.pprofPort, err = newDispatchPprofPort(args); err != nil {
 		return dispatchSettings{}, err
 	}
+	if s.apiV1End, err = newDispatchAPIV1End(args); err != nil {
+		return dispatchSettings{}, err
+	}
 	if s.disruption, err = newDispatchDisruption(args, s.replicas, s.frontDoorReplicas, s.listenerReplicas); err != nil {
 		return dispatchSettings{}, err
 	}
@@ -1408,6 +1425,20 @@ func newDispatchPprofPort(args *DispatchArgs) (int, error) {
 		return 0, fmt.Errorf("pprofPort %d is the cloud-sql-proxy sidecar's port in the same pod; choose another, such as 6060", port)
 	}
 	return port, nil
+}
+
+// newDispatchAPIV1End resolves apiV1End, the instant /api/v1 ends: "", rendering nothing, when it
+// is unset. It parses the value as Dispatch parses DISPATCH_API_V1_END, with time.RFC3339, so a
+// value the server would refuse at boot is refused here, before the app's pods roll onto it, and
+// returns it as written, since that is the text Dispatch reads.
+func newDispatchAPIV1End(args *DispatchArgs) (string, error) {
+	if args.ApiV1End == "" {
+		return "", nil
+	}
+	if _, err := time.Parse(time.RFC3339, args.ApiV1End); err != nil {
+		return "", core.InputErrorf("apiV1End", "apiV1End %q is not an RFC 3339 time, such as 2027-01-01T00:00:00Z; leave it unset for no end of /api/v1", args.ApiV1End)
+	}
+	return args.ApiV1End, nil
 }
 
 // newDispatchSigningKeyGenerations resolves signingKeyGenerations, the generations the component
