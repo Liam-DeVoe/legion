@@ -106,13 +106,17 @@ describe("step-records-read.sh", () => {
     const { code, stdout } = read(
       changed(/ 5 step acceptance /, (line) => line.replace(/ \S+ passed$/, " running running"))
     );
-    expect(stdout).toContain("FAIL: the record never ended: default 5 step acceptance review attempt 1");
+    expect(stdout).toContain(
+      "FAIL: the record never ended: default 5 step acceptance review attempt 1"
+    );
     expect(code).toBe(1);
   });
 
   test("a retro with no agent fails, exit 1, naming it", () => {
     const { code, stdout } = read(
-      changed(/ retro implementer /, (line) => line.replace("legion-infra-infra-42-implementer", "-"))
+      changed(/ retro implementer /, (line) =>
+        line.replace("legion-infra-infra-42-implementer", "-")
+      )
     );
     expect(stdout).toContain("FAIL: the record names no agent: default 0 retro implementer");
     expect(code).toBe(1);
@@ -120,7 +124,9 @@ describe("step-records-read.sh", () => {
 
   test("a step with no agent fails, exit 1, naming it", () => {
     const { code, stdout } = read(
-      changed(/ 3 step tester testing attempt 2 /, (line) => line.replace("legion-infra-infra-42-tester", "-"))
+      changed(/ 3 step tester testing attempt 2 /, (line) =>
+        line.replace("legion-infra-infra-42-tester", "-")
+      )
     );
     expect(stdout).toContain(
       "FAIL: the record names no agent: default 3 step tester testing attempt 2 - anthropic/claude-opus-5"
@@ -132,7 +138,9 @@ describe("step-records-read.sh", () => {
     const { code, stdout } = read(
       changed(/ merge merger /, (line) => line.replace("legion-infra-infra-42-merger", "-"))
     );
-    expect(stdout).toContain("the merge has no agent: no merger ran it: default 0 merge merger - attempt 1 - -");
+    expect(stdout).toContain(
+      "the merge has no agent: no merger ran it: default 0 merge merger - attempt 1 - -"
+    );
     expect(stdout).not.toContain("FAIL");
     expect(stdout).toContain(`PASS: ${key}: 10 records`);
     expect(code).toBe(0);
@@ -161,17 +169,23 @@ describe("step-records-read.sh", () => {
       [key],
       1
     );
-    expect(stdout).toContain(`UNKNOWN: dispatch steps --issue ${key} exited 1, so nothing was read`);
+    expect(stdout).toContain(
+      `UNKNOWN: dispatch steps --issue ${key} exited 1, so nothing was read`
+    );
     expect(stdout).toContain("is unreachable: ECONNREFUSED");
     expect(code).toBe(2);
   });
 
   test("an answer that is no read of the issue is UNKNOWN, exit 2", () => {
     const header = read("OTHER-1: 10 steps in 1 tasks\n");
-    expect(header.stdout).toContain("UNKNOWN: the first line of the answer is no header of INFRA-42");
+    expect(header.stdout).toContain(
+      "UNKNOWN: the first line of the answer is no header of INFRA-42"
+    );
     expect(header.code).toBe(2);
     const short = read(`${key}: 11 steps in 1 tasks\n` + whole.slice(1).join("\n") + "\n");
-    expect(short.stdout).toContain("UNKNOWN: the header says 11 records and 10 lines of runs follow it");
+    expect(short.stdout).toContain(
+      "UNKNOWN: the header says 11 records and 10 lines of runs follow it"
+    );
     expect(short.code).toBe(2);
   });
 
