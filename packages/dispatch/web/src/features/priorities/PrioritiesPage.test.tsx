@@ -4,8 +4,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
+import { recordedEditors, writeAtEnd } from "../../__tests__/recorded-editors";
 import { api } from "../../api/client";
 import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
+import { DocumentRuntime } from "../doc/runtime";
 import { PrioritiesPage } from "./PrioritiesPage";
 
 function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow {
@@ -145,10 +147,14 @@ function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["whoami"], whoami);
+  // An open row's description is drawn in the documents' own editor, which a test edits through.
+  const editors = recordedEditors();
   const view = render(
     <MemoryRouter initialEntries={["/priorities"]}>
       <QueryClientProvider client={client}>
-        <PrioritiesPage />
+        <DocumentRuntime.Provider value={editors.runtime}>
+          <PrioritiesPage />
+        </DocumentRuntime.Provider>
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -160,7 +166,7 @@ function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
     if (descriptor) Object.defineProperty(HTMLElement.prototype, "clientHeight", descriptor);
     else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
   });
-  return { create, listing, patch, view };
+  return { create, editors, listing, patch, view };
 }
 
 const FIFTEEN = body({
@@ -388,17 +394,16 @@ test("a row counts the work in flight, waiting, parked and closed in the last 7 
 
 test("the first line of a description shows on a closed row and the whole of it when it opens", async () => {
   const user = userEvent.setup();
-  page(FIFTEEN, [issue("CORE-1", ["legion-first"]), issue("CORE-2")]);
+  const { editors } = page(FIFTEEN, [issue("CORE-1", ["legion-first"]), issue("CORE-2")]);
   await screen.findByRole("row", { name: "P1 Legion works reliably first" });
   expect(screen.getByText("The first line.")).toBeDefined();
   await user.click(screen.getByRole("button", { name: "Open P1 Legion works reliably first" }));
-  // Open, the row reads the whole description rendered, and a click on its text opens its source.
-  const rendered = await screen.findByRole("group", { name: "Description of P1" });
-  expect(await within(rendered).findByText(/The rest of it/)).toBeDefined();
-  await user.click(within(rendered).getByText(/The rest of it/));
-  const whole = await screen.findByRole("textbox", { name: "Description of P1" });
-  expect((whole as HTMLTextAreaElement).value).toBe(
-    "The first line.\nThe rest of it, which the row shows when it is open."
+  // Open, the row holds the whole description in the documents' editor, its line break read as
+  // the space a paragraph's soft break is.
+  const { box } = await editors.named("Description of P1");
+  expect(box.classList.contains("ProseMirror")).toBe(true);
+  expect(box.textContent).toBe(
+    "The first line. The rest of it, which the row shows when it is open."
   );
 });
 
@@ -445,23 +450,24 @@ test("a title is renamed where it is read, with no edit mode and no Save button"
   expect(screen.queryByRole("button", { name: /^Save/ })).toBeNull();
 });
 
-test("a description is written on the open row: the empty block is the prompt that opens it", async () => {
+test("a description is written on the open row: the empty editor under the prompt that says none is", async () => {
   const user = userEvent.setup();
-  const { patch } = page(FIFTEEN);
+  const { editors, patch } = page(FIFTEEN);
   await screen.findByRole("row", { name: "P3 OSS Verify" });
   await user.click(screen.getByRole("button", { name: "Open P3 OSS Verify" }));
-  const rendered = await screen.findByRole("group", { name: "Description of P3" });
-  const prompt = within(rendered).getByText(/No description is written\./);
-  expect(prompt.textContent).toBe("No description is written. Click here to write one.");
-  await user.click(prompt);
-  const field = await screen.findByRole("textbox", { name: "Description of P3" });
-  await user.type(field, "What it is.");
+  const { box, handle } = await editors.named("Description of P3");
+  expect(screen.getByText("No description is written. Write one below.")).toBeDefined();
+  expect(box.textContent).toBe("");
+  handle.view.focus();
+  writeAtEnd(handle, "What it is.", "it");
   await user.tab();
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
-  expect(patch.mock.calls[0]?.slice(0, 2)).toEqual(["oss-verify", { description: "What it is." }]);
-  // Left, the description reads rendered again, with what was written.
-  const back = await screen.findByRole("group", { name: "Description of P3" });
-  expect(await within(back).findByText("What it is.")).toBeDefined();
+  expect(patch.mock.calls[0]?.slice(0, 2)).toEqual([
+    "oss-verify",
+    { description: "What **it** is.\n" },
+  ]);
+  // The editor still holds what was written: there is no rendered block to give back.
+  expect(box.textContent).toBe("What it is.");
 });
 
 test("dragging a row onto another writes the place it landed", async () => {

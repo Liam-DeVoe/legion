@@ -1,0 +1,197 @@
+import { afterEach, expect, jest, mock, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, render, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
+import { jump, onFakeClock } from "../../__tests__/fake-clock";
+import { recordedEditors, selectText, writeAtEnd } from "../../__tests__/recorded-editors";
+import { DocumentRuntime } from "../doc/runtime";
+import { SAVE_AFTER_MS } from "./InPlaceField";
+import { PriorityDescription } from "./PriorityDescription";
+
+const OUTLINE = "# Why\n\n- Every machine runs the daemon\n- Nothing waits on the old build";
+/** `OUTLINE` as the editor writes it back: its own bullet, and a closing newline. */
+const OUTLINE_READ_BACK =
+  "# Why\n\n* Every machine runs the daemon\n* Nothing waits on the old build\n";
+
+const unmounts: (() => void)[] = [];
+afterEach(() => {
+  for (const unmount of unmounts.splice(0)) unmount();
+});
+
+/**
+ * The description as a page holds it, in the documents' own editor: `description` is the text
+ * the server answered with, which `rerender` moves, and every write lands in `onSave`. Queries
+ * are scoped to this render's container, since bun runs every test file in one document.
+ */
+function described(description: string, canWrite = true) {
+  const editors = recordedEditors();
+  const onSave = mock((_next: string) => {});
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const page = (text: string, writer: boolean): ReactNode => (
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <DocumentRuntime.Provider value={editors.runtime}>
+          <PriorityDescription
+            canWrite={writer}
+            description={text}
+            label="Description of P1"
+            onSave={onSave}
+          />
+        </DocumentRuntime.Provider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(page(description, canWrite));
+  unmounts.push(() => {
+    view.unmount();
+    client.clear();
+  });
+  return {
+    /** The editor once it holds the description, and its handle. */
+    editor: () => editors.named("Description of P1", view.container),
+    onSave,
+    rerender: (text: string, writer = canWrite) => view.rerender(page(text, writer)),
+    scope: within(view.container),
+    view,
+  };
+}
+
+test("the description is the documents' editor, named for it, drawn as the markdown it is", async () => {
+  const { editor } = described(`${OUTLINE}\n\nRead [the runbook](https://example.com/rb).`);
+  const { box } = await editor();
+  // The editor Dispatch's documents are written in, not a field of the page's own.
+  expect(box.classList.contains("ProseMirror")).toBe(true);
+  expect(box.getAttribute("contenteditable")).toBe("true");
+  expect(box.getAttribute("aria-multiline")).toBe("true");
+  expect(box.getAttribute("aria-readonly")).toBeNull();
+  expect(within(box).getByRole("heading", { name: "Why" })).toBeDefined();
+  expect(
+    within(box)
+      .getAllByRole("listitem")
+      .map((item) => item.textContent)
+  ).toEqual(["Every machine runs the daemon", "Nothing waits on the old build"]);
+  const link = within(box).getByRole("link", { name: "the runbook" });
+  expect(link.getAttribute("href")).toBe("https://example.com/rb");
+});
+
+test("a selection in it offers no comment, suggestion or ask, and writes no mark", async () => {
+  const { editor, onSave, view } = described(OUTLINE);
+  const { handle } = await editor();
+  handle.view.focus();
+  selectText(handle, "Every machine");
+  expect(handle.view.state.selection.empty).toBe(false);
+  expect(document.querySelector(".dispatch-action-bar")).toBeNull();
+  expect(document.querySelector(".mark-popover")).toBeNull();
+  for (const name of ["Comment", "Suggest", "Ask"]) {
+    expect(within(view.container).queryByRole("button", { name })).toBeNull();
+  }
+  // Dispatch's Ctrl+Alt+M asks the editor for the same Comment, which it refuses.
+  expect(handle.commentOnSelection()).toBe(false);
+  act(() => handle.view.dom.blur());
+  expect(onSave).not.toHaveBeenCalled();
+});
+
+test("an edit is written as markdown once the typing rests, once, with no Save button", async () => {
+  const { editor, onSave, view } = described(OUTLINE);
+  const { handle } = await editor();
+  handle.view.focus();
+  await onFakeClock(async () => {
+    writeAtEnd(handle, " and is gone", "gone");
+    expect(onSave).not.toHaveBeenCalled();
+    // One move each, rather than `jump`: Bun's `advanceTimersByTime(0)`, the second round
+    // `jump` runs, fires a timer still a millisecond short of its time.
+    act(() => jest.advanceTimersByTime(SAVE_AFTER_MS - 1));
+    expect(onSave).not.toHaveBeenCalled();
+    act(() => jest.advanceTimersByTime(1));
+  });
+  expect(onSave.mock.calls).toEqual([
+    [
+      "# Why\n\n* Every machine runs the daemon\n* Nothing waits on the old build and is **gone**\n",
+    ],
+  ]);
+  expect(within(view.container).queryByRole("button", { name: /save/i })).toBeNull();
+  // Leaving it writes nothing more: the text was written already.
+  act(() => handle.view.dom.blur());
+  expect(onSave).toHaveBeenCalledTimes(1);
+});
+
+test("leaving the editor writes what it holds at once", async () => {
+  const { editor, onSave } = described("Speedruns run again.");
+  const { handle } = await editor();
+  handle.view.focus();
+  writeAtEnd(handle, " More.");
+  act(() => handle.view.dom.blur());
+  expect(onSave.mock.calls).toEqual([["Speedruns run again. More.\n"]]);
+});
+
+test("the editor's own reading of the text is no edit, and writes nothing", async () => {
+  const { editor, onSave } = described(OUTLINE);
+  const { handle } = await editor();
+  expect(handle.getMarkdown()).toBe(OUTLINE_READ_BACK);
+  handle.view.focus();
+  act(() => handle.view.dom.blur());
+  await onFakeClock(() => jump(SAVE_AFTER_MS));
+  expect(onSave).not.toHaveBeenCalled();
+});
+
+test("closing the editor while a write waits for the typing to rest writes it", async () => {
+  const { editor, onSave, view } = described("Speedruns run again.");
+  const { handle } = await editor();
+  writeAtEnd(handle, " More.");
+  view.unmount();
+  expect(onSave.mock.calls).toEqual([["Speedruns run again. More.\n"]]);
+});
+
+test("the server's text replaces the editor's while the reader is not in it, and not while they are", async () => {
+  const { editor, onSave, rerender } = described("Speedruns run again.");
+  const { box, handle } = await editor();
+  rerender("Written elsewhere.");
+  await waitFor(() => expect(box.textContent).toBe("Written elsewhere."));
+
+  handle.view.focus();
+  writeAtEnd(handle, " Mine.");
+  rerender("Written elsewhere, again.");
+  expect(box.textContent).toBe("Written elsewhere. Mine.");
+  act(() => handle.view.dom.blur());
+  expect(onSave.mock.calls).toEqual([["Written elsewhere. Mine.\n"]]);
+  // The round trip of that write answers with what the editor wrote, which it holds already.
+  rerender("Written elsewhere. Mine.\n");
+  expect(box.textContent).toBe("Written elsewhere. Mine.");
+  expect(onSave).toHaveBeenCalledTimes(1);
+});
+
+test("the keyboard reaches the editor as it reaches any field", async () => {
+  const { editor, view } = described(OUTLINE);
+  const { box } = await editor();
+  const before = view.container.ownerDocument.createElement("button");
+  view.container.prepend(before);
+  before.focus();
+  await userEvent.setup().tab();
+  expect(document.activeElement).toBe(box);
+});
+
+test("a reader who may not write reads it in the same editor, read-only", async () => {
+  const { editor, onSave } = described(OUTLINE, false);
+  const { box, handle } = await editor();
+  expect(box.classList.contains("ProseMirror")).toBe(true);
+  expect(box.getAttribute("contenteditable")).toBe("false");
+  expect(box.getAttribute("aria-readonly")).toBe("true");
+  expect(within(box).getByRole("heading", { name: "Why" })).toBeDefined();
+  expect(handle.view.editable).toBe(false);
+  expect(onSave).not.toHaveBeenCalled();
+});
+
+test("an empty description says none is written: above the empty editor for a writer, alone for a reader", async () => {
+  const writer = described("");
+  const { box } = await writer.editor();
+  expect(writer.scope.getByText("No description is written. Write one below.")).toBeDefined();
+  expect(box.textContent).toBe("");
+  writer.view.unmount();
+
+  const reader = described("", false);
+  expect(await reader.scope.findByText("No description is written.")).toBeDefined();
+  expect(reader.scope.queryByRole("textbox")).toBeNull();
+});

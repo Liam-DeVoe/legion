@@ -26,6 +26,7 @@ import {
   patchIssue,
   patchPriority,
 } from "./api";
+import { actionBar } from "./editor";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -484,19 +485,18 @@ test("a priority row opens its work by status, and four writes survive a reload"
     await page.getByLabel("Title of P2").fill(renamed);
     await page.getByLabel("Title of P2").blur();
 
-    // Described in the row that holds it, which is where the whole description is shown: read
-    // rendered, every paragraph of it, and opened into its editor by a click on what it reads.
+    // Described in the row that holds it, which is where the whole description is shown: in
+    // the documents' editor, every paragraph of it, and written where it is read.
     const described = "The fleet is one build, or the rollout is not done.";
-    const rendered = page.getByRole("group", { exact: true, name: "Description of P1" });
     const editor = page.getByRole("textbox", { exact: true, name: "Description of P1" });
     const finished = "It is finished when no machine is left on the old build";
     await page.getByRole("button", { name: `Open P1 ${seed.titles[0]}` }).click();
-    await expect(rendered).toContainText(finished);
-    await rendered.getByText(finished).click();
-    await expect(editor).toHaveValue(seed.description);
-    await editor.fill(described);
+    await expect(editor).toContainText(finished);
+    await editor.getByText(finished).click();
+    await page.keyboard.press("ControlOrMeta+a");
+    await page.keyboard.type(described);
     await editor.blur();
-    await expect(rendered).toContainText(described);
+    await expect(editor).toHaveText(described);
 
     // Added, which takes the last place of the order.
     const added = "Keep the fleet on one build";
@@ -530,8 +530,11 @@ test("a priority row opens its work by status, and four writes survive a reload"
       `P4 ${added}`,
     ]);
     await page.getByRole("button", { name: `Open P1 ${seed.titles[0]}` }).click();
-    await expect(rendered).toContainText(described);
-    await expect(rendered).not.toContainText("It is finished when no machine is left");
+    await expect(editor).toHaveText(described);
+    // The store's text: what the reader wrote, and no Proof mark of the editor's own.
+    const stored = (await listPriorities()).priorities?.find((row) => row.id === seed.ids[0]);
+    expect(stored?.description).not.toContain("data-proof");
+    expect(stored?.description).toBe(`${described}\n`);
 
     // What the page does not say about a priority (INFRA-2947, R10): no date it is wanted by,
     // no portion of it done, and no word judging how it is going. Every `<time>` the page draws
@@ -690,60 +693,72 @@ test("a priority's own page writes its title and description and lists only its 
     await page.getByRole("textbox", { name: "Title" }).fill(retitled);
     await page.getByRole("textbox", { name: "Title" }).blur();
 
-    // The description reads rendered, and no editor is drawn until the reader asks for one.
-    const rendered = page.getByRole("group", { exact: true, name: "Description of P1" });
+    // The description is the editor Dispatch's documents are written in (`features/doc/
+    // editor.ts`), named for the description: the markdown it is, drawn as a heading and a
+    // list, with no source and no edit mode.
     const editor = page.getByRole("textbox", { exact: true, name: "Description of P1" });
-    await expect(rendered.getByRole("heading", { name: "Why" })).toBeVisible();
-    await expect(rendered.getByRole("listitem")).toHaveText([
+    await expect(editor).toHaveClass(/\bProseMirror\b/);
+    await expect(editor).toHaveAttribute("contenteditable", "true");
+    await expect(editor.getByRole("heading", { name: "Why" })).toBeVisible();
+    await expect(editor.getByRole("listitem")).toHaveText([
       "Every machine runs the daemon",
       "Nothing waits on the old build",
     ]);
-    await expect(editor).toHaveCount(0);
 
-    // A click on it opens its source in its place, with the caret at the end, so the line typed
-    // there follows the text; leaving the field saves it and gives the rendered block back.
-    const line = "The roll-back is written down";
-    const described = `${outline}\n- ${line}`;
-    await rendered.getByRole("listitem").last().click();
-    await expect(editor).toBeFocused();
-    await expect(editor).toHaveValue(outline);
-    await editor.pressSequentially(`\n- ${line}`);
-    await editor.blur();
-    await expect(editor).toHaveCount(0);
-    await expect(rendered.getByRole("listitem")).toHaveText([
-      "Every machine runs the daemon",
-      "Nothing waits on the old build",
-      line,
-    ]);
-
-    // The store holds both, and the page that is loaded again reads them from it.
+    // A selection in it offers no comment, suggestion or ask, since a priority takes none: the
+    // documents' selection bar, which their editor draws as it is built, is not drawn at all.
+    // The selection is the keyboard's, made once the click has put the caret in the editor:
+    // ProseMirror writes its own selection back over the page's just after it takes the focus.
+    await editor.getByText("Nothing waits on the old build").click();
+    await page.keyboard.press("End");
+    await page.keyboard.press("Shift+Home");
     await expect
-      .poll(async () => {
-        const stored = (await listPriorities()).priorities?.find((row) => row.id === seed.ids[0]);
-        return [stored?.title, stored?.description];
-      })
-      .toEqual([retitled, described]);
+      .poll(() => page.evaluate(() => String(window.getSelection())))
+      .toBe("Nothing waits on the old build");
+    await expect(actionBar(page)).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^(Comment|Suggest|Ask)$/ })).toHaveCount(0);
+
+    // A line typed after the list, with one word made bold through the editor's own Mod-b, and
+    // left: leaving it writes it at once.
+    const line = "The roll-back is written down";
+    await editor.getByRole("listitem").last().click();
+    await page.keyboard.press("End");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("The ");
+    await page.keyboard.press("ControlOrMeta+b");
+    await page.keyboard.type("roll-back");
+    await page.keyboard.press("ControlOrMeta+b");
+    await page.keyboard.type(" is written down");
+    await expect(editor.getByRole("listitem").last()).toHaveText(line);
+    await expect(editor.getByRole("listitem").last().locator("strong")).toHaveText("roll-back");
+    await editor.blur();
+
+    // The store holds both, the line as markdown with its word in `**`, as the editor writes a
+    // list, and nothing the reader did not write: no Proof mark of the editor's own, such as the
+    // authorship of what was typed (`<span data-proof="authored" ...>`). The write has landed
+    // once the store holds the last words typed; the page loaded again draws the text from the
+    // store, and what is read back is the store's, not the editor's.
+    const described =
+      "# Why\n\n* Every machine runs the daemon\n* Nothing waits on the old build\n" +
+      "* The **roll-back** is written down\n";
+    const stored = async () =>
+      (await listPriorities()).priorities?.find((one) => one.id === seed.ids[0]);
+    await expect.poll(async () => (await stored())?.description ?? "").toContain("written down");
     await page.reload();
     await expect(page.getByRole("textbox", { name: "Title" })).toHaveValue(retitled);
-    await expect(rendered.getByRole("listitem").last()).toHaveText(line);
-    // The keyboard's way in is the one button in the block, named by the words it shows, which
-    // is drawn only once it holds the focus; Enter on it opens the editor as a click does.
-    const edit = rendered.getByRole("button", { exact: true, name: "Edit the description of P1" });
-    await expect(edit).toHaveText("Edit the description of P1");
-    expect((await edit.boundingBox())?.width ?? 0).toBeLessThanOrEqual(1);
-    await edit.focus();
-    expect((await edit.boundingBox())?.width ?? 0).toBeGreaterThan(1);
-    await page.keyboard.press("Enter");
-    await expect(editor).toHaveValue(described);
-    await editor.blur();
-    await expect(editor).toHaveCount(0);
+    await expect(editor.getByRole("listitem").last()).toHaveText(line);
+    await expect(editor.getByRole("listitem").last().locator("strong")).toHaveText("roll-back");
+    const row = await stored();
+    expect(row?.description).not.toContain("data-proof");
+    expect([row?.title, row?.description]).toEqual([retitled, described]);
 
-    // The description is a disclosure, and it shuts and opens.
+    // The keyboard reaches the editor as it reaches any field: the next stop after the
+    // disclosure above it.
     const description = section(page, "Description");
-    await description.getByRole("button", { exact: true, name: "Description" }).click();
-    await expect(rendered).toHaveCount(0);
-    await description.getByRole("button", { exact: true, name: "Description, closed" }).click();
-    await expect(rendered.getByRole("listitem").last()).toHaveText(line);
+    await description.getByRole("button", { exact: true, name: "Description" }).focus();
+    await page.keyboard.press("Tab");
+    await expect(editor).toBeFocused();
+    await editor.blur();
 
     // The work is this priority's and nothing else's: the two issues that advance it, and
     // neither of the issues under the other two.
@@ -752,6 +767,16 @@ test("a priority's own page writes its title and description and lists only its 
       `${seed.rollout} Daemon rollout to the fleet`,
       `${seed.smoke} Daemon smoke suite`,
     ]);
+
+    // The description is a disclosure, and it shuts and opens; shut, the work moves up into
+    // the room it left.
+    const open = await topOf(work);
+    await description.getByRole("button", { exact: true, name: "Description" }).click();
+    await expect(editor).toHaveCount(0);
+    await expect.poll(() => topOf(work)).toBeLessThan(open);
+    await description.getByRole("button", { exact: true, name: "Description, closed" }).click();
+    await expect(editor.getByRole("listitem").last()).toHaveText(line);
+    await expect.poll(() => topOf(work)).toBe(open);
   } finally {
     await context.close();
   }

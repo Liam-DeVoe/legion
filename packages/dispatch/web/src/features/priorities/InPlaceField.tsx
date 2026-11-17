@@ -7,43 +7,34 @@ import {
 } from "../../theme/classes";
 
 /** How long the reader may stop typing before what they wrote is saved. Nothing else in
- *  Dispatch asks a person to press Save, so a priority's title and description are saved as
- *  they are written: once the typing rests, and at once when the field is left. */
-const SAVE_AFTER_MS = 500;
+ *  Dispatch asks a person to press Save, so a priority's fields are saved as they are written:
+ *  once the typing rests, and at once when the field is left. The description's editor keeps
+ *  the same rule (`PriorityDescription`). */
+export const SAVE_AFTER_MS = 500;
 
 /**
- * A field edited where it is read: no edit mode, no Save button. What the reader types is kept
- * here until it rests, then written once; leaving the field writes it immediately, and Enter in
- * a one-line field does both. The reader's own text stands until `value` itself changes, so a
- * refresh of the row underneath never pulls a half-typed word out from under them and the
- * round trip of their own write never shows them the old text again.
+ * A one-line field edited where it is read: no edit mode, no Save button. What the reader types
+ * is kept here until it rests, then written once; leaving the field writes it immediately, and
+ * Enter does both. The reader's own text stands until `value` itself changes, so a refresh of
+ * the row underneath never pulls a half-typed word out from under them and the round trip of
+ * their own write never shows them the old text again.
  */
 export function InPlaceField({
-  autoFocus = false,
   id,
   label,
-  multiline = false,
-  onDone,
   onSave,
   options,
   placeholder,
-  rows = 8,
   value,
 }: {
-  /** Takes the focus as it is drawn: a field the reader opened by clicking what it edits. */
-  autoFocus?: boolean;
   /** The field's own id, where a visible label points at it rather than wrapping it. */
   id?: string;
   label: string;
-  multiline?: boolean;
-  /** Told when the reader leaves the field, after what they wrote has been sent. */
-  onDone?: () => void;
   onSave: (next: string) => void;
   /** What other rows already hold, offered beside the field: a reader picks one of the owners
    *  the deployment uses, or writes a new one, since nothing bounds what an owner may be. */
   options?: readonly string[];
   placeholder?: string;
-  rows?: number;
   value: string;
 }): ReactNode {
   const [draft, setDraft] = useState(value);
@@ -81,52 +72,35 @@ export function InPlaceField({
     },
     []
   );
-  // A field opened by a click on what it edits takes the focus once, with the caret at the end
-  // of the text, so the reader writes on from where the text stands.
-  const field = useRef<HTMLInputElement & HTMLTextAreaElement>(null);
-  useEffect(() => {
-    const node = field.current;
-    if (!autoFocus || node === null) return;
-    node.focus();
-    node.setSelectionRange(node.value.length, node.value.length);
-  }, [autoFocus]);
-
-  const common = {
-    "aria-label": label,
-    id,
-    onBlur: () => {
-      setEditing(false);
-      save();
-      onDone?.();
-    },
-    onChange: (event: { target: { value: string } }) => {
-      setDraft(event.target.value);
-      stop();
-      timer.current = window.setTimeout(save, SAVE_AFTER_MS);
-    },
-    onFocus: () => setEditing(true),
-    placeholder,
-    ref: field,
-    value: draft,
-  };
   // A plain bordered field: it is the text's one reading, written where it is read, so nothing
   // hides it until the reader hovers it.
-  const className = `w-full rounded-md border px-2 py-1 text-sm ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas} ${focusVisibleRing}`;
-  if (multiline) return <textarea {...common} className={`${className} font-mono`} rows={rows} />;
   const listId = options === undefined ? undefined : `${label.replace(/\W+/g, "-")}-options`;
   return (
     <>
       <input
-        {...common}
-        className={className}
+        aria-label={label}
+        className={`w-full rounded-md border px-2 py-1 text-sm ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas} ${focusVisibleRing}`}
+        id={id}
         list={listId}
+        onBlur={() => {
+          setEditing(false);
+          save();
+        }}
+        onChange={(event) => {
+          setDraft(event.target.value);
+          stop();
+          timer.current = window.setTimeout(save, SAVE_AFTER_MS);
+        }}
+        onFocus={() => setEditing(true)}
         onKeyDown={(event) => {
           if (event.key !== "Enter") return;
           event.preventDefault();
           save();
           event.currentTarget.blur();
         }}
+        placeholder={placeholder}
         type="text"
+        value={draft}
       />
       {listId === undefined ? null : (
         <datalist id={listId}>

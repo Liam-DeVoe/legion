@@ -103,7 +103,6 @@ function TitleCell({ actions, item }: { actions: PriorityRowActions; item: Prior
             description={description}
             label={`Description of ${item.order}`}
             onSave={(next) => actions.onDescribe(item, next)}
-            rows={6}
           />
         ) : item.summary === "" ? null : (
           <p className={`truncate text-sm ${textSecondaryOnCanvas}`}>{item.summary}</p>
