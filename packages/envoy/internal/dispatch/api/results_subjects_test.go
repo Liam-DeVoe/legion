@@ -1,9 +1,9 @@
 // results_subjects_test.go holds GET /api/v1/issues/{key}/results to which heads a `before_merge`
 // check's pass must stand at, its subjects: the head of each open pull request of the issue, and
-// where it has none, the final head of each merged one and the head of each of its branches that a
-// CI job's result names. A pass stands only when one stands at each subject, and the answer says
-// the state of each. It also holds R7 for a CI job's results: a pass and a fail of one check at one
-// commit make that commit's state unknown, in either order.
+// where it has none, the final head of the newest merged one and the head of each of its branches
+// that a CI job's result names. A pass stands only when one stands at each subject, and the answer
+// says the state of each. It also holds R7 for a CI job's results: a pass and a fail of one check at
+// one commit make that commit's state unknown, in either order.
 package api
 
 import (
@@ -229,5 +229,85 @@ func TestAMergedHeadStaysABasisWhileAPullRequestIsOpen(t *testing.T) {
 	stands := passStandsOnWire(t, rig.handler, rig.issue, "k1")
 	if stands.Answer != model.PassStandsNo || len(stands.Subjects) != 1 || stands.Subjects[0].Basis.Commit != ciJobHead {
 		t.Fatalf("k1 reads %+v, want no, with the open head %s its one subject", stands, ciJobHead)
+	}
+}
+
+// TestTheNewestMergedHeadIsASubjectWhereNoPullRequestIsOpen: ACME-1 has no open pull request and
+// two merged ones, #69 at ciJobCommit and #70, the newest, at ciJobHead. k1 compares with both
+// heads, and #70's final head is its one subject: a tester's pass at #69's head stands at that
+// basis, and no pass of k1 stands, since #70's head holds no result. The control: a tester's pass at
+// #70's head makes that subject yes, and k1 reads a pass from the tester.
+func TestTheNewestMergedHeadIsASubjectWhereNoPullRequestIsOpen(t *testing.T) {
+	rig := newCIJobRig(t)
+	writeHead(t, rig.database, ciJobRepository, 69, ciJobCommit, "merged", rig.issue)
+	writeHead(t, rig.database, ciJobRepository, 70, ciJobHead, "merged", rig.issue)
+	older := jobRecorded(t, "the tester's pass of k1 at #69's head", rig.post(t, rig.issue, rig.sessionToken(),
+		resultBody("k1", "pass", ciJobCommit, map[string]any{"role": "tester"})))
+	read := readResults(t, rig.handler, rig.issue)
+	check := checkOf(t, read, "k1")
+	heads := map[int]string{}
+	for _, basis := range check.ComparedWith {
+		if basis.PullRequest != nil {
+			heads[*basis.PullRequest] = basis.Commit
+		}
+	}
+	if len(check.ComparedWith) != 2 || heads[69] != ciJobCommit || heads[70] != ciJobHead {
+		t.Fatalf("k1 compares with %+v, want the heads of #69 (%s) and #70 (%s)", check.ComparedWith, ciJobCommit, ciJobHead)
+	}
+	standsAt(t, read, "k1", older.ID, "the tester's pass at the older merged head", model.CommitAtBasis, false)
+	stands := passStandsOnWire(t, rig.handler, rig.issue, "k1")
+	if subject := subjectAt(t, stands, ciJobHead); stands.Answer != model.PassStandsNo || len(stands.Subjects) != 1 ||
+		subject.Basis.PullRequest == nil || *subject.Basis.PullRequest != 70 || subject.Answer != model.PassStandsNo || subject.Reason != "no_result" {
+		t.Fatalf("k1 reads %+v, want no, with #70's head %s its one subject and no result there", stands, ciJobHead)
+	}
+
+	jobRecorded(t, "the control: the tester's pass of k1 at #70's head", rig.post(t, rig.issue, rig.sessionToken(),
+		resultBody("k1", "pass", ciJobHead, map[string]any{"role": "tester"})))
+	stands = passStandsOnWire(t, rig.handler, rig.issue, "k1")
+	if subject := subjectAt(t, stands, ciJobHead); stands.Answer != model.PassStandsYes || len(stands.Subjects) != 1 || subject.Answer != model.PassStandsYes {
+		t.Fatalf("the control: with a pass at #70's head k1 reads %+v, want yes at its one subject", stands)
+	}
+	passStandsFrom(t, checkOf(t, readResults(t, rig.handler, rig.issue), "k1"), "the control", model.PassStandsYes, "tester")
+}
+
+// TestABranchHeadAnOlderMergedHeadNamesIsASubject: ACME-1 has no open pull request and two merged
+// ones, #69 at ciJobCommit and #70, the newest, at ciJobHead. The job's pass of c1 names
+// legion/ACME-1, whose head is still ciJobCommit. That head adds no basis, since #69's head names
+// the commit already, but it is a subject, under #69's basis, beside #70's final head: a tester's
+// pass of k1 at #70's head alone reads no pass, and the answer names #69's head with no result.
+// The control: a tester's pass at ciJobCommit too makes both subjects yes, and k1 reads a pass.
+func TestABranchHeadAnOlderMergedHeadNamesIsASubject(t *testing.T) {
+	rig := newCIJobRig(t)
+	writeHead(t, rig.database, ciJobRepository, 69, ciJobCommit, "merged", rig.issue)
+	writeHead(t, rig.database, ciJobRepository, 70, ciJobHead, "merged", rig.issue)
+	rig.github.setBranch(ciJobBranch, ciJobBranchHead{sha: ciJobCommit})
+	jobRecorded(t, "the job's pass of c1 on "+ciJobBranch, rig.post(t, rig.issue, rig.jobToken(nil), jobResultOf("c1", "pass")))
+	jobRecorded(t, "the tester's pass of k1 at #70's head", rig.post(t, rig.issue, rig.sessionToken(),
+		resultBody("k1", "pass", ciJobHead, map[string]any{"role": "tester"})))
+
+	check := checkOf(t, readResults(t, rig.handler, rig.issue), "k1")
+	heads := map[int]string{}
+	for _, basis := range check.ComparedWith {
+		if basis.PullRequest != nil {
+			heads[*basis.PullRequest] = basis.Commit
+		}
+	}
+	if len(check.ComparedWith) != 2 || heads[69] != ciJobCommit || heads[70] != ciJobHead || len(check.BranchHeads) != 0 {
+		t.Fatalf("k1 compares with %+v and branch heads %+v, want the heads of #69 (%s) and #70 (%s) and no branch head",
+			check.ComparedWith, check.BranchHeads, ciJobCommit, ciJobHead)
+	}
+	stands := passStandsOnWire(t, rig.handler, rig.issue, "k1")
+	newest, branch := subjectAt(t, stands, ciJobHead), subjectAt(t, stands, ciJobCommit)
+	if stands.Answer != model.PassStandsNo || len(stands.Subjects) != 2 || newest.Answer != model.PassStandsYes ||
+		branch.Basis.PullRequest == nil || *branch.Basis.PullRequest != 69 || branch.Answer != model.PassStandsNo || branch.Reason != "no_result" {
+		t.Fatalf("k1 reads %+v, want no, with #70's head yes and the head of %s, #69's at %s, no for no_result", stands, ciJobBranch, ciJobCommit)
+	}
+
+	jobRecorded(t, "the control: the tester's pass of k1 at the head of "+ciJobBranch, rig.post(t, rig.issue, rig.sessionToken(),
+		resultBody("k1", "pass", ciJobCommit, map[string]any{"role": "tester"})))
+	stands = passStandsOnWire(t, rig.handler, rig.issue, "k1")
+	if stands.Answer != model.PassStandsYes || len(stands.Subjects) != 2 ||
+		subjectAt(t, stands, ciJobHead).Answer != model.PassStandsYes || subjectAt(t, stands, ciJobCommit).Answer != model.PassStandsYes {
+		t.Fatalf("the control: with a pass at both heads k1 reads %+v, want yes at both subjects", stands)
 	}
 }
