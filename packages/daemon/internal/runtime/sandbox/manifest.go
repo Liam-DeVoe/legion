@@ -111,7 +111,9 @@ const (
 // the second not at all, so Autopilot stops giving it a node of its own and it shares a node and
 // bursts; what a pod the cluster ends was doing is not lost, since the daemon keeps a copy of each
 // issue workspace outside the pod and continues every role of that pod in a session of its own,
-// with no death charged.
+// with no death charged but for the end that completes a run of launch_failure_limit such ends and
+// an Evicted end with no DisruptionTarget condition, which are charged (docs/kubernetes.md, "An
+// end from outside the pod").
 const (
 	doNotDisruptAnnotation = "karpenter.sh/do-not-disrupt"
 	safeToEvictAnnotation  = "cluster-autoscaler.kubernetes.io/safe-to-evict"

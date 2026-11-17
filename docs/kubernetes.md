@@ -4473,7 +4473,7 @@ Every pod runs:
     An issue pod given a lower `cpu_request` or `memory_request` is `Burstable` and carries the annotation not at all:
     it asks GKE Autopilot for no extended run time, so Autopilot gives it no node of its own, and the pod shares a node and bursts ([Issue sizing](#issue-sizing-one-reservation-per-pod), "Guaranteed or Burstable").
     What such a pod gives up is the seven-day protection, since the cluster may end it to repack a node;
-    what it keeps is its work and its roles, because the daemon holds a copy of each issue workspace outside the pod and continues every role of a pod the cluster ended in that role's own session, with no death charged ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace), [The disk dies with its pod](#the-disk-dies-with-its-pod));
+    what it keeps is its work and its roles, because the daemon holds a copy of each issue workspace outside the pod and continues every role of a pod the cluster ended in that role's own session, with no death charged, except for the end that completes a run of `launch_failure_limit` such ends, which is charged (as a death, or as a launch failure while the agent starts), and an `Evicted` end with no `DisruptionTarget` condition, which is not read as an end from outside the pod and is charged as a death ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace), [The disk dies with its pod](#the-disk-dies-with-its-pod), "An end from outside the pod");
 
   - on GKE Autopilot this second annotation also adds a required node affinity (`cloud.google.com/extended-duration-pods`) and gives the pod a node of its own whenever possible, which usually costs each pod it creates (an issue's first launch, or a relaunch that replaces the pod) a fresh node and a cold image pull ([Image size and pull time](#image-size-and-pull-time));
 
@@ -6396,7 +6396,7 @@ Neither orders a copy wrongly against a pod's first ask: every first ask the tab
 An earlier daemon charges a death for every pod end again, as it did before this release, and records no reading.
 It also neither reads nor resets the claims' two runs of ends from outside the pod (`claims.pod_ends_not_ours` and `claims.start_ends_not_ours`), since no earlier daemon names either column:
 the turns it completes do not start the first run again and the readies its agents reach do not start the second, so a roll forward would read back runs the earlier daemon had ended and could charge an end for them.
-No earlier daemon writes the claim's record of a relaunch record's turn (`claims.record_turn`) either, so a base this release left in it would be read after a roll forward and measured against counts the earlier daemon had moved.
+No earlier daemon writes the claim's record of a relaunch record's turn (`claims.record_turn`) either, so a value this release left in it would be read twice over after a roll forward: the turn a claim is in at that moment would end as that record's turn, which ends neither count and takes back at most what the value says, since the earlier daemon's turn starts move `last_turn_start` and leave the column as it was; and its base would be measured against counts the earlier daemon had moved.
 Clear the three columns in the same rollback:
 
 ```sh

@@ -116,7 +116,10 @@ func (issuePod) resources(r *Runtime) corev1.ResourceRequirements { return r.res
 // earlier daemon release without editing its file first, which is the one action it takes when
 // this change goes wrong. What a Burstable issue pod gives up is the seven-day protection: the
 // cluster may end it to repack a node, and the daemon continues each of its roles from the
-// workspace copy it keeps outside the pod, in a session of its own with no death charged.
+// workspace copy it keeps outside the pod, in a session of its own with no death charged but for
+// the end that completes a run of launch_failure_limit such ends and an Evicted end with no
+// DisruptionTarget condition, which are charged (docs/kubernetes.md, "An end from outside the
+// pod").
 func (k issuePod) asksExtendedRunTime(r *Runtime) bool {
 	return guaranteedReservation(k.resources(r))
 }

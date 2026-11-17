@@ -41,7 +41,7 @@ to: with no death charged
     An issue pod given a lower `cpu_request` or `memory_request` is `Burstable` and carries the annotation not at all:
     it asks GKE Autopilot for no extended run time, so Autopilot gives it no node of its own, and the pod shares a node and bursts ([Issue sizing](#issue-sizing-one-reservation-per-pod), "Guaranteed or Burstable").
     What such a pod gives up is the seven-day protection, since the cluster may end it to repack a node;
-    what it keeps is its work and its roles, because the daemon holds a copy of each issue workspace outside the pod and continues every role of a pod the cluster ended in that role's own session, with no death charged ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace), [The disk dies with its pod](#the-disk-dies-with-its-pod));
+    what it keeps is its work and its roles, because the daemon holds a copy of each issue workspace outside the pod and continues every role of a pod the cluster ended in that role's own session, with no death charged, except for the end that completes a run of `launch_failure_limit` such ends, which is charged (as a death, or as a launch failure while the agent starts), and an `Evicted` end with no `DisruptionTarget` condition, which is not read as an end from outside the pod and is charged as a death ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace), [The disk dies with its pod](#the-disk-dies-with-its-pod), "An end from outside the pod");
 
 from: An issue pod carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` only while
 to: rather than into a node of its own.
