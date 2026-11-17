@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
-import type { Artifact } from "../../../api/types";
+import type { Artifact, ArtifactBlock } from "../../../api/types";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
@@ -192,7 +192,7 @@ const PLAN_ARTIFACT = "artifact-plan";
  *  order and the chart's places are worked out from (`slots/view-plan.tsx`, dispatch://INFRA-3938
  *  R4): the view's own tasks unless a case draws the view a words filter leaves. `reveal` is the
  *  chain down to the node the address names. `written` is the block ids of the plan document in
- *  the order they are written, as the page's own blocks read holds them (`useIssueTree.ts`);
+ *  the order they are written, as the tree read holds them (`useIssueTree`'s `blocksOf("plan")`);
  *  where a case gives none the page holds no document, as on a tree drawn before that read
  *  answered. */
 function renderBody(
@@ -213,10 +213,6 @@ function renderBody(
   const artifacts = new Map<string, Artifact>();
   if (written !== undefined) {
     artifacts.set(PLAN, { id: PLAN_ARTIFACT, slug: PLAN } as Artifact);
-    client.setQueryData(
-      ["artifact", PLAN_ARTIFACT, "blocks"],
-      written.map((id) => ({ id }))
-    );
   }
   return render(
     <MemoryRouter>
@@ -236,6 +232,7 @@ function renderBody(
                 isClosed={false}
                 onEditing={() => {}}
                 plan={plan}
+                planBlocks={written?.map((id) => ({ id }) as ArtifactBlock)}
                 reveal={reveal}
                 root={root}
                 rootRow={false}
