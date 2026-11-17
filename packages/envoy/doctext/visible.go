@@ -36,10 +36,11 @@ var markdown = goldmark.New(goldmark.WithExtensions(extension.GFM, extension.Foo
 // HTML inline. golang.org/x/net/html's tokenizer, which follows the HTML specification's
 // tokenizer, reads each of those, and every comment or DOCTYPE token it gives is taken out: a
 // comment, the empty `<!-->`, one that `--!>` ends, a bogus comment such as `<?php … ?>`,
-// `<![CDATA[ … ]]>` or `<!X …>`, and a DOCTYPE, none of which a page shows. Before it reads a
-// piece, the `<` of each tag GitHub's tag filter disallows (`<script>`, `<style>`, `<textarea>`,
-// `<title>`, `<xmp>`, `<iframe>`, `<noembed>`, `<noframes>`, `<plaintext>`) is read as text, as
-// GitHub writes it `&lt;`, so a comment inside one of those is a comment, as on GitHub.
+// `<![CDATA[ … ]]>` or `<!X …>`, and a `<!DOCTYPE …>` (in upper case: see below), none of which a
+// page shows. Before it reads a piece, the `<` of each tag GitHub's tag filter disallows
+// (`<script>`, `<style>`, `<textarea>`, `<title>`, `<xmp>`, `<iframe>`, `<noembed>`,
+// `<noframes>`, `<plaintext>`) is read as text, as GitHub writes it `&lt;`, so a comment inside
+// one of those is a comment, as on GitHub.
 //
 // A `<!--` comment still open at the end of an HTML block stays open on the page: the Markdown
 // after it renders `-->` as `--&gt;`, which closes nothing. So it is taken out through the first
@@ -55,6 +56,21 @@ var markdown = goldmark.New(goldmark.WithExtensions(extension.GFM, extension.Foo
 // Not modelled:
 //   - a tab between a block quote's `>` and a `<!--`: goldmark opens no HTML block there, where
 //     GitHub and CommonMark do, so the comment is read as inline text and stays;
+//   - a declaration whose first letter is lower case, such as `<!doctype html>`: goldmark opens
+//     an HTML block or inline raw HTML at `<!` only before an upper-case letter
+//     (parser/html_block.go:88 and parser/raw_html.go:41 at v1.8.6), where CommonMark and every
+//     renderer take any ASCII letter, so the declaration is read as text and stays, though no page
+//     shows it;
+//   - a tag or a quoted attribute value an HTML block leaves open, as in `<div title="x` and a
+//     blank line: on GitHub the HTML parser runs the tag on over what follows, up to the quote or
+//     the `>` that ends it, and hides that text, where this reads each node on its own, ends the
+//     tag with its block, and keeps the text;
+//   - the order of footnotes: GitHub renders every footnote definition at the end of the page,
+//     after the body, where this carries an open comment in the order of the source. So a comment
+//     a footnote leaves open, which on GitHub hides the footnotes after it, here runs over the
+//     body text that follows the definition in the source and leaves those footnotes in; and a
+//     comment the body leaves open before a footnote definition here hides the definition, which
+//     GitHub shows;
 //   - the documentation site's reading where it differs from GitHub's: it keeps the text of a
 //     `<script>`, `<style>` or `<textarea>`, and it ends a comment its block leaves open with that
 //     block. In both, this takes out text the site shows, so a check fails rather than passes.
