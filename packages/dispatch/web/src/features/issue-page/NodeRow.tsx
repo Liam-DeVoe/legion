@@ -571,6 +571,11 @@ function toneOf(type: NodeType, author: AuthorKind): Tone {
       return "decision";
     case "plan_task":
       return "step";
+    // A reading is what an agent read under a decision it made: the agent's tone.
+    case "reading":
+      return "agent";
+    // A criterion is a sentence that must be true of the software, as a requirement is.
+    case "criterion":
     case "requirement":
       return "statement";
     case "callout":

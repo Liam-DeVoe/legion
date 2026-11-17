@@ -86,6 +86,10 @@ export const NODE_TYPE_NAMES = freeze({
   check: "check",
   child_issue: "child issue",
   comment: "comment",
+  /** A `criterion` block, and a `reading` below: block types INFRA-1253's block schema
+   *  (version 6) declares, named here so every type the schema declares has a name. Part Y of
+   *  dispatch://INFRA-1196 draws them (decision 130). */
+  criterion: "criterion",
   decision: "decision",
   document: "document",
   handoff: "handoff",
@@ -93,6 +97,7 @@ export const NODE_TYPE_NAMES = freeze({
   issue: "issue",
   message: "message",
   plan_task: "plan task",
+  reading: "reading",
   /** A `requirement` block, drawn by his word for it (R22, the Design's "The words"): a
    *  sentence that must be true of the software. */
   requirement: "statement",
@@ -1133,20 +1138,31 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
   ci_check: "CI check",
   copied_from: "copied from",
   copied_from_document: "copied from document",
+  decided_by: "decided by",
+  /** The question a decision answers: an `ask` is a question on the page (`NODE_TYPE_NAMES`). */
+  from_ask: "from question",
   /** Why the block cannot be answered as written; "invalid" names a verdict, not the reason. */
   invalid: "problem",
+  kept_by: "kept by",
+  kept_text_sum: "kept text sum",
   kind: "kind",
   /** Whether the reader may choose more than one option. */
   multiple: "more than one answer",
   needs: "needs",
   negative_control: "negative control",
+  parent: "parent",
+  replaced: "replaced",
   run: "run",
   selected: "selected",
   /** The requirements a check or a plan task is there for; the spec's own verb for the edge. */
   serves: "serves",
+  shaped: "shaped",
+  size: "size",
   state: "state",
   surface: "surface",
   title: "title",
+  uncertainty: "uncertainty",
+  uncertainty_reason: "uncertainty reason",
   urgency: "urgency",
   when: "when",
 } as const);
@@ -1300,6 +1316,7 @@ export const GLYPH_TOKENS = freeze({
     check: "check",
     child_issue: "child-issue",
     comment: "comment",
+    criterion: "criterion",
     decision: "decision",
     document: "document",
     handoff: "handoff",
@@ -1307,6 +1324,7 @@ export const GLYPH_TOKENS = freeze({
     issue: "issue",
     message: "message",
     plan_task: "plan-task",
+    reading: "reading",
     requirement: "requirement",
     result: "result",
   },
