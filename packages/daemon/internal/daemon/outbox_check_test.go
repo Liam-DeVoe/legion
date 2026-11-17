@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -316,6 +317,67 @@ func TestCheckLookAndCheckBoundRowsApplyTheirFacts(t *testing.T) {
 		if !sameCheckFact(got[i], want[i], check) {
 			t.Fatalf("fact %d = %+v, want %+v", i, got[i], want[i])
 		}
+	}
+}
+
+// The bound row of the first of two open checks of one issue, as that check's open queued it
+// (record.CheckBound, an empty payload, which the release before writes too), runs through the
+// executor to the workflow at the first check's bound: the first check starts its last look, whose
+// start row names it, and the second, whose bound is still ahead, is left as it stands.
+func TestTheBoundRowOfTheFirstOfTwoChecksStartsItsLastLook(t *testing.T) {
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	ctx := context.Background()
+	root := checkRoot()
+	putOutboxIssue(t, pool, records, root)
+	first := openCheck(root, "a1b2c3d4")
+	first.LookOpen, first.BoundAt = false, time.Now().Add(-time.Minute).UTC().Truncate(time.Microsecond)
+	second := openCheck(root, "f00dfeed")
+	second.OpenedAt, second.LookOpen = first.OpenedAt.Add(30*time.Minute), false
+	putProductionCheck(t, pool, records, first)
+	putProductionCheck(t, pool, records, second)
+	engine := workflow.New(records, workflow.Config{Project: "legion", Steps: config.DesignGateRootIssues.Steps(), Linger: 24 * time.Hour}, quietLogger())
+	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, handlers: []intake.Handler{engine}, log: quietLogger(), now: time.Now}
+
+	bound := mustOutboxRow(t, root.Key, record.CheckBound{}, time.Now())
+	bound.ID = 62
+	if string(bound.Payload) != "{}" {
+		t.Fatalf("the bound row's payload = %s, want {}, as the release before writes it", bound.Payload)
+	}
+	if err := runner.execute(ctx, bound); err != nil {
+		t.Fatalf("the first check's bound row = %v", err)
+	}
+	var checks []record.ProductionCheck
+	var starts []record.SuperviseRequest
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		var err error
+		if checks, err = records.ProductionChecksOf(ctx, tx, root.Key); err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, `select payload from outbox where issue = $1 and kind = 'supervise' order by id`, root.Key)
+		if err != nil {
+			return err
+		}
+		starts, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (record.SuperviseRequest, error) {
+			var payload []byte
+			var start record.SuperviseRequest
+			if err := row.Scan(&payload); err != nil {
+				return start, err
+			}
+			return start, json.Unmarshal(payload, &start)
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("read the checks and the starts after the bound row: %v", err)
+	}
+	if len(checks) != 2 || !checks[1].OpenedAt.Equal(first.OpenedAt) || !checks[1].Last || checks[1].Looks != 2 || !checks[1].LookOpen {
+		t.Fatalf("the checks after the first's bound row = %+v, want the first at its last look, look 2", checks)
+	}
+	if !checks[0].OpenedAt.Equal(second.OpenedAt) || checks[0].Last || checks[0].Looks != 1 || checks[0].LookOpen {
+		t.Fatalf("the second check after the first's bound row = %+v, want it at look 1 as it stood", checks[0])
+	}
+	if len(starts) != 1 || starts[0].CheckLook != 2 || !starts[0].CheckOpenedAt.Equal(first.OpenedAt) {
+		t.Fatalf("the starts queued by the bound row = %+v, want the first check's look 2 alone", starts)
 	}
 }
 

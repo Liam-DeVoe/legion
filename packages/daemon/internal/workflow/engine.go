@@ -746,12 +746,15 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 	// completion serves the generation it took and the API refuses it once this generation begins.
 	// Roles that finished earlier phases of the run stay live, as they do between phases, and the
 	// new run's starts hand them their tasks.
-	check, err := e.store.ProductionCheck(ctx, tx, child.Key)
+	checks, err := e.store.ProductionChecksOf(ctx, tx, child.Key)
 	if err != nil {
 		return err
 	}
-	if check != nil && check.Open() {
-		if err := e.markCheckClosed(ctx, tx, check, record.CheckNotRun); err != nil {
+	for i := range checks {
+		if !checks[i].Open() {
+			continue
+		}
+		if err := e.markCheckClosed(ctx, tx, &checks[i], record.CheckNotRun); err != nil {
 			return err
 		}
 	}
@@ -1057,20 +1060,26 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		return intake.Result{}, nil
 	}
 	// The failure of the role an open check records ends the look of its closed issue's production
-	// check, as its bound would. Which role that is the check's own row says (record.ProductionCheck.Role,
-	// the role it opened under), never the setting as it stands now, so a check opened before the
-	// project changed its `production_check` still ends its look on its own role's failure. Unlike
-	// an ordinary pending report, nobody remains to report the look or wait for
-	// the next wake, so the architect is told now with the persisted launch failure. An issue in the
+	// check, as its bound would, for each open check of the issue whose look is open. Which role
+	// that is each check's own row says (record.ProductionCheck.Role, the role it opened under),
+	// never the setting as it stands now, so a check opened before the project changed its
+	// `production_check` still ends its look on its own role's failure. Unlike an ordinary pending
+	// report, nobody remains to report the look or wait for the next wake, so the architect is told
+	// now with the persisted launch failure, once for each look that ended. An issue in the
 	// workflow (one reopened inside its linger with a look still open at the reopen) takes the
 	// live-phase path below instead, where the failure holds the phase and is told; its stale look
 	// ends at the look's own bound (check_look), which endLookPending keeps for the run.
 	if !record.InWorkflow(*issue) {
-		check, err := e.store.ProductionCheck(ctx, tx, issue.Key)
+		checks, err := e.store.ProductionChecksOf(ctx, tx, issue.Key)
 		if err != nil {
 			return intake.Result{}, err
 		}
-		if check != nil && check.Open() && check.LookOpen && fact.Role == check.Role {
+		ended := false
+		for i := range checks {
+			check := &checks[i]
+			if !check.Open() || !check.LookOpen || fact.Role != check.Role {
+				continue
+			}
 			if err := e.endLook(ctx, tx, check, "claim failed"); err != nil {
 				return intake.Result{}, err
 			}
@@ -1078,9 +1087,15 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 			if reason == "" {
 				reason = fmt.Sprintf("the %s's claim failed before it reported the look", check.Role)
 			}
-			return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{
+			if err := e.notice(ctx, tx, issue.Key, record.Notice{
 				Kind: "worker-died", Role: fact.Role, Reason: fmt.Sprintf("production check look %d lost its %s: %s", check.Looks, check.Role, reason),
-			})
+			}); err != nil {
+				return intake.Result{}, err
+			}
+			ended = true
+		}
+		if ended {
+			return intake.Result{}, nil
 		}
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers || issue.Phase == phase.Done {

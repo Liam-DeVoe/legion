@@ -1232,13 +1232,17 @@ func (CutoverMergerRepair) isFact() {}
 // agent asks for its next look, which a pending on a look that is not the check's last carries
 // and no other report does (the route holds it to that: CHECK_WAKE_REQUIRED,
 // CHECK_WAKE_UNEXPECTED); the engine clamps it and writes the check's one wake row for it.
+// OpenedAt is the check the look is of (record.ProductionCheck.OpenedAt), since an issue holds a
+// check for each merge; a zero OpenedAt names none, and the report is of the issue's newest check
+// (record.Store.ProductionCheckOf).
 type CheckReport struct {
-	Issue   string
-	Claim   claim.Token
-	Look    int
-	Verdict string
-	Summary string
-	WakeAt  *time.Time
+	Issue    string
+	Claim    claim.Token
+	Look     int
+	Verdict  string
+	Summary  string
+	WakeAt   *time.Time
+	OpenedAt time.Time
 }
 
 func (CheckReport) isFact() {}
@@ -1247,9 +1251,9 @@ func (CheckReport) isFact() {}
 // ProductionCheck.WakeAt): the next look starts, woken by Reason — what the checking agent named
 // its own next look for on a pending report, or the retry of a look nobody reported. Look is the
 // look the check stood at when the wake was named, so a row of a look the check has since left
-// starts nothing, and OpenedAt the check instance it was named for, so a row of a check a later
-// merge of the same issue replaced — whose looks count from one again — starts nothing either; a
-// zero OpenedAt names none.
+// starts nothing, and OpenedAt the check instance it was named for, the check of the issue it
+// acts on, so a closed one starts nothing either; a zero OpenedAt names none, and the wake is of
+// the issue's newest check.
 type CheckWakeDue struct {
 	Issue    string
 	Look     int
@@ -1263,8 +1267,8 @@ func (CheckWakeDue) isFact() {}
 // `look bound` (the check_look row due at the look's bound), `operator hold` (a check start the
 // outbox met an operator's suspension on) or `claim failed` (the implementer's claim failed in
 // the look). Look names the look, so a row of a look already ended changes nothing, and OpenedAt
-// the check instance (its OpenedAt), so a row of a check a later merge of the same issue replaced
-// — whose looks count from one again — changes nothing either; a zero OpenedAt names none.
+// the check instance (its OpenedAt), the check of the issue it acts on, so a row of a closed check
+// changes nothing either; a zero OpenedAt names none, and the end is of the issue's newest check.
 type CheckLookEnded struct {
 	Issue    string
 	Look     int
@@ -1274,8 +1278,9 @@ type CheckLookEnded struct {
 
 func (CheckLookEnded) isFact() {}
 
-// CheckBound is the whole production check's bound of issue Issue coming due (the check_bound
-// row at its bound_at): the check's last look starts, or the bound defers while a look is open.
+// CheckBound is a production check's bound coming due for issue Issue (the check_bound row each
+// check's open queues at its bound_at, carrying no check): each open check of the issue whose
+// bound came due starts its last look, or, while its look is open, the issue's bound defers.
 type CheckBound struct {
 	Issue string
 }
