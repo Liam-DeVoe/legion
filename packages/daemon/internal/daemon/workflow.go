@@ -794,11 +794,13 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		return "", nil, fmt.Errorf("decode what the task held for %s names: %w", c.Token, err)
 	}
 	stays := record.KeptDecisions{KeptApproval: named.KeptApproval}
-	// The record the rewrite reads where the task is of an entry and so carries the first-task
-	// instruction (workflow.NarrowRootTask): the tree's root as the record holds it at the
-	// narrowing, and what its first task is derived from, read by the reader every start of a
-	// root architect reads it through (workflow.ArchitectStartOf). The reads are made only where
-	// a decision was dropped, since nothing else rewrites the task.
+	// The record every rewrite of a recorded root reads (workflow.NarrowRootTask): the tree's root
+	// as the record holds it at the narrowing, and what its first task is derived from, read by the
+	// reader every start of a root architect reads it through (workflow.ArchitectStartOf). Every
+	// such rewrite names the roots that rest on the root's approval from it (its Resting), and one
+	// whose task is of an entry, and so carries the first-task instruction, takes the first task's
+	// shape from it too. The reads are made only where a decision was dropped, since nothing else
+	// rewrites the task.
 	var root *record.Issue
 	var start workflow.ArchitectStart
 	var left []record.DecisionMark
@@ -866,9 +868,9 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 	// would hand a fresh architect the empty task that instruction exists to replace. Which task
 	// carries it is the entry the delivery is of, never the task's text (workflow.NarrowRootTask
 	// says why). A root the record now shows past admitted under its own power is served no first
-	// task, so its rewrite is the decisions' own; with no root recorded there is nothing to write
-	// one from either, so the rewrite is the decisions' own there too, as it always was. Every
-	// rewrite of a recorded root names the roots that rest on its approval after its decisions.
+	// task, so its rewrite is the decisions' own and the resting roots; with no root recorded there
+	// is nothing to write one from either, so the rewrite is the decisions' own alone there, as it
+	// always was.
 	var task string
 	if root != nil {
 		task = workflow.NarrowRootTask(start, d.Entry, stays)

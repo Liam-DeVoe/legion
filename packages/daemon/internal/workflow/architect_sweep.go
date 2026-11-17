@@ -291,10 +291,9 @@ func (e *Engine) SendArchitectStart(ctx context.Context, tx pgx.Tx, root record.
 // promotion of a root past phase.Admitted under its own power on which nobody decided anything
 // and on whose approval no root still in the workflow rests (ArchitectStartTask's second rule):
 // an entry raised with no work on it would stand above every entry its claim was ever given, with
-// nothing to send it. The sweep's raise never meets that
-// case, because the roots it raises an entry for are inside its reach (ArchitectAtWork) with a
-// row that names no entry, which no resume raised, and those are the two roots the derivation
-// writes a first task for.
+// nothing to send it. The sweep's raise never meets that case, because the roots it raises an
+// entry for are inside its reach (ArchitectAtWork) with a row that names no entry, which no resume
+// raised, and those are the two roots the derivation writes a first task for.
 //
 // The start waits for no admission slot, so it is enqueued directly rather than through
 // StartOrOwe, and it marks no movement of its own: the promotion marks the movement of the tree it

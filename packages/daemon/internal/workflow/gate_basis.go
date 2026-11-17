@@ -512,16 +512,12 @@ func restingRootsOn(ctx context.Context, tx pgx.Tx, store record.Store, ancestor
 	return resting, nil
 }
 
-// RestingRootsTask is what the architect of ancestor is told of the roots that rest on its
+// restingRootsTask is what the architect of ancestor is told of the roots that rest on its
 // approval and are still in the workflow (RestingRoots), "" for none: each one, and that the
 // daemon refuses the ancestor's sign-off and close while any of them is in the workflow, since
-// the checks of the issues under the ancestor prove its requirements together (R8). The reader of
-// a root architect's start reads it for the ancestor as a fact of the record
-// (ArchitectStartOf, ArchitectStart.Resting), and every shape of the start task names it apart from
-// the decisions (ArchitectStartTask): admission's start of the ancestor carries it, and so does that
-// task wherever it is written again (the daemon's rootTask, NarrowRootTask), so a task left naming
-// no decision still names these roots.
-func RestingRootsTask(ctx context.Context, tx pgx.Tx, store record.Store, ancestor string) (string, error) {
+// the checks of the issues under the ancestor prove its requirements together (R8). Its one
+// reader is ArchitectStartOf (ArchitectStart.Resting).
+func restingRootsTask(ctx context.Context, tx pgx.Tx, store record.Store, ancestor string) (string, error) {
 	roots, err := RestingRoots(ctx, tx, store, ancestor)
 	if err != nil || len(roots) == 0 {
 		return "", err

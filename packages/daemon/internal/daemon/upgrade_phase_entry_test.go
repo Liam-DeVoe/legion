@@ -128,15 +128,14 @@ func migrationsAbove(t *testing.T, version int) int {
 // putPreEntryIssue records issue as the release before the phase entry's issue writer did, with
 // the columns of the issues table that release named and these cases set, as literal SQL, so the
 // write names no column a migration above that release's newest adds; every other column takes
-// what that writer gave it for an issue with no hold, no wait on a person and no ancestry, its
-// default.
+// what that writer gave it for an issue with no hold, no wait on a person, no ancestry, no take-back
+// and no tree it was handed over from, its default.
 func putPreEntryIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	_, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over,
-		taken_back, last_dispatch_seq, dispatch_status, repo, default_branch, github_repo, ancestry, handed_over_from)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, coalesce($17::text[], '{}'), $18)`,
+		last_dispatch_seq, dispatch_status, repo, default_branch, github_repo)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 		issue.Key, issue.Tree, issue.Project, issue.Title, issue.Parent, string(issue.Phase), int64(issue.Generation), issue.Status,
-		issue.Rank, issue.HandedOver, issue.TakenBack, issue.LastDispatchSeq, issue.DispatchStatus, issue.Repo, issue.DefaultBranch,
-		issue.GitHubRepo, issue.Ancestry, issue.HandedOverFrom)
+		issue.Rank, issue.HandedOver, issue.LastDispatchSeq, issue.DispatchStatus, issue.Repo, issue.DefaultBranch, issue.GitHubRepo)
 	if err != nil {
 		return fmt.Errorf("record issue %s with the release before the phase entry's columns: %w", issue.Key, err)
 	}

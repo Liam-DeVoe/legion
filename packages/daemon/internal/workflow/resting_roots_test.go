@@ -447,20 +447,11 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 			HandedOver: true, LastDispatchSeq: 1}
 		seedIssue(t, pool, ancestor)
 		seedRecord(t, pool, func(tx pgx.Tx) error { return engine.StartArchitect(t.Context(), tx, ancestor) })
-		var starts []record.SuperviseRequest
-		for _, start := range superviseRowsOf(t, pool, basisAncestor, "start") {
-			if start.Role == claim.RoleArchitect {
-				starts = append(starts, start)
-			}
-		}
-		if len(starts) != 1 {
-			t.Fatalf("P's architect starts = %+v, want the one its promotion queues", starts)
-		}
+		start := architectStartOf(t, pool, basisAncestor)
 		resting := "These roots rest on the approval of LEGION-100 and are still in the workflow: " + restingNamed + ". " +
 			"The daemon refuses the sign-off and the close of LEGION-100 while any of them is in the workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW). " +
 			"Each root's own architect, or a person, moves it."
 		fresh := ArchitectStartTask(ArchitectStart{Root: ancestor, Gate: record.TreeGate{Steps: engine.GatedSteps()}})
-		start := starts[0]
 		if want := resting + "\n\n" + fresh; start.Task != want || start.Kept != nil || start.Entry == 0 {
 			t.Fatalf("P's start = task %q naming %#v at entry %d, want %q naming no decision, at the entry it raised", start.Task, start.Kept, start.Entry, want)
 		}

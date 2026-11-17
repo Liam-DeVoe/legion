@@ -110,11 +110,10 @@ func ParkedDecisionTask(ctx context.Context, tx pgx.Tx, store record.Store, step
 // task and a catch-up both use (ParkedDecisionTask) and the one a held task is written back to
 // when an issue it names leaves that tree while the task waits to be sent (supervise's
 // Deps.RootTask, the daemon's rootTask, NarrowRootTask), beside the roots that rest on the root's
-// approval (ArchitectStart.Resting): a task whose decisions have all left and that names no such
-// root and no first act is written back to "", which is a task that names nothing and is retired
-// rather than sent. The approval is the root's own, so it is named whenever kept carries one —
-// the gate was read where it was first kept — and it is named on the document of its own step
-// (record.DesignStep.Document), which is the document the person reviewed and the one whose
+// approval (ArchitectStart.Resting), and is "" when kept names nothing (NarrowRootTask says when a
+// rewritten task is retired). The approval is the root's own, so it is named whenever kept carries
+// one — the gate was read where it was first kept — and it is named on the document of its own
+// step (record.DesignStep.Document), which is the document the person reviewed and the one whose
 // approval the architect requests again.
 //
 // The approval kept is a person's approval of an earlier version of the root's own document,

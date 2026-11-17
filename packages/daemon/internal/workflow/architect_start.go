@@ -85,7 +85,7 @@ type ArchitectStart struct {
 	// reader reads it for such a root alone.
 	MembersRun bool
 	// Resting is each root that rests on the root's approval and is still in the workflow, as
-	// RestingRootsTask writes it (dispatch://INFRA-3320, R8), empty where there is none. It is a
+	// restingRootsTask writes it (dispatch://INFRA-3320, R8), empty where there is none. It is a
 	// fact of the record like the gate rows, so the reader fills it for every root: an ancestor
 	// the daemon recorded in no live tree when a root came to rest on its approval was queued no
 	// resting-root notice then (queueRestingRoot), and its start is where it hears of that root.
@@ -100,7 +100,7 @@ type ArchitectStart struct {
 // and whether it brought a design gate with it (ArchitectCarried) and, for such a root, whether
 // its phase is over by its own terminating fact (PhaseFinished), the design gate rows it holds
 // under steps, the design-gate steps the deployment gates, the run and the phase entry its tree's
-// architect claim last served, the roots that rest on its approval (RestingRootsTask) and, for a
+// architect claim last served, the roots that rest on its approval (restingRootsTask) and, for a
 // root at phase.Admitted, whether a member of its tree runs. It is the one reader of them, which
 // every derivation of a root architect's task reads them through.
 //
@@ -142,7 +142,7 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 	if start.Served, start.ServedEntry, err = store.ArchitectServed(ctx, tx, root.Tree); err != nil {
 		return ArchitectStart{}, err
 	}
-	if start.Resting, err = RestingRootsTask(ctx, tx, store, root.Key); err != nil {
+	if start.Resting, err = restingRootsTask(ctx, tx, store, root.Key); err != nil {
 		return ArchitectStart{}, err
 	}
 	if root.Phase == phase.Admitted {
