@@ -675,9 +675,11 @@ if [ "$priv_private" = 1 ]; then
     # The live socket, live: the caller subscribes with no resume on each server, and while its
     # socket is open carol comments on PRIV's issue (main only: the twin holds no PRIV) and then on
     # PUB's. Each server's answer is the frames the caller was sent; each comment's id is
-    # remembered under one label on both servers, so the mask names it alike. The twin always
-    # sends the caller its PUB comment, so an answer holding no event fails the pair, and a PRIV
-    # event on main differs from the twin's answer.
+    # remembered under one label on both servers, so the mask names it alike. A PRIV event on main
+    # differs from the twin's answer. Every unseeing caller but alice's PRIV token sees PUB, so the
+    # twin sends it the PUB comment, and an answer holding no event fails the pair: the compare
+    # must see the socket send something. alice's PRIV token sees no project, so both servers send
+    # it nothing, which the compare holds them to.
     for server in main twin; do
       rm -f "$work/live-ready" "$work/live-written"
       bun "$(dirname "$0")/socket-access.ts" live "${build_url[$server]}" "$work/auth/$server-$caller" \
@@ -697,7 +699,7 @@ if [ "$priv_private" = 1 ]; then
       cp "$work/live-body" "$work/body"
       keep_answer "$server" "$server"
     done
-    grep -q '"type":"event"' "$work/answers/twin.body" || {
+    [ "$caller" = alice-priv-token ] || grep -q '"type":"event"' "$work/answers/twin.body" || {
       printf '%s /ws/live: the twin sent no event of carol'"'"'s PUB comment, so the compare saw nothing: %s\n' \
         "$caller" "$(head -c 300 "$work/answers/twin.body")" >>"$work/differences"
       differed=$((differed + 1))
