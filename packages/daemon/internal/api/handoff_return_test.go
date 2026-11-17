@@ -40,7 +40,7 @@ func completionKeys(t *testing.T, h *harness, key string) []string {
 	return keys
 }
 
-// A step that failed names the step its task returns to with returnTo (R7), by its place in the
+// A step that failed names the step its task returns to with returnTo, by its place in the
 // task, 1 for its first. Only a tester's completion with the verdict fail names one: a pass,
 // another role's completion and a place below 1 are refused before anything is recorded, each
 // with its reason. A fail naming a step carries it on the fact, and its key names the place, so a

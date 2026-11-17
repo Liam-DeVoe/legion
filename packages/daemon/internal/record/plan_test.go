@@ -747,8 +747,9 @@ func TestReturnCountsLiveOnTheTaskOrOnTheImplementersRow(t *testing.T) {
 	}
 }
 
-// Slice 4 holds an issue for two more reasons: its owner stopped its task, and it waits before its
-// retro for the issues beneath it. Each is written and read back as any reason of a hold is.
+// An owner's plan holds an issue for two more reasons: its owner stopped its task, and it waits
+// before its retro for the issues beneath it. Each is written and read back as any reason of a
+// hold is.
 func TestAHoldKeepsEachNewReason(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()

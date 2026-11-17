@@ -8,11 +8,12 @@ import (
 // yet ends each refusal of something a later release carries out.
 const yet = " This release of Legion does not carry it out yet."
 
-// R14 in this release: a step that names a role neither the deployment nor the plan defines is
-// refused, naming the step, its task and the role (B-11). Legion refuses no plan for a step that
-// it lacks, so each plan of Legion's own roles is taken whatever steps it leaves out. The control
-// is in the second half: a validator that also required a reviewer step would refuse
-// `implementer tester`, and one that required a tester would refuse `implementer reviewer`.
+// What no release carries out, as this release checks it: a step that names a role neither the
+// deployment nor the plan defines is refused, naming the step, its task and the role. Legion
+// refuses no plan for a step that it lacks, so each plan of Legion's own roles is taken whatever
+// steps it leaves out. The control is in the second half: a validator that also required a
+// reviewer step would refuse `implementer tester`, and one that required a tester would refuse
+// `implementer reviewer`.
 func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 	d := Deployment{Roles: BuiltinRoles()}
 	r := Validate(oneTask("a", "implementer prober"), d)
@@ -25,7 +26,7 @@ func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 			t.Fatalf("%v refused: %+v", taken, r)
 		}
 	}
-	// architect, merger and controller are no roles of a step (the lead's ruling on open point 1).
+	// architect, merger and controller are no roles of a step: the step roles are Legion's five.
 	for _, role := range []string{"architect", "merger", "controller"} {
 		r := Validate(oneTask("a", "implementer "+role), d)
 		want := Refusal{Task: "a", Reason: "step 2 of task a names the role " + role + ", which neither the deployment nor the plan defines."}
@@ -75,9 +76,9 @@ func TestValidateRefusesAPlanWithNoTask(t *testing.T) {
 	}
 }
 
-// C6: each row of "What slice 4 refuses", with its exact text and its task. Each cause gets one
-// reason, so a plan with two causes gets two. The taken plans are the subsets of today's line
-// that keep the implementer, with the owner's acceptance.
+// Each cause this release does not carry out yet (Supported), with its exact text and its task.
+// Each cause gets one reason, so a plan with two causes gets two. The taken plans are the subsets
+// of today's line that keep the implementer, with the owner's acceptance.
 func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 	implementer, _ := ParseSteps("implementer")
 	withTask := func(task Task) Plan { return Plan{Tasks: []Task{task}} }
