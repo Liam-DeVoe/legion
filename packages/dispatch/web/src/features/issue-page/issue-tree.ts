@@ -222,6 +222,10 @@ export interface TreeNode {
   /** Whether this node is an open question, whoever's turn it is - the reader's, another
    *  person's or an agent's - which the fold unfolds the path to whatever its depth (R6). */
   readonly question: boolean;
+  /** The id the tree read gives the node this one was drawn from (`tree-read/tree-nodes.ts`), on
+   *  each of its placements, so a later part finds a node by the read's own id; absent on a node
+   *  drawn from another read. */
+  readonly readId?: string;
   /** The node's own `dispatch://` address, where it has one. */
   readonly reference?: string;
   /** The parent a filter draws as no row, where it draws this node as one (R2): every parent
@@ -402,7 +406,7 @@ export function nodeWords(node: TreeNode): string {
  * stays the whole reading, which is what a body draws and what a node's citations are read
  * from.
  */
-export function lineWords(node: TreeNode): string {
+export function lineWords(node: Pick<TreeNode, "text" | "tree">): string {
   return lineWordsBy(node, firstBlockWords, plainWords);
 }
 
@@ -568,7 +572,7 @@ function drawOrder(one: Draft, other: Draft): number {
  * is absent goes (R4). A draft the issue cannot reach is the same case one step further out,
  * and `bringHome` answers it the same way.
  */
-function assemble(
+export function assemble(
   issue: IssueDetails,
   drafts: readonly Draft[],
   chipOf: (reference: string) => NodeChip
@@ -622,6 +626,7 @@ function assemble(
       ...(draft.multiple === undefined ? {} : { multiple: draft.multiple }),
       ...(draft.options === undefined ? {} : { options: draft.options }),
       question: draft.question,
+      ...(draft.readId === undefined ? {} : { readId: draft.readId }),
       ...(draft.reference === undefined ? {} : { reference: draft.reference }),
       replaced: draft.replaced,
       ...(draft.source === undefined ? {} : { source: draft.source }),
