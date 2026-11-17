@@ -330,16 +330,18 @@ func (s *streamStub) await(t *testing.T, token claim.Token) *stubConn {
 }
 
 // stubConn is one shim connection as a runtime.Conn. shutdowns counts the shutdown frames the
-// runtime sent through it.
+// runtime sent through it; with holdShutdowns set, a frame is counted and never reaches the shim,
+// whose agent then has no end of its own coming.
 type stubConn struct {
-	seq       uint64
-	writer    *shimwire.Writer
-	mu        sync.Mutex
-	pending   map[string]chan shimwire.Response
-	next      int
-	events    chan string
-	done      chan struct{}
-	shutdowns atomic.Int32
+	seq           uint64
+	writer        *shimwire.Writer
+	mu            sync.Mutex
+	pending       map[string]chan shimwire.Response
+	next          int
+	events        chan string
+	done          chan struct{}
+	shutdowns     atomic.Int32
+	holdShutdowns atomic.Bool
 }
 
 func (c *stubConn) read(reader *shimwire.Reader) {
@@ -415,6 +417,9 @@ func (c *stubConn) GetState(ctx context.Context) (runtime.ConnState, error) {
 
 func (c *stubConn) Shutdown(context.Context) error {
 	c.shutdowns.Add(1)
+	if c.holdShutdowns.Load() {
+		return nil
+	}
 	return c.writer.WriteFrame(shimwire.Shutdown{})
 }
 
@@ -1044,15 +1049,38 @@ func TestRealTmuxLifecycle(t *testing.T) {
 		t.Errorf("the resumed OMP was not started with --resume: %v", report["argv"])
 	}
 
-	// An agent that will not end itself: the grace runs out and its pane is killed.
+	// An agent that will not end itself: the grace runs out and its pane is killed. The grace runs
+	// on the rig's clock, which the row moves past it once the release has armed it. The release's
+	// shutdown frame is counted and held (holdShutdowns), so nothing ends the agent in the
+	// meantime: given the frame, the pane's shim kills its agent itself after its own 5 s grace
+	// (shim.DefaultGrace), a real timer in another process that a loaded machine can let run out
+	// before the row moves the rig's clock, and the pane is then gone before it can be killed.
 	conn2 := r.stream.await(t, spec.Claim)
 	if err := conn2.Prompt(ctx, "delivery-2", "ignore SIGTERM"); err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
+	conn2.holdShutdowns.Store(true)
 	before = len(r.recorded())
-	impatient := r.newRuntime(func(o *Options) { o.StopGrace = 500 * time.Millisecond })
-	if err := impatient.Release(ctx, runtime.Known{Claim: loc2.Claim, Locator: &loc2}); err != nil {
+	const grace = 500 * time.Millisecond
+	impatient := r.newRuntime(func(o *Options) { o.StopGrace = grace })
+	released := make(chan error, 1)
+	go func() { released <- impatient.Release(ctx, runtime.Known{Claim: loc2.Claim, Locator: &loc2}) }()
+	ends := r.clock.Now().Add(grace)
+	testwait.Until(t, fmt.Sprintf("the release's %s grace armed at %v on the rig's clock", grace, ends), func() ([]time.Time, bool) {
+		select {
+		case err := <-released:
+			t.Fatalf("Release returned %v before it armed its %s grace on the rig's clock", err, grace)
+		default:
+		}
+		armed := r.clock.Armed()
+		return armed, slices.Contains(armed, ends)
+	})
+	r.clock.Advance(grace)
+	if err := testwait.Receive(t, "the release once its grace passed", released); err != nil {
 		t.Fatalf("Release: %v", err)
+	}
+	if sent := conn2.shutdowns.Load(); sent != 1 {
+		t.Errorf("the release sent %d shutdown frames, want one before it killed the pane", sent)
 	}
 	if !hasKillPane(r.recorded()[before:]) {
 		t.Errorf("an agent that ignored its shutdown was not killed")
@@ -1328,10 +1356,29 @@ func TestRealTmuxSplitsIntoTheIssueWindow(t *testing.T) {
 	if after := readSecrets(); !maps.Equal(after, before) {
 		t.Errorf("the refused second spawn rewrote the live tester's secret files from %q to %q", before, after)
 	}
-	impatient := r.newRuntime(withMinting, func(o *Options) { o.StopGrace = 300 * time.Millisecond })
+	// The resume waits its grace on the rig's clock, which the row moves past it once the resume
+	// has armed it, and the live tester is still running then.
+	const grace = 300 * time.Millisecond
+	impatient := r.newRuntime(withMinting, func(o *Options) { o.StopGrace = grace })
 	resume := r.spec("LEGION-2", "LEGION-2", claim.RoleTester)
 	resume.ResumeSessionFile = r.rolePrompt
-	if _, err := impatient.Resume(ctx, &tester, resume); err == nil ||
+	resumed := make(chan error, 1)
+	go func() {
+		_, err := impatient.Resume(ctx, &tester, resume)
+		resumed <- err
+	}()
+	ends := r.clock.Now().Add(grace)
+	testwait.Until(t, fmt.Sprintf("the resume's %s grace armed at %v on the rig's clock", grace, ends), func() ([]time.Time, bool) {
+		select {
+		case err := <-resumed:
+			t.Fatalf("the resume over a live incarnation returned %v before it armed its %s grace on the rig's clock", err, grace)
+		default:
+		}
+		armed := r.clock.Armed()
+		return armed, slices.Contains(armed, ends)
+	})
+	r.clock.Advance(grace)
+	if err := testwait.Receive(t, "the resume once its grace passed", resumed); err == nil ||
 		!strings.Contains(err.Error(), "previous incarnation "+tester.Incarnation+" is still running") {
 		t.Errorf("a resume over a live incarnation = %v", err)
 	}

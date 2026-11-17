@@ -12,12 +12,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -37,11 +40,11 @@ const winitHelper = workspace.GitHubCredentialHelper
 // the pod's feed just before) opens the directory's `release` fifo, writes its pid to its `held`
 // fifo, waits on `release` until the test closes its end there, and exits without initializing. A
 // fresh provisioning's first jj command is that init, so a process held there is mid-provisioning.
-// With WINIT_CHECKOUT_DELAY set, the issue's checkout sleeps that many seconds before it runs and
-// then records the sleep as one more log line, so a case can make the checkout outlive a
-// provisioning budget shorter than it; the checkout is `jj sparse reset -R <workspace>`, whose
-// `sparse reset` is "$1 $2" once the pin is stripped. Both variables are empty for every other
-// case, which therefore holds and sleeps nowhere.
+// With WINIT_CHECKOUT_GATE naming a fifo, the issue's checkout records that it is held, waits on
+// that fifo until the test writes to it, and records its release, so a case can hold the checkout
+// while it moves the runner's clock past a budget; the checkout is `jj sparse reset -R
+// <workspace>`, whose `sparse reset` is "$1 $2" once the pin is stripped. Both variables are empty
+// for every other case, which therefore holds nowhere.
 const fakeJJ = `#!/bin/sh
 pin=
 case "$1" in --config=*) pin=$1; shift ;; esac
@@ -52,9 +55,10 @@ if [ -n "$WINIT_HOLD" ] && [ "$1 $2 $3" = "git init --colocate" ]; then
 	read _ <&3
 	exit 1
 fi
-if [ -n "$WINIT_CHECKOUT_DELAY" ] && [ "$1 $2" = "sparse reset" ]; then
-	sleep "$WINIT_CHECKOUT_DELAY"
-	printf '%s slept %ss before %s\n' "$WINIT_TAG" "$WINIT_CHECKOUT_DELAY" "$*" >> "$WINIT_JJ_LOG"
+if [ -n "$WINIT_CHECKOUT_GATE" ] && [ "$1 $2" = "sparse reset" ]; then
+	printf '%s held %s\n' "$WINIT_TAG" "$*" >> "$WINIT_JJ_LOG"
+	read _ < "$WINIT_CHECKOUT_GATE"
+	printf '%s released %s\n' "$WINIT_TAG" "$*" >> "$WINIT_JJ_LOG"
 fi
 PATH="${PATH#*:}" exec "$WINIT_REAL_JJ" ${pin:+"$pin"} "$@"
 `
@@ -129,7 +133,7 @@ func newIssueVolume(t *testing.T) *issueVolume {
 		"WINIT_CLONE_FAILURES": "",
 		"WINIT_TAG":            "",
 		"WINIT_HOLD":           "",
-		"WINIT_CHECKOUT_DELAY": "",
+		"WINIT_CHECKOUT_GATE":  "",
 		"JJ_USER":              "Legion test",
 		"JJ_EMAIL":             "legion-test@example.invalid",
 		"XDG_CONFIG_HOME":      filepath.Join(dir, "config"),
@@ -540,42 +544,94 @@ func TestWorkspaceInitProvisionsAtADefaultBranchWithASlash(t *testing.T) {
 }
 
 // The issue's checkout (`jj sparse reset`) writes every file of the repository's tree, so it runs
-// under workspace.CheckoutTimeout rather than provisionBudget (workspace.Provision,
-// Request.CheckoutBound; workspace.CommandTimeout names which commands carry a bound of their
-// own): a pod whose checkout outlasts that budget provisions all the same, rather than exiting 1
-// on a killed checkout and spending one of the claim's launches (INFRA-1265). Here the volume's
-// jj holds the checkout eight seconds and the budget is five, which no other command of the run
-// comes near.
+// under workspace.CheckoutTimeout rather than the runner's slow-command budget,
+// workspace.CommandTimeout (workspace.Provision, Request.CheckoutBound; workspace.CommandTimeout
+// names which commands carry a bound of their own): a pod whose checkout outlasts that budget
+// provisions all the same, rather than exiting 1 on a killed checkout and spending one of the
+// claim's launches (INFRA-1265). The runner's bounds run on provisionClock, a fake here: the
+// volume's jj holds the checkout until the row has moved the fake past the budget, which would end
+// a checkout the budget bounded, and lets it go after.
 func TestWorkspaceInitProvisionsThroughACheckoutLongerThanTheBudget(t *testing.T) {
-	const delay = 8 * time.Second
 	v := newIssueVolume(t).withRemote(t, "main")
 	// The checkout is what puts the tree in the workspace, so the remote's default branch carries
 	// a file for it to write there.
 	v.commitAddingAFile(t, v.env["WINIT_REMOTE"], "refs/heads/main", "refs/heads/main", "tree.txt", "tree\n")
-	v.env["WINIT_CHECKOUT_DELAY"] = strconv.Itoa(int(delay.Seconds()))
-	v.fetch(t)
-	// `provision` runs in this process, so the budget it reads is shortened here and put back
-	// after; the case takes no t.Parallel, as no case of this package does.
-	provisionBudget = 5 * time.Second
-	t.Cleanup(func() { provisionBudget = workspace.CommandTimeout })
-
-	code, stdout, stderr := runWorkspaceInitHere(v.args("LEGION-42"))
-	if code != 0 {
-		t.Fatalf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	gate := filepath.Join(t.TempDir(), "checkout-gate")
+	if err := syscall.Mkfifo(gate, 0o600); err != nil {
+		t.Fatal(err)
 	}
+	// Opened for reading and writing, the fifo takes the release whether or not the checkout is
+	// reading it yet, or still there at all.
+	release := sync.OnceFunc(func() {
+		fifo, err := os.OpenFile(gate, os.O_RDWR, 0)
+		if err != nil {
+			t.Errorf("open the checkout's gate: %v", err)
+			return
+		}
+		defer fifo.Close()
+		if _, err := fifo.WriteString("released\n"); err != nil {
+			t.Errorf("release the checkout: %v", err)
+		}
+	})
+	v.env["WINIT_CHECKOUT_GATE"] = gate
+	v.fetch(t)
+	fake := provisionOnAFakeClock(t)
+
+	type answer struct {
+		code           int
+		stdout, stderr string
+	}
+	answered, finished := make(chan answer, 1), make(chan struct{})
+	go func() {
+		defer close(finished)
+		code, stdout, stderr := runWorkspaceInitHere(v.args("LEGION-42"))
+		answered <- answer{code, stdout, stderr}
+	}()
+	t.Cleanup(func() {
+		release()
+		testwait.Receive(t, "workspace-init provision to end", finished)
+	})
 	provisionedWorkspace := v.workspace("LEGION-42")
-	if want := "workspace-init: " + provisionedWorkspace + " on legion/LEGION-42 from main\n"; stdout != want {
-		t.Fatalf("stdout %q, want %q", stdout, want)
+	testwait.Until(t, "the volume's jj to hold the issue's checkout", func() (string, bool) {
+		calls := strings.Join(v.jjCalls(t), "\n")
+		return calls, strings.Contains(calls, " held sparse reset -R "+provisionedWorkspace)
+	})
+	// Every command before the checkout has ended, so the one bound armed on the runner's clock is
+	// the checkout's own, and none is the budget's.
+	if want, armed := fake.Now().Add(workspace.CheckoutTimeout), fake.Armed(); !slices.Equal(armed, []time.Time{want}) {
+		t.Fatalf("with the checkout held the runner's clock holds %v armed, want the checkout's own %s bound alone, at %v",
+			armed, workspace.CheckoutTimeout, want)
+	}
+	fake.Advance(workspace.CommandTimeout)
+	release()
+
+	got := testwait.Receive(t, "workspace-init provision's end once the checkout was let go", answered)
+	if got.code != 0 {
+		t.Fatalf("exit %d, stdout %q, stderr %q", got.code, got.stdout, got.stderr)
+	}
+	if want := "workspace-init: " + provisionedWorkspace + " on legion/LEGION-42 from main\n"; got.stdout != want {
+		t.Fatalf("stdout %q, want %q", got.stdout, want)
 	}
 	if _, err := os.Stat(filepath.Join(provisionedWorkspace, "tree.txt")); err != nil {
 		t.Fatalf("the workspace after provisioning: %v, want the tree the checkout writes", err)
 	}
-	// The delay is the point of the case, so the run proves it ran: the stub records the sleep it
-	// finished, which is the checkout's own record of how long it held.
-	slept := " slept 8s before sparse reset -R " + provisionedWorkspace
-	if calls := strings.Join(v.jjCalls(t), "\n"); !strings.Contains(calls, slept) {
-		t.Fatalf("the volume's jj recorded %q, want a checkout holding %q", calls, slept)
+	// The hold past the budget is the point of the case, so the run proves the checkout was held
+	// and then let go: the stub records both, around its wait on the gate.
+	released := " released sparse reset -R " + provisionedWorkspace
+	if calls := strings.Join(v.jjCalls(t), "\n"); !strings.Contains(calls, released) {
+		t.Fatalf("the volume's jj recorded %q, want the checkout let go after the budget passed: %q", calls, released)
 	}
+}
+
+// provisionOnAFakeClock has `provision`'s runner measure its commands' bounds on a fake clock that
+// moves only when the test moves it, for the test's life, and answers that clock.
+func provisionOnAFakeClock(t *testing.T) *clocktest.Fake {
+	t.Helper()
+	fake := clocktest.New(time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC))
+	was := provisionClock
+	provisionClock = fake
+	t.Cleanup(func() { provisionClock = was })
+	return fake
 }
 
 // staleLock leaves a git lock file at path, last written age ago, as a git or jj process killed or

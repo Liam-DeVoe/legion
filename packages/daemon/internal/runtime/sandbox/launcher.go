@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"net"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -266,9 +267,9 @@ func (d *launchers) request(ctx context.Context, token claim.Token, podUID strin
 		return nil, nil, errors.New("launcher connection closed")
 	}
 	session.waiters[id] = waiter
-	deadline := time.Now().Add(apiTimeout)
+	deadline, contextDeadline := time.Now().Add(apiTimeout), false
 	if until, ok := ctx.Deadline(); ok && until.Before(deadline) {
-		deadline = until
+		deadline, contextDeadline = until, true
 	}
 	err = session.conn.SetWriteDeadline(deadline)
 	if err == nil {
@@ -285,6 +286,15 @@ func (d *launchers) request(ctx context.Context, token claim.Token, podUID strin
 	}()
 	if err != nil {
 		session.close()
+		// A write whose deadline was ctx's own fails with the connection's timeout at the instant
+		// ctx's timer ends ctx, and either can run first: the write's error can come back while
+		// ctx.Err() is still nil. The deadline that ended the write is ctx's, so the request
+		// answers ctx's end, once ctx has ended, and a caller that tells its own bound from
+		// another failure by ctx.Err() reads the bound (serveLeakCheck, boundRanOut).
+		if contextDeadline && errors.Is(err, os.ErrDeadlineExceeded) {
+			<-ctx.Done()
+			return nil, nil, ctx.Err()
+		}
 		return nil, nil, err
 	}
 	select {

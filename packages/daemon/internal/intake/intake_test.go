@@ -804,6 +804,17 @@ func TestConsumePreparesAnIssueEventsRepositoryBeforeApplyingIt(t *testing.T) {
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
+	// The count of preparations below is exact, so the acknowledgement window is a minute: far
+	// above this handling's own work and its acknowledgement's trip, so a redelivery the count
+	// would see needs the whole minute to pass first. That is the carve-out docs/testing.md gives
+	// such a count ("A test asserts no count of work a broker may repeat"), on the margin it
+	// states for TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction, a handling of the
+	// same shape: about 717 ms of work and acknowledgement trip at their largest
+	// (dispatch://INFRA-1113), a factor of about 80 below a minute. At consumerSpec's 200 ms window
+	// a late progress report let the server deliver the applied message again, and the count read
+	// a third preparation under 32 busy loops (dispatch://INFRA-3149, Job dl24-whole2-32). The
+	// retry after the failed preparation is NakDelay's, which the window does not touch.
+	spec.AckWait = time.Minute
 	var mu sync.Mutex
 	var prepared []string
 	var applied []DispatchIssue

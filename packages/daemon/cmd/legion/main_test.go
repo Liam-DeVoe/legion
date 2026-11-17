@@ -45,6 +45,7 @@ func TestMain(m *testing.M) {
 		if proven := os.Getenv(testProvenCheckEnv); proven != "" {
 			ghReadsProvenCheck.sha256 = proven
 		}
+		holdGhBounds()
 		main()
 	}
 	// environment_test.go reads these variables again once every test before it has run, so the

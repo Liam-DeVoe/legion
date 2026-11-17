@@ -249,7 +249,14 @@ type execRunner struct {
 // NewRunner returns the production process runner. The supplied timeout is applied to every
 // command separately, rather than bounding the whole provisioning sequence.
 func NewRunner(timeout time.Duration, tools map[string]string) Runner {
-	return execRunner{timeout: timeout, tools: tools, clock: clock.Real()}
+	return NewRunnerOn(timeout, tools, clock.Real())
+}
+
+// NewRunnerOn is NewRunner with the clock each command's Timeout and the grace of its stop are
+// measured on: a caller that keeps a clock of its own for provisioning passes it (cmd/legion's
+// provisionClock), and a test hands a clocktest.Fake.
+func NewRunnerOn(timeout time.Duration, tools map[string]string, c clock.Clock) Runner {
+	return execRunner{timeout: timeout, tools: tools, clock: c}
 }
 
 func (r execRunner) Timeout() time.Duration {

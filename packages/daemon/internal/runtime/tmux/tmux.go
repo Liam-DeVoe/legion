@@ -165,9 +165,9 @@ type Options struct {
 	Executable func() (string, error)
 	// Now stamps observations and ages orphans; time.Now when nil.
 	Now func() time.Time
-	// Clock is what the sweep's period (ProbeInterval) and each tmux invocation's CommandTimeout
-	// are measured on; the wall clock (clock.Real) when nil. A test hands it a clocktest.Fake and
-	// moves it.
+	// Clock is what the sweep's period (ProbeInterval), each tmux invocation's CommandTimeout and
+	// a stop's wait for a process to end itself (StopGrace) are measured on; the wall clock
+	// (clock.Real) when nil. A test hands it a clocktest.Fake and moves it.
 	Clock clock.Clock
 	// Log receives what the runtime decides without being asked; slog.Default() when nil.
 	Log *slog.Logger
@@ -779,10 +779,10 @@ func (r *Runtime) settleUnverified(loc runtime.Locator, pane string, inc incarna
 }
 
 // awaitNotRunning re-verifies the pane until the recorded process no longer verifies, or grace
-// is spent, and returns the last verdict. A verdict that cannot be reached — tmux not answering
-// — keeps the wait going; it proves nothing either way.
+// is spent on the runtime's clock, and returns the last verdict. A verdict that cannot be reached
+// — tmux not answering — keeps the wait going; it proves nothing either way.
 func (r *Runtime) awaitNotRunning(ctx context.Context, pane string, inc incarnation, grace time.Duration) (verdict, error) {
-	deadline := time.NewTimer(grace)
+	deadline := r.timers().NewTimer(grace)
 	defer deadline.Stop()
 	tick := time.NewTicker(pollInterval)
 	defer tick.Stop()
@@ -790,7 +790,7 @@ func (r *Runtime) awaitNotRunning(ctx context.Context, pane string, inc incarnat
 		select {
 		case <-ctx.Done():
 			return verdict{}, ctx.Err()
-		case <-deadline.C:
+		case <-deadline.C():
 			return r.verifyPane(ctx, pane, inc)
 		case <-tick.C:
 			v, err := r.verifyPane(ctx, pane, inc)
