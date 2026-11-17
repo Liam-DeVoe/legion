@@ -3,7 +3,7 @@
 for the entries ci.yaml restores and which packages its race build must compile, which workspaces
 ci_job_reads.py's WORKSPACES must name,
 that no other workflow of this repository runs on a merge group, and that a job of any workflow
-that runs the results action makes its go test -json report with no -v.
+that runs the results action makes its go test -json report with no -v but -json's own test2json.
 None of them
 reads a filter, a gate or the closure of a go command, so none belongs in the filter-coverage
 engine beside them; check-ci-filters.sh's header numbers them 10, 12, 11, 13, 14, 16 and 20, and
@@ -527,15 +527,15 @@ def go_test_commands(script: str) -> list:
 
 
 def check_report_steps(problems: list) -> list:
-    """A job of any workflow that runs RESULTS_ACTION makes its report with no -v. Each `go test`
-    command in a run: script of the job is held to no flag that verbose_flags names (a -v or
-    -test.v of go test before -args, and a -test.v of the test binary after it, one dash or two,
-    bare or with any value but test2json), since the report the action reads is one of them; and a
-    job with no `go test` command where this rule reads it is refused too, since the flags of a
-    report made elsewhere are flags this rule cannot see. It reads the job's own steps alone: a
-    report made in another job and handed over as an artifact is refused until this rule follows
-    it there. Returns its one report line, which says how many jobs and commands it read, so a run
-    that read none says so."""
+    """A job of any workflow that runs RESULTS_ACTION makes its report with no -v but -json's own
+    test2json. Each `go test` command in a run: script of the job is held to no flag that
+    verbose_flags names (a -v or -test.v of go test before -args, and a -test.v of the test binary
+    after it, one dash or two, bare or with any value but test2json), since the report the action
+    reads is one of them; and a job with no `go test` command where this rule reads it is refused
+    too, since the flags of a report made elsewhere are flags this rule cannot see. It reads the
+    job's own steps alone: a report made in another job and handed over as an artifact is refused
+    until this rule follows it there. Returns its one report line, which says how many jobs and
+    commands it read, so a run that read none says so."""
     jobs = commands = 0
     for path, document in directory_workflows().items():
         for job_id, job in ((document or {}).get("jobs") or {}).items():
@@ -566,6 +566,6 @@ def check_report_steps(problems: list) -> list:
             if not found:
                 problems.append(error(path, f"{path} job {job_id} runs {RESULTS_ACTION}, and no run: step of it runs "
                                             f"`go test` where this check reads it: the report the action reads is "
-                                            f"held to no -v, so the go test -json command that makes it is a line "
-                                            f"of a run: step of the same job"))
+                                            f"held to no -v but -json's own test2json, so the go test -json command "
+                                            f"that makes it is a line of a run: step of the same job"))
     return [f"{RESULTS_ACTION}: run by {jobs} job(s), which hold {commands} go test command(s)"]

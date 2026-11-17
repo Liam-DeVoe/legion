@@ -4,7 +4,7 @@ tests read outside their packages. ci_workflow_rules.py, also beside it, holds t
 read none of that - what no `if:` of ci.yaml may say, what every job's `if:` must say, what
 ci-caches.yaml must save for the entries ci.yaml restores, that ci.yaml is the only workflow
 of this repository running on a merge group, and that a job running the results action makes
-its go test -json report with no -v - and main() runs them.
+its go test -json report with no -v but -json's own test2json - and main() runs them.
 
 check-ci-filters.sh runs it from the repository root with this directory on PYTHONPATH, through
 `import ci_filter_coverage` rather than as a script, so ci_job_reads.py's `from ci_filter_coverage

@@ -30,7 +30,7 @@
 # every output of the changes job must name the paths-filter step its own filter is declared in,
 # a listed block's patterns are passed over by rule 9 only while its marker names a check a
 # job of CI runs, and a job of any workflow that runs the results action must make its
-# `go test -json` report in a run: step of its own with no -v.
+# `go test -json` report in a run: step of its own with no -v but -json's own test2json.
 #
 # Each case builds a miniature repository under a temporary directory - a go.work binding one
 # module, a ci.yaml whose `changes` job gates one job, a root package.json with one workspace, and
@@ -2223,7 +2223,7 @@ run_check "$root"
 check "and reads the .yml spelling GitHub reads too" \
   "$(contains "$out" "::error file=.github/workflows/scan.yml::")"
 
-echo "case: a job that runs the results action makes its go test -json report with no -v"
+echo "case: a job that runs the results action makes its go test -json report with no -v but -json's own test2json"
 # go test -json runs the test binary with -test.v=test2json, whose frame lines carry a mark. A -v
 # or -test.v of any other value, false too, replaces it, so the frame lines carry no mark, a test
 # can print a line that reads as its own pass, and the report the action reads cannot be told from
@@ -2284,16 +2284,14 @@ done
 # A job that asks for no verbose output passes: go's own -test.v=test2json, which -json passes
 # itself, before -args and after it; flags of the test's own after -args, a -v among them, as the
 # log level of glog and klog; grep's -v after a pipe; and the -v of another go command.
-for honest in "-v=test2json -count=1 -vet=off -run '^(TestA|TestB)\$' ./mod/... |" \
-  "-test.v=test2json -count=1 -vet=off -run '^(TestA|TestB)\$' ./mod/... |" \
-  "--test.v=test2json -count=1 -vet=off -run '^(TestA|TestB)\$' ./mod/... |" \
-  "-count=1 -vet=off -run '^(TestA|TestB)\$' ./mod/... -args -test.v=test2json |" \
-  "-count=1 -vet=off -run '^(TestA|TestB)\$' ./mod/... -args -v=2 --check |" \
-  "-count=1 -vet=off -run '^(TestA|TestB)\$' ./mod/... 2>&1 | grep -v '^#' |"; do
-  replace "$root/.github/workflows/results.yaml" "-count=1 -vet=off -run '^(TestA|TestB)\$' ./mod/... |" "$honest"
+report_command="-count=1 -vet=off -run '^(TestA|TestB)\$' ./mod/..."
+for honest in "-v=test2json $report_command |" "-test.v=test2json $report_command |" \
+  "--test.v=test2json $report_command |" "$report_command -args -test.v=test2json |" \
+  "$report_command -args -v=2 --check |" "$report_command 2>&1 | grep -v '^#' |"; do
+  replace "$root/.github/workflows/results.yaml" "$report_command |" "$honest"
   run_check "$root"
   check "passes with go test -json $honest" "$(is "$status" 0)"
-  replace "$root/.github/workflows/results.yaml" "$honest" "-count=1 -vet=off -run '^(TestA|TestB)\$' ./mod/... |"
+  replace "$root/.github/workflows/results.yaml" "$honest" "$report_command |"
 done
 replace "$root/.github/workflows/results.yaml" "          set -o pipefail" $'          set -o pipefail\n          go build -v ./mod/... && go vet -v ./mod/...'
 run_check "$root"
