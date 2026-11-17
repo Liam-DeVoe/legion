@@ -676,8 +676,7 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 		"A review whose footer names another head, or no head, decides no round",
 		"The footer's `entry` is the number your newest task names as `Review entry: <n>.`, written bare, as a JSON number:",
 		"by it Legion tells a review of this round from a review of an earlier round, and only a review of this round moves the commit a later round reads from",
-		"Where your newest task names no entry, write no `entry` into the footer: the review still decides the round.",
-		"A review with no entry, or with another one, still decides the round, and the next round then reads more: from an older commit, or the whole change.",
+		"Where your newest task names no entry, write no `entry` into the footer. A review with no entry, or with another one, still decides the round, and the next round then reads more: from an older commit, or the whole change.",
 		"The `<entry>` is the number your newest task names as `Review entry: <n>.`; a review with no entry, or with another one, decides the round as any other, but moves no commit",
 	} {
 		if !strings.Contains(text, phrase) {
