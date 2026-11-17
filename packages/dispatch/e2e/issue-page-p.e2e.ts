@@ -32,6 +32,8 @@ import {
   headerFamilies,
   headerLabels,
   headerParts,
+  holdClipboard,
+  holdReviewReads,
   IPHONE_13,
   identityBand,
   issueDecisions,
@@ -2620,6 +2622,247 @@ test("a change request sent from the header's Request changes leaves the focus o
     await expect(
       approvalChip(page, seeded.specArtifactId),
       `the change request left the focus on ${focus.what}, not on the spec's chip`
+    ).toBeFocused();
+  });
+});
+
+// Approve pressed by Enter, and then by Enter again after its review has landed but before the
+// page has drawn the approval it reads back, sends one review: a shared control's write is out,
+// and a press of it does nothing, until the new read is drawn (decision 223). The reads that
+// redraw the chip - the issue's, which the header draws the approval from, and the document's -
+// are held with a route, so the second press falls in that gap: the review's answer has reached
+// the page and the server holds the approval, while the header still draws Approve. The second
+// Enter is pressed where the focus is, as a keyboard reader's next Enter is, and the rule keeps
+// the focus on Approve while its write is out: the row reads that it is there, so the press
+// reaches Approve's own guard and not another control. The focus is read in the header in the
+// gap, and again once the reads go on and the header draws neither action.
+test("Approve pressed again by Enter before its approval is drawn sends no second review", async ({
+  browser,
+}) => {
+  test.fail(
+    true,
+    "Approve still sends a second review in the gap until the shared controls' sweep (decision 223) is under this branch"
+  );
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await requestApproval(seeded.specArtifactId, { summary: "Read it." });
+    const reviewed = reviewsSent(page);
+    const reads = await holdReviewReads(page, seeded.key, seeded.specArtifactId);
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const header = issueHeader(page);
+    const approve = header.getByRole("button", { exact: true, name: "Approve" });
+    await expect(approve, "the chip carries no Approve while its request waits").toBeVisible();
+
+    await approve.focus();
+    await expect(approve).toBeFocused();
+    reads.hold();
+    const answered = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname === `/api/v1/artifacts/${seeded.specArtifactId}/reviews`
+    );
+    await page.keyboard.press("Enter");
+    await (await answered).finished();
+    expect(
+      (await getArtifact(seeded.specArtifactId)).approval?.state,
+      "Approve by Enter recorded no approval"
+    ).toBe("approved");
+    await expect
+      .poll(() => reads.issueReadsHeld(), {
+        message: "the page made no read of the issue after the review landed",
+      })
+      .toBeGreaterThan(0);
+    await expect(approve, "the header drew the approval while its reads were held").toBeVisible();
+    await framesDrawn(page, 2);
+    const pressedOn = await focusNow(page);
+    await expect(
+      approve,
+      `in the gap the focus was on ${pressedOn.what}, not on Approve`
+    ).toBeFocused();
+    await page.keyboard.press("Enter");
+    await framesDrawn(page, 2);
+    expect(reviewed, "Approve pressed again by Enter in the gap sent another review").toEqual([
+      seeded.specArtifactId,
+    ]);
+    const inGap = await focusNow(page);
+    expect(
+      inGap.onBody || !inGap.inHeader,
+      `Approve pressed again in the gap left the focus on ${inGap.what}`
+    ).toBe(false);
+
+    reads.release();
+    await expect(reviewActions(header), "the header still draws an action").toHaveCount(0);
+    await framesDrawn(page, 2);
+    const drawn = await focusNow(page);
+    expect(
+      drawn.onBody || !drawn.inHeader,
+      `once the header drew the approval the focus was on ${drawn.what}`
+    ).toBe(false);
+    expect(reviewed, "Approve pressed again in the gap sent another review later").toEqual([
+      seeded.specArtifactId,
+    ]);
+  });
+});
+
+// The Request changes dialog's own Request changes, pressed by Enter, and then by Enter again
+// after the change request has landed but before the page has drawn it, sends one review
+// (decision 223, as for Approve above). The reads are held the same way. The second Enter is
+// pressed wherever the focus is then, as a keyboard reader's next Enter is: the rule keeps the
+// focus on the dialog's own button while its write is out, and the dialog's one hand-over of the
+// focus waits for the new read. Once the reads go on, the dialog is shut, the header draws
+// neither action, and the focus is in the header.
+test("Request changes in its dialog pressed again by Enter before the change request is drawn sends no second review", async ({
+  browser,
+}) => {
+  test.fail(
+    true,
+    "The dialog shuts when its review lands and the header's Request changes opens it again in the gap until the shared controls' sweep (decision 223) is under this branch"
+  );
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await requestApproval(seeded.specArtifactId, { summary: "Read it." });
+    const reviewed = reviewsSent(page);
+    const reads = await holdReviewReads(page, seeded.key, seeded.specArtifactId);
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const header = issueHeader(page);
+    const requestChanges = header.getByRole("button", { exact: true, name: "Request changes" });
+    await expect(
+      requestChanges,
+      "the chip carries no Request changes while its request waits"
+    ).toBeVisible();
+    await requestChanges.focus();
+    await expect(requestChanges).toBeFocused();
+    await page.keyboard.press("Enter");
+    const dialog = page.getByRole("dialog", { name: "Request changes" });
+    await expect(dialog, "Enter on Request changes opened no dialog").toBeVisible();
+    await page.keyboard.type("One change.");
+    const submit = dialog.getByRole("button", { exact: true, name: "Request changes" });
+    await submit.focus();
+    await expect(submit).toBeFocused();
+
+    reads.hold();
+    const answered = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname === `/api/v1/artifacts/${seeded.specArtifactId}/reviews`
+    );
+    await page.keyboard.press("Enter");
+    await (await answered).finished();
+    expect(
+      (await getArtifact(seeded.specArtifactId)).approval?.state,
+      "the change request was not recorded"
+    ).toBe("changes_requested");
+    await expect
+      .poll(() => reads.issueReadsHeld(), {
+        message: "the page made no read of the issue after the change request landed",
+      })
+      .toBeGreaterThan(0);
+    await expect(
+      header.getByRole("button", { exact: true, name: "Approve" }),
+      "the header drew the change request while its reads were held"
+    ).toBeVisible();
+    await framesDrawn(page, 2);
+    const pressedOn = await focusNow(page);
+    const dialogOpen = await dialog.isVisible();
+    const where = `${pressedOn.what}, with the dialog ${dialogOpen ? "open" : "shut"}`;
+    await page.keyboard.press("Enter");
+    await framesDrawn(page, 2);
+    expect(reviewed, `Enter pressed again in the gap, on ${where}, sent another review`).toEqual([
+      seeded.specArtifactId,
+    ]);
+    const inGap = await focusNow(page);
+    expect(
+      inGap.onBody || !inGap.inHeader,
+      `Enter pressed again in the gap, on ${where}, left the focus on ${inGap.what}`
+    ).toBe(false);
+
+    reads.release();
+    await expect(
+      dialog,
+      `the dialog is open once the change request was drawn: the Enter in the gap was on ${where}`
+    ).toHaveCount(0);
+    await expect(reviewActions(header), "the header still draws an action").toHaveCount(0);
+    await framesDrawn(page, 2);
+    const drawn = await focusNow(page);
+    expect(
+      drawn.onBody || !drawn.inHeader,
+      `once the header drew the change request the focus was on ${drawn.what}`
+    ).toBe(false);
+    expect(reviewed, "Enter pressed again in the gap sent another review later").toEqual([
+      seeded.specArtifactId,
+    ]);
+  });
+});
+
+// Copy issue key, the identity row's copy button, pressed by Enter and then by Enter again while
+// its write is out makes one write (decision 223). Its write is the clipboard's: `copyText`
+// awaits `navigator.clipboard.writeText`, so the write is out from the press until that promise
+// settles, which is the write landing. The new read is the "Copied" the button draws from the
+// status the settled write sets, and the button's one hand-over of the focus (`CopyButton`'s
+// effect on that status) runs as it is drawn: no frame falls between the two for a press to land
+// in. So a press made while the clipboard holds the write must make no write, and a press made
+// once "Copied" is drawn, inside its 1.5 s, is a copy of its own and makes its one write: the
+// write before it has ended, and "Copied" is what the button read back from it. The clipboard is
+// replaced, before the page loads, by one that counts its writes and holds each until the row
+// lets it land. Nothing disables the button, so the focus stays on it throughout.
+test("Copy issue key pressed again by Enter while its write is out makes no second write", async ({
+  browser,
+}) => {
+  test.fail(
+    true,
+    "Copy issue key writes to the clipboard again while its write is out until the shared controls' sweep (decision 223) is under this branch"
+  );
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    const clipboard = await holdClipboard(page);
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const header = issueHeader(page);
+    const copy = header.getByRole("button", { name: new RegExp(`^Copy issue key ${seeded.key} `) });
+    const copied = header.getByText("Copied", { exact: true });
+    await copy.focus();
+    await expect(copy).toBeFocused();
+
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => clipboard.writes(), {
+        message: "Enter on Copy issue key wrote nothing to the clipboard",
+      })
+      .toBe(1);
+    await framesDrawn(page, 2);
+    await page.keyboard.press("Enter");
+    await framesDrawn(page, 2);
+    expect(
+      await clipboard.writes(),
+      "Copy issue key, pressed again while its write was out, wrote to the clipboard again"
+    ).toBe(1);
+    await expect(copied, "Copy issue key drew Copied while its write was held").toHaveCount(0);
+    const whileOut = await focusNow(page);
+    await expect(
+      copy,
+      `while the copy's write was out the focus was on ${whileOut.what}`
+    ).toBeFocused();
+
+    await clipboard.land();
+    await expect(copied, "Copy issue key drew no Copied once its write landed").toBeVisible();
+    const landed = await focusNow(page);
+    await expect(copy, `once Copied was drawn the focus was on ${landed.what}`).toBeFocused();
+
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => clipboard.writes(), {
+        message: "Copy issue key, pressed inside Copied's time, wrote nothing",
+      })
+      .toBe(2);
+    expect(await copied.isVisible(), "the press made for Copied's time came after it").toBe(true);
+    await clipboard.land();
+    await framesDrawn(page, 2);
+    const after = await focusNow(page);
+    await expect(
+      copy,
+      `after the copy made inside Copied's time the focus was on ${after.what}`
     ).toBeFocused();
   });
 });

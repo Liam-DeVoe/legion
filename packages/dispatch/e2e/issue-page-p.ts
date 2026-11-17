@@ -389,6 +389,108 @@ export function approvalEntry(page: Page, step: string): Locator {
     .locator(`[data-approval-step="${cssValue(step)}"]`);
 }
 
+/** The reads that redraw the header's approval control after a review of the issue's document,
+ *  held from `hold` until `release`. */
+export interface HeldReviewReads {
+  /** Holds every read made from now until `release`. */
+  hold(): void;
+  /** How many reads of the issue itself have been held. */
+  issueReadsHeld(): number;
+  /** Lets every held read on, and holds no read made after. */
+  release(): void;
+}
+
+/**
+ * Routes the page's reads that follow a review of the document `artifactId` of the issue `key`,
+ * so that a row can press a control after the review has landed and before the page has drawn
+ * what it reads back: each `GET` of the issue itself, which the header draws the approval from
+ * (`useIssueDetail`'s `primaryArtifact`), of the issue's documents and of its asks, and of the
+ * document and every address under it, its reviews among them - the reads `ApprovalChip`'s
+ * `onSuccess` refreshes. Each read waits in the route's handler, and goes on once released. A
+ * write is never held, and neither is a read made before `hold` or after `release`.
+ */
+export async function holdReviewReads(
+  page: Page,
+  key: string,
+  artifactId: string
+): Promise<HeldReviewReads> {
+  const issue = `/api/v1/issues/${key}`;
+  const artifact = `/api/v1/artifacts/${artifactId}`;
+  const released = Promise.withResolvers<void>();
+  let holding = false;
+  let issueReads = 0;
+  await page.route(
+    ({ pathname }) =>
+      pathname === issue ||
+      pathname === `${issue}/artifacts` ||
+      pathname === `${issue}/asks` ||
+      pathname === artifact ||
+      pathname.startsWith(`${artifact}/`),
+    async (route) => {
+      if (route.request().method() !== "GET" || !holding) return route.fallback();
+      if (new URL(route.request().url()).pathname === issue) issueReads += 1;
+      await released.promise;
+      return route.fallback();
+    }
+  );
+  return {
+    hold: () => {
+      holding = true;
+    },
+    issueReadsHeld: () => issueReads,
+    release: () => {
+      holding = false;
+      released.resolve();
+    },
+  };
+}
+
+/** The page's `window` as `holdClipboard`'s clipboard leaves it: how many writes were made, and
+ *  the resolve of each write still held. */
+type HeldClipboardWindow = Window & {
+  heldClipboard?: { held: (() => void)[]; writes: number };
+};
+
+/** The page's clipboard, as `holdClipboard` replaces it. */
+export interface HeldClipboard {
+  /** Lets every held write land: each `writeText` promise still out resolves. */
+  land(): Promise<void>;
+  /** How many writes the page has made to the clipboard. */
+  writes(): Promise<number>;
+}
+
+/**
+ * Replaces the page's clipboard, before the page loads, with one that counts each
+ * `navigator.clipboard.writeText` and holds the promise it returns until the row calls `land`,
+ * so a row can press a copy control while its write is out. Called before the row's first
+ * navigation, as `e2e/clipboard.ts`'s recorder is.
+ */
+export async function holdClipboard(page: Page): Promise<HeldClipboard> {
+  await page.addInitScript(() => {
+    const state = { held: [] as (() => void)[], writes: 0 };
+    (window as HeldClipboardWindow).heldClipboard = state;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: () => {
+          state.writes += 1;
+          const { promise, resolve } = Promise.withResolvers<void>();
+          state.held.push(resolve);
+          return promise;
+        },
+      },
+    });
+  });
+  return {
+    land: () =>
+      page.evaluate(() => {
+        const state = (window as HeldClipboardWindow).heldClipboard;
+        for (const resolve of state?.held.splice(0) ?? []) resolve();
+      }),
+    writes: () => page.evaluate(() => (window as HeldClipboardWindow).heldClipboard?.writes ?? 0),
+  };
+}
+
 /**
  * Every element the header draws that a reader reads or presses, by what it is: its test id, or
  * its tag with the name a reader hears; and every run of words drawn outside those, as
