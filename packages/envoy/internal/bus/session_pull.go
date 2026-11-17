@@ -140,10 +140,10 @@ func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*Session
 		return nil, err
 	}
 	life := s.client.requestLife()
-	lost := &connectionLost{client: s.client}
 	if life.Err() != nil {
-		return nil, lost
+		return nil, s.client.lostOrClosed(nil)
 	}
+	lost := &connectionLost{client: s.client}
 	conn := s.client.Connection()
 	p := &SessionPull{conn: conn, client: s.client, life: life, lost: lost, name: name, next: consumerAPI("MSG.NEXT", name), inbox: conn.NewInbox(), request: request, heartbeat: s.pullHeartbeat, wake: make(chan struct{}, 1)}
 	if p.sub, err = conn.Subscribe(p.inbox, p.receive); err != nil {

@@ -1942,17 +1942,26 @@ func (c *Client) publishJetStreamOn(ctx context.Context, subject string, item co
 }
 
 // sendStored publishes data to subject on the notification stream under options, once more if the
-// connection had closed under it, and names a refusal as the ErrPublishDenied, ErrTooLarge,
-// ErrStreamFull or ErrDuplicateInProcess it is. It is the one send of the stored path: its callers
-// (publishJetStreamOn, publishStoredRaw) bound ctx, connected first and pass nats.Context(ctx)
-// among the options, so the acknowledgement wait ends with that bound.
+// connection had closed under it or was lost under it before its acknowledgement came
+// (ErrConnectionLost, once the connection is back within ctx: Reconnected), and names a refusal as
+// the ErrPublishDenied, ErrTooLarge, ErrStreamFull or ErrDuplicateInProcess it is. It is the one
+// send of the stored path: its callers (publishJetStreamOn, publishStoredRaw) bound ctx, connected
+// first and pass nats.Context(ctx) among the options, so the acknowledgement wait ends with that
+// bound. A publish the loss cut off may have been stored, so the one sent again is stored once
+// only under a Nats-Msg-Id, within the stream's duplicate window; one without an id may be stored
+// twice, as a publish sent again after a closed connection always could.
 func (c *Client) sendStored(ctx context.Context, subject string, data []byte, options ...nats.PubOpt) (*nats.PubAck, error) {
 	sentAt := time.Now()
 	ack, err := c.JS().Publish(subject, data, options...)
-	if err != nil && errors.Is(err, nats.ErrConnectionClosed) {
+	switch {
+	case err == nil:
+	case errors.Is(err, nats.ErrConnectionClosed):
 		if err := c.ensureConnWithContext(ctx); err != nil {
 			return nil, err
 		}
+		sentAt = time.Now()
+		ack, err = c.JS().Publish(subject, data, options...)
+	case Reconnected(ctx, err):
 		sentAt = time.Now()
 		ack, err = c.JS().Publish(subject, data, options...)
 	}

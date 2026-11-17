@@ -6,6 +6,7 @@ package bus
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/nats-io/nats.go"
 )
@@ -27,6 +28,12 @@ import (
 // client's connection to be back, inside the caller's own budget, and send the request again on it.
 // A caller that holds a lock or a shared read releases it before it waits, since that wait is the
 // whole of the outage.
+//
+// It is the error of a client that is still running and so recovers its connection. A client that
+// was stopped (Close, or Drain once its connection has closed) recovers nothing, and a request cut
+// off by its stop answers nats.ErrConnectionClosed instead, as nats.go answers a request its own
+// close cut off: a caller that reads that error as lasting (cistore's kvErrorLasts, sendStored's
+// reconnect branch) reads it as it always did (lostOrClosed).
 var ErrConnectionLost = errors.New("bus: the NATS connection was lost")
 
 // connectionLost is the error Request returns for a request the loss of client's connection cut
@@ -110,8 +117,8 @@ var endedLife = func() context.Context {
 }()
 
 // bindRequest is the context a request made under ctx on c's connection is sent with, and the func
-// that ends it and names the request's error: one the connection's loss cut off, while ctx itself
-// had not ended, is connectionLost. A nil c binds nothing.
+// that ends it and names the request's error: one the end of the connection's life cut off, while
+// ctx itself had not ended, is lostOrClosed's. A nil c binds nothing.
 func (c *Client) bindRequest(ctx context.Context) (context.Context, func(error) error) {
 	if c == nil {
 		return ctx, func(err error) error { return err }
@@ -125,11 +132,26 @@ func (c *Client) bindRequest(ctx context.Context) (context.Context, func(error) 
 	return bound, func(err error) error {
 		stop()
 		cancel(nil)
-		if err != nil && ctx.Err() == nil && life.Err() != nil {
-			return &connectionLost{client: c}
+		if err == nil || ctx.Err() != nil || life.Err() == nil {
+			return err
 		}
+		return c.lostOrClosed(err)
+	}
+}
+
+// lostOrClosed is the error of a request, which answered err, whose connection's life ended before
+// its answer: connectionLost on a client that is still running, which recovers its connection and
+// whose caller retries (Reconnected); and on a client that was stopped, err itself when it is
+// nats.ErrConnectionClosed and otherwise an error wrapping that one, since such a client's
+// connection is gone for good and every caller reads that error as lasting.
+func (c *Client) lostOrClosed(err error) error {
+	if !c.stopped() {
+		return &connectionLost{client: c}
+	}
+	if errors.Is(err, nats.ErrConnectionClosed) {
 		return err
 	}
+	return fmt.Errorf("bus: the client was stopped before the request was answered: %w", nats.ErrConnectionClosed)
 }
 
 // requestLife is the life of the client's connection that a request made now is bound to: the one

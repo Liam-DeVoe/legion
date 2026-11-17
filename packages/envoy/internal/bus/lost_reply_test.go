@@ -121,8 +121,10 @@ func TestARequestWhoseReplyTheDropLostFailsAtTheDrop(t *testing.T) {
 				return err
 			}
 		}},
-		{"forward", "notifications.lostreply.", withFlush, func(_ *testing.T, c *Client) func() error {
-			item := contracts.Envelope{Topic: "notifications.lostreply.forward", Source: "test", DedupeKey: "lost-reply"}
+		// An agent subject, which the stream stores, so the withheld reply is the stream's
+		// acknowledgement of the forward.
+		{"forward", contracts.AgentSubject("ses_lost_forward"), withFlush, func(_ *testing.T, c *Client) func() error {
+			item := contracts.Envelope{Topic: contracts.AgentSubject("ses_lost_forward"), Source: "test", DedupeKey: "lost-reply"}
 			return func() error {
 				forward, err := c.StartRequestStoredTo(item.Topic, item, "lost-reply", 3*time.Second)
 				if err != nil {
