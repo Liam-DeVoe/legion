@@ -880,7 +880,11 @@ test("an invalidated issue read marks the decisions view stale", async () => {
   );
   try {
     const view = renderHook(() => useIssueTree(issue).root, { wrapper });
-    await waitFor(() => expect(taskWords(view.result.current)).toBe(TASK_WORDS));
+    await waitFor(() =>
+      expect(taskWords(view.result.current), "the outline never drew the tree read").toBe(
+        TASK_WORDS
+      )
+    );
     await act(async () => {
       client.setQueryData(viewKey(KEY, "decisions"), decisionsView);
       await Promise.resolve();
