@@ -187,6 +187,71 @@ func TestAStepRecordRetriesUntilDispatchHasTheRoute(t *testing.T) {
 	}
 }
 
+// A step record and the write Dispatch gets are the same fields, the record's id aside, and the
+// publication copies them one by one (publishStepRecord), since the dispatch package imports no
+// record of the daemon's. A field added to both types and left out of the copy compiles and drops
+// that field from every write. So the two types are held to one set of fields, each of the same
+// type under the same JSON name; the fixture to a value in every field, which a new field must
+// get; and the write to the record's own value of each.
+func TestAStepRecordReachesDispatchWithEveryField(t *testing.T) {
+	recordType, writeType := reflect.TypeFor[record.StepRecord](), reflect.TypeFor[dispatch.StepWrite]()
+	recordFields := map[string]reflect.StructField{}
+	for i := range recordType.NumField() {
+		field := recordType.Field(i)
+		if field.Name != "ID" {
+			recordFields[field.Name] = field
+		}
+	}
+	if len(recordFields) != writeType.NumField() {
+		t.Errorf("record.StepRecord has %d fields beside its ID, dispatch.StepWrite %d: a field of one is not a field of the other",
+			len(recordFields), writeType.NumField())
+	}
+	for i := range writeType.NumField() {
+		field := writeType.Field(i)
+		mirror, ok := recordFields[field.Name]
+		if !ok || mirror.Type != field.Type || mirror.Tag.Get("json") != field.Tag.Get("json") {
+			t.Errorf("dispatch.StepWrite's %s is %s %q; record.StepRecord's is %s %q (present: %t)", field.Name,
+				field.Type, field.Tag.Get("json"), mirror.Type, mirror.Tag.Get("json"), ok)
+		}
+	}
+	rec := stepRecordOf()
+	value := reflect.ValueOf(rec)
+	for i := range recordType.NumField() {
+		field := recordType.Field(i)
+		if value.Field(i).IsZero() {
+			t.Errorf("stepRecordOf leaves %s unset, so a write that dropped it would pass", field.Name)
+		}
+	}
+	if t.Failed() {
+		t.FailNow()
+	}
+
+	client := &stepRecordDispatch{outboxDispatch: &outboxDispatch{}}
+	runner := &outbox{dispatch: client, log: quietLogger()}
+	if err := runner.publishStepRecord(context.Background(), mustOutboxRow(t, stepIssue, rec, time.Now()), rec); err != nil {
+		t.Fatalf("publish the record: %v", err)
+	}
+	puts := client.received()
+	if len(puts) != 1 || puts[0].Issue != stepIssue || puts[0].ID != rec.ID {
+		t.Fatalf("PUTs = %+v, want the one of record %s under %s", puts, rec.ID, stepIssue)
+	}
+	written := reflect.ValueOf(puts[0].Write)
+	// shown reads a pointer through, so a failure prints the value rather than an address.
+	shown := func(v reflect.Value) any {
+		if v.Kind() == reflect.Pointer && !v.IsNil() {
+			return v.Elem().Interface()
+		}
+		return v.Interface()
+	}
+	for i := range writeType.NumField() {
+		field := writeType.Field(i)
+		got, want := written.Field(i), value.FieldByName(field.Name)
+		if !reflect.DeepEqual(got.Interface(), want.Interface()) {
+			t.Errorf("the write's %s = %v, want the record's %v", field.Name, shown(got), shown(want))
+		}
+	}
+}
+
 // A merge that moves back to the retro returns its task to place 0, the retro's: the row carries
 // that 0 through the store, and the write Dispatch gets names it, where a nil would read as a
 // failed merge that returned nowhere.
