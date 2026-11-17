@@ -105,7 +105,7 @@ func TestSecretKindAndMaxGrantOnAWS(t *testing.T) {
 // Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
 // reads the broker's address from (startSecretBrokerWith's t.Setenv), CLOUDSDK_AUTH_ACCESS_TOKEN
 // (useGCPIdentity's t.Setenv), and the package-level seams the secret forms are reached through
-// (gcpCredentials, gcpUserinfo, gcpClientDial, secretStdin).
+// (gcpCredentialsFile, gcpUserinfo, gcpClientDial, secretStdin).
 func TestSecretKindAndMaxGrantOnGCP(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
@@ -1172,8 +1172,8 @@ func (s gcpKindStore) readPermissions() []string { return []string{"secretmanage
 // Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
 // reads the broker's address from (startSecretBroker's t.Setenv, through onEachStore), and, in
 // its gcp store, CLOUDSDK_AUTH_ACCESS_TOKEN; and the package-level seams the secret forms are
-// reached through, which it sets: awsClients in the aws store, gcpClientDial, gcpCredentials and
-// gcpUserinfo in the gcp one, secretStdin for the value it types, and stdinTerminal, which it
+// reached through, which it sets: awsClients in the aws store, gcpClientDial, gcpCredentialsFile
+// and gcpUserinfo in the gcp one, secretStdin for the value it types, and stdinTerminal, which it
 // reads.
 func TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses(t *testing.T) {
 	onEachStore(t, func(t *testing.T, store kindStore, broker *secretBroker) {
@@ -1241,7 +1241,7 @@ func TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses(t *testing
 // Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
 // reads the broker's address from (startSecretBroker's t.Setenv, through onEachStore), and, in
 // its gcp store, CLOUDSDK_AUTH_ACCESS_TOKEN; and the package-level seams retag is reached
-// through, which it sets: awsClients in the aws store and gcpClientDial, gcpCredentials and
+// through, which it sets: awsClients in the aws store and gcpClientDial, gcpCredentialsFile and
 // gcpUserinfo in the gcp one. It types no value, since only create and set read one
 // (readSecretValue, secret.go:934 and :982).
 func TestSecretRetagReadsTheValueOnlyWhenItChangesTheKindOrShape(t *testing.T) {

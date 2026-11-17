@@ -51,6 +51,7 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -282,41 +283,93 @@ func Lines(lines func() []string) func() []Warning {
 	}
 }
 
-// Listen makes the default logger's handler one that keeps every stall warning and passes every
-// record on to the handler it replaced, until stop, which t's cleanup also calls. A horizon logs
-// its warnings to slog.Default as it stands when it warns (events.Horizon's log), so this hears
-// every horizon of the test's own process, its second server's included, and a test that captures
-// its logs itself still gets every line. warnings answers the stall warnings kept so far, oldest
-// first. A warning logged through a logger made by With or WithGroup is kept without the
-// attributes those added; warnStall uses neither.
+// Listen keeps every stall warning logged to the default logger until stop, which t's cleanup also
+// calls. A horizon logs its warnings to slog.Default as it stands when it warns (events.Horizon's
+// log), so this hears every horizon of the test's own process, its second server's included, and a
+// test that captures its logs itself still gets every line. warnings answers the stall warnings
+// kept so far, oldest first. A warning logged through a logger made by With or WithGroup is kept
+// without the attributes those added; warnStall uses neither.
+//
+// Any number of tests may listen at once, as parallel tests do, and stop in any order: every live
+// listener is one of listeners, behind the one handler the first of them made the default
+// (fanOut), which keeps each stall warning for every listener live as it is logged and passes
+// every record on to the handler that first listener found. A later listener only joins, a stop
+// only leaves, and the last to leave puts back the defaults the first found. A listener that put
+// back what it found itself would undo another's: stopped while a listener that began after it
+// still listened, it would take that one's warnings away, and the later one's stop would then put
+// back its handler for good.
 //
 // Only slog's default changes: the log package keeps its own output and flags. slog.SetDefault
 // points the log package at the new handler, and slog's own default handler writes through the
 // log package, so a record handed on to it there would wait for the lock the log package holds
 // while a log.Print is under way: the first line logged would deadlock every goroutine that logs.
-// So when the handler Listen replaces is slog's own, records are handed on to one that writes as
-// it does on a logger of its own over the log package's writer (asSlogWrites).
+// So when the handler the first listener found is slog's own, records are handed on to one that
+// writes as it does on a logger of its own over the log package's writer (asSlogWrites).
 func Listen(t *testing.T) (warnings func() []Warning, stop func()) {
 	t.Helper()
 	kept := &keptWarnings{}
-	previous, output, flags := slog.Default(), log.Writer(), log.Flags()
-	next := previous.Handler()
-	if next == slogsOwn {
-		next = asSlogWrites(next, output, log.Prefix(), flags)
-	}
-	slog.SetDefault(slog.New(keepWarnings{next: next, kept: kept}))
-	log.SetOutput(output)
-	log.SetFlags(flags)
+	listeners.join(kept)
 	var once sync.Once
 	stop = func() {
-		once.Do(func() {
-			slog.SetDefault(previous)
-			log.SetOutput(output)
-			log.SetFlags(flags)
-		})
+		once.Do(func() { listeners.leave(kept) })
 	}
 	t.Cleanup(stop)
 	return kept.read, stop
+}
+
+// listeners is every Listen not yet stopped.
+var listeners listenerSet
+
+// listenerSet is the live listeners and the defaults the first of them found. mu guards it all,
+// and is held across each change of the defaults, so a join and a leave never interleave theirs.
+type listenerSet struct {
+	mu   sync.Mutex
+	live []*keptWarnings
+	// previous, output and flags are slog's default and the log package's output and flags as
+	// the first live listener found them, which the last to leave puts back.
+	previous *slog.Logger
+	output   io.Writer
+	flags    int
+}
+
+// join adds kept to the live listeners, making fanOut the default when it is the first.
+func (s *listenerSet) join(kept *keptWarnings) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.live) == 0 {
+		s.previous, s.output, s.flags = slog.Default(), log.Writer(), log.Flags()
+		next := s.previous.Handler()
+		if next == slogsOwn {
+			next = asSlogWrites(next, s.output, log.Prefix(), s.flags)
+		}
+		slog.SetDefault(slog.New(fanOut{next: next, set: s}))
+		log.SetOutput(s.output)
+		log.SetFlags(s.flags)
+	}
+	s.live = append(s.live, kept)
+}
+
+// leave takes kept from the live listeners, putting back the defaults the first found when it
+// was the last.
+func (s *listenerSet) leave(kept *keptWarnings) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.live = slices.DeleteFunc(s.live, func(live *keptWarnings) bool { return live == kept })
+	if len(s.live) == 0 {
+		slog.SetDefault(s.previous)
+		log.SetOutput(s.output)
+		log.SetFlags(s.flags)
+		s.previous, s.output = nil, nil
+	}
+}
+
+// keep gives record to every live listener.
+func (s *listenerSet) keep(record slog.Record) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, kept := range s.live {
+		kept.add(record)
+	}
 }
 
 // slogsOwn is slog's own default handler, the one the process starts with: no package's init
@@ -386,8 +439,8 @@ func (h slogWrites) WithGroup(name string) slog.Handler {
 	return h
 }
 
-// keptWarnings is the stall warnings Listen's handler kept; the goroutines a test's server logs
-// from share it.
+// keptWarnings is the stall warnings one listener kept; the goroutines a test's server logs from
+// share it.
 type keptWarnings struct {
 	mu      sync.Mutex
 	records []slog.Record
@@ -410,20 +463,21 @@ func (k *keptWarnings) read() []Warning {
 	return warnings
 }
 
-// keepWarnings is Listen's handler: it keeps each stall warning and hands every record on to next
-// whenever next would take it.
-type keepWarnings struct {
+// fanOut is the handler the first live listener makes the default: it keeps each stall warning
+// for every listener of set live as it is logged and hands every record on to next whenever next
+// would take it.
+type fanOut struct {
 	next slog.Handler
-	kept *keptWarnings
+	set  *listenerSet
 }
 
-func (h keepWarnings) Enabled(ctx context.Context, level slog.Level) bool {
+func (h fanOut) Enabled(ctx context.Context, level slog.Level) bool {
 	return level >= slog.LevelWarn || h.next.Enabled(ctx, level)
 }
 
-func (h keepWarnings) Handle(ctx context.Context, record slog.Record) error {
+func (h fanOut) Handle(ctx context.Context, record slog.Record) error {
 	if record.Message == events.StallWarning {
-		h.kept.add(record)
+		h.set.keep(record)
 	}
 	if !h.next.Enabled(ctx, record.Level) {
 		return nil
@@ -431,12 +485,12 @@ func (h keepWarnings) Handle(ctx context.Context, record slog.Record) error {
 	return h.next.Handle(ctx, record)
 }
 
-func (h keepWarnings) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return keepWarnings{next: h.next.WithAttrs(attrs), kept: h.kept}
+func (h fanOut) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return fanOut{next: h.next.WithAttrs(attrs), set: h.set}
 }
 
-func (h keepWarnings) WithGroup(name string) slog.Handler {
-	return keepWarnings{next: h.next.WithGroup(name), kept: h.kept}
+func (h fanOut) WithGroup(name string) slog.Handler {
+	return fanOut{next: h.next.WithGroup(name), set: h.set}
 }
 
 // Wait returns the one result arrived delivers: the outcome of work that waits on the event

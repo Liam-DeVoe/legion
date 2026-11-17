@@ -1274,6 +1274,7 @@ func TestTheHealthWaitTakesNoAnswerOnThePortForAProcessThatLostIt(t *testing.T) 
 // (connectionRefusalCause): the connection ceiling check counts only this binary's Dispatch
 // processes, so a server whose slots other clients hold passes it, and the process fails later.
 func TestAProcessThatExitsBeforeItIsHealthySaysWhy(t *testing.T) {
+	t.Parallel()
 	exited := func(output, databaseURL string) error {
 		logged := &cmdtest.LockedBuffer{}
 		_, _ = logged.Write([]byte(output))

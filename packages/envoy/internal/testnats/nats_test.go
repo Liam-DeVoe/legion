@@ -30,6 +30,7 @@ func TestMain(m *testing.M) { os.Exit(Main(m)) }
 // protocol handshake while JetStream is still starting, so a KV test that returns at the handshake
 // races CreateKeyValue. The helper must retry the JetStream operation itself.
 func TestWaitForJetStreamRetriesTheOperationUntilItIsReady(t *testing.T) {
+	t.Parallel()
 	attempts := 0
 	waitForJetStream(t, func() error {
 		attempts++
@@ -47,8 +48,10 @@ func TestWaitForJetStreamRetriesTheOperationUntilItIsReady(t *testing.T) {
 // directory, and is answered with the store failure; RecreateKeyValue tries it again. Every other
 // answer is the test's own failure and must not be retried into a slower one or a pass.
 func TestRetryStreamStoreFailureRetriesOnlyTheStoreFailure(t *testing.T) {
+	t.Parallel()
 	storeFailure := &natsgo.APIError{Code: 500, ErrorCode: streamCreateErrorCode, Description: streamStoreFailed}
 	t.Run("store failure", func(t *testing.T) {
+		t.Parallel()
 		attempts := 0
 		err := retryStreamStoreFailure(func() error {
 			attempts++
@@ -62,6 +65,7 @@ func TestRetryStreamStoreFailureRetriesOnlyTheStoreFailure(t *testing.T) {
 		}
 	})
 	t.Run("any other error", func(t *testing.T) {
+		t.Parallel()
 		other := &natsgo.APIError{Code: 500, ErrorCode: streamCreateErrorCode, Description: "insufficient storage resources available"}
 		attempts := 0
 		err := retryStreamStoreFailure(func() error {
@@ -78,7 +82,10 @@ func TestRetryStreamStoreFailureRetriesOnlyTheStoreFailure(t *testing.T) {
 // messages left by one test are not there when the next asks for the server, which hands it an
 // account of its own.
 func TestEachTestGetsTheSharedServerEmpty(t *testing.T) {
+	t.Parallel()
 	t.Run("leaves a stream and a message", func(t *testing.T) {
+		// Serial: the subtest after it reads the shared server once this one has left a stream and
+		// a message there.
 		conn := Connect(t, URL(t))
 		defer conn.Close()
 		js, err := conn.JetStream()
@@ -93,6 +100,8 @@ func TestEachTestGetsTheSharedServerEmpty(t *testing.T) {
 		}
 	})
 	t.Run("finds none of it", func(t *testing.T) {
+		// Serial: it reads the shared server once the subtest before it has left a stream and a
+		// message there.
 		conn := Connect(t, URL(t))
 		defer conn.Close()
 		js, err := conn.JetStream()
@@ -113,9 +122,11 @@ func TestEachTestGetsTheSharedServerEmpty(t *testing.T) {
 // the test ends. They land in that test's own account, so the next test, creating a stream on the
 // same subjects, finds none of them.
 func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
+	t.Parallel()
 	const burst = 20000
 	config := &natsgo.StreamConfig{Name: "BURST", Subjects: []string{"burst.>"}}
 	t.Run("publishes a burst and ends", func(t *testing.T) {
+		// Serial: the subtest after it reads what this one's burst leaves in flight.
 		conn := Connect(t, URL(t))
 		defer conn.Close()
 		js, err := conn.JetStream()
@@ -133,6 +144,8 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 		}
 	})
 	t.Run("recreates the stream and finds none of it", func(t *testing.T) {
+		// Serial: it reads what the subtest before it left in flight, after a second's quiet
+		// window in which those messages would land.
 		conn := Connect(t, URL(t))
 		defer conn.Close()
 		js, err := conn.JetStream()
@@ -168,6 +181,7 @@ func (f *fatalRecorder) Fatalf(format string, args ...any) {
 // A test gets one account however often it asks, so every connection it makes reaches the streams
 // any other made; a subtest gets an account of its own, where none of its parent's streams is.
 func TestATestGetsOneAccountAndEachSubtestItsOwn(t *testing.T) {
+	t.Parallel()
 	uri := URL(t)
 	if again := URL(t); again != uri {
 		t.Fatalf("a second URL for the same test is %q, want its first, %q", again, uri)
@@ -182,6 +196,7 @@ func TestATestGetsOneAccountAndEachSubtestItsOwn(t *testing.T) {
 		t.Fatalf("add stream: %v", err)
 	}
 	t.Run("subtest", func(t *testing.T) {
+		t.Parallel()
 		subURI := URL(t)
 		if subURI == uri {
 			t.Fatalf("the subtest got its parent's account, %q", uri)
@@ -217,6 +232,7 @@ func ownAccountServer(t *testing.T, accounts int) *accountServer {
 // next, and an account a test is still using keeps its connection and its watcher across the
 // reload.
 func TestAServerOutOfAccountsDoublesThemWithoutDisturbingOneInUse(t *testing.T) {
+	t.Parallel()
 	server := ownAccountServer(t, 2)
 	live := Connect(t, server.url(namedTB{t, "live"}))
 	defer live.Close()
@@ -253,7 +269,7 @@ func TestAServerOutOfAccountsDoublesThemWithoutDisturbingOneInUse(t *testing.T) 
 		if entry == nil || entry.Key() != "after-the-reload" {
 			t.Fatalf("the watcher delivered %v after the reload, want the put", entry)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(connectTimeout):
 		t.Fatal("the watcher of an account in use delivered nothing after the reload")
 	}
 	if status := live.Status(); status != natsgo.CONNECTED {
@@ -266,6 +282,7 @@ func TestAServerOutOfAccountsDoublesThemWithoutDisturbingOneInUse(t *testing.T) 
 // wrong reason. A server started with no configuration, which asks for no credential, stands in
 // for one.
 func TestTheNkeyReadinessWaitRefusesAServerThatAdmitsAnyone(t *testing.T) {
+	t.Parallel()
 	_, uri := Start(t)
 	wait := &fatalRecorder{TB: t}
 	done := make(chan struct{})
@@ -286,6 +303,7 @@ func TestTheNkeyReadinessWaitRefusesAServerThatAdmitsAnyone(t *testing.T) {
 // A restart keeps its server's URL even when something else takes the URL's port while the server is
 // stopped, as another test's server or a free-port pick can on a busy host.
 func TestARestartKeepsItsURLWhenThePortIsContendedWhileStopped(t *testing.T) {
+	t.Parallel()
 	server, uri := Start(t)
 	server.Stop(t)
 	u, err := url.Parse(uri)
@@ -303,6 +321,7 @@ func TestARestartKeepsItsURLWhenThePortIsContendedWhileStopped(t *testing.T) {
 // of what it did: a server stopped and started again says it is ready twice, once for each server
 // that ran behind the one URL.
 func TestTheLogHoldsWhatTheServerSaidAcrossARestart(t *testing.T) {
+	t.Parallel()
 	server, _ := Start(t)
 	server.Stop(t)
 	server.Start(t)
@@ -316,6 +335,7 @@ func TestTheLogHoldsWhatTheServerSaidAcrossARestart(t *testing.T) {
 // pinned whatever range the machine running this test has: a CI runner's default range would hide
 // a band that lands inside the 16000-65535 a Legion worker pod (gVisor) has.
 func TestTheGateBandLiesBelowTheEphemeralRangeItIsGiven(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		text  string
@@ -329,6 +349,7 @@ func TestTheGateBandLiesBelowTheEphemeralRangeItIsGiven(t *testing.T) {
 		{name: "the lowest range that leaves a band", text: "3048\t65535\n", low: 3048, first: 2048},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			first, count, err := gatePorts(tc.text)
 			if err != nil {
 				t.Fatalf("gatePorts(%q) = %v, want a band", tc.text, err)
@@ -342,6 +363,7 @@ func TestTheGateBandLiesBelowTheEphemeralRangeItIsGiven(t *testing.T) {
 		})
 	}
 	t.Run("a range too low to leave a band", func(t *testing.T) {
+		t.Parallel()
 		first, count, err := gatePorts("1024\t65535\n")
 		if err == nil {
 			t.Fatalf("gatePorts = %d ports from %d, want a refusal", count, first)
@@ -357,6 +379,7 @@ func TestTheGateBandLiesBelowTheEphemeralRangeItIsGiven(t *testing.T) {
 // gates against it: a StartGate that stopped reading the file and took a band of its own fails
 // here on every machine whose range does not start where that band ends.
 func TestEveryGatePortLiesJustBelowThisMachinesEphemeralRange(t *testing.T) {
+	t.Parallel()
 	low := fallbackEphemeralLow
 	text, err := os.ReadFile(ephemeralRangePath)
 	if fields := strings.Fields(string(text)); err == nil && len(fields) == 2 {
@@ -390,6 +413,7 @@ func TestEveryGatePortLiesJustBelowThisMachinesEphemeralRange(t *testing.T) {
 // Open fails, with the claim gone the second gate's hold succeeds, and with the reservation
 // listening the dial succeeds.
 func TestAClosedGateKeepsItsPort(t *testing.T) {
+	t.Parallel()
 	server, _ := Start(t)
 	gate := StartGate(t, server)
 	address, err := net.ResolveTCPAddr("tcp", gate.address)
@@ -438,6 +462,7 @@ func TestAClosedGateKeepsItsPort(t *testing.T) {
 // Terminate ends the server for good and gives up the port its URL named, so nothing answers there
 // any more; the cleanup that runs at the test's end finds the work done and does it no second time.
 func TestTerminateEndsTheServerAndGivesUpItsPort(t *testing.T) {
+	t.Parallel()
 	server, uri := Start(t)
 	Connect(t, uri).Close()
 	server.Terminate(t)
@@ -454,6 +479,7 @@ func TestTerminateEndsTheServerAndGivesUpItsPort(t *testing.T) {
 // MonitorURL is where the server's /varz and /connz are, which a test reads to see what the server
 // makes of its own state.
 func TestTheMonitorURLAnswersVarz(t *testing.T) {
+	t.Parallel()
 	server, _ := Start(t)
 	response, err := http.Get(server.MonitorURL() + "/varz")
 	if err != nil {
@@ -469,6 +495,7 @@ func TestTheMonitorURLAnswersVarz(t *testing.T) {
 // second grant the server refuses fails the test with the server's reason for that grant, which
 // comes back from that Grant's own reload.
 func TestASecondGrantWaitsForItsOwnReload(t *testing.T) {
+	t.Parallel()
 	_, public := User(t)
 	grant := StartNkeyGranted(t, public, "first.>")
 	grant.Grant(t, "second.>")
@@ -490,6 +517,7 @@ func TestASecondGrantWaitsForItsOwnReload(t *testing.T) {
 // and the server goes on serving the configuration it had: its user is still admitted and a client
 // with no credential still refused.
 func TestARefusedReloadAnswersWithTheServersReasonAndKeepsTheOldConfiguration(t *testing.T) {
+	t.Parallel()
 	seed, public := User(t)
 	server, uri := StartConfig(t, publishGrantConfig(public, []string{"first.>"}), []string{"-js"}, false)
 
@@ -533,6 +561,7 @@ const (
 // changes the user's grant, so each one runs the server's authorization reload, and the server's
 // log says so.
 func TestAReloadUnderJetStreamRequestsAnswersEveryOne(t *testing.T) {
+	t.Parallel()
 	seed, public := User(t)
 	grant := func(n int) string {
 		return publishGrantConfig(public, []string{"$JS.API.>", "_INBOX.>", fmt.Sprintf("reload%d.>", n)})
@@ -556,7 +585,7 @@ func TestAReloadUnderJetStreamRequestsAnswersEveryOne(t *testing.T) {
 						return
 					default:
 					}
-					if _, err := conn.Request("$JS.API.INFO", nil, 5*time.Second); err != nil {
+					if _, err := conn.Request("$JS.API.INFO", nil, connectTimeout); err != nil {
 						failures <- err
 						return
 					}
@@ -591,6 +620,7 @@ func TestAReloadUnderJetStreamRequestsAnswersEveryOne(t *testing.T) {
 // reloads: the hold waits for the server's answer to the relay's PING, which the server sends once
 // it has read everything before it, and not for a count of messages the server never reaches.
 func TestAReloadAfterATraceOnlyMessageTheServerDropsStillReloads(t *testing.T) {
+	t.Parallel()
 	seed, public := User(t)
 	grant := func(subjects ...string) string { return publishGrantConfig(public, subjects) }
 	server, uri := StartConfig(t, grant("traced.>"), []string{"-js"}, false)
@@ -617,7 +647,7 @@ func TestAReloadAfterATraceOnlyMessageTheServerDropsStillReloads(t *testing.T) {
 	if reloads := strings.Count(server.Log(), "Reloaded: authorization nkey users"); reloads != 1 {
 		t.Fatalf("the server reloaded its nkey users %d times, want 1", reloads)
 	}
-	if _, err := conn.Request("more.echo", nil, 5*time.Second); !errors.Is(err, natsgo.ErrNoResponders) {
+	if _, err := conn.Request("more.echo", nil, connectTimeout); !errors.Is(err, natsgo.ErrNoResponders) {
 		t.Fatalf("a request on the subject the reload granted: %v, want %v from the server that took the grant", err, natsgo.ErrNoResponders)
 	}
 }
@@ -626,6 +656,7 @@ func TestAReloadAfterATraceOnlyMessageTheServerDropsStillReloads(t *testing.T) {
 // subscribe to a subject is refused it once the server restarts on one that does not, and has it
 // again once the server restarts on the first.
 func TestARestartServesItsNewConfiguration(t *testing.T) {
+	t.Parallel()
 	seed, public := User(t)
 	granted := SubscribeGrantConfig(public, "granted.>")
 	server, uri := StartConfig(t, granted, []string{"-js"}, false)
@@ -663,6 +694,7 @@ func TestARestartServesItsNewConfiguration(t *testing.T) {
 // command line does: -DV puts the protocol trace in its log, and without -js among them the server
 // has no JetStream, whatever a server started by another helper has.
 func TestStartConfigRunsTheArgumentsItWasGivenAndNoOther(t *testing.T) {
+	t.Parallel()
 	seed, public := User(t)
 	config := fmt.Sprintf("authorization {\n  users: [ { nkey: %q } ]\n}\n", public)
 	server, uri := StartConfig(t, config, []string{"-DV"}, false)
@@ -687,6 +719,7 @@ func TestStartConfigRunsTheArgumentsItWasGivenAndNoOther(t *testing.T) {
 // out while its connection is still CONNECTED, as a server that has stopped answering leaves it,
 // and the traffic resumes when the test thaws it.
 func TestAFrozenServerTimesOutARequestWithoutDroppingTheConnection(t *testing.T) {
+	t.Parallel()
 	server, uri := Start(t)
 	conn := Connect(t, uri)
 	defer conn.Close()
@@ -721,8 +754,10 @@ func TestAFrozenServerTimesOutARequestWithoutDroppingTheConnection(t *testing.T)
 // binary (a second close of one gate panicked it once), a thaw left over from an earlier freeze
 // does not end a later one, and the traffic resumes once every thaw has run.
 func TestOverlappingFreezesThawInEitherOrderWithoutPanicking(t *testing.T) {
+	t.Parallel()
 	for _, secondFirst := range []bool{false, true} {
 		t.Run(fmt.Sprintf("second thawed first %v", secondFirst), func(t *testing.T) {
+			t.Parallel()
 			server, uri := Start(t)
 			conn := Connect(t, uri)
 			defer conn.Close()
@@ -761,6 +796,7 @@ func TestOverlappingFreezesThawInEitherOrderWithoutPanicking(t *testing.T) {
 // credential: that server is up and has no no_auth_user, so waiting out the deadline would only
 // report the same refusal later.
 func TestTheAnonymousWaitRefusesAServerThatRefusesAnyone(t *testing.T) {
+	t.Parallel()
 	_, public := User(t)
 	uri := StartNkeyAuthorized(t, public)
 	wait := &fatalRecorder{TB: t}
@@ -823,12 +859,15 @@ var dockerDriver = regexp.MustCompile(
 // does not go by tag: it reads every .go file, those included, and passes them because none
 // drives docker by hand.
 func TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime(t *testing.T) {
+	t.Parallel()
 	t.Run("imports", func(t *testing.T) {
+		t.Parallel()
 		for _, finding := range containerImporters(t) {
 			t.Errorf("package %s imports %s, which belongs to a container runtime; a test that needs a NATS server starts it with testnats.Start, StartConfig or URL", finding.pkg, finding.imported)
 		}
 	})
 	t.Run("docker", func(t *testing.T) {
+		t.Parallel()
 		for _, file := range dockerDriverFiles(t) {
 			t.Errorf("%s drives a container runtime itself; a test that has to stop a server's traffic uses testnats.Server.Freeze, and one that has to stop the server, Server.Stop", file)
 		}
@@ -840,6 +879,7 @@ func TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime(t *testing.T) {
 // and t.Context() is the test's own. Each line is assembled from pieces so this file, which the walk
 // also reads, is not a finding itself.
 func TestTheDockerDriverMatchCatchesEveryContextArgument(t *testing.T) {
+	t.Parallel()
 	const run, docker = "exec." + "Command", `"dock` + `er"`
 	for _, line := range []string{
 		run + "(" + docker + `, "pause", id)`,

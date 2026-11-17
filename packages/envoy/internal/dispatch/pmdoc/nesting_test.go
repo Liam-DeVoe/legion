@@ -306,6 +306,7 @@ func TestOrdinaryNestedInlineMarksReadAndRenderUnchanged(t *testing.T) {
 // thousand closers, checking each label for a link inside it. This counts the nodes rather than
 // timing the parse, so it holds on any machine.
 func TestARunOfBracketsTheirClosersTurnBackIntoTextIsOneText(t *testing.T) {
+	t.Parallel()
 	source := []byte(strings.Repeat("[", 15_000) + strings.Repeat("]", 15_000))
 	pc, _ := readContext(false, NewWriteBudget(), 0, false)
 	root := readSource(blockReader.md.Parser(), source, pc)

@@ -3,6 +3,7 @@ package horizontest
 import (
 	"log"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +24,8 @@ var processDefault = slog.Default()
 // slog's handler and the log package take the log package's lock in turn - slog.SetDefault points
 // the log package at the new handler, which hands the record to slog's handler, which writes
 // through the log package - and the first record logged deadlocks every goroutine that logs.
+// Serial: it swaps process-wide state - the default logger (slog.SetDefault) and the log
+// package's output - and logs through both, which a test beside it would read as its own.
 func TestListenOverSlogsOwnDefaultHandlerPassesEveryRecordOn(t *testing.T) {
 	written := &logtest.Buffer{}
 	previous, output, flags := slog.Default(), log.Writer(), log.Flags()
@@ -159,6 +162,7 @@ func heldRecordFor(pendingFor, held time.Duration, database string) slog.Record 
 // so that a later change of any of the three moves the rows with it instead of leaving them to
 // test a boundary that has moved.
 func TestVerdictOfKeysTheWaitOnTheStallWarning(t *testing.T) {
+	t.Parallel()
 	const ownDatabase = "dispatch_test_ab"
 	// A foreign holder: another service's transaction on the same Postgres instance, which holds
 	// the horizon back and is no defect of Dispatch's, however long it has stood.
@@ -288,6 +292,7 @@ func TestVerdictOfKeysTheWaitOnTheStallWarning(t *testing.T) {
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			row.state.ownDatabase = ownDatabase
 			if got := verdictOf(row.state); got != row.want {
 				t.Errorf("verdictOf(%+v) = %s, want %s", row.state, got, row.want)
@@ -300,6 +305,7 @@ func TestVerdictOfKeysTheWaitOnTheStallWarning(t *testing.T) {
 // match would read a foreign hold as the test's own and fail the wait at once on a database the
 // test does not own.
 func TestFromLineMatchesTheWholeDatabaseField(t *testing.T) {
+	t.Parallel()
 	const ownDatabase = "dispatch_test_ab"
 	for _, row := range []struct {
 		name     string
@@ -329,6 +335,7 @@ func TestFromLineMatchesTheWholeDatabaseField(t *testing.T) {
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			warning := FromLine(row.warning)
 			if got := warning.Named && warning.Database == row.database; got != row.want {
 				t.Errorf("FromLine(%q) names %q: %t, want %t", row.warning, row.database, got, row.want)
@@ -349,6 +356,7 @@ func TestFromLineMatchesTheWholeDatabaseField(t *testing.T) {
 // read a value a client chose, opening with a backquote, as a raw literal running across the
 // fields after it.
 func TestFieldTakesAQuotedValueWhole(t *testing.T) {
+	t.Parallel()
 	const ownDatabase = "dispatch_test_ab"
 	const foreignDatabase = "dispatch_test_cd"
 	// The client of the backquote row: an application_name opening with a backquote, which slog
@@ -404,6 +412,7 @@ func TestFieldTakesAQuotedValueWhole(t *testing.T) {
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			got, found := Field(row.warning, row.key)
 			if got != row.value || found != row.found {
 				t.Errorf("Field(%q, %q) = %q, %t; want %q, %t", row.warning, row.key, got, found, row.value, row.found)
@@ -422,6 +431,7 @@ func TestFieldTakesAQuotedValueWhole(t *testing.T) {
 // TestFromRecordReadsWhatWarnStallLogged reads a record's own attributes, typed as warnStall
 // logged them, and renders it as the deployment's text handler would for a failure to print.
 func TestFromRecordReadsWhatWarnStallLogged(t *testing.T) {
+	t.Parallel()
 	warning := FromRecord(heldRecord(7*time.Second, "dispatch_test_ab"))
 	if warning.PendingFor != 7*time.Second || !warning.Named || warning.Database != "dispatch_test_ab" {
 		t.Errorf("FromRecord = %+v, want pending_for 7s in database dispatch_test_ab", warning)
@@ -441,6 +451,8 @@ func TestFromRecordReadsWhatWarnStallLogged(t *testing.T) {
 // belongs to a test that captures its own records: the stall warning is kept, every record still
 // reaches the test's own handler, and once stopped nothing more is kept and the test's handler is
 // the default again.
+// Serial: it swaps process-wide state - the default logger (logtest.SetDefault) - and logs
+// through it, which a test beside it would read as its own.
 func TestListenKeepsEachStallWarningAndPassesEveryRecordOn(t *testing.T) {
 	captured := &logtest.Recorder{}
 	logtest.SetDefault(t, captured)
@@ -461,5 +473,54 @@ func TestListenKeepsEachStallWarningAndPassesEveryRecordOn(t *testing.T) {
 	}
 	if want := []string{"dispatch: request", events.StallWarning, events.StallWarning}; strings.Join(messages, "|") != strings.Join(want, "|") {
 		t.Fatalf("the test's own handler got %q, want %q", messages, want)
+	}
+}
+
+// TestListensStoppedInTheCrossedOrderEachKeepWhatWasLoggedWhileTheyListened starts two listeners
+// and stops the first one first, as two parallel tests do when the one that began first ends
+// first: A, B, stop A, stop B. Each keeps exactly the stall warnings logged while it listened,
+// every record still reaches the test's own handler once, and after the last stop that handler's
+// logger is the default again. A Listen that swapped slog's default for itself and put back the
+// one it found would fail all three: stopping A would put back the test's own logger while B
+// still listened, so B would miss the third warning, and stopping B would then put back A's
+// handler, which would go on keeping the fourth.
+// Serial: it swaps process-wide state - the default logger (logtest.SetDefault) - and logs
+// through it, which a test beside it would read as its own.
+func TestListensStoppedInTheCrossedOrderEachKeepWhatWasLoggedWhileTheyListened(t *testing.T) {
+	captured := &logtest.Recorder{}
+	logtest.SetDefault(t, captured)
+	original := slog.Default()
+	pendingFor := func(warnings []Warning) []time.Duration {
+		var ages []time.Duration
+		for _, warning := range warnings {
+			ages = append(ages, warning.PendingFor)
+		}
+		return ages
+	}
+
+	warningsA, stopA := Listen(t)
+	slog.Warn(events.StallWarning, "pending_for", 1*time.Second)
+	warningsB, stopB := Listen(t)
+	slog.Warn(events.StallWarning, "pending_for", 2*time.Second)
+	stopA()
+	slog.Warn(events.StallWarning, "pending_for", 3*time.Second)
+	stopB()
+	slog.Warn(events.StallWarning, "pending_for", 4*time.Second)
+
+	if kept, want := pendingFor(warningsA()), []time.Duration{time.Second, 2 * time.Second}; !slices.Equal(kept, want) {
+		t.Errorf("A, which listened through the first two warnings, kept %v, want %v", kept, want)
+	}
+	if kept, want := pendingFor(warningsB()), []time.Duration{2 * time.Second, 3 * time.Second}; !slices.Equal(kept, want) {
+		t.Errorf("B, which listened through the second and third warnings, kept %v, want %v", kept, want)
+	}
+	if slog.Default() != original {
+		t.Errorf("after both listeners stopped the default logger is %T, want the test's own again", slog.Default().Handler())
+	}
+	var messages []string
+	for _, record := range captured.Records() {
+		messages = append(messages, record.Message)
+	}
+	if want := slices.Repeat([]string{events.StallWarning}, 4); !slices.Equal(messages, want) {
+		t.Errorf("the test's own handler got %q, want each of the four warnings once", messages)
 	}
 }
