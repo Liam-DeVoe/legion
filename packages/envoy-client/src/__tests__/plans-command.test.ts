@@ -49,7 +49,9 @@ const ratedOnce: FinishedIssue = {
   failed_steps: 1,
 };
 
-/** A finished issue its owner planned in two tasks, which no retro rated. */
+/** A finished issue its owner planned in three tasks, which no retro rated. The plan's first task
+ *  is neither the first nor the last by id, and each task has its own steps, so the line names the
+ *  first task of the plan and no other. */
 const unrated: FinishedIssue = {
   issue: "INFRA-11",
   title: "Document the retry",
@@ -62,8 +64,9 @@ const unrated: FinishedIssue = {
     artifact_id: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
     version: 3,
     tasks: [
-      { id: "api", steps: ["implementer", "reviewer"] },
-      { id: "docs", steps: ["implementer:docs"] },
+      { id: "server", steps: ["implementer", "reviewer"] },
+      { id: "api", steps: ["implementer:api"] },
+      { id: "web", steps: ["implementer:web", "tester"] },
     ],
   },
   ratings: [],
@@ -181,7 +184,7 @@ describe("dispatch plans", () => {
       [
         "INFRA: 2 finished issues",
         'INFRA-12 closed 2026-11-16T12:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 "The plan fit the work; the review sent it back once." time 1h30m failed steps 1',
-        "INFRA-11 closed 2026-11-15T08:00:00Z plan owner (2 tasks: implementer reviewer) ratings none time 1h2m failed steps 0",
+        "INFRA-11 closed 2026-11-15T08:00:00Z plan owner (3 tasks: implementer reviewer) ratings none time 1h2m failed steps 0",
       ].join("\n")
     );
     expect(result.details).toEqual({ project: "INFRA", issues: [ratedOnce, unrated] });
@@ -393,7 +396,7 @@ describe("dispatch plans on the command line", () => {
         [
           "INFRA: 2 finished issues",
           'INFRA-12 closed 2026-11-16T12:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 "The plan fit the work; the review sent it back once." time 1h30m failed steps 1',
-          "INFRA-11 closed 2026-11-15T08:00:00Z plan owner (2 tasks: implementer reviewer) ratings none time 1h2m failed steps 0",
+          "INFRA-11 closed 2026-11-15T08:00:00Z plan owner (3 tasks: implementer reviewer) ratings none time 1h2m failed steps 0",
         ].join("\n")
       );
     }
