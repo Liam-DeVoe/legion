@@ -408,11 +408,15 @@ function PaletteDialog({
   // The highlight: the row the reader sees highlighted, held by its id, beside the query whose
   // hits were listed when it was last decided ("" while none were). The two are one state
   // because they are read together, to tell a fresh query's first hits - which take the head -
-  // from the same query's hits re-ranked, which never move the highlight.
-  const [active, setActive] = useState<{ readonly hits: string; readonly id: string | null }>({
-    hits: "",
-    id: null,
-  });
+  // from the same query's hits re-ranked, which never move the highlight. `left` is true while
+  // no row is highlighted because the row that was left the list (a re-rank dropped it), so the
+  // highlight stays on no row until the reader arrows; a list that simply held nothing to
+  // highlight leaves it false, so the query's first row to arrive takes the head.
+  const [active, setActive] = useState<{
+    readonly hits: string;
+    readonly id: string | null;
+    readonly left: boolean;
+  }>({ hits: "", id: null, left: false });
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
@@ -647,14 +651,19 @@ function PaletteDialog({
   // held. Sending it to the head there would move the selection under the reader's hand, and
   // the next Enter would open a row they never chose - so nothing is highlighted, and Enter
   // does nothing, until they arrow.
+  // A list that answered this query and highlighted nothing - it held no row to highlight, a
+  // stale empty answer among them - held no row the reader could lose, so the first row of that
+  // query to arrive takes the head (INFRA-2952).
   const chosen = rows.findIndex((row) => row.id === active.id);
-  const reranked = listedQuery !== "" && listedQuery === active.hits;
+  const held = active.id !== null || active.left;
+  const reranked = listedQuery !== "" && listedQuery === active.hits && held;
   const head = leadRows.length > 0 ? 0 : hitRows.length > 0 ? operationRows.length : -1;
   const activeIndex = chosen === -1 && !reranked ? head : chosen;
   const activeRow = rows[activeIndex];
   const shownId = activeRow?.id ?? null;
-  if (shownId !== active.id || listedQuery !== active.hits) {
-    setActive({ hits: listedQuery, id: shownId });
+  const left = shownId === null && reranked;
+  if (shownId !== active.id || listedQuery !== active.hits || left !== active.left) {
+    setActive({ hits: listedQuery, id: shownId, left });
   }
   // Focus stays in the input while the arrows move the highlight (`aria-activedescendant`), so
   // the list scrolls the highlighted row into its own view: an issue page offers more rows than
@@ -730,7 +739,7 @@ function PaletteDialog({
             ? 0
             : walkable - 1
           : stepActive(activeIndex, delta, walkable);
-      setActive({ hits: listedQuery, id: rows[next]?.id ?? null });
+      setActive({ hits: listedQuery, id: rows[next]?.id ?? null, left: false });
     } else if (
       event.key === "Enter" &&
       !event.metaKey &&
@@ -769,7 +778,7 @@ function PaletteDialog({
                 setQuery(event.target.value);
                 // A new query is a new list, so the highlight is undecided again and the first
                 // hits to answer it take the head.
-                setActive({ hits: "", id: null });
+                setActive({ hits: "", id: null, left: false });
               }}
               onKeyDown={handleKeyDown}
               placeholder="Search Dispatch"

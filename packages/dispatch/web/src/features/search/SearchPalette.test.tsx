@@ -657,6 +657,41 @@ test("a re-rank that drops the highlighted hit leaves no row highlighted, and En
   }
 });
 
+test("a first answer with no hits and a second that carries one leave that hit highlighted, and Enter opens it", async () => {
+  const user = userOnFakeClock();
+  const [only] = [issueHit("LEGION-3")];
+  const search = spyOn(api, "search").mockImplementation(bothTiers([], [only]));
+  const view = renderPalette();
+
+  try {
+    // The keystroke's search answers this query with no hit, so the list holds nothing to
+    // highlight. The clock moves the debounce's length alone, short of the pause.
+    const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
+    await user.click(input);
+    await user.paste("astrolabe");
+    await tick(150);
+    expect(search.mock.calls).toHaveLength(1);
+    expect(search.mock.calls[0]?.[1]).toEqual({ keywords_only: true });
+    expect(screen.getByText(/No results for/)).toBeInTheDocument();
+    expect(optionIds()).not.toContain(optionId(only));
+    expect(input.getAttribute("aria-activedescendant")).toBeNull();
+
+    // The pause's search answers the same query with its one hit. No row was highlighted, so
+    // no row the reader held has left: the hit is the query's first and takes the highlight.
+    // The clock crosses the 500 ms pause here deliberately: this row is about what firing it
+    // does.
+    await tick(500);
+    await waitFor(() => expect(optionIds()).toContain(optionId(only)), { timeout: 3000 });
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(only));
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-3");
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 test("a background refresh that fails keeps the hits the query has, and the highlight on its hit", async () => {
   const user = userOnFakeClock();
   const [first, second] = [issueHit("LEGION-3"), issueHit("LEGION-4")];
