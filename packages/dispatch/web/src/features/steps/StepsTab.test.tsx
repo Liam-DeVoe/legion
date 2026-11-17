@@ -113,6 +113,61 @@ test("the Steps tab draws each task's runs as a table, a running run as running"
   }
 });
 
+// Two tasks are two tables under two headings, in the server's order (which here is not the
+// order of their names), and each table holds its own task's runs and none of the other's.
+test("the Steps tab draws each of two tasks as its own table, with its own runs", async () => {
+  const tab = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [
+      {
+        steps: [
+          record({ id: "docs-implement-1", task: "docs" }),
+          record({
+            attempt: 2,
+            id: "docs-review-1",
+            result: "stopped",
+            role: "reviewer",
+            step: 3,
+            task: "docs",
+            type: "review",
+          }),
+        ],
+        task: "docs",
+      },
+      {
+        steps: [record({ id: "default-plan-1", role: "planner", step: 1, type: "plan" })],
+        task: "default",
+      },
+    ],
+  }));
+
+  try {
+    const tables = await screen.findAllByRole("table");
+    expect(tables.map((table) => table.getAttribute("aria-label"))).toEqual([
+      "Steps of task docs",
+      "Steps of task default",
+    ]);
+    expect(screen.getAllByRole("heading").map((heading) => heading.textContent)).toEqual([
+      "Task docs",
+      "Task default",
+    ]);
+    // Each table's step, role, type, attempt and result, the table of docs first.
+    expect(
+      tables.map((table) =>
+        bodyRows(table).map((cells) => [cells[0], cells[1], cells[2], cells[5], cells[8]])
+      )
+    ).toEqual([
+      [
+        ["2", "implementer", "implementation", "1", "passed"],
+        ["3", "reviewer", "review", "2", "stopped"],
+      ],
+      [["1", "planner", "plan", "1", "passed"]],
+    ]);
+  } finally {
+    tab.restore();
+  }
+});
+
 // "step 1" is one phrase. A narrow Result column (a phone) wraps "stopped, returned to step 1"
 // between its words, and the last break must not fall inside the phrase: at 390 px it left the
 // number alone on the last line.
