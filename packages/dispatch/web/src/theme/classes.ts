@@ -243,10 +243,11 @@ for (const [status, [, background, foreground]] of Object.entries(ISSUE_STATUS_S
  * One fixed fill for each phase Time per phase draws (`WORK_PHASES` in
  * `features/project/issues-table-model.ts`), in the board's order with Other last: eight from
  * the Okabe-Ito palette, which readers with each common colour-vision deficiency can tell apart
- * (https://jfly.uni-koeln.de/color/#pallet), and two grays, Held and Other. No two phases share
- * a fill. Each is the same in both colour schemes but Waiting on a person's, black on a light
- * page and white on a dark one. Queue holds no hours, so it has no fill. No text is drawn on
- * these fills - every name stands beside its swatch - so no contrast pair is registered for them.
+ * (https://jfly.uni-koeln.de/color/#pallet), and three grays, Retro, Held and Other. No two
+ * phases share a fill. Each is the same in both colour schemes but Waiting on a person's, black
+ * on a light page and white on a dark one. Queue holds no hours, so it has no fill. No text is
+ * drawn on these fills - every name stands beside its swatch - so no contrast pair is registered
+ * for them.
  */
 export const legionPhaseFill = {
   design: "bg-[#E69F00]",
@@ -255,6 +256,7 @@ export const legionPhaseFill = {
   testing: "bg-[#F0E442]",
   reviewing: "bg-[#0072B2]",
   accepting: "bg-[#D55E00]",
+  retro: "bg-[#666666]",
   merging: "bg-[#CC79A7]",
   awaiting_person: "bg-[#000000] dark:bg-[#FFFFFF]",
   held: "bg-[#999999]",

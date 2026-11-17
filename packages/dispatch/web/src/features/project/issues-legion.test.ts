@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { http } from "msw";
 
@@ -106,7 +108,7 @@ const servedColumns = (key: string): Record<string, unknown> => ({
   priority: 1,
 });
 
-test("the Legion phases are the board's ten columns, in its order, by their titles", () => {
+test("the Legion phases are the board's columns, in its order, by their titles, with Retro between Accepting and Merging", () => {
   expect(LEGION_PHASES.map(({ id, title }) => [id, title])).toEqual([
     ["queue", "Queue"],
     ["design", "Design"],
@@ -115,13 +117,30 @@ test("the Legion phases are the board's ten columns, in its order, by their titl
     ["testing", "Testing"],
     ["reviewing", "Reviewing"],
     ["accepting", "Accepting"],
+    ["retro", "Retro"],
     ["merging", "Merging"],
     ["awaiting_person", "Waiting on a person"],
     ["held", "Held"],
   ]);
+  expect(legionPhaseTitle("retro")).toBe("Retro");
   expect(legionPhaseTitle("awaiting_person")).toBe("Waiting on a person");
   // A phase a newer daemon names, which this build does not know, shows as the daemon wrote it.
   expect(legionPhaseTitle("rebasing")).toBe("rebasing");
+});
+
+test("the Legion phases are each column id of the board route's contract, and no other", () => {
+  // The generated `LegionBoardColumn["id"]` is made from this enum. A column that the board
+  // adds and the phase list lacks fails here.
+  const contract = JSON.parse(
+    readFileSync(
+      join(import.meta.dir, "../../../../../contracts/schemas/dispatch-openapi.json"),
+      "utf8"
+    )
+  ) as {
+    components: { schemas: { LegionBoardColumn: { properties: { id: { enum: string[] } } } } };
+  };
+  const columns = contract.components.schemas.LegionBoardColumn.properties.id.enum;
+  expect(LEGION_PHASES.map(({ id }) => id).sort()).toEqual([...columns].sort());
 });
 
 test("the time in a phase and the work time read in minutes, hours and minutes, then days", () => {

@@ -6,7 +6,9 @@ import { legionPhaseFill, surfaceMutedBg } from "../../theme/classes";
 import { PhaseHoursCell, type PhaseHoursMode, PhaseHoursModeControl } from "./issues-phase-hours";
 import { WORK_PHASES } from "./issues-table-model";
 
-/** The Design's colour for each phase: one in both schemes, but Waiting on a person's. */
+/** The Design's colour for each phase, in the board's order with Other last: one in both
+ *  schemes, but Waiting on a person's. Retro's `#666666` is from the spec's correction
+ *  (dispatch://INFRA-3221/comment/57ac6e4d-c2d8-4e1d-a082-f26b0dc34ae7). */
 const DESIGN_COLOURS: Readonly<Record<string, string>> = {
   design: "bg-[#E69F00]",
   planning: "bg-[#56B4E9]",
@@ -14,6 +16,7 @@ const DESIGN_COLOURS: Readonly<Record<string, string>> = {
   testing: "bg-[#F0E442]",
   reviewing: "bg-[#0072B2]",
   accepting: "bg-[#D55E00]",
+  retro: "bg-[#666666]",
   merging: "bg-[#CC79A7]",
   awaiting_person: "bg-[#000000] dark:bg-[#FFFFFF]",
   held: "bg-[#999999]",
@@ -24,7 +27,8 @@ const DESIGN_COLOURS: Readonly<Record<string, string>> = {
 const EVERY_PART: Record<string, number> = {
   other: 1,
   held: 1,
-  reviewing: 4,
+  reviewing: 3,
+  retro: 1,
   design: 2,
   awaiting_person: 3,
   implementing: 8,
@@ -55,10 +59,13 @@ const segments = () =>
     phase: segment.dataset.phaseSegment,
   }));
 
-test("each phase has the Design's fixed colour, no two the same, and Queue has none", () => {
+test("each phase has the Design's fixed colour in the board's order with Other last, no two the same, and Queue has none", () => {
+  expect([...WORK_PHASES]).toEqual(Object.keys(DESIGN_COLOURS));
   expect(Object.keys(legionPhaseFill)).toEqual([...WORK_PHASES]);
   const fills: Readonly<Record<string, string>> = legionPhaseFill;
   expect({ ...fills }).toEqual(DESIGN_COLOURS);
+  // Retro is one gray in both schemes, apart from Held's and Other's.
+  expect(legionPhaseFill.retro).toBe("bg-[#666666]");
   expect(new Set(Object.values(legionPhaseFill)).size).toBe(WORK_PHASES.length);
   expect(Object.keys(legionPhaseFill)).not.toContain("queue");
 });
@@ -107,6 +114,29 @@ test("an issue whose facts hold no hours draws an empty cell", () => {
   for (const restore of restores.splice(0)) restore();
   cell({ implementing: 0 });
   expect(screen.getByTestId("cell")).toBeEmptyDOMElement();
+});
+
+test("a row with Retro hours draws its Retro segment and its tooltip line between Accepting and Merging", async () => {
+  const user = userEvent.setup();
+  cell({ merging: 1, other: 1, retro: 2, accepting: 1 });
+  expect(segments()).toEqual([
+    { className: "bg-[#D55E00]", phase: "accepting" },
+    { className: "bg-[#666666]", phase: "retro" },
+    { className: "bg-[#CC79A7]", phase: "merging" },
+    { className: "bg-[#D9D9D9]", phase: "other" },
+  ]);
+  await user.hover(screen.getByRole("button", { name: "Time per phase, 5.0 h" }));
+  const lines = [
+    ...screen.getByRole("tooltip").querySelectorAll<HTMLElement>("[data-phase-hours-line]"),
+  ];
+  expect(lines.map((line) => [...line.children].slice(1).map((part) => part.textContent))).toEqual([
+    ["Accepting", "1.0 h", "20%"],
+    ["Retro", "2.0 h", "40%"],
+    ["Merging", "1.0 h", "20%"],
+    ["Other", "1.0 h", "20%"],
+  ]);
+  const retro = lines.find((line) => line.dataset.phaseHoursLine === "retro");
+  expect(retro?.querySelector("[data-phase-swatch]")).toHaveClass("bg-[#666666]");
 });
 
 test("the cell is a Tab stop whose tooltip has one line per phase with hours: its swatch, name, hours and share", async () => {

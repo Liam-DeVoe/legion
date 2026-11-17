@@ -632,7 +632,7 @@ export const legionDaemonQuery = (project: string) =>
 
 /** A project's Legion board, live (`GET /api/v1/projects/{key}/legion/board`): one subscription
  *  per project, since the board has no window and the project is all it reads. Its snapshot and
- *  each delta carry the ten columns of cards in the board's order, with the Queue column in the
+ *  each delta carry every column of cards in the board's order, with the Queue column in the
  *  daemon's own order, the header (capacity, the queue's length, the last read and whether it
  *  failed), and the `issues` map of stored facts by issue key, so a daemon read or a facts write
  *  of an issue the board shows reaches the page at once. TanStack Query's own sharing keeps what

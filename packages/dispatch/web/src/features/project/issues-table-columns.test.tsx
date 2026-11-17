@@ -400,6 +400,20 @@ test("Legion phase sorts in the board's order, the rows with no card last either
   });
   await screen.findByRole("table", { name: "Issues" });
   expect(listed()).toEqual(["CORE-5", "CORE-1", "CORE-2", "CORE-3", "CORE-4", "CORE-6", "CORE-7"]);
+  undraw();
+  // A Retro card sorts between an Accepting card and a Merging card.
+  const late = board(
+    { merging: [card("CORE-1")], retro: [card("CORE-2")], accepting: [card("CORE-3")] },
+    {}
+  );
+  draw({
+    items: rows({ legion: { ...READS, board: late } }),
+    layout: showing("legion_phase"),
+    sorting: [{ id: "legion_phase", desc: false }],
+  });
+  await screen.findByRole("table", { name: "Issues" });
+  expect(listed().slice(0, 3)).toEqual(["CORE-3", "CORE-2", "CORE-1"]);
+  expect(cellsOf("CORE-2")).toEqual(["Retro"]);
 });
 
 test("Worker state and Why it waits sort in their values' order and read their words", async () => {

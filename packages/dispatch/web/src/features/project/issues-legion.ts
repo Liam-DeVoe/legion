@@ -15,10 +15,13 @@ import type {
 
 /**
  * The Legion phases, in the board's order (`legionBoardColumnOrder` in
- * `packages/envoy/internal/dispatch/api/legion_board.go`): the ten columns of the board route,
- * each by its id and its title. The Legion phase column, its filter, the Board grouped by Legion
- * phase and Time per phase follow this order. An issue is in a phase only while the daemon holds
- * a card for it, and its Dispatch status is a column of its own.
+ * `packages/envoy/internal/dispatch/api/legion_board.go`): every column of the board route, each
+ * by its id and its title, with Retro between Accepting and Merging. The Legion phase column,
+ * its filter, the Board grouped by Legion phase and Time per phase follow this order. An issue
+ * is in a phase only while the daemon holds a card for it, and its Dispatch status is a column
+ * of its own. Each id is one of the generated column ids (`LegionBoardColumn["id"]`), and
+ * `issues-legion.test.ts` holds this list to that whole set: a column that the board adds and
+ * this list lacks fails that test.
  */
 export const LEGION_PHASES = [
   { id: "queue", title: "Queue" },
@@ -28,6 +31,7 @@ export const LEGION_PHASES = [
   { id: "testing", title: "Testing" },
   { id: "reviewing", title: "Reviewing" },
   { id: "accepting", title: "Accepting" },
+  { id: "retro", title: "Retro" },
   { id: "merging", title: "Merging" },
   { id: "awaiting_person", title: "Waiting on a person" },
   { id: "held", title: "Held" },

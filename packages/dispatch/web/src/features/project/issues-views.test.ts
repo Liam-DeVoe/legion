@@ -735,7 +735,7 @@ test("Legion tree's picks are root, child and none, and two of them select their
   ]);
 });
 
-test("Legion phase's picks are the board's column ids and none", () => {
+test("Legion phase's picks are the board's column ids in its order, Retro between Accepting and Merging, and None last", () => {
   expect(LEGION_PHASE_PICKS).toEqual([
     "queue",
     "design",
@@ -744,6 +744,7 @@ test("Legion phase's picks are the board's column ids and none", () => {
     "testing",
     "reviewing",
     "accepting",
+    "retro",
     "merging",
     "awaiting_person",
     "held",

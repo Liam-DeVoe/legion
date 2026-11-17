@@ -459,7 +459,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     id: "legion_phase",
     size: 168,
     min: 168,
-    // The ten phases are offered in the board's order, then None, whatever the rows hold.
+    // Every Legion phase is offered in the board's order, then None, whatever the rows hold.
     filter: one((item) => phaseColumnPick(item.card?.column), {
       order: LEGION_PHASE_PICKS,
       show: (value) => (value === NONE_PICK ? NONE_WORD : legionPhaseTitle(value)),

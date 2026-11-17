@@ -425,8 +425,8 @@ function facts(overrides: Partial<LegionBoardFacts> = {}): LegionBoardFacts {
   };
 }
 
-/** The board route's answer: its ten columns in the board's order, each with the cards
- *  `cards` gives it, and the `issues` map. */
+/** The board route's answer: its columns in the board's order, each with the cards `cards`
+ *  gives it, and the `issues` map. */
 function board(
   cards: Partial<Record<LegionPhase, LegionBoardCard[]>>,
   issues: Record<string, LegionBoardFacts>
@@ -454,7 +454,7 @@ function board(
 const alice = { kind: "user", id: "alice" };
 const bob = { kind: "user", id: "bob" };
 
-/** Nine rows of a project with a Legion daemon: cards in four columns, facts from the board's
+/** Nine rows of a project with a Legion daemon: cards in three columns, facts from the board's
  *  map and from the items read, and rows with no Legion work. */
 const LEGION_ISSUES: IssueSummary[] = [
   issue("CORE-1", { created_by: alice }),
@@ -554,7 +554,7 @@ test("each card column picks what the rows' cards hold, in the board's words and
   });
   const phase = columnFilterSpec("legion_phase");
   if (phase?.kind !== "picks") throw new Error("Legion phase picks");
-  // The ten phases in the board's order, then None, whatever the rows hold.
+  // Every Legion phase in the board's order, then None, whatever the rows hold.
   expect(phase.always).toEqual([...LEGION_PHASES.map(({ id }) => id), "none"]);
   expect(phase.always?.map(showOf("legion_phase"))).toEqual([
     "Queue",
@@ -564,6 +564,7 @@ test("each card column picks what the rows' cards hold, in the board's words and
     "Testing",
     "Reviewing",
     "Accepting",
+    "Retro",
     "Merging",
     "Waiting on a person",
     "Held",
@@ -817,6 +818,10 @@ test("Group by offers main's groupings and Legion phase, in the board's order wi
     "awaiting_person",
     "none",
   ]);
+  // Retro heads its group between Accepting and Merging.
+  expect(
+    ["none", "merging", "retro", "accepting"].sort((a, b) => compareGroups("legion_phase", a, b))
+  ).toEqual(["accepting", "retro", "merging", "none"]);
   expect(readUrl(new URLSearchParams("group=legion_phase")).grouping).toEqual(["legion_phase"]);
 });
 
