@@ -78,13 +78,18 @@ func (cmarkGFMBlock) CanInterruptParagraph() bool { return true }
 func (cmarkGFMBlock) CanAcceptIndentedLine() bool { return false }
 
 // cmarkGFMCommentEnd is where cmark-gfm's comment scanner can end a comment
-// (src/scanners.re:57, `htmlcomment`), read on the text after its `<!--`: at a `-->` that no `-`
-// stands before, or one at that text's first byte.
-var cmarkGFMCommentEnd = regexp.MustCompile(`(?:^|[^-])-->`)
+// (src/scanners.re:57, `htmlcomment`), read on the text after its `<!--`: at a run of dashes, 2
+// more than a multiple of 3, before a `>`. Its `"--" [^\x00>]` alternative takes three dashes at a
+// time and the closing `-->` takes the last two, so a run of 2, 5, 8 and so on ends a comment and
+// a run of any other length does not. The run begins at that text's first byte, where the `<!--`
+// it opened stands, or after a byte that is no dash.
+var cmarkGFMCommentEnd = regexp.MustCompile(`(?:^|[^-])(?:---)*-->`)
 
 // cmarkGFMRawHTML is whether GitHub writes n, an inline raw HTML node goldmark reads with text raw,
 // as raw HTML: when it does not, GitHub writes it as text, which hides nothing and ends no open
-// comment. cmark-gfm reads inline raw HTML as goldmark does but at a `<!` (src/inlines.c:940-980):
+// comment. cmark-gfm reads inline raw HTML as goldmark does but at a `<!` (src/inlines.c:940-980),
+// and the three readings below are its (a declaration with no space after its name is under
+// VisibleMarkdown's "Not modelled"):
 //   - `<!-->` and `<!--->` are comments to both (inlines.c:943-947);
 //   - another `<!--` opens a comment that cmark-gfm's scanner (inlines.c:949) ends at the first
 //     cmarkGFMCommentEnd after it, which may lie past goldmark's end, the first `-->`, anywhere
@@ -213,6 +218,10 @@ func commentEndAfter(block ast.Node, from int, source []byte) bool {
 //     (parser/html_block.go:88 and parser/raw_html.go:41 at v1.8.6), where CommonMark and every
 //     renderer take any ASCII letter, so the declaration is read as text and stays, though no page
 //     shows it;
+//   - a declaration with no space after its name, such as `<!ZM>` or `<!DOCTYPE>`: cmark-gfm takes
+//     a name and then one space character at least (scanners.re:61, `declaration`), so GitHub
+//     writes such a one as text, where goldmark reads inline raw HTML and this takes it out. That
+//     takes out text the page shows, so a check fails rather than passes;
 //   - a tag or a quoted attribute value an HTML block leaves open, as in `<div title="x` and a
 //     blank line: on GitHub the HTML parser runs the tag on over what follows, up to the quote or
 //     the `>` that ends it, and hides that text, where this reads each node on its own, ends the

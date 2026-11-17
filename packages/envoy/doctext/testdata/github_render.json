@@ -1,5 +1,5 @@
 {
- "read": "2026-11-17T22:13:28Z",
+ "read": "2026-11-17T23:18:27Z",
  "how": "gh api markdown -f text=<doc> -f mode=gfm (POST /markdown), GitHub's renderer and sanitizer",
  "rows": [
   {
@@ -293,6 +293,49 @@
     "zh34"
    ],
    "html": "<p>para zp34</p>\n<source>"
+  },
+  {
+   "name": "a run of five dashes ends a comment",
+   "doc": "p <!-- zm35 -----> ze35\n",
+   "markers": [
+    "zm35",
+    "ze35"
+   ],
+   "html": "<p>p  ze35</p>"
+  },
+  {
+   "name": "a five-dash comment, then a CDATA section",
+   "doc": "p <!-- zm36 -----> zn36 <![CDATA[ zc36 ]]> ze36\n",
+   "markers": [
+    "zm36",
+    "zn36",
+    "zc36",
+    "ze36"
+   ],
+   "html": "<p>p  zn36  ze36</p>"
+  },
+  {
+   "name": "runs of six, seven and eight dashes",
+   "doc": "p <!-- zm37 ------> ze37\n\nq <!-- zm38 -------> ze38\n\nr <!-- zm39 --------> ze39\n",
+   "markers": [
+    "zm37",
+    "ze37",
+    "zm38",
+    "ze38",
+    "zm39",
+    "ze39"
+   ],
+   "html": "<p>p &lt;!-- zm37 ------&gt; ze37</p>\n<p>q &lt;!-- zm38 -------&gt; ze38</p>\n<p>r  ze39</p>"
+  },
+  {
+   "name": "an open comment that a five-dash comment ends",
+   "doc": "<div><!--\n\nzh40 <!-- q -----> zs40\n\nzt40\n",
+   "markers": [
+    "zh40",
+    "zs40",
+    "zt40"
+   ],
+   "html": "<div> zs40<p></p>\n<p>zt40</p></div>"
   }
  ]
 }
