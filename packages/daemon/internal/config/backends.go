@@ -20,10 +20,14 @@ func (c Config) BackendFor(role claim.Role) runtime.Backend {
 }
 
 // Backends are the backends the daemon launches agents on, each once, in the order the workflow
-// reaches the first role on it: every issue role's (BackendFor), then the controller's when the
-// daemon launches it. Boot resolves each one's launch (readTmux).
+// reaches the first role on it: every issue role's (BackendFor), then that of each role of
+// `roles`, in the file's order, then the controller's when the daemon launches it. Boot resolves
+// each one's launch (readTmux).
 func (c Config) Backends() []runtime.Backend {
 	roles := slices.Clone(claim.Roles)
+	for _, role := range c.Roles {
+		roles = append(roles, role.Name)
+	}
 	if c.ControllerLaunch == ControllerLaunchDaemon {
 		roles = append(roles, claim.RoleController)
 	}
@@ -67,7 +71,7 @@ func readWorkerBackends(value *yaml.Node, key string) (map[claim.Role]runtime.Ba
 		case !ok:
 			return nil, fmt.Errorf("%s.%s must be one of %s (got %q)", key, role, names, name)
 		case !info.Runs(role):
-			return nil, fmt.Errorf("%s.%s is %s (%s), which runs only %s: %s", key, role, backend, info.Name, runtime.JoinRoles(info.Roles), info.Why)
+			return nil, fmt.Errorf("%s.%s is %s (%s), which runs only %s: %s", key, role, backend, info.Name, info.RunsWhat(), info.Why)
 		}
 		backends[role] = backend
 	}
