@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import type { Artifact } from "../../../api/types";
+import { pageFocusedRow } from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
@@ -19,6 +20,7 @@ import {
   type TreeNode,
 } from "../issue-tree";
 import {
+  ANSWER_LINES,
   BLOCK_ATTRIBUTE_LABELS,
   EMPTY_STATE_LINES,
   NODE_TYPE_NAMES,
@@ -26,7 +28,7 @@ import {
   PLAN_WORDS,
 } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
-import { PlanFilterBody } from "./PlanFilterBody";
+import { PlanFilterBody, type PlanRead, type PlanReads } from "./PlanFilterBody";
 
 /**
  * What the Plan filter's body draws (dispatch://INFRA-1196 R26, ruling 5 of build-rulings-md):
@@ -188,25 +190,33 @@ function Place(): ReactNode {
 /** The plan document, as the issue's read names it. */
 const PLAN_ARTIFACT = "artifact-plan";
 
+/** Both reads answered, which every case draws under unless it gives another. */
+const ANSWERED: PlanReads = { state: "answered" };
+
 /** Draws the body over `root`, the view's tasks. `plan` is the whole plan's tasks, which the
  *  order and the chart's places are worked out from (`slots/view-plan.tsx`, dispatch://INFRA-3938
  *  R4): the view's own tasks unless a case draws the view a words filter leaves. `reveal` is the
  *  chain down to the node the address names. `written` is the block ids of the plan document in
  *  the order they are written, as the page's own blocks read holds them (`useIssueTree.ts`);
  *  where a case gives none the page holds no document, as on a tree drawn before that read
- *  answered. */
+ *  answered. `reads` is how the plan's and the spec's blocks reads stand, as the slot hands them
+ *  on (`slots/view-plan.tsx`): answered unless a case gives another. `redraw` draws the same body
+ *  again where it is mounted, over another `root` and `reads`, as the slot does when the issue's
+ *  reads change. */
 function renderBody(
   root: TreeNode,
   {
-    plan = root.children,
+    plan,
+    reads = ANSWERED,
     reveal,
     written,
   }: {
     plan?: readonly TreeNode[];
+    reads?: PlanReads;
     reveal?: readonly TreeNode[];
     written?: readonly string[];
   } = {}
-): RenderResult {
+): RenderResult & { readonly redraw: (root: TreeNode, reads: PlanReads) => void } {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -218,7 +228,7 @@ function renderBody(
       written.map((id) => ({ id }))
     );
   }
-  return render(
+  const draw = (shown: TreeNode, held: PlanReads): ReactNode => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <KeymapProvider>
@@ -235,9 +245,10 @@ function renderBody(
                 holdsEscape={false}
                 isClosed={false}
                 onEditing={() => {}}
-                plan={plan}
+                plan={plan ?? shown.children}
+                reads={held}
                 reveal={reveal}
-                root={root}
+                root={shown}
                 rootRow={false}
               />
             </FocusedNodeProvider>
@@ -246,6 +257,8 @@ function renderBody(
       </QueryClientProvider>
     </MemoryRouter>
   );
+  const view = render(draw(root, reads));
+  return { ...view, redraw: (shown, held) => view.rerender(draw(shown, held)) };
 }
 
 const D = (blockId: string): string => blockNodeId(PLAN, blockId);
@@ -538,6 +551,92 @@ test("the control switches to the ordered steps, which are the outline's own row
   }
 });
 
+// A Verification or decisions document made while the reader is on Plan rebuilds the issue's
+// tree, and the slot draws the same body again over the same tasks, its reads still answered and
+// the body mounted where it was (`slots/view-plan.tsx`; decisions 98 and 148 of
+// dispatch://INFRA-1196): the reader's press of "Steps", the focused row and its mark stay
+// (dispatch://INFRA-3938 R6 and R7).
+test("the body drawn again over the same tasks keeps Steps pressed and the focused row marked", async () => {
+  setViewport(1440);
+  const tasks = (): TreeNode => issue([task("t1"), task("t2", { needs: ["t1"] })]);
+  const view = renderBody(tasks());
+  try {
+    const steps = () => view.getByRole("button", { name: PLAN_WORDS.steps });
+    const card = () => rowOf(view, "t2").querySelector("[data-node-card]")?.className;
+    await showSteps(view);
+    act(() => rowOf(view, "t2").focus());
+    expect([steps().getAttribute("aria-pressed"), focusedRow()]).toEqual(["true", D("t2")]);
+    expect(card()).toContain(pageFocusedRow);
+    view.redraw(tasks(), ANSWERED);
+    expect(
+      steps().getAttribute("aria-pressed"),
+      "the body drawn again over the same tasks is back on the chart"
+    ).toBe("true");
+    expect(focusedRow()).toBe(D("t2"));
+    expect(card()).toContain(pageFocusedRow);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The view waits on the plan's and the spec's blocks reads (`slots/view-plan.tsx`, decision 148
+// of dispatch://INFRA-1196): while one is out its tree holds nothing, and a read refused before
+// it first answered is one line over the tree, in the page's words, with a Retry that asks that
+// read again. Neither draws a row, the switch or the empty line, and the tree itself stays
+// (dispatch://INFRA-3938 R1). With the focus on nothing, the first Retry takes it, and Enter on
+// it, once the reads answer, leaves the focus on the chart's first row (decisions 182 and 162 of
+// dispatch://INFRA-1196, R7).
+test("while a read is out the view draws nothing, and a read that failed says so with a Retry that takes the focus", async () => {
+  setViewport(1440);
+  const root = issue([task("t1"), task("t2", { needs: ["t1"] })]);
+  const asked: PlanRead[] = [];
+  const failed = (...reads: PlanRead[]): PlanReads => ({
+    failed: reads,
+    onRetry: (read) => asked.push(read),
+    state: "failed",
+  });
+  const view = renderBody(root, { reads: { state: "waiting" } });
+  try {
+    const drawn = () => ({
+      charts: view.container.querySelectorAll("[data-plan-chart]").length,
+      empty: view.container.textContent?.includes(EMPTY_STATE_LINES.plan),
+      rows: rowIds(view.container),
+      switches: view.container.querySelectorAll("[data-plan-switch]").length,
+      trees: view.container.querySelectorAll('[role="tree"]').length,
+    });
+    const nothing = { charts: 0, empty: false, rows: [], switches: 0, trees: 1 };
+    const lines = () => [...view.container.querySelectorAll("[data-plan-unreadable]")];
+    expect(drawn()).toEqual(nothing);
+    expect(lines()).toHaveLength(0);
+
+    view.redraw(root, failed("plan", "statements"));
+    expect(drawn()).toEqual(nothing);
+    expect(
+      lines().map((line) => [
+        line.getAttribute("data-plan-unreadable"),
+        line.querySelector("p")?.textContent,
+        line.closest('[role="tree"]'),
+      ])
+    ).toEqual([
+      ["plan", ANSWER_LINES.plan_unreadable, null],
+      ["statements", ANSWER_LINES.statements_unreadable, null],
+    ]);
+    const retry = lines()[0]?.querySelector("button");
+    if (retry == null) throw new Error("the plan's line draws no Retry");
+    expect(document.activeElement, "the first line's Retry does not take the focus").toBe(retry);
+    await userEvent.keyboard("{Enter}");
+    expect(asked).toEqual(["plan"]);
+
+    view.redraw(root, ANSWERED);
+    expect(lines()).toHaveLength(0);
+    expect(rowIds(view.container)).toEqual([D("t1"), D("t2")]);
+    expect(view.container.querySelectorAll("[data-plan-switch]")).toHaveLength(1);
+    expect(focusedRow(), "Enter on Retry does not leave the focus on the first row").toBe(D("t1"));
+  } finally {
+    view.unmount();
+  }
+});
+
 // The focus leaving the chart lets go of its row by the outline's own rule (part I's
 // `useReleaseFocus`, decision 105 of dispatch://INFRA-1196 as amended; dispatch://INFRA-3938 R6):
 // with no press under way, the row's mark and its heavier curves go at once, and Details goes back
@@ -690,6 +789,17 @@ test("a plan with no tasks says so in the one line the page has for it, and draw
     expect(view.container.textContent).toContain(EMPTY_STATE_LINES.plan);
   } finally {
     view.unmount();
+  }
+  // While its reads are out (`slots/view-plan.tsx`) a view with no task is one whose tasks have
+  // not arrived, and it draws nothing - no line, no switch and no chart (dispatch://INFRA-3938
+  // R1).
+  const held = renderBody(issue([]), { reads: { state: "waiting" } });
+  try {
+    expect(held.container.querySelectorAll("[data-plan-switch]")).toHaveLength(0);
+    expect(held.container.querySelectorAll("[data-plan-chart]")).toHaveLength(0);
+    expect(held.container.querySelector("[data-plan-body]")?.textContent).toBe("");
+  } finally {
+    held.unmount();
   }
 });
 

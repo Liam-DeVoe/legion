@@ -152,6 +152,8 @@ export function stepLayouts(page: Page): Promise<StepLayout[]> {
       const third = row.querySelector(":scope > [data-plan-serves]");
       const noSize = row.querySelector("[data-plan-no-size]");
       const nothing = { bottom: 0, height: 0, left: 0, right: 0, top: 0, width: 0 };
+      // One query for the statement chips, so the line's tops are those of the chips' boxes.
+      const chips = [...row.querySelectorAll("[data-plan-serve]")].map(box);
       return {
         bar: {
           ...(bar === null ? nothing : box(bar)),
@@ -159,7 +161,7 @@ export function stepLayouts(page: Page): Promise<StepLayout[]> {
           borderColor: barStyle?.borderTopColor ?? "",
           borderStyle: barStyle?.borderTopStyle ?? "",
         },
-        chips: [...row.querySelectorAll("[data-plan-serve]")].map(box),
+        chips,
         columns: {
           first: first === null ? 0 : first.getBoundingClientRect().width,
           third: third === null ? 0 : third.getBoundingClientRect().width,
@@ -170,9 +172,7 @@ export function stepLayouts(page: Page): Promise<StepLayout[]> {
             (need) => need.getBoundingClientRect().top
           ),
           noSize: noSize === null ? null : noSize.getBoundingClientRect().top,
-          serves: [...row.querySelectorAll("[data-plan-serve]")].map(
-            (serve) => serve.getBoundingClientRect().top
-          ),
+          serves: chips.map((chip) => chip.top),
         },
         row: {
           ...box(row),

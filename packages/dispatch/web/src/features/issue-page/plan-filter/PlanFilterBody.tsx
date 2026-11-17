@@ -13,6 +13,7 @@ import {
 import { Link, useNavigate } from "react-router-dom";
 
 import { artifactBlocksQuery } from "../../../api/queries";
+import { QueryError } from "../../../components/QueryError";
 
 import {
   focusVisibleRing,
@@ -34,7 +35,13 @@ import { drawnLine, firstLineOf, heldBy, lineWords, type TreeNode } from "../iss
 import { useRowOnScreen } from "../NodeRow";
 import { chipWords } from "../node-row-chip";
 import { authorText, pageChrome } from "../page-structure";
-import { CONTROL_LABELS, NODE_TYPE_NAMES, PLAN_WORDS, PRESET_NAMES } from "../page-words";
+import {
+  ANSWER_LINES,
+  CONTROL_LABELS,
+  NODE_TYPE_NAMES,
+  PLAN_WORDS,
+  PRESET_NAMES,
+} from "../page-words";
 import {
   needsChip,
   type PlanBar,
@@ -46,6 +53,21 @@ import {
   taskDocumentIds,
   writtenOrder,
 } from "./plan-order";
+
+/** The two reads the Plan view is drawn from (`slots/view-plan.tsx`): the plan document's
+ *  blocks, which are its tasks, and the spec's blocks, which are the statements a task serves. */
+export type PlanRead = "plan" | "statements";
+
+/** How the reads the body is drawn from stand: one still out, both answered, or one or both
+ *  failed before they first answered, each with the press that asks that read again. */
+export type PlanReads =
+  | { readonly state: "waiting" }
+  | { readonly state: "answered" }
+  | {
+      readonly state: "failed";
+      readonly failed: readonly PlanRead[];
+      readonly onRetry: (read: PlanRead) => void;
+    };
 
 /**
  * The Plan filter's body (dispatch://INFRA-1196 R26, ruling 5 of build-rulings-md, the picture
@@ -78,6 +100,14 @@ import {
  * the button pressed (dispatch://INFRA-3938 R6 and R7; dispatch://INFRA-1196 R11). Held by the
  * chart, the address would take the focus back from "Chart" each time the chart is drawn again.
  *
+ * It draws its tasks, its switch and its empty line once both reads it is drawn from have
+ * answered (`reads`), so it never says the issue has no plan tasks before they are in
+ * (dispatch://INFRA-3938 R1); until then its tree holds nothing, and a read refused before it
+ * first answered is one line over the tree with a Retry that asks that read alone again, as
+ * part V says its own (decisions 126 and 148 of dispatch://INFRA-1196). It stays mounted
+ * through all of it (`slots/view-plan.tsx`), so no read takes the reader's press of "Steps",
+ * the focus or its mark (R6, R7).
+ *
  * ## What today's reads give, and what waits
  *
  * - **The plan's own order** is the order the tasks are written in (`plan-order.ts`'s
@@ -99,7 +129,9 @@ import {
  *   dispatch://INFRA-3577 and dispatch://INFRA-1253.
  */
 export function PlanFilterBody({
+  emptyLine,
   plan,
+  reads,
   root,
   ...tree
 }: ComponentProps<typeof IssueTree> & {
@@ -107,6 +139,8 @@ export function PlanFilterBody({
    *  (`slots/view-plan.tsx`): the order and the chart's places are worked out from them, and
    *  `root`, the view, chooses which of those places are drawn (dispatch://INFRA-3938 R4). */
   plan: readonly TreeNode[];
+  /** How the plan's and the spec's blocks reads stand, which the body draws its tasks after. */
+  reads: PlanReads;
 }): ReactNode {
   // Which of the two the reader is looking at: the chart, which the filter opens on, or the
   // ordered steps.
@@ -130,12 +164,16 @@ export function PlanFilterBody({
     return planOrder(writtenOrder(plan, artifacts, held));
   }, [artifacts, documentIds, plan, written]);
   // The view's tasks by id, each as the view gives it and once, as the order holds it: the
-  // places drawn are those holding one of them (R4).
+  // places drawn are those holding one of them (R4). None until both reads have answered, so
+  // the view draws no row, no cycle and no switch before the tasks and the statements they
+  // serve are in.
+  const answered = reads.state === "answered";
   const inView = useMemo(() => {
     const held = new Map<string, TreeNode>();
+    if (!answered) return held;
     for (const node of root.children) if (!held.has(node.id)) held.set(node.id, node);
     return held;
-  }, [root]);
+  }, [answered, root]);
   const cycles = useMemo(
     () =>
       entries.flatMap((entry) =>
@@ -173,12 +211,70 @@ export function PlanFilterBody({
         ? `${pageInkFill} ${pageInkBorder}`
         : `${pageHairBorder} ${pagePaperBg} ${pageMutedText}`
     }`;
-  const empty = root.children.length === 0;
+  // A view with no task to draw - none in the view, or reads not yet answered - draws no switch,
+  // having nothing to switch between, and draws the tree, which says the issue has no plan tasks
+  // in the line the slot hands on (`emptyLine`, `IssueTree`) once both reads have answered, and
+  // nothing before (dispatch://INFRA-3938 R1).
+  const empty = inView.size === 0;
+  // Each read that failed before it first answered, which the body says over the tree.
+  const unreadable = reads.state === "failed" ? reads : undefined;
+  const firstUnreadable = PLAN_READS.find((read) => unreadable?.failed.includes(read));
+  const box = useRef<HTMLDivElement | null>(null);
+  // A refused read leaves the view nothing to act on but its Retry: the empty tree holds no row,
+  // and Tab from it never reaches the lines above it. So once the lines are drawn the first
+  // line's Retry takes the focus, where the view's key (`t p`) or the page opened at the view's
+  // address left it on nothing, as part I's stage finds no row to give it to
+  // (`slots/stage.tsx`); a reader whose focus is anywhere else keeps it (decision 182 of
+  // dispatch://INFRA-1196, dispatch://INFRA-3938 R7).
+  useEffect(() => {
+    if (firstUnreadable === undefined) return;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) return;
+    box.current
+      ?.querySelector<HTMLElement>(`[data-plan-unreadable="${firstUnreadable}"] button`)
+      ?.focus();
+  }, [firstUnreadable]);
+  // Whether the reader pressed a Retry while it held the focus, until the reads answer. The
+  // Retry is drawn no more once they do, which leaves the focus on nothing, so the view's first
+  // row takes it - the tree's one tab stop, under the chart the first bar's row - unless
+  // something else holds it by then (decisions 182 and 162 of dispatch://INFRA-1196,
+  // dispatch://INFRA-3938 R7).
+  const retried = useRef(false);
+  useEffect(() => {
+    if (!answered || !retried.current) return;
+    retried.current = false;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) return;
+    box.current?.querySelector<HTMLElement>(TAB_STOP_ROW)?.focus({ preventScroll: true });
+  }, [answered]);
   return (
     <div
       className="mt-3 mb-[120px] flex w-full min-w-0 flex-col max-[761px]:mt-0"
       data-plan-body=""
+      ref={box}
     >
+      {/* Each read that failed before it first answered, one line in the page's words with a
+          Retry that asks that read alone again, in the order plan, statements (decisions 126
+          and 148 of dispatch://INFRA-1196). The lines stand over the tree and never in it: an
+          alert inside a tree would break the tree's own structure of rows. */}
+      {unreadable === undefined
+        ? null
+        : PLAN_READS.flatMap((read) =>
+            unreadable.failed.includes(read)
+              ? [
+                  <div className="mb-2.5" data-plan-unreadable={read} key={read}>
+                    <QueryError
+                      message={UNREADABLE_LINES[read]}
+                      onRetry={() => {
+                        retried.current =
+                          document.activeElement?.closest("[data-plan-unreadable]") != null;
+                        unreadable.onRetry(read);
+                      }}
+                    />
+                  </div>,
+                ]
+              : []
+          )}
       {/* R26's one control: the chart of time, or the ordered steps. A plan with no task has
           nothing to switch between. The box is 22 px under the view row, and 10 px at 760 px
           and below, as the prototype's `.plan` is (dispatch://INFRA-3938 R1 and its Sizes): D's
@@ -221,8 +317,15 @@ export function PlanFilterBody({
             <CycleLine cycle={cycle} key={cycleIds(cycle.tasks)} />
           ))}
           {/* The tree takes the address's node only while the view has not: drawn after a
-              press of the switch, it leaves the focus on the button pressed (R6). */}
-          <IssueTree {...tree} focusReveal={tree.focusReveal && landing} root={ordered} />
+              press of the switch, it leaves the focus on the button pressed (R6). While a read
+              is out or has failed it holds nothing, and is still the tree `t p` and the stage
+              focus. */}
+          <IssueTree
+            {...tree}
+            {...(answered && emptyLine !== undefined ? { emptyLine } : {})}
+            focusReveal={tree.focusReveal && landing}
+            root={ordered}
+          />
         </>
       ) : (
         <PlanChart
@@ -237,6 +340,21 @@ export function PlanFilterBody({
     </div>
   );
 }
+
+/** The two reads, in the order the body says which of them failed. */
+const PLAN_READS: readonly PlanRead[] = ["plan", "statements"];
+
+/** The row of the view's tree that holds its one tab stop, as part I's stage finds it
+ *  (`slots/stage.tsx`): the first bar's row under the chart. */
+const TAB_STOP_ROW = '[role="tree"] [role="treeitem"][tabindex="0"]';
+
+/** What the body says of each read that failed before it first answered, in the page's words:
+ *  the plan for the plan document's blocks, which hold its tasks, and the statements for the
+ *  spec's blocks, as the Spec view says it (decisions 126 and 179 of dispatch://INFRA-1196). */
+const UNREADABLE_LINES: Readonly<Record<PlanRead, string>> = {
+  plan: ANSWER_LINES.plan_unreadable,
+  statements: ANSWER_LINES.statements_unreadable,
+};
 
 /** Each document's block ids in the order they are written, or undefined while its read is
  *  out. It is one function for every render, so the reads' answer is one value until a read
@@ -370,13 +488,8 @@ interface DrawnPlace {
  * inside a row - the row's own, or a link of it that a pointer went down on - is the focus on
  * that row, as it is on the outline's (`NodeRow.tsx`): the row takes the mark, the heavier
  * curves, Details and the Tab stop, and the keys, which find the row that holds the focus
- * (`at`), move from there. The focus leaving the chart lets go of its focused row by the
- * outline's own rule (part I's `useReleaseFocus`, decision 105 of dispatch://INFRA-1196 as
- * amended): with no press under way - Tab, Escape, a script's blur - the row's mark and its
- * heavier curves go at once, and where a press took the focus elsewhere they go once that press
- * has ended, unless the focus is back in the chart by then. Details goes back to the issue's
- * facts as the focus leaves, unless it goes to Details or the control that opens it
- * (dispatch://INFRA-3938 R6).
+ * (`at`), move from there. The focus leaving the chart lets go of its row by the outline's rule
+ * (`releaseFocus`, below).
  *
  * A cycle's row takes the focus too, as a bar's does: a press on it, an address naming one of
  * its tasks, and the Tab stop where the chart draws no bar (decision 2 of dispatch://INFRA-3938's
@@ -459,9 +572,9 @@ function PlanChart({
   // no press under way runs `leave` at once, and a press that takes it elsewhere runs it once
   // that press has ended, unless the focus is back in the chart by then, so the row's mark and
   // its heavier curves go as the outline's row lets go of its look (dispatch://INFRA-3938 R6).
-  // Details goes back to the issue's own facts as the focus leaves. A focus moving within the
-  // chart is no leave. The chart edits no row (Enter goes to the conversation), so no edit holds
-  // the focus.
+  // Details goes back to the issue's own facts as the focus leaves, unless it goes to Details or
+  // the control that opens it. A focus moving within the chart is no leave. The chart edits no
+  // row (Enter goes to the conversation), so no edit holds the focus.
   const leave = useCallback(() => setFocused(undefined), []);
   const releaseFocus = useReleaseFocus({ editing: false, onLeave: leave });
   // An address that names a task puts the focus on its row, a cycle's included, and holds the
@@ -980,10 +1093,9 @@ function BarRow({
           // border and padding and wraps a long first word inside the column rather than run past
           // it (R5). A linked chip's link inside it draws none: below 1280 px a
           // `dispatch-inline-link` takes 6 px of padding above and below (`styles.css`), which an
-          // inline link inside the box's 18 px line takes without growing the box. G's `Chip`
-          // (`NodeRow.tsx`) draws no border or padding, so its link is the whole of it. This chip
-          // draws both around its link, so the link is stretched over the whole box, its border
-          // included (the link's `::after`, laid over the box it is `relative` to): a press
+          // inline link inside the box's 18 px line takes without growing the box. The chip draws
+          // a border and padding around its link, so the link is stretched over the whole box, its
+          // border included (the link's `::after`, laid over the box it is `relative` to): a press
           // anywhere on the chip opens the statement (R4: each chip "a link to that statement"),
           // where a press on its edge would land on the row and give the row the focus.
           const look = `min-w-0 rounded-[5px] border px-1.5 text-xs leading-[18px] font-semibold text-page-statement [overflow-wrap:anywhere] ${pageHairBorder}`;

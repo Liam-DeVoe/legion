@@ -1,7 +1,9 @@
+import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
-import { primarySpec } from "../../../api/issue-cache";
+import { primarySpec, roleDocument } from "../../../api/issue-cache";
+import { artifactBlocksQuery } from "../../../api/queries";
 import { buildIssuePath } from "../../refs/routes";
 import { useAddressTarget } from "../address-target";
 import { IssuePresetPanels } from "../IssuePresetPanels";
@@ -10,7 +12,7 @@ import { artifactsBySlug } from "../issue-artifacts";
 import { NoTooltips } from "../NoTooltips";
 import { useOutlineRequest } from "../outline-request";
 import { EMPTY_STATE_LINES } from "../page-words";
-import { PlanFilterBody } from "../plan-filter/PlanFilterBody";
+import { PlanFilterBody, type PlanRead, type PlanReads } from "../plan-filter/PlanFilterBody";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { useToolbarSink } from "../useDocumentToolbars";
@@ -29,21 +31,56 @@ import { useIssueTree } from "../useIssueTree";
 export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
   const navigate = useNavigate();
   const { hash, search } = useLocation();
-  const specSlug = primarySpec(issue)?.slug;
-  const address = issueAddress(route, search, hash, specSlug);
-  // The view is drawn once every document the tree reads holds its blocks (part F's
-  // `IssueTreeView.blocksHeld`, decision 98 of dispatch://INFRA-1196): the spec, whose
-  // statements the tasks serve, the plan, whose blocks are the tasks, and the Verification and
-  // decisions documents. Before then the plan holds no task, or tasks that serve no statement,
-  // and the view would say the issue has no plan tasks and draw no switch (dispatch://INFRA-3938
-  // R1; root dispatch://INFRA-1196 R26); a first read that failed holds no blocks either, so the
-  // box stays empty rather than say that. A later read that fails keeps the blocks held, so it
-  // does not take the view down, with the reader's press of "Steps" and the focus (R6, R7), and
-  // the view drawn again on a return to Plan draws the blocks held. The reads are the tree's own,
-  // so the view sends no request of its own (dispatch://INFRA-3938 R2). An issue with none of
-  // these documents has no read to wait for, so its view is drawn at once and draws its empty
-  // line.
-  const { blocksHeld, root } = useIssueTree(issue);
+  const spec = primarySpec(issue);
+  const address = issueAddress(route, search, hash, spec?.slug);
+  const { root } = useIssueTree(issue);
+  // The view waits on the reads of the two documents it draws from, and on no other: the plan's
+  // blocks, which are its tasks, and the spec's, which are the statements a task serves
+  // (dispatch://INFRA-3938 R1 and R4). It is these two reads and not `useIssueTree`'s
+  // `blocksHeld` (decision 98 of dispatch://INFRA-1196), which counts the Verification and
+  // decisions documents too: one of those made while the reader is on Plan opens a read that
+  // holds nothing yet, and one whose first read is refused holds nothing at all, and neither
+  // changes anything in Plan; and a failed line needs the failed read's own error and Retry
+  // (decision 148 of dispatch://INFRA-1196, as part V reads its own). Each read is watched under
+  // the key `useIssueTree` fills, by an observer that is never enabled, so the view sends no
+  // request of its own (R2) and sees whatever the tree's observer fetches; its `refetch` still
+  // fetches, which is what Retry asks. A document the issue does not name needs no read.
+  //
+  // A read has answered where it holds data, and not by its status: a refetch that fails keeps
+  // the data it last answered (decision 98), so a view drawn by `isSuccess` would empty itself
+  // on one failed refetch. A read has failed where it holds no data and its status is error
+  // (`failedWithNothing`): it was refused before it first answered. The view draws its tasks,
+  // its switch and its empty line once both have answered, so it never says the issue has no
+  // plan tasks before they are in (R1; root dispatch://INFRA-1196 R26), and where a read failed
+  // it says which, each with a Retry that asks that read alone again (`PlanFilterBody`). The
+  // view stays mounted through all of it, as the outline does (`slots/body.tsx`), so no read
+  // takes from the reader the press of "Steps", the focused row and its mark, a step being
+  // edited, or the address's step having taken the focus, which it takes once (R6 and R7).
+  const planId = roleDocument(issue, "plan")?.id;
+  // This observer reads the key `useIssueTree` fills and fetches nothing of its own.
+  const planBlocks = useQuery({ ...artifactBlocksQuery(planId ?? ""), enabled: false });
+  const specId = spec?.id;
+  // This observer reads the key `useIssueTree` fills and fetches nothing of its own.
+  const specBlocks = useQuery({ ...artifactBlocksQuery(specId ?? ""), enabled: false });
+  const answered =
+    (planId === undefined || planBlocks.data !== undefined) &&
+    (specId === undefined || specBlocks.data !== undefined);
+  const failed: PlanRead[] = [];
+  if (planId !== undefined && failedWithNothing(planBlocks)) failed.push("plan");
+  if (specId !== undefined && failedWithNothing(specBlocks)) failed.push("statements");
+  const reads: PlanReads =
+    failed.length > 0
+      ? {
+          failed,
+          onRetry: (read) => {
+            if (read === "plan") void planBlocks.refetch();
+            else void specBlocks.refetch();
+          },
+          state: "failed",
+        }
+      : answered
+        ? { state: "answered" }
+        : { state: "waiting" };
   // The address's own node, resolved against the whole tree as the outline resolves it
   // (`useAddressTarget`, decision 94 of dispatch://INFRA-1196; `slots/body.tsx`): a step it names
   // takes the focus (R7).
@@ -89,27 +126,25 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
       {/* The view's box, the prototype's `.plan`: at most 1300 px, in the middle of the column,
           and at 760 px and below the column less 10 px at each side (dispatch://INFRA-3938 R1
           and its Sizes). That is `max-[761px]:`, since Tailwind writes `max-[N]:` as
-          `(width < N)` and 760 px itself is a phone (decision 72 of dispatch://INFRA-1196).
-          It draws nothing until the blocks it draws from are held (`blocksHeld`, above). */}
+          `(width < N)` and 760 px itself is a phone (decision 72 of dispatch://INFRA-1196). */}
       <div className="mx-auto flex w-full max-w-[1300px] min-w-0 flex-col max-[761px]:max-w-[calc(100%-20px)]">
-        {blocksHeld ? (
-          <PlanFilterBody
-            artifacts={artifacts}
-            context={view.context}
-            emptyLine={address.filter === "" ? EMPTY_STATE_LINES.plan : EMPTY_STATE_LINES.no_match}
-            filtering={view.filtering}
-            focusReveal
-            // The words filter's Escape comes before the view is left (part N).
-            holdsEscape={address.filter !== ""}
-            isClosed={isClosed}
-            onEditing={setEditing}
-            plan={plan}
-            {...(request === undefined ? {} : { request })}
-            reveal={reveal}
-            root={view.root}
-            rootRow={view.rootRow}
-          />
-        ) : null}
+        <PlanFilterBody
+          artifacts={artifacts}
+          context={view.context}
+          emptyLine={address.filter === "" ? EMPTY_STATE_LINES.plan : EMPTY_STATE_LINES.no_match}
+          filtering={view.filtering}
+          focusReveal
+          // The words filter's Escape comes before the view is left (part N).
+          holdsEscape={address.filter !== ""}
+          isClosed={isClosed}
+          onEditing={setEditing}
+          plan={plan}
+          reads={reads}
+          {...(request === undefined ? {} : { request })}
+          reveal={reveal}
+          root={view.root}
+          rootRow={view.rootRow}
+        />
       </div>
       <IssuePresetPanels
         editedDocument={edited}
@@ -130,4 +165,11 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
       />
     </NoTooltips>
   );
+}
+
+/** Whether `read` failed with no answer held: a read asked again that fails keeps the answer it
+ *  had, which the view still draws from, so only a read that left nothing to draw says it
+ *  failed (decisions 98 and 148 of dispatch://INFRA-1196), as part V's view reads its own. */
+function failedWithNothing(read: { readonly data: unknown; readonly isError: boolean }): boolean {
+  return read.isError && read.data === undefined;
 }

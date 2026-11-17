@@ -1,6 +1,7 @@
 import type { Locator, Page, Route } from "@playwright/test";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import {
+  ANSWER_LINES,
   BLOCK_ATTRIBUTE_LABELS,
   DECLARED_WORDS,
   EMPTY_STATE_LINES,
@@ -159,8 +160,8 @@ const BLOCKS_READ = "**/api/v1/artifacts/*/blocks";
 /** R1 before the reads it needs answer: opened with every document's blocks read held, `path`
  *  draws no line saying the issue has no task and no switch, since a task is a block of the
  *  plan document and the plan holds none until that read answers (`slots/view-plan.tsx`, which
- *  draws the view once every document the tree reads holds its blocks, part F's `blocksHeld`);
- *  let go, it draws the chart. */
+ *  draws the view's tasks, its switch and its empty line once the plan's and the spec's blocks
+ *  reads have answered, decision 148 of dispatch://INFRA-1196); let go, it draws the chart. */
 async function expectNothingBeforeTheBlocks(page: Page, path: string): Promise<void> {
   const held = Promise.withResolvers<void>();
   let asked = 0;
@@ -241,6 +242,71 @@ async function expectChartAfterAFailedRead(page: Page, seeded: WholeIssueSeed): 
     ).toHaveCount(seeded.planTasks.length);
   } finally {
     await page.unroute(BLOCKS_READ, fail);
+  }
+}
+
+/** Decisions 148, 182 and 162 of dispatch://INFRA-1196 on a first read that fails
+ *  (`slots/view-plan.tsx`): with every read of the plan document's blocks refused, the page's two
+ *  retries included, `t p` from the conversation opens Plan, which says in the page's words that
+ *  it could not load the plan, with a Retry that holds the focus, and draws no bar and no switch.
+ *  With the read let through, Enter on that Retry asks it again, and the view draws the chart
+ *  with the focus on its first row (dispatch://INFRA-3938 R7). */
+async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSeed): Promise<void> {
+  let refusing = true;
+  const refuse = async (route: Route) => {
+    if (refusing && route.request().url().includes(seeded.planArtifactId)) {
+      await route.fulfill({ status: 500 });
+      return;
+    }
+    await route.continue();
+  };
+  await page.route(BLOCKS_READ, refuse);
+  try {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await focusThePage(page);
+    await page.keyboard.press("t");
+    await page.keyboard.press("p");
+    await expect(page).toHaveURL(new RegExp(`${planPath(seeded.key)}$`));
+    const line = issuePage(page).locator('[data-plan-unreadable="plan"]');
+    await expect(
+      line,
+      "the Plan view whose first read of the plan's blocks failed does not say it could not load the plan"
+    ).toContainText(ANSWER_LINES.plan_unreadable);
+    const retry = line.getByRole("button");
+    await expect(retry, "the line saying the plan could not be loaded draws no Retry").toHaveCount(
+      1
+    );
+    await expect(
+      retry,
+      "the Plan view with a refused read does not put the focus on its Retry"
+    ).toBeFocused();
+    await expect(
+      planBody(page).locator("[data-plan-bar-row]"),
+      "the Plan view whose first read of the plan's blocks failed draws a bar"
+    ).toHaveCount(0);
+    await expect(
+      planBody(page).locator("[data-plan-switch]"),
+      "the Plan view whose first read of the plan's blocks failed draws its switch"
+    ).toHaveCount(0);
+    refusing = false;
+    await page.keyboard.press("Enter");
+    await expect(
+      planView(page, "chart"),
+      "Enter on Retry once the plan's blocks are read does not draw the chart"
+    ).toHaveAttribute("aria-pressed", "true");
+    const bars = planChart(page).locator("[data-plan-bar-row]");
+    await expect(bars).toHaveCount(seeded.planTasks.length);
+    await expect(line, "the line saying the plan could not be loaded stays").toHaveCount(0);
+    const first = await bars.first().getAttribute("data-node-id");
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message:
+          "Enter on Retry once the plan's blocks are read does not put the focus on the chart's first row",
+      })
+      .toBe(first);
+  } finally {
+    await page.unroute(BLOCKS_READ, refuse);
   }
 }
 
@@ -860,9 +926,13 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
 // outline's own rows, so G's readers of every row hold on them, and the chart names each tie by
 // words and never by an address or a slug. Beyond the check: at 1440 px, with the blocks reads
 // held, the view draws no line saying the issue has no task and no switch, and draws the chart
-// once they are let go (dispatch://INFRA-3938 R1; `expectNothingBeforeTheBlocks`); and a read of
-// the plan's blocks that fails once the chart is drawn leaves the chart drawn on a return to Plan
-// (decision 98 of dispatch://INFRA-1196; `expectChartAfterAFailedRead`).
+// once they are let go (dispatch://INFRA-3938 R1; `expectNothingBeforeTheBlocks`); a first read
+// of the plan's blocks that fails draws the page's line for it with a Retry, which `t p` leaves
+// the focus on, and no bar and no switch, and Enter on the Retry draws the chart with the focus
+// on its first row once the read is let through (decisions 148, 182 and 162 of
+// dispatch://INFRA-1196, R7; `expectRetryAfterAFailedFirstRead`); and a read of the plan's
+// blocks that fails once the chart is drawn leaves the chart drawn on a return to Plan (decision
+// 98 of dispatch://INFRA-1196; `expectChartAfterAFailedRead`).
 // SLOW(>=2s): the whole seeded issue, loaded and read under both drawings at two widths.
 test("the Plan view's steps are drawn as every row of the outline @phone", async ({ browser }) => {
   test.setTimeout(180_000);
@@ -876,7 +946,10 @@ test("the Plan view's steps are drawn as every row of the outline @phone", async
         "aria-pressed",
         "true"
       );
-      if (size === DESKTOP) await expectNothingBeforeTheBlocks(page, planPath(seeded.key));
+      if (size === DESKTOP) {
+        await expectNothingBeforeTheBlocks(page, planPath(seeded.key));
+        await expectRetryAfterAFailedFirstRead(page, seeded);
+      }
       await expect(
         planChart(page).locator("[data-plan-bar-row]"),
         `${where} does not draw a bar for each task of the plan`
