@@ -71,6 +71,8 @@ var markdown = goldmark.New(goldmark.WithExtensions(extension.GFM, extension.Foo
 //     body text that follows the definition in the source and leaves those footnotes in; and a
 //     comment the body leaves open before a footnote definition here hides the definition, which
 //     GitHub shows;
+//   - a comment inside a `<noscript>` element: the tokenizer reads its content as raw text, and
+//     GitHub's tag filter does not cover `<noscript>`, so the comment stays;
 //   - the documentation site's reading where it differs from GitHub's: it keeps the text of a
 //     `<script>`, `<style>` or `<textarea>`, and it ends a comment its block leaves open with that
 //     block. In both, this takes out text the site shows, so a check fails rather than passes.
