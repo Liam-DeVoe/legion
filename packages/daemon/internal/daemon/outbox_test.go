@@ -203,8 +203,9 @@ func (d *outboxDispatch) PutDesignGates(context.Context, string, []dispatch.Desi
 // noArtifacts is the issue's documents as a fake Dispatch that keeps none: the read of an issue's
 // artifacts answers none, a document's reviews none, a version of a document Dispatch's 404, and
 // an upload answers the slug Dispatch files the name under, which for a message's document is its
-// name (record.MessageArtifact). Every fake of the client that no test drives through a message's
-// document embeds it.
+// name (record.MessageArtifact). It also takes every role-holder publication and keeps none. Every
+// fake of the client that no test drives through a message's document or a role-holder publication
+// embeds it.
 type noArtifacts struct{}
 
 func (noArtifacts) Artifacts(context.Context, string) ([]dispatch.Artifact, error) {
@@ -217,6 +218,7 @@ func (noArtifacts) DocumentVersion(context.Context, string, int) (string, error)
 func (noArtifacts) UploadArtifact(_ context.Context, _, name, _ string) (string, error) {
 	return name, nil
 }
+func (noArtifacts) PutRoleHolders(context.Context, string, []dispatch.RoleHolder) error { return nil }
 
 func TestOutboxStatusWriteCallsDispatchOnlyForItsObservedStatus(t *testing.T) {
 	row := mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "todo", ""), time.Now())

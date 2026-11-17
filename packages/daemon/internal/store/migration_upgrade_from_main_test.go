@@ -26,10 +26,10 @@ import (
 // (20261110235320), the kind of the rule that wrote a release mark (20261111001612), the issue's
 // movement time (20261111010031), the declined ask (20261111021610), the tree-stalled mark
 // (20261111041503) and the claim's failure cause (20261111212544), are main's own and are
-// applied as main's run applied them. Every version of this branch's but sixteen stands below
+// applied as main's run applied them. Every version of this branch's but seventeen stands below
 // main's newest: a migration's version is a timestamp rather than a place in a line, and the
-// sixteen above it are the phase entry's own (20261111225552, dispatch://INFRA-2800), which this
-// branch wrote after main's claim-failure cause, and the fifteen the next paragraph names.
+// seventeen above it are the phase entry's own (20261111225552, dispatch://INFRA-2800), which this
+// branch wrote after main's claim-failure cause, and the sixteen the next paragraph names.
 //
 // A branch migration this list forgets would be applied as one of main's, which is a database no
 // deployment ever has, so the test below holds the list against the embedded set: every version
@@ -44,17 +44,18 @@ import (
 // (20261113082214) and its drop of the claim's two update answer marks (20261113110610),
 // dispatch://INFRA-3276's record of what a relaunch ended (20261113082415),
 // dispatch://INFRA-3274's kind list with the merge-queue read and removal (20261114031356), and
-// dispatch://INFRA-3320's gate basis (20261114064234), its kind list with the two basis seeds
-// (20261114064235) and its phase awaiting_children (20261114232555), which stand above all of
-// them and are applied after them, in version order: the kind list with the update ask, the
-// record of what a relaunch ended, the drop, the merge-queue kind list, the gate basis, the kind
-// list with the basis seeds, then the phase awaiting_children, the last of every version. The
-// record of what a relaunch ended adds one column to claims and rewrites neither constraint. The
-// kind list with the basis seeds is the last word of outbox_kind_check: the upgrade applies it
-// after 20261029120800 has deleted main's merge-lane rows, and it names every other kind main's
-// daemon writes (mainsOutboxKinds), with update_ask, the two merge-queue kinds and the two basis
-// seeds besides, which main's daemon never writes; the phase awaiting_children, after it, is the
-// last word of issues_phase_check and rewrites no kind list. dispatch://INFRA-3146's
+// dispatch://INFRA-3320's gate basis (20261114064234) and its phase awaiting_children
+// (20261114232555), which stand above all of them and are applied after them, in version order:
+// the kind list with the update ask, the record of what a relaunch ended, the drop, the
+// merge-queue kind list, the gate basis, then the phase awaiting_children. The record of what a
+// relaunch ended adds one column to claims and rewrites neither constraint. The phase
+// awaiting_children is the last word of issues_phase_check and rewrites no kind list. The kind
+// list with the role-holders publication (20261116165926) stands above those, and INFRA-3320's
+// kind list with the two basis seeds (20261117110810) above it, the last of every version. That
+// list is the last word of outbox_kind_check: the upgrade applies it after 20261029120800 has
+// deleted main's merge-lane rows, and it names every other kind main's daemon writes
+// (mainsOutboxKinds), with update_ask, the two merge-queue kinds, role_holders_publish and the
+// two basis seeds besides, which main's daemon never writes. dispatch://INFRA-3146's
 // `phases.entry_moved_back` (20261113090512) is named here too, which stands between
 // INFRA-2981's two and adds one column beside the phase entry's, true on every row it finds and
 // false by default after, and so needs no row of its own here (migration_20261113090512_test.go
@@ -80,7 +81,7 @@ var thisBranchsMigrations = []int{
 	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111045636, 20261111181500,
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
-	20261114061900, 20261114064234, 20261114064235, 20261114232555,
+	20261114061900, 20261114064234, 20261114232555, 20261116165926, 20261117110810,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -90,10 +91,10 @@ var thisBranchsMigrations = []int{
 // 20261112070503, dispatch://INFRA-3219's 20261112180548, dispatch://INFRA-2981's 20261113082214
 // and 20261113110610, dispatch://INFRA-3276's 20261113082415, dispatch://INFRA-3146's
 // 20261113090512, dispatch://INFRA-3274's 20261114031356, dispatch://INFRA-2614's
-// 20261113181500, 20261113182000, 20261114020537 and 20261114061900, and dispatch://INFRA-3320's
-// 20261114064234, 20261114064235 and 20261114232555, which is why the loop below holds the list
-// rather than counting it, so that a version added above any of them is named here rather than
-// read as main's.
+// 20261113181500, 20261113182000, 20261114020537 and 20261114061900, the role-holders
+// publication's 20261116165926, and dispatch://INFRA-3320's 20261114064234, 20261114232555 and
+// 20261117110810, which is why the loop below holds the list rather than counting it, so that a
+// version added above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
