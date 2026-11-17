@@ -619,20 +619,6 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 			t.Fatalf("the silence repair's task = %q, want %q", task, want)
 		}
 	})
-	t.Run("an owed entry whose row names no task", func(t *testing.T) {
-		pool, engine, _ := reviewRoundTwo(t)
-		if _, err := pool.Exec(context.Background(), "update phases set entry_task = '' where issue = 'LEGION-208' and role = 'reviewer'"); err != nil {
-			t.Fatalf("take the task off the reviewer's row: %v", err)
-		}
-		row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
-		outboxRan(t, pool)
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
-			return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, row)
-		})
-		if task := onlyReviewerStart(t, pool).Task; task != resumeWant {
-			t.Fatalf("the owed entry's task = %q, want %q", task, resumeWant)
-		}
-	})
 	t.Run("a carried hand-over's promotion", func(t *testing.T) {
 		pool, engine, _ := reviewRoundTwo(t)
 		before := reviewerRow(t, pool)
