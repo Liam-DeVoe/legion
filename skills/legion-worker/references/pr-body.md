@@ -16,15 +16,15 @@ later phase keeps it current rather than replacing it:
 **Why:** <the problem, one or two sentences, ending with the Dispatch key in parentheses — the key only, never a URL>
 **Change:**
 - <two to five bullets, each one behaviour a user or operator meets, never a file name>
-**Look at first:** <one to three `path:line` places where a wrong decision would hurt> (the reviewer writes this line)
+**Look at first:** <one to three `path:line` places where a wrong decision would hurt> (the reviewer writes this line; on a task whose `Steps:` line names no reviewer, the implementer does)
 **Proven by:** <the surface and the run of the check the change turns on, one line>
 **Not proven / risk:**
-- <one line per claim recorded as unproven before the merge>, or the single word `none` (the reviewer writes this line; `none` is invalid while such a claim stands)
+- <one line per claim recorded as unproven before the merge>, or the single word `none` (the reviewer writes this line; on a task whose `Steps:` line names no reviewer, the implementer does; `none` is invalid while such a claim stands)
 **Size:** <files changed, +added/−removed>
 
 ## Verification
 
-**Threads:** <n> resolved, 0 unresolved. Each answered and resolved individually by the implementer, the pull request's author, never in bulk (the reviewer names the bot threads it accepted; it resolves none itself):
+**Threads:** <n> resolved, 0 unresolved. Each answered and resolved individually by the implementer, the pull request's author, never in bulk (the reviewer names the bot threads it accepted; it resolves none itself; on a task whose `Steps:` line names no reviewer, the implementer resolves each bot thread it fixed or declined, its reason in the reply):
 - Thread <node id>: fixed in <commit-sha> — <one line>; resolved at <head-sha>.
 - Thread <node id>: not a defect — <reason>; resolved at <head-sha>.
 - Thread <node id>: accepted by the reviewer — <its reason, one line>; resolved at <head-sha>.
@@ -86,14 +86,19 @@ about whether the head merges.
 ledger the reviewer and merger check against GitHub. The implementer writes `Outcome`, `Why`,
 `Change`, `Proven by`, and `Size` when the pull request opens, and keeps them true after every
 push; `Outcome` is a sentence a user of the repository would recognise, never "fix bug" or a file
-name, and `Why` ends with the Dispatch key, never a URL. The reviewer writes `Look at first` and
-`Not proven / risk` at each round, into the live body (`gh api
+name, and `Why` ends with the Dispatch key, never a URL. Where the task has a review step, the
+reviewer writes `Look at first` and `Not proven / risk` at each round, into the live body (`gh api
 repos/{owner}/{repo}/pulls/{number} --jq .body`, edit, then `--method PATCH ... -F body=@body.md`);
 `Not proven / risk` copies every claim recorded as unproven before the merge — the tester's
-`failures`, the reviewer's own review, any proof-check comment already on the pull request —
-word for word, and `none` is a finding while one stands. The merger reads `Outcome` and
-`Not proven / risk` from the body at the head it merges, and a stale `Outcome` that no
-longer describes the diff is a finding against the implementer, not a line the merger rewrites.
+`failures`, where the task has a tester step, the reviewer's own review, any proof-check comment
+already on the pull request — word for word, and `none` is a finding while one stands. On a task
+whose `Steps:` line names no reviewer, the implementer writes both lines at each of its rounds,
+into the live body the same way. It writes `Not proven / risk` from what its own evidence does not
+prove, and copies word for word the tester's `failures`, where the task has a tester step, and any
+proof-check comment already on the pull request; `none` is invalid there too while such a claim
+stands. The merger reads `Outcome` and `Not proven / risk` from the body at the head it merges, and
+a stale `Outcome` that no longer describes the diff is a finding against the implementer, not a
+line the merger rewrites.
 
 ## What a result is
 

@@ -2,7 +2,8 @@
 
 Part of `skill://legion-worker`. Read it when you reply on or resolve a review thread, list a pull
 request's threads, or adjudicate a bot's finding: the implementer after every push that answers a
-review, and the reviewer on every re-review. Every path it cites is in cybermonklabs/legion.
+review and, on a task whose `Steps:` line names no reviewer, before each completion; the reviewer
+on every re-review. Every path it cites is in cybermonklabs/legion.
 
 Three facts govern every thread, whoever opened it.
 
@@ -15,8 +16,8 @@ Three facts govern every thread, whoever opened it.
 - **Resolve each thread you have answered, one thread per call, never in bulk, never a thread you
   have not read.** GitHub grants `resolveReviewThread` to the pull request's author, and the
   implementer opens every Legion pull request (`docs/site/src/content/docs/legion/running-legion.md`,
-  "The GitHub Apps"), so the implementer resolves every thread, its own and the ones the
-  reviewer accepted:
+  "The GitHub Apps"), so the implementer resolves every thread: its own, the ones the reviewer
+  accepted, and on a task with no reviewer step the bot threads it fixed or declined:
   - The **implementer**, after every push that answers a review and before its `handoff_complete`,
     resolves each thread it answered with its own `gh`, one thread per call:
 
@@ -24,14 +25,20 @@ Three facts govern every thread, whoever opened it.
     gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -F id=<thread node id>
     ```
 
-    A thread a bot opened (a CI bot's, or an App-routed person's) it answers the same way; where
-    the task has a review step, the reviewer adjudicates the finding. The bot threads the reviewer
+    A thread a bot opened (a CI bot's, or an App-routed person's) it answers the same way. Where
+    the task has a review step, the reviewer adjudicates the finding: the bot threads the reviewer
     accepted, which the reviewer names to the implementer by node id (below), the implementer
     resolves with the same call, one per thread, as soon as the message reaches it or as part of
     answering that review, and records in the PR body's `Threads` section too; never one the
-    reviewer did not name. When GitHub refuses
-    a resolution, report the thread and GitHub's message to the architect with `envoy_publish`,
-    which opens a `dispatch ask` for a human to resolve it by hand; never skip it silently.
+    reviewer did not name. On a task whose `Steps:` line names no reviewer, nobody adjudicates a
+    bot's finding for the implementer: before each `handoff_complete` it lists the pull request's
+    threads (the query below), answers each bot thread, resolves each one it fixed or declined,
+    with its reason in the reply, and records each in the `Threads` section. It names each thread
+    it declined, by node id with its reason, to the architect, the owner of the task, in the
+    `summary` of that `handoff_complete`, which its `phase-finished` notice carries. When GitHub
+    refuses a resolution, report the thread and GitHub's message to the architect with
+    `envoy_publish`, which opens a `dispatch ask` for a human to resolve it by hand; never skip it
+    silently.
   - The **reviewer** cannot resolve a thread as its own App: GitHub refuses the review App
     `resolveReviewThread` on the implementer's pull request, so it replies, and names the threads
     it accepted to the implementer, who resolves them. List the pull request's threads:
@@ -71,8 +78,9 @@ opened that is none of Legion's role Apps, with one reply in your own words. A b
 cannot accept becomes your own: say what stands and request changes. Approve once each of those
 threads carries your answer and no finding stands, read in `gh api graphql` — quote those answers
 in the approval. Your approval never waits on a resolution: resolution is the pull request author's
+App's. A review bot that is red while a thread it opened still stands is CI like any other, and
 you re-run nothing: that red moves the issue nowhere, but the base branch holds the merge for a
-check it requires, so the
-implementer answers or fixes each of the bot's threads, resolves them with its own `gh` (the
-ones you named to it, above, and its own), and pushes, and the bot runs again on that push. The
-merger resolves nothing: the merge requires no thread state beyond what your approval already judged.
+check it requires, so the implementer answers or fixes each of the bot's threads, resolves them
+with its own `gh` (the ones you named to it, above, and its own), and pushes, and the bot runs
+again on that push. The merger resolves nothing: the merge requires no thread state beyond what
+your approval already judged.
