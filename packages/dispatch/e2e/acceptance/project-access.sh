@@ -379,8 +379,11 @@ send main carol PUT /api/v1/projects/PRIV/access/groups/priv-group
 expect_status 200 "main: carol names the group priv-group on PRIV's list"
 # ses-priv-worker's history in PRIV, which shows it to bob and carol's PRIV token (confined). Only
 # a session its own credential proves records history (events.queueSessionProjects: a
-# broker-issued token's session; the shared token only names one), and this stack has no broker,
-# so the row is written as that write writes it. No event names the session, so it is no node.
+# broker-issued token's session; the shared token only names one), and this stack has no broker.
+# So the row is a stand-in for a broker-proven session's write, as --private-by-sql's store write
+# stands in for the visibility route: it is written as that write writes it, and the stand-in goes
+# once the stack can mint a broker-issued session token. No event names the session, so it is no
+# node.
 psql "$main_database_url" -X -q -v ON_ERROR_STOP=1 \
   -c "insert into session_projects (session_id, project_key) values ('ses-priv-worker', 'PRIV')" >/dev/null ||
   fail "main: could not record ses-priv-worker's history in PRIV"
