@@ -196,8 +196,10 @@ env:
     packages/envoy/internal/googleidentity/
     packages/envoy/listenfd/
     packages/envoy/migrationid/
+    packages/envoy/natsversion/
     packages/envoy/roleholder/
     packages/envoy/sessiontiming/
+    packages/envoy/subjectforms/
   # END generated
 
   # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
