@@ -2,7 +2,6 @@ package docs
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"reflect"
 	"strings"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -441,24 +441,16 @@ func joined(t *testing.T, service *Service, op func(ctx context.Context, tx pgx.
 }
 
 // answerBlockAs writes login's answer to the block ask blockID of artifactID as the answer route
-// writes it while another build serves: the row's state and answer, and the block's attributes
-// in step with them through the service's own live attribute write, in one joined transaction.
+// writes it (settleAskAs): on the ask's node and its row, and, while another build serves
+// (serveTwoBuilds), into the block in step with them; on a fleet of one build no byte of the
+// document holds it.
 func answerBlockAs(t *testing.T, service *Service, artifactID, blockID, login string, selected []string) {
 	t.Helper()
+	person := model.Actor{Kind: "user", ID: login}
 	at := time.Now().UTC()
-	answer := model.AskAnswer{User: login, Selected: selected, At: at}
-	encoded, err := json.Marshal(answer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined(t, service, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `update asks set state = 'answered', answer = $3 where block_artifact_id = $1 and block_id = $2`, artifactID, blockID, encoded); err != nil {
-			return err
-		}
-		return service.SetBlockAttributes(ctx, artifactID, blockID, map[string]any{
-			"state": "answered", "answered_by": login, "answered_at": at.Format(time.RFC3339Nano), "selected": selected, "answer": nil,
-		}, model.Actor{Kind: "user", ID: login})
-	})
+	change := asks.Answered(model.AskAnswer{User: login, Selected: selected, At: at})
+	change.Who, change.At = person, at
+	settleAskAs(t, service, artifactID, blockID, blockAskOn(t, service, artifactID, blockID).ID, person, change)
 }
 
 // regionSpec is the one-block document the repeated-block-id carry tests decide and then repeat:
@@ -505,10 +497,14 @@ func appendSecondRegionAsk(t *testing.T) func(*pmdoc.Node) *pmdoc.Node {
 // A version named from the live tree while it holds two ask nodes under one decided block id - a
 // second node a document-socket peer wrote with the id of the block the human answered - carries
 // nothing: one node per id is the first thing the carry holds a version to, before any node is
-// read. The same version without the repeat carries, so the repeat alone is what refuses.
+// read. The same version without the repeat carries, so the repeat alone is what refuses. Another
+// build serves (serveTwoBuilds), so the answer is written into the block and the version without
+// the repeat differs from the approved one in the block's server-owned attributes alone, which
+// R10's case carries.
 func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 	run := func(t *testing.T, repeat bool) (reviews, approvals int) {
 		database, service, artifactID := seededRegionDocument(t, 20*time.Millisecond)
+		serveTwoBuilds(t, database)
 		approveStoredVersion(t, database, artifactID, 1, "alice")
 
 		answerBlockAs(t, service, artifactID, "region", "alice", []string{"East"})

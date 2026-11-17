@@ -840,7 +840,7 @@ the document websocket's admission check (`loadTree`), a read outside any transa
 a repair reads the tree inside the transaction that writes it (`rewriteLive`), and the unrecorded-mark sweep (`sweepUnrecordedMarks`) inside the transaction that unmarks it.
 A room's load reads the live tree before ygo hands the room to anyone (`onLoadDocument`).
 A write reads its transaction's fork, with no exception:
-every operation that changes the document - `ReplaceText`, `MarkQuote`, `SetBlockAttributes` and the rest of `applyLive`'s callers - takes it from a transaction its caller joined first (`Docs.Join`), and refuses one that didn't (`errUnjoined`).
+every operation that changes the document - `ReplaceText`, `MarkQuote`, `KeepAskBlockInStep` and the rest of `applyLive`'s callers - takes it from a transaction its caller joined first (`Docs.Join`), and refuses one that didn't (`errUnjoined`).
 Main's own `applyLive`/`applyJoined` fold (#1693) removed the unjoined branch this used to carve out as a tests-only exception, which walked the room's own live document directly inside `Server.Apply`, holding no lock across its callback, and so could read a peer's write halfway through as a tree outside the schema;
 every write now reads through its own transaction's fork instead, which is always a consistent copy no peer's concurrent write can tear.
 A tree a read returns shares no map or slice with the document it was read from (`pmdoc.Read` copies each mark's attributes and every list or object an attribute holds), so a reader that edits its tree changes nothing a later read of the replica meets (`TestEditingALiveReadsTreeChangesNoLaterRead`).
@@ -1814,7 +1814,7 @@ The step ticks at `docs.BlockIndexReconcileInterval` for as long as the process 
 A tick with nothing owed and no other build live reads the live processes, the newest event and whether any block index is owed, each one probe of an index, on the shared pool, and dials no connection (`TestATickWithNothingOwedReadsNoTableWhole`).
 `graphcensus.AsksOwed` reads its tables to the end when nothing is owed, so it runs at boot, on a tick that owes a catch-up and after a tick that saw another build live, until it finds nothing: this build's create sites write their nodes and markers, so only another build writes a row it finds.
 A session advisory lock keeps two processes from running it together: a booting process waits for it, and a tick that finds it held skips.
-The count of what the restore and the conversion still owe, which `/healthz` answers as `decisions_step_owed` once a pass has run, reads whole tables, so where it read nothing it is read again only after another build was live, a phase ran, an event was appended above the writer floor read before it, or while a block index is owed and once after.
+The count of what the restore and the conversion still owe, which `/healthz` answers as `decisions_step_owed`, one number, once a tick has counted it, and whose three parts each count logs, reads whole tables, so where it read nothing it is read again only after another build was live, a phase ran, an event was appended above the writer floor read before it, or while a block index is owed and once after.
 `DISPATCH_TEST_HOLD_DECISIONS_STEP=1`, beside `DISPATCH_TEST_HOOKS=1`, keeps every phase from running, and `backfill-graph-store` runs the first phase.
 
 The document keeps its own `refs` rows, which the closure and the older `GET /api/v1/artifacts/{id}/references` read, but a document's mention of a target that one of its blocks holds a link of any kind to, listed or not, is listed and counted from that block alone (`heldByABlock`, in `refs.Edges` and `refs.BacklinkCounts`), so a node is counted once for each block link to it and each link shows once, where its block holds it.
@@ -2187,7 +2187,7 @@ Text a caller writes reaches the parser with line feeds alone:
 in every edit operation's text before any check reads it (`applyOperation`:
 a replace's `with`, an insert's markdown whether it becomes blocks or table rows, a retype's attributes);
 in a suggestion's `replace_with` when it is created and when it is accepted;
-in the attributes written onto a typed block (`SetBlockAttributes`, `pmdoc.LineFeedAttrs`), and in an answer's text, which its ask block carries;
+in an answer's text, which the ask's node holds;
 and in a block ask's edited question and options.
 A message's body and a comment's body are written the same way where they are stored (`validateCreateMessage` in `api/messages.go`, `createCommentFor` in `api/comment_create.go`, `editComment` in `api/comment_actions.go`), so a body stored since sjawhar/legion#2712 holds no carriage return;
 the block ids an edit carries are the browser editor's own offsets, and a ProseMirror document holds no carriage return, so that normalisation shortens no offset a caller sent.
@@ -2912,10 +2912,12 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - The first rule is the restore (`restoresApprovedText`): N's stored markdown byte for byte that of A - an accidental edit undone exactly, or a version a route wrote over a document that changed nothing - carries the approval, since it holds nothing its reviewer has not agreed to.
   Only a stored A of N's size is read (`octet_length`, which reads a stored text's size without decompressing it), so the write of any other text reads no document.
   Its `reason` is `Carried forward from the approval of version <A>: this version's text is that version's, unchanged.`
+
 - The second is the carry cases (`carryVerdict` over `carryCases`, which compose): A's stored tree and N's, each taken through every case, which takes out of a tree what the case may change, must render byte for byte the same, at least one case must have taken something out, A's stored markdown must be what this build renders A's tree to (so what is compared is the bytes the person approved, and a renderer change between A and N is a difference no case carries), and every typed block id of A must still stand in N (`blockIDsStand`).
   The one case today is R10's (`attributeRemovalCase`): the eight server-owned attributes of every ask block (`askServerAttributeNames`, the one place the eight are spelled, read by the carry alone), which the first accepted write on a fleet of one build drops, and which an answer, a close or a reopen written while two builds serve keeps in step with the asks row, so the release before's answer carry and reopen carry are cases of it.
   Its `reason` is `Carried forward from the approval of version <A>: ` and the change of each case that took something out.
   The readings of R2, the conversion of D6 and the restore of D1 join `carryCases` as further cases of the same rule.
+
 - Every carried `reason` opens with the daemon's `intake.CarriedApprovalReasonPrefix`, so a carried approval queues no parked root and reopens a design gate as a carried approval does;
   the write that carries supersedes no approval, so its advice carries no `superseded_approval`.
   The carry writes an `approved` review pinned to N in the approval's own actor and `artifact.approved`, ahead of the version's own `artifact.version`;

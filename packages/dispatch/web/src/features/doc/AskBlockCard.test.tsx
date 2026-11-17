@@ -478,6 +478,31 @@ test("a read-only block reads who answered, when and what from the server, whate
   }
 });
 
+test("the frame stamps the state the server reads, so an answered block's source list stays folded under the caret", () => {
+  // The block records no answer, so its own `state` reads the schema's default, open, which is
+  // what the shell stamps; the document's styles show the source list in an open block the caret
+  // is in, so the card stamps the server's read over it.
+  const card = renderCard({
+    ask: answeredAsk,
+    node: askNode({}),
+    served: servedAskOf([answeredAsk], "artifact-1", "b-1"),
+  });
+  try {
+    expect(card.section.getAttribute("data-dispatch-ask-state")).toBe("answered");
+  } finally {
+    card.unmount();
+  }
+});
+
+test("without the server's read the frame stamps the state the block records", () => {
+  const card = renderCard({ indexed: false, node: askNode({ state: "resolved" }), readOnly: true });
+  try {
+    expect(card.section.getAttribute("data-dispatch-ask-state")).toBe("resolved");
+  } finally {
+    card.unmount();
+  }
+});
+
 test("the hosted card offers the options as the shared choice rows, plus Other, and answers through the ask route", async () => {
   answerAsk.mockImplementation(async (_id, input) => ({
     ...ask,

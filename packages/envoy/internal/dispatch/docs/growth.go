@@ -38,15 +38,17 @@ import (
 // carries - can still be trimmed or split. Each refusal is ErrDocumentTooLarge, served as 413
 // CAP_EXCEEDED. An answer is no text of the document's: it is held on its ask's node alone
 // (dispatch://INFRA-1150 R3), and while another build serves the server keeps a copy of it in the
-// block for that build's pages (rollWindowAskAttributes), which no write weighs. Of the other
-// writes that run through none of these, a rebuild weighs the markdown a caller supplies as
-// SeedText weighs a new document's, and restores a latest version whatever it weighs, since that
-// is the server's own text (RebuildDocument); the block-id backfill (stampBlockIDs) and the sweep
-// of unrecorded marks (unmarkExpired) add no caller text. None of these calls refuseGrowth, so none
-// reaches refuseUndecodable either: a document already past the decode cap still accepts them,
-// unrefused (LEGION-545). Each is a narrow trigger: the block-id backfill runs only for a duplicate
-// or missing id a browser edit left (LEGION-487's gap), and the mark sweep only for a mark a
-// browser race left with no comment, ask or suggestion row to match.
+// block for that build's pages (rollWindowAskAttributes), which no write weighs. The text routes
+// render each answer into its block on read, and hold what they answer to this bound, so an agent's
+// read still uploads back: an answer the document has no room for is left out of its block there
+// (TextWithAnswers). Of the other writes that run through none of these, a rebuild weighs the
+// markdown a caller supplies as SeedText weighs a new document's, and restores a latest version
+// whatever it weighs, since that is the server's own text (RebuildDocument); the block-id backfill
+// (stampBlockIDs) and the sweep of unrecorded marks (unmarkExpired) add no caller text. None of
+// these calls refuseGrowth, so none reaches refuseUndecodable either: a document already past the
+// decode cap still accepts them, unrefused (LEGION-545). Each is a narrow trigger: the block-id
+// backfill runs only for a duplicate or missing id a browser edit left (LEGION-487's gap), and the
+// mark sweep only for a mark a browser race left with no comment, ask or suggestion row to match.
 // What the bound weighs is the document a write leaves, not the history its store keeps - that
 // is now compaction's (LEGION-496), which folds the document's rows older than compactTail into
 // its state once they are due (the compaction queue, checkCompaction) and at the hourly sweep

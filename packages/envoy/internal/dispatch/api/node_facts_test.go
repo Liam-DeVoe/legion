@@ -640,8 +640,9 @@ func TestAPinnedBlockCarriesItsFacts(t *testing.T) {
 }
 
 // R12: a block ask belongs to its document at the version that added its block, the version
-// current when it was written. A later edit of the document and the ask's answer, which each move
-// the block's changed version, leave it there.
+// current when it was written. A later edit of the document leaves it there, and so does the
+// ask's answer, which is held on the ask's node and changes no byte of the document
+// (dispatch://INFRA-1150 R3), so it leaves the block's changed version where it was too.
 func TestABlockAskBelongsToTheVersionThatAddedIt(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
@@ -669,21 +670,19 @@ func TestABlockAskBelongsToTheVersionThatAddedIt(t *testing.T) {
 	}
 	want("as written")
 
-	before := readNode(t, handler, blockRef).ChangedVersion
 	editSpec(t, handler, issue.Key, []map[string]any{{"op": "insert", "after": "end", "markdown": "Closing paragraph."}})
 	want("after a later edit")
+	awaitSettled(t, database, spec)
+	before := readNode(t, handler, blockRef).ChangedVersion
 	ask := decodeBody[struct {
 		Ask model.Ask `json:"ask"`
 	}](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/asks/"+askID, nil, "alice")).Ask
 	succeeded(t, "answer the block ask", dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/answer", map[string]any{
 		"selected": []string{"Ship"}, "expected_edited_at": ask.EditedAt,
 	}, "alice"))
-	deadline := time.Now().Add(10 * time.Second)
-	for readNode(t, handler, blockRef).ChangedVersion <= before {
-		if time.Now().After(deadline) {
-			t.Fatalf("the answer never moved the block's changed version past %d", before)
-		}
-		time.Sleep(20 * time.Millisecond)
+	awaitSettled(t, database, spec)
+	if changed := readNode(t, handler, blockRef).ChangedVersion; changed != before {
+		t.Fatalf("the answer moved the block's changed version from %d to %d, want it left: an answer changes no byte of the document", before, changed)
 	}
 	want("after its answer")
 }
