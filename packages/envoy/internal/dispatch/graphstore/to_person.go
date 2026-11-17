@@ -35,7 +35,7 @@ var ErrReservedForAuthor = errors.New("a node reserved for its author reaches no
 // ErrPersonTupleOutsideToPerson refuses one of the three kinds ToPerson appends, naming a person,
 // handed to any other writer of this store: ToPerson is the one place that holds such a tuple to
 // the rule of ErrReservedForAuthor, so a writer that went around it would be a second rule.
-var ErrPersonTupleOutsideToPerson = errors.New("a delivered_to, mentions or participates_in tuple naming a person is appended by graphstore.ToPerson alone")
+var ErrPersonTupleOutsideToPerson = errors.New("a delivered_to, mentions or participates_in tuple naming a person is appended by ToPerson alone")
 
 // ToPerson appends tuples that tie a thing to a person: a delivered_to or a mentions from the
 // thing to the person, or a participates_in from the person to the root of the thread. It is

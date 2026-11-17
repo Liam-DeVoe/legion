@@ -708,6 +708,15 @@ var indexPasses = map[string]string{
 	// their tuples: the node the operator named and what the store holds of the parts its item's
 	// rows name.
 	"grapherase/erase.go#eraseItemParts": "the node the operator named",
+	// The one writer of the threads a person takes part in and of what reaches them there
+	// (dispatch://INFRA-1152 D3): it reads the write its caller stored, the thread that write's head
+	// pointer tuples name, and who takes part in that thread - the participates_in tuples into its
+	// root, and the login of each user_threads row of it the marker test passes - and appends the
+	// participation and the deliveries of that one write, through graphstore.ToPerson. An answer's
+	// catch-up reads its ask's own row and refs rows while their markers are null, which is the
+	// marker test passing. It reads no marked row's columns to decide what to write, so it mends
+	// nothing and is no repair.
+	"inboxwrite/record.go#Record": "the write its caller stored and the event that recorded it, the thread's participates_in tuples and the rows of the thread the marker test passes",
 }
 
 // projectedWrite matches one statement of a Go source file that writes a projected table or the
@@ -720,7 +729,7 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // graphstore.WriteArmsUncaused by its cause and then calls what it picked, so a scan for calls
 // alone would read it as no writer, where graphstore's TestEveryStoreWriteCallSiteIsListed reads
 // the same use as one.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|WriteArms|WriteArmsUncaused|AttemptOpened|Attempted|EraseNode|FillScopes)\b`)
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|WriteArms|WriteArmsUncaused|AttemptOpened|Attempted|ToPerson|EraseNode|FillScopes)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the

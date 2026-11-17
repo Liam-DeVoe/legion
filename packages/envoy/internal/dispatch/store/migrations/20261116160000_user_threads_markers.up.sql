@@ -10,8 +10,8 @@
 -- the delivered_to tuples into that person from that thread, with seq above marked_seq, that a
 -- reply caused, which the census proves. One lock rule makes that hold: the writer locks every
 -- row of the thread it writes in before it appends the delivered_to tuples of the people who hold
--- them, and the backfill marks a row under that same lock. A row neither marked is answered by the
--- old trigger (user_threads_record) until the backfill takes it once.
+-- them, and the backfill marks a row under that same lock. A row not marked is answered by the old
+-- trigger (user_threads_record) until the backfill takes it once.
 --
 -- A marker survives only this release's writer, as the node pair of the rows 20261116150000 names
 -- does: every connection of this release's pool carries dispatch.store_marker_writer `on`
@@ -19,13 +19,21 @@
 -- delivery no tuple of this release states - an older build's route statement, or the old trigger
 -- body user_threads_record moving the version - so the trigger below, before each update, takes
 -- the marker off the row it writes: the row returns to the backfill, which marks it again under
--- the lock above. The old trigger body runs inside the trigger of the write that fires it
--- (user_threads_comment, user_threads_message, user_threads_ask), so its update reaches this
--- trigger at a nesting depth above one (pg_trigger_depth), and is unmarked whichever build's
--- transaction it runs in: a write this release leaves to the old trigger - a comment or a message
--- past the store's address bound, whose row names no marker of its own - moves the version of a
--- marked row with no tuple beside it just as an older build's does. A statement this release
--- runs on user_threads itself runs at depth one and keeps the marker it finds.
+-- the lock above.
+--
+-- The setting alone does not find the old trigger body when it runs inside this release's own
+-- transaction, whose connection carries the setting: this release still leaves three writes to it
+-- - a comment or a message past the store's address bound, whose row names no marker of its own
+-- (comments.tuples_stored false, no node pair), and an answer the boot step's decision step
+-- replays from another build's ask.answered (docs' decision step, asks.Recorded), whose update
+-- leaves the ask's marker where it was - and each of them moves the version of a marked row with
+-- no delivered_to beside it, just as an older build's write does. That body only ever runs inside
+-- the trigger of the write that fires it (user_threads_comment, user_threads_message,
+-- user_threads_ask), so its update reaches this trigger at a nesting depth above one
+-- (pg_trigger_depth), and the second test unmarks it whichever build's transaction it runs in.
+-- Every statement this release's own writers run on user_threads - inboxwrite.Record's moves and
+-- its own row, and the read-mark and dismissal routes - runs at depth one, outside any trigger, and
+-- keeps the marker it finds.
 --
 -- Both columns are nullable with no default: a catalog change, so no stored row is rewritten or
 -- read, and every existing row reads null, which is true of it, since no writer before this one

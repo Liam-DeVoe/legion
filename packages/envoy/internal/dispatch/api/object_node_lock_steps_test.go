@@ -27,9 +27,11 @@ import (
 // row that holds the object, an ask's or a message's body blocks are written as nodes after its
 // block state row and before the block rows that name them (bodyBlockSteps), the event is appended
 // after those rows, and the facts the node write stated are appended after the event that causes
-// them. The id of each object is drawn inside its own transaction, so no other transaction can hold
-// its node or its row before they exist: those steps are held as the tables they are written to,
-// and its first block's node by the key its row's insert names (holdFirstBlockNode).
+// them. An ask's create, a message and a broadcast's copy then run the one writer of a thread
+// (inboxwrite.Record), whose user_threads steps each lists after its event. The id of each object
+// is drawn inside its own transaction, so no other transaction can hold its node or its row before
+// they exist: those steps are held as the tables they are written to, and its first block's node by
+// the key its row's insert names (holdFirstBlockNode).
 //
 // Its control is the ask create's node write skipped (api/asks.go): held at the ask's node, the
 // path then waits at the author follow's node write rather than its own, or at none.
@@ -39,12 +41,14 @@ func TestEveryObjectNodeWriterTakesTheStoreLockOrder(t *testing.T) {
 	for _, writer := range []storeWriter{
 		rig.objectCreate("createAskFor on an issue", "the ask", "asks", "insert into asks (",
 			[]storeStep{rig.issueOwnerStep(issueOwnerStatement)}, rig.bodyBlockSteps("the ask", refs.ItemAsk, "insert into asks ("),
+			[]storeStep{ownRowStep()},
 			"/api/v1/issues/"+rig.issue+"/asks", map[string]any{"question": "Does the lock order hold?"}),
 		rig.objectCreate("createStoredMessage on an issue", "the message", "messages", "insert into messages (",
 			nil, rig.bodyBlockSteps("the message", refs.ItemMessage, "insert into messages ("),
+			[]storeStep{threadRowsStep(), ownRowStep()},
 			"/api/v1/issues/"+rig.issue+"/messages", map[string]any{"body": "A message the lock steps hold."}),
 		rig.objectCreate("storeArtifact on an issue", "the document", "artifacts", "insert into artifacts (",
-			nil, nil, "/api/v1/issues/"+rig.issue+"/artifacts", nil),
+			nil, nil, nil, "/api/v1/issues/"+rig.issue+"/artifacts", nil),
 		rig.issueCreate(),
 		rig.broadcastCreate(),
 	} {
@@ -75,13 +79,17 @@ func objectNodeSteps(object, table, insert string, parts []storeStep) []storeSte
 	return append(append(steps, parts...), eventAppendStep(), tupleAppendStep())
 }
 
-// objectCreate is a create through route, which takes the owner steps it lists and then
-// objectNodeSteps. A nil body is a document upload, which each run names afresh, and whose row's
-// foreign key into projects takes that project's row in key share mode.
-func (r *storeWriterRig) objectCreate(name, object, table, insert string, owner, parts []storeStep, route string, body map[string]any) storeWriter {
+// objectCreate is a create through route, which takes the owner steps it lists, then
+// objectNodeSteps, then the steps of the one writer of a thread it lists (recorded): an ask's
+// create keeps its asker's own user_threads row, and a message's write takes every row of its
+// thread in one pass and then keeps its writer's (inboxwrite.Record), while a document upload
+// records nothing in a thread. A nil body is a document upload, which each run names afresh, and
+// whose row's foreign key into projects takes that project's row in key share mode.
+func (r *storeWriterRig) objectCreate(name, object, table, insert string, owner, parts, recorded []storeStep, route string, body map[string]any) storeWriter {
+	steps := append(append([]storeStep(nil), owner...), objectNodeSteps(object, table, insert, parts)...)
 	return storeWriter{
 		name:            name,
-		steps:           append(append([]storeStep(nil), owner...), objectNodeSteps(object, table, insert, parts)...),
+		steps:           append(steps, recorded...),
 		locksOwnProject: body == nil,
 		ready: func(t *testing.T, _ context.Context) storeWriterRun {
 			sent := body
@@ -127,9 +135,10 @@ func (r *storeWriterRig) issueCreate() storeWriter {
 // names its recipients, would have written s2's copy whole - its node and s2's page, its row, its
 // event and the tuples it caused - before it waited on s1's page, and two such writes naming the
 // same recipients in the other order would each hold one page the other waits for. After the
-// pages come the first copy's row, its message.created and the tuples that event caused. A
-// broadcast takes no owner row: its copies stand on no issue, and their events name no owner
-// (events.Broker's lockEventOwner).
+// pages come the first copy's row, its message.created, the tuples that event caused and the one
+// writer of the copy's thread (inboxwrite.Record), whose pass over the thread's user_threads rows
+// finds none, since a copy on no issue keeps no row. A broadcast takes no owner row: its copies
+// stand on no issue, and their events name no owner (events.Broker's lockEventOwner).
 //
 // The pages are there before every run (writeRecipientPages), so the hold is a lock of a row the
 // store holds, as a node write locks a page another write made. Each run waits out its own copies'
@@ -155,6 +164,7 @@ func (r *storeWriterRig) broadcastCreate() storeWriter {
 			},
 			eventAppendStep(),
 			tupleAppendStep(),
+			threadRowsStep(),
 		},
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
 			r.writeRecipientPages(t)

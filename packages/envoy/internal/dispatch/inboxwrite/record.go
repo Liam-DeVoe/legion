@@ -116,14 +116,15 @@ func (w Write) ThreadLogins(logins []string) []string {
 	return logins
 }
 
-// keptLogin is the login whose row the write keeps: its writer's, where its writer is a person and
-// its owner resolves to a project, which is what a row names.
+// keptLogin is the login whose row the write keeps: its writer's, where its writer is a person the
+// store can key (graphstore.AddressFits) and its owner resolves to a project, which is what a row
+// names.
 func (w Write) keptLogin() (string, bool) {
 	if w.Arm == TakesPart || w.Project == "" {
 		return "", false
 	}
 	kind, id, named := graphstore.AuthorOf(w.Author)
-	return id, named && kind == graphstore.KindPerson
+	return id, named && kind == graphstore.KindPerson && graphstore.AddressFits(id)
 }
 
 // Record records w, whose event is event (graphstore.NoEvent for a write no event records, the
@@ -147,8 +148,8 @@ func (w Write) keptLogin() (string, bool) {
 //     person in that set but A, so a person never draws their own write (outbox's
 //     recipientFilter.keep), beside every delivered_to the catch-up owes;
 //  4. for a reply, the move of each row of T a person of that set but A holds: replied_at,
-//     last_reply_id, version + 1 and dismissed_at cleared, beside the retraction of every current
-//     dismissed tuple into T from anybody but A;
+//     last_reply_id, version + 1 and dismissed_at cleared, and, for each person of that set but A
+//     whose dismissed tuple into T stands, the retraction of that tuple;
 //  5. A's own row, where A is a person and T's owner resolves to a project: its read mark moves to
 //     the write, and a row this write begins records marked_version 0 and marked_seq at the log
 //     position of this moment (migration 20261116160000).
@@ -236,19 +237,16 @@ func Record(ctx context.Context, tx pgx.Tx, w Write, event int64) error {
 		deliveries := owed.deliveries
 		var moved, dismissed []string
 		for _, member := range members {
-			if member.login == person {
+			if member.login == person || !(member.takesPart || (member.row && !member.marked)) {
 				continue
 			}
-			takesPart := member.takesPart || (member.row && !member.marked)
-			if takesPart {
-				deliveries = append(deliveries, graphstore.Tuple{
-					FromKind: w.NodeKind, FromID: w.NodeID, Kind: graphstore.TupleDeliveredTo,
-					ToKind: graphstore.KindPerson, ToID: member.login,
-					At: w.At, Who: w.Who, SourceEvent: event, Asserted: true,
-				})
-				if member.row {
-					moved = append(moved, member.login)
-				}
+			deliveries = append(deliveries, graphstore.Tuple{
+				FromKind: w.NodeKind, FromID: w.NodeID, Kind: graphstore.TupleDeliveredTo,
+				ToKind: graphstore.KindPerson, ToID: member.login,
+				At: w.At, Who: w.Who, SourceEvent: event, Asserted: true,
+			})
+			if member.row {
+				moved = append(moved, member.login)
 			}
 			if member.dismissed {
 				dismissed = append(dismissed, member.login)
@@ -258,7 +256,7 @@ func Record(ctx context.Context, tx pgx.Tx, w Write, event int64) error {
 			return fmt.Errorf("deliver %s/%s to the participants of %s/%s: %w", w.NodeKind, w.NodeID, thread.kind, thread.id, err)
 		}
 
-		// 4. Each row of T but A's moves, and a dismissal of T by anybody but A ends.
+		// 4. Each row of T those people hold moves, and each of their dismissals of T ends.
 		if len(dismissed) > 0 {
 			if err := graphstore.Write(ctx, tx, nil, dismissalsEnded(dismissed, thread, w, event)); err != nil {
 				return fmt.Errorf("retract the dismissals of %s/%s: %w", thread.kind, thread.id, err)
@@ -270,7 +268,7 @@ func Record(ctx context.Context, tx pgx.Tx, w Write, event int64) error {
 	}
 
 	// 5. A's own row.
-	if login, keeps := w.keptLogin(); keeps && login == person {
+	if login, keeps := w.keptLogin(); keeps {
 		if err := keepRow(ctx, tx, thread, w, login); err != nil {
 			return err
 		}

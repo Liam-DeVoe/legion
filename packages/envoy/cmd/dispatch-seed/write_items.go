@@ -410,6 +410,18 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 			if _, err := refs.WriteItemWindows(ctx, tx, refs.ItemComment, comment.ID); err != nil {
 				return fmt.Errorf("write the windows of comment %s: %w", comment.ID, err)
 			}
+			// Who wrote it takes part in its thread and keeps the thread's row, and the comment
+			// reaches everyone else in that thread, as the server's comment write records it
+			// (inboxwrite.Record): the row holds its marker from its insert, so the trigger
+			// user_threads_comment passes it by. A comment whose pointers the batch could not state
+			// is the trigger's, as it is the server's. The seed appends no event of its own.
+			if pointersStored[index-from] {
+				written := inboxwrite.Comment(comment.ID, seedAuthor, comment.CreatedAt, issueKey, artifactID,
+					r.itemProject(comment.Issue, comment.Document))
+				if err := inboxwrite.Record(ctx, tx, written, graphstore.NoEvent); err != nil {
+					return fmt.Errorf("record comment %s in its thread: %w", comment.ID, err)
+				}
+			}
 			mentions.add(comment.ID, text.Refs(located), comment.CreatedAt)
 		}
 		cited, err := mentions.write(ctx, tx)
@@ -598,6 +610,18 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 			}
 			if _, err := refs.WriteItemWindows(ctx, tx, refs.ItemMessage, message.ID); err != nil {
 				return fmt.Errorf("write the windows of message %s: %w", message.ID, err)
+			}
+			// Who wrote it takes part in its thread and keeps the thread's row, and the message
+			// reaches everyone else in that thread, as the server's message write records it
+			// (inboxwrite.Record): the row names its node from its insert, so the trigger
+			// user_threads_message passes it by. A message whose row names no node is the
+			// trigger's, as it is the server's.
+			if projected[index-from] {
+				written := inboxwrite.Message(message.ID, seedAuthor, message.CreatedAt, &row.IssueKey,
+					r.itemProject(message.Issue, -1))
+				if err := inboxwrite.Record(ctx, tx, written, graphstore.NoEvent); err != nil {
+					return fmt.Errorf("record message %s in its thread: %w", message.ID, err)
+				}
 			}
 			mentions.add(message.ID, text.Refs(located), message.CreatedAt)
 		}

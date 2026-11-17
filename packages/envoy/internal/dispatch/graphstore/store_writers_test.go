@@ -27,19 +27,20 @@ const graphstoreImportPath = "github.com/sjawhar/envoy/internal/dispatch/graphst
 const graphstoreDirectory = "internal/dispatch/graphstore"
 
 // storeWriteFunctions are the calls a write of graph_nodes and graph_tuples from outside this
-// package goes through, the same eleven docs' register of the tree's passes scans for
+// package goes through, the same twelve docs' register of the tree's passes scans for
 // (storeWriterCall), and the session writer beside them: Write, WriteUncaused and Caused in a
 // caller's transaction, WriteArms and WriteArmsUncaused spliced into a caller's statement,
 // Authored, Reached and SessionRecorded, which run those arms for the writers that record an
 // author, a reached session and a session an ask names, AttemptOpened and Attempted, which write a
 // delivery attempt's node before its row and state what its row holds after each write of it,
+// ToPerson, the one writer of a delivered_to, a mentions or a participates_in that names a person,
 // EraseNode, the erase's delete of a node and its tuples, and FillScopes, the backfill's fill of
 // the project of a node stored with none. Each is a function of the package, never a method, so a
 // call of one is named by the package and found here wherever it is made. A write that holds a
 // statement of its own instead is found by rawStoreWrite, and none outside this package may hold
 // one.
 var storeWriteFunctions = []string{"Write", "WriteUncaused", "WriteArms", "WriteArmsUncaused", "Caused",
-	"Authored", "Reached", "SessionRecorded", "AttemptOpened", "Attempted", "EraseNode", "FillScopes"}
+	"Authored", "Reached", "SessionRecorded", "AttemptOpened", "Attempted", "ToPerson", "EraseNode", "FillScopes"}
 
 // rawStoreWrite matches a statement that writes graph_nodes or graph_tuples itself rather than
 // through one of storeWriteFunctions: an insert, an update or a delete, in any case, over any
@@ -224,6 +225,16 @@ var storeWriteCallSites = []string{
 	// eraseItemParts): its block nodes and its delivery attempts, after the item's own node, each
 	// through EraseNode over the tuples its listing named.
 	"grapherase/erase.go#eraseItemParts",
+	// The one writer of the threads a person takes part in (dispatch://INFRA-1152 D3,
+	// inboxwrite.Record), which every comment, message, ask and answer write runs after its
+	// event: what an answer's ask still owes the store, its writer's participates_in, every
+	// user_threads row of the thread in one pass, then the delivered_to of each other participant
+	// through ToPerson and the move of their rows, and its writer's own row. It takes the owner row
+	// its caller took first and no other node row than the person nodes ToPerson upserts `do
+	// nothing`. api's TestEveryApiStoreWriterTakesTheStoreLockOrder and
+	// TestEveryObjectNodeWriterTakesTheStoreLockOrder hold the comment, reply, ask and message
+	// paths to its user_threads step.
+	"inboxwrite/record.go#Record",
 }
 
 // TestEveryStoreWriteCallSiteIsListed reads the module's source, every Go file but the tests,

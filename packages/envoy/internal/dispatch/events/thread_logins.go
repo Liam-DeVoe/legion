@@ -20,13 +20,17 @@ func AskEventPayload(ctx context.Context, q Queryer, ask model.Ask, changes mode
 }
 
 // ThreadLogins is the thread_logins an event names: every login with a Replies row
-// (user_threads, migrations 0095-0097) on threadID, sorted. The rows are kept by triggers on the
-// comment, message and ask writes, so a writer reads this in its own transaction after the write,
-// and the list says whose Replies count the write can have moved. It is never nil, so a thread
-// nobody has a row on is named as [] rather than left out. threadID is the thread as the
-// triggers key it: an ask's id; a comment's ask, else the root it replies to, else itself; an
-// issue message's root up in_reply_to. A direct (issue-less) message keeps no row here, and names
-// its thread root's author instead (api/thread_logins.go, directThreadLogins).
+// (user_threads, migrations 0095-0097) on threadID, sorted. The rows are kept by the one writer of
+// a thread, inboxwrite.Record, which each comment, message, ask and answer write of this release
+// runs after its event, and, for a write an older build makes, by the triggers of 0095-0097. A
+// writer reads this in its own transaction before it appends its event, so the list names the rows
+// the thread held before the write, and the writer adds the one row its own write is about to keep
+// (inboxwrite.Write.ThreadLogins): the list says whose Replies count the write can have moved. It
+// is never nil, so a thread nobody has a row on is named as [] rather than left out. threadID is
+// the thread as Record and the triggers key it: an ask's id; a comment's ask, else the root it
+// replies to, else itself; an issue message's root up in_reply_to. A direct (issue-less) message
+// keeps no row here, and names its thread root's author instead (api/thread_logins.go,
+// directThreadLogins).
 func ThreadLogins(ctx context.Context, q Queryer, threadID string) ([]string, error) {
 	logins := []string{}
 	if err := q.QueryRow(ctx, `

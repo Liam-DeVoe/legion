@@ -426,14 +426,17 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 //     before the first append.
 //
 // Step 2 comes before the caller's rows because that is the order a session's reply takes those
-// two in. Postgres fires a table's row triggers in name order, so on messages
-// user_agent_thread_dismissed_clear (migration 20261105093507) runs before user_threads_message
-// (0095, attached by 0097) on an issue message, and on an Agent thread's reply it is the only
-// one of the two that runs at all: that other trigger returns at once for a message with no
-// issue key, and an Agent thread's messages carry none. So a session's reply takes the thread's
-// root - the row the clear trigger locks before its delete - before any row of this caller's it
-// reaches. A dismiss that took the caller's rows first and the root second would be the opposite
-// order, and the two would meet each holding what the other waits for.
+// two in. Its writer, inboxwrite.Record, takes the thread's root `for key share` and clears the
+// root's Agent dismissals before it takes any user_threads row of the thread (Record's step 2,
+// below). An older build's reply does the same through its triggers: Postgres fires a table's row
+// triggers in name order, so on messages user_agent_thread_dismissed_clear (migration
+// 20261105093507) runs before user_threads_message (0095, attached by 0097) on an issue message,
+// and on an Agent thread's reply it is the only one of the two that runs at all: that other
+// trigger returns at once for a message with no issue key, and an Agent thread's messages carry
+// none. So a session's reply takes the thread's root - the row the clear locks before its delete -
+// before any row of this caller's it reaches. A dismiss that took the caller's rows first and the
+// root second would be the opposite order, and the two would meet each holding what the other
+// waits for.
 //
 // PUT /api/v1/me/threads/{id}/read takes that same order over its one thread, and the two need
 // the same one: both take the owner `for share`, two share locks do not conflict, so the owner
@@ -459,14 +462,26 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // ones the update moves, so a second press waits for the first over rows it would have skipped.
 //
 // An ordinary writer is ordered by the owner instead. A comment, an answer or an issue message
-// takes its issue or document `for no key update` (owner.go, ownerRowLock) before its trigger
-// moves the user_threads rows of everyone in the thread; that level conflicts with the
-// `for share` taken here, and every row such a trigger moves belongs to a thread on the owner
-// it holds, which is an owner this transaction holds too, since it locks the owner of every
-// thread it marks. One of the two therefore waits at the owner while holding nothing the other
-// wants, whichever order the writer itself reaches the project in: a block ask's answer appends
-// an anchor refresh, and so takes the project, before its own update moves those rows, and it
-// is ordered all the same.
+// takes its issue or document `for no key update` (owner.go, ownerRowLock) before it moves the
+// user_threads rows of everyone in the thread; that level conflicts with the `for share` taken
+// here, and every row such a write moves belongs to a thread on the owner it holds, which is an
+// owner this transaction holds too, since it locks the owner of every thread it marks. One of the
+// two therefore waits at the owner while holding nothing the other wants, whichever order the
+// writer itself reaches the project in: a block ask's answer appends an anchor refresh, and so
+// takes the project, before its own update moves those rows, and it is ordered all the same.
+//
+// The rows such a write moves are moved by the one writer of a thread, inboxwrite.Record
+// (dispatch://INFRA-1152 D3), which every comment, message, ask and answer write of this release
+// runs after its event, under the owner row it took first, and for a write an older build makes
+// by the triggers of 0095-0097. Record takes them in this order: the participates_in tuples of the
+// write, and of what an answer's ask still owes the store; then every user_threads row of the
+// thread, `for no key update`, in ascending login order, in one pass (lockThread), which holds the
+// row of every person the write is about to deliver to; only then the delivered_to tuple of each
+// of those people, through graphstore.ToPerson; then the move of their rows; and last the writer's
+// own row. The backfill marks a row under that same lock, so no delivery falls on both sides of a
+// row's mark (D4). Two writes into one thread queue at their owner row before either reaches this
+// pass, so the pass orders nothing between writers; it is what holds a mark to the deliveries
+// around it.
 //
 // The node and tuple store (internal/dispatch/graphstore) adds five invariants rather than a
 // sequence of its own. Its writers do not all run their steps in one order - one learns its

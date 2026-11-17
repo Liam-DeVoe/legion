@@ -37,7 +37,10 @@ const storeStepWait = 20 * time.Second
 // session's reply to a mention (replyComment, through the same four); and the settle of a comment
 // mention's delivery (completeCommentDelivery) and of a targeted message's
 // (completeMessageDelivery), each of which records the session it reached through
-// graphstore.Reached inside its own transaction.
+// graphstore.Reached inside its own transaction. The comment path and the reply then run the one
+// writer of a thread (inboxwrite.Record, a site of graphstore.ToPerson), whose user_threads steps
+// each path lists after its event: every row of the thread in one pass, before the delivered_to of
+// anybody holding one, then the rows of the people the write reached, then the writer's own row.
 //
 // The order they are held to is the one written on api/inbox_read.go's markInboxReadThreads, which
 // graphstore's TestEveryStoreWriteTakesOneLockOrder reads: the owner row comes first; a node's
@@ -84,6 +87,10 @@ const (
 	projectionStep
 	eventStep
 	tupleStep
+	// threadStep is a user_threads row of the thread the write is in, which the one writer of a
+	// thread (inboxwrite.Record) takes after the write's event: every row of the thread in one
+	// pass, then the rows of the people the write reached, then the writer's own.
+	threadStep
 )
 
 // The lock modes a step shows in pg_locks: `for update`, `for no key update` and a foreign key's
@@ -175,6 +182,14 @@ const (
 	eventAppendStatement = "with inserted as ( insert into events ("
 	// tupleAppendStatement is graphstore's tuple append, which caused runs through graphstore.Write.
 	tupleAppendStatement = "insert into graph_tuples ("
+	// threadRowsStatement is inboxwrite.Record's one pass over every user_threads row of the
+	// write's thread (lockThread), `for no key update` in ascending login order.
+	threadRowsStatement = "with held as materialized ("
+	// reachedRowsStatement is Record's move of the rows of the people the write reached
+	// (moveRows), after their delivered_to tuples.
+	reachedRowsStatement = "update user_threads set replied_at"
+	// ownRowStatement is Record's upsert of the writer's own row (keepRow).
+	ownRowStatement = "insert into user_threads ("
 )
 
 // answeredRowStatement is loadCommentForUpdate's lock of the comment a reply answers.
@@ -187,11 +202,13 @@ var answeredRowStatement = "select " + commentColumns + " from comments where id
 // row that names it, takes the comment's block state row, writes the block nodes of its body before
 // the block rows that name them (bodyBlockSteps), appends comment.created, then appends the tuples
 // that event caused (caused) and, in one statement, the author's node and the authored_by tuple
-// under that event (graphstore.Authored). The comment's id is drawn inside its own transaction, so
-// no other transaction can hold its node, its row or its tuples before they exist: those steps are
-// held as the tables they are written to, and its block's node by the key its row's insert names
-// (holdFirstBlockNode). Each run's author is a person no write has recorded, so the author's node
-// is new and is held as its row.
+// under that event (graphstore.Authored). Last it records the comment in its thread
+// (inboxwrite.Record): every user_threads row of the thread in one pass, then its writer's own
+// row, a comment that opens its own thread reaching nobody else. The comment's id is drawn inside
+// its own transaction, so no other transaction can hold its node, its row or its tuples before they
+// exist: those steps are held as the tables they are written to, and its block's node by the key
+// its row's insert names (holdFirstBlockNode). Each run's author is a person no write has
+// recorded, so the author's node is new and is held as its row.
 func (r *storeWriterRig) commentCreate(name, route string, owner storeStep) storeWriter {
 	steps := []storeStep{
 		owner,
@@ -209,7 +226,7 @@ func (r *storeWriterRig) commentCreate(name, route string, owner storeStep) stor
 	steps = append(steps, r.bodyBlockSteps("the comment", refs.ItemComment, commentInsertStatement)...)
 	return storeWriter{
 		name:  name,
-		steps: append(steps, eventAppendStep(), tupleAppendStep(), authorNodeStep()),
+		steps: append(steps, eventAppendStep(), tupleAppendStep(), authorNodeStep(), threadRowsStep(), ownRowStep()),
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
 			login := r.fresh("lockwriter")
 			author := model.Actor{Kind: "user", ID: login}
@@ -227,7 +244,10 @@ func (r *storeWriterRig) commentCreate(name, route string, owner storeStep) stor
 // mentionReply is a session's reply to a mention, through its route. It takes the owner row and
 // then the comment it answers `for update` (lockedCommentForDelivery), and from there takes the
 // comment path's steps for the reply: its node, its row, its block state row, its block nodes and
-// rows, the event, the tuples and its author. The answered comment's row belongs to a projected
+// rows, the event, the tuples and its author. Last it records the reply in its thread
+// (inboxwrite.Record): every user_threads row of the thread in one pass, which holds the row of
+// alice, who wrote the comment it answers, before her delivered_to is appended, then the move of
+// her row; a session keeps no row of its own. The answered comment's row belongs to a projected
 // table, and the written order lets it come before the reply's node: what it orders is a node
 // against the rows that name that node, and this row names the answered comment's node, which the
 // reply never writes.
@@ -256,7 +276,7 @@ func (r *storeWriterRig) mentionReply() storeWriter {
 	steps = append(steps, r.bodyBlockSteps("the reply", refs.ItemComment, commentInsertStatement)...)
 	return storeWriter{
 		name:  "replyComment",
-		steps: append(steps, eventAppendStep(), tupleAppendStep(), authorNodeStep()),
+		steps: append(steps, eventAppendStep(), tupleAppendStep(), authorNodeStep(), threadRowsStep(), reachedRowsStep()),
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
 			answered := decodeMentionedComment(t, postMentionedComment(t, r.handler, r.issue, map[string]any{
 				"body": "Does this ship, @s1?", "mentions": []map[string]any{{"target": "session:s1"}},
@@ -451,6 +471,38 @@ func authorNodeStep() storeStep {
 	}
 }
 
+// threadRowsStep is inboxwrite.Record's one pass over every user_threads row of the write's
+// thread, `for no key update` in ascending login order (lockThread), after the write's event and
+// before the delivered_to of anybody holding one of those rows. A row of the thread may not exist
+// yet - a write that opens its own thread finds none - so the table is held against row locks
+// (holdTableRowLocks), which stops the write at its locking read whatever rows it reaches.
+func threadRowsStep() storeStep {
+	return storeStep{
+		name: "the thread's user_threads rows", order: threadStep,
+		hold: holdTableRowLocks("user_threads"), at: threadRowsStatement,
+		takes: []tableLock{{"user_threads", rowShareMode}},
+	}
+}
+
+// reachedRowsStep is Record's move of the user_threads rows of the people the write reached
+// (moveRows), which the pass above took, after their delivered_to tuples.
+func reachedRowsStep() storeStep {
+	return storeStep{
+		name: "the rows of the people the write reached", order: threadStep,
+		hold: holdTableWrites("user_threads"), at: reachedRowsStatement,
+		takes: []tableLock{{"user_threads", rowExclusiveMode}},
+	}
+}
+
+// ownRowStep is Record's upsert of its writer's own user_threads row (keepRow), the write's last.
+func ownRowStep() storeStep {
+	return storeStep{
+		name: "the writer's own user_threads row", order: threadStep,
+		hold: holdTableWrites("user_threads"), at: ownRowStatement,
+		takes: []tableLock{{"user_threads", rowExclusiveMode}},
+	}
+}
+
 // bodyBlockSteps are the three steps an item's write takes for the blocks of its body, between
 // the item's row and its event (refs.indexItemBlocks). The first is the item's block state row,
 // which the trigger on the item row's insert writes (item_blocks_owe, migrations 0143, 0144 and
@@ -504,6 +556,19 @@ func holdTableWrites(table string) func(t *testing.T, ctx context.Context, holde
 		t.Helper()
 		if _, err := holder.Exec(ctx, "lock table "+table+" in share mode"); err != nil {
 			t.Fatalf("hold the writes of %s: %v", table, err)
+		}
+	}
+}
+
+// holdTableRowLocks holds a table in exclusive mode. That mode conflicts with the row share lock
+// a `for no key update` takes on its table and with the row exclusive lock of every write, and with
+// no plain read, so the write stops at its first locking read or write of the table and nowhere
+// before it. It is how a pass over rows is held that may find none to lock.
+func holdTableRowLocks(table string) func(t *testing.T, ctx context.Context, holder pgx.Tx, run storeWriterRun) {
+	return func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
+		t.Helper()
+		if _, err := holder.Exec(ctx, "lock table "+table+" in exclusive mode"); err != nil {
+			t.Fatalf("hold the row locks of %s: %v", table, err)
 		}
 	}
 }
@@ -586,7 +651,8 @@ func (s *statementStarts) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQue
 // the invariants on markInboxReadThreads: the owner row first, a node before the projection row
 // naming it, and the event before every step appending tuples that carry it. The fourth, several
 // nodes of one write in ascending (kind, id), is graphstore's own (writeNodes, WriteArms), and
-// every node step here writes one node.
+// every node step here writes one node. A user_threads row of the write's thread comes after the
+// event, as the one writer of a thread runs after it (inboxwrite.Record).
 func requireTheWrittenOrderAdmits(t *testing.T, writer storeWriter) {
 	t.Helper()
 	position := make(map[string]int, len(writer.steps))
@@ -612,6 +678,9 @@ func requireTheWrittenOrderAdmits(t *testing.T, writer storeWriter) {
 		}
 		if step.caused && (event < 0 || event > index) {
 			t.Errorf("%s takes %s, whose tuples carry its event, before it appends that event", writer.name, step.name)
+		}
+		if step.order == threadStep && (event < 0 || event > index) {
+			t.Errorf("%s takes %s, a row of its thread, before it appends its event: the one writer of a thread runs after the event", writer.name, step.name)
 		}
 	}
 }

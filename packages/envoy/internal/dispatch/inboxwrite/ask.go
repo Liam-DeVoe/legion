@@ -38,6 +38,11 @@ type Ask struct {
 	opened, answered int64
 }
 
+// askEventTypes is the type list of the partial index events_ask_payload_id (migration 0030),
+// which a read of an ask's events by payload->>'id' repeats beside the one type it reads, so the
+// planner can prove the index's predicate and read it (0134's lookup takes it the same way).
+const askEventTypes = `'ask.opened', 'ask.answered', 'ask.resolved', 'ask.edited'`
+
 // ReadAsk reads askID as an answer writer must before its answer's update moves the ask's marker
 // (decision 16): the marker test of the ask's create and of the answer it holds, read off the
 // ask's own row, which passes the test while the marker is null; the person an open ask waits on,
@@ -59,12 +64,12 @@ func ReadAsk(ctx context.Context, tx pgx.Tx, askID string) (Ask, error) {
 		       n.made_by,
 		       case when a.tuples_stored_at is null then (
 		           select e.id from events e
-		           where e.type = 'ask.opened' and e.payload->>'id' = a.id::text
+		           where e.type in (`+askEventTypes+`) and e.type = 'ask.opened' and e.payload->>'id' = a.id::text
 		           order by e.id limit 1
 		       ) end,
 		       case when a.answer->>'user' is not null and a.tuples_stored_at is distinct from (a.answer->>'at')::timestamptz then (
 		           select e.id from events e
-		           where e.type = 'ask.answered' and e.payload->>'id' = a.id::text
+		           where e.type in (`+askEventTypes+`) and e.type = 'ask.answered' and e.payload->>'id' = a.id::text
 		             and (e.payload->'answer'->>'at')::timestamptz = (a.answer->>'at')::timestamptz
 		           order by e.id limit 1
 		       ) end
@@ -249,7 +254,7 @@ func answerReached(ctx context.Context, tx pgx.Tx, askID string, at time.Time, a
 			union all
 			select user_threads_login(e.payload->'answer'->>'user')
 			from events e
-			where e.type = 'ask.answered' and e.payload->>'id' = $1
+			where e.type in (`+askEventTypes+`) and e.type = 'ask.answered' and e.payload->>'id' = $1
 			  and (e.payload->'answer'->>'at')::timestamptz < $2
 		) as earlier
 		where earlier.login is not null and earlier.login <> '' and earlier.login <> $3

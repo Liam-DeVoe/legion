@@ -1,6 +1,7 @@
 package docs
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -1413,35 +1414,72 @@ func createAskBlock(
 // answer it held before the retraction (stateBeforeRetraction) and takes the retraction off,
 // through the one writer of an ask's answer state (asks.Settle) in who's name. What that writes on
 // the ask's node waits in held for the event the settlement appends for the restoration
-// (causeSettledAnswers). It answers, for a restoration that brings an answer back, that answer's
-// write in the ask's thread, which the settlement records under the same event (recordThreads),
-// and nil for one that restores the ask open.
+// (causeSettledAnswers). It answers, for a restoration that writes an answer the ask did not hold,
+// that answer's write in the ask's thread, which the settlement records under the same event
+// (recordThreads), and nil for any other.
 func restoreRetractedAsk(ctx context.Context, tx pgx.Tx, ask model.Ask, who model.Actor, held *graphstore.Uncaused) (model.Ask, *inboxwrite.Write, error) {
 	prior, err := stateBeforeRetraction(ctx, tx, ask.ID)
 	if err != nil {
 		return model.Ask{}, nil, err
 	}
-	// An answer the restoration brings back is a reply in the ask's thread again, as the trigger
-	// user_threads_ask projected it, so what the ask still owed the store is read before the
-	// update marks it (inboxwrite.ReadAsk), and that update moves the marker to the answer's moment.
+	// An answer the restoration writes is a reply in the ask's thread where the ask does not hold
+	// it already, as the trigger user_threads_ask reads an update of asks.answer (new.answer is
+	// distinct from old.answer): a retraction keeps the answer it closes (asks.Resolved), so a
+	// restoration mostly writes back the answer the row still holds, which is no new write in the
+	// thread, and only a retraction of a release before that rule left none. Such an answer reads
+	// what the ask still owed the store before the update marks it (inboxwrite.ReadAsk), and that
+	// update moves the marker to the answer's moment.
+	returns, err := answerReturns(ask.Answer, prior.Answer)
+	if err != nil {
+		return model.Ask{}, nil, fmt.Errorf("restore retracted ask: %w", err)
+	}
 	var before inboxwrite.Ask
-	if prior.Answer != nil {
+	if returns {
 		if before, err = inboxwrite.ReadAsk(ctx, tx, ask.ID); err != nil {
 			return model.Ask{}, nil, err
 		}
 	}
 	change := asks.Restored(prior.State, prior.Answer)
-	change.Who, change.At, change.Held, change.TuplesStored = who, time.Now().UTC(), held, prior.Answer != nil
+	change.Who, change.At, change.Held, change.TuplesStored = who, time.Now().UTC(), held, returns
 	settled, err := asks.Settle(ctx, tx, ask.ID, change)
 	if err != nil {
 		return model.Ask{}, nil, fmt.Errorf("restore retracted ask: %w", err)
 	}
 	ask.State, ask.Answer, ask.Resolution = settled.State, settled.Answer, settled.Resolution
-	if settled.Answer == nil {
+	if !returns || settled.Answer == nil {
 		return ask, nil, nil
 	}
 	answered := inboxwrite.Answered(before, *settled.Answer, who)
 	return ask, &answered, nil
+}
+
+// answerReturns is whether a restoration that writes restored over held, the answer the ask's row
+// holds, writes an answer the row does not hold: none where it restores no answer, and otherwise
+// where the two differ as stored, each encoded as the row stores an answer (asks.Settle), its
+// selection never null and its moment in UTC.
+func answerReturns(held, restored *model.AskAnswer) (bool, error) {
+	if restored == nil {
+		return false, nil
+	}
+	if held == nil {
+		return true, nil
+	}
+	encoded := func(answer model.AskAnswer) ([]byte, error) {
+		if answer.Selected == nil {
+			answer.Selected = []string{}
+		}
+		answer.At = answer.At.UTC()
+		return json.Marshal(answer)
+	}
+	was, err := encoded(*held)
+	if err != nil {
+		return false, err
+	}
+	now, err := encoded(*restored)
+	if err != nil {
+		return false, err
+	}
+	return !bytes.Equal(was, now), nil
 }
 
 // stateBeforeRetraction is the ask askID as it stood before settlement retracted it, read from

@@ -2,6 +2,7 @@ package inboxwrite
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -10,59 +11,74 @@ import (
 )
 
 // thread is the root of the thread a write is in, as the store addresses its node: an ask, a
-// comment or a message.
+// comment or a message. Its kind is the kind a user_threads row of the thread names.
 type thread struct{ kind, id string }
 
-// rowKind is the kind a user_threads row of the thread names, which is its root's kind.
-func (t thread) rowKind() string { return t.kind }
-
-// maxThreadDepth bounds the walk up a thread, as the trigger user_threads_message bounds its walk
-// up in_reply_to (0095): sixty-four steps, where production threads are seven deep at most.
+// maxThreadDepth bounds the walk up a message thread, as the trigger user_threads_message bounds
+// its walk up in_reply_to (0095): sixty-four steps, where production threads are seven deep at
+// most.
 const maxThreadDepth = 64
 
 // threadOf is the root of the thread w is written in (decision 12), read from the write's head
-// pointer tuples rather than from a projection's columns. An ask is its own thread. A comment's
-// replies_to names its ask, else the root comment its row names, which has no head of its own
-// (api's threadHeadOf stores every reply against its head), else the comment is its own root. A
-// message's replies_to names the message it answers, and the walk climbs those to the root its
-// in_reply_to chain reaches, within maxThreadDepth steps. A message on the way whose row names no
-// node - an older build's, which states no tuple - is climbed by its in_reply_to, the old arm
-// answering a row the marker test passes until the backfill gives it its tuples.
+// pointer tuples rather than from a projection's columns, as the triggers of 0095-0097 read it from
+// the row. An ask is its own thread. A comment's thread is one step away, as user_threads_comment
+// takes it (coalesce(ask_id, reply_to, id)): the ask its replies_to names, else the comment its
+// replies_to names, which is the root of its thread (api's threadHeadOf stores every reply against
+// its head), else the comment itself. comments.reply_to carries no acyclicity constraint, so the
+// step is never repeated. A message's replies_to names the message it answers, and the walk climbs
+// those to the root its in_reply_to chain reaches within maxThreadDepth steps, as
+// user_threads_message walks it. A message on the way whose row names no node - an older build's,
+// which states no tuple - is climbed by its in_reply_to, which is the old arm answering a row the
+// marker test passes until the backfill gives it its tuples.
 func threadOf(ctx context.Context, tx pgx.Tx, w Write) (thread, error) {
-	if w.NodeKind == graphstore.KindAsk {
-		return thread{kind: w.NodeKind, id: w.NodeID}, nil
+	root := thread{kind: w.NodeKind, id: w.NodeID}
+	switch w.NodeKind {
+	case graphstore.KindAsk:
+		return root, nil
+	case graphstore.KindComment:
+		err := tx.QueryRow(ctx, `
+			select t.to_kind, t.to_id
+			from graph_tuples t
+			where t.from_kind = $1 and t.from_id = $2 and t.kind = $3 and t.to_kind = any($4::text[]) and t.asserted
+			order by t.to_kind = $5 desc, t.seq desc
+			limit 1
+		`, w.NodeKind, w.NodeID, graphstore.TupleRepliesTo, []string{graphstore.KindAsk, graphstore.KindComment},
+			graphstore.KindAsk).Scan(&root.kind, &root.id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return root, nil
+		}
+		if err != nil {
+			return thread{}, fmt.Errorf("read the thread comment %s is written in: %w", w.NodeID, err)
+		}
+		return root, nil
 	}
-	var root thread
 	if err := tx.QueryRow(ctx, `
-		with recursive walk(kind, id, depth) as (
-			select $1::text, $2::text, 0
+		with recursive walk(id, depth) as (
+			select $1::text, 0
 			union all
-			select up.kind, up.id, walk.depth + 1
+			select up.id, walk.depth + 1
 			from walk
 			cross join lateral (
-				select coalesce(stored.kind, older.kind) as kind, coalesce(stored.id, older.id) as id
+				select coalesce(stored.id, older.id) as id
 				from (values (1)) as one (row)
 				left join lateral (
-					select t.to_kind as kind, t.to_id as id
+					select t.to_id as id
 					from graph_tuples t
-					where t.from_kind = walk.kind and t.from_id = walk.id and t.kind = $3
-					  and t.to_kind = any($4::text[]) and t.asserted
-					order by t.to_kind = $5 desc, t.seq desc
+					where t.from_kind = $2 and t.from_id = walk.id and t.kind = $3 and t.to_kind = $2 and t.asserted
+					order by t.seq desc
 					limit 1
 				) stored on true
 				left join lateral (
-					select $6::text as kind, m.in_reply_to::text as id
+					select m.in_reply_to::text as id
 					from messages m
-					where walk.kind = $6 and m.id = walk.id::uuid and m.node_kind is null
+					where m.id = walk.id::uuid and m.node_kind is null
 				) older on true
 			) up
-			where walk.depth < $7 and up.id is not null
+			where walk.depth < $4 and up.id is not null
 		)
-		select kind, id from walk order by depth desc limit 1
-	`, w.NodeKind, w.NodeID, graphstore.TupleRepliesTo,
-		[]string{graphstore.KindAsk, graphstore.KindComment, graphstore.KindMessage},
-		graphstore.KindAsk, graphstore.KindMessage, maxThreadDepth).Scan(&root.kind, &root.id); err != nil {
-		return thread{}, fmt.Errorf("read the thread %s/%s is written in: %w", w.NodeKind, w.NodeID, err)
+		select id from walk order by depth desc limit 1
+	`, w.NodeID, graphstore.KindMessage, graphstore.TupleRepliesTo, maxThreadDepth).Scan(&root.id); err != nil {
+		return thread{}, fmt.Errorf("read the thread message %s is written in: %w", w.NodeID, err)
 	}
 	return root, nil
 }
@@ -81,19 +97,24 @@ type member struct {
 }
 
 // lockThread is step 2 of Record, in one statement: every user_threads row of the thread, locked
-// `for no key update` in ascending login order, the one order every writer of a thread's rows and
-// the backfill take them in, and the people whose participates_in and whose dismissed into the
-// thread's root stand now, each read the way CurrentOut reads a relation (CurrentTupleRead), so a
-// retraction takes a person out. A row a session or nobody wrote keys no row, and neither does a
+// `for no key update` in ascending login order in one pass, the one order every writer of a
+// thread's rows and the backfill take them in, and, beside them, the people whose participates_in
+// and whose dismissed into the thread's root stand now, each read the way CurrentOut reads a
+// relation (CurrentTupleRead), so a retraction takes a person out. A write into the thread by
+// anyone else waits at the owner row its writer took first, so nothing moves the thread between
+// the statement's snapshot and its locks. The pass takes every row of the thread, which holds the
+// row of each person the write's catch-up delivers to (owedBy) as well as every participant's,
+// since each of those is a row of the thread. A session or nobody keys no row, and neither does a
 // thread whose owner resolves to no project, so such a thread locks nothing and still answers its
-// participants.
+// participants. A row's marker is read to tell a marked row from one the marker test passes, and
+// no other column of a marked row is read.
 func lockThread(ctx context.Context, tx pgx.Tx, thread thread) ([]member, error) {
 	current := func(kind string) string {
 		return graphstore.CurrentTupleRead(`t.from_id`, `t.from_id, t.asserted`,
 			`t.to_kind = $2 and t.to_id = $3 and t.kind = `+kind+` and t.from_kind = $6`)
 	}
 	rows, err := tx.Query(ctx, `
-		with held as (
+		with held as materialized (
 			select u.login, u.marked_seq is not null as marked
 			from user_threads u
 			where u.thread_id = $1::uuid
@@ -170,7 +191,7 @@ func keepRow(ctx context.Context, tx pgx.Tx, thread thread, w Write, login strin
 		        (select coalesce(max(seq), 0) from graph_tuples))
 		on conflict (login, thread_id) do update
 			set read_through = greatest(user_threads.read_through, excluded.read_through)
-	`, login, thread.id, thread.rowKind(), w.Project, w.IssueKey, w.ArtifactID, w.At); err != nil {
+	`, login, thread.id, thread.kind, w.Project, w.IssueKey, w.ArtifactID, w.At); err != nil {
 		return fmt.Errorf("keep the row of %s on thread %s/%s: %w", login, thread.kind, thread.id, err)
 	}
 	return nil
