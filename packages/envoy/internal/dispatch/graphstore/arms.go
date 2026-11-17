@@ -133,25 +133,26 @@ func writeArms(first int, nodes []Node, tuples []Tuple, claims []Claim, states b
 // row - every node was already there - must still let every tuple through.
 const nodesWrittenFirst = `(select count(*) from graph_nodes_written) >= 0`
 
-// nodeArm writes the nodes and, where states says so, the two base attributes of each node it
-// made. The node rows arrive in ascending (kind, id), as every write of this store takes them
+// nodeArm writes the nodes and, where states says so, the base attributes of each node it made.
+// The node rows arrive in ascending (kind, id), as every write of this store takes them
 // (writeNodes), and the upsert moves nothing on a node that is already there: a record of what
 // a delivery reached learns nothing about a node another write made, and its own made_at,
 // made_by and source_event would otherwise overwrite that write's. The base attributes are read
 // off the rows the insert returned, so they are stated once, by the write that made the node,
-// rather than per event.
+// rather than per event: its visibility and state always, and its project and parties where it
+// carries them.
 //
 // That is the rule Write follows too, and the arm needs no second half of it: this upsert moves
 // no stored state, so there is never a state of a node already there for it to state.
 //
 // states is false for a writer whose cause is appended after these arms (WriteArmsUncaused),
-// which holds those same two for that event instead.
+// which holds those same attributes for that event instead (BaseAttributeFacts).
 func nodeArm(first int, states bool) string {
 	written := `graph_nodes_written as (
 	insert into graph_nodes (` + nodeColumns + `)
 	` + nodeRows(first) + `
 	on conflict (kind, id) do nothing
-	returning kind, id, visibility, state, made_at, made_by, source_event
+	returning kind, id, visibility, state, project_key, parties, made_at, made_by, source_event
 )`
 	if !states {
 		return written
@@ -162,8 +163,11 @@ graph_node_attributes as (
 	select written.kind, written.id, attribute.kind, '` + KindValue + `', attribute.value,
 	       written.made_at, written.made_by, written.source_event, null, true
 	from graph_nodes_written written
-	cross join lateral (values ('visibility', written.visibility), ('state', written.state))
+	cross join lateral (values
+		('` + AttributeVisibility + `', written.visibility), ('` + AttributeState + `', written.state),
+		('` + AttributeProject + `', written.project_key), ('` + AttributeParties + `', array_to_string(written.parties, ' ')))
 		as attribute(kind, value)
+	where attribute.value is not null
 	order by written.kind, written.id, attribute.kind` + valueRepeatKey + `
 )`
 }
@@ -258,17 +262,26 @@ const (
 	do nothing`
 )
 
-// nodeArrays are the nine arrays a node write binds, in nodeColumns' order: one spelling of the
-// types, read by the arm the publisher's record splices in and by writeNodes alike.
+// nodeArrays are the eleven arrays a node write binds, in nodeColumns' order: one spelling of the
+// types, read by the arm the publisher's record splices in and by writeNodes alike. The project
+// and the parties are bound as text, null for a node that carries none, and the parties as the
+// one value their attribute carries (PartiesValue), which nodeBound splits into the column's
+// array.
 func nodeArrays(first int) string {
-	return arrayList(first, "text", "text", "text", "text", "text", "jsonb", "timestamptz", "jsonb", "bigint")
+	return arrayList(first, "text", "text", "text", "text", "text", "jsonb", "timestamptz", "jsonb", "bigint", "text", "text")
 }
+
+// nodeBound is nodeColumns as a node write reads them off the arrays it binds (nodeArrays): each
+// column as it was bound, but parties, which is bound as its attribute's value and stored as the
+// array that value names.
+const nodeBound = `kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event, project_key, ` +
+	`string_to_array(parties, ' ') as parties`
 
 // nodeRows reads the nodes of a write in ascending (kind, id): a write touching several nodes
 // takes its row locks in that order, so two such writes cannot each hold the row the other waits
 // for (the lock order on api/inbox_read.go's markInboxReadThreads).
 func nodeRows(first int) string {
-	return `select ` + nodeColumns + `
+	return `select ` + nodeBound + `
 	from unnest(` + nodeArrays(first) + `) as node(` + nodeColumns + `)
 	order by kind, id`
 }
@@ -332,7 +345,7 @@ func splitTuples(tuples []Tuple) (relations, values []Tuple) {
 	return relations, values
 }
 
-// nodeParams are the nine arrays a node write binds, in nodeColumns' order.
+// nodeParams are the eleven arrays a node write binds, in nodeColumns' order.
 func nodeParams(nodes []Node) ([]any, error) {
 	kinds := make([]string, len(nodes))
 	ids := make([]string, len(nodes))
@@ -343,6 +356,8 @@ func nodeParams(nodes []Node) ([]any, error) {
 	madeAts := make([]time.Time, len(nodes))
 	madeBys := make([][]byte, len(nodes))
 	sourceEvents := make([]int64, len(nodes))
+	projects := make([]*string, len(nodes))
+	parties := make([]*string, len(nodes))
 	for index, node := range nodes {
 		encoded, err := encodeAttributes(node.Attributes)
 		if err != nil {
@@ -357,8 +372,14 @@ func nodeParams(nodes []Node) ([]any, error) {
 		supertags[index], visibilities[index], states[index] = node.Supertag, node.Visibility, node.State
 		attributes[index], madeAts[index], madeBys[index] = encoded, node.MadeAt, madeBy
 		sourceEvents[index] = node.SourceEvent
+		if node.Project != "" {
+			projects[index] = &nodes[index].Project
+		}
+		if value := PartiesValue(node.Parties); value != "" {
+			parties[index] = &value
+		}
 	}
-	return []any{kinds, ids, supertags, visibilities, states, attributes, madeAts, madeBys, sourceEvents}, nil
+	return []any{kinds, ids, supertags, visibilities, states, attributes, madeAts, madeBys, sourceEvents, projects, parties}, nil
 }
 
 // tupleParams are the ten arrays a tuple append binds, in tupleWriteColumns' order.

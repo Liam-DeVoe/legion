@@ -27,16 +27,17 @@ const graphstoreImportPath = "github.com/sjawhar/envoy/internal/dispatch/graphst
 const graphstoreDirectory = "internal/dispatch/graphstore"
 
 // storeWriteFunctions are the calls a write of graph_nodes and graph_tuples from outside this
-// package goes through, the same seven docs' register of the tree's passes scans for
+// package goes through, the same eight docs' register of the tree's passes scans for
 // (storeWriterCall), and the session writer beside them: Write, WriteUncaused and Caused in a
 // caller's transaction, WriteArms and WriteArmsUncaused spliced into a caller's statement,
 // Authored, Reached and SessionRecorded, which run those arms for the writers that record an
-// author, a reached session and a session an ask names, and EraseNode, the erase's delete of a
-// node and its tuples. Each is a function of the package, never a method, so a call of one is
-// named by the package and found here wherever it is made. A write that holds a statement of
-// its own instead is found by rawStoreWrite, and none outside this package may hold one.
+// author, a reached session and a session an ask names, EraseNode, the erase's delete of a node
+// and its tuples, and FillScopes, the backfill's fill of the project of a node stored with none.
+// Each is a function of the package, never a method, so a call of one is named by the package
+// and found here wherever it is made. A write that holds a statement of its own instead is found
+// by rawStoreWrite, and none outside this package may hold one.
 var storeWriteFunctions = []string{"Write", "WriteUncaused", "WriteArms", "WriteArmsUncaused", "Caused",
-	"Authored", "Reached", "SessionRecorded", "EraseNode"}
+	"Authored", "Reached", "SessionRecorded", "EraseNode", "FillScopes"}
 
 // rawStoreWrite matches a statement that writes graph_nodes or graph_tuples itself rather than
 // through one of storeWriteFunctions: an insert, an update or a delete, in any case, over any
@@ -61,6 +62,9 @@ var storeWriteCallSites = []string{
 	"api/asks.go#createAskFor",
 	"api/reviews.go#renewApprovalAsk",
 	"docs/ask_blocks.go#causeFollows",
+	// The shaped ties of each ask block a settlement opened, when it writes no version: appended
+	// under the ask.opened that records the ask, through Caused, after the follow's node above.
+	"docs/ask_blocks.go#causeOpenedAskTies",
 	// The block index's cause: each site that appends what a version's index pass stated under
 	// the event that recorded the version, through Caused (refs' TestCausedTakesTheStoreLockOrder
 	// proves the step): an upload, a version write's event, an issue's spec, the block-index tick,
@@ -84,11 +88,38 @@ var storeWriteCallSites = []string{
 	"api/comment_delivery.go#recordAnsweredDelivery",
 	"api/comment_delivery.go#replyComment",
 	"api/message_delivery.go#completeMessageDelivery",
+	// The node of every issue, document, ask and message a request creates, in the project or
+	// between the parties it belongs to (dispatch://INFRA-3862): written before its row, and
+	// caused by the event the create appends after it. createIssue, storeArtifact and
+	// createAskFor are listed above for their block index and follow; these are the others. Their
+	// order - the owner row their path already takes, the node before the row, the event before
+	// the tuples - is the order of the write they share (WriteUncaused, then Caused), which
+	// TestEveryStoreWriteTakesOneLockOrder proves on this package's own writers, and the node
+	// before its row is held at each site by api's TestEveryCreateStoresItsNode and the node-first
+	// trigger of object_nodes_issue_test.go and object_nodes_items_test.go.
+	"api/broadcasts.go#writeBroadcast",
+	"api/message_delivery.go#insertSessionReply",
+	"api/messages.go#createStoredMessage",
+	"api/messages.go#writeMessageNode",
+	"api/reviews.go#openApprovalAsk",
+	"docs/ask_blocks.go#createAskBlock",
+	// A document's retirement (dispatch://INFRA-1150 R11), in the same order under the document's
+	// owner row: its artifact node stated gone, then the artifacts row that retires it, then
+	// document.retired and the node's facts under it.
+	"docs/retire.go#RetireDocument",
+	"docs/retire.go#writeRetiredNode",
+	// A person's Keep of an agent's decision (dispatch://INFRA-1150 R2): under the issue's owner
+	// row, the person's node, then the decision_keeps row that projects the Keep, then
+	// decision.kept, and the kept_by tuple and the kept_text_sum value under it, through Caused.
+	"api/decisions.go#keepDecisionNode",
 	// The seed's comments, with their author's person node and each comment's authored_by
-	// tuple, which its one batch write states as a seeded database's own writer, and the session
-	// nodes of the followers its ask batch copies.
+	// tuple, which its one batch write states as a seeded database's own writer, the session
+	// nodes of the followers its ask batch copies, and its issues', asks' and messages' nodes,
+	// each written in the batch that copies their rows, in its project, before any row of it.
+	"cmd/dispatch-seed/write_core.go#writeIssues",
 	"cmd/dispatch-seed/write_items.go#writeComments",
 	"cmd/dispatch-seed/write_items.go#writeFollowerNodes",
+	"cmd/dispatch-seed/write_items.go#writeItemNodes",
 	// The backfill command's five batches: the blocks, the block references and the comments
 	// written before the store existed, the role and page nodes of the roles the census holds to
 	// one (addressedRoles), and the session nodes of the sessions it holds to one
@@ -98,6 +129,14 @@ var storeWriteCallSites = []string{
 	"graphcensus/backfill.go#writeCommentBatch",
 	"graphcensus/backfill.go#writeRoleBatch",
 	"graphcensus/backfill.go#writeSessionBatch",
+	// The backfill's passes over the project of every node (dispatch://INFRA-3862): the nodes of
+	// the issues, documents, asks and messages written before their writers wrote one, in one
+	// graphstore.Write per batch that takes no other row, and the project of the comment and
+	// block nodes written before a node named one (graphstore.FillScopes), the block batch under
+	// the revision fence (lockBlockDocuments). graphcensus' TestTheBackfillGivesEveryRowItsNodeAndProject
+	// runs both.
+	"graphcensus/projects.go#writeObjectBatch",
+	"graphcensus/projects.go#writeScopeBatch",
 	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both
 	// sides of the node, then the node's row. It takes the owner rows it writes under before that
 	// row, and its projection rows after it (grapherase's TestTheEraseTakesTheStoreLockOrder).
@@ -107,6 +146,27 @@ var storeWriteCallSites = []string{
 	"graphstore/people.go#Authored",
 	"graphstore/people.go#Reached",
 	"graphstore/people.go#SessionRecorded",
+	// The one writer of an ask's answer state (dispatch://INFRA-1150): asks.Settle states the answer
+	// on the ask's node, appended at once under the event it is given or held for the caller's, and
+	// then writes the row; the catch-up of a follow another build recorded states it on the node.
+	// Each site that appends what a transition held under the event it appends after it, through
+	// Caused: the answer, resolve and decline routes' transition, an issue's close and reopen, the
+	// approval carry's answer, and a settlement's retractions and restorations. The settlement
+	// states the copies among a document's ask blocks as claims once its version is indexed, and
+	// beside them the readability of each ask whose block it read, as that ask node's `invalid`
+	// value (G1), and the backfill of the boot step's first phase states the asks and the
+	// followers written before this release, each batch with its rows locked first.
+	"api/ask_transitions.go#closeAskTx",
+	"api/issue_ask_lifecycle.go#recordWithdrawnAsksTx",
+	"api/issue_ask_lifecycle.go#restoreIssueAsksTx",
+	"asks/followers.go#CatchUpFollower",
+	"asks/settle.go#Settle",
+	"docs/approval_carry.go#answerApprovalAsk",
+	"docs/ask_blocks.go#causeSettledAnswers",
+	"docs/ask_blocks.go#claimCopies",
+	"docs/ask_blocks.go#stateInvalidReasons",
+	"graphcensus/backfill.go#writeAskBatch",
+	"graphcensus/backfill.go#writeAskFollowerBatch",
 	// The publisher's record of a batch, which splices the store's arms into its statement, and
 	// its record of a fallback pass, which splices in what each published copy delivered.
 	"outbox/mentions.go#recordFallbackCopies",
@@ -114,6 +174,11 @@ var storeWriteCallSites = []string{
 	// The block index: its nodes inside the revision fence, whose tuples and cause wait for the
 	// event that recorded the version (the sites of Caused above).
 	"refs/blocks.go#IndexBlocks",
+	// The typed-node pass (dispatch://INFRA-1150): the decision and reading nodes of a version and
+	// their authors' nodes, in the transaction that accepts it, under the document's owner row its
+	// caller holds, after the block index's own nodes where that runs and on its own above the
+	// deferral bound, its tuples and cause waiting for the same event (the sites of Caused above).
+	"refs/decision_nodes.go#IndexDecisionNodes",
 }
 
 // TestEveryStoreWriteCallSiteIsListed reads the module's source, every Go file but the tests,

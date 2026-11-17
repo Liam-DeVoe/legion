@@ -1254,12 +1254,28 @@ var requiredGraphIndexes = []requiredGraphIndex{
 	},
 }
 
+// laterGraphNodesIndexes are the indexes of graph_nodes a migration after the first declares. A
+// table of a deployment already holds rows by then, so each is held to the one build that does not
+// stop the store's writers while it scans: `create index concurrently` in a migration of its own
+// that runs outside the runner's transaction (`-- pgmigrate:non-transactional`,
+// pgmigrate/nontransactional.go). graph_nodes_project is the read of one project's nodes by kind
+// (20261116015042 gave graph_nodes its project_key).
+var laterGraphNodesIndexes = []requiredGraphIndex{
+	{
+		name: "graph_nodes_project", table: "graph_nodes",
+		keys: "project_key, kind", predicate: "project_key is not null",
+	},
+}
+
 // declaredIndex is one create index a migration file holds.
 type declaredIndex struct {
 	migration       string
 	name, table     string
 	keys, predicate string
 	unique          bool
+	// concurrent is a build `create index concurrently` in a migration whose first line is
+	// `-- pgmigrate:non-transactional`, the one way such a build reaches the database.
+	concurrent bool
 }
 
 // requireIndexSetOfTheFirstMigration reads the migration files in version order and holds the
@@ -1274,8 +1290,10 @@ func requireIndexSetOfTheFirstMigration(t *testing.T) {
 	declared := map[string][]declaredIndex{}
 	graphNodesTable := ""
 	for _, file := range files {
-		body := withoutLineComments(readMigration(t, file))
-		for _, index := range indexesOf(file, body) {
+		raw := readMigration(t, file)
+		firstLine, _, _ := strings.Cut(raw, "\n")
+		body := withoutLineComments(raw)
+		for _, index := range indexesOf(file, body, firstLine) {
 			declared[index.name] = append(declared[index.name], index)
 		}
 		if table := graphNodesCreateTable.FindStringSubmatch(body); table != nil {
@@ -1306,6 +1324,24 @@ func requireIndexSetOfTheFirstMigration(t *testing.T) {
 		if index.migration != graphStoreMigration {
 			t.Errorf("%s is declared in %s, not in %s: an existing deployment would build it on a full graph_tuples",
 				want.name, index.migration, graphStoreMigration)
+		}
+		if index.table != want.table || index.keys != want.keys || index.predicate != want.predicate || index.unique != want.unique {
+			t.Errorf("%s is declared as unique=%v on %s (%s)%s, want unique=%v on %s (%s)%s",
+				want.name, index.unique, index.table, index.keys, wherePart(index.predicate),
+				want.unique, want.table, want.keys, wherePart(want.predicate))
+		}
+	}
+	for _, want := range laterGraphNodesIndexes {
+		found := declared[want.name]
+		if len(found) != 1 {
+			t.Errorf("%s is declared %d times, want once, in a migration of its own", want.name, len(found))
+			continue
+		}
+		index := found[0]
+		if index.migration == graphStoreMigration || !index.concurrent {
+			t.Errorf("%s is declared in %s with concurrent=%v, want a concurrent build in a later, non-transactional migration:"+
+				" graph_nodes holds a row for every block by then, and a plain build stops every writer of the store while it scans",
+				want.name, index.migration, index.concurrent)
 		}
 		if index.table != want.table || index.keys != want.keys || index.predicate != want.predicate || index.unique != want.unique {
 			t.Errorf("%s is declared as unique=%v on %s (%s)%s, want unique=%v on %s (%s)%s",
@@ -1482,18 +1518,21 @@ var lineComment = regexp.MustCompile(`(?m)^[ \t]*--.*$`)
 func withoutLineComments(body string) string { return lineComment.ReplaceAllString(body, "") }
 
 // indexesOf is every index one migration file declares, with its key list and predicate written
-// the way requiredGraphIndexes writes them.
-func indexesOf(migration, body string) []declaredIndex {
+// the way requiredGraphIndexes writes them. body is the file with its comments taken out, so
+// whether the file runs outside the runner's transaction is read off firstLine, the file's own.
+func indexesOf(migration, body, firstLine string) []declaredIndex {
+	nonTransactional := strings.TrimSpace(firstLine) == "-- pgmigrate:non-transactional"
 	var indexes []declaredIndex
 	for _, match := range indexDeclaration.FindAllStringSubmatch(body, -1) {
 		keys, predicate := splitIndexBody(match[5])
 		indexes = append(indexes, declaredIndex{
-			migration: migration,
-			name:      match[3],
-			table:     match[4],
-			keys:      keys,
-			predicate: predicate,
-			unique:    strings.TrimSpace(match[1]) != "",
+			migration:  migration,
+			name:       match[3],
+			table:      match[4],
+			keys:       keys,
+			predicate:  predicate,
+			unique:     strings.TrimSpace(match[1]) != "",
+			concurrent: nonTransactional && strings.TrimSpace(match[2]) != "",
 		})
 	}
 	return indexes

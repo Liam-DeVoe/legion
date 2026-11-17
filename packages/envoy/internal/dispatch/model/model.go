@@ -1182,12 +1182,17 @@ type Artifact struct {
 	// Role is the part an issue's document plays beside its spec: ArtifactRoleVerification for
 	// the document created as verification.md, ArtifactRolePlan for the one created as plan.md,
 	// ArtifactRoleDecisions for the one created as decisions.md, "" for every other document.
-	// It is set from the document's slug when the row is created and never changes, as Primary
-	// never changes, and no request field sets it.
+	// It is set from the document's slug when the row is created, as Primary is, and no request
+	// field sets it; the one write that clears it is the document's retirement.
 	Role      string    `json:"role,omitempty"`
 	CreatedBy Actor     `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
-	Versions  []Version `json:"versions"`
+	// Retired is whether the document was retired (artifacts.retired_at, docs.RetireDocument): it
+	// is in no list of its issue's or its project's documents, plays no role, and its approval no
+	// longer stands, while its row, its versions and its address stay readable. No response
+	// carries it.
+	Retired  bool      `json:"-"`
+	Versions []Version `json:"versions"`
 	// Approval is the document's approval as of its latest version, derived from
 	// version-pinned reviews and any open approval ask; nil for non-documents.
 	Approval *ArtifactApproval `json:"approval,omitempty"`
@@ -1228,7 +1233,8 @@ type ArtifactReview struct {
 // ArtifactApproval is a document's approval state as of its latest version:
 // draft (never reviewed or requested), awaiting (an approval ask is open),
 // approved (approved at the latest version), stale (approved at an older
-// version), or changes_requested (the latest review asks for changes). An
+// version, or approved before the document was retired, whose retirement
+// superseded the approval), or changes_requested (the latest review asks for changes). An
 // awaiting approval carries its request's WaitingOn: agent once a version moved
 // the request past the one its agent handed to the human, or a reply left it with
 // the agent; human otherwise (the ask reads' waiting_on). Seq is the latest
@@ -1275,6 +1281,32 @@ type ArtifactReviewEventPayload struct {
 	AskID               *string `json:"ask_id"`
 	ContentSHA256       *string `json:"content_sha256,omitempty"`
 	ContentSHA256Source *string `json:"content_sha256_source,omitempty"`
+}
+
+// DocumentRetiredEventType is the event docs.RetireDocument appends, once, for the document it
+// retires, on the document's owner.
+const DocumentRetiredEventType = "document.retired"
+
+// DocumentRetiredEventPayload is the payload of document.retired: the document, the role it
+// played until its retirement cleared it ("" for none), why it was retired, and the approval the
+// retirement superseded, nil where the document held none standing.
+type DocumentRetiredEventPayload struct {
+	ArtifactID         string              `json:"artifact_id"`
+	RefKey             string              `json:"ref_key"`
+	Name               string              `json:"name"`
+	Role               string              `json:"role,omitempty"`
+	Reason             string              `json:"reason"`
+	SupersededApproval *SupersededApproval `json:"superseded_approval"`
+}
+
+// SupersededApproval is an approval a write ended rather than carried: the review that gave it,
+// the version it approved, who gave it and of which kind (docs' ReviewKindPerson,
+// ReviewKindPlanReview).
+type SupersededApproval struct {
+	ReviewID        string `json:"review_id"`
+	ApprovedVersion int    `json:"approved_version"`
+	ApprovedBy      Actor  `json:"approved_by"`
+	Kind            string `json:"kind"`
 }
 
 // CheckBasisNamed, CheckBasisPullRequest and CheckBasisBranch are the kinds of thing a check's
@@ -3284,16 +3316,23 @@ type DecisionKeep struct {
 	TextSHA256 string `json:"-"`
 }
 
-// DecisionLink is one link from a block of a decision to a block of the issue's spec: the
-// decision's own block that holds it, the spec block it names, when and in which version of
-// decisions.md the link was first written, and whether the spec block is out of date - the
-// decision changed after it first linked that block, and that block has not changed since.
+// DecisionLink is one link from a decision to a block it shaped: the decision's own block that
+// holds it, the block it names, when and in which version the link was first written, and whether
+// that block is out of date. A link of the decisions document's view reads stale when the
+// decision changed after it first linked that block and that block has not changed since; a link
+// of a decision node (internal/dispatch/decisionread) is its `shaped` tuple, Event the event that
+// wrote the tuple, TextChangedEvent and TextChangedAt the event and the time that wrote the version
+// the block's text last changed in, and Stale true when the block's text changed after the tuple
+// was written (dispatch://INFRA-1150 R5). The three are absent where the store holds none.
 type DecisionLink struct {
-	FromBlock      string    `json:"from_block"`
-	To             GraphNode `json:"to"`
-	CreatedVersion int       `json:"created_version"`
-	CreatedAt      time.Time `json:"created_at"`
-	Stale          bool      `json:"stale"`
+	FromBlock        string     `json:"from_block"`
+	To               GraphNode  `json:"to"`
+	CreatedVersion   int        `json:"created_version"`
+	CreatedAt        time.Time  `json:"created_at"`
+	Stale            bool       `json:"stale"`
+	Event            *int64     `json:"event,omitempty"`
+	TextChangedEvent *int64     `json:"text_changed_event,omitempty"`
+	TextChangedAt    *time.Time `json:"text_changed_at,omitempty"`
 }
 
 // Decision is one decision of an issue's decisions.md: its heading block and every block after
@@ -3322,6 +3361,11 @@ type Decision struct {
 	ChangedAt      *time.Time     `json:"changed_at"`
 	Kept           *DecisionKeep  `json:"kept"`
 	WaitingReview  bool           `json:"waiting_review"`
+	// NodeKind and NodeID name the node a decision node's read answered this for
+	// (decisionread.Decisions): an ask's own node, or a decision's block node. No wire shape
+	// carries them; a caller that asked for several decisions finds each one by them.
+	NodeKind string `json:"-"`
+	NodeID   string `json:"-"`
 }
 
 // DocumentRead is one person's last read version of a document: null when they have read none.

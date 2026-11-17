@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -257,6 +259,47 @@ func (s *server) owedMessageAttempts(ctx context.Context, messageIDs []string) (
 	return owed, rows.Err()
 }
 
+// writeMessageNode writes the node of message id, which a request is about to store, before its
+// row (graphstore.MessageNode), and answers the write held for the event that records the
+// message. A message on an issue is in that issue's project. A message on none is between its
+// thread's parties (graphstore.ThreadParties): those of the root it answers, read up in_reply_to as
+// messageThreadCTE walks it, or, for a message that answers nothing, its own author and target.
+func writeMessageNode(
+	ctx context.Context, tx pgx.Tx, id string, issueKey, inReplyTo *string, author model.Actor, target *string,
+) (graphstore.Uncaused, error) {
+	var project string
+	var parties []string
+	switch {
+	case issueKey != nil:
+		var err error
+		if project, _, err = graphstore.ScopeOf(ctx, tx, issueKey, nil); err != nil {
+			return graphstore.Uncaused{}, err
+		}
+	case inReplyTo != nil:
+		var rootAuthor []byte
+		var rootTarget *string
+		if err := tx.QueryRow(ctx, messageThreadCTE+`
+			select m.author, m.target from messages m join thread t on t.id = m.id
+			where t.in_reply_to is null
+		`, *inReplyTo).Scan(&rootAuthor, &rootTarget); err != nil {
+			return graphstore.Uncaused{}, fmt.Errorf("read the thread root of a reply to message %s: %w", *inReplyTo, err)
+		}
+		var root model.Actor
+		if err := json.Unmarshal(rootAuthor, &root); err != nil {
+			return graphstore.Uncaused{}, fmt.Errorf("decode the author of the thread root of message %s: %w", *inReplyTo, err)
+		}
+		parties = graphstore.ThreadParties(root, rootTarget)
+	default:
+		parties = graphstore.ThreadParties(author, target)
+	}
+	written, err := graphstore.WriteUncaused(ctx, tx,
+		[]graphstore.Node{graphstore.MessageNode(id, project, parties, author, time.Now().UTC())}, nil)
+	if err != nil {
+		return graphstore.Uncaused{}, fmt.Errorf("write the node of message %s: %w", id, err)
+	}
+	return written, nil
+}
+
 // createStoredMessage writes one message in a single transaction, with it the keyed request's
 // recovery point (bindRequestKeyRecovery), so a repeat under the key is answered with this message
 // however this request ends, then sends a targeted message's first attempt. connectedOnly is the
@@ -328,11 +371,18 @@ func (s *server) createStoredMessage(
 	if err != nil {
 		return model.Message{}, nil, err
 	}
+	// The message's node goes in before its row, in its issue's project or between its thread's
+	// parties; what that write states waits for the event below (graphstore.Caused).
+	messageID := uuid.NewString()
+	messageNode, err := writeMessageNode(ctx, tx, messageID, issueKey, input.InReplyTo, actor, input.Target)
+	if err != nil {
+		return model.Message{}, nil, err
+	}
 	message, err := scanMessage(tx.QueryRow(ctx, `
-		insert into messages (issue_key, author, body, target, in_reply_to, replies_to_block)
-		values ($1, $2, $3, $4, $5, $6)
+		insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block)
+		values ($1, $2, $3, $4, $5, $6, $7)
 		returning `+messageColumns+`
-	`, issueKey, author, input.Body, input.Target, input.InReplyTo, block.nodeID()))
+	`, messageID, issueKey, author, input.Body, input.Target, input.InReplyTo, block.nodeID()))
 	if err != nil {
 		return model.Message{}, nil, err
 	}
@@ -368,6 +418,9 @@ func (s *server) createStoredMessage(
 		if err := refs.Stamp(ctx, tx, "message", message.ID, event.ID); err != nil {
 			return model.Message{}, nil, err
 		}
+	}
+	if err := graphstore.Caused(ctx, tx, messageNode, event.ID); err != nil {
+		return model.Message{}, nil, err
 	}
 	// A targeted message's attempt 1 is written here, in the transaction that stores the
 	// message, unclaimed and naming no session yet, as writeBroadcast opens each recipient's: a

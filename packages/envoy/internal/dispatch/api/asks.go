@@ -197,8 +197,12 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The ask's id and its created_at, drawn before anything is written: the node goes in before
+	// the row, and each relation it states is dated as graph_edges' old arm dates the row, by the
+	// transaction's now(), which is the default the insert below gives created_at.
 	var rowID string
-	if err := tx.QueryRow(r.Context(), `select gen_random_uuid()::text`).Scan(&rowID); err != nil {
+	var createdAt time.Time
+	if err := tx.QueryRow(r.Context(), `select gen_random_uuid()::text, now()`).Scan(&rowID, &createdAt); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -226,12 +230,37 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 			return
 		}
 	}
+	// The ask's node goes in before its row, in the project of the issue or the document it is
+	// asked on, with the documents it is anchored to and belongs to and who asked it
+	// (graphstore.AskFacts); what that write states waits for the ask.opened event below
+	// (graphstore.Caused), and the row names the node.
+	project, parties, err := graphstore.ScopeOf(r.Context(), tx, owner.IssueKey, owner.ArtifactID)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	var anchorArtifact *string
+	if anchor != nil {
+		anchorArtifact = &anchor.ArtifactID
+	}
+	places, err := graphstore.ReadAskPlaces(r.Context(), tx, anchorArtifact, owner.ArtifactID, nil)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	nodes, facts, marked := graphstore.AskFacts(rowID, project, parties, actor, createdAt, graphstore.NoEvent, places)
+	askNode, err := graphstore.WriteUncaused(r.Context(), tx, nodes, facts)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	nodeKind, nodeAddress := graphstore.AskRowNode(rowID, marked)
 	var ask model.Ask
 	if err := tx.QueryRow(r.Context(), `
-		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, node_kind, node_address)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		returning created_at
-	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Question, options, multiple, urgency, anchorJSON, kind).Scan(&ask.CreatedAt); err != nil {
+	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Question, options, multiple, urgency, anchorJSON, kind, nodeKind, nodeAddress).Scan(&ask.CreatedAt); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -309,6 +338,10 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		return
 	}
 	if err := graphstore.Caused(r.Context(), tx, followed.Uncaused, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := graphstore.Caused(r.Context(), tx, askNode, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

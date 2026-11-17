@@ -314,7 +314,7 @@ func storeKinds() []StoreKind {
 			" state, and either its part_of the role it claimed with that role's held_by and the retraction that ends it," +
 			" or a page of its own with that page's visibility, state and part_of - three tuples either way, and two" +
 			" nodes at most, since which one a session took is the role bucket's and no table's",
-		count: `(select count(*) from (` + recordedSessions + `) recorded
+		count: `(select count(*) from (` + recordedSessions(sizingAuthors) + `) recorded
 			where recorded.at > ` + sizingWindow + ` and octet_length(recorded.id) <= ` + addressBound + `)`,
 	}, {
 		Name: graphstore.KindRole, MovedBy: movedHere, Nodes: 1, Tuples: 2,
@@ -519,6 +519,14 @@ func storeKinds() []StoreKind {
 			" its lens and one prevented_by",
 	}}
 }
+
+// sizingAuthors is the relation the session term reads recordedSessions over in storedAuthors'
+// place (censusAuthors, inlineAuthors): a FROM item named stored, of (kind, id, at), holding no
+// row. storedAuthors reads graph_nodes, graph_tuples and graph_erasures, tables of this branch
+// that a database the store does not exist in yet does not hold, and the sizing reads none of
+// them; a session that opened an ask is read all the same, from its asks row and its ask.opened
+// event.
+const sizingAuthors = `(select null::text, null::text, null::timestamptz where false) stored (kind, id, at)`
 
 // sizingWritesWith is the sets of rows several terms count over, each read once for every term
 // that counts it: the comments written inside the window with the facts each one's write states

@@ -421,13 +421,13 @@ func corpusFiles(t *testing.T, dir string) []string {
 }
 
 // A document either build wrote reads and edits on the other. For each writer X and each file of
-// X's own corpus: a document created on X answers /text on Y and takes an append edit there, and X
-// then renders it as its first render with the appended paragraph after it; on Y, a document socket
-// opened with X's page parameters is admitted writable and stays open. A version X wrote holding
-// every typed block of X's manifest is approved, the answer to its decision block makes Y write the
-// next version, and the approval is carried to it. A body holding every reference form of X's
-// text/testdata keeps its refs rows after Y rewrites it, but for the edges a Y from before the
-// unknown-kind guard drops, which it logs (requireRefsKept).
+// X's own corpus: a document created on X and settled answers /text on Y and takes an append edit
+// there, and X then renders it as its first render with the appended paragraph after it; on Y, a
+// document socket opened with X's page parameters is admitted writable and stays open. A version X
+// wrote holding every typed block of X's manifest is approved, the answer to its decision block
+// makes Y write the next version, and the approval is carried to it. A body holding every
+// reference form of X's text/testdata keeps its refs rows after Y rewrites it, but for the edges a
+// Y from before the unknown-kind guard drops, which it logs (requireRefsKept).
 func TestTwoBuildsReadAndEditEachOthersDocuments(t *testing.T) {
 	builds := newTwoBuilds(t)
 	env := map[string]string{"DISPATCH_SERVER_URL": referenceServerURL}
@@ -477,9 +477,19 @@ func corpusSkips(file string, markdown []byte) bool {
 	return bytes.ContainsRune(markdown, 0)
 }
 
+// requireCorpusCrossesBuilds creates every corpus document of the writer's on the writer, then
+// waits for each to settle before any build reads it: while two builds serve, an ask block's state
+// reaches its markdown at its document's settlement alone, which keeps it in step with the ask's
+// row for the earlier build's pages (docs' rollWindowAskAttributes), since this build gives a
+// server attribute no written default (pmdoc's writtenDefault) and the earlier build writes the
+// default `state="open"` into every ask block it renders. So the writer's first render, taken once
+// the document has settled, is the document as the roll window keeps it, and the reader's append
+// changes nothing else in it. The documents are all created before the first wait, so their
+// settle delays run together.
 func requireCorpusCrossesBuilds(t *testing.T, builds *twoBuilds, writer, reader documentSide, project string) {
 	fleet := builds.fleet(t)
-	var sockets []*documentSocket
+	type corpusDocument struct{ file, artifactID string }
+	var created []corpusDocument
 	files := corpusFiles(t, writer.corpus)
 	for _, file := range files {
 		markdown, err := os.ReadFile(filepath.Join(writer.corpus, file))
@@ -490,6 +500,14 @@ func requireCorpusCrossesBuilds(t *testing.T, builds *twoBuilds, writer, reader 
 			continue
 		}
 		_, artifactID := createDocument(t, writer.process, project, "Corpus "+file, string(markdown))
+		created = append(created, corpusDocument{file: file, artifactID: artifactID})
+	}
+	for _, document := range created {
+		waitForSettlementOwed(t, builds.database, document.artifactID, false)
+	}
+	var sockets []*documentSocket
+	for _, document := range created {
+		file, artifactID := document.file, document.artifactID
 		first := writer.process.documentText(t, artifactID)
 		reader.process.documentText(t, artifactID)
 
