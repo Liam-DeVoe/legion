@@ -150,9 +150,9 @@ func TestTheKindsThatTakeAuthorAreThisChildsRegisteredKinds(t *testing.T) {
 // verified as hers read what any of them wrote, under any spelling of her login, a capital outside
 // ASCII among them, whose stored form and acting form go through one canonical form
 // (user_threads_login) - and, where the author is no person, to each credential that proves that
-// same session or that same workload: a session the broker proved (model.Actor's Proof) by its
+// same session or that same workload: a session the broker proved (model.Actor's Proven) by its
 // own id, and a session a pod's body named beside the workload its token proved as that workload.
-// A session id only a body named, with no proof and no workload, proves nobody. A kind that
+// A session id only a body named, not proven and with no workload, proves nobody. A kind that
 // compares the whole credential (credentialAuthoredKind), an interaction's, answers the node to
 // the credential that wrote it alone, so alice's cookie reads nothing of what her token recorded,
 // and a session's credential that names a workload too reads nothing that session wrote without
@@ -191,15 +191,15 @@ func TestAKindComparesTheAuthorOrTheCredentialItsEntryStates(t *testing.T) {
 	bobCookie := model.Actor{Kind: "user", ID: "bob"}
 	bobToken := model.Actor{Kind: "session", Owner: name("bob")}
 	workload := model.Actor{Service: name("system:serviceaccount:legion:worker")}
-	// A session id a pod's body named beside the workload its token proved, with no proof: that
+	// A session id a pod's body named beside the workload its token proved, not proven: that
 	// workload is its author.
 	podNamed := model.Actor{Kind: "session", ID: "session-a-pod-named", Service: name("system:serviceaccount:legion:worker")}
 	// A session the broker proved that nobody owns proves its own id, and so does that session
 	// where the broker proved it for a workload: one author, two credentials.
-	unowned := model.Actor{Kind: "session", ID: "session-nobody-owns", Proof: model.ProofBroker}
+	unowned := model.Actor{Kind: "session", ID: "session-nobody-owns", Proven: true}
 	unownedForWorkload := model.Actor{Kind: "session", ID: "session-nobody-owns", Service: name("system:serviceaccount:legion:worker"),
-		Proof: model.ProofBroker}
-	// A session id only a body named, with no proof and no workload, proves nobody.
+		Proven: true}
+	// A session id only a body named, not proven and with no workload, proves nobody.
 	bodyNamed := model.Actor{Kind: "session", ID: "session-a-body-named"}
 	shared := model.Actor{}
 	readers := []struct {

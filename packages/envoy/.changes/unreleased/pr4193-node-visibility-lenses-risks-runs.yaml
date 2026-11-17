@@ -4,9 +4,10 @@ body: |-
   refuses any other state. A lens, a finding, a risk and a constraint can be kept for their author,
   and a run of the command bar always is: such a node answers its author and no other reader, at
   every read, count and excerpt. The store refuses `author` visibility on every other kind. The
-  author is the person a credential proves, else a session the broker verified, which a recorded
-  actor now marks with `proof: broker`, else a pod's workload, the session a pod's request body
-  names included. A session only a request body names, with no workload, proves no author.
+  author is the person a credential proves, else a session, only where its recorded actor is proven
+  (`proven: true`, which a broker-issued token's session carries), else a pod's workload, the
+  session a pod's request body names included. A session only a request body names, with no
+  workload, proves no author.
 
   Dispatch adds a lens (`POST /api/v1/issues/{key}/lenses`), its findings, a risk, a constraint and
   the pointers between them (`prevented_by` from a risk to the checks that prevent it,

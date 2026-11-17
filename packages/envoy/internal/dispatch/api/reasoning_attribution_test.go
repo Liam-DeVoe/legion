@@ -148,7 +148,7 @@ func TestAReasoningNodeNamesTheSessionItsBodyNamesAsItsWriter(t *testing.T) {
 			// Attribution is no proof: the record names the session and proves nobody, so the
 			// one rule reads the node as nobody's, and the session the body named is no author.
 			if graphstore.ProvesAuthor(node.MadeBy) ||
-				graphstore.SameAuthor(node.MadeBy, model.Actor{Kind: "session", ID: bearerSession, Proof: model.ProofBroker}) {
+				graphstore.SameAuthor(node.MadeBy, model.Actor{Kind: "session", ID: bearerSession, Proven: true}) {
 				t.Errorf("%s/%s, made by %+v, proves an author under the one rule, want nobody", written.kind, written.id, node.MadeBy)
 			}
 		}
@@ -187,13 +187,13 @@ func TestAReasoningNodeNamesTheSessionItsBodyNamesAsItsWriter(t *testing.T) {
 		if !sessionHeld(t, podSession) {
 			t.Errorf("the pod's lens states authored_by to %s and the store holds no node of it", podSession)
 		}
-		// The one rule reads the pod's write as its workload's: the session beside it carries no
-		// proof, so the pod's token is its author and the session the body named is not.
+		// The one rule reads the pod's write as its workload's: the session beside it is not
+		// proven, so the pod's token is its author and the session the body named is not.
 		subject := workload
 		if !graphstore.SameAuthor(node.MadeBy, model.Actor{Service: &subject}) {
 			t.Errorf("the pod's project lens, made by %+v, is not the workload %s's under the one rule", node.MadeBy, workload)
 		}
-		if graphstore.SameAuthor(node.MadeBy, model.Actor{Kind: "session", ID: podSession, Proof: model.ProofBroker}) {
+		if graphstore.SameAuthor(node.MadeBy, model.Actor{Kind: "session", ID: podSession, Proven: true}) {
 			t.Errorf("the pod's project lens, made by %+v, is the session %s's under the one rule, want the workload's", node.MadeBy, podSession)
 		}
 		requireAuthor(t, "the pod's read of its project lens", readLens(t, project.Address, asToken(podToken)).Author, podSession)

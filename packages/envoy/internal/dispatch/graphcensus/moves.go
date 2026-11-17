@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
@@ -43,22 +43,13 @@ type RestoreWork struct {
 	Collides bool
 }
 
-// decisionsDocument is true of the artifacts row a that is an issue's decisions document, retired
-// or not: the document whose role is decisions, or, for a document stored before the role existed
-// or one whose retirement cleared its role, the issue's document whose slug is that document's. It
-// is the one place the census spells what a decisions document is; the step's own finder moves
-// this lookup into the catalog function decisions_documents(), and this is the one text that call
-// replaces.
-var decisionsDocument = `a.issue_key is not null and a.kind = 'doc'
-		  and (a.role = '` + model.ArtifactRoleDecisions + `' or (a.role is null and a.slug = 'decisions-md'))`
-
 // decisionsDocuments is each issue's decisions document that stands, as a FROM item of (id,
-// issue_key, ref_key): decisionsDocument, and never a retired one (artifacts.retired_at), which
-// holds nothing the restore owes.
-var decisionsDocuments = `(
-		select a.id, a.issue_key, a.ref_key from artifacts a
-		where ` + decisionsDocument + ` and a.retired_at is null
-	)`
+// issue_key, ref_key): the catalog function decisions_documents()
+// (20261117093337_decisions_documents.up.sql), the one place a decisions document is spelled, by
+// its role or, for one stored before the role existed, by its slug. A retired document is none of
+// them (artifacts.retired_at): it holds nothing the restore owes, and each block address of it a
+// citation can still name is a moved_to source the conversion wrote, which the moved set reads.
+const decisionsDocuments = `decisions_documents()`
 
 // owesBlockIndex is true of the document whose uuid is the SQL expression artifact while it still
 // owes its block index (document_block_versions.version null, as typedNodeOwed reads it): its
@@ -162,8 +153,8 @@ func CollisionsOf(work []RestoreWork) []Collision {
 // The two sets of the dangling-citation counter (dispatch://INFRA-1150 R8, E4).
 const (
 	// DanglingMoved is the citations whose target is a moved_to source, or a block address of a
-	// decisions document, retired or not - the document a move of the second shape and the
-	// conversion empty - and that resolve to no block. It reads zero before the first restore,
+	// decisions document that stands - the document a move of the second shape and the conversion
+	// empty - and that resolve to no block. It reads zero before the first restore,
 	// while each such block stands where it is, and zero after the last one, while every address
 	// a move left resolves through its tuple: a move that wrote no tuple leaves its citations
 	// dangling in the decisions document, and they count here.
@@ -202,15 +193,17 @@ func (r DanglingReport) Count(set string) int64 {
 // addresses of the returns (ReadRestoreWork).
 //
 // A target is a block address: the moved_to sources the store states now, read through
-// graph_tuples_store_only; each block address a decisions document held at a version the block
-// index recorded (document_block_texts, keyed by the document), retired or not
-// (decisionsDocument); and the addresses the returns name. One that resolves, through
-// block_moved_to, to a block a document_blocks row holds is no dangling target, and neither is one
-// in a document that still owes its block index, whose rows are not current. The counter reads no
-// other target: a `#b-` citation in prose is free text nothing validates, and a block of a
-// document past the deferral bound resolves to no block until the index catches up, so a count of
-// every unresolved citation of the instance is non-zero on a healthy one. A decisions document's
-// address its versions never held is such a prose citation too.
+// graph_tuples_store_only; each block address a decisions document that stands
+// (decisionsDocuments) held at a version the block index recorded (document_block_texts, keyed by
+// the document); and the addresses the returns name. One that resolves, through block_moved_to,
+// to a block a document_blocks row holds is no dangling target, and neither is one in a document
+// that still owes its block index, whose rows are not current. The counter reads no other target:
+// a `#b-` citation in prose is free text nothing validates, and a block of a document past the
+// deferral bound resolves to no block until the index catches up, so a count of every unresolved
+// citation of the instance is non-zero on a healthy one. A decisions document's address its
+// versions never held is such a prose citation too, and so is an address of a retired one that no
+// move left: the conversion wrote a moved_to from each section's heading it took out, which the
+// first part reads.
 //
 // A citation is the node whose text cites a target, read off the five tables a citation of a block
 // is stored in, each through its index on (to_kind, to_id): refs, by its source, and block_refs,
@@ -226,9 +219,8 @@ var danglingRead = `
 	`t.kind = '`+graphstore.TupleMovedTo+`' and t.from_kind = '`+refs.BlockNodeKind+`' and t.to_kind <> '`+graphstore.KindValue+`'`) + `
 		) moved where moved.asserted
 		union
-		select distinct a.ref_key || '#' || held.block_id, '` + DanglingMoved + `'
-		from artifacts a join document_block_texts held on held.artifact_id = a.id
-		where ` + decisionsDocument + `
+		select distinct decisions.ref_key || '#' || held.block_id, '` + DanglingMoved + `'
+		from ` + decisionsDocuments + ` decisions join document_block_texts held on held.artifact_id = decisions.id
 		union
 		select unnest($1::text[]), '` + DanglingReturning + `'
 	),
@@ -309,5 +301,46 @@ func writeMoves(w io.Writer, dangling DanglingReport, collisions []Collision, ve
 	}
 	for _, collision := range collisions {
 		fmt.Fprintf(w, "census: collisions issue=%s block=%s\n", collision.Issue, collision.BlockID)
+	}
+}
+
+// DecisionsCensus is what the census prints of the decisions step's third phase
+// (dispatch://INFRA-1150 R6, R9): the decisions documents that stand (decisions_documents()), the
+// sections they still hold, each one no rule has converted yet, and each spec whose answered asks
+// left it, with those asks. docs' ReadDecisionsCensus reads it, since only docs reads a decisions
+// document's sections; the census command sets it on the report it prints (StoreReport.Decisions).
+type DecisionsCensus struct {
+	Documents, UnconvertedSections int64
+	SpecsWithMovedAnswers          []SpecWithMovedAnswers
+}
+
+// SpecWithMovedAnswers is one spec whose answered asks left it: its issue, and the id of each ask
+// the restore owes it, in the restore's order (ReadRestoreWork).
+type SpecWithMovedAnswers struct {
+	Issue string
+	Asks  []string
+}
+
+// SpecsWithMovedAnswersOf is each spec the restore owes an answered ask over work, in work's
+// order, each once: the issue whose spec an ask of either shape returns to, with its asks.
+func SpecsWithMovedAnswersOf(work []RestoreWork) []SpecWithMovedAnswers {
+	var specs []SpecWithMovedAnswers
+	for _, ask := range work {
+		if len(specs) == 0 || specs[len(specs)-1].Issue != ask.Issue {
+			specs = append(specs, SpecWithMovedAnswers{Issue: ask.Issue})
+		}
+		specs[len(specs)-1].Asks = append(specs[len(specs)-1].Asks, ask.Ask)
+	}
+	return specs
+}
+
+// writeDecisions prints the decisions line, and one line for each spec whose answered asks left
+// it, naming the asks by id.
+func writeDecisions(w io.Writer, decisions DecisionsCensus) {
+	fmt.Fprintf(w, "census: decisions documents=%s unconverted_sections=%s specs_with_moved_answers=%s\n",
+		pgmigrate.Thousands(decisions.Documents), pgmigrate.Thousands(decisions.UnconvertedSections),
+		pgmigrate.Thousands(int64(len(decisions.SpecsWithMovedAnswers))))
+	for _, spec := range decisions.SpecsWithMovedAnswers {
+		fmt.Fprintf(w, "census: spec_with_moved_answers issue=%s asks=%s\n", spec.Issue, strings.Join(spec.Asks, ","))
 	}
 }

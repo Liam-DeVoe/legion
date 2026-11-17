@@ -55,6 +55,11 @@ type versionWrite struct {
 	// as the reopen's own move does (moveApprovalAsk, which takes those versions to hold that
 	// editor's text, since no stored version says whose text each added).
 	keptEditor *model.Actor
+	// steps names the phases of the decisions step whose own write this version is (restoreCase,
+	// conversionCase): set by SnapshotVersion from the mark the step alone puts on its context
+	// (withDecisionStepWrite), which no route can send, and zero for every other version, which
+	// the restore's and the conversion's carry cases do not reach.
+	steps decisionStepCases
 }
 
 // mergeInto copies src into *dst, allocating *dst if it is nil and src holds anything; a nil or
@@ -1636,7 +1641,7 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 	if !changed && readsAs(latest.markdown, rendered.markdown) {
 		return VersionResult{Version: latest.Version}, nil
 	}
-	capture.authors[actorKey(actor)] = actor
+	mergeAuthor(capture.authors, actor)
 	// The owner's lock holds the issue's state under this write, and a closed issue refuses it -
 	// except the version a comment's anchor is pinned to, which a closed issue takes like the
 	// comment itself (WithCommentMarks, commentMarkOperation above).
@@ -1650,6 +1655,7 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 	result, err := s.writeVersionTx(ctx, tx, artifactID, rendered, actor, &versionWrite{
 		authors: actorSlice(capture.authors),
 		capture: &capture,
+		steps:   decisionStepCasesOf(ctx),
 	})
 	if err != nil {
 		return VersionResult{}, err
@@ -2653,7 +2659,7 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 		// that text with the questions the close withdrew and the reopen opened again. It runs
 		// after the move, so an open request already names this version when the carry answers
 		// it in his name.
-		carried, err := s.carryApproval(ctx, tx, artifactID, version, rendered)
+		carried, err := s.carryApproval(ctx, tx, artifactID, version, rendered, write.steps)
 		if err != nil {
 			return versionWriteResult{}, err
 		}
@@ -2682,6 +2688,27 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 
 func actorKey(actor model.Actor) string {
 	return actor.Kind + "\x00" + actor.ID
+}
+
+// mergeAuthor puts actor into authors, a map keyed by actorKey that a version's author list is
+// read from. One writer can reach the map more than once - a write whose credential proved its
+// session and another that only named it - and the entry is Proven only when every write merged
+// into it was (model.Actor.Proven), in whichever order they came: a session that claimed a write
+// must not read as proven because a proven write of the same session sits beside it. Every
+// other field is the later actor's, as a plain assignment leaves it.
+func mergeAuthor(authors map[string]model.Actor, actor model.Actor) {
+	key := actorKey(actor)
+	if held, merged := authors[key]; merged {
+		actor.Proven = actor.Proven && held.Proven
+	}
+	authors[key] = actor
+}
+
+// mergeAuthors merges every author of from into authors (mergeAuthor).
+func mergeAuthors(authors, from map[string]model.Actor) {
+	for _, actor := range from {
+		mergeAuthor(authors, actor)
+	}
 }
 
 func actorSlice(actors map[string]model.Actor) []model.Actor {

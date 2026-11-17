@@ -6,16 +6,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// A run recorded before model.Actor's Proof existed is its own credential's still: the stream and
+// A run recorded before model.Actor's Proven existed is its own credential's still: the stream and
 // a write made for the run (withinGoingRun) hold its owner to goingRunIsTheCallers, which asks the
 // recorded author only whether it names a credential at all (graphstore.NamesCredential) and then
 // compares the whole credential (model.Actor.SameCredential), never the one author rule.
 //
-// Each row is a recorded author as an older pod stored it, with no proof, and the caller as a
-// request resolves it now (optionalActor): a broker session carries the proof from its
+// Each row is a recorded author as an older pod stored it, with no proven mark, and the caller as
+// a request resolves it now (optionalActor): a broker session carries the mark from its
 // resolution on (brokerTokenActor). A session that names no owner and no workload, which the rule
 // now counts as nobody, is read by that session and by no other; so is a broker session beside a
-// person or a workload, recorded before the proof. A session of another workload, a workload's
+// person or a workload, recorded before the mark. A session of another workload, a workload's
 // own token and the shared bearer read none of them, and the shared bearer's empty author is
 // nobody's.
 func TestARunRecordedBeforeTheProofIsItsOwnCredentialsStill(t *testing.T) {
@@ -25,7 +25,7 @@ func TestARunRecordedBeforeTheProofIsItsOwnCredentialsStill(t *testing.T) {
 	person := named("alice")
 	const asker = "ses_asked_before_the_proof"
 	proved := func(actor model.Actor) model.Actor {
-		actor.Proof = model.ProofBroker
+		actor.Proven = true
 		actor.Credential = &model.Credential{Session: actor.ID}
 		return actor
 	}

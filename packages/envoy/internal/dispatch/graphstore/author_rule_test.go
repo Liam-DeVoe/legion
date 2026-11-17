@@ -12,10 +12,11 @@ import (
 )
 
 // The root's R19 makes an author the person a credential proved, so the credentials of one
-// person are one author. A session is its own author only where the record says the broker proved
-// it (model.Actor's Proof): two such sessions of one workload stay two authors, because every
-// session of that workload carries the same workload. A session id a request's body named, with
-// no proof, proves nothing of itself - anybody can type any id - so beside the workload a pod's
+// person are one author. A session is its own author only where the record says its credential
+// proved it (model.Actor's Proven, which only a broker-issued token sets on a session): two such
+// sessions of one workload stay two authors, because every session of that workload carries the
+// same workload. A session id a request's body named, not proven, proves nothing of itself -
+// anybody can type any id - so beside the workload a pod's
 // token proved it is that workload's, the pod's own token's author, as every other id that pod
 // names is, and another workload is no author of it; with no workload it proves nobody, as the
 // shared bearer proves nobody. This test writes a node under each writer through Write, so its
@@ -41,16 +42,16 @@ func TestTheAuthorIsThePersonACredentialProvedAndNothingElseJoinsTwo(t *testing.
 	workload := "system:serviceaccount:legion:legion-worker"
 	podToken := model.Actor{Service: named(workload)}
 	otherPodToken := model.Actor{Service: named("system:serviceaccount:legion:legion-reviewer")}
-	// Two session ids a pod's body named beside the workload its token proved, with no proof.
+	// Two session ids a pod's body named beside the workload its token proved, not proven.
 	workloadSession := model.Actor{Kind: "session", ID: "ses_of_the_workload_1", Service: named(workload)}
 	otherWorkloadSession := model.Actor{Kind: "session", ID: "ses_of_the_workload_2", Service: named(workload)}
 	// Two sessions of that workload the broker proved, and the first one's id named by a body.
-	brokerSession := model.Actor{Kind: "session", ID: "ses_proved_1", Service: named(workload), Proof: model.ProofBroker}
-	otherBrokerSession := model.Actor{Kind: "session", ID: "ses_proved_2", Service: named(workload), Proof: model.ProofBroker}
+	brokerSession := model.Actor{Kind: "session", ID: "ses_proved_1", Service: named(workload), Proven: true}
+	otherBrokerSession := model.Actor{Kind: "session", ID: "ses_proved_2", Service: named(workload), Proven: true}
 	brokerIDNamed := model.Actor{Kind: "session", ID: "ses_proved_1", Service: named(workload)}
 	// A session the broker proved that names no person and no workload, and session ids only a
 	// body named, with neither.
-	brokerUnowned := model.Actor{Kind: "session", ID: "ses_nobody_owns_proved", Proof: model.ProofBroker}
+	brokerUnowned := model.Actor{Kind: "session", ID: "ses_nobody_owns_proved", Proven: true}
 	unowned := model.Actor{Kind: "session", ID: "ses_nobody_owns_1"}
 	otherUnowned := model.Actor{Kind: "session", ID: "ses_nobody_owns_2"}
 	bearer := model.Actor{}
@@ -144,7 +145,7 @@ func TestTheAuthorIsThePersonACredentialProvedAndNothingElseJoinsTwo(t *testing.
 	}
 
 	// The authored_by edge is attribution and the rule is visibility, and they part on a session
-	// no proof backs: a pod's write on a session its body named states its authored_by to that
+	// that is not proven: a pod's write on a session its body named states its authored_by to that
 	// session (AuthorOf, as dispatch://INFRA-1149 has it), while the rule counts the workload its
 	// author; a session only a body named, the shared bearer's writes, keeps its authored_by too,
 	// while the rule counts it as nobody. A session the broker proved is its own author under both.
@@ -181,8 +182,8 @@ func TestTheAuthorIsThePersonACredentialProvedAndNothingElseJoinsTwo(t *testing.
 // Its predicate compares the whole credential (AuthorCredentialIsSQL), and the bound credential
 // is nil unless the reader proves an author (ActingCredential), so the four-field equality holds
 // the run to one credential; the record is asked only whether it names a credential at all
-// (NamesCredential), as it was before model.Actor's Proof existed. A run a session that names no
-// owner and no workload recorded before then carries no proof: the rule counts that record as
+// (NamesCredential), as it was before model.Actor's Proven existed. A run a session that names no
+// owner and no workload recorded before then carries no proven mark: the rule counts that record as
 // nobody, and the session, proved by the broker now, reads its run all the same. No other session
 // does, of no workload, nor that session's id named by a body, nor a workload's own token. A run
 // whose author is the shared bearer's empty one is read by nobody, the bearer included.
@@ -201,12 +202,12 @@ func TestARunIsReadByTheCredentialThatAskedItWhateverItsRecordProves(t *testing.
 		who   model.Actor
 		reads bool
 	}{
-		{"that session, proved by the broker now", model.Actor{Kind: "session", ID: asker, Proof: model.ProofBroker}, true},
+		{"that session, proved by the broker now", model.Actor{Kind: "session", ID: asker, Proven: true}, true},
 		{"that session's id named by a body", model.Actor{Kind: "session", ID: asker}, false},
-		{"another session the broker proved", model.Actor{Kind: "session", ID: "ses_another", Proof: model.ProofBroker}, false},
-		{"that id beside a workload, proved by the broker", model.Actor{Kind: "session", ID: asker, Service: workload, Proof: model.ProofBroker}, false},
+		{"another session the broker proved", model.Actor{Kind: "session", ID: "ses_another", Proven: true}, false},
+		{"that id beside a workload, proved by the broker", model.Actor{Kind: "session", ID: asker, Service: workload, Proven: true}, false},
 		{"that id beside a workload, named by a pod", model.Actor{Kind: "session", ID: asker, Service: workload}, false},
-		{"another session of a workload, proved by the broker", model.Actor{Kind: "session", ID: "ses_of_a_workload", Service: workload, Proof: model.ProofBroker}, false},
+		{"another session of a workload, proved by the broker", model.Actor{Kind: "session", ID: "ses_of_a_workload", Service: workload, Proven: true}, false},
 		{"a workload's own token", model.Actor{Service: workload}, false},
 		{"the shared bearer", bearer, false},
 	}
@@ -219,7 +220,7 @@ func TestARunIsReadByTheCredentialThatAskedItWhateverItsRecordProves(t *testing.
 		actor  model.Actor
 		readBy func(reads bool) bool
 	}{
-		{"a run that session recorded before the proof", oldShape, func(reads bool) bool { return reads }},
+		{"a run that session recorded before the mark", oldShape, func(reads bool) bool { return reads }},
 		{"a run of the shared bearer's empty author", bearer, func(bool) bool { return false }},
 	} {
 		id := fmt.Sprintf("credential-rule-%02d", index)

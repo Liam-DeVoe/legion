@@ -12,10 +12,10 @@ import (
 
 // ProvesAuthor reports whether a credential proves an author: the person a cookie, a personal
 // token or a session the broker verified for its owner proves, a session the broker proved
-// (model.Actor's Proof), or the workload a service-account token proved, a session a pod's body
+// (model.Actor's Proven), or the workload a service-account token proved, a session a pod's body
 // named beside it included (provedAuthor). A credential that names none of them - the
 // deployment's shared agent bearer, which resolves as {}, and a session id only a request's body
-// named, with no proof and no workload - proves nobody: every holder of the bearer presents the
+// named, not proven and with no workload - proves nobody: every holder of the bearer presents the
 // same value, so model.Actor.SameCredential reports two such credentials as one, any caller can
 // name any session id, and a node reserved for the author of such a write would be readable by
 // every such caller rather than by its writer.
@@ -47,12 +47,12 @@ func SameAuthor(writer, reader model.Actor) bool {
 // service-account token proved.
 //
 // Only a person joins credentials, and a workload the sessions a pod names. A session is its own
-// author, by its own id, only where the record says the broker proved it (model.Actor's Proof,
-// model.ProofBroker): every session of a workload carries the same workload, so an author by the
-// workload would let each such session read what any other reserved. A session id with no such
-// proof is one a request's body named, which proves nothing: beside the workload the pod's own
-// token proved its author is that workload, as the pod's token's is, and with no workload it is
-// nobody.
+// author, by its own id, only where the record says its credential proved it (model.Actor's
+// Proven, which only a broker-issued token sets on a session): every session of a workload
+// carries the same workload, so an author by the workload would let each such session read what
+// any other reserved. A session id that is not proven is one a request's body named, which
+// proves nothing: beside the workload the pod's own token proved its author is that workload, as
+// the pod's token's is, and with no workload it is nobody.
 type author struct {
 	Kind string `json:"kind"`
 	ID   string `json:"id"`
@@ -75,7 +75,7 @@ func provedAuthor(actor model.Actor) (author, bool) {
 		return author{Kind: authorPerson, ID: model.CanonicalLogin(*actor.Owner)}, true
 	case actor.Kind == "user" && actor.ID != "":
 		return author{Kind: authorPerson, ID: model.CanonicalLogin(actor.ID)}, true
-	case actor.ID != "" && (actor.Kind != "session" || actor.Proof == model.ProofBroker):
+	case actor.ID != "" && (actor.Kind != "session" || actor.Proven):
 		return author{Kind: actor.Kind, ID: actor.ID}, true
 	case actor.Service != nil && *actor.Service != "":
 		return author{Kind: authorService, ID: *actor.Service}, true
@@ -181,7 +181,7 @@ func AuthorIsSQL(column, param string) string {
 // credential its POST proved, and the bound credential is nil unless the reader proves an author
 // (ActingCredential), so the four-field equality already holds the run to the one credential
 // that asked it. Asking the rule instead would hide from its own session a run recorded before
-// model.Actor's Proof existed, by a broker session that names no owner and no workload: the rule
+// model.Actor's Proven existed, by a broker session that names no owner and no workload: the rule
 // counts such a record as nobody, while the session that asked it, proved by the broker now,
 // presents the same four fields.
 //
@@ -224,8 +224,8 @@ func authorNameSQL(column string) string {
 }
 
 // authorSQL is provedAuthor over a stored author, case for case and in the same order, and null
-// for a stored author that names none. An actor with no owner, no workload or no proof leaves the
-// key out (model.Actor's omitempty), which reads as null here as an empty name does.
+// for a stored author that names none. An actor with no owner, no workload or no proven mark
+// leaves the key out (model.Actor's omitempty), which reads as null here as an empty name does.
 func authorSQL(column string) string {
 	return `case
 		when coalesce(` + column + `->>'owner', '') <> ''
@@ -233,7 +233,7 @@ func authorSQL(column string) string {
 		when ` + column + `->>'kind' = 'user' and coalesce(` + column + `->>'id', '') <> ''
 			then ` + authorKeySQL(`'`+authorPerson+`'`, column+`->>'id'`) + `
 		when coalesce(` + column + `->>'id', '') <> ''
-		     and (coalesce(` + column + `->>'kind', '') <> 'session' or ` + column + `->>'proof' = '` + string(model.ProofBroker) + `')
+		     and (coalesce(` + column + `->>'kind', '') <> 'session' or ` + column + `->>'proven' = 'true')
 			then ` + authorKeySQL(`coalesce(`+column+`->>'kind', '')`, column+`->>'id'`) + `
 		when coalesce(` + column + `->>'service', '') <> ''
 			then ` + authorKeySQL(`'`+authorService+`'`, column+`->>'service'`) + `

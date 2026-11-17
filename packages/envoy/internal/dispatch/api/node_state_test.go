@@ -406,14 +406,14 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 		}
 	}
 	authors := map[string]model.Actor{
-		"r-first":    {Kind: "session", ID: firstSession, Owner: &firstPerson, Proof: model.ProofBroker},
-		"r-second-a": {Kind: "session", ID: secondSession, Owner: &secondPerson, Proof: model.ProofBroker},
-		"r-second-b": {Kind: "session", ID: secondSession, Owner: &secondPerson, Proof: model.ProofBroker},
+		"r-first":    {Kind: "session", ID: firstSession, Owner: &firstPerson, Proven: true},
+		"r-second-a": {Kind: "session", ID: secondSession, Owner: &secondPerson, Proven: true},
+		"r-second-b": {Kind: "session", ID: secondSession, Owner: &secondPerson, Proven: true},
 		"r-shared":   {Kind: "session", ID: sessionActor()["id"].(string)},
 	}
 	for blockID, author := range authors {
 		node, held, err := graphstore.ReadNode(ctx, rig.database.Pool, refs.BlockNodeKind, refKey+"#"+blockID)
-		if err != nil || !held || !node.MadeBy.SameCredential(author) || node.MadeBy.Proof != author.Proof {
+		if err != nil || !held || !node.MadeBy.SameCredential(author) || node.MadeBy.Proven != author.Proven {
 			t.Fatalf("%s is made by %+v (held %t, %v), want %+v: the test's premise is who wrote each requirement", blockID, node.MadeBy, held, err, author)
 		}
 	}
@@ -567,7 +567,7 @@ func TestATokenThatProvesNoIDOfItsOwnSettlesWhatItWrote(t *testing.T) {
 		}
 		lens := decodeBody[lensInvoked](t, written)
 		node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindLens, lens.ID)
-		if err != nil || !held || !node.MadeBy.SameCredential(madeBy) || node.MadeBy.Proof != "" {
+		if err != nil || !held || !node.MadeBy.SameCredential(madeBy) || node.MadeBy.Proven {
 			t.Fatalf("%s's %s lens is made by %+v (held %t, %v), want %+v", by.name, visibility, node.MadeBy, held, err, madeBy)
 		}
 		address := graphstore.KindLens + "/" + lens.ID
@@ -636,18 +636,18 @@ func TestATokenThatProvesNoIDOfItsOwnSettlesWhatItWrote(t *testing.T) {
 	podsOwn := propose(workerA, graphstore.VisibilityAuthor, model.Actor{Service: &subject})
 	sharedProject := propose(shared, graphstore.VisibilityProject, model.Actor{Kind: "session", ID: shared.session})
 
-	// A body's proof is no proof: the session a pod's body names, claiming the broker verified
-	// it, is recorded with no proof, so it is no session's own write but the workload's.
+	// A body's proven mark proves nothing: the session a pod's body names, claiming its credential
+	// proved it, is recorded with no mark, so it is no session's own write but the workload's.
 	claimed := agentRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/lenses", map[string]any{
 		"on": spec, "kind": "trade-off",
-		"actor": map[string]any{"kind": "session", "id": workerA.session, "proof": model.ProofBroker},
+		"actor": map[string]any{"kind": "session", "id": workerA.session, "proven": true},
 	}, workerA.token)
 	if claimed.Code != http.StatusCreated {
-		t.Fatalf("worker a's lens with a body claiming a proof: status=%d body=%s", claimed.Code, claimed.Body.String())
+		t.Fatalf("worker a's lens with a body claiming proven: status=%d body=%s", claimed.Code, claimed.Body.String())
 	}
 	if node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindLens, decodeBody[lensInvoked](t, claimed).ID); err != nil || !held ||
-		node.MadeBy.Proof != "" || !node.MadeBy.SameCredential(model.Actor{Kind: "session", ID: workerA.session, Service: &subject}) {
-		t.Fatalf("the lens whose body claimed a proof is made by %+v (held %t, %v), want the body's session with no proof", node.MadeBy, held, err)
+		node.MadeBy.Proven || !node.MadeBy.SameCredential(model.Actor{Kind: "session", ID: workerA.session, Service: &subject}) {
+		t.Fatalf("the lens whose body claimed proven is made by %+v (held %t, %v), want the body's session with no mark", node.MadeBy, held, err)
 	}
 	for address, whose := range map[string]string{podsOwn: "the lens it reserved for itself", podsProject: "its project lens"} {
 		if own := read(workerA, address); own.Code != http.StatusOK {
@@ -679,9 +679,9 @@ func TestATokenThatProvesNoIDOfItsOwnSettlesWhatItWrote(t *testing.T) {
 // TestABrokerSessionOfAWorkloadIsNotThatWorkload holds the one author rule where a workload's
 // credentials meet: a pod token of one workload, and two sessions the broker verified for that
 // same workload and no person. The pod's write records the workload (graphstore.SameAuthor reads
-// a session with no proof beside a service as that service), so the pod reads and settles the
-// lens it reserved for itself. Each broker session's credential carries the broker's proof
-// (model.ProofBroker), so its author is its own session and not the workload: it reads that lens
+// a session that is not proven beside a service as that service), so the pod reads and settles
+// the lens it reserved for itself. Each broker session's credential is Proven (brokerTokenActor),
+// so its author is its own session and not the workload: it reads that lens
 // as a lens nobody wrote, byte for byte once the address is substituted. Such a session writes
 // nothing at all, since no person stands behind it (writeNeedsASignedInPerson), so its settle is
 // refused 403 SIGN_IN_REQUIRED and the lens stays proposed; two such sessions therefore author no
@@ -743,8 +743,8 @@ func TestABrokerSessionOfAWorkloadIsNotThatWorkload(t *testing.T) {
 	lensID := decodeBody[lensInvoked](t, written).ID
 	lens := graphstore.KindLens + "/" + lensID
 	if node, held, err := graphstore.ReadNode(ctx, rig.database.Pool, graphstore.KindLens, lensID); err != nil || !held ||
-		!node.MadeBy.SameCredential(model.Actor{Service: &workload}) || node.MadeBy.Proof != "" {
-		t.Fatalf("the pod's lens is made by %+v (held %t, %v), want the workload with no proof", node.MadeBy, held, err)
+		!node.MadeBy.SameCredential(model.Actor{Service: &workload}) || node.MadeBy.Proven {
+		t.Fatalf("the pod's lens is made by %+v (held %t, %v), want the workload with no proven mark", node.MadeBy, held, err)
 	}
 	if marked := pod.send(http.MethodPost, statePath(issue, lens, "state"), map[string]any{"state": graphstore.StateProposed}); marked.Code != http.StatusOK {
 		t.Fatalf("the pod marks its lens proposed: status=%d body=%s", marked.Code, marked.Body.String())

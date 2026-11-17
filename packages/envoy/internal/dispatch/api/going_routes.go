@@ -416,7 +416,7 @@ func writeGoingRequestNotFound(w http.ResponseWriter) {
 // {} exactly as that author does, and a write that token makes would count as made for that run.
 // The POST refuses such an asker before anything is recorded, so no row the POST writes carries
 // one. It asks the row no question of the author rule (graphstore.ProvesAuthor): a row recorded
-// before model.Actor's Proof existed, by a broker session that names no owner and no workload,
+// before model.Actor's Proven existed, by a broker session that names no owner and no workload,
 // names that session, which the rule now counts as nobody, and the session that asked it still
 // presents the same credential.
 func goingRunIsTheCallers(author, caller model.Actor) bool {

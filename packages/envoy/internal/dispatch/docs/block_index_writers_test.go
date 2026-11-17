@@ -575,6 +575,12 @@ var indexPasses = map[string]string{
 	// person read. It reads the kept_by the node holds only to retract one naming another person,
 	// so the node holds the one Keep the row projects: what moved, never a side mended.
 	"api/decisions.go#keepDecisionNode": "the Keep request, the decision the person read, and the kept_by its node holds",
+	// The decisions step's restore and conversion of an issue (dispatch://INFRA-1150 R6 to R9):
+	// each version it writes appends its index pass's facts under the version's event, and the
+	// moves, the ask nodes' relations and the Keeps it carries onto a decision's node are drawn
+	// from what it read of the issue's documents and asks under their locks, mending nothing.
+	"docs/decision_restore.go#writeVersion": "the facts the version's index pass stated and the event that recorded the version",
+	"docs/decision_restore.go#writeFacts":   "the restore's and the conversion's plan, read off the documents and the asks rows it locked",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.Caused), which reads no
 	// projection and mends nothing.
