@@ -383,9 +383,11 @@ function WriteLine({
             <>
               <span {...pageChrome}>{CONTROL_LABELS.replying_to}</span>{" "}
               {/* A statement taken up from a held send is its words alone, named in plain
-                  words as a row's statement is. */}
+                  words as a row's statement is. A row's text is the coverage read's words, which
+                  leave every reference out, so its tree's references are named whole. */}
               <TargetWords
                 markdown={statementRow?.text ?? statement.quote}
+                namesAll={statementRow !== undefined}
                 source={statementRow?.source}
                 tree={statementRow?.tree}
               />
@@ -793,10 +795,17 @@ function AnswerForm({
  */
 function TargetWords({
   markdown,
+  namesAll = false,
   source,
   tree,
 }: {
   markdown: string;
+  /** Whether the line names every reference `tree` holds, rather than only those `markdown`
+   *  cites (`ReferenceNaming.cited`): a statement row's `markdown` is the coverage read's words,
+   *  which leave each of its references out (`blockWords` in Go's `api/results.go`), so it cites
+   *  none of them, and the line names them as the statement's row draws them (`RowText`). Its
+   *  words are still what the line draws until the engine has answered. */
+  namesAll?: boolean;
   source: TextSource | undefined;
   tree: DisplayTree | undefined;
 }): ReactNode {
@@ -805,7 +814,7 @@ function TargetWords({
   return (
     <PlainText
       firstLine
-      markdown={markdown}
+      markdown={namesAll ? undefined : markdown}
       source={source}
       surface="issue-page-composer-target"
       tree={tree}

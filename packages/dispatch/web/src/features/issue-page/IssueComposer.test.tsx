@@ -1111,6 +1111,52 @@ test("a statement's target line names its first line, and its send carries its w
   });
 });
 
+// The reviewer's finding 4593511319: a statement's row holds the coverage read's words, which
+// leave each of its references out (`blockWords` in Go's `api/results.go`), beside the reading
+// of its whole words, which keeps them. The target line reads a reference that reading holds as
+// the name the row draws for it - the issue's key and title - and never as its address.
+test("a statement's target line names the issue its words cite, never its address", async () => {
+  const user = userEvent.setup();
+  const tree = displayTree(
+    "A comment on this statement is drawn under it, as dispatch://CORE-2 asks."
+  );
+  if (tree === undefined) throw new Error("the engine read no statement");
+  const summary = stub(
+    spyOn(api, "getIssueSummary").mockImplementation(async (key) => ({
+      documents: [],
+      key,
+      project: "CORE",
+      status: "in_progress",
+      title: "The issue a statement cites",
+    }))
+  );
+  const root = node({
+    children: [
+      node({
+        id: "spec#b-r2",
+        reference: `dispatch://${KEY}/spec#b-r2`,
+        source: SPEC_SOURCE,
+        // The coverage read's words, the address left out, as the page's row holds them.
+        text: "A comment on this statement is drawn under it, as asks.",
+        tree,
+        type: "requirement",
+      }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const page = renderPage({}, root);
+
+  await page.press(user, "spec#b-r2", "r");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  await waitFor(() =>
+    expect(targetWords()).toBe(
+      `${CONTROL_LABELS.replying_to} A comment on this statement is drawn under it, as CORE-2 The issue a statement cites asks.`
+    )
+  );
+  expect(summary).toHaveBeenCalledWith("CORE-2");
+});
+
 // The reviewer's finding 4593511280: a comment on a statement Dispatch refused holds the box on
 // the statement - a Reply on another row, or an Answer, puts the caret back in it on that
 // statement, its refused words kept - and a box that mounts again over the refused send, as one
