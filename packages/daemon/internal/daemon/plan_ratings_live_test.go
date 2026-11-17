@@ -34,7 +34,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // planRatingsLive is one run of the proof: the walk's rig over four issues of one project, and the
@@ -262,7 +261,7 @@ func plansPrintedHold(project, out string, want []ratedWant) error {
 		}
 		before = closed
 	}
-	plan := fmt.Sprintf("default (1 tasks: %s)", strings.Join(workflow.DefaultSteps(), " "))
+	plan := fmt.Sprintf("default (1 tasks: %s)", strings.Join(todaysSteps(), " "))
 	for _, w := range want {
 		at := slices.IndexFunc(lines, func(line planLine) bool { return line.issue == w.issue })
 		if at < 0 {

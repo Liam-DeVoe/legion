@@ -17,10 +17,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
+
+// todaysSteps is the default steps of a project that names no default_steps
+// (config.Project.RunsByDefault), as a plan writes them: the steps the one task default of each
+// issue of these tests runs, since their project names none.
+func todaysSteps() []string {
+	steps := config.Project{}.RunsByDefault()
+	words := make([]string, len(steps))
+	for i, step := range steps {
+		words[i] = step.String()
+	}
+	return words
+}
 
 // v-records, the read by project, in the form this slice can run: three issues of one project run
 // to done with no plan of their owner, the first with one failed review, and each retro rates the
@@ -165,8 +177,8 @@ func plansHold(read projectPlansRead, want []ratedWant) error {
 		case plan == nil:
 			return fmt.Errorf("%s lists no plan, want the default plan", w.issue)
 		case plan.Source != "default" || plan.ArtifactID != nil || plan.Version != nil || len(plan.Tasks) != 1 ||
-			plan.Tasks[0].ID != "default" || !slices.Equal(plan.Tasks[0].Steps, workflow.DefaultSteps()):
-			return fmt.Errorf("%s lists the plan %+v, want source default with no document and the one task default of %v", w.issue, *plan, workflow.DefaultSteps())
+			plan.Tasks[0].ID != "default" || !slices.Equal(plan.Tasks[0].Steps, todaysSteps()):
+			return fmt.Errorf("%s lists the plan %+v, want source default with no document and the one task default of %v", w.issue, *plan, todaysSteps())
 		}
 		retro := w.steps.find("retro", 0, 1)
 		switch {

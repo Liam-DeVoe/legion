@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -25,11 +26,14 @@ type StepAgent struct {
 	Model   string
 }
 
-// stepOf is the step a phase runs as a step of the task default, whose steps are DefaultSteps
-// (stepIn): the step of a run with no plan rows, which walks today's line (stepAt). A held issue's
-// step is the step of the phase its hold is from (record.StandsAt), which the caller reads.
+// stepOf is the step a phase runs as a step of the task default (stepIn): the step of a run with
+// no plan rows, which walks today's line (stepAt). Its steps are the default steps of a project
+// that names none (config.Project.RunsByDefault), never the configured project's: such a run
+// walks today's line whatever `default_steps` says, so its places, and the ids of its records,
+// stay where the release before put them (R20). A held issue's step is the step of the phase its
+// hold is from (record.StandsAt), which the caller reads.
 func stepOf(p phase.Phase) (place record.StepPlace, step int, role, typ string, ok bool) {
-	return stepIn(DefaultSteps(), p)
+	return stepIn(config.Project{}.RunsByDefault(), p)
 }
 
 // stepOfWalk is the step w's task runs at place, a place of w's line (Walk.PlaceOf): the step's

@@ -4,61 +4,54 @@ import (
 	"encoding/json"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // The place of a phase's step is read from the steps, never stated: the step of each working
-// phase is the step of DefaultSteps whose role works that phase, at one plus its index, under that
-// role. The place logic takes the steps as a parameter, so a list without the tester shows that the
-// place is read: the reviewer moves up to place 3, and testing runs no step of that list. Nothing
-// global is swapped: DefaultSteps answers a fresh copy, so a caller that changes the slice it got
-// changes no later answer.
+// phase is the step of the default steps of a project that names none (config.Project.RunsByDefault)
+// whose role works that phase, at one plus its index, under that role. The place logic takes the
+// steps as a parameter, so a list without the tester shows that the place is read: the reviewer
+// moves up to place 3, and testing runs no step of that list.
 func TestStepOfReadsTheDefaultSteps(t *testing.T) {
 	works := map[string]phase.Phase{"planner": phase.Planning, "implementer": phase.Implementing, "tester": phase.Testing,
 		"reviewer": phase.Reviewing, "acceptance": phase.Accepting}
-	steps := DefaultSteps()
-	if want := []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}; !slices.Equal(steps, want) {
-		t.Fatalf("DefaultSteps() = %q, want %q", steps, want)
+	steps := config.Project{}.RunsByDefault()
+	if got, want := stepWords(steps), []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}; !slices.Equal(got, want) {
+		t.Fatalf("the default steps of a project that names none = %q, want %q", got, want)
 	}
 	for i, step := range steps {
-		role, _, _ := strings.Cut(step, ":")
-		at, ok := works[role]
+		at, ok := works[step.Role]
 		if !ok {
 			t.Fatalf("the default step %q names a role that works no phase", step)
 		}
 		place, n, got, _, ok := stepOf(at)
-		if want := (record.StepPlace{Task: "default", Kind: "step", Place: i + 1}); !ok || place != want || n != i+1 || got != role {
-			t.Errorf("stepOf(%s) = %+v, step %d, role %q, ok %v; want %+v, step %d, role %q", at, place, n, got, ok, want, i+1, role)
+		if want := (record.StepPlace{Task: "default", Kind: "step", Place: i + 1}); !ok || place != want || n != i+1 || got != step.Role {
+			t.Errorf("stepOf(%s) = %+v, step %d, role %q, ok %v; want %+v, step %d, role %q", at, place, n, got, ok, want, i+1, step.Role)
 		}
 	}
 
-	withoutTester := slices.DeleteFunc(DefaultSteps(), func(step string) bool { return step == "tester" })
+	withoutTester := slices.DeleteFunc(config.Project{}.RunsByDefault(), func(step plan.Step) bool { return step.Role == "tester" })
 	if place, n, role, typ, ok := stepIn(withoutTester, phase.Reviewing); !ok || n != 3 || place.Place != 3 || role != "reviewer" || typ != "review" {
 		t.Errorf("the reviewing step of %q = %+v, step %d, role %q, type %q, ok %v; want place 3 under the reviewer, of type review",
-			withoutTester, place, n, role, typ, ok)
+			stepWords(withoutTester), place, n, role, typ, ok)
 	}
 	if place, n, role, _, ok := stepIn(withoutTester, phase.Testing); ok {
-		t.Errorf("the testing step of %q = %+v, step %d, role %q; want none, since no step of that list is the tester's", withoutTester, place, n, role)
+		t.Errorf("the testing step of %q = %+v, step %d, role %q; want none, since no step of that list is the tester's", stepWords(withoutTester), place, n, role)
 	}
 	// A retro and a merge are no step of any list: the kind tells them apart, at place 0.
 	for at, kind := range map[phase.Phase]string{phase.Retro: "retro", phase.Merging: "merge"} {
 		if place, n, _, _, ok := stepIn(nil, at); !ok || place != (record.StepPlace{Task: "default", Kind: kind}) || n != 0 {
 			t.Errorf("the %s step of no list = %+v, step %d, ok %v; want kind %s at place 0", at, place, n, ok, kind)
 		}
-	}
-
-	changed := DefaultSteps()
-	changed[0] = "architect"
-	if again := DefaultSteps(); again[0] != "planner" {
-		t.Fatalf("DefaultSteps() after a caller changed its answer = %q, want a fresh copy starting with the planner", again)
 	}
 }
 
@@ -78,9 +71,10 @@ func planWrites(t *testing.T, pool *pgxpool.Pool, issue string) []record.PlanRec
 
 // The work of an issue starts at its move out of admitted, and that move writes the plan the run
 // carries out: one plan record of the issue, with the source default and one task, default, whose
-// steps are DefaultSteps. Its id is a version 5 uuid of the issue and its run, in the plan records'
-// own namespace, so a write sent again lands on the same plan and the next run gets a plan of its
-// own. No later move of the run writes another.
+// steps are the default steps of a project that names none (config.Project.RunsByDefault). Its id
+// is a version 5 uuid of the issue and its run, in the plan records' own namespace, so a write
+// sent again lands on the same plan and the next run gets a plan of its own. No later move of the
+// run writes another.
 func TestTheWorkStartsWithTheDefaultPlan(t *testing.T) {
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Admitted)

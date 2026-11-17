@@ -17,15 +17,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// DefaultSteps is the steps of the one task of an issue whose owner gave no plan, in order, each a
-// role or `role:key`: the one place they are stated. The plan each run writes when its work starts
-// names them (defaultPlan), and the place and the role of the step a phase runs are read from them
-// (stepOf). It answers a fresh copy each time, so no caller's change to its slice reaches another
-// caller: Go has no constant of a slice, and a package variable would be state each caller shares.
-func DefaultSteps() []string {
-	return []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}
-}
-
 // stepWork is the role whose step works phase p, as a step of a plan names it (the part before a
 // step's `:key`), and the type of that work; ok is false for a phase no step of a plan works.
 func stepWork(p phase.Phase) (role, typ string, ok bool) {
@@ -50,7 +41,7 @@ func stepWork(p phase.Phase) (role, typ string, ok bool) {
 // retro or a merge, whose role stepOfWalk names for every task). A working phase's step is the
 // first step of steps whose role works it, at one plus its index. A phase no step of steps works,
 // and a phase that runs no step — admitted, awaiting a person, held, done — answers ok false.
-func stepIn(steps []string, p phase.Phase) (place record.StepPlace, step int, role, typ string, ok bool) {
+func stepIn(steps []plan.Step, p phase.Phase) (place record.StepPlace, step int, role, typ string, ok bool) {
 	switch p {
 	case phase.Retro, phase.Merging:
 		act, _ := Walk{}.PlaceOf(p)
@@ -63,7 +54,7 @@ func stepIn(steps []string, p phase.Phase) (place record.StepPlace, step int, ro
 		return record.StepPlace{}, 0, "", "", false
 	}
 	for i, named := range steps {
-		if stepRole, _, _ := strings.Cut(named, ":"); stepRole == role {
+		if named.Role == role {
 			return record.StepPlace{Task: defaultTask, Kind: "step", Place: i + 1}, i + 1, role, typ, true
 		}
 	}

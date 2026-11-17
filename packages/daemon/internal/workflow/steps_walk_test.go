@@ -1,9 +1,16 @@
 package workflow
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	gotoken "go/token"
+	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -481,5 +488,102 @@ func TestThePlanNodeIsTheOwnersAndIsWrittenAgainAtEachVersionTaken(t *testing.T)
 		firstStep(t, pool, engine, root.Key)
 		assertPlanNodes(t, pool, root.Key, "at the start", record.PlanRecord{ID: PlanID(root.Key, 1), Generation: 1, Source: record.PlanSourceDefault,
 			Tasks: []record.PlanRecordTask{{ID: plan.DefaultTask, Steps: []string{"implementer", "reviewer"}}}})
+	})
+}
+
+// topLevelNames is the name of each top-level declaration of this package's own source, its
+// non-test files (a method is no top-level name), and how many files the scan parsed, so a scan
+// that read nothing cannot pass for one that found nothing.
+func topLevelNames(t *testing.T) (map[string]bool, int) {
+	t.Helper()
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("list the package's files: %v", err)
+	}
+	names, parsed := map[string]bool{}, 0
+	set := gotoken.NewFileSet()
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(set, name, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		parsed++
+		for _, decl := range file.Decls {
+			switch decl := decl.(type) {
+			case *ast.FuncDecl:
+				if decl.Recv == nil {
+					names[decl.Name.Name] = true
+				}
+			case *ast.GenDecl:
+				for _, spec := range decl.Specs {
+					switch spec := spec.(type) {
+					case *ast.TypeSpec:
+						names[spec.Name.Name] = true
+					case *ast.ValueSpec:
+						for _, n := range spec.Names {
+							names[n.Name] = true
+						}
+					}
+				}
+			}
+		}
+	}
+	return names, parsed
+}
+
+// The default steps are stated in one place, the project's setting (config.Project.RunsByDefault,
+// which the daemon wires as Config.DefaultSteps). With default_steps [implementer, reviewer], the
+// plan node an issue whose owner gave no plan writes at its first step holds exactly the one task
+// default of those two steps, and the package declares no DefaultSteps of its own: a scan of its
+// source finds none, and the same scan finds PlanID, so it read the package. An issue with no
+// plan rows runs today's steps at today's places whatever the project names (R20): under the
+// same setting its implementer is step 2 and its tester step 3 of the task default.
+func TestThereIsOneDefinitionOfTheDefaultSteps(t *testing.T) {
+	t.Run("the plan node holds the project's default_steps", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := engineRunningByDefault(t, "implementer", "reviewer")
+		root := stepRoot(t, pool, phase.Admitted)
+		firstStep(t, pool, engine, root.Key)
+		rows := issueOutboxOf(t, pool, root.Key, string(record.OutboxKindPlanRecord))
+		if len(rows) != 1 {
+			t.Fatalf("the first step queued %d plan nodes, want 1", len(rows))
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(rows[0].payload, &fields); err != nil {
+			t.Fatalf("decode the plan node: %v", err)
+		}
+		var tasks bytes.Buffer
+		if err := json.Compact(&tasks, fields["tasks"]); err != nil {
+			t.Fatalf("compact the plan node's tasks %q: %v", fields["tasks"], err)
+		}
+		if want := `[{"id":"default","steps":["implementer","reviewer"]}]`; tasks.String() != want {
+			t.Fatalf("the plan node's tasks = %s, want %s", tasks.String(), want)
+		}
+	})
+
+	t.Run("the package declares no DefaultSteps", func(t *testing.T) {
+		names, parsed := topLevelNames(t)
+		if parsed == 0 || !names["PlanID"] {
+			t.Fatalf("the scan parsed %d files and found no PlanID, so it did not read the package", parsed)
+		}
+		if names["DefaultSteps"] {
+			t.Fatalf("the package declares DefaultSteps: the default steps are the project's setting (config.Project.RunsByDefault), stated once")
+		}
+	})
+
+	t.Run("an issue with no plan rows keeps today's places under the project's default_steps", func(t *testing.T) {
+		pool := migratedPool(t)
+		stepRoot(t, pool, phase.Implementing)
+		move(t, pool, engineRunningByDefault(t, "implementer", "reviewer"), "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
+		assertStepWrites(t, pool, "LEGION-208", 1, []walkedWrite{
+			{task: defaultTask, kind: record.PlaceStep, step: 2, role: "implementer", typ: "implementation", result: "passed", attempt: 0},
+			{start: true, task: defaultTask, kind: record.PlaceStep, step: 3, role: "tester", typ: "testing", attempt: 1},
+		})
+		if got, want := stepStartCounts(t, pool, "LEGION-208"), []string{"default/step/2=0", "default/step/3=1"}; !slices.Equal(got, want) {
+			t.Fatalf("the starts of LEGION-208 = %v, want %v", got, want)
+		}
 	})
 }
