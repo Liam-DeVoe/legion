@@ -120,11 +120,12 @@ export const REFRESHED_BY_EVENTS = {
  *  reads a refused one again on a focus, and only while the live feed is down
  *  (`subscribeTreeFreshness`); while it is up, its events say what changed, and a refused read is
  *  not asked again on every focus. Nor does a new observer of a refused read (`retryOnMount`) - a
- *  filter pressed, a slot drawn again - nor the browser saying the network is back
+ *  slot drawn again, a filter pressed - but for a view that a refresh asked for again since its
+ *  last read began (`viewQuery`); nor the browser saying the network is back
  *  (`refetchOnReconnect`), which it may say while the feed never went: a feed that went comes
  *  back with a refresh of every query. So after its own retries a refused read is read again only
  *  on the reader's Retry, an event of the issue, the feed coming back, or a focus while the feed
- *  is down. */
+ *  is down, and a refused view whose filter is off then is read when its filter is next on. */
 const TREE_FRESH = {
   ...REFRESHED_BY_EVENTS,
   refetchOnReconnect: false,
@@ -140,13 +141,25 @@ export const issueTreeQuery = (key: string) =>
     queryFn: ({ signal }) => readTree(key, undefined, signal),
   });
 
+/** The view queries a refresh of the subscription asked for again while they held no answer
+ *  (`watchTree`), each until its next read begins. TanStack keeps no such record: a refused read
+ *  is marked stale by its refusal already, and marking it stale again records nothing new. Held
+ *  as plain objects, since each view's query is typed by its own key and answer. */
+const askedAgain = new WeakSet<object>();
+
 /** One view of the issue's tree, one query over every page (`readTree`). A plain query rather
- *  than one per page, so an observer that is never enabled can watch a view a slot read. */
+ *  than one per page, so an observer that is never enabled can watch a view a slot read. A filter
+ *  turned on (`ViewReadProvider`) reads its view where the view was never read, where a write or
+ *  an event marked its answer stale, and, where its read was refused, only where a refresh asked
+ *  for it again since that read began (`askedAgain`): a write or an event of the issue, the live
+ *  feed coming back, a focus while the feed is down. A filter turned off and on again is none of
+ *  those, so it reads a refused view no more. */
 export const viewQuery = (key: string, filter: TreeFilter) =>
   queryOptions({
     ...TREE_FRESH,
     queryKey: viewKey(key, filter),
     queryFn: ({ signal }) => readTree(key, filter, signal),
+    retryOnMount: (query) => askedAgain.has(query),
   });
 
 /** One role's blocks from the tree read, answered as the blocks read of that role's document
@@ -454,9 +467,20 @@ function watchTree(
       ? !sameActs(held, query.state.data)
       : held !== query.state.data;
   };
+  // Records each view of `targets` that holds no answer as asked for again (`askedAgain`), before
+  // the scheduler is asked. The read that answers the ask clears the record as it begins: the
+  // scheduler's own where the filter is on, and where it is off, the one its filter sends when it
+  // is next on, since the scheduler only marks stale a view nothing reads.
+  const markAskedAgain = (targets: readonly RefreshTarget[]): void => {
+    for (const target of targets) {
+      const query = views.includes(target) ? cache.find(target) : undefined;
+      if (query !== undefined && query.state.data === undefined) askedAgain.add(query);
+    }
+  };
   // Asks the scheduler for `targets`. What the call raises is the subscription's own (`calling`):
   // a read the scheduler begins in it, and the stale mark it puts on one it holds back.
   const ask = (targets: readonly RefreshTarget[]): void => {
+    markAskedAgain(targets);
     calling = true;
     try {
       refreshQueries(queryClient, targets);
@@ -552,6 +576,8 @@ function watchTree(
     const { action } = event;
     if (matchQuery({ queryKey: issueTreeKey(key) }, query)) {
       if (action.type !== "fetch") return;
+      // A read begins, which answers whatever asked for the view again.
+      askedAgain.delete(query);
       const now = turnNow();
       beganIn.set(hash, now);
       if (!matchQuery(tree, query)) return;
@@ -615,7 +641,10 @@ function watchTree(
       const query = cache.find(target);
       return query?.state.status === "error" && query.state.fetchStatus === "idle";
     });
-    if (refused.length > 0) refreshQueries(queryClient, refused);
+    if (refused.length > 0) {
+      markAskedAgain(refused);
+      refreshQueries(queryClient, refused);
+    }
   });
   const watcher: TreeFreshness = {
     holders: 0,

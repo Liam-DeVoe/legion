@@ -1608,6 +1608,161 @@ test("a write marks the held views stale, keeps what they draw, and reads the op
   }
 });
 
+/** Every read of the tree answered, and every read of the Spec view refused, as by a Dispatch
+ *  that cannot serve that view. The cases' client retries nothing, so a refusal is final. */
+function refuseSpecView(): void {
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) => {
+    if (query?.view === "spec") throw new Error("the spec view read was refused");
+    return treeAnswer([]);
+  });
+}
+
+/** The reader pressing the Spec filter off and on again, on a stage `turnedStage` drew, and the
+ *  page left a moment to send whatever it sends for it. */
+async function pressSpecOffAndOn(
+  view: { readonly rerender: () => void },
+  on: { preset: "conversation" | "plan" | "spec" }
+): Promise<void> {
+  on.preset = "conversation";
+  view.rerender();
+  on.preset = "spec";
+  view.rerender();
+  await act(async () => {
+    await Bun.sleep(300);
+  });
+}
+
+// A view read refused, its retries spent, stays refused until something asks for it again: the
+// reader's Retry, an event of the issue, the live feed coming back, a focus while the feed is
+// down. The reader pressing its filter off and on again is none of those, so the page sends no
+// view read for it.
+test("a refused view read sends no read when its filter is pressed off and on", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  refuseSpecView();
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const on: { preset: "conversation" | "plan" | "spec" } = { preset: "spec" };
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper: turnedStage(client, on) });
+    await waitFor(() => expect(client.getQueryState(viewKey(KEY, "spec"))?.status).toBe("error"));
+    expect(treeReadsOf("spec")).toBe(1);
+
+    await pressSpecOffAndOn(view, on);
+    expect(treeReadsOf("spec"), "no view read for the press").toBe(1);
+    expect(client.getQueryState(viewKey(KEY, "spec"))?.status).toBe("error");
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// An event of the issue lands while the filter of a refused view is off. Its refresh asks for
+// the view again, which nothing reads while the filter is off, so the view is read when its
+// filter is next on - once: refused again, it is read no more for a press of its filter.
+test("a refused view whose filter is off at an event of the issue is read once when its filter is next on", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  refuseSpecView();
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const on: { preset: "conversation" | "plan" | "spec" } = { preset: "spec" };
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper: turnedStage(client, on) });
+    await waitFor(() => expect(client.getQueryState(viewKey(KEY, "spec"))?.status).toBe("error"));
+    on.preset = "conversation";
+    view.rerender();
+    await act(async () => {
+      await Bun.sleep(1_100);
+    });
+    const tree = treeReadsOf();
+
+    act(() => {
+      refreshQueries(client, [{ queryKey: ["comments", KEY] }]);
+    });
+    await act(async () => {
+      await Bun.sleep(2_500);
+    });
+    expect(treeReadsOf(), "the event reads the tree").toBeGreaterThan(tree);
+    expect(treeReadsOf("spec"), "no view read while its filter is off").toBe(1);
+
+    on.preset = "spec";
+    view.rerender();
+    await waitFor(() => expect(treeReadsOf("spec"), "the filter on reads the view").toBe(2));
+    await waitFor(() => expect(client.getQueryState(viewKey(KEY, "spec"))?.status).toBe("error"));
+    await pressSpecOffAndOn(view, on);
+    expect(treeReadsOf("spec"), "the refused view is read once for the event").toBe(2);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// The open filter's view read is refused, and an event of the issue asks for it again: the view
+// is read again while its filter stays on. Refused again, it stays refused until the next ask,
+// so the reader pressing the filter off and on sends no read for it.
+test("an open refused view is read again by an event of the issue, and no more by a press of its filter", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  refuseSpecView();
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const on: { preset: "conversation" | "plan" | "spec" } = { preset: "spec" };
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper: turnedStage(client, on) });
+    await waitFor(() => expect(client.getQueryState(viewKey(KEY, "spec"))?.status).toBe("error"));
+    expect(treeReadsOf("spec")).toBe(1);
+
+    act(() => {
+      refreshQueries(client, [{ queryKey: ["comments", KEY] }]);
+    });
+    await waitFor(() => expect(treeReadsOf("spec"), "the event reads the open view").toBe(2), {
+      timeout: 3_000,
+    });
+    await act(async () => {
+      await Bun.sleep(2_500);
+    });
+    expect(client.getQueryState(viewKey(KEY, "spec"))?.status).toBe("error");
+    const read = treeReadsOf("spec");
+
+    await pressSpecOffAndOn(view, on);
+    expect(treeReadsOf("spec"), "no view read for the press").toBe(read);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// A window focus while the live feed is down asks for a refused view again. Its filter is off,
+// so nothing reads it then, and it is read when its filter is next on - once, as for an event.
+test("a refused view whose filter is off at a focus with the live feed down is read once when its filter is next on", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  refuseSpecView();
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const on: { preset: "conversation" | "plan" | "spec" } = { preset: "spec" };
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper: turnedStage(client, on) });
+    await waitFor(() => expect(client.getQueryState(viewKey(KEY, "spec"))?.status).toBe("error"));
+    on.preset = "conversation";
+    view.rerender();
+
+    await act(async () => {
+      focusWindow();
+      await Bun.sleep(300);
+    });
+    expect(treeReadsOf("spec"), "no view read while its filter is off").toBe(1);
+
+    on.preset = "spec";
+    view.rerender();
+    await waitFor(() => expect(treeReadsOf("spec"), "the filter on reads the view").toBe(2));
+    await waitFor(() => expect(client.getQueryState(viewKey(KEY, "spec"))?.status).toBe("error"));
+    await pressSpecOffAndOn(view, on);
+    expect(treeReadsOf("spec"), "the refused view is read once for the focus").toBe(2);
+    view.unmount();
+  } finally {
+    focusManager.setFocused(undefined);
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
 // A Keep writes the decisions read's new answer into the cache, and a status change the issue
 // read's, with no invalidation; each reads the tree again all the same, so it is drawn while the
 // live feed is down.
