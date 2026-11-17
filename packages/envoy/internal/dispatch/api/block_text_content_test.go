@@ -3,6 +3,8 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -13,9 +15,11 @@ import (
 // list item or a footnote definition, has the closing fence's indentation taken out of its lines.
 // A block of a comment, a message or an ask, stored from the start of its line, has its opening
 // line's indentation, up to three spaces, taken off it and up to as many columns off each later
-// line, and its content reads as the item's own parse reads what the block holds. A text that does
-// not read back as one typed block is answered as it stands. The documents' texts are slices of a
-// rendering, as the block index stores them; the items' texts are as a comment writes them.
+// line, and its content reads as the item's own parse reads what the block holds. Where that
+// parse keeps a tab as text, the content can hold spaces in its place (columnsOff), so there the
+// two readings are compared with each run of spaces and tabs in a text as one space. A text that
+// does not read back as one typed block is answered as it stands. The documents' texts are slices
+// of a rendering, as the block index stores them; the items' texts are as a comment writes them.
 func TestBlockTextContentReadsEveryShape(t *testing.T) {
 	const document, item = true, false
 	for _, row := range []struct {
@@ -108,15 +112,9 @@ func TestBlockTextContentReadsEveryShape(t *testing.T) {
 		// from the callout's two spaces on, without the paragraph. An ask's part is the ask's
 		// question, an option or its answer whole, as written (refs.AskParts), so a question that
 		// is such a callout is a part of that same text.
-		{"an item's block whose opening line stands two spaces in: a comment's second block, after a paragraph", item,
+		{"an item's block whose opening line stands two spaces in, after a paragraph", item,
 			"  :::callout{}\n  Text.\n  :::",
 			"Text.\n"},
-		{"an item's block whose opening line stands two spaces in: a message's block", item,
-			"  :::callout{}\n  A message's text.\n  :::",
-			"A message's text.\n"},
-		{"an item's block whose opening line stands two spaces in: an ask's question", item,
-			"  :::callout{}\n  An ask's question.\n  :::",
-			"An ask's question.\n"},
 		{"an item's block whose opening line stands three spaces in, over a line at column 0", item,
 			"   :::callout{}\nAt column 0.\n   :::",
 			"At column 0.\n"},
@@ -141,6 +139,26 @@ func TestBlockTextContentReadsEveryShape(t *testing.T) {
 		{"an item's block whose opening line stands one space in, over a code line a space and two tabs in", item,
 			" :::callout{}\n \t\tCode across a tab.\n :::",
 			"       Code across a tab.\n"},
+		{"an item's block whose opening line stands two spaces in, over a list item whose marker a tab follows and a second paragraph of that item", item,
+			"  :::callout{}\n  -\tItem.\n\n    Second para.\n  :::",
+			"- Item.\n\n  Second para.\n"},
+		{"an item's block whose opening line stands one space in, over a list item whose marker a tab follows and a rule a space and a tab in", item,
+			" :::callout{}\n -\titem\n \t***\n   :::",
+			"-  item\n   ***\n"},
+		{"an item's block whose opening line stands two spaces in, over a list item whose marker two tabs follow", item,
+			"  :::callout{}\n  -\t\tCodeInItem.\n  :::",
+			"-     CodeInItem.\n"},
+		{"an item's block whose opening line stands two spaces in, over a quote whose `>` two tabs follow", item,
+			"  :::callout{}\n  >\t\tCodeInItem.\n  :::",
+			">     CodeInItem.\n"},
+		{"an item's block whose opening line stands two spaces in, over a code line six spaces in, a line of spaces and another code line", item,
+			"  :::callout{}\n      a\n        \n      b\n  :::",
+			"    a\n      \n    b\n"},
+		// The item keeps the tab in its code's text, and the cut writes it as spaces: the limit
+		// columnsOff names, so the two readings are compared with their whitespace collapsed.
+		{"an item's block whose opening line stands two spaces in, over a fenced code line a tab past the fence", item,
+			"  :::callout{}\n  ```\n  \tcode\n  ```\n  :::",
+			"```\n  code\n```\n"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			content := blockTextContent(row.whole, row.document)
@@ -152,6 +170,9 @@ func TestBlockTextContentReadsEveryShape(t *testing.T) {
 			}
 			got := sameShape(t, treeContent(t, pmdoc.DisplayJSON(content, pmdoc.DisplayLatest)))
 			want := sameShape(t, heldByItsOneBlock(t, row.whole))
+			if holdsATab(t, want) {
+				got, want = whitespaceCollapsed(t, got), whitespaceCollapsed(t, want)
+			}
 			if !bytes.Equal(got, want) {
 				t.Errorf("the content %q reads as\n\t%s\nwant what the item's own parse reads in the block\n\t%s", content, got, want)
 			}
@@ -181,4 +202,58 @@ func heldByItsOneBlock(t *testing.T, whole string) json.RawMessage {
 		t.Fatalf("%q reads as %s, want one block (%v)", whole, tree, err)
 	}
 	return treeContent(t, blocks[0])
+}
+
+// displayTexts decodes tree, the content of a node as the display read encodes it, calls visit
+// with each text node in it and whether a code block holds that node, and answers the decoded
+// tree with whatever visit changed in it.
+func displayTexts(t *testing.T, tree json.RawMessage, visit func(node map[string]any, inCode bool)) any {
+	t.Helper()
+	var value any
+	if err := json.Unmarshal(tree, &value); err != nil {
+		t.Fatalf("decode the tree %s: %v", tree, err)
+	}
+	var walk func(value any, inCode bool)
+	walk = func(value any, inCode bool) {
+		switch node := value.(type) {
+		case []any:
+			for _, child := range node {
+				walk(child, inCode)
+			}
+		case map[string]any:
+			if _, text := node["text"].(string); text {
+				visit(node, inCode)
+			}
+			walk(node["content"], inCode || node["type"] == "code_block")
+		}
+	}
+	walk(value, false)
+	return value
+}
+
+// holdsATab reports whether a text node of tree holds a tab.
+func holdsATab(t *testing.T, tree json.RawMessage) bool {
+	t.Helper()
+	holds := false
+	displayTexts(t, tree, func(node map[string]any, _ bool) {
+		holds = holds || strings.Contains(node["text"].(string), "\t")
+	})
+	return holds
+}
+
+// whitespaceRuns is a run of spaces and tabs.
+var whitespaceRuns = regexp.MustCompile(`[ \t]+`)
+
+// whitespaceCollapsed is tree with each run of spaces and tabs in its text nodes written as one
+// space, its keys in the order sameShape leaves them.
+func whitespaceCollapsed(t *testing.T, tree json.RawMessage) json.RawMessage {
+	t.Helper()
+	value := displayTexts(t, tree, func(node map[string]any, _ bool) {
+		node["text"] = whitespaceRuns.ReplaceAllString(node["text"].(string), " ")
+	})
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("encode the tree: %v", err)
+	}
+	return encoded
 }

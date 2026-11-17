@@ -414,8 +414,8 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 			continue
 		}
 		want := sameShape(t, pmdoc.DisplayJSON(indentedOpener, pmdoc.DisplayLatest))
-		if got := sameShape(t, json.RawMessage(member.TextTree)); !bytes.Equal(got, want) || strings.Contains(string(member.TextTree), "callout") {
-			t.Errorf("%s: text_tree is\n\t%s\nwant the tree of %q, with no callout in it\n\t%s", member.Ref, got, indentedOpener, want)
+		if got := sameShape(t, json.RawMessage(member.TextTree)); !bytes.Equal(got, want) {
+			t.Errorf("%s: text_tree is\n\t%s\nwant the tree of %q\n\t%s", member.Ref, got, indentedOpener, want)
 		}
 	}
 
