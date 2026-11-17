@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -40,13 +41,14 @@ import (
 //
 // The window a run has belongs to the record: going_requests.ends_at, written by the POST. A pod
 // that dies mid-run stores no terminal frame, so a reader on another pod ends the stream itself
-// once the run is past that moment with nothing terminal stored (readGoingStream), and
+// once the run is past that moment with nothing terminal stored (readGoingStream),
 // sweepGoingRequests ends the runs nobody reads, each in the day after its deadline
-// (goingSweepWindow). At the deadline the running answer, a reader and the sweep may each try to
-// end one run, so which of them ends it is settled by the table (the going_events_terminal index
-// of migration 20261105152945) and never by whichever is first: every terminal write is an insert
-// that does nothing on a conflict, and the writer that loses reads the stored terminal frame and
-// reports that one (endGoingRun).
+// (goingSweepWindow), and the boot pass, once at each boot of a process, every older one
+// (EndGoingRunsOverdueAtBoot). At the deadline the running answer, a reader and a pass may each
+// try to end one run, so which of them ends it is settled by the table (the going_events_terminal
+// index of migration 20261105152945) and never by whichever is first: every terminal write is an
+// insert that does nothing on a conflict, and the writer that loses reads the stored terminal
+// frame and reports that one (endGoingRun).
 
 // goingRequestColumns is the going_requests select list scanGoingRequest reads, in scan order.
 const goingRequestColumns = `id::text, author, project, words, created_at, ends_at`
@@ -460,17 +462,18 @@ func scanGoingEvent(row pgx.Row) (goingEvent, error) {
 // however many runs are kept. A day is far longer than the sweep needs to reach a run: a run past
 // its ends_at is inside the window for some 1,440 passes, any one of which ends it. A run that
 // leaves the window with no ending is one no pass ended in that day, every process of the
-// deployment down for as long, and what ends it then is its reader: the stream ends a run past its
-// ends_at with no terminal frame stored when it reads it (streamGoingAnswer, on readGoingStream's
-// PastDeadline), and a run nobody reads keeps nobody waiting on its ending.
+// deployment down for as long, and what ends it then is the boot pass, at the next boot of any
+// process (EndGoingRunsOverdueAtBoot), or its reader, if one reads it first: the stream ends a
+// run past its ends_at with no terminal frame stored when it reads it (streamGoingAnswer, on
+// readGoingStream's PastDeadline).
 const goingSweepWindow = 24 * time.Hour
 
 // goingOverdueRuns is the sweep's read of the runs it ends, $1 the terminal frame names and $2
 // goingSweepWindow in seconds: every run whose ends_at passed within that window of now with no
 // terminal frame stored, oldest deadline first. Both bounds key going_requests_ends_at, so the
-// read is that index's range for the last day and not a scan of every run kept. It is named
-// rather than written inline so that its plan is held to that index
-// (TestTheGoingSweepReadsItsWindowThroughTheEndsAtIndex).
+// read is that index's range for the last day and not a scan of every run kept; an older run is
+// the boot pass's (goingEveryOverdueRun). It is named rather than written inline so that its plan
+// is held to that index (TestTheGoingSweepReadsItsWindowThroughTheEndsAtIndex).
 const goingOverdueRuns = `
 	select r.id::text
 	from going_requests r
@@ -479,37 +482,89 @@ const goingOverdueRuns = `
 	  and not exists (select 1 from going_events e where e.request_id = r.id and e.name = any($1::text[]))
 	order by r.ends_at, r.id`
 
+// goingEveryOverdueRun is the boot pass's read of the runs it ends (EndGoingRunsOverdueAtBoot),
+// $1 the terminal frame names: every run whose ends_at has passed with no terminal frame stored,
+// at any age, oldest deadline first. It is goingOverdueRuns without the window's lower bound, so
+// it reads going_requests_ends_at from its first entry up to now, every run kept whose deadline
+// has passed, which is why it runs once at a boot and never once a pass. It is named rather than
+// written inline so that its plan is held to that index
+// (TestTheBootPassReadsTheOverdueRunsThroughTheEndsAtIndex).
+const goingEveryOverdueRun = `
+	select r.id::text
+	from going_requests r
+	where r.ends_at <= now()
+	  and not exists (select 1 from going_events e where e.request_id = r.id and e.name = any($1::text[]))
+	order by r.ends_at, r.id`
+
 // sweepGoingRequests ends every run whose ends_at passed within goingSweepWindow of now with no
-// terminal frame stored, with the deadline's error (contracts.GoingErrorAnswerDidNotArrive).
-// Ending those runs is what nothing else does: the pod that was answering one may have died, and
-// nobody may be reading it. An older run is left to its reader, as goingSweepWindow says.
+// terminal frame stored, with the deadline's error (contracts.GoingErrorAnswerDidNotArrive), once
+// a maintenance pass (RunMaintenanceSweep). Ending those runs is what nothing else does: the pod
+// that was answering one may have died, and nobody may be reading it. An older run is the boot
+// pass's, or its reader's, as goingSweepWindow says.
 // It deletes no run: a run is kept, row, frames and node, until an erase removes it
 // (dispatch://INFRA-1950/spec#b-r-interaction), where the release before deleted every run past
 // contracts.GoingRequestTTL. That value is read nowhere in this build.
-//
-// Each overdue run is ended by endGoingRun, the path every other terminal write takes, so the
-// sweep holds no second copy of how a frame is written: the ids are read first, oldest deadline
-// first, then each run is ended in a transaction of its own. A run a reader or the answer itself
-// ended between the read and the write keeps that frame, which endGoingRun answers. A run deleted
-// between the read and the write - by an erase, or during a roll by a process of the release
-// before, which still deletes a run an hour old - stores nothing (errGoingRunGone) and is passed
-// over, and any other failure of one run's ending is kept and answered once the pass is done, so
-// one run neither fails the pass nor costs the runs read after it their ending.
 func sweepGoingRequests(ctx context.Context, pool *store.Pool) error {
-	rows, err := pool.Query(ctx, goingOverdueRuns, goingTerminalNames, goingSweepWindow.Seconds())
+	_, err := endOverdueGoingRuns(ctx, pool, goingOverdueRuns, goingTerminalNames, goingSweepWindow.Seconds())
+	return err
+}
+
+// EndGoingRunsOverdueAtBoot is the boot pass: once at each boot of a process, before the first
+// tick of RunMaintenanceSweep (cmd/dispatch runs the two in that order on one goroutine), it ends
+// every run past its ends_at with no terminal frame stored, at any age (goingEveryOverdueRun),
+// with the deadline's error, through the loop the sweep ends its runs through. The sweep reads the
+// last day alone (goingSweepWindow), so a run whose window passed while every process of the
+// deployment was down for longer is ended here, at the next boot, whether or not anybody reads
+// it (D16 of dispatch://INFRA-1950). It takes no lease: every process that boots runs it once,
+// and endGoingRun does nothing to a run that already holds a terminal frame, so two processes
+// booting together still end each run once. It logs one line, how many runs it ended and how long
+// it took; a failure is that line at warn, with the error, and stops nothing else: the sweep's
+// ticks still run, and a run the pass could not end is left to its reader.
+func EndGoingRunsOverdueAtBoot(ctx context.Context, pool *store.Pool) {
+	started := time.Now()
+	ended, err := endOverdueGoingRuns(ctx, pool, goingEveryOverdueRun, goingTerminalNames)
 	if err != nil {
-		return err
+		slog.Warn("dispatch: the boot pass over the overdue answer runs failed",
+			"ended", ended, "duration", time.Since(started), "error", err)
+		return
 	}
-	overdue, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	slog.Info("dispatch: the boot pass ended the overdue answer runs", "ended", ended, "duration", time.Since(started))
+}
+
+// endOverdueGoingRuns ends every run the read overdue answers, run with args, with the
+// deadline's error (contracts.GoingErrorAnswerDidNotArrive), and answers how many of them it
+// ended: the one loop of the sweep (sweepGoingRequests) and the boot pass
+// (EndGoingRunsOverdueAtBoot), which differ only in what they read.
+//
+// Each overdue run is ended by endGoingRun, the path every other terminal write takes, so neither
+// pass holds a second copy of how a frame is written: the ids are read first, oldest deadline
+// first, then each run is ended in a transaction of its own. A run a reader, the answer itself or
+// another pass ended between the read and the write keeps that frame, which endGoingRun answers,
+// and is counted ended. A run deleted between the read and the write - by an erase, or during a
+// roll by a process of the release before, which still deletes a run an hour old - stores nothing
+// (errGoingRunGone) and is passed over, and any other failure of one run's ending is kept and
+// answered once the pass is done, so one run neither fails the pass nor costs the runs read after
+// it their ending.
+func endOverdueGoingRuns(ctx context.Context, pool *store.Pool, overdue string, args ...any) (int, error) {
+	rows, err := pool.Query(ctx, overdue, args...)
 	if err != nil {
-		return err
+		return 0, err
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return 0, err
 	}
 	deadline := going.Fault(contracts.GoingErrorAnswerDidNotArrive)
+	ended := 0
 	var failed []error
-	for _, id := range overdue {
-		if _, err := endGoingRun(ctx, pool, id, deadline); err != nil && !errors.Is(err, errGoingRunGone) {
+	for _, id := range ids {
+		_, err := endGoingRun(ctx, pool, id, deadline)
+		switch {
+		case err == nil:
+			ended++
+		case !errors.Is(err, errGoingRunGone):
 			failed = append(failed, err)
 		}
 	}
-	return errors.Join(failed...)
+	return ended, errors.Join(failed...)
 }
