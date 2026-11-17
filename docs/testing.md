@@ -37,7 +37,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   A `go build` that produces no binary, such as a compile check of a generated module, is not a build of this kind, and neither is one that takes no `testing.TB`: `infra/internal/pulumitest/pulumitest.go` builds the test binary's own plugin once per binary, under a `sync.Once` and removed by its `Main`, and returns an error rather than failing a test.
   Both still run go through `testgo.Output`.
 
-- A Bun test or test helper that starts go takes `goOutput` or `goOutputSync` from `@legion/test-fixtures`, which do for Bun what `testgo.Output` does for Go: go's standard error reaches the test's output as go writes it, and a failure names the command and carries both streams.
+- A Bun test or test helper that starts go takes `goOutput` or `goOutputSync` from `@legion/test-fixtures/go-command`, which do for Bun what `testgo.Output` does for Go: go's standard error reaches the test's output as go writes it, and a failure names the command and carries both streams.
   `goOutput` returns a promise and runs under Node as well as Bun, because Playwright's runner loads the Dispatch e2e harness under Node; `goOutputSync` is for a caller that cannot wait on a promise, takes go's standard input, and needs Bun.
 
 
