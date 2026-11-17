@@ -4288,7 +4288,8 @@ jobs:
             # embedded files and testdata, every module and workspace file, the target lists the go
             # commands expand over), every workflow file, and the check's own script, engine, data,
             # rules and path model. The job's second check, check-legion-version-inputs.sh, reads
-            # release.yaml, cmd/legion's closure, its module files and the target list, all of
+            # release.yaml and release-envoy-listener.yaml, the closures of cmd/legion and of the
+            # legion-envoy archives' programs, their module files and the two target lists, all of
             # which the patterns below already match, and its own script.
             ci_filters:
               # The directory rather than the four workflows the check names one by one (this

@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Tests for `check-legion-version-inputs.sh`: release.yaml's LEGION_GO_INPUTS block is what
-# `go list -deps ./cmd/legion` names beyond $LEGION_VERSION_ARGS's paths, and the version step
-# passes it.
+# `go list -deps ./cmd/legion` names beyond $LEGION_VERSION_ARGS's paths, the version step passes
+# it, and release-envoy-listener.yaml's $LEGION_ENVOY_VERSION_ARGS covers what go names for the
+# archives that workflow builds.
 #
 # Each case builds a miniature repository under a temporary directory - a go.work over a daemon
-# module whose cmd/legion imports packages of an envoy module, one of them on darwin alone, a
-# release.yaml and a target list - and symlinks the real script into it, so the script under test
-# is the file CI runs. No module of a fixture requires anything outside it, so its go commands
-# load every package with nothing downloaded.
+# module whose cmd/legion imports packages of an envoy module, one of them on darwin alone, an
+# envoy module with the three programs the listener release builds, the two workflows and the
+# two target lists - and symlinks the real script into it, so the script under test is the file
+# CI runs. No module of a fixture requires anything outside it, so its go commands load every
+# package with nothing downloaded.
 #
 # Run from anywhere: .github/scripts/check-legion-version-inputs.test.sh
 # CI runs it in ci.yaml's test job, after its setup-go.
@@ -25,6 +27,10 @@ source "$script_dir/test-lib.sh"
 # The hand-written arguments and the version step every fixture starts from.
 hand_args='    -- packages/daemon/ .github/go-release-targets.json'
 handoff='.github/scripts/release-push.sh version legion-v $LEGION_VERSION_ARGS $LEGION_GO_INPUTS'
+# The listener's, as release-envoy-listener.yaml writes them: the envoy module but its excluded
+# infra directory, and the workspace's module files.
+envoy_args='    -- :(exclude)packages/envoy/infra packages/envoy/ .github/go-release-targets.json'
+envoy_modules='    go.work go.work.sum packages/daemon/go.mod packages/daemon/go.sum'
 
 # fixture <name>: a tree whose block is still empty, so `write` fills it. Echoes its root.
 fixture() {
@@ -34,8 +40,10 @@ fixture() {
     return 1
   fi
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/packages/daemon/cmd/legion" \
-    "$root/packages/envoy/alpha" "$root/packages/envoy/beta" "$root/packages/envoy/gamma" \
-    "$root/packages/envoy/internal/delta"
+    "$root/packages/daemon/lib" "$root/packages/envoy/alpha" "$root/packages/envoy/beta" \
+    "$root/packages/envoy/gamma" "$root/packages/envoy/internal/delta" "$root/packages/envoy/infra/x" \
+    "$root/packages/envoy/cmd/listener" "$root/packages/envoy/cmd/agent-secrets" \
+    "$root/packages/envoy/cmd/agent-secrets-helper"
   ln -s "$check_script" "$root/.github/scripts/check-legion-version-inputs.sh"
   printf 'go 1.22\n\nuse (\n\t./packages/daemon\n\t./packages/envoy\n)\n' > "$root/go.work"
   : > "$root/go.work.sum"
@@ -45,11 +53,30 @@ fixture() {
   printf 'package beta\n' > "$root/packages/envoy/beta/beta.go"
   printf 'package gamma\n' > "$root/packages/envoy/gamma/gamma.go"
   printf 'package delta\n' > "$root/packages/envoy/internal/delta/delta.go"
+  printf 'package x\n' > "$root/packages/envoy/infra/x/x.go"
+  printf 'package main\n\nimport _ "example.com/envoy/alpha"\n\nfunc main() {}\n' > "$root/packages/envoy/cmd/listener/main.go"
+  printf 'package main\n\nfunc main() {}\n' > "$root/packages/envoy/cmd/agent-secrets/main.go"
+  printf 'package main\n\nfunc main() {}\n' > "$root/packages/envoy/cmd/agent-secrets-helper/main.go"
   printf 'module example.com/daemon\n\ngo 1.22\n\nrequire example.com/envoy v0.0.0\n\nreplace example.com/envoy => ../envoy\n' \
     > "$root/packages/daemon/go.mod"
+  : > "$root/packages/daemon/go.sum"
+  printf 'package lib\n' > "$root/packages/daemon/lib/lib.go"
   printf 'package main\n\nimport _ "example.com/envoy/alpha"\n\nfunc main() {}\n' > "$root/packages/daemon/cmd/legion/main.go"
   printf '//go:build darwin\n\npackage main\n\nimport _ "example.com/envoy/beta"\n' > "$root/packages/daemon/cmd/legion/darwin.go"
-  printf '{"legion": ["linux/amd64", "darwin/arm64"]}\n' > "$root/.github/go-release-targets.json"
+  printf '{"legion": ["linux/amd64", "darwin/arm64"], "envoy": ["amd64"]}\n' > "$root/.github/go-release-targets.json"
+  printf '{"agent-secrets-client": ["darwin/arm64"]}\n' > "$root/.github/agent-secrets-client-targets.json"
+  cat > "$root/.github/workflows/release-envoy-listener.yaml" <<EOF
+name: Release Envoy Listener
+on:
+  push:
+    branches: [main]
+env:
+  LEGION_ENVOY_VERSION_ARGS: >-
+    --patch-path .github/go-release-targets.json
+$envoy_args
+$envoy_modules
+jobs: {}
+EOF
   cat > "$root/.github/workflows/release.yaml" <<EOF
 name: Release Packages
 on:
@@ -120,6 +147,8 @@ run_check "$root"
 check "check exits 0" "$(is "$status" 0)"
 check "says what it compared" \
   "$(contains "$out" '3 package directories and 4 module files, over linux/amd64, darwin/arm64')"
+check "says what the listener's paths cover" \
+  "$(contains "$out" "release-envoy-listener.yaml's LEGION_ENVOY_VERSION_ARGS covers what go decides the archives from: 5 package directories and 6 module files, over 4 listings")"
 run_check "$root" write
 check "a second write exits 0" "$(is "$status" 0)"
 check "and changes nothing" "$(contains "$out" 'already holds what go names: 7 paths')"
@@ -154,7 +183,7 @@ check "the written block passes" "$(is "$status" 0)"
 
 echo "case: a package one target alone links is named for that target"
 root=$(written targets)
-printf '{"legion": ["linux/amd64"]}\n' > "$root/.github/go-release-targets.json"
+printf '{"legion": ["linux/amd64"], "envoy": ["amd64"]}\n' > "$root/.github/go-release-targets.json"
 run_check "$root"
 check "exits 1 when no target is darwin" "$(is "$status" 1)"
 check "names the darwin-only package" "$(contains "$out" 'it names packages/envoy/beta/, which go does not')"
@@ -182,16 +211,22 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the step and the command" "$(contains "$out" "legion_build's step \`version\` must run \`$handoff\`")"
 
-echo "case: a pathspec with magic among LEGION_VERSION_ARGS's paths"
+echo "case: an exclude among LEGION_VERSION_ARGS's paths drops a path go names"
 root=$(written magic)
 replace "$root/.github/workflows/release.yaml" "$hand_args" "$hand_args :(exclude)packages/envoy/alpha"
 before=$(release "$root")
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "names it" "$(contains "$out" 'LEGION_VERSION_ARGS names `:(exclude)packages/envoy/alpha`, a pathspec with magic')"
+check "names the exclude and what it drops" \
+  "$(contains "$out" 'LEGION_VERSION_ARGS'"'"'s `:(exclude)packages/envoy/alpha` drops packages/envoy/alpha/, which go names for ./cmd/legion for linux/amd64')"
 run_check "$root" write
 check "write refuses too" "$(is "$status" 1)"
 check "and writes nothing" "$(is "$(release "$root")" "$before")"
+root=$(written glob)
+replace "$root/.github/workflows/release.yaml" "$hand_args" "$hand_args :(glob)packages/envoy/*"
+run_check "$root"
+check "exits 1 on other magic" "$(is "$status" 1)"
+check "names it" "$(contains "$out" 'LEGION_VERSION_ARGS names `:(glob)packages/envoy/\*`, a pathspec with magic this check cannot read')"
 
 echo "case: no block, or two"
 root=$(fixture unmarked)
@@ -215,7 +250,7 @@ printf 'package alpha\n\nimport (\n\t_ "example.com/envoy/internal/delta"\n' > "
 before=$(release "$root")
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "names the package" "$(contains "$out" 'go list cannot load example.com/envoy/alpha for linux/amd64')"
+check "names the package" "$(contains "$out" 'go list cannot load example.com/envoy/alpha for ./cmd/legion for linux/amd64')"
 run_check "$root" write
 check "write refuses too" "$(is "$status" 1)"
 check "and writes nothing" "$(is "$(release "$root")" "$before")"
@@ -223,14 +258,14 @@ root=$(written missing)
 printf 'package alpha\n\nimport _ "example.com/envoy/internal/gone"\n' > "$root/packages/envoy/alpha/alpha.go"
 run_check "$root"
 check "exits 1 on an import of the envoy module that is not there" "$(is "$status" 1)"
-check "names that import" "$(contains "$out" 'go list cannot load example.com/envoy/internal/gone for linux/amd64')"
+check "names that import" "$(contains "$out" 'go list cannot load example.com/envoy/internal/gone for ./cmd/legion for linux/amd64')"
 
 echo "case: a listing that names nothing of cmd/legion"
 root=$(written gone)
 rm "$root"/packages/daemon/cmd/legion/*.go
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "says the set is unknown" "$(contains "$out" 'so what ./cmd/legion links is unknown')"
+check "says the set is unknown" "$(contains "$out" 'so what it links is unknown')"
 
 echo "case: the block's header edited by hand"
 root=$(written header)
@@ -256,5 +291,56 @@ check "exits 1 on an unknown word" "$(is "$status" 1)"
 check "names the two modes" "$(contains "$out" 'this check takes one optional mode: `check` (the default)')"
 run_check "$root" check write
 check "exits 1 on two words" "$(is "$status" 1)"
+
+echo "case: the listener's paths as they were, without the workspace's module files"
+root=$(fixture workspace)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'\n'"$envoy_modules" ''
+run_check "$root" write
+check "exits 1" "$(is "$status" 1)"
+check "write still writes the legion block, which the listener's paths do not decide" \
+  "$(contains "$out" "wrote .github/workflows/release.yaml's LEGION_GO_INPUTS: 7 paths")"
+for path in go.work go.work.sum; do
+  check "names $path" "$(contains "$out" "::error file=.github/workflows/release-envoy-listener.yaml::LEGION_ENVOY_VERSION_ARGS names no path that covers $path, which go names for go env GOWORK in packages/envoy")"
+done
+for path in packages/daemon/go.mod packages/daemon/go.sum; do
+  check "names $path" "$(contains "$out" "LEGION_ENVOY_VERSION_ARGS names no path that covers $path, which go names for go list -m in packages/envoy")"
+done
+check "names no path the list covers" "$(is "$(contains "$out" 'covers packages/envoy/')" false)"
+
+echo "case: the listener imports, under cgo alone, a package outside the list"
+root=$(written cgo)
+printf '//go:build cgo\n\npackage main\n\nimport _ "example.com/daemon/lib"\n' > "$root/packages/envoy/cmd/listener/cgo.go"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names it and the cgo listing" \
+  "$(contains "$out" 'covers packages/daemon/lib/, which go names for ./cmd/listener for linux/amd64 with CGO_ENABLED=1')"
+
+echo "case: agent-secrets for a client target alone imports a package outside the list"
+root=$(written client)
+printf '//go:build darwin\n\npackage main\n\nimport _ "example.com/daemon/lib"\n' > "$root/packages/envoy/cmd/agent-secrets/darwin.go"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names it and the client listing" \
+  "$(contains "$out" 'covers packages/daemon/lib/, which go names for ./cmd/agent-secrets for darwin/arm64')"
+
+echo "case: an archive links what the listener's exclude drops"
+root=$(written excluded)
+printf 'package main\n\nimport _ "example.com/envoy/infra/x"\n\nfunc main() {}\n' > "$root/packages/envoy/cmd/agent-secrets-helper/main.go"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the exclude and what it drops" \
+  "$(contains "$out" 'LEGION_ENVOY_VERSION_ARGS'"'"'s `:(exclude)packages/envoy/infra` drops packages/envoy/infra/x/, which go names for ./cmd/agent-secrets and ./cmd/agent-secrets-helper for linux/amd64')"
+
+echo "case: a listener program gone, or the listener's paths"
+root=$(written nolistener)
+rm "$root/packages/envoy/cmd/listener/main.go"
+run_check "$root"
+check "exits 1 with the program gone" "$(is "$status" 1)"
+check "says the set is unknown" "$(contains "$out" 'so what it links is unknown')"
+root=$(written noargs)
+replace "$root/.github/workflows/release-envoy-listener.yaml" 'LEGION_ENVOY_VERSION_ARGS:' 'OTHER_ARGS:'
+run_check "$root"
+check "exits 1 with the paths gone" "$(is "$status" 1)"
+check "names the key" "$(contains "$out" "release-envoy-listener.yaml's workflow env: holds no LEGION_ENVOY_VERSION_ARGS string")"
 
 summary "check-legion-version-inputs.sh"

@@ -834,6 +834,28 @@ def go_notices_runs():
     return out
 
 
+def version_input_runs():
+    """Every go list check-legion-version-inputs.sh runs, as its header lists them: ./cmd/legion in
+    packages/daemon for each legion target under CGO_ENABLED=0, and in packages/envoy the
+    legion-envoy archives' programs, envoy-listener for linux and each envoy arch under
+    CGO_ENABLED=0 and 1, agent-secrets and agent-secrets-helper for the same under 0, and
+    agent-secrets for each client target under 0."""
+    why = at("ci-filters", VERSION_INPUTS_STEP)
+
+    def listing(workdir, pkgs, goos, goarch, cgo):
+        return run(workdir, pkgs, f"{why}: go list -deps for {goos}/{goarch} with CGO_ENABLED={cgo}", mode="build",
+                   step=VERSION_INPUTS_STEP, text=VERSION_INPUTS,
+                   env={"CGO_ENABLED": cgo, "GOOS": goos, "GOARCH": goarch})
+
+    out = [listing(DAEMON, ["./cmd/legion"], *target.split("/"), "0") for target in targets(GO_TARGETS, "legion")]
+    for arch in targets(GO_TARGETS, "envoy"):
+        out += [listing(ENVOY, ["./cmd/listener"], "linux", arch, cgo) for cgo in ("0", "1")]
+        out.append(listing(ENVOY, ["./cmd/agent-secrets", "./cmd/agent-secrets-helper"], "linux", arch, "0"))
+    out += [listing(ENVOY, ["./cmd/agent-secrets"], *target.split("/"), "0")
+            for target in targets(CLIENT_TARGETS, "agent-secrets-client")]
+    return out
+
+
 # The steps whose go commands are not in the simple form, pinned whole: envoy-go-checks'
 # pack step, envoy-smoke's schema step, and the tag steps below.
 PACK_STEP = "Pack envoy binaries"
@@ -1771,7 +1793,7 @@ SMOKE_IMAGE_STEP = "Build the listener image the smoke test runs against"
 BASE_IMAGES_STEP = "Read the smoke image's base images"
 FOLD_CHECK_STEP = "Check every changelog fragment renders"
 CHECK_STEP = "Check every CI filter matches every file its job reads"
-VERSION_INPUTS_STEP = "Check release.yaml's legion version inputs are what cmd/legion links"
+VERSION_INPUTS_STEP = "Check the legion and legion-envoy releases' version inputs against what go links"
 VERSION_INPUTS = ".github/scripts/check-legion-version-inputs.sh"
 GUIDES_STEP = "Check the guides' semantic line breaks"
 COPY_STEP = "Copy every image the package does not hold"
@@ -3048,7 +3070,9 @@ GATES = [
     # the runs above expand, reads every workflow of .github/workflows, and is its own script,
     # engine, data, rules and path model. The job's second step, the legion version-input check,
     # lists ./cmd/legion once per legion release target, as release.yaml's Build legion step
-    # compiles it, and reads release.yaml's version arguments, block and version step.
+    # compiles it, and the legion-envoy archives' programs as release-envoy-listener.yaml builds
+    # them (version_input_runs), and reads both workflows' version arguments, release.yaml's block
+    # and its version step.
     gate("ci_filters", "ci-filters", runs=[
         run(DAEMON, ["./..."], f"{at('ci-filters', CHECK_STEP)}: go list over the daemon module", mode="vet", step=CHECK_STEP,
             text=".github/scripts/check-ci-filters.sh"),
@@ -3056,16 +3080,15 @@ GATES = [
             text=".github/scripts/check-ci-filters.sh"),
         run(INFRA, ["./..."], f"{at('ci-filters', CHECK_STEP)}: go list over the envoy-infra module", mode="vet", step=CHECK_STEP,
             text=".github/scripts/check-ci-filters.sh"),
-        *[run(DAEMON, ["./cmd/legion"], f"{at('ci-filters', VERSION_INPUTS_STEP)}: go list -deps for {target}", mode="build",
-              step=VERSION_INPUTS_STEP, text=VERSION_INPUTS,
-              env={"CGO_ENABLED": "0", "GOOS": target.split("/")[0], "GOARCH": target.split("/")[1]})
-          for target in targets(GO_TARGETS, "legion")],
+        *version_input_runs(),
     ], reads=reads(
         ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.go", "the pi_legion gate's go run -overlay compiles it"),
         (".github/scripts/check-ci-filters.sh", at("ci-filters", CHECK_STEP)),
         (VERSION_INPUTS, at("ci-filters", VERSION_INPUTS_STEP)),
         (".github/workflows/release.yaml", f"{VERSION_INPUTS} holds its LEGION_GO_INPUTS block to what go names beyond "
                                            "LEGION_VERSION_ARGS's paths, and legion_build's version step to passing it"),
+        (".github/workflows/release-envoy-listener.yaml", f"{VERSION_INPUTS} holds its LEGION_ENVOY_VERSION_ARGS to "
+                                                          "cover what go names for the archives it builds"),
         (".github/scripts/ci_filter_coverage.py", "check-ci-filters.sh's engine"),
         (".github/scripts/ci_job_reads.py", "check-ci-filters.sh's data"),
         (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and "
@@ -3073,7 +3096,7 @@ GATES = [
         (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it"),
         ("package.json", "ci_job_reads.py reads the workspace list from the root manifest"),
         (GO_TARGETS, f"ci_job_reads.py expands the notices and pack runs over it, and {VERSION_INPUTS} its listings"),
-        (CLIENT_TARGETS, "ci_job_reads.py expands the notices runs over it"),
+        (CLIENT_TARGETS, f"ci_job_reads.py expands the notices runs over it, and {VERSION_INPUTS} its agent-secrets listings"),
         (INFRA_TARGETS, "ci_job_reads.py expands the notices runs over it"),
         (DOCS_SITE, "ci_filter_coverage.py looks the docs gate's step citations up in it"),
         (BROWSER_SITE, "ci_filter_coverage.py looks the dispatch_browser gate's step citations up in it"),

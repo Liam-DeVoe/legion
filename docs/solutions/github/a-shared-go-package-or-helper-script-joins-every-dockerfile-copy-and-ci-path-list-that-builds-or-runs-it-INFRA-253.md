@@ -72,4 +72,7 @@ Extends docs/solutions/github/a-worker-image-path-filter-covers-the-code-the-ini
 - The hand-kept `LEGION_VERSION_ARGS` fell behind again: at main 4055c4a523 it named 14 of the 17
   envoy packages `go list -deps ./cmd/legion` names, and lacked `internal/ctxlock`,
   `internal/dispatch/bytelru` and `internal/fold`, so INFRA-3904 replaced the list with the
-  generated block and the check.
+  generated block and the check. The same check found `release-envoy-listener.yaml`'s
+  `LEGION_ENVOY_VERSION_ARGS` lacked `go.work`, `go.work.sum` and `packages/daemon/go.mod` and
+  `go.sum`, which the archives built under the root `go.work` read, and now holds that list to
+  cover what go names for them.

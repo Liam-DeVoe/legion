@@ -38,6 +38,12 @@ on:
       - "scripts/assemble-third-party-notices.sh"
       - ".github/go-release-targets.json"
       - ".github/agent-secrets-client-targets.json"
+      # The workspace the archives build under, which LEGION_ENVOY_VERSION_ARGS below names for
+      # the reason given there: the image reads none of these four, the archives' builds do.
+      - "go.work"
+      - "go.work.sum"
+      - "packages/daemon/go.mod"
+      - "packages/daemon/go.sum"
   workflow_dispatch:
     inputs:
       # "Confirm the version" in release_publish sets it when its run lost its version to another
@@ -94,7 +100,15 @@ env:
   # version) and release_publish (which confirms it, --expect, inside the concurrency group):
   # every notices script changes an artifact this release publishes, and the target lists decide
   # the archives, so they take a patch release; packages/envoy/infra is excluded, since
-  # release-envoy-infra.yaml releases it and nothing published here compiles it in.
+  # release-envoy-infra.yaml releases it and nothing published here compiles it in. The archives
+  # the build and release_build jobs compile on the runner build in packages/envoy under the root
+  # go.work, whose version selection reads packages/daemon's go.mod beside packages/envoy's: so
+  # go.work, go.work.sum and the daemon module's go.mod and go.sum can change what the archives
+  # link, and a change to one of them must release. The image does not build under go.work
+  # (packages/envoy/docker/Dockerfile copies packages/envoy's module files alone), so none of the
+  # four is an input of it. .github/scripts/check-legion-version-inputs.sh, in the ci-filters job,
+  # fails a pull request whose paths here miss a package or a module file go names for the
+  # archives.
   LEGION_ENVOY_VERSION_ARGS: >-
     --patch-path scripts/third-party-notices.ts --patch-path scripts/go-third-party-notices.sh
     --patch-path scripts/assemble-third-party-notices.sh --patch-path .github/go-release-targets.json
@@ -102,6 +116,7 @@ env:
     -- :(exclude)packages/envoy/infra packages/envoy/ packages/contracts/ scripts/third-party-notices.ts
     scripts/go-third-party-notices.sh scripts/assemble-third-party-notices.sh
     .github/go-release-targets.json .github/agent-secrets-client-targets.json
+    go.work go.work.sum packages/daemon/go.mod packages/daemon/go.sum
 
 
   # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
