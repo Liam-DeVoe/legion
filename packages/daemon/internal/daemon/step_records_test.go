@@ -3,10 +3,12 @@
 // GET /api/v1/issues/{key}/steps, the read `dispatch steps` and the tab Steps make.
 //
 // Each test boots the whole daemon (startDaemonWithin) over the package's broker, the real store,
-// the real outbox and the real Dispatch client, and walks one issue from planning to done through
-// the transports production has: each role's agent over the worker stream and the daemon's HTTP
-// routes, its handoff record written to Dispatch under its own session, a person's review and the
-// merge as GitHub's envelopes on the stream, and the architect's sign-off through its own route.
+// the real outbox and the real Dispatch client, and walks an issue, from planning to done or
+// through the part of the walk the records it reads need (planning alone, or a child of the walk's
+// issue from its review to its retro), through the transports production has: each role's agent
+// over the worker stream and the daemon's HTTP routes, its handoff record written to Dispatch under
+// its own session, a person's review and the merge as GitHub's envelopes on the stream, and the
+// architect's sign-off through its own route.
 // What is stood in for is outside the records: GitHub's REST API (stepRecordsGitHub), and the
 // panes, which the fake runtime launches and the test plays.
 package daemon
@@ -50,8 +52,8 @@ const (
 	stepRecordsHead = "5e7f00d5a1b2c3d4e5f60718293a4b5c6d7e8f90"
 	// stepRecordsPerson is the account with write access whose reviews decide each round.
 	stepRecordsPerson = "a-person"
-	// stepRecordsModel is the model every agent of the walk answers with, as Oh My Pi's
-	// message_end names it: provider and model.
+	// stepRecordsModel is the model an agent of the walk answers with until its test gives the
+	// agent another (stepClaimant.model), as Oh My Pi's message_end names it: provider and model.
 	stepRecordsModel = "stand-in/model"
 	// stepRecordsWait bounds each wait of the walk on the daemon, which a loaded machine slows.
 	stepRecordsWait = 2 * time.Minute
