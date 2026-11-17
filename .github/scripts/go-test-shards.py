@@ -2,7 +2,7 @@
 r"""Split one Go package's tests into shards by name, and prove that the shards' `-run` patterns
 select every test of the package exactly once.
 
-It exists for envoy-go-race-api (dispatch://INFRA-3904). `go test -race ./internal/dispatch/api/`
+It exists for envoy-go-race-api. `go test -race ./internal/dispatch/api/`
 took 913 s to 1,527 s of its 30-minute `-timeout` on one day's runners, so whether the job passed
 depended on how fast the runner was. The job is now a matrix, and each leg runs one shard of the
 package. A shard is a set of top-level test names, written as the anchored alternation

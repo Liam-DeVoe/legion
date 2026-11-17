@@ -5176,7 +5176,7 @@ jobs:
   # package apart also reads its seconds as its own job's, and leaves the others' numbers
   # standing when one is red. api grew past that bar on its own runner too - 913 s to 1,527 s on
   # the runners of 2026-11-16 - so its job is now a matrix whose legs each run one shard of the
-  # package (its workflow file says how the tests are split, dispatch://INFRA-3904).
+  # package (its workflow file says how the tests are split).
   #
   # pmdoc is not in this lane: its tests run plain only, in envoy-go's unit-test step
   # (INFRA-1408). It sat here because LEGION-571's flakes - pmdoc's own under -race and load, not

@@ -36,10 +36,10 @@ jobs:
     # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race
     # binaries, then the step's own 30 minutes, which is 36.
     timeout-minutes: 45
-    # One leg per shard of the package's tests (dispatch://INFRA-3904). Run whole, the package
+    # One leg per shard of the package's tests. Run whole, the package
     # took 913 s to 1,527 s of its 1,800-second -timeout on the runners of 2026-11-16 (jobs
     # 133268762448 and 133298210013), over the race lane's bar of 1,080 s, which is 60 % of that
-    # timeout (dispatch://INFRA-757): whether the job passed depended on the runner it got. Each
+    # timeout: whether the job passed depended on the runner it got. Each
     # leg now runs the shard .github/scripts/go-test-shards.py gives it, a test's shard being
     # crc32(name) mod the leg count, so a test added later lands in exactly one leg and none is
     # kept by hand. The script reads the leg count and this leg's index from the matrix itself

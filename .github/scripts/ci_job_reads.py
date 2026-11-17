@@ -1373,8 +1373,8 @@ def race_step(job):
     return step_run(job.job, job.step, race_text(job), ENVOY, race_pkgs(job), race=True)
 
 
-# envoy-go-race-api is a matrix whose legs each run one shard of the package (dispatch://INFRA-3904;
-# the job's comment in its workflow file gives the numbers): .github/scripts/go-test-shards.py
+# envoy-go-race-api is a matrix whose legs each run one shard of the package (the job's comment
+# in its workflow file gives the numbers): .github/scripts/go-test-shards.py
 # builds the race test binary, splits its tests across the legs by name, proves every test is in
 # exactly one leg and prints this leg's -run, which the step assigns on a line of its own. That
 # substitution, the two matrix expressions and the quoted -run are outside the simple form, so
@@ -2832,7 +2832,7 @@ GATES = [
     # The lane's three jobs: each step's text and packages come from ENVOY_RACE_LANE, which the
     # envoy-go unit step and its plain companion are built from too. envoy-go-race-docs and
     # envoy-go-race-api are the two whose step is not race_step's text: docs runs the package
-    # under .github/scripts/race_memory.py (dispatch://INFRA-1085), and api runs one shard of it
+    # under .github/scripts/race_memory.py, and api runs one shard of it
     # per leg of a matrix (RACE_API_SCRIPT says why), so each gate pins its whole step while the
     # lane table still names the package, which is what keeps it out of the unit step.
     gate("envoy_go_race", "envoy-go-race", runs=[race_step(RACE_JOBS["envoy-go-race"]), ceiling_run("envoy-go-race")],

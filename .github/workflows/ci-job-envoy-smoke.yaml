@@ -60,7 +60,7 @@ jobs:
       # Without it each run fetched 161 modules, 242 MB, from the proxy: 6-8 s of the live-test step
       # in a passing run, but 14 m 45 s in run 43880882183, where the step started no other module
       # for 7.5 and then 6 minutes after the pulumi-aws and pulumi-gcp SDKs, and the job reached its
-      # 20-minute limit before a live test ran (dispatch://INFRA-3904). The key carries the Go this
+      # 20-minute limit before a live test ran. The key carries the Go this
       # setup-go installs from packages/envoy/go.mod, the family's fill the Go of
       # packages/envoy/infra/go.mod: both name go 1.27.3, and should they part, the exact key misses
       # and the prefix restores the family's newest entry, whose modules still serve. Both go test
