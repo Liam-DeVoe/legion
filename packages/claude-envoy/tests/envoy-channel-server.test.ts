@@ -647,14 +647,19 @@ test("a Dispatch frame the channel answered with an error is answered again when
 
     // The listener mints a fresh event id for the re-send; its dedupe key is the first send's.
     relayed(nats, 2, JSON.stringify({ ...JSON.parse(rejectedFrameRaw), event_id: "resend" }))
-    // The relay hands frames over in stream order, so the control's answer comes after whatever
-    // the channel did with the re-send.
+    // A control after it, under a dedupe key of its own: once it is answered, the re-send has
+    // been handed over too. Their answers can reach Dispatch in either order, since each reads
+    // the session's settings first, asynchronously, so the re-send's answer is waited for.
     relayed(
       nats,
       3,
       JSON.stringify({ ...control, event_id: "control", dedupe_key: "dispatch-control" }),
     )
     await controlAnswered.promise
+    await waitFor(
+      async () => replied.filter((path) => path.includes("44444444")).length >= 2,
+      "the re-send's answer",
+    )
 
     expect(notifier.notifications).toEqual([])
     expect(replied.filter((path) => path.includes("44444444"))).toHaveLength(2)

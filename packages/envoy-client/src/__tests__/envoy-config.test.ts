@@ -1391,15 +1391,39 @@ describe("a ! command in envoy.json", () => {
   /** Whether the process with this pid is gone within a second: a killed orphan is a zombie until
    * the process it was reparented to reaps it, and `kill(pid, 0)` still answers for a zombie. */
   function gone(pid: number): boolean {
-    for (const deadline = Date.now() + 1_000; Date.now() < deadline; Bun.sleepSync(20)) {
+    return endsWithin(pid, 1_000);
+  }
+
+  /** Whether the process with this pid has ended within `ms`: it no longer exists, or it is a
+   * zombie waiting for whatever adopted it to reap it, which is ended all the same. */
+  function endsWithin(pid: number, ms: number): boolean {
+    const zombie = (): boolean => {
+      try {
+        return /\) Z /.test(readFileSync(`/proc/${pid}/stat`, "utf-8"));
+      } catch {
+        // No /proc here (macOS), or the process is already gone: `kill` below answers.
+        return false;
+      }
+    };
+    for (const deadline = Date.now() + ms; Date.now() < deadline; Bun.sleepSync(20)) {
       try {
         process.kill(pid, 0);
       } catch {
         return true;
       }
+      if (zombie()) return true;
     }
     return false;
   }
+
+  /** What one `bun` start may take before it runs a line: three times the 7.3 s one start took on a
+   * devbox at 1-minute load ~1035, as a bound three times a measurement under load is sized
+   * (docs/testing.md). */
+  const BUN_START_MS = 22_000;
+  /** How long a command's group may take to end once its process has: the watch in the group
+   * (`groupWatchedBy`) must be scheduled, see its pipe close and kill the group, and that is no
+   * faster than any other process on a loaded machine. The command runner's own bound. */
+  const GROUP_END_MS = 10_000;
 
   test("that exits 0 is its value at once, and a process it left running is killed", async () => {
     const home = tempDir();
@@ -1446,11 +1470,15 @@ describe("a ! command in envoy.json", () => {
     let dispatch: DispatchWithToken | undefined;
     let elapsed = 0;
     const left = await inScratchTmp(async () => {
+      const config = await readEnvoyConfig(file, env, { cwd });
       const started = Date.now();
-      dispatch = await dispatchSettings(env, await readEnvoyConfig(file, env, { cwd }));
+      dispatch = await dispatchSettings(env, config);
       elapsed = Date.now() - started;
     });
-    expect(elapsed).toBeLessThan(15_000);
+    // Ended by the 10 s bound, not by the command: its own `sleep 30` would take 30 s. The rest is
+    // the read's own file and process steps around the command, which took 5.1 s at load ~1200
+    // (a run that read 15.1 s), and three times that is allowed for them.
+    expect(elapsed).toBeLessThan(25_000);
     expect(dispatch).toEqual({
       enabled: false,
       notice: null,
@@ -1458,7 +1486,7 @@ describe("a ! command in envoy.json", () => {
     });
     expect(gone(Number(readFileSync(pidFile, "utf-8").trim()))).toBe(true);
     expect(left).toEqual([]);
-  }, 20_000);
+  }, 60_000);
 
   // A read waits for its command without holding the process, so the process can end while the
   // command runs, by any path: its own exit, Oh My Pi's handlers for SIGINT, SIGTERM and SIGHUP and
@@ -1526,7 +1554,7 @@ ${end === "release" ? exit : ""}
       try {
         // A real process on the platform's clock: the command writes its child's pid when it has
         // started it, and nothing else says so.
-        for (const deadline = Date.now() + 10_000; pid === 0; await Bun.sleep(20)) {
+        for (const deadline = Date.now() + BUN_START_MS; pid === 0; await Bun.sleep(20)) {
           if (Date.now() > deadline) throw new Error("the command never wrote its child's pid");
           if (existsSync(pidFile)) pid = Number(readFileSync(pidFile, "utf-8").trim()) || 0;
         }
@@ -1539,7 +1567,9 @@ ${end === "release" ? exit : ""}
         // The way the process ended is the one named: its own handler's code, or the signal.
         if (code === null) expect(child.signalCode).toBe("SIGKILL");
         else expect(child.exitCode).toBe(code);
-        expect(gone(pid)).toBe(true);
+        // The watch ends the group once the kernel has closed the pipe the process held; it is a
+        // process of its own, so that takes as long as the machine takes to schedule it.
+        expect(endsWithin(pid, GROUP_END_MS)).toBe(true);
         expect(readdirSync(scratch)).toEqual([]);
       } finally {
         child.kill("SIGKILL");
@@ -1551,7 +1581,7 @@ ${end === "release" ? exit : ""}
           }
         }
       }
-    }, 30_000);
+    }, 60_000);
   }
 
   test("whose field a variable overrides, or whose section is off, is not run", async () => {

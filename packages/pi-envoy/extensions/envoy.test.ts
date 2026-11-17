@@ -15938,6 +15938,46 @@ console.log(JSON.stringify(args));
         });
       }
 
+      // The host runs a person's typed input off the relay (`runTypedInput`) after the delivery
+      // has returned, and leaves while it runs, so the move's pass runs before the reply: the reply
+      // must still go out on the one token the accept traded for.
+      test("trades once for a typed input's session when the host leaves while it runs the input", async () => {
+        const broker = stubBroker("typed-input-moved");
+        const move: { fire?: () => Promise<unknown> } = {};
+        try {
+          const { agent, fixture, replied, replies } = await bootDirectSession(
+            "typed-input-moved",
+            {
+              accept: () => ({ accepted: true, body: "/new" }),
+              dispatch: broker.trade,
+              dispatchCredential: "broker",
+              sendUserInput: async () => {
+                await move.fire?.();
+                return { handled: "terminal-only" };
+              },
+            }
+          );
+          move.fire = async () =>
+            await fixture.handlers.get("session_switch")?.(
+              { reason: "new" },
+              sessionContext("ses_after_typed_input")
+            );
+          broker.watch();
+          agent.push(directDispatchEnvelope("steer", "typed-input-moved"));
+          await replied(1);
+
+          expect(replies.map((reply) => reply.body.actor)).toEqual([
+            { id: "ses_delivery", kind: "session" },
+          ]);
+          expect(
+            broker.presented.filter((one) => one.path.endsWith("/reply")).map((one) => one.signedAs)
+          ).toEqual(["ses_delivery"]);
+          expect(broker.traded).toEqual(["ses_delivery"]);
+        } finally {
+          broker.stop();
+        }
+      }, 30_000);
+
       // Between the accept and the send: the accept itself. The attempt is spent by the time
       // Dispatch answers it, so this one is no release - a re-send of a taken message is
       // refused - and the person is answered instead. The host is handed nothing: the line
@@ -16198,6 +16238,52 @@ console.log(JSON.stringify(args));
           broker.stop();
         }
       });
+
+      // A BTW's whole body is read inside the delivery, and its side turn and answer run off the
+      // relay (`offWorker`) after the delivery has returned. The host leaves inside the side turn,
+      // so the move's pass runs while that work is under way: the answer must still go out on the
+      // one token the whole-body read traded for, rather than trade again under the session the
+      // host has left.
+      test("trades once for a BTW's session when the host leaves inside its side turn, after the delivery returned", async () => {
+        const broker = stubBroker("btw-whole-moved");
+        const move: { fire?: () => Promise<unknown> } = {};
+        try {
+          const { agent, fixture, replied, replies } = await bootDirectSession("btw-whole-moved", {
+            dispatch: async (url, init) => {
+              if (url.pathname === `/api/v1/messages/${DIRECT_MESSAGE_ID}`) {
+                return response({
+                  message: { body: "Can this ship?", id: DIRECT_MESSAGE_ID },
+                  replies: [],
+                });
+              }
+              return broker.trade(url, init);
+            },
+            dispatchCredential: "broker",
+            sideTurn: async () => {
+              await move.fire?.();
+              return "This session's answer.";
+            },
+          });
+          move.fire = async () =>
+            await fixture.handlers.get("session_switch")?.(
+              { reason: "new" },
+              sessionContext("ses_after_btw_whole")
+            );
+          broker.watch();
+          agent.push(directDispatchEnvelope("btw", "btw-whole-moved", { bodyTruncated: true }));
+          await replied(1);
+
+          expect(replies.map((reply) => reply.body.actor)).toEqual([
+            { id: "ses_delivery", kind: "session" },
+          ]);
+          expect(
+            broker.presented.filter((one) => one.path.endsWith("/reply")).map((one) => one.signedAs)
+          ).toEqual(["ses_delivery"]);
+          expect(broker.traded).toEqual(["ses_delivery"]);
+        } finally {
+          broker.stop();
+        }
+      }, 30_000);
     });
 
     // A host without `pi.sendUserInput` would hand a command to the model as words, so the
