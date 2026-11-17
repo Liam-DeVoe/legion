@@ -24,11 +24,11 @@ const eraseOwnerAttempts = 3
 // order (api/inbox_read.go's markInboxReadThreads), whose first invariant is that a store write
 // takes the owner row first. Every owner row the erase writes under comes first (ownerRows says
 // which they are), then the node's row `for update`, then the node's own projection rows
-// (lockProjectionRows), and nothing the erase does after them takes an owner row it does not
-// already hold: docs.ReadErasedLiveText takes a document's owner row again and finds this
-// transaction holding it. A node no row projects - a person, a session, a role, a page - stands
-// under no owner row, and the erase then starts at its node's row, which the order allows: a
-// writer may leave a step out.
+// (lockProjectionRows), then its read-state rows (lockReadStateRows), and nothing the erase does
+// after them takes an owner row it does not already hold: docs.ReadErasedLiveText takes a
+// document's owner row again and finds this transaction holding it. A node no row projects - a
+// person, a session, a role, a page - stands under no owner row, and the erase then starts at its
+// node's row, which the order allows: a writer may leave a step out.
 //
 // Those owner rows are the node's own and its own document's, never another node's: a row that
 // holds the erased bytes and derives from another node is listed and left as it is, so the run
@@ -69,8 +69,9 @@ func lockInStoreOrder(ctx context.Context, conn *pgx.Conn, kind, id string) (pgx
 
 // lockOwnersThenNode is one try of lockInStoreOrder: it reads which owner rows the erase writes
 // under (ownerRows, which reads no node, tuple or event), takes them (events.LockOwnerRows), the
-// node's row and the node's projection rows (lockProjectionRows), reads the whole listing under
-// those locks (read), and answers it with every owner it names that the try did not take.
+// node's row, the node's projection rows (lockProjectionRows) and its read-state rows
+// (lockReadStateRows), reads the whole listing under those locks (read), and answers it with every
+// owner it names that the try did not take.
 func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx) (erasedRead, []string, error) {
 	before, err := e.ownerRows(ctx, tx)
 	if err != nil {
@@ -88,6 +89,13 @@ func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx) (erasedRead
 		return erasedRead{}, nil, fmt.Errorf("read node %s:%s: %w", e.Kind, e.ID, err)
 	}
 	if err := lockProjectionRows(ctx, tx, e.Kind, e.ID); err != nil {
+		return erasedRead{}, nil, err
+	}
+	scope, err := e.readStateScope(ctx, tx)
+	if err != nil {
+		return erasedRead{}, nil, err
+	}
+	if err := lockReadStateRows(ctx, tx, scope); err != nil {
 		return erasedRead{}, nil, err
 	}
 	locked, err := e.read(ctx, tx)

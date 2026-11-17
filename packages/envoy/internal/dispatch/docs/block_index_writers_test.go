@@ -685,6 +685,22 @@ var indexPasses = map[string]string{
 	// with the row its project is read from.
 	"graphcensus/projects.go#writeObjectBatch": "the issue, document, ask and message rows no node marks",
 	"graphcensus/projects.go#writeScopeBatch":  "the comment and block nodes that name no project, and the rows their project is read from",
+	// The backfill of every kind dispatch://INFRA-1152 moves but the mention tuples. Each batch
+	// reads the rows of its own kind that its marker test passes - the rows an older build wrote,
+	// which name no node, hold no tuples_stored or no tuples_stored_at, or carry no marked_seq -
+	// and writes into the store what each such row's own content says, under the event that
+	// recorded the write, then sets the row's marker. It reads no marked row: an item's block
+	// node, which a link and its maker hang from, and the placement a block's part_of would repeat,
+	// are read off the store, and a row's marker only ever as the test that passes it. So it never
+	// reads one side of a projection to mend the other.
+	"graphcensus/backfill_inbox.go#writeMessages":            "each messages row that names no node, and the page its target hangs from",
+	"graphcensus/backfill_inbox.go#writeCommentPointers":     "each comments row whose tuples_stored is false",
+	"graphcensus/backfill_inbox.go#writeBlocks":              "each item block row that names no node, its item's node, and where the store places that block now",
+	"graphcensus/backfill_inbox.go#writeRelations":           "the links and citations its caller read off rows that name no node or hold no tuples_stored",
+	"graphcensus/backfill_inbox.go#writeAttempts":            "each attempt row that names no node, and what the store holds of the node it writes for it",
+	"graphcensus/backfill_inbox_threads.go#writeUserThreads": "each user_threads row that carries no marked_seq, and the event of its last reply",
+	"graphcensus/backfill_inbox_threads.go#writeMarks":       "each read-state row whose tuples_stored_at is null",
+	"inboxwrite/older.go#RecordOlder":                        "the write an older build made and the event that recorded it, the person an ask it created waits on, who wrote in its thread before it - the store's authored_by and head pointer tuples, the log's ask.answered events and the rows the marker test passes - and the dismissals into the thread the store holds",
 	// The erase (R5), the one statement of the tree that removes bytes. Its input is the node
 	// the operator named and what the store itself holds about it, which is neither side of a
 	// projection read to mend the other: it deletes both sides together, the store's through

@@ -137,7 +137,10 @@ func requireTheBlockRefBatchLockOrder(t *testing.T) {
 // comment c1's node row before the comments row whose foreign key names it. Where its tuples fall
 // among its node rows they leave to the batch: a batch that appended its comments' tuples before
 // it wrote its authors' nodes, as the comment path appends its comment's tuples before its
-// author's node (graphstore.Authored), passes as well.
+// author's node (graphstore.Authored), passes as well. The run followed is the comment pass
+// alone: the pass over the comment pointers that runs after it (dispatch://INFRA-1152's
+// commentPointersPass) takes the issue's owner row first, as every writer of a comment does, and
+// following the whole run would read that pass's lock as this batch's.
 func requireTheCommentBatchLockOrder(t *testing.T) {
 	ctx := context.Background()
 	writes := newAddressingWrites(t)
@@ -228,8 +231,10 @@ func requireTheCommentBatchLockOrder(t *testing.T) {
 		Statement: "update comments c set node_kind",
 	}, `select 1 from comments where id = $1::uuid for no key update`, c1.id)
 
-	report := followTheBackfill(t, database, "writeCommentBatch",
-		[]*lockstep.Hold{owner, project, firstComment, secondComment, amyNode, zedNode, sessionNode, state, amyAuthored, row})
+	report := followTheRun(t, database, "writeCommentBatch", func(ctx context.Context, database *store.Store) (BackfillReport, error) {
+		done, err := backfillComments(ctx, database)
+		return BackfillReport{Kinds: []KindBackfill{done}}, err
+	}, []*lockstep.Hold{owner, project, firstComment, secondComment, amyNode, zedNode, sessionNode, state, amyAuthored, row})
 
 	for _, seeded := range comments {
 		authorKind, authorID, _ := graphstore.AuthorOf(seeded.by)

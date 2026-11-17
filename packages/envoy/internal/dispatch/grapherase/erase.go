@@ -110,8 +110,10 @@ func ParseNode(value string) (kind, id string, err error) {
 // projection rows and the rows that cannot exist without one, its own embedding rows and window
 // state, the events about it, for a block its own document - the versions at which its own block
 // held the text and the approvals over them, the document's editing state, its search rows and
-// its windows - and the excerpts cut from its text, and for a comment the editing state of every
-// document whose margin record holds its body. The run deletes those, or rewrites them with the
+// its windows - and the excerpts cut from its text, for a comment the editing state of every
+// document whose margin record holds its body, and its rows of the six read-state tables, which
+// mirror tuples from a person to what the mark is about: a person's every row, and an item's the
+// rows that name it (readStateTables). The run deletes those, or rewrites them with the
 // marker where it may take no row away. Every other row that holds the same bytes derives from
 // another node and is that node's text - a sibling block of the same document among them: the
 // run lists it with its address and changes nothing in it, and an operator erases that node by a
@@ -223,15 +225,15 @@ func Erase(ctx context.Context, databaseURL, kind, id, confirm string, treeStore
 // order the foreign keys allow. Before anything goes it reads the keys of the display trees of
 // the texts it removes or rewrites (treeSums) and deletes the node's embedding rows
 // (forgetEmbeddings). Then go the whole text of the node's block, the rows that cannot exist
-// without a projection row, the projection rows, and the approvals and the versions they stood
-// on. Then it rewrites what it may not remove - the blocks holding the node's block and the
-// mentions whose excerpt was cut from it, the events about it, the search vectors that stood on
-// a version that went, the embedding rows of what it leaves (restateEmbeddings), and the live
-// state of every document whose history it replaces - counts the term statistics of every
-// project whose items moved again, and deletes the display trees of the texts that went. Last go
-// the tuples the listing named and the node (graphstore.EraseNode), which refuses the run where
-// a tuple landed since, and the record of what the run did goes in. Every row it writes is one
-// the read under its locks listed (erasedRead).
+// without a projection row, the projection rows, the node's read-state rows (deleteReadState),
+// and the approvals and the versions they stood on. Then it rewrites what it may not remove - the
+// blocks holding the node's block and the mentions whose excerpt was cut from it, the events about
+// it, the search vectors that stood on a version that went, the embedding rows of what it leaves
+// (restateEmbeddings), and the live state of every document whose history it replaces - counts the
+// term statistics of every project whose items moved again, and deletes the display trees of the
+// texts that went. Last go the tuples the listing named and the node (graphstore.EraseNode), which
+// refuses the run where a tuple landed since, and the record of what the run did goes in. Every
+// row it writes is one the read under its locks listed (erasedRead).
 func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 	sums, err := e.treeSums(ctx, tx, read)
 	if err != nil {
@@ -266,6 +268,9 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 			return fmt.Errorf("delete the %s rows of %s:%s: %w", held.Table, e.Kind, e.ID, err)
 		}
 		e.removed(held.Table, tag.RowsAffected())
+	}
+	if err := e.deleteReadState(ctx, tx, read); err != nil {
+		return err
 	}
 	if len(read.artifacts) > 0 {
 		tag, err := tx.Exec(ctx, `delete from artifact_reviews where exists (

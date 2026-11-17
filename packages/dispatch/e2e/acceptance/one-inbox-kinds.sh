@@ -31,6 +31,13 @@
 #                 answered once, by its old arm, the store holding no tuple of it. A comment row
 #                 carries its node, as dispatch://INFRA-1149's writer gives it one. The rows are
 #                 removed once read.
+#   backfill      one row per arm, and one citation of each item sort, written through psql as a
+#                 build before this child writes them, each comment and the message and the ask
+#                 naming no node yet: each is answered once, by its old arm, before
+#                 `envoy-dispatch backfill-graph-store` runs over the server's database, and once,
+#                 by the tuple arm, after it, which reports every kind complete=true, each comment
+#                 carrying the node dispatch://INFRA-1149's backfill gave it. The rows are removed
+#                 once read.
 #   artifact_citation
 #                 a document's citation, which dispatch://INFRA-1253 moves and not this child, is
 #                 still answered by the refs arm.
@@ -41,15 +48,12 @@
 #                 adds, the server serves the schema the store holds, a document socket admits a
 #                 writer, and a write over it is accepted and reaches the document's text.
 #
-# Three sentences of the check read what this build cannot serve yet, and their sections land with
+# Two sentences of the check read what this build cannot serve yet, and their sections land with
 # what they read, each where the call list at the end of this file says:
 #
 #   - the session-conversation read, GET /api/v1/agents/{session_id}/conversation, which the
 #     issue message is read in through its delivered_to tuple and which answers the rows
 #     GET /api/v1/agents/{session_id}/messages answers (dispatch://INFRA-1152/artifact/plan-md#b-t18);
-#   - this child's backfill, before and after which a row written before this child is read
-#     answered once by its old arm and then once by the tuple arm
-#     (dispatch://INFRA-1152/artifact/plan-md#b-t14);
 #   - the reads that address, list and count a delivery_attempt, a person and a role: no address of
 #     those kinds exists at this build (text.ParseRef reads none) and no route counts one's
 #     backlinks, so they come with the addresses and the mention arm into a person, a session and a
@@ -64,14 +68,17 @@
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed), PROJECT (an existing project key), ISSUE_DATABASE_URL (the database that
 # server serves, on this machine, which the pod's setup in the issue's Verification document
-# exports) and optionally DEV_SIGNIN_LOGIN (default alice), the person the dev sign-in route signs
-# in: a direct message, a broadcast and a document socket are a person's. Each unmet input is exit
-# 2. The server's agent list must hold a session that claims no role, as the harness's Observer
-# does; without one the setup fails, naming the sessions it lists.
+# exports), envoy-dispatch on PATH (this build's packages/envoy/cmd/dispatch, which the backfill
+# section runs over that database, as the Verification preamble builds it) and optionally
+# DEV_SIGNIN_LOGIN (default alice), the person the dev sign-in route signs in: a direct message, a
+# broadcast and a document socket are a person's. Each unmet input is exit 2, but envoy-dispatch,
+# whose absence fails the backfill section. The server's agent list must hold a session that
+# claims no role, as the harness's Observer does; without one the setup fails, naming the
+# sessions it lists.
 #
 # Each passing assertion prints `PASS: <section> <what>`; a failing one prints
 # `FAIL: <section> <what>: <observed>` and ends its section. Every section runs whatever an
-# earlier one found, each arm of the retractions and of the older rows runs whatever another arm
+# earlier one found, each arm of the retractions, the older rows and the backfill runs whatever another arm
 # found, and the script exits 1 at its end if anything failed. A failure while it writes what the
 # sections read ends the run there, with nothing to read.
 #
@@ -131,8 +138,9 @@ esac
 work_dir
 printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 
-# The issues the run writes, each closed when the run ends. The rows older_rows_section writes as
-# the release before writes them are that section's own to remove, on its way out.
+# The issues the run writes, each closed when the run ends. The rows older_rows_section and
+# backfill_section write as an older build writes them are each section's own to remove, on its
+# way out.
 issues=()
 cleanup() {
   local code=$? key
@@ -900,6 +908,139 @@ older_rows_section() {
   return "$failed"
 }
 
+# The rows written before this child that backfill_section plants: two comments, a message and an
+# ask, their ids drawn once the section starts.
+before_comment="" before_ask_comment="" before_message="" before_ask=""
+
+# remove_backfilled_rows: removes every row backfill_section planted and what the backfill stated
+# of them - the items, which take their blocks, links, texts and block state with them, their
+# citations, their user_threads rows, the store's nodes of them and of their blocks and every tuple
+# out of or into either - so no later run reads them.
+remove_backfilled_rows() {
+  local ids blocks
+  [[ -n "$before_comment" ]] || return 0
+  ids="$(sql_list "$before_comment" "$before_ask_comment" "$before_message" "$before_ask")"
+  blocks="$(sql_list "comment/$before_comment#%" "comment/$before_ask_comment#%" "message/$before_message#%" "ask/$before_ask#%")"
+  env -u PGHOSTADDR psql "$database_url" -Atq -v ON_ERROR_STOP=1 -c "
+    begin;
+    delete from comments where id in ('$before_comment', '$before_ask_comment');
+    delete from messages where id = '$before_message';
+    delete from asks where id = '$before_ask';
+    delete from refs where from_id in ($ids);
+    delete from user_threads where thread_id::text in ($ids);
+    delete from graph_tuples where from_id in ($ids) or to_id in ($ids) or from_id like any (array[$blocks]);
+    delete from graph_nodes where id in ($ids) or id like any (array[$blocks]);
+    commit;" >/dev/null 2>"$work/remove" ||
+    printf 'one-inbox-kinds.sh: could not remove the rows the backfill section planted: %s\n' "$(<"$work/remove")" >&2
+}
+
+# backfilled_arm NAME EDGE TUPLE MARKER-SQL BEFORE AFTER: before the backfill (when $backfilled is
+# 0), graph_edges answers the relation EDGE names once, the store holds no tuple TUPLE names and
+# the row reads BEFORE through MARKER-SQL, so its old arm answers it; after it, graph_edges answers
+# it once, the store holds the one tuple, and the row reads AFTER, so the tuple arm answers it and
+# the old arm answers it no more. One assertion.
+backfilled=0
+backfilled_arm() {
+  local when="before this child's backfill, once, by its old arm" want="1|0|$5"
+  if [[ "$backfilled" == 1 ]]; then
+    when="after it, once, by the tuple arm" want="1|1|$6"
+  fi
+  want_value backfill "$1: the row written before this child is answered $when" "$want" "
+    select (select count(*) from graph_edges where $2) || '|' || (select count(*) from graph_tuples where $3 and asserted)
+           || '|' || coalesce(($4), '(no row)')"
+}
+
+backfill_section() {
+  local failed=0 arm
+  command -v envoy-dispatch >/dev/null ||
+    fail backfill "find envoy-dispatch on PATH" "no envoy-dispatch: build packages/envoy/cmd/dispatch onto PATH, as the Verification preamble does"
+  trap remove_backfilled_rows EXIT
+  query backfill "draw the ids of the rows written before this child" \
+    "select gen_random_uuid() || ' ' || gen_random_uuid() || ' ' || gen_random_uuid() || ' ' || gen_random_uuid()"
+  read -r before_comment before_ask_comment before_message before_ask <<<"$answer"
+  local comment_text="Written before this child, $citation."
+  local ask_comment_text="On the question, before this child."
+  local message_text="Written before this child, $citation."
+  local ask_text="Asked before this child, $citation?"
+  # Each row as a build before this child writes it: a comment with no node, which
+  # dispatch://INFRA-1149's backfill gives it, and a message and an ask with no node either, which
+  # dispatch://INFRA-3862's gives them; none holds a marker of this child's, and their triggers
+  # project them into user_threads as that build's do.
+  query backfill "write two comments, a message and an ask as a build before this child writes them" "
+    begin;
+    insert into comments (id, issue_key, author, body, reply_to, answers, replies_to_block, created_at)
+    values ('$before_comment', '$issue', '$actor'::jsonb, '$comment_text', '$root', '$reply', 'comment/$reply#b1', now());
+    $(blocks_as_the_release_before comment "$before_comment" "$comment_text" cites)
+    insert into comments (id, issue_key, author, body, ask_id, replies_to_block, created_at)
+    values ('$before_ask_comment', '$issue', '$actor'::jsonb, '$ask_comment_text', '$ask', 'ask/$ask#b1', now());
+    $(blocks_as_the_release_before comment "$before_ask_comment" "$ask_comment_text" '')
+    insert into messages (id, issue_key, author, body, in_reply_to, replies_to_block, created_at)
+    values ('$before_message', '$issue', '$actor'::jsonb, '$message_text', '$message', 'message/$message#b1', now());
+    $(blocks_as_the_release_before message "$before_message" "$message_text" cites)
+    insert into asks (id, issue_key, author, question, created_at)
+    values ('$before_ask', '$issue', '$actor'::jsonb, '$ask_text', now());
+    $(blocks_as_the_release_before ask "$before_ask" "$ask_text" cites)
+    commit;"
+  pass backfill "wrote comments $before_comment and $before_ask_comment, message $before_message and ask $before_ask as a build before this child writes them"
+
+  local -a arms=(
+    "comment_blocks part_of|from_kind = 'comment_block' and from_id = 'comment/$before_comment#b1' and kind = 'part_of' and to_kind = 'comment' and to_id = '$before_comment'|from_kind = 'block' and from_id = 'comment/$before_comment#b1' and kind = 'part_of'|select coalesce(max(node_kind), 'unmarked') from comment_blocks where comment_id = '$before_comment'|unmarked|block"
+    "message_blocks part_of|from_kind = 'message_block' and from_id = 'message/$before_message#b1' and kind = 'part_of' and to_kind = 'message' and to_id = '$before_message'|from_kind = 'block' and from_id = 'message/$before_message#b1' and kind = 'part_of'|select coalesce(max(node_kind), 'unmarked') from message_blocks where message_id = '$before_message'|unmarked|block"
+    "ask_blocks part_of|from_kind = 'ask_block' and from_id = 'ask/$before_ask#b1' and kind = 'part_of' and to_kind = 'ask' and to_id = '$before_ask'|from_kind = 'block' and from_id = 'ask/$before_ask#b1' and kind = 'part_of'|select coalesce(max(node_kind), 'unmarked') from ask_blocks where ask_id = '$before_ask'|unmarked|block"
+    "comment_block_refs link|from_kind = 'comment_block' and from_id = 'comment/$before_comment#b1' and kind = 'mentions' and to_kind = 'issue' and to_id = '$cited'|from_kind = 'block' and from_id = 'comment/$before_comment#b1' and kind = 'mentions'|select coalesce(max(node_kind), 'unmarked') from comment_block_refs where comment_id = '$before_comment'|unmarked|block"
+    "message_block_refs link|from_kind = 'message_block' and from_id = 'message/$before_message#b1' and kind = 'mentions' and to_kind = 'issue' and to_id = '$cited'|from_kind = 'block' and from_id = 'message/$before_message#b1' and kind = 'mentions'|select coalesce(max(node_kind), 'unmarked') from message_block_refs where message_id = '$before_message'|unmarked|block"
+    "ask_block_refs link|from_kind = 'ask_block' and from_id = 'ask/$before_ask#b1' and kind = 'mentions' and to_kind = 'issue' and to_id = '$cited'|from_kind = 'block' and from_id = 'ask/$before_ask#b1' and kind = 'mentions'|select coalesce(max(node_kind), 'unmarked') from ask_block_refs where ask_id = '$before_ask'|unmarked|block"
+    "comment replies_to comment_block|from_kind = 'comment' and from_id = '$before_comment' and kind = 'replies_to' and to_kind = 'comment_block' and to_id = 'comment/$reply#b1'|from_kind = 'comment' and from_id = '$before_comment' and kind = 'replies_to' and to_kind = 'block'|select tuples_stored::text from comments where id = '$before_comment'|false|true"
+    "comment replies_to ask_block|from_kind = 'comment' and from_id = '$before_ask_comment' and kind = 'replies_to' and to_kind = 'ask_block' and to_id = 'ask/$ask#b1'|from_kind = 'comment' and from_id = '$before_ask_comment' and kind = 'replies_to' and to_kind = 'block'|select tuples_stored::text from comments where id = '$before_ask_comment'|false|true"
+    "message replies_to message_block|from_kind = 'message' and from_id = '$before_message' and kind = 'replies_to' and to_kind = 'message_block' and to_id = 'message/$message#b1'|from_kind = 'message' and from_id = '$before_message' and kind = 'replies_to' and to_kind = 'block'|select coalesce(node_kind, 'unmarked') from messages where id = '$before_message'|unmarked|message"
+    "comment replies_to comment|from_kind = 'comment' and from_id = '$before_comment' and kind = 'replies_to' and to_kind = 'comment' and to_id = '$root'|from_kind = 'comment' and from_id = '$before_comment' and kind = 'replies_to' and to_kind = 'comment'|select tuples_stored::text from comments where id = '$before_comment'|false|true"
+    "comment answers comment|from_kind = 'comment' and from_id = '$before_comment' and kind = 'answers' and to_kind = 'comment' and to_id = '$reply'|from_kind = 'comment' and from_id = '$before_comment' and kind = 'answers'|select tuples_stored::text from comments where id = '$before_comment'|false|true"
+    "comment replies_to ask|from_kind = 'comment' and from_id = '$before_ask_comment' and kind = 'replies_to' and to_kind = 'ask' and to_id = '$ask'|from_kind = 'comment' and from_id = '$before_ask_comment' and kind = 'replies_to' and to_kind = 'ask'|select tuples_stored::text from comments where id = '$before_ask_comment'|false|true"
+    "message replies_to message|from_kind = 'message' and from_id = '$before_message' and kind = 'replies_to' and to_kind = 'message' and to_id = '$message'|from_kind = 'message' and from_id = '$before_message' and kind = 'replies_to' and to_kind = 'message'|select coalesce(node_kind, 'unmarked') from messages where id = '$before_message'|unmarked|message"
+    "the comment's refs row|from_kind = 'comment' and from_id = '$before_comment' and kind = 'mentions' and to_kind = 'issue' and to_id = '$cited'|from_kind = 'comment' and from_id = '$before_comment' and kind = 'mentions'|select tuples_stored::text from refs where from_kind = 'comment' and from_id = '$before_comment' and to_id = '$cited'|false|true"
+    "the message's refs row|from_kind = 'message' and from_id = '$before_message' and kind = 'mentions' and to_kind = 'issue' and to_id = '$cited'|from_kind = 'message' and from_id = '$before_message' and kind = 'mentions'|select tuples_stored::text from refs where from_kind = 'message' and from_id = '$before_message' and to_id = '$cited'|false|true"
+    "the ask's refs row|from_kind = 'ask' and from_id = '$before_ask' and kind = 'mentions' and to_kind = 'issue' and to_id = '$cited'|from_kind = 'ask' and from_id = '$before_ask' and kind = 'mentions'|select tuples_stored::text from refs where from_kind = 'ask' and from_id = '$before_ask' and to_id = '$cited'|false|true"
+  )
+  for arm in "${arms[@]}"; do
+    local -a fields
+    IFS='|' read -r -a fields <<<"$arm"
+    isolated backfilled_arm "${fields[@]}"
+    [[ "$isolated_status" == 0 ]] || failed=1
+  done
+
+  local backfill_status=0
+  # shellcheck disable=SC2031 # lib.sh's `cli` exports its own PATH; this is the caller's
+  env -u PGHOSTADDR DATABASE_URL="$database_url" envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 || backfill_status=$?
+  [[ "$backfill_status" == 0 ]] ||
+    fail backfill "envoy-dispatch backfill-graph-store over the server's database" "exit $backfill_status: $(<"$work/backfill")"
+  if grep -q 'complete=false' "$work/backfill"; then
+    fail backfill "envoy-dispatch backfill-graph-store reports every kind complete" "$(grep 'complete=false' "$work/backfill")"
+  fi
+  pass backfill "envoy-dispatch backfill-graph-store over the server's database reports $(grep -c 'complete=true' "$work/backfill") kinds complete=true"
+  want_value backfill "the comments carry their node from dispatch://INFRA-1149's backfill, and the message and the ask theirs" \
+    "comment|comment|message|ask" "
+    select (select string_agg(coalesce(c.node_kind, '(none)'), '|' order by c.body) from comments c
+            where c.id in ('$before_comment', '$before_ask_comment'))
+           || '|' || (select coalesce(node_kind, '(none)') from messages where id = '$before_message')
+           || '|' || (select coalesce(max(n.kind), '(none)') from graph_nodes n where n.kind = 'ask' and n.id = '$before_ask')"
+  backfilled=1
+  for arm in "${arms[@]}"; do
+    local -a fields
+    IFS='|' read -r -a fields <<<"$arm"
+    isolated backfilled_arm "${fields[@]}"
+    [[ "$isolated_status" == 0 ]] || failed=1
+  done
+  local -a planted=("$before_comment" "$before_ask_comment" "$before_message" "$before_ask")
+  remove_backfilled_rows
+  before_comment=""
+  want_value backfill "the rows planted before this child are removed" 0 "
+    select (select count(*) from graph_nodes where id in ($(sql_list "${planted[@]}")))
+         + (select count(*) from graph_tuples where from_id in ($(sql_list "${planted[@]}")))
+         + (select count(*) from refs where from_id in ($(sql_list "${planted[@]}")))
+         + (select count(*) from comments where id::text in ($(sql_list "${planted[@]}")))"
+  return "$failed"
+}
+
 artifact_citation_section() {
   local section=artifact_citation document ref_key
   send POST "/api/v1/issues/$issue/artifacts" \
@@ -1091,11 +1232,7 @@ run_section agent_page
 # (dispatch://INFRA-1152/artifact/plan-md#b-t18).
 run_section retractions
 run_section older_rows
-# The backfill section runs here once this child's backfill exists: one row per arm written
-# before this child, each comment carrying its node from dispatch://INFRA-1149's backfill, answered
-# once by its old arm before this child's backfill and once by the tuple arm after it, the old arms
-# answering none of them, and the same of an item's refs row and of the document's citation
-# (dispatch://INFRA-1152/artifact/plan-md#b-t14).
+run_section backfill
 run_section artifact_citation
 run_section kinds
 # The section that addresses, lists and counts a delivery_attempt, a person and a role runs here

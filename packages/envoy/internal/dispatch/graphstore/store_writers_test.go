@@ -197,6 +197,21 @@ var storeWriteCallSites = []string{
 	"docs/ask_blocks.go#stateInvalidReasons",
 	"graphcensus/backfill.go#writeAskBatch",
 	"graphcensus/backfill.go#writeAskFollowerBatch",
+	// The backfill of every kind dispatch://INFRA-1152 moves but the mention tuples
+	// (graphcensus.backfillInbox), each batch with its rows locked first in the writers' order -
+	// owner rows, then an ask's project rows, then the item rows and an item's block state, then
+	// the user_threads rows in ascending login - before the nodes, then the tuples, then the
+	// markers: the messages, the comment pointers, an item's blocks and, through writeRelations,
+	// their links and the item's citations, the attempt rows, the user_threads rows and the five
+	// other read-state tables. What each comment, message, ask, answer and decline an older build
+	// wrote owed its thread is inboxwrite.RecordOlder's, listed with the one writer below.
+	"graphcensus/backfill_inbox.go#writeMessages",
+	"graphcensus/backfill_inbox.go#writeCommentPointers",
+	"graphcensus/backfill_inbox.go#writeBlocks",
+	"graphcensus/backfill_inbox.go#writeRelations",
+	"graphcensus/backfill_inbox.go#writeAttempts",
+	"graphcensus/backfill_inbox_threads.go#writeUserThreads",
+	"graphcensus/backfill_inbox_threads.go#writeMarks",
 	// The publisher's record of a batch, which splices the store's arms into its statement, and
 	// its record of a fallback pass, which splices in what each published copy delivered.
 	"outbox/mentions.go#recordFallbackCopies",
@@ -247,6 +262,12 @@ var storeWriteCallSites = []string{
 	// TestEveryObjectNodeWriterTakesTheStoreLockOrder hold the comment, reply, ask and message
 	// paths to its user_threads step.
 	"inboxwrite/record.go#Record",
+	// The same writer's record of a write an older build made (inboxwrite.RecordOlder), which the
+	// backfill runs for each such comment, message, ask, answer and decline in the batch that marks
+	// it, after its owner and item rows: participates_in, the user_threads rows of the people it
+	// reached locked in ascending login, then their delivered_to through ToPerson and the
+	// retractions of the dismissals it ended through FromPerson.
+	"inboxwrite/older.go#RecordOlder",
 	// The move of the person open asks wait on (dispatch://INFRA-1152 R2, inboxwrite.MoveWaiting),
 	// which patchIssue's assignee, putAskAskedOf, putProjectDefaultAssignee, the reopen's restore
 	// of withdrawn asks and a settlement's restore of an ask it retracted run after their event:

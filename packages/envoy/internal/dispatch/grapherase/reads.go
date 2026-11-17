@@ -68,12 +68,17 @@ type erasedRead struct {
 	// tupleSeqs are the seqs of the tuples the listing names, which the delete takes and no
 	// others (graphstore.EraseNode).
 	tupleSeqs []int64
-	artifacts []string
-	numbers   []int32
-	events    []redactedEvent
-	embedded  []embeddingRow
-	owners    events.OwnerRows
-	listing   listing
+	// readState are the node's rows of the six read-state tables, by table, and readStateScope
+	// the predicate that found them (readReadState): a person's every row, an item's the rows
+	// that name it.
+	readState      []readStateRows
+	readStateScope readStateScope
+	artifacts      []string
+	numbers        []int32
+	events         []redactedEvent
+	embedded       []embeddingRow
+	owners         events.OwnerRows
+	listing        listing
 }
 
 // read reads the node as the erase would remove it and every row that derives from it, and
@@ -112,7 +117,7 @@ func (e *Erasure) read(ctx context.Context, tx pgx.Tx) (erasedRead, error) {
 		return erasedRead{}, err
 	}
 	for _, step := range []func(context.Context, pgx.Tx, *erasedRead) error{
-		e.readTuples, e.readRows, e.readAncestors, e.readVersions, e.readReviews, e.readEmbeddings,
+		e.readTuples, e.readRows, e.readReadState, e.readAncestors, e.readVersions, e.readReviews, e.readEmbeddings,
 		e.readSearch, e.readExcerpts, e.readEvents, e.readHistory, e.readItemParts, e.readBlockers, e.readLeft,
 	} {
 		if err := step(ctx, tx, &read); err != nil {
@@ -313,7 +318,8 @@ func (e *Erasure) readTexts(ctx context.Context, tx pgx.Tx, read *erasedRead) er
 
 // readTuples lists every tuple out of the node and into it, by its seq, each of which goes with
 // the node. A value tuple is listed without its value, which can be text. Of an ask's node or a
-// block's, it also keeps the writers its authored_by, decided_by and answered_by tuples name
+// block's, it also keeps the writers its authored_by, decided_by and answered_by tuples name, and
+// of a comment's, a message's or an ask's the people its inbox tuples tie to it (reachedPerson)
 // (Erasure.Writers), which the record of the run holds once those tuples go.
 func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	rows, err := tx.Query(ctx, `
@@ -340,6 +346,9 @@ func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		}
 		if out && writesTheNode(e.Kind, kind, toKind) {
 			writers[ErasedWriter{Kind: toKind, ID: toID}] = struct{}{}
+		}
+		if person, reached := reachedPerson(e.Kind, out, fromKind, fromID, kind, toKind, toID); reached {
+			writers[ErasedWriter{Kind: graphstore.KindPerson, ID: person}] = struct{}{}
 		}
 		far := toKind + ":" + toID
 		if toKind == graphstore.KindValue {
@@ -524,6 +533,28 @@ func writesTheNode(nodeKind, kind, toKind string) bool {
 		return kind == graphstore.TupleAuthoredBy || kind == graphstore.TupleDecidedBy
 	}
 	return false
+}
+
+// reachedPerson answers the person a tuple of an erased comment, message or ask ties to it as one
+// of its thread's participants or readers (dispatch://INFRA-1152 R2 and R6): the far end of its
+// delivered_to into a person, and the near end of a participates_in, read_through, dismissed,
+// snoozed or reply_read from a person into it. Each such person's node was made by the write that
+// stated the tuple, and once the tuple and the item's user_threads and read-state rows are gone
+// nothing else may name them, so the record of the erase holds them (Erasure.Writers) as it holds
+// who wrote an ask.
+func reachedPerson(nodeKind string, out bool, fromKind, fromID, kind, toKind, toID string) (string, bool) {
+	if nodeKind != graphstore.KindComment && nodeKind != graphstore.KindMessage && nodeKind != graphstore.KindAsk {
+		return "", false
+	}
+	if out {
+		return toID, kind == graphstore.TupleDeliveredTo && toKind == graphstore.KindPerson
+	}
+	switch kind {
+	case graphstore.TupleParticipatesIn, graphstore.TupleReadThrough, graphstore.TupleDismissed,
+		graphstore.TupleSnoozed, graphstore.TupleReplyRead:
+		return fromID, fromKind == graphstore.KindPerson
+	}
+	return "", false
 }
 
 // readRows lists the node's row, its projection rows by key, the rows that cannot exist without

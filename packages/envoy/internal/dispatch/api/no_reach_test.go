@@ -568,14 +568,19 @@ func threeBadRequests(t *testing.T) {
 	// and proves nothing; so every route reads a row here, but the few listed in
 	// routesNoSeedAnswers, each of which needs something no seed of this test holds.
 	//
-	// Each route is sent the traversal words it does not declare. No route refuses an
+	// Each route is sent the traversal words it does not declare. No route but one refuses an
 	// undeclared query parameter, and the base build answered each of them as it answers the
 	// plain read, so the walked read must answer exactly that: a refusal is an answer
-	// production never gave, and fails as any other. A word a route does declare - `kind` on
-	// GET /api/v1/me/replies - is that route's own parameter, which it answers by its own
-	// rule, and is no traversal the caller handed it. A read whose rows can grow between the
-	// two reads (growingReads) is walked under a parameter it declares that holds it to the
-	// rows its plain read answered, so the two answers differ only where the walk did.
+	// production never gave, and fails as any other. The one is a route whose shape declares
+	// RefusesUndeclared, GET /api/v1/me/inbox: dispatch://INFRA-1152's plan, decision 7, has it
+	// refuse every key it does not declare with 400 INVALID_QUERY naming the key (c-routes-gone
+	// requires that refusal), so its walked read is held to exactly that answer
+	// (requireTheUndeclaredKeyRefused), which reads no row and so adds no reach and changes no
+	// shape. A word a route does declare - `kind` on GET /api/v1/me/replies - is that route's
+	// own parameter, which it answers by its own rule, and is no traversal the caller handed
+	// it. A read whose rows can grow between the two reads (growingReads) is walked under a
+	// parameter it declares that holds it to the rows its plain read answered, so the two
+	// answers differ only where the walk did.
 	//
 	// The event log answers only the events at or below the server's safe horizon, which a
 	// transaction open anywhere on the Postgres instance holds back (events.Horizon): under
@@ -624,6 +629,10 @@ func threeBadRequests(t *testing.T) {
 		} else {
 			answered++
 		}
+		if routeShapes[name].RefusesUndeclared {
+			requireTheUndeclaredKeyRefused(t, name, walk, walked)
+			continue
+		}
 		if plain.Code != walked.Code {
 			t.Errorf("%s answers %d at %s on its own and %d with a traversal parameter: %s",
 				name, plain.Code, target, walked.Code, firstLine(walked.Body.String()))
@@ -638,6 +647,34 @@ func threeBadRequests(t *testing.T) {
 		t.Fatalf("only %d read answered a row for the traversal probe, which is too few to prove anything", answered)
 	}
 	t.Logf("%d reads answered a row with and without a traversal parameter alike", answered)
+}
+
+// requireTheUndeclaredKeyRefused fails unless walked, the read of a route that refuses every key
+// it does not declare (RefusesUndeclared, plan decision 7 of dispatch://INFRA-1152), answers 400
+// INVALID_QUERY naming the first of walk's keys it does not declare, the one its handler reads
+// first (me_inbox.go reads the keys sorted), and nothing else.
+func requireTheUndeclaredKeyRefused(t *testing.T, name, walk string, walked *httptest.ResponseRecorder) {
+	t.Helper()
+	query, err := url.ParseQuery(walk)
+	if err != nil {
+		t.Fatalf("read the traversal query %q: %v", walk, err)
+	}
+	declared := queryTagsOf(routeShapes[name].Params)
+	var undeclared []string
+	for _, key := range slices.Sorted(maps.Keys(query)) {
+		if !slices.Contains(declared, key) {
+			undeclared = append(undeclared, key)
+		}
+	}
+	if len(undeclared) == 0 {
+		t.Fatalf("%s was walked with %q, which holds no key it does not declare, so its refusal proves nothing", name, walk)
+	}
+	var refusal struct{ Code, Error string }
+	if walked.Code != http.StatusBadRequest || json.Unmarshal(walked.Body.Bytes(), &refusal) != nil ||
+		refusal.Code != "INVALID_QUERY" || !strings.HasPrefix(refusal.Error, undeclared[0]+" is not a query parameter of ") {
+		t.Errorf("%s answers %d %s with a traversal parameter, want 400 INVALID_QUERY naming %s, the key it does not declare (plan decision 7)",
+			name, walked.Code, firstLine(walked.Body.String()), undeclared[0])
+	}
 }
 
 // routesNoSeedAnswers are the reads no object seedTwoProjects writes lets answer a row, each

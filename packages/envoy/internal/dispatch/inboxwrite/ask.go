@@ -127,7 +127,7 @@ type owed struct {
 // - each row marked tuples_stored as its mentions tuple is stated (markCitations). Where the ask
 // holds an answer whose moment the marker does not hold, that older build's answer owes, under
 // its own ask.answered event and at its own moment, its answerer's participates_in and one
-// delivered_to to each person it reached (answerReached). Each tuple carries the event of the
+// delivered_to to each person it reached (reachedBefore). Each tuple carries the event of the
 // write it belongs to, so the repeat key keeps it once beside the backfill's, which writes the
 // same tuple under the same event.
 func owedBy(ctx context.Context, tx pgx.Tx, ask *Ask) (owed, error) {
@@ -185,7 +185,7 @@ func owedBy(ctx context.Context, tx pgx.Tx, ask *Ask) (owed, error) {
 		answerer := model.CanonicalLogin(ask.answer.User)
 		who := model.Actor{Kind: "user", ID: ask.answer.User}
 		takesPart(graphstore.KindPerson, answerer, ask.answer.At, who, ask.answered)
-		reached, err := answerReached(ctx, tx, ask.id, ask.answer.At, answerer)
+		reached, err := reachedBefore(ctx, tx, thread{kind: graphstore.KindAsk, id: ask.id}, ask.answer.At, answerer)
 		if err != nil {
 			return owed{}, err
 		}
@@ -223,60 +223,4 @@ func markCitations(ctx context.Context, tx pgx.Tx, askID string, maker model.Act
 		cited = append(cited, tuple)
 	}
 	return cited, rows.Err()
-}
-
-// answerReached is who an older build's answer to ask askID, given at at by answerer, reached:
-// each person other than its writer who wrote in the ask's thread before it, never one who joined
-// after it, which is the rows the old trigger raised for that answer (T14's owed rule). Each
-// earlier writer is read from the store where the store holds their write - the authored_by of
-// the ask's node, and of each comment whose replies_to names the ask - from the log for an earlier
-// answer, its ask.answered event, and from a row the marker test passes for a write the store holds
-// nothing of yet: the ask's own row where its marker is null, and each comment of its thread whose
-// tuples_stored is false. It reads no marked row. The answer is sorted, each login once.
-func answerReached(ctx context.Context, tx pgx.Tx, askID string, at time.Time, answerer string) ([]string, error) {
-	rows, err := tx.Query(ctx, `
-		select distinct earlier.login from (
-			select t.to_id as login
-			from graph_tuples t
-			where t.from_kind = $4 and t.from_id = $1 and t.kind = $5 and t.to_kind = $6
-			  and t.asserted and t.at < $2
-			union all
-			select user_threads_login(a.author->>'id')
-			from asks a
-			where a.id = $1::uuid and a.tuples_stored_at is null and a.author->>'kind' = 'user' and a.created_at < $2
-			union all
-			select written.to_id
-			from graph_tuples reply
-			join graph_tuples written
-			  on written.from_kind = reply.from_kind and written.from_id = reply.from_id
-			 and written.kind = $5 and written.to_kind = $6 and written.asserted
-			where reply.to_kind = $4 and reply.to_id = $1 and reply.kind = $7 and reply.from_kind = $8
-			  and reply.asserted and reply.at < $2
-			union all
-			select user_threads_login(c.author->>'id')
-			from comments c
-			where c.ask_id = $1::uuid and not c.tuples_stored and c.author->>'kind' = 'user' and c.created_at < $2
-			union all
-			select user_threads_login(e.payload->'answer'->>'user')
-			from events e
-			where e.type in (`+askEventTypes+`) and e.type = 'ask.answered' and e.payload->>'id' = $1
-			  and (e.payload->'answer'->>'at')::timestamptz < $2
-		) as earlier
-		where earlier.login is not null and earlier.login <> '' and earlier.login <> $3
-		order by 1
-	`, askID, at, answerer, graphstore.KindAsk, graphstore.TupleAuthoredBy, graphstore.KindPerson,
-		graphstore.TupleRepliesTo, graphstore.KindComment)
-	if err != nil {
-		return nil, fmt.Errorf("read who the older answer of ask %s reached: %w", askID, err)
-	}
-	defer rows.Close()
-	var reached []string
-	for rows.Next() {
-		var login string
-		if err := rows.Scan(&login); err != nil {
-			return nil, fmt.Errorf("read who the older answer of ask %s reached: %w", askID, err)
-		}
-		reached = append(reached, login)
-	}
-	return reached, rows.Err()
 }

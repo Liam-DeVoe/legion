@@ -122,6 +122,30 @@ func AttemptOpened(ctx context.Context, tx pgx.Tx, key AttemptKey, who model.Act
 	return &kind, &id, opened, nil
 }
 
+// AttemptNode is the node of the attempt key names as the write that opened it makes it
+// (AttemptOpened), made by who at `at` and caused by event: the node the backfill writes for an
+// attempt row an older build inserted, which names none, before it names it on that row.
+func AttemptNode(key AttemptKey, who model.Actor, at time.Time, event int64) Node {
+	return agentNode(KindDeliveryAttempt, key.ID(), who, at, event)
+}
+
+// AttemptFactsAsWritten is what each named attempt holds, as Attempted states it, against what the
+// store holds of its node now, for the backfill of an attempt row an older build wrote, whose node
+// it has just written and named on the row: dated at the row's own created_at rather than the
+// transaction's time, written by who, at the sentinel for the caller to cause. It reads, and
+// appends nothing.
+func AttemptFactsAsWritten(ctx context.Context, tx pgx.Tx, who model.Actor, keys ...AttemptKey) ([]Tuple, error) {
+	return attemptTuples(ctx, tx, who, keys, attemptWritten)
+}
+
+// The moment an attempt's facts are dated by, as the read of its rows spells it: the
+// transaction's time, which a write of the row stamps the row with, or the row's own created_at,
+// which the backfill of a row an older build wrote reads.
+const (
+	attemptNow     = `now()`
+	attemptWritten = `d.created_at`
+)
+
 // attemptEnd is the far end of one of an attempt's relations.
 type attemptEnd struct{ kind, id string }
 
@@ -140,7 +164,7 @@ type attemptRow struct {
 // opened is (AttemptOpened): opened with each named row's facts added, held for the cause the
 // caller hands Caused, written by who. It reads and states as Attempted does, and appends nothing.
 func AttemptStated(ctx context.Context, tx pgx.Tx, opened Uncaused, who model.Actor, keys ...AttemptKey) (Uncaused, error) {
-	facts, err := attemptTuples(ctx, tx, who, keys)
+	facts, err := attemptTuples(ctx, tx, who, keys, attemptNow)
 	if err != nil {
 		return Uncaused{}, err
 	}
@@ -170,7 +194,7 @@ func AttemptStated(ctx context.Context, tx pgx.Tx, opened Uncaused, who model.Ac
 // a transition is stated at the sentinel, and each fact is appended once because this reads what
 // the node already states before it appends.
 func Attempted(ctx context.Context, tx pgx.Tx, keys ...AttemptKey) error {
-	facts, err := attemptTuples(ctx, tx, AttemptWriter, keys)
+	facts, err := attemptTuples(ctx, tx, AttemptWriter, keys, attemptNow)
 	if err != nil {
 		return err
 	}
@@ -181,8 +205,9 @@ func Attempted(ctx context.Context, tx pgx.Tx, keys ...AttemptKey) error {
 }
 
 // attemptTuples is the tuples that bring what the store holds of each named attempt's node to
-// what its row now says, written by who at the transaction's time and at the sentinel.
-func attemptTuples(ctx context.Context, tx pgx.Tx, who model.Actor, keys []AttemptKey) ([]Tuple, error) {
+// what its row now says, written by who at moment (attemptNow or attemptWritten) and at the
+// sentinel.
+func attemptTuples(ctx context.Context, tx pgx.Tx, who model.Actor, keys []AttemptKey, moment string) ([]Tuple, error) {
 	var comments, targets, messages []string
 	var commentAttempts, messageAttempts []int32
 	for _, key := range keys {
@@ -195,14 +220,14 @@ func attemptTuples(ctx context.Context, tx pgx.Tx, who model.Actor, keys []Attem
 	}
 	var rows []attemptRow
 	if len(comments) > 0 {
-		read, err := readCommentAttempts(ctx, tx, comments, targets, commentAttempts)
+		read, err := readCommentAttempts(ctx, tx, comments, targets, commentAttempts, moment)
 		if err != nil {
 			return nil, err
 		}
 		rows = append(rows, read...)
 	}
 	if len(messages) > 0 {
-		read, err := readMessageAttempts(ctx, tx, messages, messageAttempts)
+		read, err := readMessageAttempts(ctx, tx, messages, messageAttempts, moment)
 		if err != nil {
 			return nil, err
 		}
@@ -228,11 +253,12 @@ func attemptTuples(ctx context.Context, tx pgx.Tx, who model.Actor, keys []Attem
 	return tuples, nil
 }
 
-// readCommentAttempts reads the named comment_deliveries rows that name their node. A comment's
-// attempt is owed to the route its row targets, a session or a role (model.ParseRoute).
-func readCommentAttempts(ctx context.Context, tx pgx.Tx, comments, targets []string, attempts []int32) ([]attemptRow, error) {
+// readCommentAttempts reads the named comment_deliveries rows that name their node, each at
+// moment. A comment's attempt is owed to the route its row targets, a session or a role
+// (model.ParseRoute).
+func readCommentAttempts(ctx context.Context, tx pgx.Tx, comments, targets []string, attempts []int32, moment string) ([]attemptRow, error) {
 	rows, err := tx.Query(ctx, `
-		select d.node_address, now(), d.attempt, d.state, d.envelope_id, d.error, d.resolve_error,
+		select d.node_address, `+moment+`, d.attempt, d.state, d.envelope_id, d.error, d.resolve_error,
 		       d.duplicate, d.claimed_at, d.target, d.session_id, d.reply_id::text
 		from unnest($1::uuid[], $2::text[], $3::int[]) as named (comment_id, target, attempt)
 		join comment_deliveries d
@@ -261,13 +287,13 @@ func readCommentAttempts(ctx context.Context, tx pgx.Tx, comments, targets []str
 	})
 }
 
-// readMessageAttempts reads the named message_deliveries rows that name their node. A message's
-// attempt is owed to the route its message targets (messages.target), the conversation every
-// attempt of it belongs to, and its row names the session it resolved, or the empty string before
-// it resolved one.
-func readMessageAttempts(ctx context.Context, tx pgx.Tx, messages []string, attempts []int32) ([]attemptRow, error) {
+// readMessageAttempts reads the named message_deliveries rows that name their node, each at
+// moment. A message's attempt is owed to the route its message targets (messages.target), the
+// conversation every attempt of it belongs to, and its row names the session it resolved, or the
+// empty string before it resolved one.
+func readMessageAttempts(ctx context.Context, tx pgx.Tx, messages []string, attempts []int32, moment string) ([]attemptRow, error) {
 	rows, err := tx.Query(ctx, `
-		select d.node_address, now(), d.attempt, d.state, d.envelope_id, d.error, d.duplicate,
+		select d.node_address, `+moment+`, d.attempt, d.state, d.envelope_id, d.error, d.duplicate,
 		       d.claimed_at, d.accepted_at, d.accepted_as, coalesce(m.target, ''), nullif(d.session_id, ''),
 		       d.reply_id::text
 		from unnest($1::uuid[], $2::int[]) as named (message_id, attempt)

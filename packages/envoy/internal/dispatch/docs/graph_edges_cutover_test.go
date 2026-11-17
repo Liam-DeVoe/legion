@@ -28,22 +28,24 @@ import (
 // graphEdgesArm is one arm of graph_edges as this test reads it back: the relation the arm reads
 // first, and what is to become of it. The relation is enough to name an arm here because the
 // list is held in the view's own order, so two arms over one table are told apart by where they
-// stand. projects is, for the arms over a kind a child moved into the store, the kind whose rows
-// the store now holds beside that arm's table, and empty for every other arm; renders is, for the
-// moved arms over comments and over asks, the edge kind each renders, which is what tells their
-// rows apart. stated is, for an arm dispatch://INFRA-1152 has begun to move, the projection the
-// store's arms name for it: the store answers that arm's relation for a row that carries its
-// marker - a messages row its node, a comments row its tuples_stored - and the arm answers the
-// rest, but no backfill states that arm's older rows yet, so it is not one of the arms held to
-// answering rows before the backfill and none after it, and it takes projects once that child's
-// backfill does. joins is, for an arm over graph_tuples, the projection tables whose row it
-// requires to carry the tuple's node (tupleJoins), or that marker. text is the arm's own SQL as
-// the catalogue prints it, which only an arm read back carries.
+// stand. projects is, for the arms over a kind a child moved into the store, the projection whose
+// rows the store now holds beside that arm's table, and empty for every other arm; renders, from
+// and to are, for the moved arms over one table that render more than one relation, the edge kind
+// each renders and the kinds of the ends it renders it between, which is what tells their rows
+// apart (an empty one tells nothing). stated is, for an arm whose rows the store answers in part
+// but whose table is not one moved kind's, the projection the store's arms name for the rows it
+// answers: the refs arm, whose rows out of a comment, a message or an ask the store answers for a
+// row that holds tuples_stored and whose rows out of a document it answers none of, so it is no arm
+// held to answering rows before the backfill and none after it. joins is, for an arm over
+// graph_tuples, the projection tables whose row it requires to carry the tuple's node
+// (tupleJoins), or that marker. text is the arm's own SQL as the catalogue prints it, which only
+// an arm read back carries.
 type graphEdgesArm struct {
 	relation string
 	fate     string
 	projects string
 	renders  string
+	from, to string
 	stated   string
 	joins    []string
 	text     string
@@ -55,8 +57,22 @@ const movedArmsDeletedBy = "dispatch://INFRA-1253"
 
 // askArmsDeletedBy is the child whose own pull request deletes the three arms over the kinds
 // dispatch://INFRA-1150 moved - an ask's anchored_to and owned_by over asks, and followed_by over
-// ask_followers - with the tuple arm's joins to those two tables.
+// ask_followers - with the tuple arm's joins to those two tables, and the thirteen arms over the
+// kinds dispatch://INFRA-1152 moved: the root, dispatch://INFRA-1098.
 const askArmsDeletedBy = "dispatch://INFRA-1098"
+
+// The children that moved the arms the root deletes, as each such arm's fate names its mover, which
+// is what tells the root's two sets apart.
+const (
+	askArmsMovedBy   = "dispatch://INFRA-1150"
+	inboxArmsMovedBy = "dispatch://INFRA-1152"
+)
+
+// inboxArmFate is the fate of an arm over a kind dispatch://INFRA-1152 moved: what the store
+// answers, the backfill of that child that marks the rest, and the root that deletes the arm.
+func inboxArmFate(what string) string {
+	return what + ", " + inboxArmsMovedBy + "'s backfill marks the rest, and " + askArmsDeletedBy + " deletes this arm"
+}
 
 // graphEdgesArms is every arm of graph_edges, in the order the view states them. An arm the view
 // gains or loses fails this test, whichever source column it reads: the store is to answer each
@@ -72,25 +88,38 @@ var graphEdgesArms = []graphEdgesArm{
 	{relation: "comments", projects: "comment", renders: "anchored_to", fate: "a comment's anchored_to; the store answers it for a row that carries its node, and " + movedArmsDeletedBy + " deletes this arm"},
 	{relation: "asks", projects: "ask", renders: "owned_by", fate: "an ask's owned_by; the store answers it for a row that carries its node (dispatch://INFRA-1150), and " + askArmsDeletedBy + " deletes this arm"},
 	{relation: "comments", projects: "comment", renders: "owned_by", fate: "a comment's owned_by; the store answers it for a row that carries its node, and " + movedArmsDeletedBy + " deletes this arm"},
-	{relation: "comments", stated: "comment_pointer", fate: "a reply's replies_to its thread; the store answers it for a comments row that holds tuples_stored, and dispatch://INFRA-1152 backfills the rest"},
-	{relation: "comments", stated: "comment_pointer", fate: "a reply's answers; the store answers it for a comments row that holds tuples_stored, and dispatch://INFRA-1152 backfills the rest"},
-	{relation: "comments", stated: "comment_pointer", fate: "a reply's replies_to an ask; the store answers it for a comments row that holds tuples_stored, and dispatch://INFRA-1152 backfills the rest"},
-	{relation: "messages", stated: "message", fate: "a message's replies_to; the store answers it for a messages row that carries its node, and dispatch://INFRA-1152 backfills the rest"},
+	{relation: "comments", projects: "comment_pointer", renders: "replies_to", to: "comment",
+		fate: inboxArmFate("a reply's replies_to its thread; the store answers it for a comments row that holds tuples_stored")},
+	{relation: "comments", projects: "comment_pointer", renders: "answers", to: "comment",
+		fate: inboxArmFate("a reply's answers; the store answers it for a comments row that holds tuples_stored")},
+	{relation: "comments", projects: "comment_pointer", renders: "replies_to", to: "ask",
+		fate: inboxArmFate("a reply's replies_to an ask; the store answers it for a comments row that holds tuples_stored")},
+	{relation: "messages", projects: "message", renders: "replies_to", to: "message",
+		fate: inboxArmFate("a message's replies_to; the store answers it for a messages row that carries its node")},
 	{relation: "ask_followers", projects: "ask_follower", renders: "followed_by", fate: "followed_by; the store answers it for a row that carries its ask's node (dispatch://INFRA-1150), and " + askArmsDeletedBy + " deletes this arm"},
 	{relation: "components", fate: "a component's part_of; no child has moved it"},
 	{relation: "component_depends", fate: "depends_on; no child has moved it"},
 	{relation: "issue_component_members", fate: "affects; no child has moved it"},
 	{relation: "block_refs", projects: "block_ref", fate: "a block's links; the store answers them for a row that carries its node, and " + movedArmsDeletedBy + " deletes this arm"},
 	{relation: "document_blocks", projects: "block", fate: "a block's part_of its document; the store answers it for a row that carries its node, and " + movedArmsDeletedBy + " deletes this arm"},
-	{relation: "comment_blocks", stated: "item_block", fate: "a comment block's part_of; the store answers it for a row that names its node, and dispatch://INFRA-1152 backfills the rest"},
-	{relation: "message_blocks", stated: "item_block", fate: "a message block's part_of; the store answers it for a row that names its node, and dispatch://INFRA-1152 backfills the rest"},
-	{relation: "ask_blocks", stated: "item_block", fate: "an ask part's part_of; the store answers it for a row that names its node, and dispatch://INFRA-1152 backfills the rest"},
-	{relation: "comment_block_refs", stated: "item_link", fate: "a comment block's links; the store answers them for a row that names its node, and dispatch://INFRA-1152 backfills the rest"},
-	{relation: "message_block_refs", stated: "item_link", fate: "a message block's links; the store answers them for a row that names its node, and dispatch://INFRA-1152 backfills the rest"},
-	{relation: "ask_block_refs", stated: "item_link", fate: "an ask part's links; the store answers them for a row that names its node, and dispatch://INFRA-1152 backfills the rest"},
-	{relation: "comments", stated: "comment_pointer", fate: "a reply's replies_to a comment's block; the store answers it for a comments row that holds tuples_stored, and dispatch://INFRA-1152 backfills the rest"},
-	{relation: "comments", stated: "comment_pointer", fate: "a reply's replies_to an ask's part; the store answers it for a comments row that holds tuples_stored, and dispatch://INFRA-1152 backfills the rest"},
-	{relation: "messages", stated: "message", fate: "a message's replies_to a message's block; the store answers it for a messages row that carries its node, and dispatch://INFRA-1152 backfills the rest"},
+	{relation: "comment_blocks", projects: "item_block", renders: "part_of", from: "comment_block",
+		fate: inboxArmFate("a comment block's part_of; the store answers it for a row that names its node")},
+	{relation: "message_blocks", projects: "item_block", renders: "part_of", from: "message_block",
+		fate: inboxArmFate("a message block's part_of; the store answers it for a row that names its node")},
+	{relation: "ask_blocks", projects: "item_block", renders: "part_of", from: "ask_block",
+		fate: inboxArmFate("an ask part's part_of; the store answers it for a row that names its node")},
+	{relation: "comment_block_refs", projects: "item_link", from: "comment_block",
+		fate: inboxArmFate("a comment block's links; the store answers them for a row that names its node")},
+	{relation: "message_block_refs", projects: "item_link", from: "message_block",
+		fate: inboxArmFate("a message block's links; the store answers them for a row that names its node")},
+	{relation: "ask_block_refs", projects: "item_link", from: "ask_block",
+		fate: inboxArmFate("an ask part's links; the store answers them for a row that names its node")},
+	{relation: "comments", projects: "comment_pointer", renders: "replies_to", to: "comment_block",
+		fate: inboxArmFate("a reply's replies_to a comment's block; the store answers it for a comments row that holds tuples_stored")},
+	{relation: "comments", projects: "comment_pointer", renders: "replies_to", to: "ask_block",
+		fate: inboxArmFate("a reply's replies_to an ask's part; the store answers it for a comments row that holds tuples_stored")},
+	{relation: "messages", projects: "message", renders: "replies_to", to: "message_block",
+		fate: inboxArmFate("a message's replies_to a message's block; the store answers it for a messages row that carries its node")},
 	{relation: "graph_tuples", joins: []string{"document_blocks", "block_refs", "comments", "comment_pointers", "messages", "citations", "asks", "ask_followers"},
 		fate: "the store itself, which answers an edge of a moved kind while the row that names it carries its node; it stays"},
 	{relation: "graph_tuples", joins: []string{"messages"},
@@ -153,34 +182,37 @@ const previousGraphEdgesMigration = "../store/migrations/20261105014808_comments
 // The arm list is read back out of the catalogue, split on its top-level UNION ALL and compared
 // with the one declared above, so no arm over a source column can be added anywhere in this branch
 // without this test naming it, and the list is printed with the child that deletes each arm that
-// remains. Each of the four arms over a moved kind is held to its `node_kind is null` test and to
-// the child that deletes it, each arm the store has begun to answer (stated) to its own per-row
-// test - `node_kind is null` over messages, `not tuples_stored` over comments - and each arm over
-// the tuples to its join to each projection table it declares; no arm may read a table that
-// decides the switch by kind.
+// remains. Each of the seventeen arms over a moved kind - the four over the kinds
+// dispatch://INFRA-1149 moved and the thirteen over the kinds dispatch://INFRA-1152 moved - is held
+// to its per-row test - `node_kind is null`, or `not tuples_stored` over a comment's pointers - and
+// to the child that deletes it, the refs arm, which the store has begun to answer (stated), to its
+// `not tuples_stored`, and each arm over the tuples to its join to each projection table it
+// declares; no arm may read a table that decides the switch by kind.
 //
 // Every reading reads the whole view, the previous release's view over the same rows, and each of
-// the four arms and the tuple arm on their own. The whole view must equal the previous release's,
-// row for row with each row's time and causing write. Each row of a moved kind the previous
-// release reads goes to exactly one arm, decided by its own projection row: the four arms answer
-// exactly the rows whose row carries no node, and the tuple arm exactly those whose row carries it,
-// with the rows of a stated arm whose row carries its marker, and nothing else, so it answers no
-// edge whose row is gone or names no node. Every reading counts as well: for every node kind its
-// arm table declares, refs.BacklinkCounts must answer what the previous release's count statement
-// answers over that release's view, at every id of the kind an edge of that view, a tuple or a
-// block reference points at and at one id nothing points at.
+// the seventeen arms and the tuple arm on their own. The whole view must equal the previous
+// release's, row for row with each row's time and causing write. Each row of a moved kind the
+// previous release reads goes to exactly one arm, decided by its own projection row: the seventeen
+// arms answer exactly the rows whose row carries no marker, and the tuple arm exactly those whose
+// row carries it, with the rows of the refs arm whose row holds tuples_stored, and nothing else, so
+// it answers no edge whose row is gone or names no node. Every reading counts as well: for every
+// node kind its arm table declares, refs.BacklinkCounts must answer what the previous release's
+// count statement answers over that release's view, at every id of the kind an edge of that view,
+// a tuple or a block reference points at and at one id nothing points at.
 //
-// The readings, in order. Before the backfill, one document's rows and the comments name no node
-// beside documents the index wrote and the messages and comments this build wrote, whose replies
-// and answers the store's arms answer throughout, and each of the four arms answers rows of its
-// own. After the backfill every row is stamped, the four arms answer nothing and the tuple arm
-// answers every row of their kinds, and the whole view is the reading before it. A comment and a
-// block reference then written as the previous release writes them, naming no node, come from
-// their old arms. Then the rollback: a stamped block row, a stamped block reference and a stamped
-// comment deleted with no retraction, as a build of the previous release deletes them, answer from
-// no arm; a second stamped block row and block reference deleted and written again naming no node
-// answer once each, from the old arm. The store census then reports a difference for each of the
-// three deleted rows, which is what the release that deletes an old arm reads first.
+// The readings, in order. Before the backfill, one document's rows, the comments written before
+// the store and the comments, the message and the ask written before dispatch://INFRA-1152 with
+// their blocks, links and citations name no marker, beside documents the index wrote and the
+// messages, comments and ask this build wrote, which the store's arms answer throughout, and each
+// of the seventeen arms answers rows of its own. After the backfill every row is marked, the
+// seventeen arms answer nothing and the tuple arm answers every row of their kinds, and the whole
+// view is the reading before it. A comment and a block reference then written as the previous
+// release writes them, naming no node, come from their old arms. Then the rollback: a stamped block
+// row, a stamped block reference and a stamped comment deleted with no retraction, as a build of
+// the previous release deletes them, answer from no arm; a second stamped block row and block
+// reference deleted and written again naming no node answer once each, from the old arm. The store
+// census then reports a difference for each of the three deleted rows, which is what the release
+// that deletes an old arm reads first.
 //
 // Last, the announcement: a build of the previous release announced itself naming only its
 // commit, and once every live process serves this build its announcement lists the kinds the
@@ -196,7 +228,7 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 			"write the kind's tuples and let the store's own arm answer it, or declare the new arm here with the child that takes it.",
 			armRelations(read), want)
 	}
-	moved := movedArms(t, read, movedArmsDeletedBy, 4)
+	moved := append(movedArms(t, read, movedArmsDeletedBy, "", 4), movedArms(t, read, askArmsDeletedBy, inboxArmsMovedBy, 13)...)
 	stores := storeArms(t, read)
 	requireTheStatedArmsTestTheirRows(t, read)
 	createPreviousGraphEdges(t, database)
@@ -214,7 +246,7 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 	}
 	projected := before.view
 	projectedCounts := before.counts
-	// Each of the four answers rows of its own before the backfill, so finding it empty after
+	// Each of the arms over a moved kind answers rows of its own before the backfill, so finding it empty after
 	// it is the per-row test at work and not an arm with nothing to say.
 	for index, arm := range moved {
 		t.Logf("arm %d (%s) answers %d rows before the backfill", arm.place, arm.relation, len(before.arms[index]))
@@ -289,7 +321,7 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 }
 
 // movedArm is one arm of the view as read back, with its place in the view, counted from one: one
-// of the four arms over a kind this change moved, or the tuple arm.
+// of the arms over a kind a child moved, or the tuple arm.
 type movedArm struct {
 	place int
 	graphEdgesArm
@@ -308,9 +340,13 @@ var switchedByKind = regexp.MustCompile(`graph_store_cutover`)
 
 // movedArms holds each arm over a moved kind to the per-row test over its own table and to the
 // child that deletes it, and answers, with their text for reading on their own, the want arms
-// deletedBy deletes: the four over the kinds dispatch://INFRA-1149 moved (movedArmsDeletedBy) or
-// the three over the kinds dispatch://INFRA-1150 moved (askArmsDeletedBy).
-func movedArms(t *testing.T, read []graphEdgesArm, deletedBy string, want int) []movedArm {
+// deletedBy deletes that movedBy moved, or that deletedBy deletes alone where movedBy is empty:
+// the four over the kinds dispatch://INFRA-1149 moved (movedArmsDeletedBy), the three over the
+// kinds dispatch://INFRA-1150 moved (askArmsMovedBy) and the thirteen over the kinds
+// dispatch://INFRA-1152 moved (inboxArmsMovedBy), the root deleting both of the last two sets. An
+// arm's per-row test is `node_kind is null`, or for an arm whose projection marks its rows another
+// way the test of that marker (statedRowTests): a comments row's tuples_stored.
+func movedArms(t *testing.T, read []graphEdgesArm, deletedBy, movedBy string, want int) []movedArm {
 	t.Helper()
 	for index, arm := range read {
 		if switchedByKind.MatchString(arm.text) {
@@ -325,15 +361,20 @@ func movedArms(t *testing.T, read []graphEdgesArm, deletedBy string, want int) [
 		}
 		arm := read[index]
 		arm.fate, arm.projects, arm.renders = declared.fate, declared.projects, declared.renders
-		if !nodelessRowTest.MatchString(arm.text) {
-			t.Errorf("arm %d (%s) over the moved kind %s carries no `node_kind is null` test, so it answers rows the store answers too:\n%s",
-				index+1, arm.relation, declared.projects, arm.text)
+		arm.from, arm.to = declared.from, declared.to
+		test := nodelessRowTest
+		if marker, own := statedRowTests[declared.projects]; own {
+			test = marker
+		}
+		if !test.MatchString(arm.text) {
+			t.Errorf("arm %d (%s) over the moved kind %s carries no `%s` test, so it answers rows the store answers too:\n%s",
+				index+1, arm.relation, declared.projects, test, arm.text)
 		}
 		if !strings.Contains(declared.fate, movedArmsDeletedBy) && !strings.Contains(declared.fate, askArmsDeletedBy) {
 			t.Errorf("arm %d (%s) over the moved kind %s is declared with the fate %q, which names neither %s nor %s, the children that delete the moved arms",
 				index+1, arm.relation, declared.projects, declared.fate, movedArmsDeletedBy, askArmsDeletedBy)
 		}
-		if !strings.Contains(declared.fate, deletedBy) {
+		if !strings.Contains(declared.fate, deletedBy) || (movedBy != "" && !strings.Contains(declared.fate, movedBy)) {
 			continue
 		}
 		moved = append(moved, movedArm{place: index + 1, graphEdgesArm: arm})
@@ -504,7 +545,7 @@ func createPreviousGraphEdges(t *testing.T, database *store.Store) {
 }
 
 // graphEdgesReading is one reading of the view: the whole view, the previous release's view over
-// the same rows, each of the four arms over a moved kind on its own in the order movedArms
+// the same rows, each of the arms over a moved kind on its own in the order movedArms
 // answers them, the tuple arm on its own, and refs.BacklinkCounts for every node kind its arm
 // table declares, kind by kind.
 type graphEdgesReading struct {
@@ -514,7 +555,7 @@ type graphEdgesReading struct {
 	counts         map[string]map[string]int
 }
 
-// answering is how often the reading answers edge: from the whole view, from each of the four
+// answering is how often the reading answers edge: from the whole view, from each of the moved
 // arms and from the tuple arm.
 func (r graphEdgesReading) answering(edge graphEdge) (view int, arms []int, tuple int) {
 	count := func(rows []graphEdgeRow) int {
@@ -535,7 +576,7 @@ func (r graphEdgesReading) answering(edge graphEdge) (view int, arms []int, tupl
 
 // readEachArm takes one reading and fails unless every row was answered by the arm its own
 // projection row decides: the whole view equals the previous release's over the same rows, each of
-// the four arms answers exactly the rows of its kind whose row carries no node, and the store's
+// the moved arms answers exactly the rows of its kind whose row carries no marker, and the store's
 // arms between them exactly the rows of the moved kinds and of the stated arms whose row carries
 // it. It fails as well unless this build's backlink counts are the previous release's over the
 // same rows (requireBacklinkCountsAsThePreviousRelease).
@@ -582,7 +623,9 @@ func readEachArm(t *testing.T, database *store.Store, stage string, moved, store
 // false for an edge of a kind no moved arm carries. A block's edge is a document_blocks row's when
 // it is the part_of to its document, and a block_refs row's otherwise; a comment's anchored_to and
 // owned_by are each one comments arm's, an ask's each one asks arm's, and an ask's followed_by the
-// ask_followers arm's.
+// ask_followers arm's. A comment's and a message's replies_to and answers are each the arm of what
+// they render to; an item block's part_of is its blocks table's arm, and its every other edge its
+// links table's.
 func movedArmOf(moved []movedArm, row graphEdgeRow) (int, bool) {
 	membership := row.kind == "part_of" && row.toKind == "artifact"
 	for index, arm := range moved {
@@ -591,7 +634,11 @@ func movedArmOf(moved []movedArm, row graphEdgeRow) (int, bool) {
 			arm.projects == "block_ref" && row.fromKind == refs.BlockNodeKind && !membership,
 			arm.projects == "comment" && row.fromKind == "comment" && row.kind == arm.renders,
 			arm.projects == "ask" && row.fromKind == graphstore.KindAsk && row.kind == arm.renders,
-			arm.projects == "ask_follower" && row.fromKind == graphstore.KindAsk && row.kind == arm.renders:
+			arm.projects == "ask_follower" && row.fromKind == graphstore.KindAsk && row.kind == arm.renders,
+			arm.projects == "comment_pointer" && row.fromKind == "comment" && row.kind == arm.renders && row.toKind == arm.to,
+			arm.projects == "message" && row.fromKind == "message" && row.kind == arm.renders && row.toKind == arm.to,
+			arm.projects == "item_block" && row.fromKind == arm.from && row.kind == "part_of",
+			arm.projects == "item_link" && row.fromKind == arm.from && row.kind != "part_of":
 			return index, true
 		}
 	}
@@ -1420,6 +1467,9 @@ func seedGraphEdgeFixture(t *testing.T, database *store.Store, service *Service)
 	writeCommentAsThisBuild(t, database, graphstore.CommentPointers{AskID: ask}, "a comment on the ask")
 	writeCommentAsThisBuild(t, database, graphstore.CommentPointers{AskID: ask, RepliesToBlock: "ask/" + ask + "#b1"},
 		"a comment on the ask's question")
+	// The same kinds as a build before dispatch://INFRA-1152 writes them, one row per arm of that
+	// child's thirteen, which name no marker of its own until its backfill marks them.
+	writeItemsAsAnOlderBuild(t, database, thread, reply, ask, root)
 	var blocks, links, citations int
 	if err := database.Pool.QueryRow(ctx, `
 		select (select count(*) from comment_blocks where node_kind is not null)
@@ -1437,6 +1487,87 @@ func seedGraphEdgeFixture(t *testing.T, database *store.Store, service *Service)
 			blocks, links, citations)
 	}
 	return graphEdgeFixture{target: target, plan: plan, anchored: anchored}
+}
+
+// writeItemsAsAnOlderBuild writes, as a build before dispatch://INFRA-1152 writes them, a comment
+// that replies to thread, answers reply and names reply's first block, a comment on ask naming its
+// question, a message replying to root and naming its first block, and an ask, each on CORE-1 with
+// one body block that links to CORE-2 and, but the second comment, its citation of CORE-2: rows
+// that name no node and hold no tuples_stored, a comment naming no node as one written before the
+// store does, which dispatch://INFRA-1149's backfill gives it. Each item's block index is settled
+// as that build's index settles it, so this build's tick reads nothing owed and leaves the rows as
+// they were written. Between them the rows give each of that child's thirteen arms a row of its own
+// and the refs arm a row out of each item sort.
+func writeItemsAsAnOlderBuild(t *testing.T, database *store.Store, thread, reply, ask, root string) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the items of an older build: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	var comment, onAsk, message, asked string
+	for _, item := range []struct {
+		id        *string
+		statement string
+		args      []any
+	}{
+		{&comment, `insert into comments (issue_key, author, body, reply_to, answers, replies_to_block)
+			values ('CORE-1', '{"kind":"user","id":"alice"}', 'Before the child.', $1::uuid, $2::uuid, $3) returning id::text`,
+			[]any{thread, reply, "comment/" + reply + "#b1"}},
+		{&onAsk, `insert into comments (issue_key, author, body, ask_id, replies_to_block)
+			values ('CORE-1', '{"kind":"user","id":"alice"}', 'On the question, before the child.', $1::uuid, $2) returning id::text`,
+			[]any{ask, "ask/" + ask + "#b1"}},
+		{&message, `insert into messages (issue_key, author, body, in_reply_to, replies_to_block)
+			values ('CORE-1', '{"kind":"user","id":"alice"}', 'Before the child.', $1::uuid, $2) returning id::text`,
+			[]any{root, "message/" + root + "#b1"}},
+		{&asked, `insert into asks (issue_key, author, question)
+			values ('CORE-1', '{"kind":"user","id":"alice"}', 'Before the child?') returning id::text`, nil},
+	} {
+		if err := tx.QueryRow(ctx, item.statement, item.args...).Scan(item.id); err != nil {
+			t.Fatalf("write an item as an older build: %v", err)
+		}
+	}
+	for _, item := range []struct {
+		kind, id, blockType string
+		cites               bool
+	}{{"comment", comment, "paragraph", true}, {"comment", onAsk, "paragraph", false},
+		{"message", message, "paragraph", true}, {"ask", asked, "question", true}} {
+		node := item.kind + "/" + item.id + "#b1"
+		blocks := `insert into ` + item.kind + `_blocks (` + item.kind + `_id, block_id, node_id, position, type, text_sha256, excerpt,
+			created_at, made_at, changed_revision, changed_at) values ($1::uuid, 'b1', $2, 0, $3, '', 'Before the child.', now(), now(), 1, now())`
+		state := `update ` + item.kind + `_block_state set revision = 1, next_block = 2, body_sha256 = '', owed_at = null, windows_owed_at = null
+			where ` + item.kind + `_id = $1::uuid`
+		if item.kind == "message" {
+			blocks = `insert into message_blocks (message_id, block_id, node_id, position, type, text_sha256, excerpt,
+				created_at, made_at, changed_at) values ($1::uuid, 'b1', $2, 0, $3, '', 'Before the child.', now(), now(), now())`
+			state = `update message_block_state set body_sha256 = '', owed_at = null, windows_owed_at = null where message_id = $1::uuid`
+		}
+		type statement struct {
+			sql  string
+			args []any
+		}
+		statements := []statement{
+			{blocks, []any{item.id, node, item.blockType}},
+			{state, []any{item.id}},
+			{`delete from refs_grammar_owed where kind = $1 and id = $2::uuid`, []any{item.kind, item.id}},
+		}
+		if item.cites {
+			statements = append(statements,
+				statement{`insert into ` + item.kind + `_block_refs (` + item.kind + `_id, block_id, from_node, to_kind, to_id, kind, created_at)
+					values ($1::uuid, 'b1', $2, 'issue', 'CORE-2', 'mentions', now())`, []any{item.id, node}},
+				statement{`insert into refs (from_kind, from_id, to_kind, to_id, kind, created_at) values ($1, $2, 'issue', 'CORE-2', 'mentions', now())`,
+					[]any{item.kind, item.id}})
+		}
+		for _, statement := range statements {
+			if _, err := tx.Exec(ctx, statement.sql, statement.args...); err != nil {
+				t.Fatalf("write the block of %s %s as an older build: %v", item.kind, item.id, err)
+			}
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the items of an older build: %v", err)
+	}
 }
 
 // graphEdgeItemCitation is what a message, a comment and an ask of the fixture cite: an issue,
@@ -1768,8 +1899,8 @@ func TestTheAsksArmsAnswerEachRowOnce(t *testing.T) {
 	if want := armRelations(graphEdgesArms); !slices.Equal(armRelations(read), want) {
 		t.Fatalf("graph_edges reads %v; this test declares %v", armRelations(read), want)
 	}
-	asked := movedArms(t, read, askArmsDeletedBy, 3)
-	moved := append(movedArms(t, read, movedArmsDeletedBy, 4), asked...)
+	asked := movedArms(t, read, askArmsDeletedBy, askArmsMovedBy, 3)
+	moved := append(movedArms(t, read, movedArmsDeletedBy, "", 4), asked...)
 	firstAsked := len(moved) - len(asked)
 	stores := storeArms(t, read)
 	createPreviousGraphEdges(t, database)
