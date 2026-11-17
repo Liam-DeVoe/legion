@@ -1,8 +1,14 @@
 import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { type ArtifactRebuildReport, MAX_ISSUE_ADVANCES } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
-import { type RenderResult, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import {
+  type BoundFunctions,
+  type queries,
+  type RenderResult,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 
 import { graphNode } from "../../__tests__/graph-fixture";
@@ -11,12 +17,15 @@ import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type {
   Actor,
+  AnswerAskInput,
   ArchitectureSource,
   Artifact,
   ArtifactApproval,
   ArtifactReview,
   ArtifactText,
+  Ask,
   ClaimHolderLiveness,
+  Comment,
   Issue,
   IssueClaim,
   IssueComponents,
@@ -4513,4 +4522,373 @@ test("Escape in the route box closes the box and leaves Details open", async () 
 
 test("Escape in the parent box closes the box and leaves Details open", async () => {
   await escapeInFieldBox("parent", PROPERTY_LABELS.parent);
+});
+
+/** An AskCard's queries, as a case reads them (`within`'s). */
+type CardScope = BoundFunctions<typeof queries>;
+
+/** The reader's answer to `ask`, as Dispatch answers the write that `sent` it. */
+function answeredWith(ask: Ask, sent: AnswerAskInput | undefined): Ask {
+  return {
+    ...ask,
+    answer: {
+      at: "2026-10-08T02:00:00Z",
+      selected: sent?.selected ?? null,
+      text: sent?.text ?? null,
+      user: "alice",
+    },
+    state: "answered",
+  };
+}
+
+/** The reader's answer to the case's question, recorded, which a card drawn to change it seeds
+ *  its form with. */
+const RECORDED_ANSWER: Partial<Ask> = {
+  answer: { at: "2026-10-08T01:00:00Z", selected: ["Ship"], text: "First note", user: "alice" },
+  state: "answered",
+};
+
+/** A control of an open AskCard that its answer or its clarification refuses while that write is
+ *  out, and how a reader reaches it by the keyboard. */
+interface AskCardControl {
+  /** The control, as its case names it. */
+  readonly name: string;
+  /** What the card's question holds besides `openAsk`'s. */
+  readonly ask?: Partial<Ask>;
+  /** Whether the card is drawn changing the reader's recorded answer (`mode="change"`). */
+  readonly changing?: boolean;
+  /** The write the press sends. */
+  readonly write: "answer" | "clarification";
+  /** Brings the card to the press, sends the write by the keyboard, and answers the control,
+   *  which inside `NoTooltips` holds the focus then. */
+  readonly press: (scope: CardScope, user: UserEvent, surface: Surface) => Promise<HTMLElement>;
+  /** Presses the control again, as a reader would while its write is out. */
+  readonly again: (scope: CardScope, user: UserEvent, control: HTMLElement) => Promise<void>;
+}
+
+function answerBoxOf(scope: CardScope): HTMLTextAreaElement {
+  return scope.getByRole("textbox", { name: "Your answer" }) as HTMLTextAreaElement;
+}
+
+function radioOf(scope: CardScope, name: string): HTMLInputElement {
+  return scope.getByRole("radio", { name }) as HTMLInputElement;
+}
+
+/** Types a question-shaped answer and sends it from the box, which offers to ask it back
+ *  instead; answers the choice's two actions once drawn. */
+async function offerToAskBack(
+  scope: CardScope,
+  user: UserEvent
+): Promise<{ anyway: HTMLElement; instead: HTMLElement }> {
+  await user.type(answerBoxOf(scope), "Which path is safer?");
+  await user.keyboard("{Control>}{Enter}{/Control}");
+  const instead = await scope.findByRole("button", { name: "Ask back instead" });
+  // Ask back instead takes the focus as it is drawn, on both sides of `NoTooltips`.
+  expect(document.activeElement).toBe(instead);
+  return { anyway: scope.getByRole("button", { name: "Answer with it anyway" }), instead };
+}
+
+async function pressEnter(_scope: CardScope, user: UserEvent): Promise<void> {
+  await user.keyboard("{Enter}");
+}
+
+/** Presses Enter in an option, which submits the form as a browser's implicit submission does,
+ *  and picks the option `other` with a click that moves no focus: neither changes the pick. */
+async function pressOptionAgain(
+  scope: CardScope,
+  user: UserEvent,
+  control: HTMLElement,
+  other: string
+): Promise<void> {
+  await user.keyboard("{Enter}");
+  const picked = control as HTMLInputElement;
+  radioOf(scope, other).click();
+  await settleReads();
+  expect(picked.checked).toBe(true);
+  expect(radioOf(scope, other).checked).toBe(false);
+}
+
+const ASK_CARD_CONTROLS: readonly AskCardControl[] = [
+  {
+    again: async (scope, user, control) => {
+      await user.keyboard("more");
+      expect(answerBoxOf(scope).value).toBe("Ship it after the freeze");
+      await user.keyboard("{Control>}{Enter}{/Control}");
+      expect(document.activeElement).toBe(control);
+    },
+    ask: { options: [] },
+    name: "answer box",
+    press: async (scope, user) => {
+      const box = answerBoxOf(scope);
+      await user.type(box, "Ship it after the freeze");
+      await user.keyboard("{Control>}{Enter}{/Control}");
+      return box;
+    },
+    write: "answer",
+  },
+  {
+    again: pressEnter,
+    name: "Answer",
+    press: async (scope, user) => {
+      await user.click(radioOf(scope, "Ship"));
+      const answer = scope.getByRole("button", { name: "Answer" });
+      answer.focus();
+      await user.keyboard("{Enter}");
+      return answer;
+    },
+    write: "answer",
+  },
+  {
+    again: pressEnter,
+    ask: RECORDED_ANSWER,
+    changing: true,
+    name: "Save answer",
+    press: async (scope, user) => {
+      const save = await scope.findByRole("button", { name: "Save answer" });
+      save.focus();
+      await user.keyboard("{Enter}");
+      return save;
+    },
+    write: "answer",
+  },
+  {
+    again: pressEnter,
+    ask: RECORDED_ANSWER,
+    changing: true,
+    name: "Cancel of a change",
+    // Save answer sends the change, and the reader moves to Cancel while it is out: outside
+    // `NoTooltips` Cancel is `disabled` then, and takes no focus.
+    press: async (scope, user, surface) => {
+      const save = await scope.findByRole("button", { name: "Save answer" });
+      const cancel = scope.getByRole("button", { name: "Cancel" });
+      save.focus();
+      await user.keyboard("{Enter}");
+      if (surface === "inside") cancel.focus();
+      return cancel;
+    },
+    write: "answer",
+  },
+  {
+    again: pressEnter,
+    name: "Ask back",
+    press: async (scope, user) => {
+      await user.type(answerBoxOf(scope), "Stage it before the release");
+      const askBack = scope.getByRole("button", { name: "Ask back" });
+      askBack.focus();
+      await user.keyboard("{Enter}");
+      return askBack;
+    },
+    write: "clarification",
+  },
+  {
+    again: pressEnter,
+    name: "Ask back instead",
+    press: async (scope, user) => {
+      const { instead } = await offerToAskBack(scope, user);
+      await user.keyboard("{Enter}");
+      return instead;
+    },
+    write: "clarification",
+  },
+  {
+    again: pressEnter,
+    name: "Answer with it anyway",
+    press: async (scope, user) => {
+      const { anyway } = await offerToAskBack(scope, user);
+      anyway.focus();
+      await user.keyboard("{Enter}");
+      return anyway;
+    },
+    write: "answer",
+  },
+  {
+    again: (scope, user, control) => pressOptionAgain(scope, user, control, "Hold"),
+    name: "option",
+    press: async (scope, user) => {
+      const ship = radioOf(scope, "Ship");
+      await user.click(ship);
+      await user.keyboard("{Enter}");
+      return ship;
+    },
+    write: "answer",
+  },
+  {
+    again: (scope, user, control) => pressOptionAgain(scope, user, control, "Ship"),
+    name: "Other",
+    press: async (scope, user) => {
+      const other = radioOf(scope, "Other");
+      await user.click(other);
+      await user.type(answerBoxOf(scope), "Stage it first");
+      other.focus();
+      await user.keyboard("{Enter}");
+      return other;
+    },
+    write: "answer",
+  },
+];
+
+/** Inside `NoTooltips`, the AskCard control holds the focus and is refused without `disabled`:
+ *  the answer box is `readOnly`, an option says it by its group's `aria-disabled`, and every
+ *  other control by its own. */
+function expectAskControlRefusedHoldingFocus(control: HTMLElement): void {
+  if (control instanceof HTMLTextAreaElement) {
+    expect(document.activeElement).toBe(control);
+    expect(control.hasAttribute("readonly")).toBe(true);
+    expect(control.hasAttribute("disabled")).toBe(false);
+    return;
+  }
+  if (control instanceof HTMLInputElement) {
+    expect(document.activeElement).toBe(control);
+    expect(control.closest("fieldset")?.getAttribute("aria-disabled")).toBe("true");
+    expect(control.hasAttribute("disabled")).toBe(false);
+    return;
+  }
+  expectRefusedHoldingFocus(control);
+}
+
+/** Outside `NoTooltips`, the AskCard control is `disabled` alone, as on `main`. */
+function expectAskControlDisabledAsOnMain(control: HTMLElement): void {
+  expectDisabledAsOnMain(control);
+  expect(control.hasAttribute("readonly")).toBe(false);
+  expect(control.closest("fieldset")?.hasAttribute("aria-disabled") ?? false).toBe(false);
+}
+
+/** Once its write has failed, the AskCard control is still drawn and takes a press again. */
+function expectAskControlFree(control: HTMLElement): void {
+  expect(control.isConnected).toBe(true);
+  expect(control.hasAttribute("disabled")).toBe(false);
+  expect(control.hasAttribute("aria-disabled")).toBe(false);
+  expect(control.hasAttribute("readonly")).toBe(false);
+  expect(control.closest("fieldset")?.hasAttribute("aria-disabled") ?? false).toBe(false);
+}
+
+/** `ask`'s card in a row the focus can land on, as the Inbox draws its row: the element the
+ *  card's own hand-off gives the focus to when a control holding it leaves the page. */
+function AskRow({ ask, changing = false }: { ask: Ask; changing?: boolean }): ReactNode {
+  return (
+    <div data-testid="ask-row" tabIndex={-1}>
+      <AskCard
+        ask={ask}
+        getAskThread={async () => threadOf(ask)}
+        initialThread={threadOf(ask)}
+        mode={changing ? "change" : "answer"}
+      />
+    </div>
+  );
+}
+
+// While the card's answer or its clarification is out, every control of its form is refused.
+// Inside `NoTooltips` each is `aria-disabled` in place of `disabled`, which drops the focus to the
+// body in a browser (the answer box is `readOnly`, an option is refused by its group): the one
+// the reader pressed keeps the focus, and a press of it sends no second write and changes
+// nothing. Once the write lands, what it takes off the page - the form, which the answer replaces
+// with its record, or the choice a question-shaped answer offers - hands the focus on as it goes,
+// to the row the card is drawn in, and a clarification that empties the box leaves Ask back
+// `disabled`, which hands it on too; once the write fails, the pressed control is still drawn and
+// kept the focus all along. Outside `NoTooltips` each is `disabled` while the write is out, as on
+// `main`, and the card hands the focus to the row as it disables the control.
+for (const control of ASK_CARD_CONTROLS) {
+  test(`inside NoTooltips AskCard's ${control.name} keeps the focus while its write is out, then the card hands it to the row`, async () => {
+    const user = userEvent.setup();
+    for (const surface of ["inside", "outside"] as const) {
+      for (const write of ["lands", "fails"] as const) {
+        const unemulate = emulateChromiumFocusFixup();
+        const ask = openAsk({ ...control.ask, id: `ask-${surface}-${write}` });
+        const answered = Promise.withResolvers<Ask>();
+        const answerAsk = spyOn(api, "answerAsk").mockImplementation(() => answered.promise);
+        const said = Promise.withResolvers<Comment>();
+        const createComment = spyOn(api, "createComment").mockImplementation(() => said.promise);
+        const sent = control.write === "answer" ? answerAsk : createComment;
+        const view = draw(<AskRow ask={ask} changing={control.changing} />, surface);
+        try {
+          const scope = within(view.container);
+          const row = scope.getByTestId("ask-row");
+          await settleReads();
+          const pressed = await control.press(scope, user, surface);
+          await waitFor(() => expect(sent).toHaveBeenCalledTimes(1));
+          await settleReads();
+          if (surface === "inside") {
+            expectAskControlRefusedHoldingFocus(pressed);
+            await control.again(scope, user, pressed);
+            await settleReads();
+            expect(sent).toHaveBeenCalledTimes(1);
+            expectAskControlRefusedHoldingFocus(pressed);
+          } else {
+            expectAskControlDisabledAsOnMain(pressed);
+            expect(document.activeElement).toBe(row);
+          }
+
+          if (write === "fails") {
+            const failure = new Error("the connection dropped");
+            if (control.write === "answer") answered.reject(failure);
+            else said.reject(failure);
+            await scope.findByRole("alert");
+            await settleReads();
+            expectAskControlFree(pressed);
+            if (surface === "inside") expect(document.activeElement).toBe(pressed);
+            continue;
+          }
+          if (control.write === "answer") {
+            answered.resolve(answeredWith(ask, answerAsk.mock.calls[0]?.[1]));
+            await waitFor(() =>
+              expect(view.container.querySelector("[data-ask-answer]")).toBeNull()
+            );
+          } else {
+            said.resolve({} as Comment);
+            await waitFor(() => expect(answerBoxOf(scope).value).toBe(""));
+          }
+          await settleReads();
+          expect(document.activeElement).toBe(row);
+          expect(sent).toHaveBeenCalledTimes(1);
+        } finally {
+          answerAsk.mockRestore();
+          createComment.mockRestore();
+          undraw(view);
+          unemulate();
+        }
+      }
+    }
+  });
+}
+
+// The card hands off a focus its form holds alone. A reader who moves on while Answer's write is
+// out keeps the focus where they put it once the answer lands and the form leaves the page, on
+// both sides of `NoTooltips`.
+test("inside NoTooltips AskCard's Answer leaves a focus the reader moved elsewhere where it is", async () => {
+  const user = userEvent.setup();
+  for (const surface of ["inside", "outside"] as const) {
+    const unemulate = emulateChromiumFocusFixup();
+    const ask = openAsk({ id: `ask-${surface}` });
+    const answered = Promise.withResolvers<Ask>();
+    const answerAsk = spyOn(api, "answerAsk").mockImplementation(() => answered.promise);
+    const view = draw(
+      <>
+        <AskRow ask={ask} />
+        <button type="button">Elsewhere</button>
+      </>,
+      surface
+    );
+    try {
+      const scope = within(view.container);
+      await settleReads();
+      await user.click(radioOf(scope, "Ship"));
+      const answer = scope.getByRole("button", { name: "Answer" });
+      answer.focus();
+      await user.keyboard("{Enter}");
+      await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
+      const elsewhere = scope.getByRole("button", { name: "Elsewhere" });
+      elsewhere.focus();
+
+      answered.resolve(answeredWith(ask, answerAsk.mock.calls[0]?.[1]));
+      await waitFor(() => expect(view.container.querySelector("[data-ask-answer]")).toBeNull());
+      await settleReads();
+      expect(answer.isConnected).toBe(false);
+      expect(document.activeElement).toBe(elsewhere);
+      expect(answerAsk).toHaveBeenCalledTimes(1);
+    } finally {
+      answerAsk.mockRestore();
+      undraw(view);
+      unemulate();
+    }
+  }
 });
