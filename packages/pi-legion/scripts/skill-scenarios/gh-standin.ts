@@ -24,8 +24,9 @@
 // from the review's own state (`reviewSubmission`); and the read of one review this run created
 // (`reviewRead`). A route that names an `answer` is answered from what the run did — the reviews
 // it created and their inline comments, the comments it posted, a ref or a commit's combined
-// status read on its remote, a commit's check runs reported on that commit, and a file or a
-// directory at a ref of its remote (`fromRun`) — and a route that holds a `graph` answers GraphQL
+// status read on its remote, a commit's check runs reported on that commit, a file or a
+// directory at a ref of its remote, a branch with the commit it points at there, and the base's
+// ruleset by its id (`fromRun`) — and a route that holds a `graph` answers GraphQL
 // from it, paged as GitHub pages a connection (`graphAnswer`, with gh-routes.ts's parser and
 // executor). The pull request's review threads are GitHub's state and so the run's: the world's
 // threads, then the effect of every call the record holds on them — the threads a review's
@@ -39,7 +40,9 @@
 // error body on stdout, as gh prints both — and exits 1, and so does a GraphQL mutation the
 // world's graph holds no answer for and a `gh pr edit` or `gh pr comment` the world does not
 // model: a write the world does not model is refused, never answered as a success that changed
-// nothing. Nothing is sent anywhere.
+// nothing. A route that refuses a `gh api` call — the 403 of a role App's read of a branch's
+// protection — prints GitHub's error body and gh's line for it, as gh prints an HTTP error, with
+// no `--jq` run over the body (`refuseWith`). Nothing is sent anywhere.
 // `--json a,b` picks fields and `--jq`/`-q` runs jq over each page, as gh does; `--slurp` prints
 // the pages as one list. A pull request body edit (`gh pr edit --body`, `--body-file`, or a PATCH
 // through `gh api`) is kept: every answer of the pull request then carries the new one, the
@@ -579,6 +582,26 @@ function refuse(text: string, documentation?: string): never {
 function notFoundBody(documentation = "https://docs.github.com/rest"): string {
   return `${JSON.stringify({ message: "Not Found", documentation_url: documentation, status: "404" }, null, 2)}\n`;
 }
+/** Refuses this call as gh prints an HTTP error GitHub answered `gh api` with: `body`, GitHub's
+ * error body, on stdout as GitHub sent it, `text`, gh's line for it, on stderr, and `status`.
+ * gh runs no `--jq` over an error's body: measured on 2026-11-17 from a Legion issue pod with the
+ * role App token its gh gives, `gh api repos/cybermonklabs/legion/branches/main/protection --jq
+ * '.required_status_checks.contexts[]'` printed GitHub's 403 body on one line, `gh: Resource not
+ * accessible by integration (HTTP 403)` on stderr, and exited 1, and `gh api
+ * repos/cybermonklabs/legion/rulesets/1` (no ruleset of that repository) printed `{"message":"Not
+ * Found","documentation_url":"https://docs.github.com/rest/repos/rules#get-a-repository-ruleset",
+ * "status":"404"}` on one line and `gh: Not Found (HTTP 404)`. A body of none prints nothing. */
+function refuseWith(body: unknown, text: string, status: number): never {
+  if (body !== undefined) process.stdout.write(`${JSON.stringify(body)}\n`);
+  process.stderr.write(text);
+  exit(status);
+}
+/** GitHub's 404 of a ruleset the repository has not got, as `refuseWith` measured it. */
+const NO_RULESET = {
+  message: "Not Found",
+  documentation_url: "https://docs.github.com/rest/repos/rules#get-a-repository-ruleset",
+  status: "404",
+};
 /** The pages of GitHub's REST reference whose endpoints this world serves and answers 404 for an
  * object it does not hold, which GitHub's 404 body names (`notFoundBody`). */
 const REVIEW_DOCS = "https://docs.github.com/rest/pulls/reviews#get-a-review-for-a-pull-request";
@@ -1183,6 +1206,136 @@ function contentsAt(endpoint: string): unknown {
 const REVIEW_BODY = "gh: Unprocessable Entity (HTTP 422)\nA review is updated with a body.\n";
 const CONVERSATION_BODY =
   "gh: Unprocessable Entity (HTTP 422)\nA comment on the conversation is created with a body.\n";
+/** The world's GitHub accounts (rig.sh's fixture_first_commit writes $run/accounts.json): each
+ * one's login, id and the address the commits it makes carry. */
+const Accounts = z.array(z.object({ login: z.string(), id: z.number(), email: z.string() }));
+/** The account GitHub links a commit's `email` to, as its REST API answers a user, or null where
+ * the world holds no account with that address, as GitHub answers a commit no account made. */
+function accountOf(email: string): Record<string, unknown> | null {
+  const file = `${run}/accounts.json`;
+  const account = existsSync(file)
+    ? Accounts.parse(JSON.parse(readFileSync(file, "utf8"))).find((one) => one.email === email)
+    : undefined;
+  if (account === undefined) return null;
+  const { login, id } = account;
+  const api = `https://api.github.com/users/${login}`;
+  return {
+    login,
+    id,
+    node_id: `U_kgDO${id}`,
+    avatar_url: `https://avatars.githubusercontent.com/u/${id}?v=4`,
+    gravatar_id: "",
+    url: api,
+    html_url: `https://github.com/${login}`,
+    followers_url: `${api}/followers`,
+    following_url: `${api}/following{/other_user}`,
+    gists_url: `${api}/gists{/gist_id}`,
+    starred_url: `${api}/starred{/owner}{/repo}`,
+    subscriptions_url: `${api}/subscriptions`,
+    organizations_url: `${api}/orgs`,
+    repos_url: `${api}/repos`,
+    events_url: `${api}/events{/privacy}`,
+    received_events_url: `${api}/received_events`,
+    type: "User",
+    user_view_type: "public",
+    site_admin: false,
+  };
+}
+/** GitHub's verification of the commit `sha` of the run's own remote, committed at `committed`:
+ * for a commit that carries no signature, `unsigned` and nothing else; for one that does, the
+ * signature and the payload it signs (the commit without its `gpgsig` header), verified where a
+ * key the world's accounts sign with ($run/allowed-signers, rig.sh's fixture_first_commit)
+ * verifies it, as git verifies it (`git verify-commit`), at the time the commit reached the
+ * remote, its committer's date. */
+function verificationOf(sha: string, committed: string): Record<string, unknown> {
+  const [header = "", ...body] = (fromRemote("cat-file", "commit", sha) ?? "").split("\n\n");
+  const lines = header.split("\n");
+  const start = lines.findIndex((line) => line.startsWith("gpgsig "));
+  if (start < 0)
+    return {
+      verified: false,
+      reason: "unsigned",
+      signature: null,
+      payload: null,
+      verified_at: null,
+    };
+  let end = start + 1;
+  while (lines[end]?.startsWith(" ")) end++;
+  // The header's value, its continuation lines each without the space that folds it.
+  const signature = [
+    (lines[start] ?? "").slice("gpgsig ".length),
+    ...lines.slice(start + 1, end).map((line) => line.slice(1)),
+  ].join("\n");
+  const signers = `${run}/allowed-signers`;
+  const verified =
+    existsSync(signers) &&
+    Bun.spawnSync([
+      "git",
+      "-C",
+      `${run}/remote.git`,
+      "-c",
+      `gpg.ssh.allowedSignersFile=${signers}`,
+      "verify-commit",
+      sha,
+    ]).exitCode === 0;
+  return {
+    verified,
+    reason: verified ? "valid" : "unknown_key",
+    signature: `${signature}\n`,
+    payload: `${[...lines.slice(0, start), ...lines.slice(end)].join("\n")}\n\n${body.join("\n\n")}\n`,
+    verified_at: verified ? committed : null,
+  };
+}
+/** The commit `sha` of the run's own remote as GitHub's REST API answers one inside another
+ * answer (a branch's `commit`): its author and committer as git holds them, its message, tree and
+ * parents, the links GitHub gives each, its verification (`verificationOf`), and the accounts
+ * GitHub links its author's and its committer's addresses to (`accountOf`): the world's base
+ * holds its developer's commits, whose account the world holds. */
+function commitJson(sha: string): Record<string, unknown> {
+  const repo = world?.repo ?? "";
+  const api = `https://api.github.com/repos/${repo}`;
+  const html = `https://github.com/${repo}`;
+  const format = ["%an", "%ae", "%at", "%cn", "%ce", "%ct", "%T", "%P", "%B"].join("%x00");
+  const [
+    author = "",
+    email = "",
+    authored = "",
+    committer = "",
+    address = "",
+    committed = "",
+    tree = "",
+    parents = "",
+    message = "",
+  ] = (fromRemote("show", "-s", `--format=${format}`, sha) ?? "").split("\0");
+  const date = (seconds: string) =>
+    new Date(Number(seconds) * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+  return {
+    sha,
+    node_id: `C_kwDOAAAAAdoAKD${sha}`,
+    commit: {
+      author: { name: author, email, date: date(authored) },
+      committer: { name: committer, email: address, date: date(committed) },
+      message,
+      tree: { sha: tree, url: `${api}/git/trees/${tree}` },
+      url: `${api}/git/commits/${sha}`,
+      comment_count: 0,
+      verification: verificationOf(sha, date(committed)),
+    },
+    url: `${api}/commits/${sha}`,
+    html_url: `${html}/commit/${sha}`,
+    comments_url: `${api}/commits/${sha}/comments`,
+    author: accountOf(email),
+    committer: accountOf(address),
+    parents: parents
+      .split(" ")
+      .filter((parent) => parent !== "")
+      .map((parent) => ({
+        sha: parent,
+        url: `${api}/commits/${parent}`,
+        html_url: `${html}/commit/${parent}`,
+      })),
+  };
+}
 /** A route's answer read from what the run did (rig.sh's fixture_write names which, as `answer`),
  * with `held` the route's own `stdout`, what the world held before the run:
  *   - `reviews`: the world's reviews, then each review this run created as it stands, each with
@@ -1202,6 +1355,11 @@ const CONVERSATION_BODY =
  *     remote has not got;
  *   - `contents`: the file or the directory the path names at the ref the call names, on the run's
  *     own remote (`contentsAt`);
+ *   - `ruleset`: the world's one ruleset (`held`) where the path names its id, and GitHub's 404
+ *     for any other;
+ *   - `branch`: the branch the path names, with its `commit`, the commit that branch points at on
+ *     the run's own remote (`commitJson`), as GitHub answers "Get a branch"; a remote that has not
+ *     got it leaves the world's answer as it is;
  *   - `review-update`: GitHub's "Update a review for a pull request" (`PUT …/reviews/<id>`), on
  *     a review this run created or one the world held (`held`): the review with the body the call
  *     sent, in the shape GitHub answers it (`reviewJson`), which every later read of it reads
@@ -1303,6 +1461,20 @@ function fromRun(kind: string, held: unknown): unknown {
     }
     case "contents":
       return contentsAt(path);
+    case "ruleset": {
+      const id = /\/rulesets\/([^/]+)$/.exec(path)?.[1];
+      if (!isObject(held) || String(held.id) !== id) refuseWith(NO_RULESET, NOT_FOUND, 1);
+      return held;
+    }
+    case "branch": {
+      const name = /\/branches\/(.+)$/.exec(path)?.[1] ?? "";
+      const sha = REF.test(name)
+        ? fromRemote("rev-parse", "--verify", "--quiet", `refs/heads/${name}^{commit}`)
+        : undefined;
+      if (sha === undefined || sha === "" || !isObject(held)) return held;
+      const { name: named, ...rest } = held;
+      return { name: named, commit: commitJson(sha), ...rest };
+    }
     case "review-update": {
       const id = /\/reviews\/(\d+)$/.exec(path)?.[1] ?? "";
       const made = world === undefined ? undefined : ownReviews(repo).byId.get(id);
@@ -1363,6 +1535,13 @@ if (compared !== undefined) {
   output = own;
   handler =
     submitted !== undefined ? "review submit" : read !== undefined ? "review read" : "thread";
+} else if (as === "gh" && args[0] === "api" && route?.exit !== undefined && route.exit !== 0) {
+  // A route that refuses a `gh api` call is GitHub's HTTP error, which gh prints as it got it
+  // (`refuseWith`): run through the pipeline below, its body was handed to `--jq`, and a filter
+  // over the 403 GitHub answers a role App's read of a branch's protection with printed jq's own
+  // error and never the 403 (rig.sh's fixture_write).
+  handler = "route";
+  refuseWith(route.stdout, route.stderr ?? "", route.exit);
 } else if (route?.answer !== undefined) {
   handler = route.answer;
   output = fromRun(route.answer, route.stdout);

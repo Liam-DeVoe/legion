@@ -527,18 +527,21 @@ export function restComment(world: World | undefined, thread: Json, comment: Jso
   };
 }
 
-/** The merge states a conversation GitHub's protection requires resolved holds `BLOCKED`: the
- * states of a pull request GitHub would otherwise merge. A conflict (`DIRTY`), a base the head is
- * behind (`BEHIND`) and a state GitHub has not computed (`UNKNOWN`) are each the world's own. */
+/** The merge states a ruleset that requires review threads resolved holds `BLOCKED`: the states
+ * of a pull request GitHub would otherwise merge. A conflict (`DIRTY`), a base the head is behind
+ * (`BEHIND`) and a state GitHub has not computed (`UNKNOWN`) are each the world's own. */
 const MERGEABLE_BUT_FOR_THREADS = ["CLEAN", "UNSTABLE", "HAS_HOOKS"];
 /** The merge state GitHub reports for the pull request at `head`, with its threads `threads`: the
  * world's own state for that head (`mergeStates`, gh-call.ts's `mergeStateOn`), except that a
- * base whose protection requires conversation resolution (the world's answer to the protection
- * read of its base, `required_conversation_resolution.enabled`) holds a pull request it would
- * otherwise merge `BLOCKED` while any thread with a comment GitHub has published (no pending
- * review's alone) is unresolved. GitHub moves a head so protected from `BLOCKED` to `CLEAN` when
- * the last such thread is resolved, and a world whose state never moved told every agent that
- * resolving a thread changes nothing; a base that requires no resolution is moved by no thread. */
+ * base whose rules require review threads resolved (the world's answer to the rules in force on
+ * its base, `rules/branches/<base>`: a `pull_request` rule with
+ * `required_review_thread_resolution`) holds a pull request it would otherwise merge `BLOCKED`
+ * while any thread with a comment GitHub has published (no pending review's alone) is unresolved.
+ * The base is read where GitHub enforces it, its rules, since a ruleset alone protects it (rig.sh's
+ * base_ruleset_routes) and a read of the classic protection's fields finds none. GitHub moves a
+ * head so protected from `BLOCKED` to `CLEAN` when the last such thread is resolved, and a world
+ * whose state never moved told every agent that resolving a thread changes nothing; a base that
+ * requires no resolution is moved by no thread. */
 export function mergeStateOf(
   at: ThreadWorld,
   threads: Threads,
@@ -548,14 +551,19 @@ export function mergeStateOf(
   const own = mergeStateOn(mergeStates, head);
   const { world } = at;
   if (world === undefined || !MERGEABLE_BUT_FOR_THREADS.includes(own)) return own;
-  const protection = routeFor(at.routes, [
+  const rules = routeFor(at.routes, [
     "api",
-    `repos/${world.repo}/branches/${world.base}/protection`,
+    `repos/${world.repo}/rules/branches/${world.base}`,
   ])?.stdout;
   const requires =
-    isObject(protection) &&
-    isObject(protection.required_conversation_resolution) &&
-    protection.required_conversation_resolution.enabled === true;
+    Array.isArray(rules) &&
+    rules.some(
+      (rule) =>
+        isObject(rule) &&
+        rule.type === "pull_request" &&
+        isObject(rule.parameters) &&
+        rule.parameters.required_review_thread_resolution === true
+    );
   const open = threads.list.some(
     (thread) =>
       thread.isResolved !== true &&

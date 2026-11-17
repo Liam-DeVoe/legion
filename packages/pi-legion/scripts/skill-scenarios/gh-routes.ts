@@ -691,11 +691,29 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   },
   {
     route: "GET repos/{owner}/{repo}/rules/branches/{branch+}",
-    answer: "the base branch's rulesets: none, or the one requiring conversation resolution",
+    answer:
+      "the rules the base branch's one ruleset puts on it: the checks it requires, and review-thread resolution where the world requires it",
+  },
+  {
+    route: "GET repos/{owner}/{repo}/rulesets",
+    answer: "the repository's rulesets: the one on its base branch",
+    evidence: {
+      world:
+        "the list of the rulesets whose id each rule of the base branch names, which a reviewer reaches from those rules",
+    },
+  },
+  {
+    route: "GET repos/{owner}/{repo}/rulesets/{id}",
+    answer: "the base branch's ruleset, its conditions and its rules; GitHub's 404 for another id",
+    evidence: {
+      world:
+        "the ruleset a rule of the base branch names by its id, which a reviewer reads for the rules it holds",
+    },
   },
   {
     route: "GET repos/{owner}/{repo}/branches/{branch}/protection",
-    answer: "the base branch's protection: the checks it requires, and conversation resolution",
+    answer:
+      "GitHub's 403 to a role App, whose token may not read a repository's administration: `Resource not accessible by integration`",
     evidence: {
       world:
         "GitHub's protection read of the base branch the merge gate reads, which a reviewer reaches for its required checks",
@@ -703,7 +721,8 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   },
   {
     route: "GET repos/{owner}/{repo}/branches/{branch+}",
-    answer: "the base branch, protected, with the checks its protection requires",
+    answer:
+      "the remote: the base branch at its head, protected by its ruleset alone, so no classic protection and no check of its own required",
   },
   {
     route: "GET repos/{owner}/{repo}/compare/{basehead+}",

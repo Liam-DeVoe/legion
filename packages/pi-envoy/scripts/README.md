@@ -778,10 +778,19 @@ read from the run's own `calls.jsonl` (`gh-threads.ts`, one replay for the gh st
 daemon stand-in). A thread a review's inline comment or a comment of its own opens is listed by
 `reviewThreads` and by the REST review comments; `resolveReviewThread` reads back
 `isResolved: true`; a reply, through GraphQL or the REST reply route, is its thread's last
-comment; and each comment's `databaseId` is its REST id. A base whose protection requires
-conversation resolution holds the pull request `BLOCKED` while any thread is open and reports it
-`CLEAN` once the last is resolved, and the daemon stand-in moves the record on that same state.
-Every world's base protection requires the checks the head reports (`test`, `lint`); the check runs
+comment; and each comment's `databaseId` is its REST id. A base whose ruleset requires review
+threads resolved holds the pull request `BLOCKED` while any thread is open and reports it `CLEAN`
+once the last is resolved, and the daemon stand-in moves the record on that same state. Every
+world's base is protected as production's `main` is, by one repository ruleset alone (`rig.sh`'s
+`base_ruleset_routes`): its `required_status_checks` rule names the checks the head reports
+(`test`, `lint`), and a world whose base requires review threads resolved holds a `pull_request`
+rule too (`resolution_protection_routes`). The rules of the branch, the repository's rulesets and
+the ruleset by its id (GitHub's 404 for any other id) answer from it; the branch read answers the
+branch at its head on the run's remote, `protected: true` with the classic protection off and
+naming no check; and the classic protection's own endpoint (`…/branches/<base>/protection`) is
+GitHub's 403 to a role App, whose token may not read a repository's administration: `gh: Resource
+not accessible by integration (HTTP 403)`, GitHub's error body on stdout, exit 1, with or without
+a `--jq`, which gh runs over no error. The check runs
 are reported on the commit read (its `head_sha`, GitHub Actions as their App, their times counted
 from when that commit reached the run's remote). A `contents` read answers the file or directory
 at the ref it names, or on the default branch where it names none, raw or as GitHub's JSON.
@@ -806,6 +815,32 @@ world's owner beside it, its own repository read from the pane's `GH_REPO` where
 gets the wrapper's `the command names more than one owner, …`. A form the label's wrapper holds
 that this reading does not model fails the batch at `services_up`, naming it, and so does the
 pin in `gh-standin.test.ts`, which runs every form the table holds through the world.
+
+The world's reads are held to production's own answers by `production-shapes.json`: for each
+read, the command it was made with (production's values written as placeholders: `<owner>`,
+`<repo>`, `<number>`, `<head>`, `<base>`, `<review>`, `<comment>`, `<path>`, `<id>`), when it was
+read, its exit, its stderr and its answer's shape — each JSON path and the kind of the value there,
+a list's items read per variant (a rule's `type`) where they differ — and no value of it. It pins
+the five reads of a branch a ruleset alone protects (`rules/branches/main`, `rulesets`,
+`rulesets/<id>`, `branches/main` and `branches/main/protection`), read of cybermonklabs/legion at
+2026-11-17T15:59:18Z from a Legion issue pod with the role App token its gh gives, and the 90
+distinct reads the 44 runs of INFRA-764's round 25 made, read against a pull request of the same
+repository at about 15:40Z that day. `production-shapes.ts` derives it from those reads' own
+files, which stay out of the tree, and refuses to write a value of theirs into it: `bun
+production-shapes.ts <ruleset reads dir> <production reads json> production-shapes.json` writes
+it and formats it with the repository's biome. A row holds a world's answer to a pinned read with
+`shapeDiff`, which reports the paths production has that the world lacks, the paths the world
+has that production does not, and the paths whose kinds differ, none of them below a path whose
+kind differs. An array the world holds empty is not compared below itself, nor is a variant of a
+list the world holds none of, since how many items a list holds is the world's state and not its
+shape; an array production held empty pins no item shape, so an item the world holds there is a
+path production does not show. `gh-standin.test.ts` holds each of the five ruleset reads to its
+pin, shape, exit and stderr, with no difference. The branch's head is the world's developer's
+commit, signed with an SSH key of the developer's own: the world's GitHub holds the developer's
+account by the address the commit carries and the key it signs with (`rig.sh`'s
+`fixture_first_commit` writes `<run>/accounts.json` and `<run>/allowed-signers`), so the commit's
+`author` and `committer` are that account and its `verification` is the one `git verify-commit`
+gives against that key, as production's head is linked and verified.
 
 A write is answered only where the world models it, each by a route of its own that names its
 verb and the one path it writes, the world's repository and pull request read whole: the create

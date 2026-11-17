@@ -2068,6 +2068,7 @@ describe("childEnv", () => {
             "fixture_body",
             "fixture_write",
             "concluded_checks",
+            "base_ruleset_routes",
             "tester_proof_world",
           ].map(fn),
           definition("fixture_cli"),
@@ -2326,6 +2327,7 @@ describe("round_world and the worlds' own text findings", () => {
         fn(world),
         fn("resolution_protection_routes"),
         fn("concluded_checks"),
+        fn("base_ruleset_routes"),
         'round_world() { printf "%s\\n" "$@" >"$R/round-args"; C1=0123456789abcdef0123;',
         "  worker_pr=1001; worker_pr_url=https://example.invalid/pull/1001; }",
         "fixture_body() { :; }",
@@ -2450,6 +2452,7 @@ describe("worker_boot", () => {
         fn("adopt_workspace"),
         fn("fixture_write"),
         fn("concluded_checks"),
+        fn("base_ruleset_routes"),
         'start_process() { printf "%s\\n" "$*" >"$R/started-$1"; cp "$R/booted" "$R/booted-at-$1"; [ "$1" != daemon ] || echo "listening on http://127.0.0.1:4321" >"$R/logs/daemon.log"; }',
         "await_start() { :; }",
         "stop_pid() { :; }",
@@ -3586,7 +3589,7 @@ describe("health", () => {
   });
 
   /** The world's repository and the route that refuses, as rig.sh's fixture_write writes them:
-   * GitHub's 404 for the protection of the unprotected base, and a route that answers. */
+   * GitHub's 403 to a role App's read of the base's protection, and a route that answers. */
   const WORLD = {
     key: "LWEVAL-1",
     repo: "example/widgets",
@@ -3598,7 +3601,7 @@ describe("health", () => {
   const ROUTES = [
     {
       match: "^gh api .*/branches/main/protection",
-      stderr: "gh: Branch not protected (HTTP 404)\n",
+      stderr: "gh: Resource not accessible by integration (HTTP 403)\n",
       exit: 1,
     },
     { match: "^gh pr view", stdout: { number: 1001 } },
@@ -3718,7 +3721,7 @@ describe("health", () => {
   // TMPDIR under the path its pane file records (a `>` inside a quoted sed script, a here-document
   // body naming another run, and prose in a file's content are no writes or reaches), was shown
   // the leak check's source and a clean push's `LEAK CHECK:` lines, and met only the gh refusals
-  // reviewer-text-findings declares for a reviewer: the base's protection 404, and the 422 of a
+  // reviewer-text-findings declares for a reviewer: the base's protection 403, and the 422 of a
   // submit, with a `--jq` failure over an answer the world gave. Every rule passes it.
   test("a run that stayed in its own world and met only declared refusals is healthy", () => {
     const name = "reviewer-text-findings-text-only-head-5";
@@ -3824,7 +3827,7 @@ describe("health", () => {
   // Catches: a refusal of the gh stand-in read as healthy because it is no completion: its own
   // fallback 404 for a call no route of the world answers, which is the world missing an answer
   // GitHub gives (the 2026-11-14 batch's `gh api repos/<repo>`), and a production refusal met by
-  // a role the scenario does not declare it for (the base's protection 404 is the reviewer's
+  // a role the scenario does not declare it for (the base's protection 403 is the reviewer's
   // merge-gate read, and no implementer's).
   test("a gh refusal the scenario does not declare for the role is unhealthy", () => {
     const unrouted = worldRun("reviewer-text-findings-defect-base-3", {
@@ -3846,7 +3849,7 @@ describe("health", () => {
       "reviewer-text-findings-defect-base-3  unhealthy: gh refusal: calls.jsonl:2, `gh api repos/example/widgets --jq .default_branch` of the reviewer, exited 1: gh: Not Found (HTTP 404) (no route of the world answers it), which reviewer-text-findings does not declare for that role"
     );
     expect(verdict(stdout, role)).toContain(
-      "of the implementer, exited 1: gh: Branch not protected (HTTP 404), which threads-closed does not declare for that role"
+      "of the implementer, exited 1: gh: Resource not accessible by integration (HTTP 403), which threads-closed does not declare for that role"
     );
     expect(stdout).toContain("health: gh: 2 of 2 runs\n");
   });
@@ -3858,6 +3861,7 @@ describe("health", () => {
       [
         fn("fixture_write"),
         fn("concluded_checks"),
+        fn("base_ruleset_routes"),
         "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=main",
         assignment("world_login"),
         "C1=0123456789abcdef0123 body=a-body worker_pr=1001",
@@ -5000,6 +5004,7 @@ describe("fixture_write", () => {
       [
         fn("fixture_write"),
         fn("concluded_checks"),
+        fn("base_ruleset_routes"),
         `R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=${base}`,
         assignment("world_login"),
         "C1=0123456789abcdef0123 body=a-body worker_pr=1001",
@@ -5017,9 +5022,11 @@ describe("fixture_write", () => {
   }
 
   // The two reads of skill://legion-worker/references/merge-gate.md, each with the jq that rule
-  // writes: every base requires the checks the head reports (`test`, `lint`), which the branch's
-  // protection read names, and its rulesets name none. A 404 at either is a refused read, which
-  // the rule has the reviewer report to the architect and never guess around.
+  // writes: every base requires the checks the head reports (`test`, `lint`), which its one
+  // ruleset names, and it has no classic protection, so the branch's protection names none. A 404
+  // at either is a refused read, which the rule has the reviewer report to the architect and
+  // never guess around. Catches a base whose classic protection names the checks and whose
+  // rulesets name none, which gave a reviewer that reads the rulesets alone no required check.
   test("the world answers the base branch's rulesets and its protection, as GitHub does", () => {
     const gh = world();
     const rules = gh(
@@ -5029,51 +5036,43 @@ describe("fixture_write", () => {
       "--jq",
       '.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context'
     );
-    expect([rules.exitCode, rules.stdout.toString()]).toEqual([0, ""]);
+    expect([rules.exitCode, rules.stdout.toString()]).toEqual([0, "test\nlint\n"]);
     const branch = gh(
       "api",
       "repos/example/widgets/branches/main",
       "--jq",
       ".protection.required_status_checks.checks[].context"
     );
-    expect([branch.exitCode, branch.stdout.toString()]).toEqual([0, "test\nlint\n"]);
-    // And the branch read answers the branch itself, as GitHub answers a protected one.
+    expect([branch.exitCode, branch.stdout.toString()]).toEqual([0, ""]);
+    // And the branch read answers the branch itself, as GitHub answers one a ruleset alone
+    // protects: protected, with the classic protection off.
     const read = gh("api", "repos/example/widgets/branches/main");
     expect(JSON.parse(read.stdout.toString())).toMatchObject({
       name: "main",
       protected: true,
       protection: {
-        enabled: true,
-        required_status_checks: {
-          enforcement_level: "non_admins",
-          contexts: ["test", "lint"],
-          checks: [
-            { context: "test", app_id: null },
-            { context: "lint", app_id: null },
-          ],
-        },
+        enabled: false,
+        required_status_checks: { enforcement_level: "off", contexts: [], checks: [] },
       },
     });
   });
 
-  // Catches: the protection endpoint answered from the branch route, whose regex matches that
-  // path too. `…/branches/main/protection` is GitHub's own protection read, which answers the
-  // checks the base requires; the branch object there tells a reviewer this base's protection in
-  // a body that answers another call.
-  test("the world answers the base branch's protection endpoint with the checks it requires", () => {
+  // Catches: the protection endpoint answered from the branch route, whose regex matched that
+  // path too, and one answered as a token that may read a repository's administration is.
+  // `…/branches/main/protection` is GitHub's own read of the classic protection, which GitHub
+  // refuses a role App 403 (production-shapes.json's `branches-main-protection`); the branch
+  // object there tells a reviewer this base's protection in a body that answers another call.
+  test("the world answers the base branch's protection endpoint with GitHub's 403 to a role App", () => {
     const read = world()("api", "repos/example/widgets/branches/main/protection");
-    expect(read.exitCode).toBe(0);
-    expect(read.stderr.toString()).toBe("");
-    expect(JSON.parse(read.stdout.toString())).toMatchObject({
-      required_status_checks: {
-        strict: false,
-        contexts: ["test", "lint"],
-        checks: [
-          { context: "test", app_id: null },
-          { context: "lint", app_id: null },
-        ],
-      },
-      required_conversation_resolution: { enabled: false },
+    expect([read.exitCode, read.stderr.toString()]).toEqual([
+      1,
+      "gh: Resource not accessible by integration (HTTP 403)\n",
+    ]);
+    expect(JSON.parse(read.stdout.toString())).toEqual({
+      message: "Resource not accessible by integration",
+      documentation_url:
+        "https://docs.github.com/rest/branches/branch-protection#get-branch-protection",
+      status: "403",
     });
   });
 
@@ -5150,6 +5149,7 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
           "fixture_body",
           "fixture_write",
           "concluded_checks",
+          "base_ruleset_routes",
           "resolution_protection_routes",
           "round_world",
           world,
@@ -5264,12 +5264,13 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
   // Catches: a world GitHub could not produce, and one that leaves the reviewing path
   // unexercised. Main's engine keeps the record in `reviewing` until GitHub reports the approved
   // head `CLEAN`, `UNSTABLE` or `HAS_HOOKS` (review 5887659447, finding 3); a head `BLOCKED` with
-  // every check green and an approval standing is one whose base requires conversation
-  // resolution while a thread is open, so a world serving that state must answer that rule at
-  // both reads the merge gate makes of its base — the branch's rules and the branch itself, and
-  // the protection endpoint. Every base requires the checks the head reports, `test` and `lint`,
-  // which the protection read prints and the rulesets read does not. Every head's checks are
-  // concluded: `BLOCKED` comes from the threads, not from CI.
+  // every check green and an approval standing is one whose base requires review threads
+  // resolved while a thread is open, so a world serving that state must answer that rule where
+  // GitHub states it for a base a ruleset alone protects — the rules in force on the branch and
+  // the ruleset itself — while the branch's classic protection is off and its endpoint refuses a
+  // role App 403. Every base requires the checks the head reports, `test` and `lint`, which the
+  // rulesets read prints and the branch's protection does not. Every head's checks are concluded:
+  // `BLOCKED` comes from the threads, not from CI.
   test("a BLOCKED head's base requires conversation resolution, every check green, and a CLEAN head's base requires only its checks", () => {
     for (const [world, guard, blocked] of [
       ["review_world", "", true],
@@ -5308,28 +5309,18 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
         { code: 0, out: blocked ? "blocked" : "clean" },
       ]);
       // The rule, at each read of the base, and the merge gate's own reads of its required
-      // checks (skill://legion-worker/references/merge-gate.md), which name none either way.
+      // checks (skill://legion-worker/references/merge-gate.md), which name the ruleset's.
       const base = "repos/example/widgets/branches/main";
       const rules = "repos/example/widgets/rules/branches/main";
+      const resolution =
+        '[.[] | select(.type=="pull_request") | .parameters.required_review_thread_resolution] | any';
       expect([
         world,
         guard,
-        answer(dir, "api", base, "--jq", ".protected"),
-        answer(dir, "api", base, "--jq", ".protection.required_conversation_resolution.enabled"),
-        answer(
-          dir,
-          "api",
-          `${base}/protection`,
-          "--jq",
-          ".required_conversation_resolution.enabled"
-        ),
-        answer(
-          dir,
-          "api",
-          rules,
-          "--jq",
-          '[.[] | select(.type=="pull_request") | .parameters.required_review_thread_resolution] | any'
-        ),
+        answer(dir, "api", base, "--jq", "[.protected, .protection.enabled] | @json"),
+        answer(dir, "api", `${base}/protection`, "--jq", ".required_status_checks"),
+        answer(dir, "api", rules, "--jq", resolution),
+        answer(dir, "api", "repos/example/widgets/rulesets/1", "--jq", `.rules | ${resolution}`),
         answer(dir, "api", base, "--jq", ".protection.required_status_checks.checks[].context"),
         answer(
           dir,
@@ -5341,12 +5332,20 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
       ]).toEqual([
         world,
         guard,
-        { code: 0, out: "true" },
-        { code: 0, out: blocked ? "true" : "null" },
+        { code: 0, out: "[true,false]" },
+        {
+          code: 1,
+          out: JSON.stringify({
+            message: "Resource not accessible by integration",
+            documentation_url:
+              "https://docs.github.com/rest/branches/branch-protection#get-branch-protection",
+            status: "403",
+          }),
+        },
         { code: 0, out: String(blocked) },
         { code: 0, out: String(blocked) },
-        { code: 0, out: "test\nlint" },
         { code: 0, out: "" },
+        { code: 0, out: "test\nlint" },
       ]);
     }
   });
@@ -5812,6 +5811,7 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
           "fixture_body",
           "fixture_write",
           "concluded_checks",
+          "base_ruleset_routes",
           "resolution_protection_routes",
           "round_world",
           world,
@@ -6003,7 +6003,28 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
       answers: (got, world) =>
         expect(got).toMatchObject({
           code: 0,
-          out: PROTECTED.includes(world) ? '["pull_request"]' : "[]",
+          out: JSON.stringify(
+            PROTECTED.includes(world)
+              ? ["pull_request", "required_status_checks"]
+              : ["required_status_checks"]
+          ),
+        }),
+    },
+    "GET repos/{owner}/{repo}/rulesets": {
+      argv: () => ["api", `${REPO}/rulesets`, "--jq", "[.[] | [.id, .name, .enforcement]]"],
+      answers: (got) =>
+        expect(got).toMatchObject({ code: 0, out: JSON.stringify([[1, "main", "active"]]) }),
+    },
+    "GET repos/{owner}/{repo}/rulesets/{id}": {
+      argv: () => ["api", `${REPO}/rulesets/1`, "--jq", "[.rules[].type]"],
+      answers: (got, world) =>
+        expect(got).toMatchObject({
+          code: 0,
+          out: JSON.stringify(
+            PROTECTED.includes(world)
+              ? ["pull_request", "required_status_checks"]
+              : ["required_status_checks"]
+          ),
         }),
     },
     "GET repos/{owner}/{repo}/branches/{branch}/protection": {
@@ -6011,10 +6032,13 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
         "api",
         `${REPO}/branches/main/protection`,
         "--jq",
-        ".required_conversation_resolution.enabled",
+        ".required_status_checks.contexts",
       ],
-      answers: (got, world) =>
-        expect(got).toMatchObject({ code: 0, out: String(PROTECTED.includes(world)) }),
+      answers: (got) =>
+        expect(got).toMatchObject({
+          code: 1,
+          err: "gh: Resource not accessible by integration (HTTP 403)\n",
+        }),
     },
     "GET repos/{owner}/{repo}/branches/{branch+}": {
       argv: () => ["api", `${REPO}/branches/main`, "--jq", "[.name, .protected]"],
@@ -6569,6 +6593,7 @@ describe("the world answers every gh call the census found refused", () => {
           "fixture_body",
           "fixture_write",
           "concluded_checks",
+          "base_ruleset_routes",
           "resolution_protection_routes",
           "round_world",
           world,
@@ -6793,6 +6818,7 @@ describe("what the rig writes into a run's world", () => {
           "fixture_body",
           "fixture_write",
           "concluded_checks",
+          "base_ruleset_routes",
           "resolution_protection_routes",
           "round_world",
           world,
@@ -9663,6 +9689,7 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
           "fixture_body",
           "fixture_write",
           "concluded_checks",
+          "base_ruleset_routes",
           "resolution_protection_routes",
           "role_identity",
           "role_env",
@@ -9794,17 +9821,21 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
       const runs = [...workflow.matchAll(/^\s*- run: (.*)$/gm)].map((match) => match[1] ?? "");
       const named = [...docs.matchAll(/`bun ([\w.-]+\.ts)\b/g)].map((match) => match[1] ?? "");
       const check = /:::check\{#k1 [^\n]*\}\n[^\n]*/.exec(world.verification)?.[0] ?? "";
-      const required = spawnChecked(
+      // The required set as the merge gate reads it: the base's rulesets' required checks and
+      // its classic protection's, which a base a ruleset alone protects names none of.
+      const required = [
         [
-          "bun",
-          GH_STANDIN,
-          "gh",
-          "api",
+          "repos/fernbrook/widgets/rules/branches/main",
+          '.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context',
+        ],
+        [
           "repos/fernbrook/widgets/branches/main",
-          "--jq",
           ".protection.required_status_checks.checks[].context",
         ],
-        { env: { ...childEnv, GH_DATA_DIR: world.run } }
+      ].map(([endpoint = "", jq = ""]) =>
+        spawnChecked(["bun", GH_STANDIN, "gh", "api", endpoint, "--jq", jq], {
+          env: { ...childEnv, GH_DATA_DIR: world.run },
+        })
       );
       const blank = greet(world, "   ");
       const trimmed = greet(world, "  Ada  ");
@@ -9835,8 +9866,9 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
           check !== "" && !/blank|spaces/.test(check),
         "7 Dispatch says no pass stands for k1":
           issueState(world).passStands?.startsWith("yes") !== true,
-        "8 the base branch requires no status check":
-          required.exitCode !== 0 || required.stdout.toString().trim() === "",
+        "8 the base branch requires no status check": required.every(
+          (read) => read.exitCode !== 0 || read.stdout.toString().trim() === ""
+        ),
         "the suite passes at the head, as the head's checks report": suitePasses(world),
         "intended defect: the CLI greets a blank name": blank.code === 0,
         "intended defect: no test holds the blank name (the suite passes without its guard)":

@@ -391,14 +391,15 @@ test.skipIf(skip)(
   600_000
 );
 
-// GitHub holds a head whose base requires conversation resolution `BLOCKED` while a review thread
-// is open and reports it `CLEAN` once the last is resolved, and main's engine ends the round on
-// an approval that stands only then. Catches: a daemon stand-in that moves on a merge state frozen
-// into the world while the gh stand-in answers the threads as the run left them — the approval of
-// threads-closed's text-fixes head waited in `reviewing` for ever, however many threads the
-// implementer resolved — and one that reads another state than the one the gh stand-in answers
-// `mergeStateStatus` with (gh-threads.ts's `mergeStateOf`, which both read). The resolve is the
-// recorded reviewer-text-findings-text-only-head-1/calls.jsonl:29, made through the gh stand-in.
+// GitHub holds a head whose base's ruleset requires review threads resolved `BLOCKED` while a
+// review thread is open and reports it `CLEAN` once the last is resolved, and main's engine ends
+// the round on an approval that stands only then. Catches: a daemon stand-in that moves on a merge
+// state frozen into the world while the gh stand-in answers the threads as the run left them — the
+// approval of threads-closed's text-fixes head waited in `reviewing` for ever, however many
+// threads the implementer resolved — and one that reads another state than the one the gh
+// stand-in answers `mergeStateStatus` with (gh-threads.ts's `mergeStateOf`, which both read). The
+// resolve is the recorded reviewer-text-findings-text-only-head-1/calls.jsonl:29, made through the
+// gh stand-in.
 test.skipIf(skip)(
   "an approval waits in reviewing while a thread its base requires resolved is open, and moves once the run resolves it",
   async () => {
@@ -409,8 +410,10 @@ test.skipIf(skip)(
       const fixtures = JSON.parse(readFileSync(file, "utf8"));
       fixtures.routes.push(
         {
-          match: "^gh api .*/branches/main/protection",
-          stdout: { required_conversation_resolution: { enabled: true } },
+          match: "^gh api .*/rules/branches/main",
+          stdout: [
+            { type: "pull_request", parameters: { required_review_thread_resolution: true } },
+          ],
         },
         {
           match: "^gh api .*graphql",

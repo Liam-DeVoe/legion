@@ -25,6 +25,7 @@ import {
   worldRouteOf,
 } from "./gh-routes";
 import { type GhSelectors, type GhTable, MODELLED } from "./gh-selectors";
+import { mergeStateOf } from "./gh-threads";
 import {
   ghUndeclared,
   guardRefusal,
@@ -33,6 +34,14 @@ import {
   offWorldReach,
   workflowUses,
 } from "./health";
+import {
+  argvOf,
+  derive,
+  type PinnedRead,
+  pinnedRead,
+  shapeDiff,
+  shapeOf,
+} from "./production-shapes";
 import { REMOVED_NAMES, WORLD_PROJECT } from "./run-names";
 import { bundled, spawnChecked, writeGhSelectors } from "./test-programs";
 
@@ -134,6 +143,7 @@ beforeAll(() => {
       [
         fn("fixture_write"),
         fn("concluded_checks"),
+        fn("base_ruleset_routes"),
         "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=main",
         assignment("world_login"),
         'C1=$2 body="a body" worker_pr=1001 worker_pr_url=https://example.invalid/pull/1001',
@@ -2393,6 +2403,7 @@ function worldDir(
     "fixture_body",
     "fixture_write",
     "concluded_checks",
+    "base_ruleset_routes",
     "resolution_protection_routes",
     "round_world",
     "role_identity",
@@ -3164,17 +3175,20 @@ test("the merge state follows the threads: BLOCKED until the last one the base r
   expect(states(open)).toEqual(clean);
 }, 120_000);
 
-// GitHub answers the base branch's protection with the checks it requires, and a head's check
-// runs as runs of that head. Measured in INFRA-764 round 24: "Head checks green (`test`, `lint`
-// both success); no required-check config in this rig" (reviewer-text-findings-text-only-base-3),
-// "the rig doesn't require any specific checks" (-defect-base-3), and a reviewer that read its own
+// GitHub answers the base branch's rulesets with the checks it requires, and a head's check runs
+// as runs of that head. Measured in INFRA-764 round 24: "Head checks green (`test`, `lint` both
+// success); no required-check config in this rig" (reviewer-text-findings-text-only-base-3), "the
+// rig doesn't require any specific checks" (-defect-base-3), and a reviewer that read its own
 // push's checks four times to see "whether CI goes green, since a local rig might never report
 // checks back" (-defect-base-4; reviewer-text-findings-defect-base-1/calls.jsonl:23 to :26 in
 // the preflight). The reads are the merge gate's, as recorded at
-// reviewer-text-findings-defect-base-1/calls.jsonl:18, :20 and :21. Catches: a base that names
-// no required check, at either read, in a world whose base requires nothing else; and check
-// runs that name no head, sit on no page of GitHub's and ran ten months before the commit they
-// report on, read at the world's head and at the head a push made.
+// reviewer-text-findings-defect-base-1/calls.jsonl:18, :20 and :21. A ruleset alone protects every
+// world's base, as production's (production-shapes.json), so the rulesets read names the checks
+// and the branch's classic protection names none. Catches: a base that names no required check
+// at the rulesets read, which a reviewer that reads the rulesets alone takes for a base requiring
+// nothing; a base that requires review threads resolved in a world that requires no more than
+// its checks; and check runs that name no head, sit on no page of GitHub's and ran ten months
+// before the commit they report on, read at the world's head and at the head a push made.
 test("the base requires the head's checks, and the head's checks report on that head as GitHub reports them", () => {
   const rules = [
     "api",
@@ -3189,6 +3203,12 @@ test("the base requires the head's checks, and the head's checks report on that 
     "--jq",
     ".protection.required_status_checks.checks[].context",
   ];
+  const resolution = [
+    "api",
+    "repos/example/widgets/rules/branches/main",
+    "--jq",
+    '[.[] | select(.type=="pull_request") | .parameters.required_review_thread_resolution] | @json',
+  ];
   for (const [world, guard] of [
     ["tester_proof_world", ""],
     ["approved_world", "dropped"],
@@ -3197,18 +3217,12 @@ test("the base requires the head's checks, and the head's checks report on that 
     const dir = worldDir(world, guard);
     expect([world, ghCall(dir, ...rules), ghCall(dir, ...protection)]).toEqual([
       world,
-      { code: 0, out: "", err: "" },
       { code: 0, out: "test\nlint", err: "" },
+      { code: 0, out: "", err: "" },
     ]);
-    expect(
-      ghCall(
-        dir,
-        "api",
-        "repos/example/widgets/branches/main/protection",
-        "--jq",
-        "[.required_status_checks.contexts[], .required_conversation_resolution.enabled] | @json"
-      ).out
-    ).toBe(JSON.stringify(["test", "lint", world === "review_world"]));
+    expect(ghCall(dir, ...resolution).out).toBe(
+      JSON.stringify(world === "review_world" ? [true] : [])
+    );
   }
   const dir = worldDir("approved_world", "dropped");
   const head = builtHead(dir);
@@ -3248,6 +3262,411 @@ test("the base requires the head's checks, and the head's checks report on that 
     ]);
   }
 }, 120_000);
+
+// The reads of a base branch a ruleset alone protects, each held to production's own answer to
+// it: production-shapes.json, which production-shapes.ts derives from the reads of
+// cybermonklabs/legion's `main` made from a Legion issue pod with the role App token its gh gives
+// (at the pin's `read_at`). Each row makes production's own command with the world's values in
+// it (`argvOf`) and compares the world's answer with the pin — its exit, its stderr and its shape
+// (`shapeDiff`) — and then the world's own values in it. The rows build a world whose base
+// requires its checks alone (tester_proof_world) and one whose base requires review threads
+// resolved too (review_world, rig.sh's resolution_protection_routes).
+
+// Catches: a shape that reads a list's variants as one (a `deletion` rule's lone `type` and a
+// `pull_request` rule's parameters under one `[]`), or one list of items per variant where the
+// items share a shape; and a comparison that reports a path below one whose kind differs, below
+// an array the world holds empty or a variant of a list it holds none of, or each path under a
+// missing one rather than that one.
+test("a shape reads a list per variant where its items differ, and a difference names the highest path", () => {
+  const rules = [
+    { type: "deletion" },
+    { type: "pull_request", parameters: { count: 1, methods: ["squash"] } },
+  ];
+  expect(shapeOf(rules)).toEqual({
+    ".": "array",
+    ".[type=deletion]": "object",
+    ".[type=deletion].type": "string",
+    ".[type=pull_request]": "object",
+    ".[type=pull_request].type": "string",
+    ".[type=pull_request].parameters": "object",
+    ".[type=pull_request].parameters.count": "number",
+    ".[type=pull_request].parameters.methods": "array",
+    ".[type=pull_request].parameters.methods[]": "string",
+  });
+  expect(
+    shapeOf([
+      { type: "a", n: 1 },
+      { type: "b", n: 2 },
+    ])
+  ).toEqual({ ".": "array", ".[]": "object", ".[].type": "string", ".[].n": "number" });
+  const read = {
+    shape: shapeOf({
+      commit: { sha: "s", author: { login: "l" } },
+      parents: [{ sha: "p" }],
+      rules,
+      more: 1,
+    }),
+  };
+  const world = {
+    commit: { author: null },
+    parents: [],
+    rules: [{ type: "pull_request", parameters: { count: "1", methods: [] } }],
+    extra: { a: 1 },
+  };
+  expect(shapeDiff(world, read)).toEqual({
+    missing: [".commit.sha", ".more"],
+    extra: [".extra"],
+    kinds: [
+      ".commit.author: object in production, null in the world",
+      ".rules[type=pull_request].parameters.count: number in production, string in the world",
+    ],
+  });
+});
+
+// Catches: a pin that keeps a value of production's reads — a repository, a pull request's
+// number, a head, a review's or a comment's id, a file's path, a ruleset's id in a read's name —
+// and a derivation that writes a value it was not told of into the pin rather than refusing to.
+// The reads here are this row's own, in the two layouts of the production reads INFRA-764 made.
+test("the pin is derived with production's values as placeholders, and refused where one would stay", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "production-shapes-"));
+  made.push(dir);
+  const rulesets = path.join(dir, "rulesets");
+  const prs = path.join(dir, "prs");
+  mkdirSync(rulesets);
+  mkdirSync(prs);
+  writeFileSync(
+    path.join(rulesets, "README.txt"),
+    "Reads of a branch, read at 2026-01-02T03:04:05Z.\n"
+  );
+  for (const [name, answer, err, exit] of [
+    ["rulesets", [{ id: 4242, name: "main" }], "", 0],
+    ["ruleset-4242", { id: 4242, name: "main", rules: [{ type: "deletion" }] }, "", 0],
+    [
+      "branches-main-protection",
+      { message: "Resource not accessible by integration" },
+      "gh: x\n",
+      1,
+    ],
+  ] as const) {
+    writeFileSync(path.join(rulesets, `${name}.json`), JSON.stringify(answer));
+    writeFileSync(path.join(rulesets, `${name}.err`), err);
+    writeFileSync(path.join(rulesets, `${name}.exit`), `${exit}\n`);
+  }
+  writeFileSync(
+    path.join(prs, "README.txt"),
+    "Reads of a pull request (read 2026-01-02 about 03:00Z; cut).\n"
+  );
+  const [head, base] = ["a".repeat(40), "b".repeat(40)];
+  const reads = {
+    substitutions: {
+      repo: "example/widgets -> octo-org/octo-repo",
+      pr: "1001 -> 31337",
+      head,
+      base,
+      review: "777777777",
+      comment: "888888888",
+    },
+    reads: [
+      ["repos/octo-org/octo-repo/pulls/31337/reviews/777777777/comments"],
+      [`repos/octo-org/octo-repo/compare/${base}...${head}`],
+      [`repos/octo-org/octo-repo/contents/src/app.ts?ref=${head}`],
+      ["graphql", "-f", 'query=query{repository(owner:"octo-org",name:"octo-repo"){id}}'],
+      ["graphql", "-F", "o=octo-org", "-F", "r=octo-repo", "-F", "n=31337"],
+      ["repos/octo-org/octo-repo/pulls/31337/comments/888888888/replies"],
+    ].map((argv, index) => ({
+      kind: "gh api GET",
+      key: `read-${index}`,
+      command: ["gh", "api", ...argv],
+      exit: 0,
+      stderr: "",
+      answer: { id: 777777777, title: "a title of the pull request" },
+    })),
+  };
+  const file = path.join(prs, "reads.json");
+  writeFileSync(file, JSON.stringify(reads));
+  expect(
+    derive(rulesets, file).reads.map(({ name, command, read_at }) => [name, command, read_at])
+  ).toEqual([
+    [
+      "branches-main-protection",
+      ["gh", "api", "repos/<owner>/<repo>/branches/main/protection"],
+      "2026-01-02T03:04:05Z",
+    ],
+    ["ruleset-<id>", ["gh", "api", "repos/<owner>/<repo>/rulesets/<id>"], "2026-01-02T03:04:05Z"],
+    ["rulesets", ["gh", "api", "repos/<owner>/<repo>/rulesets"], "2026-01-02T03:04:05Z"],
+    ...[
+      ["repos/<owner>/<repo>/pulls/<number>/reviews/<review>/comments"],
+      ["repos/<owner>/<repo>/compare/<base>...<head>"],
+      ["repos/<owner>/<repo>/contents/<path>?ref=<head>"],
+      ["graphql", "-f", 'query=query{repository(owner:"<owner>",name:"<repo>"){id}}'],
+      ["graphql", "-F", "o=<owner>", "-F", "r=<repo>", "-F", "n=<number>"],
+      ["repos/<owner>/<repo>/pulls/<number>/comments/<comment>/replies"],
+    ].map((argv, index) => [
+      `gh api GET read-${index}`,
+      ["gh", "api", ...argv],
+      "2026-01-02 about 03:00Z",
+    ]),
+  ]);
+  // A value of an answer, which no substitution names, written into a command.
+  reads.reads[0]?.command.push("a title of the pull request");
+  writeFileSync(file, JSON.stringify(reads));
+  expect(() => derive(rulesets, file)).toThrow(
+    'the pin would hold production\'s values: "a title of the pull request"'
+  );
+});
+/** A shape no different from production's. */
+const SAME_SHAPE = { missing: [], extra: [], kinds: [] };
+/** What the world under `dir` answers `read`'s own command with, the world's repository and
+ * `values` in its placeholders: its exit, stdout and stderr, and the stdout read as JSON. */
+function pinnedCall(dir: string, read: PinnedRead, values: Record<string, string> = {}) {
+  const got = ghCall(dir, ...argvOf(read, { owner: "example", repo: "widgets", ...values }));
+  return { ...got, answer: JSON.parse(got.out) as unknown };
+}
+/** The rules each world's one ruleset holds (rig.sh's base_ruleset_routes): the checks every base
+ * requires, the ones the head reports, as GitHub Actions' (integration 15368); and, ahead of them
+ * in the resolution world, a pull request rule requiring review threads resolved and no approval
+ * (resolution_protection_routes). */
+function rulesOf(world: "tester_proof_world" | "review_world"): object[] {
+  const checks = {
+    type: "required_status_checks",
+    parameters: {
+      strict_required_status_checks_policy: false,
+      do_not_enforce_on_create: false,
+      required_status_checks: [
+        { context: "test", integration_id: 15368 },
+        { context: "lint", integration_id: 15368 },
+      ],
+    },
+  };
+  const resolution = {
+    type: "pull_request",
+    parameters: {
+      required_approving_review_count: 0,
+      dismiss_stale_reviews_on_push: false,
+      required_reviewers: [],
+      require_code_owner_review: false,
+      dismissal_restriction: { enabled: false, allowed_actors: [] },
+      require_last_push_approval: false,
+      required_review_thread_resolution: true,
+      require_extra_approval_for_unattributed_changes: false,
+      allowed_merge_methods: ["merge", "squash", "rebase"],
+    },
+  };
+  return world === "review_world" ? [resolution, checks] : [checks];
+}
+
+// Catches: the rules read in a shape GitHub never gives — a rule without the ruleset it comes
+// from, a parameter in another kind — and a base whose rules name no required check, which a
+// reviewer that reads the rulesets alone takes for a base requiring none: the classic protection
+// named the checks and the rules named nothing (INFRA-764's ruling of 2026-11-17). Each world's
+// rules are its ruleset's, the thread-resolution rule the resolution world's alone.
+test("the base branch's rules answer as production's, naming the checks every base requires", () => {
+  const read = pinnedRead("rules-branches-main");
+  for (const world of ["tester_proof_world", "review_world"] as const) {
+    const got = pinnedCall(worldDir(world), read);
+    expect([world, got.code, got.err, shapeDiff(got.answer, read)]).toEqual([
+      world,
+      read.exit,
+      read.stderr,
+      SAME_SHAPE,
+    ]);
+    const source = { ruleset_source_type: "Repository", ruleset_source: "example/widgets" };
+    expect([world, got.answer]).toEqual([
+      world,
+      rulesOf(world).map((rule) => ({ ...rule, ...source, ruleset_id: 1 })),
+    ]);
+  }
+}, 60_000);
+
+// Catches: a world with no list of its rulesets, which a reviewer reaches from the `ruleset_id`
+// each rule names and was refused 404 where production answers, and a list in another shape.
+test("the repository's rulesets answer as production's: the one ruleset on the base", () => {
+  const read = pinnedRead("rulesets");
+  const got = pinnedCall(worldDir("tester_proof_world"), read);
+  expect([got.code, got.err, shapeDiff(got.answer, read)]).toEqual([
+    read.exit,
+    read.stderr,
+    SAME_SHAPE,
+  ]);
+  expect(got.answer).toMatchObject([
+    { id: 1, name: "main", target: "branch", source: "example/widgets", enforcement: "active" },
+  ]);
+}, 60_000);
+
+// Catches: a ruleset read in another shape, one whose rules are not the rules the branch is under,
+// and a world that answers any id with its ruleset, where GitHub answers an id the repository has
+// no ruleset of with its 404 (measured on 2026-11-17: `gh api repos/cybermonklabs/legion/rulesets/1`,
+// GitHub's error body, `gh: Not Found (HTTP 404)`, exit 1), in the shape of every GitHub error
+// body (the pinned 403's).
+test("the base's ruleset answers as production's by its id, and GitHub's 404 for another", () => {
+  const read = pinnedRead("ruleset-<id>");
+  for (const world of ["tester_proof_world", "review_world"] as const) {
+    const dir = worldDir(world);
+    const got = pinnedCall(dir, read, { id: "1" });
+    expect([world, got.code, got.err, shapeDiff(got.answer, read)]).toEqual([
+      world,
+      read.exit,
+      read.stderr,
+      SAME_SHAPE,
+    ]);
+    expect([world, got.answer]).toMatchObject([
+      world,
+      {
+        id: 1,
+        name: "main",
+        conditions: { ref_name: { exclude: [], include: ["~DEFAULT_BRANCH"] } },
+        rules: rulesOf(world),
+      },
+    ]);
+    const other = pinnedCall(dir, read, { id: "2" });
+    const error = pinnedRead("branches-main-protection");
+    expect([world, other.code, other.err, shapeDiff(other.answer, error), other.answer]).toEqual([
+      world,
+      1,
+      "gh: Not Found (HTTP 404)\n",
+      SAME_SHAPE,
+      {
+        message: "Not Found",
+        documentation_url: "https://docs.github.com/rest/repos/rules#get-a-repository-ruleset",
+        status: "404",
+      },
+    ]);
+  }
+}, 60_000);
+
+// Catches: the base branch answered with no `commit`, as the world answered it before, or with
+// the classic protection a ruleset-protected base has not got; and a head GitHub could not give
+// in production's kinds, its author and committer linked to no account and its verification
+// null, as a commit by an address no account holds and one pushed unsigned are. The branch's head
+// is the base's head on the run's remote, its developer's commit, signed with the key the
+// developer's account holds, which the world's GitHub holds by the address the commit carries
+// (rig.sh's fixture_first_commit); and the base's first commit has no parent, so its `parents`
+// are compared no further.
+test("the base branch answers as production's, at its head, protected by its ruleset alone", () => {
+  const read = pinnedRead("branches-main");
+  const dir = worldDir("tester_proof_world");
+  const got = pinnedCall(dir, read);
+  expect([got.code, got.err, shapeDiff(got.answer, read)]).toEqual([
+    read.exit,
+    read.stderr,
+    SAME_SHAPE,
+  ]);
+  const remote = path.join(dir, "remote.git");
+  const base = git(remote, "rev-parse", "refs/heads/main");
+  // The time git holds, as GitHub writes one: UTC, to the second.
+  const when = (format: string) =>
+    new Date(Number(git(remote, "show", "-s", `--format=${format}`, base)) * 1000)
+      .toISOString()
+      .replace(/\.\d{3}Z$/, "Z");
+  const email = rigValue("world_author_email");
+  // The developer's login: its address's local part, each dot a dash (GitHub's logins hold none).
+  const login = (email.split("@")[0] ?? "").replaceAll(".", "-");
+  const account = { login, type: "User", html_url: `https://github.com/${login}` };
+  const identity = { name: rigValue("world_author_name"), email };
+  expect(got.answer).toMatchObject({
+    name: "main",
+    commit: {
+      sha: base,
+      commit: {
+        author: { ...identity, date: when("%at") },
+        committer: { ...identity, date: when("%ct") },
+        message: git(remote, "show", "-s", "--format=%B", base),
+        tree: { sha: git(remote, "show", "-s", "--format=%T", base) },
+        verification: {
+          verified: true,
+          reason: "valid",
+          signature: expect.stringMatching(
+            /^-----BEGIN SSH SIGNATURE-----\n[\s\S]+\n-----END SSH SIGNATURE-----\n$/
+          ),
+          payload: `${git(remote, "cat-file", "commit", base)
+            .replace(/^gpgsig .*\n(?: .*\n)*/m, "")
+            .trim()}\n`,
+          verified_at: when("%ct"),
+        },
+      },
+      author: account,
+      committer: account,
+      parents: [],
+    },
+    protected: true,
+    protection: {
+      enabled: false,
+      required_status_checks: { enforcement_level: "off", contexts: [], checks: [] },
+    },
+    protection_url: "https://api.github.com/repos/example/widgets/branches/main/protection",
+  });
+}, 60_000);
+
+// Catches: the classic protection answered as a token that may read a repository's
+// administration is, where GitHub refuses a role App 403; and that 403 handed to a call's `--jq`,
+// which printed jq's own error and never GitHub's, where gh prints the error body as GitHub sent
+// it and the 403 line (measured on 2026-11-17: `gh api
+// repos/cybermonklabs/legion/branches/main/protection --jq '.required_status_checks.contexts[]'`).
+test("the base branch's protection is GitHub's 403 to a role App, --jq or none", () => {
+  const read = pinnedRead("branches-main-protection");
+  const dir = worldDir("tester_proof_world");
+  const got = pinnedCall(dir, read);
+  expect([got.code, got.err, shapeDiff(got.answer, read)]).toEqual([
+    read.exit,
+    read.stderr,
+    SAME_SHAPE,
+  ]);
+  const body = {
+    message: "Resource not accessible by integration",
+    documentation_url:
+      "https://docs.github.com/rest/branches/branch-protection#get-branch-protection",
+    status: "403",
+  };
+  expect(got.answer).toEqual(body);
+  const filtered = ghCall(
+    dir,
+    ...argvOf(read, { owner: "example", repo: "widgets" }),
+    "--jq",
+    ".required_status_checks.contexts[]"
+  );
+  expect(filtered).toEqual({ code: read.exit, out: JSON.stringify(body), err: read.stderr });
+}, 60_000);
+
+// Catches: a merge state that reads the base's classic protection, which a base a ruleset alone
+// protects holds none of, so that no thread ever held a head `BLOCKED`; one that blocks a base
+// whose rules require no resolution, or whose one thread is resolved or is a pending review's;
+// and one that blocks a head the world holds in a state of its own.
+test("the merge state is BLOCKED by an open thread where the base's rules require threads resolved, and by nothing else", () => {
+  const world = {
+    key: "LWEVAL-1",
+    repo: "example/widgets",
+    pr: 1001,
+    branch: "legion/LWEVAL-1",
+    base: "main",
+    head: "0123456789abcdef0123",
+  };
+  const ruled = (rules: object[]) => ({
+    world,
+    routes: [{ match: "^gh api .*/rules/branches/main", methods: ["GET"], stdout: rules }],
+  });
+  const pullRequest = (resolution: boolean) => ({
+    type: "pull_request",
+    parameters: {
+      required_approving_review_count: 0,
+      required_review_thread_resolution: resolution,
+    },
+  });
+  const checks = { type: "required_status_checks", parameters: { required_status_checks: [] } };
+  const thread = (isResolved: boolean, state = "SUBMITTED") => ({
+    list: [{ id: "PRRT_kwDOrig0001", isResolved, comments: [{ databaseId: 7001, state }] }],
+    next: 7002,
+  });
+  const head = world.head;
+  expect([
+    mergeStateOf(ruled([pullRequest(true), checks]), thread(false), {}, head),
+    mergeStateOf(ruled([pullRequest(true), checks]), thread(true), {}, head),
+    mergeStateOf(ruled([pullRequest(true), checks]), thread(false, "PENDING"), {}, head),
+    mergeStateOf(ruled([pullRequest(false), checks]), thread(false), {}, head),
+    mergeStateOf(ruled([checks]), thread(false), {}, head),
+    mergeStateOf({ world, routes: [] }, thread(false), {}, head),
+    mergeStateOf(ruled([pullRequest(true), checks]), thread(false), { [head]: "DIRTY" }, head),
+  ]).toEqual(["BLOCKED", "CLEAN", "CLEAN", "CLEAN", "CLEAN", "CLEAN", "DIRTY"]);
+});
 
 /** rig.sh's own top-level value of `name`, as its assignment line writes it, unquoted. */
 const rigValue = (name: string) =>

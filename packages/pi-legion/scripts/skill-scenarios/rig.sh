@@ -2683,7 +2683,7 @@ review_world() {
 # protection is read at both reads the merge gate prescribes — the rules of the branch and the
 # branch itself — and fixture_write serves both, since a 404 there is a refused read, which the
 # rule has a reviewer report and never guess around (the batch of 2026-11-10 holds 91 refused
-# reads of this kind); the protection names the checks the head reports as the ones it requires.
+# reads of this kind); the base's ruleset names the checks the head reports as the ones it requires.
 # `gh pr diff` is the diff of the run's own remote at the call, so the reviewer reads the fix the
 # implementer pushed and no world freezes a diff of its own (gh-standin.ts). The score reads the
 # calls each role made and never the threads' state, so that state changes what a role reads and
@@ -2853,9 +2853,25 @@ fixture_docs_before() {
 
 # fixture_first_commit commits what $src holds, pushes the world's default branch and opens
 # legion/<key> on it: the base the implementer's own commit sits above, and the other side of the
-# diff the gh stand-in serves.
+# diff the gh stand-in serves. The world's GitHub holds its developer's account, as production's
+# holds the account a base head's author is (production-shapes.json's `branches-main`, where
+# `commit.author` and `commit.committer` are user objects): its login, the local part of the
+# developer's address with each dot a dash (GitHub's logins hold none), its id, and the address
+# its commits carry ($R/accounts.json); and the SSH key that account signs with
+# ($R/allowed-signers, in git's allowed-signers form), whose private half signs this commit, as
+# production's base head is signed and GitHub verifies it (`commit.verification`). The commit's
+# author and committer lines are the developer's as before (fixture_git); the signature is a
+# header of its own.
+# gh-standin.ts's `commitJson` reads both files.
 fixture_first_commit() {
-  fixture_git add -A && fixture_git commit -qm "init"
+  local login=${world_author_email%%@*}
+  rm -f "$R/signing-key" "$R/signing-key.pub"
+  ssh-keygen -q -t ed25519 -N '' -C "$world_author_email" -f "$R/signing-key"
+  printf '%s %s\n' "$world_author_email" "$(cut -d' ' -f1,2 "$R/signing-key.pub")" >"$R/allowed-signers"
+  jq -n --arg login "${login//./-}" --arg email "$world_author_email" \
+    '[{login:$login, id:318400017, email:$email}]' >"$R/accounts.json"
+  fixture_git add -A &&
+    fixture_git -c gpg.format=ssh -c user.signingkey="$R/signing-key" commit -S -qm "init"
   fixture_git push -q "$R/remote.git" "$worker_base"
   fixture_git checkout -qb "legion/$worker_key"
 }
@@ -3076,23 +3092,31 @@ $2
 # pull request is GitHub's answer to any listing of this world's open ones; no role of these
 # scenarios lists another head.
 #
-# The base branch's two reads are shared routes for the same reason: the merge gate prescribes
-# both of them by name (skill://legion-worker/references/merge-gate.md, "the base branch's
-# rulesets' required checks and its branch protection's"), and that rule has a refused read
-# reported to the architect and never guessed, so a 404 stops a reviewer where GitHub would have
-# answered it — the batch of 2026-11-10 holds 91 refused reads of this kind. Every world's base
-# is protected as a repository whose CI gates its merges is: its branch protection requires the
-# checks the head reports (concluded_checks, `test` and `lint`), so the gate's protection read
-# prints them and its rulesets read prints none, the base having no ruleset unless a world's own
-# routes say so (resolution_protection_routes, which they stand ahead of). A base that named no
-# required check left reviewers writing that the world held no required-check configuration at
-# all (INFRA-764 round 24, reviewer-text-findings-text-only-base-3 and defect-base-3). The
-# bodies hold the fields that answer those reads and leave out the commit and link fields no
-# reader of this gate reads. The rules route is ahead of the branch route, whose regex matches
-# the rules path too, and so is the protection route, which that same regex matches: a call on
-# GitHub's protection endpoint, `…/branches/<base>/protection`, answered from the branch route
-# got the branch object, which is no answer to the call it made. The stand-in answers from the
-# first route that matches the whole call.
+# The base branch's reads are shared routes for the same reason: the merge gate prescribes two of
+# them by name (skill://legion-worker/references/merge-gate.md, "the base branch's rulesets'
+# required checks and its branch protection's"), and that rule has a refused read reported to the
+# architect and never guessed, so a 404 stops a reviewer where GitHub would have answered it — the
+# batch of 2026-11-10 holds 91 refused reads of this kind. Every world's base is protected as
+# production's `main` is, by a repository ruleset alone (base_ruleset_routes, which a world's own
+# routes stand ahead of where its ruleset requires more: resolution_protection_routes): the
+# ruleset requires the checks the head reports (concluded_checks, `test` and `lint`), so the
+# gate's rulesets read prints them, and the base has no branch protection of the classic kind, so
+# its branch read answers `protected: true` with that protection off and naming no check, and the
+# classic protection's own endpoint, `…/branches/<base>/protection`, is GitHub's 403 to a role
+# App, whose token may not read a repository's administration: `gh: Resource not accessible by
+# integration (HTTP 403)`, GitHub's error body on stdout, exit 1. A world whose classic
+# protection required the checks while its rulesets required none gave a reviewer that reads the
+# rulesets alone no required check before its review, where production's ruleset names them
+# (INFRA-764's ruling of 2026-11-17); a base that named no required check at all left reviewers
+# writing that the world held no required-check configuration (INFRA-764 round 24,
+# reviewer-text-findings-text-only-base-3 and defect-base-3). Each of these reads answers in the
+# shape production's does (production-shapes.json, which gh-standin.test.ts holds them to), with
+# the world's own values: the branch carries its `commit`, the base's head on the run's remote
+# (gh-standin.ts's `branch` answer). The rules route is ahead of the branch route, whose regex
+# matches the rules path too, and so is the protection route, which that same regex matches: a
+# call on the protection endpoint answered from the branch route got the branch object, which is
+# no answer to the call it made. The stand-in answers from the first route that matches the whole
+# call.
 #
 # Every other read a role text of either label names, and every read the census saw an agent
 # make, is a shared route too, each answered as GitHub answers it from the world's state
@@ -3144,7 +3168,7 @@ $2
 # head's SHA to the merge state GitHub reports for the pull request while it is at that head for a
 # reason no review thread decides (GitHub's names: `CLEAN`, `BEHIND`, `DIRTY`, …), beside the
 # routes as `mergeStates`, and every head it names none for is `CLEAN` (gh-call.ts's
-# `mergeStateOn`). A base whose protection requires conversation resolution holds that state
+# `mergeStateOn`). A base whose ruleset requires review threads resolved holds that state
 # `BLOCKED` while a thread is open, from the threads as the run leaves them (gh-threads.ts's
 # `mergeStateOf`), so no world writes the `BLOCKED` its threads cause. The pull request's own
 # answers carry the state of the head the run's remote is at (gh-standin.ts), and the daemon
@@ -3167,14 +3191,13 @@ fixture_write() {
     --arg key "$worker_key" --arg repo "$worker_repo" --arg base "$worker_base" \
     --argjson number "$worker_pr" --argjson extra "$1" \
     --argjson decision "$2" --argjson reviews "$3" --argjson runs "$(concluded_checks)" \
+    --argjson ruleset "$(base_ruleset_routes)" \
     --argjson states "${4:-"{}"}" --argjson threads "${5:-"[]"}" '
     ($number|tostring) as $n
     | ($repo | split("/")) as [$owner, $name]
     | ($repo | gsub("(?<c>[.+*?()|\\[\\]{}^$\\\\])"; "\\\(.c)")) as $repo_re
     | (if $when == "" then null else ($when | ltrimstr("@") | split(" ")[0] | tonumber | todate) end) as $at
     | ("https://api.github.com/repos/" + $repo + "/branches/" + $base + "/protection") as $protection_url
-    | ($runs | map(.name)) as $required
-    | [$required[] | {context:., app_id:null}] as $required_checks
     | (reduce $threads[] as $thread ({next:7001, out:[]};
         .next as $first
         | .out += [($thread | del(.review)) + {__typename:"PullRequestReviewThread",
@@ -3242,19 +3265,18 @@ fixture_write() {
       {match:("^gh api .*pulls/" + $n + "/reviews([ ?]|$)"), methods:["GET"], answer:"reviews", stdout:$reviews},
       {match:("^gh api .*pulls/" + $n + "/comments([ ?]|$)"), methods:["GET"], answer:"review-comments"},
       {match:("^gh api .*issues/" + $n + "/comments([ ?]|$)"), methods:["GET"], answer:"issue-comments", stdout:[]},
-      {match:("^gh api .*/rules/branches/" + $base), methods:["GET"], stdout:[]},
+      $ruleset[],
       {match:("^gh api .*/branches/" + $base + "/protection"), methods:["GET"],
-       stdout:{url:$protection_url,
-         required_status_checks:{url:($protection_url + "/required_status_checks"), strict:false,
-           contexts:$required, contexts_url:($protection_url + "/required_status_checks/contexts"),
-           checks:$required_checks},
-         enforce_admins:{url:($protection_url + "/enforce_admins"), enabled:false},
-         required_conversation_resolution:{enabled:false}, allow_force_pushes:{enabled:false},
-         allow_deletions:{enabled:false}}},
-      {match:("^gh api .*/branches/" + $base), methods:["GET"],
-       stdout:{name:$base, protected:true,
-         protection:{enabled:true,
-           required_status_checks:{enforcement_level:"non_admins", contexts:$required, checks:$required_checks}},
+       stdout:{message:"Resource not accessible by integration",
+         documentation_url:"https://docs.github.com/rest/branches/branch-protection#get-branch-protection",
+         status:"403"},
+       stderr:"gh: Resource not accessible by integration (HTTP 403)\n", exit:1},
+      {match:("^gh api .*/branches/" + $base), methods:["GET"], answer:"branch",
+       stdout:{name:$base,
+         _links:{self:("https://api.github.com/repos/" + $repo + "/branches/" + $base),
+           html:("https://github.com/" + $repo + "/tree/" + $base)},
+         protected:true,
+         protection:{enabled:false, required_status_checks:{enforcement_level:"off", contexts:[], checks:[]}},
          protection_url:$protection_url}},
       {match:"^gh api .*commits/[^/ ]+/check-runs([ ?]|$)", methods:["GET"], answer:"check-runs",
        stdout:{total_count:($runs|length), check_runs:$runs}},
@@ -3283,7 +3305,7 @@ fixture_write() {
 # The times say how long each ran; the gh stand-in reports each on the commit it is read for, its
 # ids that commit's and its times counted from when that commit reached the remote
 # (gh-standin.ts's `reportedRuns`). These two are the checks every world's base requires
-# (fixture_write).
+# (base_ruleset_routes).
 concluded_checks() {
   jq -n '[
     {name:"test", status:"completed", conclusion:"success", details_url:"https://example.invalid/2",
@@ -3292,42 +3314,51 @@ concluded_checks() {
      started_at:"2026-01-01T00:00:00Z", completed_at:"2026-01-01T00:00:10Z"}]'
 }
 
-# resolution_protection_routes prints the routes of a base branch ($worker_base of
-# $worker_repo) whose protection requires conversation resolution beside the checks every
-# world's base requires (fixture_write): the one rule that holds a pull request `BLOCKED` with
-# every check green and an approval standing, while a review thread is open. GitHub states it at
-# each read the merge gate prescribes, which a world puts ahead of fixture_write's own answers:
-# the branch's rules, in the ruleset form (`pull_request` with
-# `required_review_thread_resolution`); the branch, `protected: true` with
-# `required_conversation_resolution` enabled; and its protection endpoint, which answers the same
-# protection. The protection names the required checks as fixture_write's does, the checks the
-# head reports (concluded_checks), so the gate's protection read prints them and its rulesets
-# read prints none. In that order, since the branch route's regex matches the other two paths as
-# well.
-resolution_protection_routes() {
-  jq -n --arg repo "$worker_repo" --arg base "$worker_base" --argjson runs "$(concluded_checks)" '
-    ("https://api.github.com/repos/" + $repo + "/branches/" + $base + "/protection") as $url
-    | ($runs | map(.name)) as $required
-    | [$required[] | {context:., app_id:null}] as $checks
-    | {required_conversation_resolution:{enabled:true}} as $rules
+# base_ruleset_routes [RULES] prints the routes of the one repository ruleset that protects every
+# world's base ($worker_base of $worker_repo), as a ruleset alone protects production's `main`
+# (production-shapes.json's ruleset reads): active on the default branch, holding RULES, a JSON
+# list of rules in GitHub's form (none unless a world's base requires more), ahead of the
+# `required_status_checks` rule every world's base requires, naming the checks the head reports
+# (concluded_checks) with the App that reports them, GitHub Actions (integration 15368,
+# gh-standin.ts's GITHUB_ACTIONS, the App the check runs name). Its routes are the three reads of
+# a ruleset GitHub answers a role App, each in production's shape: the rules in force on the
+# branch, each with the ruleset it comes from (`rules/branches/<base>`, the merge gate's rulesets
+# read); the repository's rulesets; and the ruleset by its id, GitHub's 404 for any other id
+# (gh-standin.ts's `ruleset` answer). Its id, node id and times are the world's own.
+base_ruleset_routes() {
+  jq -n --arg repo "$worker_repo" --arg base "$worker_base" --argjson runs "$(concluded_checks)" \
+    --argjson rules "${1:-[]}" '
+    {id:1, name:$base, target:"branch", source_type:"Repository", source:$repo, enforcement:"active",
+     conditions:{ref_name:{exclude:[], include:["~DEFAULT_BRANCH"]}},
+     rules:($rules + [{type:"required_status_checks", parameters:{strict_required_status_checks_policy:false,
+       do_not_enforce_on_create:false, required_status_checks:[$runs[] | {context:.name, integration_id:15368}]}}]),
+     node_id:"RRS_lACqUmVwb3NpdG9yec4AAAABzgAAAAE", created_at:"2026-01-01T00:00:00.000Z",
+     updated_at:"2026-01-01T00:00:00.000Z", current_user_can_bypass:"never",
+     _links:{self:{href:("https://api.github.com/repos/" + $repo + "/rulesets/1")},
+       html:{href:("https://github.com/" + $repo + "/rules/1")}}} as $ruleset
     | [
       {match:("^gh api .*/rules/branches/" + $base), methods:["GET"],
-       stdout:[{type:"pull_request", ruleset_source_type:"Repository", ruleset_source:$repo, ruleset_id:1,
-         parameters:{dismiss_stale_reviews_on_push:false, require_code_owner_review:false,
-           require_last_push_approval:false, required_approving_review_count:0,
-           required_review_thread_resolution:true}}]},
-      {match:("^gh api .*/branches/" + $base + "/protection"), methods:["GET"],
-       stdout:($rules + {url:$url,
-         required_status_checks:{url:($url + "/required_status_checks"), strict:false,
-           contexts:$required, contexts_url:($url + "/required_status_checks/contexts"), checks:$checks},
-         enforce_admins:{url:($url + "/enforce_admins"), enabled:false},
-         allow_force_pushes:{enabled:false}, allow_deletions:{enabled:false}})},
-      {match:("^gh api .*/branches/" + $base), methods:["GET"],
-       stdout:{name:$base, protected:true,
-         protection:($rules + {enabled:true,
-           required_status_checks:{enforcement_level:"non_admins", contexts:$required, checks:$checks}}),
-         protection_url:$url}}
+       stdout:[$ruleset.rules[] + {ruleset_source_type:"Repository", ruleset_source:$repo, ruleset_id:$ruleset.id}]},
+      {match:"^gh api .*/rulesets/[^/ ?]+([ ?]|$)", methods:["GET"], answer:"ruleset", stdout:$ruleset},
+      {match:"^gh api .*/rulesets([ ?]|$)", methods:["GET"],
+       stdout:[$ruleset | {id, name, target, source_type, source, enforcement, node_id, _links, created_at, updated_at}]}
     ]'
+}
+
+# resolution_protection_routes prints the routes of a base whose ruleset requires review threads
+# resolved beside the checks every world's base requires (base_ruleset_routes), which a world
+# puts ahead of fixture_write's own: a `pull_request` rule with
+# `required_review_thread_resolution`, every other parameter in the kind production's rule carries
+# it (production-shapes.json's `rules-branches-main`) and none asking for an approval, so the one
+# rule that holds a pull request `BLOCKED` with every check green and an approval standing is an
+# open review thread (gh-threads.ts's `mergeStateOf`). Its merge methods are the three the world's
+# repository allows.
+resolution_protection_routes() {
+  base_ruleset_routes "$(jq -n '[{type:"pull_request", parameters:{required_approving_review_count:0,
+    dismiss_stale_reviews_on_push:false, required_reviewers:[], require_code_owner_review:false,
+    dismissal_restriction:{enabled:false, allowed_actors:[]}, require_last_push_approval:false,
+    required_review_thread_resolution:true, require_extra_approval_for_unattributed_changes:false,
+    allowed_merge_methods:["merge", "squash", "rebase"]}}]')"
 }
 
 # run_project SCENARIO CASE LABEL N [BATCH] prints the Legion project token of one worker run.

@@ -485,9 +485,10 @@ export function guardRefusal(run: Pick<Run, "dir" | "results">): string | undefi
   return undefined;
 }
 
-/** GitHub's answer to the protection of a branch that has none, which the world's protection
- * route gives for every unprotected base (rig.sh's fixture_write). */
-const PROTECTION_404 = "gh: Branch not protected (HTTP 404)";
+/** GitHub's answer to a role App's read of a branch's classic protection, which the world's
+ * protection route gives for every base (rig.sh's fixture_write): the App's token may not read a
+ * repository's administration (production-shapes.json's `branches-main-protection`). */
+const PROTECTION_403 = "gh: Resource not accessible by integration (HTTP 403)";
 /** The gh stand-in's 422s, each GitHub's own answer to that call (gh-standin.ts): the create of a
  * review with an event GitHub does not take, a REQUEST_CHANGES or COMMENT with no body, or a
  * pending review while one is pending (`reviewCreate`); and the submit of a review that is not
@@ -530,9 +531,9 @@ const GH_DECLARED_EVERY_ROLE: readonly string[] = [OWNER_REFUSED];
 /** The gh refusals each scenario provokes on purpose, or that a correct agent meets in it, by the
  * role that meets them; every other refusal is unhealthy (rule 7). Both labels' worlds are one
  * GitHub, so the table names no label; calls.jsonl records no phase, so it names none. Declared:
- *   - the reviewer's PROTECTION_404, in both scenarios: the merge gate has the reviewer read the
- *     base branch's protection (skills/legion-worker/references/merge-gate.md), every world's
- *     base is unprotected, and GitHub answers that read 404 "Branch not protected";
+ *   - the reviewer's PROTECTION_403, in both scenarios: the merge gate has the reviewer read the
+ *     base branch's protection (skills/legion-worker/references/merge-gate.md), a reviewer reaches
+ *     for the protection endpoint too, and GitHub answers a role App's read of it 403;
  *   - the reviewer's CREATE_422 and SUBMIT_422, in both scenarios: the create and the submit of a
  *     review are the reviewer's own step in both worlds, and the stand-in refuses one exactly
  *     where GitHub refuses it, so a reviewer that met one met GitHub;
@@ -540,13 +541,13 @@ const GH_DECLARED_EVERY_ROLE: readonly string[] = [OWNER_REFUSED];
  *     run and its jobs, and pr-body.md has a role watch CI with `gh run watch` and `gh run view`;
  *     in a world that holds no workflow run those reads get production's own refusals, so a role
  *     that met one met production.
- * Not declared: the implementer's PROTECTION_404 and 422s, since it reads no protection and makes
+ * Not declared: the implementer's PROTECTION_403 and 422s, since it reads no protection and makes
  * no review in threads-closed; any UNROUTED, which is the world missing an answer; and any other
  * refusal of a route the worlds add later, until a row here says why a correct agent meets it. */
 const GH_DECLARED: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = {
-  "reviewer-text-findings": { reviewer: [PROTECTION_404, CREATE_422, SUBMIT_422, ...NO_RUN] },
+  "reviewer-text-findings": { reviewer: [PROTECTION_403, CREATE_422, SUBMIT_422, ...NO_RUN] },
   "threads-closed": {
-    reviewer: [PROTECTION_404, CREATE_422, SUBMIT_422, ...NO_RUN],
+    reviewer: [PROTECTION_403, CREATE_422, SUBMIT_422, ...NO_RUN],
     implementer: NO_RUN,
   },
 };
