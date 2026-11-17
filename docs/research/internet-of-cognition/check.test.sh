@@ -2746,6 +2746,25 @@ planted_run caller-index-assigned "true || UV_EXTRA_INDEX_URL=$CALLER_INDEX uv p
 case_result "a row that assigns UV_EXTRA_INDEX_URL before an install is refused by name, as a name the gate records with" \
     "replay-command: f-behaviour-1 runs UV_EXTRA_INDEX_URL=[^ ]*, an assignment to UV_EXTRA_INDEX_URL, a name the gate records with" "$PLANTED_OUT"
 
+# 102. A contains predicate over several lines holds all of them (test round 32). At
+# a657fd7db7 evaluate reads contains with grep -qF, and grep takes a value holding a newline
+# as a list of patterns, any one of which is a match. So a multi-line contains passes on
+# output that holds one of its lines, and a value holding an empty line, as d-75's does
+# between two quoted blocks, passes on any output with a line at all. Measured with the
+# gate's own evaluate: d-75's predicate holds over output that is the one line 0. The case
+# plants a two-line contains over output that holds only its first line, which must fail,
+# d-75's predicate as claims.jsonl holds it over output that is the one line 0, which must
+# fail, and the same two-line contains over output that holds both lines, which passes.
+dir="$(fresh contains-first-line-only)"
+plant_behaviour "$dir" "printf 'ran once\\n'" '{"contains":"ran once\nran twice"}'
+case_result "a contains over two lines fails on output that holds only its first line" replay-command "$(fixture_run "$dir" --replay)"
+dir="$(fresh contains-blank-line)"
+plant_behaviour "$dir" "printf '0\\n'" "$(jq -c 'select(.id == "d-75") | .expect' "$HERE/claims.jsonl")"
+case_result "d-75's contains, as claims.jsonl holds it, fails on output that is the one line 0" replay-command "$(fixture_run "$dir" --replay)"
+dir="$(fresh contains-both-lines)"
+plant_behaviour "$dir" "printf 'ran once\\nran twice\\n'" '{"contains":"ran once\nran twice"}'
+honest_result "a contains over two lines passes on output that holds both" replay-command "$(fixture_run "$dir" --replay)"
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
