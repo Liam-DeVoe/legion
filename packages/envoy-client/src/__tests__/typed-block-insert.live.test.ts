@@ -81,7 +81,8 @@ describe.skipIf(!dispatchStackEnabled)(
           block.type === "paragraph" &&
           markdown.slice(block.from, block.to).trim() === "The read succeeds."
       );
-      if (paragraph === undefined) throw new Error(`no paragraph of ${markdown} reads the requirement`);
+      if (paragraph === undefined)
+        throw new Error(`no paragraph of ${markdown} reads the requirement`);
 
       await docEditOps(issue.key, issue.primary_artifact_id, [
         { op: "insert", after: `block:${paragraph.id}`, markdown: INSERTED },
