@@ -14,11 +14,14 @@ body: |-
     while the daemon runs, every mapped repository left out at boot or on a later read) now logs one
     ERROR line, `workflow: the daemon serves no repository, so it admits nothing and reads the
     mapping again`, with `project` and `cause`, once each time the daemon comes to serve none.
-    Unmapping the last repository and leaving out every one logged only at INFO before. The line
-    replaces the boot's `workflow: every mapped repository's GitHub App installation read failed,
-    so the daemon boots serving none and reads them again`, so a log filter or alert on that message
-    needs the new one. Plain `legion state` prints a `repositories:` line, naming what the daemon
-    serves and each repository it leaves out, on every daemon that runs the workflow.
+    Unmapping the last repository and leaving out every one logged at most a WARN line before. The
+    line replaces the boot's `workflow: every mapped repository's GitHub App installation read
+    failed, so the daemon boots serving none and reads them again`, and when no repository is
+    served the boot no longer logs the WARN `workflow: a mapped repository's GitHub App
+    installation read failed, so the daemon boots leaving it out and reads it again`, so a log
+    filter or alert on either message needs the new one. Plain `legion state` prints a
+    `repositories:` line, naming what the daemon serves and each repository it leaves out, on
+    every daemon that runs the workflow.
 time: 2026-11-17T00:58:03Z
 custom:
     Issue: pr4255

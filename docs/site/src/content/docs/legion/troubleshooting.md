@@ -313,8 +313,11 @@ Check, in order:
    daemon says why on the issue (`Legion did not admit this issue: …`), once until the cause
    changes. Set the issue's repository (the issue header's Repository picker, or
    `dispatch issue-update --repo owner/name`), or install the missing App, and move the issue to
-   `todo` again. A child of a tree is told the same way, and its tree's architect gets a
-   `child-not-recorded` notice.
+   `todo` again. When the note says the project has no repository mapped, map the project's
+   repositories in Dispatch (Settings → Repositories → Projects), one of them its default, and
+   move the issue to `todo` again: Dispatch refuses setting an issue's repository while its project
+   maps none. A child of a tree is told the same way, and its tree's architect gets a
+   `child-not-recorded` notice with the same remedy.
 4. **The slots.** When every slot is taken the issue waits its turn:
 
    ```sh

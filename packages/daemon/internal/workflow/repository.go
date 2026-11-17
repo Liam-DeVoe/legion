@@ -154,7 +154,7 @@ func (e *Engine) refuseChild(ctx context.Context, tx pgx.Tx, root record.Issue, 
 	e.logOnCommit(ctx, "workflow: child not recorded; its repository is not one Legion serves", "issue", key, "tree", root.Key, "resolved", resolved, "reason", refused.Refusal)
 	remedy := "Set its repository to one of the project's (dispatch issue-update --repo owner/name), then release it again."
 	if refused.Unmapped {
-		remedy = "Map the project's repositories there, one of them its default, then release it again."
+		remedy = "Map the project's repositories in Dispatch (Settings → Repositories → Projects), one of them its default, then release it again."
 	}
 	return e.notice(ctx, tx, root.Key, record.Notice{Kind: "child-not-recorded", Role: claim.RoleArchitect,
 		Reason: fmt.Sprintf("%s was not recorded under your tree: %s; the daemon said so on the issue. %s", key, refused.Refusal, remedy)})

@@ -392,10 +392,10 @@ const servingNoneLine = "workflow: the daemon serves no repository, so it admits
 // serving none logs it the same way (no repository mapped at boot or unmapped while it runs,
 // every repository left out for an App it lacks or a read GitHub did not answer), once per episode,
 // and the reads of its own the refresher then makes on its backoff say nothing more. A read
-// again says it as soon as its publication commits, before GitHub intake's subscription is
-// narrowed, since the daemon serves none from the publication on whether or not that last step
-// succeeds. refused is the publication's refusals: the first of them, in the order the caller
-// passes them, that a read GitHub did not answer made is the line's error.
+// again says it as soon as its publication has run set, before GitHub intake's subscription is
+// narrowed and whether or not the publication's commit succeeds, since the daemon serves none from
+// set on whatever fails after it. refused is the publication's refusals: the first of them, in the
+// order the caller passes them, that a read GitHub did not answer made is the line's error.
 func (w *workflowRuntime) sayServingNone(refused []refusedRepository) {
 	cause := w.repositories.servingNoneToSay()
 	if cause == "" {
@@ -419,20 +419,23 @@ func (r *repositories) unmapped() string {
 	return ""
 }
 
-// membership is which repositories the mapping as last read names, served or left out, and whether
-// it serves none, as one comparable key: the refresher starts its backoff again when a read
-// changes it, so a new mapping and each transition into serving none, a served repository left
-// out with the same names mapped among them, start again at 30 s, as the serving-none line's
-// retryIn says.
+// membership is which repositories the mapping as last read names, served or left out, as one
+// comparable key: the refresher starts its backoff again when a read changes it (and on a
+// transition into serving none, servesNone).
 func (r *repositories) membership() string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	names := append(slices.Collect(maps.Keys(r.accepted)), slices.Collect(maps.Keys(r.refused))...)
 	slices.Sort(names)
-	if len(r.accepted) == 0 {
-		names = append(names, "\x00serving none")
-	}
 	return strings.Join(names, "\n")
+}
+
+// servesNone is whether the mapping as last read serves no repository: the refresher starts its
+// backoff again on a read that makes it true, so the serving-none line's retryIn is true.
+func (r *repositories) servesNone() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.servingNoneLocked() != ""
 }
 
 // view is the mapping as the daemon's state shows it, with caches, the Kubernetes runtime's
@@ -1121,6 +1124,7 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	// holding that lock, which is why the stream calls are on either side of it and not in it.
 	var heard []ghrepo.Repository
 	var added, removed []string
+	published := false
 	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
 		if err := intake.SerializeFacts(ctx, tx); err != nil {
 			return fmt.Errorf("serialize the mapping's publication with admission: %w", err)
@@ -1131,11 +1135,17 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 		}
 		before := readFailures(w.repositories.Refused())
 		added, removed = w.repositories.set(accepted, refused)
+		published = true
 		w.repositories.setUnverified(unverified)
 		w.repositories.setWithoutWebhookApp(w.repositories.servedGaps(gaps, refused))
 		w.markRecovered(before, readFailures(w.repositories.Refused()))
 		return nil
 	}); err != nil {
+		// The mapping in memory is published once set has run, whether or not the commit after it
+		// succeeds, so a failed commit that left the daemon serving none still says so now.
+		if published {
+			w.sayServingNone(refused)
+		}
 		return err
 	}
 	w.sayServingNone(refused)
@@ -1241,7 +1251,8 @@ func (w *workflowRuntime) requestMappingRead() uint64 {
 // default-branch read past GitHub's rate limit, or served on its last answer, its installation read
 // having failed), or a recovery has not committed yet, it reads the mapping again of its own on
 // mappingRecheckRetry's backoff, 30 s doubling to 10 min, reset once nothing waits and started
-// again at 30 s by a read that changes which repositories the mapping names, so a repository
+// again at 30 s by a read that changes which repositories the mapping names or brings it into
+// serving none (and by no other read, a read that serves one again included), so a repository
 // mapped with no event the daemon heard, or one whose App was installed after it was mapped, is
 // served, and one GitHub did not answer for is served, or confirmed, and its issues recovered, once
 // GitHub answers, with no restart and no mapping change.
@@ -1256,17 +1267,21 @@ func (w *workflowRuntime) refreshOnMappingChange(ctx context.Context) {
 		after = time.After
 	}
 	recheckIn := mappingRecheckRetry.Initial
-	mapped := w.repositories.membership()
+	mapped, none := w.repositories.membership(), w.repositories.servesNone()
 	for {
 		var recheck <-chan time.Time
-		// A read that changed which repositories the mapping names starts the backoff again at
-		// 30 s: its reasons are about a mapping no wait so far was for, and an empty project's
-		// grown backoff says nothing about how soon an App lands on a repository just mapped. A read
-		// that changed none of them (a GitHub outage read again, an admission held for a read)
-		// keeps the backoff it has.
-		if now := w.repositories.membership(); now != mapped {
-			mapped, recheckIn = now, mappingRecheckRetry.Initial
+		// A read that changed which repositories the mapping names, or that brought the daemon
+		// into serving none, starts the backoff again at 30 s: its reasons are about a mapping no
+		// wait so far was for, an empty project's grown backoff says nothing about how soon an App
+		// lands on a repository just mapped, and the serving-none line says the next read is in
+		// 30 s. Any other read keeps the backoff it has: a GitHub outage read again, an admission
+		// held for a read, and a read that serves a repository again, which says nothing about how
+		// soon GitHub answers for the ones still left out for now.
+		nowMapped, nowNone := w.repositories.membership(), w.repositories.servesNone()
+		if nowMapped != mapped || (nowNone && !none) {
+			recheckIn = mappingRecheckRetry.Initial
 		}
+		mapped, none = nowMapped, nowNone
 		waiting := append(w.repositories.awaitingRead(), w.recoveringReasons()...)
 		wait, cut := recheckIn, false
 		if len(waiting) == 0 {

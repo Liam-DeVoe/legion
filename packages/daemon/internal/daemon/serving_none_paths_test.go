@@ -82,6 +82,36 @@ func TestComingToServeNoneWithTheSameRepositoriesMappedStartsTheBackoffAgainAt30
 	}
 }
 
+// A read that serves a repository again, out of serving none, keeps the backoff it has for what
+// still waits: only a change of the repositories mapped and a transition into serving none start it
+// again at 30 s. Two repositories left out for now through a GitHub outage grow the backoff to its
+// cap; once one of them answers and is served, the other is read again at that cap, as the outage
+// read it before, and not from 30 s.
+func TestServingARepositoryAgainKeepsTheBackoffForWhatStillWaits(t *testing.T) {
+	clock := newRecheckWaits()
+	installs := &installations{}
+	installs.setFailing(errors.New("GitHub answered 502"), "implement acme/widgets", "implement zeta/tools")
+	w, _, installs, _ := mappingRigWith(t, installs, func(w *workflowRuntime) { w.recheckAfter = clock.after })
+	if served(w, "acme/widgets") || served(w, "zeta/tools") {
+		t.Fatal("a repository served at boot while both installation reads fail")
+	}
+	testwait.Eventually(t, "six waits while both are left out for now", func() bool { return len(clock.recorded()) >= 6 })
+	clock.spin.Store(false)
+	testwait.Eventually(t, "the refresher waiting for its next read", func() bool { return clock.ticking.Load() > 0 })
+	before := len(clock.recorded())
+	if got := clock.recorded()[before-1]; got != 10*time.Minute {
+		t.Fatalf("the last wait while both are left out for now = %s, want the 10 min cap", got)
+	}
+	installs.setFailing(nil, "implement acme/widgets")
+	clock.tick <- time.Now()
+	testwait.Eventually(t, "acme/widgets served and the refresher waiting again", func() bool {
+		return served(w, "acme/widgets") && len(clock.recorded()) > before
+	})
+	if got := clock.recorded()[before]; got != 10*time.Minute {
+		t.Fatalf("the first wait after acme/widgets was served again = %s, want the 10 min it had grown to: serving one again restarts no backoff", got)
+	}
+}
+
 // A child an architect releases while the project maps no repository is refused with that cause,
 // and the architect's notice tells it to map the project's repositories, as the child's own note
 // does: Dispatch refuses setting an issue to a repository its project does not map, so "set its
@@ -103,7 +133,7 @@ func TestAChildReleasedWhileTheProjectMapsNoRepositoryTellsTheArchitectToMapOne(
 	}
 	notices := treeNotices(t, w, root)[before:]
 	if len(notices) != 1 || !strings.Contains(notices[0], api.NoRepositoryMapped("LEGION")) ||
-		!strings.Contains(notices[0], "Map the project's repositories there, one of them its default, then release it again") ||
+		!strings.Contains(notices[0], "Map the project's repositories in Dispatch (Settings → Repositories → Projects), one of them its default, then release it again") ||
 		strings.Contains(notices[0], "dispatch issue-update") {
 		t.Fatalf("notices on %s after %s = %q, want one naming the empty mapping and mapping a repository as the remedy", root, child, notices)
 	}
