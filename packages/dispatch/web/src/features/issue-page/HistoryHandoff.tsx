@@ -92,6 +92,7 @@ function HandoffFields({
   const failed = handoff.isError ? (
     <span className="mt-1 block" id={handoff.data === undefined ? id : undefined} ref={failure}>
       <DetailsErrorLine
+        failure={handoff.errorUpdateCount}
         message={ANSWER_LINES.handoff_unreadable}
         onRetry={() => {
           // The Retry goes with its line: at once where no body is held, as the read it sends

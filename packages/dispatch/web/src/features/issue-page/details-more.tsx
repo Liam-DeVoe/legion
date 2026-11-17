@@ -19,7 +19,7 @@ import { stateForIssue } from "../issue/pins";
 import { SubscribedAgents } from "../issue/SubscribedAgents";
 import { buildIssuePath, parseIssuePath } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
-import { DetailsErrorLine } from "./details-error";
+import { DetailsErrorLine, useSaidFailure } from "./details-error";
 import { DETAILS_ROW_ATTRIBUTE, type DetailsRow, useOpenDetailsAt } from "./details-rows";
 import { FocusedNodeFacts } from "./FocusedNodeFacts";
 import { type FocusedNode, useFocusedNode } from "./focused-node";
@@ -58,6 +58,10 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
   const subscribers = useIssueSubscribers(issue.key);
   // The session the last Unsubscribe was for: where Dispatch refused it, Retry sends it again.
   const refused = subscribers.unsubscribe.variables;
+  // The refusal the row says: the last Unsubscribe's, and still while the one its Retry sent
+  // again is out, so the line, and its Retry with a reader's focus, stays until that one is
+  // answered; a refusal that repeats is counted anew (`useSaidFailure`).
+  const unsubscribeRefusal = useSaidFailure(subscribers.unsubscribe);
   const [subscribersOpen, setSubscribersOpen] = useState(false);
   const [collaboratorsOpen, setCollaboratorsOpen] = useState(opensCollaborators);
   // Each arrival at the address opens the list, as it opens Details (`DetailsHistory`), with the
@@ -71,10 +75,10 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
   const collaboratorsControl = useRef<HTMLButtonElement>(null);
   // The control of the Subscribers row the focus was last on (`onFocus` below), and each agent's
   // Unsubscribe as the last drawing left them, in the list's order. An Unsubscribe goes with its
-  // agent's row once its write lands, and a Retry with its line once what it sent again is out or
-  // has been read, and the focus would fall to the page with them, so it goes on instead, as
-  // Unpin in Pinned hands it on (`IssuePins.tsx`): from an Unsubscribe to the next agent's, and
-  // from a Retry to the Unsubscribe whose write is out; else to the Subscribers control. The
+  // agent's row once its write lands, and a Retry with its line once what it sent again has
+  // landed or been read, and the focus would fall to the page with them, so it goes on instead,
+  // as Unpin in Pinned hands it on (`IssuePins.tsx`): from an Unsubscribe to the next agent's,
+  // and from a Retry to the Unsubscribe whose write is out; else to the Subscribers control. The
   // Confirm dialog gives the focus back to the Unsubscribe it opened from itself (`useDialog`).
   const held = useRef<Element | null>(null);
   const unsubscribes = useRef<readonly HTMLButtonElement[]>([]);
@@ -128,18 +132,23 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
           />
         ) : null}
         {/* Neither Retry is disabled while what it sent is out, since Chromium drops the focus of
-            a focused button that turns disabled to the page; a press then does nothing. */}
+            a focused button that turns disabled to the page: its line stays, its Retry busy, and
+            a press then does nothing. Each failure is drawn afresh, so one that repeats in the
+            same words is said again. */}
         {subscribers.error ? (
           <DetailsErrorLine
             error={subscribers.failure}
+            failure={subscribers.errorUpdateCount}
             message={STATE_LINES.subscribers_unreadable}
             onRetry={() => {
               if (!subscribers.fetching) subscribers.refetch();
             }}
+            retrying={subscribers.fetching}
           />
         ) : null}
-        {subscribers.unsubscribe.isError ? (
+        {unsubscribeRefusal === null ? null : (
           <DetailsErrorLine
+            failure={unsubscribeRefusal.count}
             message={ANSWER_LINES.unsubscribe_failed}
             onRetry={
               refused === undefined
@@ -148,8 +157,9 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
                     if (!subscribers.unsubscribe.isPending) subscribers.unsubscribe.mutate(refused);
                   }
             }
+            retrying={subscribers.unsubscribe.isPending}
           />
-        ) : null}
+        )}
       </WideRow>
       <WideRow row="collaborators">
         <button

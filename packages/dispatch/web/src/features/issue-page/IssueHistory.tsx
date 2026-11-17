@@ -388,18 +388,24 @@ export function IssueHistory({
   // next page - says so with its Retry beside the entries, never in their place, and the line
   // stands alone only while no page is held. A failed next page is said where Load older is,
   // and its Retry reads that page again; any other failure under the heading, where its Retry
-  // reads the log again.
-  const failed = log.isError ? (
+  // reads the log again. The line stays while the read its Retry sent is out, even where no page
+  // is held: a fetch of a log that holds none clears its failure and puts it back to pending as
+  // it starts, which would take the line, and its Retry with the focus, away at the press. A
+  // failure it counts (`errorUpdateCount`) is then one it still stands in. Each failure is drawn
+  // afresh by that count, so a read that fails again is said again, in the same words.
+  const logFailed = log.isError || (log.isPending && log.errorUpdateCount > 0);
+  const failed = logFailed ? (
     <div ref={failure}>
       <DetailsErrorLine
         error={log.error}
+        failure={log.errorUpdateCount}
         message={ANSWER_LINES.history_unreadable}
         onRetry={() => {
           // The next page's Retry stands where Load older stood, and hands the focus on as it
           // does; the log's Retry, under the heading, to the heading. Neither is disabled while
           // it reads, since Chromium drops the focus of a focused button that turns disabled
-          // to the page, so a read that fails again leaves the focus on it; a press while the
-          // log is read sends nothing.
+          // to the page, so a read that fails again leaves the focus on it; it reads busy then,
+          // and a press while the log is read sends nothing.
           const active = document.activeElement;
           if (active !== null && failure.current?.contains(active) === true) {
             pressed.current = log.isFetchNextPageError
@@ -409,6 +415,7 @@ export function IssueHistory({
           if (log.isFetching) return;
           void (log.isFetchNextPageError ? log.fetchNextPage() : log.refetch());
         }}
+        retrying={log.isFetching}
       />
     </div>
   ) : null;
@@ -429,7 +436,7 @@ export function IssueHistory({
         {CONTROL_LABELS.history}
       </h2>
       {log.isFetchNextPageError ? null : failed}
-      {log.isPending ? (
+      {log.isPending && !logFailed ? (
         <p className={`text-xs ${pageQuietText}`} {...pageChrome}>
           {ANSWER_LINES.loading_history}
         </p>

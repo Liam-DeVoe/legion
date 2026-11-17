@@ -137,7 +137,7 @@ export function NodeReferences({
   // page with it: it goes back to the list's own control instead, as Unpin in Pinned hands it on
   // (`IssuePins.tsx`). Retry is never disabled while it reads again, since Chromium drops the
   // focus of a focused button that turns disabled to the page, so a read that fails again
-  // leaves the focus on it; a press while the list is read does nothing.
+  // leaves the focus on it; it reads busy then, and a press while the list is read does nothing.
   const held = useRef<Element | null>(null);
   useLayoutEffect(() => {
     if (held.current === null || held.current.isConnected) return;
@@ -146,6 +146,12 @@ export function NodeReferences({
       toggle.current?.focus();
     }
   });
+  // The line stays while the read its Retry sent is out, even where the list held no answer: a
+  // fetch of a read that holds none clears its failure and puts it back to pending as it starts,
+  // which would take the line, and its Retry with the focus, away at the press. A failure it
+  // counts (`errorUpdateCount`) is then one it still stands in. Each failure is drawn afresh by
+  // that count, so a read that fails again is said again, in the same words.
+  const failed = query.isError || (query.isPending && query.errorUpdateCount > 0);
   if (addressed === undefined) {
     return null;
   }
@@ -171,19 +177,21 @@ export function NodeReferences({
       </button>
       {open ? (
         <div id={panelId}>
-          {reading && query.isPending ? (
+          {reading && query.isPending && !failed ? (
             <p className={`mt-1 text-xs ${pageQuietText}`} {...pageChrome}>
               {ANSWER_LINES.references_loading}
             </p>
           ) : null}
-          {query.isError ? (
+          {failed ? (
             <div className="mt-1">
               <DetailsErrorLine
                 error={query.error}
+                failure={query.errorUpdateCount}
                 message={ANSWER_LINES.references_unreadable}
                 onRetry={() => {
                   if (!query.isFetching) void query.refetch();
                 }}
+                retrying={query.isFetching}
               />
             </div>
           ) : null}

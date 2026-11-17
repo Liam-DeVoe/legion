@@ -312,23 +312,32 @@ test("a failed Unsubscribe says so, with Retry", async () => {
     expect(unsubscribeIssueSession).toHaveBeenCalledTimes(1);
     expect(unsubscribeIssueSession).toHaveBeenLastCalledWith(KEY, "planner", keyedAttempt);
 
-    await userEvent.click(screen.getByRole("button", { name: CONTROL_LABELS.retry }));
+    const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
+    await userEvent.click(retry);
 
     await waitFor(() => expect(unsubscribeIssueSession).toHaveBeenCalledTimes(2));
     expect(unsubscribeIssueSession).toHaveBeenLastCalledWith(KEY, "planner", keyedAttempt);
-    // Retry went with its line as soon as its write was out, and the focus with it: it is on the
-    // Unsubscribe that write is for, which stays drawn until the write lands.
-    const unsubscribe = screen.getByRole("button", { name: "Unsubscribe" });
+    // Retry stays with its line while its write is out, busy and never disabled, and keeps the
+    // focus the press gave it.
     await waitFor(() =>
-      expect(document.activeElement, "the focus fell to the page with Retry").toBe(unsubscribe)
+      expect(
+        retry,
+        "Retry does not read busy while the write it sent again is out"
+      ).toHaveAttribute("aria-busy", "true")
     );
+    expect(retry, "Retry turned disabled while the write it sent again is out").toBeEnabled();
+    expect(
+      document.activeElement,
+      "Retry lost the focus while the write it sent again is out"
+    ).toBe(retry);
 
     land();
     await waitFor(() => expect(subscribers.textContent).toBe(`${PROPERTY_LABELS.subscribers}:0`));
     expect(screen.queryByRole("alert")).toBeNull();
-    // The agent's row went with its Unsubscribe once the write landed; no agent follows it, so
-    // the focus is on the Subscribers control rather than on the page.
-    expect(document.activeElement, "the focus fell to the page with Unsubscribe").toBe(subscribers);
+    // Retry went with its line once the write landed, and the agent's row with its Unsubscribe
+    // once the agents were read again; no agent follows it, so the focus is on the Subscribers
+    // control rather than on the page.
+    expect(document.activeElement, "the focus fell to the page with Retry").toBe(subscribers);
   } finally {
     view.unmount();
     getIssueSubscribers.mockRestore();

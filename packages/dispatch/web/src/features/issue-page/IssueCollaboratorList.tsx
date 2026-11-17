@@ -97,7 +97,8 @@ export function IssueCollaboratorList({
   // the focus goes to the control that opens the list rather than fall to the page, as Unpin in
   // Pinned hands it on (`IssuePins.tsx`). It is never disabled while it reads again, so a read
   // that fails again leaves the focus on it: Chromium drops the focus of a focused button that
-  // turns disabled to the page. A press while the list is read does nothing.
+  // turns disabled to the page. It reads busy then, and a press while the list is read does
+  // nothing.
   const retried = useRef<Element | null>(null);
   useLayoutEffect(() => {
     if (retried.current === null || retried.current.isConnected) return;
@@ -106,13 +107,21 @@ export function IssueCollaboratorList({
       owner.current?.focus();
     }
   });
-  const failure = query.isError ? (
+  // The line stays while the read its Retry sent is out, even where no read has answered: a
+  // fetch of a read that holds no answer clears its failure and puts it back to pending as it
+  // starts, which would take the line, and its Retry with the focus, away at the press. A
+  // failure it counts (`errorUpdateCount`) is then one it still stands in. Each failure is drawn
+  // afresh by that count, so a read that fails again is said again, in the same words.
+  const failed = query.isError || (query.isPending && query.errorUpdateCount > 0);
+  const failure = failed ? (
     <DetailsErrorLine
+      failure={query.errorUpdateCount}
       message={ANSWER_LINES.collaborators_unreadable}
       onRetry={() => {
         retried.current = document.activeElement;
         if (!query.isFetching) void query.refetch();
       }}
+      retrying={query.isFetching}
     />
   ) : null;
   if (query.data === undefined) {

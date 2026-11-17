@@ -63,9 +63,15 @@ function live(sessionId: string): Agent {
   };
 }
 
-/** The list under the control that opens it, as Details' People section draws the two. */
-function renderCollaborators(collaborators: IssueCollaborators, agents: readonly Agent[] = []) {
+/** The list under the control that opens it, as Details' People section draws the two. Its
+ *  first read fails with `firstFailure` where one is given. */
+function renderCollaborators(
+  collaborators: IssueCollaborators,
+  agents: readonly Agent[] = [],
+  firstFailure?: Error
+) {
   const read = spyOn(api, "getIssueCollaborators").mockResolvedValue(collaborators);
+  if (firstFailure !== undefined) read.mockRejectedValueOnce(firstFailure);
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([...agents]);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const owner = createRef<HTMLButtonElement>();
@@ -266,6 +272,140 @@ test("the collaborators' Retry pressed by keyboard over the list held keeps the 
     expect(
       sessionsIn(screen.getByRole("region", { name: CONTROL_LABELS.collaborators_others }))
     ).toEqual(["writer"]);
+  } finally {
+    restoreFocus();
+    list.restore();
+  }
+});
+
+// The collaborators' Retry showed nothing while the read it sent was out, and a read that failed
+// again was said on the same node in the same words, so a screen reader said nothing of it and
+// the reader could not tell the press did anything. Retry reads busy while its read is out,
+// enabled and holding the focus, and each failure is drawn afresh while Retry stays the same
+// button.
+test("the collaborators' Retry reads busy while its read is out, and a read that fails again is said again", async () => {
+  const list = renderCollaborators({
+    agents: [otherAgent("writer", "2026-10-26T01:00:00Z")],
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: [],
+  });
+  const restoreFocus = emulateChromiumFocusFixup();
+  const key = ["issue", "CORE-1", "collaborators"];
+  try {
+    await screen.findByRole("region", { name: CONTROL_LABELS.collaborators_others });
+    list.read.mockRejectedValueOnce(new Error("the collaborators' read failed"));
+    await act(() => list.client.invalidateQueries({ queryKey: key }));
+    const failed = await screen.findByRole("alert");
+    const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
+    // The read the Retry sends is held out until the case fails it.
+    const again = Promise.withResolvers<IssueCollaborators>();
+    list.read.mockImplementationOnce(() => again.promise);
+
+    act(() => retry.focus());
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(list.read).toHaveBeenCalledTimes(3));
+    await waitFor(() =>
+      expect(retry, "Retry does not read busy while the read it sent again is out").toHaveAttribute(
+        "aria-busy",
+        "true"
+      )
+    );
+    expect(retry, "Retry turned disabled while the read it sent again is out").toBeEnabled();
+    expect(document.activeElement, "Retry lost the focus once it read busy").toBe(retry);
+
+    await act(async () => again.reject(new Error("the collaborators' read failed")));
+    await waitFor(() =>
+      expect(retry, "Retry still reads busy after the read failed again").not.toHaveAttribute(
+        "aria-busy"
+      )
+    );
+    const failedAgain = screen.getByRole("alert");
+    expect(failedAgain.textContent).toBe(ANSWER_LINES.collaborators_unreadable);
+    expect(
+      failedAgain,
+      "the second failure was not drawn afresh, so a screen reader would not say it"
+    ).not.toBe(failed);
+    expect(
+      screen.getByRole("button", { name: CONTROL_LABELS.retry }),
+      "the line came back with another Retry"
+    ).toBe(retry);
+    expect(document.activeElement, "Retry lost the focus when the read failed again").toBe(retry);
+  } finally {
+    restoreFocus();
+    list.restore();
+  }
+});
+
+// A first read of the list that failed holds no answer, and a fetch of such a read clears its
+// failure as it starts, so the press of its Retry took the line, and the Retry with it, away while
+// the read it sent was out: the focus of a reader who pressed Retry by keyboard went with it. The
+// line stays, its Retry busy and holding the focus, through a read that fails again, and once a
+// read answers the focus goes to the control that opens the list.
+test("a first read of the collaborators that failed keeps its line and its Retry, with the focus, while Retry reads again", async () => {
+  const collaborators: IssueCollaborators = {
+    agents: [otherAgent("writer", "2026-10-26T01:00:00Z")],
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: [],
+  };
+  const list = renderCollaborators(collaborators, [], new Error("the collaborators' read failed"));
+  const restoreFocus = emulateChromiumFocusFixup();
+  try {
+    const failed = await screen.findByRole("alert");
+    expect(failed.textContent).toBe(ANSWER_LINES.collaborators_unreadable);
+    const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
+    // The read the Retry sends is held out until the case fails it.
+    const again = Promise.withResolvers<IssueCollaborators>();
+    list.read.mockImplementationOnce(() => again.promise);
+
+    act(() => retry.focus());
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(list.read).toHaveBeenCalledTimes(2));
+    await waitFor(() => {
+      expect(
+        retry,
+        "the line and its Retry went while the read Retry sent again is out"
+      ).toBeInTheDocument();
+      expect(retry, "Retry does not read busy while the read it sent again is out").toHaveAttribute(
+        "aria-busy",
+        "true"
+      );
+    });
+    expect(retry, "Retry turned disabled while the read it sent again is out").toBeEnabled();
+    expect(document.activeElement, "Retry lost the focus while the read it sent again is out").toBe(
+      retry
+    );
+    expect(
+      screen.queryByText(ANSWER_LINES.loading_collaborators),
+      "the list says it is loading beside the failure its Retry reads again"
+    ).toBeNull();
+
+    await act(async () => again.reject(new Error("the collaborators' read failed")));
+    await waitFor(() =>
+      expect(retry, "Retry still reads busy after the read failed again").not.toHaveAttribute(
+        "aria-busy"
+      )
+    );
+    const failedAgain = screen.getByRole("alert");
+    expect(failedAgain.textContent).toBe(ANSWER_LINES.collaborators_unreadable);
+    expect(
+      failedAgain,
+      "the second failure was not drawn afresh, so a screen reader would not say it"
+    ).not.toBe(failed);
+    expect(
+      screen.getByRole("button", { name: CONTROL_LABELS.retry }),
+      "the line came back with another Retry"
+    ).toBe(retry);
+    expect(document.activeElement, "Retry lost the focus when the read failed again").toBe(retry);
+
+    await userEvent.keyboard("{Enter}");
+    await screen.findByRole("region", { name: CONTROL_LABELS.collaborators_others });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(
+      document.activeElement,
+      "the list answered, and the focus fell to the page rather than to the control that opens it"
+    ).toBe(list.owner.current);
   } finally {
     restoreFocus();
     list.restore();
