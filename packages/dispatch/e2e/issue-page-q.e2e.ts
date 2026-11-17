@@ -54,20 +54,18 @@ import { expect, test } from "./test";
  * `e2e/issue-page-q.ts`, and reads the page through D's `e2e/issue-page.ts`, G's
  * `e2e/issue-page-g.ts`, I's `e2e/issue-page-i.ts` and this part's `e2e/issue-page-q.ts`.
  *
- * Six rows, five of them under the title their check names (`verification.md` of
- * dispatch://INFRA-3937):
+ * Six rows, each under the title its check names (`verification.md` of dispatch://INFRA-3937):
  *
  * - **c-groups**, three rows that come from the checkpoint's `e2e/issue-layout.e2e.ts`: "the
  *   Decisions filter draws its four parts and quotes the person's answer"; "only a decision
  *   that changed a statement waits for review", whose words draw no source (the tester's F20);
  *   and "a change sent on a decision is drawn on it, and the decision leaves the review list"
  *   (the tester's F6), read again at 390 px and from an address that names the change.
- * - **c-keep**, "the Decisions view draws Keep and Change on each decision that waits, and Keep
- *   moves it": the two controls before any focus and their colours, Keep, `Shift+C`, `Shift+K`,
- *   where a load and, at 1440 px, `t d` leave the focus (the tester's F23), and a press on the
- *   link of a row that has no focus. Its 390 px `t d` reading is a row of its own tagged
- *   `@owed`, skipped until part P's header is under Q (decisions 80, 127, 135 and 141), which
- *   c-keep's run leaves out.
+ * - **c-keep**, two rows: "the Decisions view draws Keep and Change on each decision that
+ *   waits, and Keep moves it": the two controls before any focus and their colours, Keep,
+ *   `Shift+C`, `Shift+K`, where a load and, at 1440 px, `t d` leave the focus (the tester's
+ *   F23), and a press on the link of a row that has no focus; and its 390 px `t d` reading, a
+ *   row of its own that reads part P's header band first (decisions 80, 127, 135 and 141).
  * - **c-layout**, "under Decisions a row draws the outline's layout, short names and the
  *   six-line cut": G's layout and group readings on every row of the view, each statement named
  *   within 32 characters, the cut of a long answered question, and the view's width.
@@ -629,21 +627,20 @@ test("the Decisions view draws Keep and Change on each decision that waits, and 
       .toBe(0);
 
     // `t c` turns the view off, and `t d` turns it on again with the focus on a row of its list,
-    // on screen. At 390 px that reading waits on part P's header (decision 80), so it is a row of
-    // its own, tagged `@owed`, which this check's run leaves out (decisions 127, 135 and 141).
+    // on screen. At 390 px that reading stands below part P's header band, which is a row of its
+    // own below (decisions 80, 127, 135 and 141).
     if (size === DESKTOP) await expectTdReachesTheList(page, seeded.key, at);
   });
 });
 
-// c-keep's reading at 390 px, owed (decisions 80, 127, 135 and 141): after `t c` and `t d` the
-// focus is on a row of the list, on screen, below the band that stays at the top of the page.
-// Where that band ends is part P's header, which publishes `--issue-identity-height`; until P is
-// under Q nothing publishes it, the row lands under the filter row, and this row is skipped on
-// that dependency, so it runs once P is under the head. Its `@owed` tag is what c-keep's run
-// leaves out (`--grep-invert @owed`), since a pass counts no skipped case.
+// c-keep's reading at 390 px (decisions 80, 127, 135 and 141): after `t c` and `t d` the focus
+// is on a row of the list, on screen, below the band that stays at the top of the page. Where
+// that band ends is part P's header, which publishes `--issue-identity-height`, and P is under Q,
+// so the row reads that the header has published it before the chords. Its title carries
+// c-keep's words, so c-keep's run (`-g 'Keep and Change on each decision that waits'`) runs it.
 // SLOW(>=2s): a seeded issue whose view is loaded at 390 px, and two chords each waited on until
 // the page moves.
-test("t d leaves the focus on a row of the Decisions list, on screen, at 390 px @phone @phone-only @owed", async ({
+test("the Decisions view draws Keep and Change on each decision that waits, and t d at 390 px leaves the focus on a row of its list @phone @phone-only", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -657,23 +654,17 @@ test("t d leaves the focus on a row of the Decisions list, on screen, at 390 px 
       })
       .toBeGreaterThan(0);
     await expectIssuePageDrawn(page);
-    // The header publishes the band's height as it mounts; a page whose header does not
-    // publishes nothing however long it is given.
-    const published = await page
-      .waitForFunction(
-        (property) =>
-          getComputedStyle(document.documentElement).getPropertyValue(property).trim() !== "",
-        IDENTITY_HEIGHT_PROPERTY,
-        { timeout: 5_000 }
+    await expect
+      .poll(
+        () =>
+          page.evaluate(
+            (property) =>
+              getComputedStyle(document.documentElement).getPropertyValue(property).trim(),
+            IDENTITY_HEIGHT_PROPERTY
+          ),
+        { message: `the header publishes no ${IDENTITY_HEIGHT_PROPERTY} ${at}` }
       )
-      .then(
-        () => true,
-        () => false
-      );
-    test.skip(
-      !published,
-      "owed: t d at 390 px needs part P's header, which publishes --issue-identity-height (decision 80; skipped by decisions 127, 135 and 141)"
-    );
+      .not.toBe("");
     await expectTdReachesTheList(page, seeded.key, at);
   });
 });
