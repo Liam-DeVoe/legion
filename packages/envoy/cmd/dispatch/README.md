@@ -989,7 +989,8 @@ What the two processes share, and what each keeps to itself:
   its state travels in the browser's signed `dispatch_oauth_state` cookie, not in a process (Identity, above), given one `DISPATCH_SERVER_URL` on every process.
 
 - `server.started` names the build every live process serves, once each time that build changes.
-  A process that finds every live process serving one stamped, non-empty commit that the latest row of `server_build_announcements` does not name inserts a row;
+  A process that finds every live process serving one stamped, non-empty commit that is its own and that the latest row of `server_build_announcements` does not name inserts a row, with `tuple_kinds` the relation kinds its build writes as tuples of the node and tuple store (`refs.TupleKinds`, the kinds `graph_edges`' tuple arm renders);
+  a process whose heartbeat lapsed is no live process, so the fleet it reads can agree on another build's commit, and it inserts nothing for that commit, which it would otherwise name with its own build's kinds;
   any process whose bus is connected publishes each row not yet published, with the event id `dispatch-server-started-<commit>-<seq>` and `started_at` the database's time of the announcement.
   Each process looks every 5 seconds, and an advisory lock keeps two from inserting or publishing at once.
   So a roll announces nothing until its last old process is gone, a restart of every process on one commit announces nothing, and a rollback to an earlier commit announces it again.
@@ -1375,6 +1376,16 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
   A settings change reaches a running intake without a restart, and neither intake reads the row per message or on a timer;
   a read that fails is tried again 30 s later.
   The release before this one polls the row every 30 s and may run beside it during a roll.
+
+- The block schema is one value per process, built from the store's type nodes (`schemanodes.Installer`), installed at boot beside the migration run and again when a supertag or attribute node changes:
+  the triggers of migration `20261109051232` notify `dispatch_block_schema`.
+  A type is data, so a type added by a migration reaches a running server without a restart;
+  a read that fails is tried again 30 s later and leaves the schema in use where it is, and so does a value either of `installSchema`'s two checks refuses.
+  Migration `20261113230000` is the first type change after `20261109051232` seeded the types: it adds `check`'s `ci_check` attribute node and moves every block type to version 4, the version `pmdoc/schema/blocks.json` declares.
+  Each read runs in one read-only transaction at repeatable read, so a migration that commits while it reads is read whole by the next read, never half.
+  A store schema above the version this binary was built for is a store the next release migrated: the process installs it at its own version, with the elements whose `since` is at or below that version and nothing else, and keeps serving, its boot and `/healthz` unaffected, so a release that ships a type migration takes no process of the previous build out of service.
+  A read that moved the schema the process serves first writes the numbers it serves now into its registry row (`processes.Registration.RefreshSchema`), then closes every document socket it holds (`docs.Service.CloseDocumentSockets`); the browser connects again presenting the schema its own build compiled, and that admission decides against the schema installed now.
+  The subcommands that parse or write documents (`backfill-block-ids`, `backfill-anchor-blocks`, `backfill-graph-store`, `rebuild-refs`, `erase`) install the store's schema too, after their migration run, so they hold documents to the store's types and not to the file this binary embeds.
 
 The two leased woken loops take their lease with no period.
 A process that finds it held tries again
@@ -1931,6 +1942,8 @@ Its census answers `0` for the same reasons.
 Migration `0135_server_processes` creates two tables:
 `server_processes`, the registry of live server processes, and `server_build_announcements`, each build the fleet has announced as `server.started` (Running more than one process, above).
 It reads, locks and rewrites nothing that exists, and the release before it neither reads nor writes either table, so that release runs over the new schema unchanged and the census answers `0`.
+Migration `20261115051200_server_build_announcements_tuple_kinds` later adds `tuple_kinds` to `server_build_announcements`, a nullable `text[]` with no default: the relation kinds the announced build writes as tuples, from which the release that deletes an old arm of `graph_edges` reads whether the release a rollback would reach answers that arm's kinds from the store too.
+A row a build of an earlier release inserts names only `commit` and lists no kinds, which is true of it; the column rewrites no row, the release before it never reads it, and its census answers `0`.
 
 Migration `0136_dashboard_assets` creates `dashboard_builds`, `dashboard_assets` and `dashboard_build_assets`, where every server process publishes its dashboard build's assets at boot and from which it answers a page of another build that asks it for that build's chunks (`internal/dispatch/dashboard`).
 It creates tables and touches no row; its census answers `0`.
@@ -2908,6 +2921,254 @@ the advice about an earlier migration creating a missing name is given only for 
 The census writes nothing.
 An argument `envoy-dispatch` does not know is refused with exit 2, never served, so an image that predates a subcommand cannot boot and migrate when a deployment asks it for one.
 
+### The node and tuple store census
+
+`envoy-dispatch census --store` is the other census: the node and tuple store (`store/migrations/20261109013400_graph_store.up.sql`) held against the tables that project it (`20261109022248_graph_projections.up.sql`), rather than the pending migrations held against the database.
+It reads `DATABASE_URL` like every other subcommand, migrates nothing, writes nothing, and keeps the same exit convention: 0 when nothing refuses, 1 when the report refuses, 2 when the census could not be taken.
+It is one `repeatable read, read only` transaction on a connection of its own, so everything it reports is one snapshot.
+
+For each projected kind it counts every node whose `state` is not `gone` against the projection rows, in both directions, and reports each difference by its cause and by the row it was found at.
+A node at `proposed`, `settled` or `overtaken` is a node a row projects as one at `live` is (dispatch://INFRA-1950), so a move between those values reads as no lost node.
+The differences are a row naming no node, a row naming a node the store does not hold, a row naming one the store holds `gone` — which is the separate assertion that no gone node holds a projection row — a row whose shared fields disagree with its node's, and a node no row projects, named with its state (`a live node no row projects`, `a proposed node no row projects`).
+The shared fields are digested rather than printed, and for the three projected kinds they include the tuples that answer the row, read as the store reads a current relation (the newest tuple per kind and far end, kept while it asserts), and not the node row alone:
+a row that names its node is answered from the tuples by `graph_edges`, `refs.Edges` and `refs.BacklinkCounts`, so a missing or retracted tuple takes a link out of every read while each node row still stands.
+A comment's `created_at`, `author`, the artifact its `anchor` names, the artifact its `artifact_id` names and the author `graphstore.AuthorOf` reads off `author` are held against its node's `made_at` and `made_by` and its current `anchored_to`, `owned_by` and `authored_by` tuples.
+A block's document and the block its `parent_block_id` names, or the document where it names none, are held against its current `in_document` and `part_of` tuples.
+A block that states no parent at all digests differently from one the document holds directly, which is how the census tells a block the index has not reached yet from a block at a document's top level.
+The kinds are:
+
+- `comment` against `comments`, `block` against `document_blocks` and `block_ref` against `block_refs`, the three kinds a table projects, whose counts the report prints.
+  A block of a lens's finding, a block node whose id begins `lens/`, is in neither block kind: no document holds it and no table projects it.
+  A `block_refs` row is one link out of a block and its node is that block's, so several rows share one node: that kind's node side is every block node not `gone` that states a link now of a kind `refs.IndexBlocks` writes into `block_refs`, whether a row names it or not, and every row of a block is held, as the set of links that block's rows name, against every such link its node states now, so a link with no tuple, a tuple with no row and a link out of a block no `block_refs` row names are all read.
+  Those kinds are `mentions` and the name of every `block[]` attribute node the store holds, at any state (`refs.BlockRefKindsSQL`), read inside the census's own snapshot rather than from the schema the process installed: a build older than the store installs no attribute above its version, and an attribute node stated `gone` is installed by none, while the `block_refs` rows of that kind stand until their documents are indexed again.
+  A tuple of any other kind out of a block — its `in_document` and `part_of`, or one another writer states of it, such as a requirement's `constrained_by` — is in neither side of `block_ref`.
+  Nor is a `block_refs` row of another kind, a decision's `from_ask` and `decided_by`, or a row an ask's node holds, an ask block's `shaped`: the kinds of dispatch://INFRA-1150 below hold those.
+  A block whose address is past the store's address bound (`graphstore.MaxAddressBytes`, which `refs.MaxBlockNodeBytes` is), and a `block_refs` row whose far end is past it, are no node and no tuple of the store by design, and both sides leave those rows out.
+
+- `person`, `session`, `role` and a role's page, which no table projects.
+  Their row side is the actors and sessions the projected tables and the delivery records name: the people and sessions `comments.author` names as `graphstore.AuthorOf` reads an actor, and those the `made_by` of each lens, finding, risk and constraint that holds an asserted `authored_by` names the same way (`graphcensus`'s `reasoningAuthored`; a node written on the shared bearer states none, so the session its body claimed is on neither side), the sessions `comment_deliveries` and `message_deliveries` recorded reaching, and the roles `comment_deliveries.target`, `messages.target` and `issues.route` address now, with one page per role.
+  A role's row side also holds every role an event of the log ever addressed: the `route` of every `issue.created`, `issue.updated` and `issue.closed` event, the `target` of every `message.created` and `message.answered` event, and the `target` of each mention a `comment.created` event names.
+  A node is history and never goes, so an issue routed to one role and then re-routed to another still owes the first its node and its page, and the census reads the route history the events hold rather than only the current route.
+  The publisher writes a role's node and its page from those same fields of each event it publishes, whether or not it routed anything to the role: a route an agent's write sets, which wakes nobody, a targeted message's role, which no route reaches, and a role a comment mentions on an issue routed elsewhere.
+  A person's and a session's row side also hold what the event log keeps of a comment `envoy-dispatch erase` took: the erase deletes the comment's row and the delivery attempts that cannot exist without it and keeps its events with their `actor`, so the author the `actor` of its `comment.created` or `comment.answered` event names, and every session a `comment.delivery` receipt says the listener took an attempt to, are held to those events.
+  The erase never takes a session and takes a person only when asked to, so without those events a node it left would be a difference no erase can close; a person the erase took is held to no event older than that erase.
+  The census reads each of these row sides once a run, in one statement, and binds the names into every statement that reads that kind's rows; `backfill-graph-store` reads the same definition for roles and for sessions.
+  A session's own page is no part of this census.
+
+  An address past the store's bound is no part of the store on purpose: a role name longer than the bound is no node and no page, a comment anchored to or owned by a document whose `ref_key` is longer states no such tuple, and a session named past it is no node either.
+  The census leaves each such address out of both comparisons and counts it as a class of its own, reporting the count as `addresses_past_bound` on the kind's line rather than as a difference, in both directions.
+
+- `artifact` against `artifacts`, and `version` against `artifact_versions` (dispatch://INFRA-1253, R16): every document, query and version of an issue, a project or a conversation is a node.
+  A document's row names its node in `node_kind` and `node_address` (migration `20261116092210`), and its digest is its `ref_key`, the issue `issue_key` names as its node's `part_of`, and, for an image or a file, its newest version's `mime`, `size` and `sha256`, held against its node's supertag (`document`, or `query` once a query replaces the document), its current `part_of` tuples and its current `mime`, `size` and `sha256` values.
+  A version's row names no node in a column of its own: its node is `<ref_key>@v<number>`, so a version with no node reads as a row naming a node the store does not hold.
+  Its digest is its `number`, its `created_at`, its document's project or conversation and its document as its node's `part_of`, held against its node's supertag (`document version` or `query version`), its current `number` and `created_at` values, project or parties, and current `part_of` tuples.
+  The node's `made_at` is left out: it is the node's first write's, and a version that takes the address of a gone version node — the next version after an erase deleted the newest, or the first version of a document made again under a removed one's name — restates that node live with its own `number` and `created_at` values while `made_at` stays.
+  A document or a version a removal took out of the tree is a node the store holds `gone`, which no row projects; an address past the store's bound is counted as `addresses_past_bound`.
+
+- The project of every node (dispatch://INFRA-3862): `issue`, `artifact`, `ask`, `message`, `comment` and `block`, the kinds whose node names the project a read of it is limited by (`graphstore.Node`'s `Project`), or, for an object no project owns, the parties it is between (`Parties`).
+  Each row of those kinds is held to what its node must carry, by the rule its writer follows (`graphcensus.scopedRows`): an issue's project; a document's project, or its conversation's session for a conversation's file; an ask's and a comment's issue's project, else its document's, else that document's conversation; a message's issue's project, or, on no issue, the parties of its thread's root (`graphstore.ThreadParties`: who wrote the root, and the session it was sent to); a block's document's.
+  It prints one line per kind, `census: project kind=<kind> rows=<n> missing=<n> differs=<n> unscoped=<n>`: a row whose node the store does not hold, a row whose node names another project or other parties than the row's, and a row whose node names neither.
+  Any count of the three refuses the census, and the first rows of them are named on `census: project incomplete <kind> <id>: <class>` lines (`graphcensus.ProjectComplete`, the same read).
+  An address past the store's bound is left out, as its writer leaves it out of the store.
+
+- The kinds of dispatch://INFRA-1150, each held by the triple of holding node, tuple kind and far end, so a tuple that reaches the wrong node is a difference and not a count that still matches:
+  `shaped`, `from_ask` and `decided_by` against `block_refs`, each row by the node it names (`node_kind`, `node_address`: a decision's block node, or for an ask block's `shaped` the ask's node) against every such tuple that node states now;
+  `followed_by` against `ask_followers`, `ask_parent` (the ask's `part_of` and `owned_by`) and `ask_anchor` (its `anchored_to`) against `asks`, each marked row by the ask's node;
+  `reading_parent`, the `document_blocks.parent_block_id` of every reading's node against its `part_of`;
+  and `ask_answer`, which sets each marked ask row's answer, selection, answer time and answerer beside the `answer`, `selected` and `answered_at` values and the `answered_by` and `decided_by` its node holds now, character for character (a selection is compared as the labels its JSON holds).
+  A `part_of` to an ask's node, which a reading in an answered ask states, is read as the ask's block in the reading's own document, the block `parent_block_id` names — the ask's own block, or a copy's, which keeps its source's id — in `block` and `reading_parent` alike.
+  An `asks` or `ask_followers` row that names no node is a row a process of the release before wrote, which `graph_edges`' old arms answer until the decisions step marks it: it is no difference, and each of those kinds prints the count on a `census: store kind=<kind> unmarked_rows=<n>` line of its own.
+  A deployment holds none of these kinds until somebody writes one, so a kind of them with no row and no node prints `holds no row and no node` and is no refusal.
+  The person and session kinds also read who wrote each decision (its `decided_by` row) and each reading (its node's `authored_by`, which no table projects), every person and session a block's `decided_by` or `authored_by` or an ask's `authored_by` ever named — the last holds the author of an ask past the store's bound, whose row names no node while its writer writes the author's node — with the owner the server proved of each such session; every person an ask's `answered_by` or `decided_by` ever named, so a person whose answer was taken off stays held to their node; and every session an `ask.opened` event named as the asker, so a session whose ask an erase removed is held to its node as a follower is by its `ask.follower_added`.
+
+- `copied_from` and `moved_to`, which no table projects, on `census: store-only kind=<kind> tuples=<n> unresolved=<n>` lines: how many the store states now and how many of those reach a far end that does not resolve — a `copied_from` to an ask node not `gone`, as every other read of the store takes a node, and a `moved_to` to a block a `document_blocks` row holds, at once or through at most eight more `moved_to` tuples.
+  An unresolved far end refuses the census; a count does not.
+
+It passes only when it checked more than zero rows of every kind it covers and found zero differences in both directions, and every store-only far end resolves.
+A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it, but for a kind of dispatch://INFRA-1150 that holds no row and no node.
+A database the store does not exist in yet holds no kind to read: the census prints `census: store absent` and refuses, since it read nothing.
+
+Two writes can state one fact twice by design and nothing reads wrong for it — a tuple at the `source_event` sentinel is outside both repeat keys, and the backfill writes every fact it cannot date from a row's own event at that sentinel — so the census counts nodes and projection rows, never tuples.
+
+`envoy-dispatch census --store --sizing` adds the growth pass after that census, each line a driver can look for by its leading fields:
+the write rate by kind over the last 28 days of `events`; the row count and total relation size of every table this branch's migrations touch; the tuples and nodes one write of each kind states, with how many such writes the window holds; the rows a day that puts in `graph_tuples` and in `graph_nodes`; the bytes a row each is measured at; and where each reaches in a year against `pgmigrate.CensusTableLimit`.
+The kinds are the terms R4 states for all five children of dispatch://INFRA-1098, each printed on a `census: sizing tuples-a-write ` line and a `census: sizing share ` line that names the child that moves it, its writes inside the window and its share of the tuples a day:
+a comment's node and two base attributes, and its `authored_by`, `anchored_to`, `owned_by` and aliases where its row names each; a comment delivery's `delivered_to`; a block a version inserts afresh, restores, drops (its `gone` state) or moves to another parent (the old parent's retraction and the new one's assertion); a block reference's assertion and the retraction that may end it; dispatch://INFRA-1253's text and rank values, each version's node with its base attributes, its `part_of` and its `number` and `created_at` values (`version`), the `mime`, `size` and `sha256` an image's or a file's version states on its document (`version_bytes`) and the `part_of` an issue's new document states (`document_part_of`); and dispatch://INFRA-1152's message deliveries, read marks, clears, dismissals and snoozes.
+A backfill writes its rows once, beside the rate: `census: sizing backfill kind=version owed_rows=<n> nodes=<n> tuples=<n>` is the version nodes `backfill-graph-store` still owes the versions an older build stored, a node and six tuples each, and `census: sizing backfill-rows table=<table> rows=<n>` adds those rows to each store table's year projection.
+Each is read from tables that exist before this branch's first migration, so the growth pass runs on a database the store does not exist in yet, which is where R4 takes its readings; there the census prints `census: store absent` and the growth pass alone decides the exit.
+No such table holds a block's parent, so the moved parents are counted by parsing each version the block index indexed in the window beside the one it indexed before, placing the blocks as `refs.PlaceBlocks` places them, and matching the two versions' blocks by their text, since a version's markdown names no paragraph's id; blocks of one document with equal text are matched in document order, so that term is exact except there, and its share line carries `versions_read=` and `versions_unreadable=`.
+It last prints the block-index reconciliation's backlog on two `census: sizing backlog ` lines, because a loop that falls behind fails nothing and nobody would otherwise see it:
+`owed_documents=` is how many documents are owed a block index (`document_block_versions.version` null), and `oldest_owed_at=` is when the oldest of those debts was incurred, with `oldest_owed_age_seconds=` beside it and `against=` naming the time that age is measured to.
+No column dates a debt, so a debt is dated by the write that owed it — the `created_at` of the latest markdown version the document holds, or the document's own `created_at` where it holds no version — and the line says so under `dated_by=`.
+The age is measured against the newest write the database recorded (the `created_at` of its highest `events` id) and not against `now()`, so two runs print one age; a database that recorded no event prints `none` and an age of zero.
+It exits non-zero when that projection puts either store table past the limit inside a year, and when a table this branch's migrations alter is already at or above it.
+A backlog refuses nothing: how large a backlog is too large depends on the write rate the lines above it carry, and the driver that watches it decides.
+Every figure comes from a count or from a timestamp the database already holds, so two runs over one unchanged database print the same output.
+A store table holding fewer than ten thousand rows is too small to measure a bytes-a-row from, and the projection uses 783 bytes a row instead, measured for dispatch://INFRA-1149 (1,050,010 tuples at a `pg_total_relation_size` of 822,673,408 bytes on PostgreSQL 18.6, table, seven indexes and TOAST);
+the output says so on the line that uses it.
+`--sizing` without `--store` is a usage error: it is that census's growth pass and not a census of its own.
+
+### Backfilling the node and tuple store
+
+`envoy-dispatch backfill-graph-store` writes the nodes and tuples of the comments, document blocks and block references written before the store existed — every row of the three projected tables that names no node, since migration `20261109022248` added the columns and filled none of them.
+It walks each kind in batches, writing a batch's nodes, its tuples and the projection columns that name them in one transaction, so a row and its node commit together or not at all, exactly as a live write does.
+It appends no event of its own, and a fact whose row's own event cannot be found carries the store's sentinel (`source_event` 0) as its cause:
+a comment's own event is the `comment.created` that stored it, a block's is the event that recorded the version its row was written at, and a block reference's is its `source_seq`, which is that event's id already.
+Each tuple takes its row's own `created_at` as its time and its row's own `source_seq` as its `legacy_source_seq`, so a backfilled edge is dated and sequenced exactly as the `graph_edges` arm it replaces dates and sequences it.
+Once every row of a kind the store can hold names its node, the run reports that kind `complete=true`, which is the moment the arm of `graph_edges` over that kind's table answers nothing.
+
+It then gives every role the census's row side names, in a row now or in an event, and that has no node its node, its page and the page's `part_of` the role, as the publisher writes them for the events it publishes: the publisher writes none for an event it published before it wrote roles, so without this pass every role an older database names is a census difference.
+The input is the census's own role row side, so the roles the pass gives a node are exactly the roles the census holds to one; each role's node is caused by the first event that named it, or by the sentinel for a role only a row names, and a role that already holds both nodes is left alone.
+The report counts them on its `kind=role` line, and `remaining=` is how many roles the census names still lack a node or a page.
+
+It then writes the node of every issue, document, ask and message written before its kind's writer wrote one (dispatch://INFRA-3862), and gives every comment and block node written before a node named its project that project, or its conversation's party.
+Each pass walks only the rows its marker does not mark - the node pair an `issues` or an `artifacts` row names (`node_kind`, `node_address`, migration `20261116092210`), the node itself for an ask and a message, whose rows name no node in a column of their own, and the node's own `project_key` and `parties` for a comment and a block - and writes the marker in the transaction that states the facts, so a second run writes nothing.
+A node is dated at its row's own `created_at` and made by its row's own author; a filled project is stated at the node's own `made_at`, by its `made_by`, under its cause (`graphstore.FillScopes`); and the fill of a block's project takes its document's revision fence first, as every writer of a block's node does.
+Beside a document's node it states what the upload states (dispatch://INFRA-1253, R16): the document's `part_of` the issue that owns it, which `artifacts.issue_key` projects, dated at the row's `created_at` (a project's document and a conversation's file hang under none), and an image's or a file's newest bytes as values of its node - `mime`, `size` and `sha256`, dated at that version's `created_at` and by its first author - read after the row is named, so a later version an upload writes meanwhile is never missed, and stated here only where that version already holds its own node; a newest version with none states its bytes with its node in the version pass below, so each version's bytes are stated once.
+An issue's or a document's batch takes the owner rows its rows stand under first and reads its rows again under them, so a document removed after the batch was read gets no node.
+The report prints a `kind=` line for each of `issue`, `artifact`, `ask`, `message`, `comment_project` and `block_project`; `envoy-dispatch census --store` then reads `missing=0 differs=0 unscoped=0` for every project-owned kind.
+
+It then states every `asks` and `ask_followers` row that names no node on its ask's node and marks it (dispatch://INFRA-1150): an ask's `anchored_to`, `owned_by`, `part_of` and `authored_by` dated at its `created_at` under the `ask.opened` that recorded it, and its answer state (`answer_state`, `answer`, `selected`, `answered_at`, `answered_by`, `decided_by` and `resolution`) dated at the answer's or the resolution's own time under the newest event that wrote it; a follower's `followed_by` dated at its `since`.
+Each batch of 200 rows takes the owner row of every ask it holds first, in ascending owner key, then locks its rows and reads them again, so an answer this release writes on such a row waits for the batch and then states itself on the node, and the batch waits for a writer of the same issue or document holding nothing it wants.
+The report prints a `kind=asks` and a `kind=ask_followers` line, and `remaining=` is how many rows of each still name no node, leaving out an ask a document of which has an address past the store's bound and a follower whose session's has.
+These two passes, after the object nodes, are also the first phase of the decisions step, which every process runs at boot before it serves and stops its boot on a failure, and again on its own tick while a row stands unmarked (`docs.DecisionStep`).
+The step's second phase catches up the `ask.*` events a process of another build appends during a roll, on each tick while `processes.Live` lists one, once more after, and again after a pass on which an ask failed; it reads, under the ask's owner row and its row, the events the ask gained after the pass read the window, so it never writes an older answer over a newer one.
+The tick runs for as long as the process does.
+A tick with nothing owed and no other build live reads the live processes, the newest event and whether any block index is owed, each one probe of an index, and no table whole: the backfill's own probe of what it owes reads its tables to the end, so it runs at boot, on a tick that owes a catch-up and after a tick that saw another build live, and the count `/healthz` answers is read again only where it read something owed, another build was live, a phase ran, an event was appended since it was read, or a block index is owed.
+`DISPATCH_TEST_HOLD_DECISIONS_STEP=1`, under `DISPATCH_TEST_HOOKS=1`, keeps a process from running either phase, so a test driver runs this command first; `/healthz` answers `decisions_step_owed` - `{"decisions_documents": n, "answers_left_spec": n, "gated_steps_lists": n, "total": n}` - once a pass of the step has run, and no such member before.
+
+It then writes the node of every version an older build stored with none (dispatch://INFRA-1253, R16), after the passes above, so every document a version hangs under holds its node: kind `version` at `<ref_key>@v<number>`, supertag `document version`, or `query version` where its document is a query node, with its base attributes, its `part_of` its document, and its `number` and `created_at` as values.
+`artifact_versions` takes no marker column, so the node itself is the marker: the pass finds a version owed by an anti-join on `graph_nodes`, batch by batch on `(artifact_id, number)`, reads each row's number, `created_at` and first author and, for an image's or a file's newest version, its `mime`, `size` and `sha256`, and never its markdown or its bytes.
+A version node held `gone` counts as missing: a removal or an erase states a version's node gone in the transaction that deletes its row, so a row standing at a gone node's address is a later row at a freed address — the next version after an erase took the newest, or the first version of a document made again under a removed one's name — that an older build wrote with no node, and the pass restates that node live with the row's `number` and `created_at`.
+Each node and its facts are dated at the row's `created_at`, made by the version's first author (or by the run, where the row names none), and caused by no event; a version that is its image's or file's newest states its bytes on its document's node beside its node.
+A batch takes the owner rows its versions' documents stand under first and reads its rows again under them, so a version removed meanwhile gets no node and an upload of a later version waits for the batch and states its bytes after it.
+The report prints its `kind=version` line.
+
+A block's parent is the one fact it does not write.
+The parent is the nesting of the rendered version, which no column of `document_blocks` holds, so the run marks each document it touched owed a block index — `document_block_versions.version` to null, the mark `rebuild-refs` sets — and the reconciliation states the `part_of` tuple and writes `parent_block_id`, which is that column's one writer.
+The batch that names a document's block nodes writes that mark in its own transaction, so a run stopped after any batch leaves every document of its committed batches owed (`TestABackfillKilledAfterOneBatchLeavesThatBatchsDocumentsOwed`).
+So `census --store` reads a difference on every backfilled block until that reconciliation has drained the mark, at twenty documents a tick;
+`TestTheBlockParentCensusReachesZeroAfterTheBackfill` is that whole route end to end.
+
+It is no repair.
+Its input is each row's own content: it never reads one side of a projection to write the other, so a row whose node is already written is left alone and a kind whose rows disagree with the store is for the census to report.
+It is safe to run again at any time, after a rollback as well: every pass walks only the rows that name no node, names their nodes in the transaction that writes their tuples, and reads no row that names one, its guards included.
+The pointer pass skips a link whose block's node the store does not hold or holds `gone`, read off `graph_nodes` and not off the block's `document_blocks` row, which is `graph_edges`' own test of the tuple arm: a link stamped against a gone node would answer from neither arm.
+So a run interrupted anywhere carries on from where it stopped, and a run over tables whose every row names its node writes no node, no tuple and no node column (`TestASecondBackfillWritesNothingOverMarkedRows`).
+It migrates the database first, as the other backfills do, and exits 1 when it skipped a row or left one naming no node.
+
+### Erasing a node
+
+`envoy-dispatch erase --node <kind>:<id>` is the one path in Dispatch that deletes a tuple row or a node row; everything else the store does is an append.
+It is reached by the command and the database credential alone: no HTTP route serves it, no agent bearer and no session reaches it, and it migrates nothing.
+It refuses a type node, a `supertag` or an `attribute`, before it opens a connection: a type is data the block schema seeds, and no route and no command deletes one.
+It refuses a `role`, a `page` and a `session` the same way: a node of that kind holds no text anybody wrote, so no erasure is owed for it, and the event log keeps addressing it, so deleting it leaves the census a difference no erase can close.
+
+It changes only the rows that derive from the node, and what derives from a node is fixed by the node, never by a search for its bytes.
+Those rows are the node's tuples on both sides, its row, its projection rows (`comments`, `document_blocks` and `block_refs`, found by the `node_kind`/`node_address` pair migration `20261109022248` gave all three, and `asks` and `ask_followers`, which `20261116094058` gave the same pair: an ask's node is projected onto its `asks` row and onto each of its follower rows) and the rows that cannot exist without one of them, its own embedding rows and window state, and the events about it.
+A block derives more: the whole text it held at every version (`document_block_texts`, read whole and never as its 480-rune excerpt), the excerpts cut from it, and its own document's editing state, search rows and windows, and every version of that document the block stands in holding the erased text.
+A comment derives the margin record that holds its body in the document it is anchored to, and a reply its entry in its thread root's record there.
+A comment's erase ends no version, and it replaces the history of each document whose margin record holds the body, keeping every other comment's anchor mark and margin record there.
+A row anywhere else that holds the same bytes derives from another node and is that node's text: a comment reading `Yes` leaves every other issue's spec and every other person's event that says `Yes` as it is, and a block leaves a sibling block of its own document that repeats its words.
+The run lists each such row, by its table, its key and the address a reader knows it by, and changes nothing in it; an operator erases that node by a run of its own.
+
+It removes, in one transaction: the tuples the listing named out of the node and into it, its row, its projection rows and the rows that cannot exist without them, its block's texts, the versions of its own document the erased block stands in holding the erased text, and each `artifact_reviews` row whose `content_sha256` covered those bytes.
+It cannot rewrite such a review: `artifact_review_content_sha256_update` raises on any statement that moves a stored digest, so an approval over erased bytes ends rather than drifting, and the command names every one it ended by its document, its issue and its version.
+A block stands in a version where its newest `document_block_texts` row at or before that version holds the text, since the indexer writes a block's row only at a version that made, changed or dropped it; a version no block-aware build indexed goes wherever its markdown holds the text, and the listing says for each version why it goes.
+A tuple another writer commits into the node after the listing was read refuses the run with an error, naming its seq, and nothing is removed.
+
+It rewrites, with a marker naming the node and the `graph_erasures` record where the bytes were, what derives from the node and may not go:
+
+- **The blocks that hold the erased block** (`document_block_texts.text` and `document_blocks.excerpt` of each block up its `parent_block_id` chain whose text quotes it): each projects a block node of its own, and a live node no row projects is a difference `census --store` reads.
+  The text is rewritten only where the erased text stands as a block of its own, at the start of a line after its markdown framing and at the end of a line, so a sibling's words inside a longer line stand.
+  An excerpt is cut again from the rewritten text the way the indexer cuts it, and `text_sha256` is left where it is, since it is the digest the indexer compares a later version's block against.
+
+- **The excerpt a mention of the document shows** (`refs.excerpt_text`) where it was cut from the erased block or one holding it: it is cleared and marked owed, so the reconciliation cuts it again from the latest version left.
+
+- **The events about the node** (`events.payload`): a comment's own events, whose payload is the comment or names it as `comment_id`, and a block's document events (`artifact.*`, `block.*`).
+  A document event's payload quotes the whole document, so in it the erased text is replaced only where it stands as a block of its own, as in a container's text, and a sibling's line in a version's markdown or a diff stands.
+  The log is append-only, so the row stays with its id, its time and its actor, and the bytes go only from inside the JSON string values that carry what somebody wrote.
+  A key is never touched, and neither is a value under a structural key: an identifier (`id`, every key ending in `_id`, `_key`, `_slug` or `_logins`, `reply_to`, `answers`, `editors`, an actor's `owner`, `session`, `service` and `project`, and a digest, `sha256`, every key ending in `_sha256` and `content_sha256_source`), an address (`target`, `route` and every key ending in `_route`, `ref`, `node`, `slug`), a state or kind enumeration (`kind`, `type`, `state`, `status`, `role`, `delivery`, `turn`, `scopes`, `mime`, `waiting_on`, and every key ending in `_type`, `_kinds`, `_state`, `_status` or `_waiting_on`) or a time (`at` and every key ending in `_at`), at every depth of every event type alike (`grapherase.structuralKey`).
+  So an erase of `kind` leaves every `"kind"` key and the kind each one names and redacts a body reading `kind`, an erase of `sent` leaves a receipt's `state` reading `sent`, and an erase of a text that is part of a session's id leaves that id whole.
+  The rule names the structure rather than the content, so a field a later build adds is redacted until somebody names it structure, and the erased bytes never stand in a content field nobody listed.
+  An event about the node that holds the erased text only in its structural values is left whole, and the listing names it as a row the run leaves.
+
+- **The live editing state** of a block's document, and of each document whose margin record holds an erased comment's body (`doc_updates`, with `doc_checkpoints` and `doc_snapshots`), the ygo history its room loads from.
+  A deleted item keeps its bytes in those rows until a fold collects it, and a text substitution inside an update would leave one no load decodes, so no row is edited: the erase replaces the whole history with one fresh update of the live document as it leaves it, through the statements a rebuild writes (`docs.ReadErasedLiveText`, `PgVersioned.RebuildTx`).
+  For a block, that update holds the live document with the marker in place of the erased text inside the erased block's own range and nowhere else.
+  For a comment, it holds the live document with the comment's margin record, or a reply's entry in its root's record, taken out and nothing else.
+  A reply's entry is found by its author and the time the reply was made, never by its text, since an edit of a reply does not write the root's record again and the entry keeps the body the reply had before.
+  Every other block, anchor mark and margin record stands as it was, so another comment stays anchored and its suggestion can still be accepted.
+  A kept record that quotes the erased text - a suggestion's replacement, or another comment's body - is that comment's text, and the listing names it as left, by its document, its mark id and its comment, since those bytes stay in the new history.
+  The change is announced, so a room any server holds of the document finds its history replaced, closes and reloads.
+  It writes no version: the document reads as its live text, ahead of whatever version the erase left it.
+  What that costs is the edits before the erase as separate steps, the anchor marks inside the erased block, and the keystrokes of an editor open on it that were not yet stored.
+  A history that does not load, a tree outside the schema, and a redaction that drops an open ask block refuse the erase, naming the document.
+  The match is byte for byte on markdown: where the erased block holds the erased bytes but its markdown spells them otherwise - an escaped `*` or `_`, for one - the seed would keep them, so the run lists the document as **not redacted** and refuses, removing nothing.
+
+- **The search rows** standing on a version that went: `document_search` is written again from the latest version left, by touching its `search` so `20261101182454`'s trigger writes the row, and an issue whose spec lost a version has its own `search` written again by the statement `20261105145243`'s trigger runs.
+
+- **The term statistics** (`search_term_stats`, `search_term_totals`) of every project whose items moved are counted again in full as the items stand in the erase's transaction (`api.RecountSearchTermStatsTx`), and the queue rows that transaction wrote are deleted, since the count already holds what they say.
+
+- **The embedding store** (`embeddings`, with `embedding_window_states`): the node's own rows and window state go, and for a block the windows of its document whose `covers` name it or whose snapshot holds its text, its document's whole-text row and, where the document is a spec, the issue's row; each such issue's row is written again by the statement migration `0140`'s trigger runs, and the document is marked owed its windows (`document_block_versions.windows_owed_at`) where a version with markdown is left.
+
+- **The stored display trees** (`text_trees`), keyed by the SHA-256 of a whole text: the row of every text the erase removes or rewrites goes - the node's own texts, each deleted version's markdown, the texts of the blocks holding it, each event-payload string the redaction rewrites and its document's live text.
+  A read that began before the commit stores the trees it read on a goroutine of its own, bounded by `api.StoreTreesTimeout` (30 seconds), so the command waits that bound out after the commit and deletes the same keys once more, counting what it found on a `text_trees swept after the commit: <n>` line.
+  The keys are held in the command's memory alone, since each is the digest of an erased text, so a sweep that fails cannot be run again, and the command says so and exits 2 after printing the report of the erase that did commit.
+
+It refuses, removing nothing, while a live row of another node states something about this one, and names each so an operator erases or edits it first.
+A reply whose `reply_to` names an erased comment, or whose `ask_id` names an erased ask, points at its projection through a nullable reference; a block inside an erased block states `part_of` into it and names it in `parent_block_id`; a block citing it states `mentions` or a pointer into it and holds a `block_refs` row; a comment or an ask states `authored_by` into its author.
+The erase deletes the tuples into the node, so such a row would go on stating a fact the store no longer holds, which `census --store` reads as a difference; refusing it keeps the census at zero after every erase that runs.
+
+It removes nothing until an operator has read what it would.
+Run with `--node` alone, it reads every row it would delete, rewrite, redact or leave in a read-only transaction, which takes no write lock and waits on no writer, prints that listing - each version and review with its document, its issue and its version, each event row with its id, each row it leaves with its table and key - with its SHA-256 on a `listing digest:` line, and exits 1.
+Run with `--confirm <digest>`, it takes its locks, reads the listing again in its own transaction under them, and erases only when that listing has the digest it was given; a listing that changed since is refused with both digests, exit 1, and nothing is removed.
+The listing's search for the rows it leaves reads every text, jsonb, bytea and tsvector column of every table, so a store a later build adds is listed without anyone naming it; it reads them under the confirmed run's locks, so a write to the node's issue or document waits for that search.
+Run with `--confirm` over a node that holds text, it prints nothing until the sweep of `text_trees` after the commit has waited out its 30 seconds.
+
+It takes its locks in the store's lock order, written down on `markInboxReadThreads` (`internal/dispatch/api/inbox_read.go`): the owner rows first, then the node's row, then the node's own projection rows `for update` (its `comments`, `document_blocks`, `block_refs`, `asks` and `ask_followers` rows, table by table and by key), then everything else.
+Taking those rows before it writes anything is what orders it against the block index tick's window arm, which holds a comment's row `for no key update` and no owner row while it writes that comment's windows: the erase waits at the row before it has deleted a window, rather than deleting the windows first and meeting the arm in a deadlock.
+The owner rows are the node's own - a comment's or an ask's issue, or the owner of the document it is on, and for a follower row its ask's - and a block's document's: the document's issue, or the document's own row when no issue owns it.
+It takes no owner row of a row it leaves, since it writes none of them.
+It takes each once, in the order of their owner keys (`artifact:<id>` before `issue:<key>`), through `events.LockOwnerRows`; a person, a session, a role or a page has no owner row, and the run starts at its node.
+Which owners those are is read before they are locked, so it is read again under them, and a write that meanwhile moved the node under an owner the run had not taken makes it roll back and start again rather than take that owner after the node's row; after three tries it removes nothing and exits 2, naming each such owner.
+
+What went is recorded in `graph_erasures`: the node, the counts, the versions and reviews the erase ended, the document whose history it replaced and what that cost, the projects whose term statistics it counted again and the listing's digest, with who ran it (the database role, the account and the host) and when.
+That row holds no erased text and none of the rows the run left, nobody addresses it, and no read of the graph answers it, so the closed supertag list stays closed.
+Both sides go in the one transaction, so `census --store` still reads zero differences afterwards.
+A node the store does not hold is exit 2, naming it.
+`e2e/acceptance/graph-erase.sh` erases a comment and then a block of a document, each by its digest, and searches every column of every table of the database for the erased bytes, with a control row planted in the same search, marking each hit as derived from the node or not: a derived hit after the erase fails it, and so does any change to the rows it planted for other nodes holding the same bytes.
+
+### Adding a lens kind
+
+`envoy-dispatch lens-kind-add --id <slug> --words <text> --source <text> --reference <text>` adds one lens kind with its source; the usage text is in the command (`lens_kind_add.go`).
+It writes, in one transaction through `graphstore.AddLensKind`, the `lens_kind` node `dispatch://lens_kind/<slug>` with its words, a `constraint` node holding the source and its reference, and the one `constrained_by` tuple between them, the shape the seed of migrations `20261116123354` and `20261116123355` writes.
+An id the catalogue holds is refused, exit 1, and nothing is written; every server answers the new kind on its next `GET /api/v1/schema/blocks` and takes it on a lens's `has_kind`, with no restart and no block schema version moved.
+
+### The view over the store
+
+Migration `20261109215947_graph_edges_tuples` re-states `graph_edges` with one arm over the current tuples and a `node_kind is null` test on each of the four arms whose relations the store now writes.
+The new arm takes, for each `(from_kind, from_id, kind, to_kind, to_id)`, the newest tuple, which is an edge only while that newest one asserts, with `to_kind <> 'value'` so no attribute's value is an edge.
+It renders a block's `in_document` as the `part_of` to its document the view has always answered, a block's `mentions` and its pointer kinds, and a comment's `anchored_to` and `owned_by`, the list `refs.TupleKinds` holds and the announcer writes into `server_build_announcements.tuple_kinds`;
+the tuple's `at` is the row's `created_at` and its `legacy_source_seq` the row's `source_seq`.
+No other kind the store writes is an edge of this view — `authored_by`, `delivered_to`, `held_by`, the alias tuples, `attribute_of`, and a session's or a page's `part_of` — and a `part_of` whose source is a block is left out too, since the view has no block-to-block row and a top-level block would otherwise be rendered twice.
+
+Migration `20261116091932_graph_edges_store_tuples` re-states the view with the same arms and one class more in the tuple arm, `store`, which joins no projection row: `changed_by_run`, `has_kind`, `triggered_by`, `constrained_by` and `prevented_by` out of any node, and `part_of` and `authored_by` out of an `interaction`, a `lens`, a `risk` or a `constraint`, the relations the store holds with no table behind them.
+The class is tested before the block-reference class, so a requirement block's `constrained_by` is not looked for in `block_refs`; every other row keeps its class, a comment's `authored_by` and a session's, a page's or a block's `part_of` stay out of the view, and `refs.TupleKinds`, which the announcer writes, lists the seven kinds beside the earlier ones.
+
+Migration `20261116160000_graph_edges_findings` re-states the view once more and adds one arm over the current tuples: every relation of the class `store` out of a finding of a lens — a block node whose id names its lens, `lens/<uuid>#<block id>` — answered with the literal from_kind `lens_block`, the kind the read registry and every reference know a finding by, at the finding's own id, by the tuple arm's own rules.
+The tuple arm's class `store` leaves out a tuple out of such a block, so no relation is answered twice; no finding exists before this release writes one, so the arm drops no row a build of the release before reads, and the read registry maps the predicate of `lens_block` onto the store's `block` row at that id.
+Migration `20261116094101_graph_edges_asks` (dispatch://INFRA-1150) re-states the view from the text before both of these for an ask's relations, so no one of the three holds every change and whichever runs last would drop the others';
+`20261116184707_issue_tree_graph_edges_both_arms` (dispatch://INFRA-1253) states it once more with all of them, the class `store` and its guard against a finding tested where `20261116160000` tests them and the finding arm last, and a later re-statement starts from its text.
+
+Each row decides which arm answers it: each of the four old arms answers only the rows of its own table whose `node_kind` is null, and the tuple arm answers an edge of those kinds only while the projection row that names it carries its node — the `document_blocks` row of the block for `in_document`, the `block_refs` row of the pair for a pointer or a mention, and the `comments` row of the comment for `anchored_to` and `owned_by`.
+One transaction writes both sides of a row — the writer that states a row's tuples names its node on the row — so the view answers each row exactly once, at every point of the backfill and not only at its end, and a row a previous release wrote during a roll, a row written after a rollback and a block past `refs.MaxBlockNodeBytes` each keep their answer from the old arm.
+The join is what keeps a rollback whole, since a build of the previous release retracts nothing in the store: a row it deletes leaves its tuple standing and answers from neither arm, and a row it deletes and writes again with no node answers once, from its old arm.
+The arm also answers no row for a node whose current `state` is `gone`, the test the backfill's pointer guard takes too, and a pointer a version dropped is retracted in the same statement that deletes its `block_refs` row.
+`refs.BacklinkCounts` moves the same four arms the same way, each reading its own table for the rows that name no node and the tuples, through the same join, for the rest, so a count and the list behind it cannot disagree.
+A pointer's allowed targets come from the attribute node once the store answers it (`block_pointer_targets`), read as `pmdoc/schemanodes.Read` installs the schema: through the current `attribute_of` tuple and from an attribute node that is not `gone` (migration `20261116081010_block_pointer_targets_present` replaced the function's test of `state = 'live'` with that one and nothing else), so a change to an attribute's `targets` reaches every link of that attribute with no pass over documents nobody edits.
+`TestGraphEdgesLosesEveryArmOverAMovedKind` reads the arm list back out of the catalogue and reads the whole view, the previous release's view over the same rows and each arm on its own before the backfill, after it, beside rows a previous release wrote and after a rollback that deletes and rewrites rows, with every backlink count and the store census beside them.
+
 ## Stored-order check
 
 `envoy-dispatch stored-order [--artifact <uuid>]... [--since <RFC 3339 time>]` reads, and never writes, whether each document's stored history replays:
@@ -2953,14 +3214,14 @@ migration `0032_refs_provenance` gives each edge a `kind`, `created_at`, and `so
 The name of a typed block's `block[]` attribute is an edge kind too:
 each block the attribute points at is an edge of that kind from the typed block (migration `20261101144855`, Database migrations above).
 `GET /api/v1/references?to=<ref>` lists everything that points at a node and `?from=<ref>` everything it points to, cross-project.
-A row whose other end is a node kind the running build does not know (a newer build's, read during a rolling deploy) is left out of every list and every count that build serves (`nodeLoaders`, `refs/graph.go`, names the kinds it knows).
+A row whose other end is a node kind the running build does not know (a newer build's, read during a rolling deploy) is left out of every list and every count that build serves (`nodeRegistry`, `refs/graph.go`, names the kinds it knows).
 The migration refuses to run when an ask or comment anchor carries a non-uuid `artifact_id`.
 
 Each block of a document is a node of the graph too (migration `0121`; `packages/envoy/AGENTS.md`, "References form one graph").
 Its reference is the document's with `#b-` and the block's id, percent-encoded as `encodeBlockId` (`@legion/contracts`) writes it:
 `dispatch://KEY/spec#b-<id>`, `dispatch://KEY/artifact/<slug>#b-<id>` or `dispatch://PROJECT/artifact/<slug>#b-<id>`.
 Text cites a block only while its id holds at most 256 bytes decoded (`text.MaxBlockIDBytes`), and any node only while its target id, the id its edge is stored under (`text.TargetID`:
-an issue's key, a document's `<KEY or PROJECT>/<slug>`, a document block's `<KEY or PROJECT>/<slug>#<id>`, a comment's or message's block's or an ask's part's `<item kind>/<item id>#<id>` (`ask/<ask uuid>#<part id>`), an ask's, a comment's or a message's id), holds at most 2048 bytes (`text.MaxTargetBytes`), since `refs` and `block_refs` hold it in B-tree keys and neither a slug nor an item id has a bound of its own:
+an issue's key, a document's `<KEY or PROJECT>/<slug>`, a document block's `<KEY or PROJECT>/<slug>#<id>`, a comment's or message's block's, an ask's part's or a lens's finding's `<item kind>/<item id>#<id>` (`ask/<ask uuid>#<part id>`, `lens/<lens uuid>#<id>`), an ask's, a comment's or a message's id, and an interaction's, a lens's, a risk's or a constraint's uuid or a lens kind's slug), holds at most 2048 bytes (`text.MaxTargetBytes`), since `refs` and `block_refs` hold it in B-tree keys and neither a slug nor an item id has a bound of its own:
 text citing past either is written with no edge.
 The bounds decide only what the graph indexes.
 Every write is taken whatever the length of a block id it names (a seeded spec, an upload, an `insert`, a rebuild, an accepted suggestion, a browser's edit);
@@ -3016,6 +3277,10 @@ a reply to a comment names a block of that comment, whether or not the comment's
 A reference to a part no current revision of the ask holds is `404 NOT_FOUND` `no part "<part>" in ask <id>`.
 An ask any build writes is owed a part index (`20261101143212`'s trigger on `asks`), which the same block-index reconciliation drains.
 
+A node the node and tuple store addresses by its own id carries no issue key in its reference, since where it stands is a `part_of` tuple and a move changes no address:
+`dispatch://interaction/<uuid>`, `dispatch://lens/<uuid>`, `dispatch://risk/<uuid>` and `dispatch://constraint/<uuid>`, the uuid in lowercase as the store writes it, `dispatch://lens_kind/<slug>`, and a lens's finding, `dispatch://lens/<uuid>#b-<id>`, which takes no pin, since a lens records no revision of its findings (`text.ParseRef`, and the dashboard's reader, both held to `DISPATCH_TEXT_REFERENCES`).
+The dashboard has no page for any of them, so no renderer links one, and a read answers a node of such a kind only once the build registers that kind in `nodeRegistry`, as for every kind (above).
+
 ```bash
 DATABASE_URL=postgres://... envoy-dispatch rebuild-refs
 ```
@@ -3032,13 +3297,15 @@ a session id holding a `/`, `?`, `#` or whitespace names nothing.
 `graph_edges` has no structural edge for such a file (no `attached_to`, since it belongs to no issue):
 it appears in the graph through the mentions that cite it.
 
-Every node the graph reads carries six facts, whatever its kind:
-`made_by` and `made_at` (who made it and when), `changed_by` and `changed_at` (who last changed its own text or fields and when, its maker while nothing has changed it since), `parent` (`{kind, id, ref?}`, the node it belongs to, `id` that node's own id) and `parent_version` (the version of that parent it belongs to:
+Every node the graph reads carries eight facts, whatever its kind:
+`made_by` and `made_at` (who made it and when), `changed_by` and `changed_at` (who last changed its own text or fields and when, its maker while nothing has changed it since), `parent` (`{kind, id, ref?}`, the node it belongs to, `id` that node's own id), `parent_version` (the version of that parent it belongs to:
 for a document's block its changed version, for a comment's block its changed revision;
-for an ask or comment written on a document the version its anchor names, for a block ask the version that first held its block, for an approval request the version it named when it opened, else the version current when it was written).
+for an ask or comment written on a document the version its anchor names, for a block ask the version that first held its block, for an approval request the version it named when it opened, else the version current when it was written),
+and `state` and `visibility`, the node's state (`live`, `gone`, `proposed`, `settled` or `overtaken`) and who reads it (`project`, or `author` for a node reserved for its author, which its author alone reads), as the node and tuple store holds them, and `live` and `project` for a node the store holds no row of.
 A reply that names a block is part of that block.
-A fact Dispatch never recorded is `[]` for an actor list and `null` otherwise:
+A fact Dispatch never recorded is `[]` for an actor list and `null` for a time, a parent or a version, and `state` and `visibility` always hold a value:
 a session has none, a component's makers are never recorded and its times only from this release on, a document block's maker, and a block ask's version, are known only when the block is in the document's first version or Dispatch indexed the version before the one that first held it, and a comment block's making time is not known for a block found at the first indexing of a comment already edited by then (`packages/envoy/AGENTS.md`, "References form one graph", gives each kind's sources and what counts as a change).
+A node's `kind` is one of the kinds the server's read registry holds (`nodeRegistry`), and the OpenAPI document closes `GraphNode.kind` over them, so a reader that meets a kind it does not know, a newer build's, skips that node.
 Migrations `0130`-`0134` (Database migrations above) add what the facts read:
 the version current when an unanchored comment or ask is written on a document, recorded at insert and filled for the rows already stored, and `component_facts`, which every import keeps.
 `dispatch read` prints the facts of the node it reads on a `Node:` line, before `Referenced by:`.
@@ -3872,6 +4139,16 @@ Each item below names a path with its method and identity, then its purpose.
 
   Everyone who has signed in, as `{users: [{login}]}` sorted by email — the assignee picker's options.
 
+- `/api/v1/people/{login}/nodes?limit=&offset=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
+
+  One person's page: what they wrote and what reached them, newest first, read from the node and tuple store — each node whose current `authored_by` tuple names the person, and each whose `delivered_to` tuple names a session the server proved theirs (`alias_of`), held to its own kind's visibility predicate and left out while it is `gone`.
+  The answer is `{person, rows, total, limit, offset}`, `person` the login as `model.CanonicalLogin` writes it, each row `{kind, id, relations, title, created_at, href, state, visibility}`:
+  `relations` the tuples that put the node there (`authored_by`, `delivered_to` or both), `title` the first line of its text, `href` the dashboard path it opens at, and `state` and `visibility` what the store holds for the node (`live` and `project` where it holds no row), so a node reserved for its author is listed to its author alone, who reads `author` there.
+  It takes `limit` (1–200, default 50) and `offset` and no kind, filter or edge to walk, and lists comments, skipping a node of a kind it cannot open.
+  It answers `200` only where the store holds the person and the person holds at least one node the reader may see, or where the reader is that person, answered with what they may see, and no rows where they hold nothing;
+  any other login is `404 NOT_FOUND`, byte for byte what a login nobody holds answers, so the read tells nobody whether that person exists, signed in or wrote anything, and a person whose only node is reserved for its author has no page another reader can open.
+  The deployment's shared token is `403 OAUTH_SCOPE_REQUIRED`.
+
 - `/api/v1/whoami` (GET; cookie, trusted header, bearer, or a broker-issued DPoP token)
 
   Who the server takes the caller for: `{kind: "user", login, scopes}` for a person (`login` their lowercase email), `{kind: "agent", owner, service, session, project, scopes}` for every other credential (`owner` is a personal token's owner or a broker-issued token's person, by lowercase email, null for the shared token and for a broker-issued token that names a service;
@@ -3963,12 +4240,13 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/going/catalogue` (GET; cookie, trusted header, or bearer)
 
-  The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-five tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
-  The one it leaves out is `dispatch_review`, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations on the graph must never propose one.
+  The catalogue of operations an agent may propose on Dispatch's graph: twenty-six of the twenty-eight dispatch tools that write, of the forty-five tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
+  The two it leaves out are `dispatch_review` and `dispatch_settle`, on purpose: each records a person's decision - a review an approval or a changes request in a person's name, a settle written by a person's credential that the person settled a proposal - and the loop that proposes operations on the graph must never propose one.
   Each action carries `action` (the tool's own name, such as `dispatch_issue`), its `description` (the tool spec's own, whole and unchanged, which is what a model chooses on), the `routes` it writes, each a `method` and a `pattern` of this table, the `relations` its verbs write (each a structural edge kind or a `block[]` attribute of a typed block), its `request` (the tool's own argument schema) and an `example` call that schema accepts.
-  Twenty actions is under the count where a model's choice falls apart, so the catalogue is read whole: it takes no query and serves no page.
+  The catalogue is read whole: it takes no query and serves no page.
+  Twenty actions was under the count where a model's choice falls apart; dispatch://INFRA-1950 added six writes of the reasoning nodes and their state, which make twenty-six, and did not measure a model's choice against them.
   A tool naming a row this table does not hold, a row the table does not class as a write, a placeholder no argument of the tool fills, or a relation in neither edge family makes the server refuse to mount the table.
-  A write no catalogue action performs is named by the catalogue's own test instead: most are work still to do rather than an error, and the review route is kept out on purpose.
+  A write no catalogue action performs is named by the catalogue's own test instead: most are work still to do rather than an error, and the review routes and the settle are kept out on purpose.
 
 - `/api/v1/projects/{key}/related?title=&text=&exclude_issue=&exclude_issues=&keywords_only=` (GET, POST; cookie, trusted header, or bearer)
 
@@ -4024,7 +4302,7 @@ Each item below names a path with its method and identity, then its purpose.
   `since=<events.id>` keeps mentions introduced after it (structural edges excluded).
   The answer is `{node, edges}`, the node read and its edges.
   Each edge carries the other `node`, an `excerpt` (the containing block for a document mention), `created_at`, and `source_seq`.
-  The node read, each edge's `node` and each edge's `block` carry the six facts of every node, `made_by`, `made_at`, `changed_by`, `changed_at`, `parent` and `parent_version` ([Reference graph](#reference-graph)).
+  The node read, each edge's `node` and each edge's `block` carry the eight facts of every node, `made_by`, `made_at`, `changed_by`, `changed_at`, `parent`, `parent_version`, `state` and `visibility` ([Reference graph](#reference-graph)).
   What is listed, and from where:
 
   - A mention a block of a document holds is listed from that block (`node.kind` `block`, `node.document` its document);
@@ -4053,9 +4331,22 @@ Each item below names a path with its method and identity, then its purpose.
   The links from blocks of the document `from` names to blocks of the document `to` names (an issue's spec or document, or a project's document;
   one document may be both), each reference read whatever its length:
   `{from, to, links}`, each link with its `kind`, both block nodes, and the `created_at` and `created_version` at which the source block first held it, newest first;
-  `from`, `to` and every link's two blocks carry the six facts of every node ([Reference graph](#reference-graph)).
+  `from`, `to` and every link's two blocks carry the eight facts of every node ([Reference graph](#reference-graph)).
   A link is listed only while both blocks are current blocks of their documents, and a typed block's `block[]` pointer only while its target has a type the attribute allows.
   `400 INVALID_REFERENCE` when either is not a document reference; `404 NOT_FOUND` for a document that does not exist.
+
+- `/api/v1/lenses?on=` (GET; cookie, trusted header, or bearer)
+
+  The lenses invoked on one node, and each chain of triggered lenses they stand in (`api/lens_read.go`).
+  `on` is the node's `dispatch://` address, or its store address as the `/nodes/{id}` routes take one, of any node the caller may see, of an issue or of none; an address that names no node, a node nobody holds and a node the caller may not see are one `404 NOT_FOUND`, in the same words but the address, and an empty `on` is `400 INVALID_QUERY`.
+  It takes no other query: nothing chooses a kind, an edge or a depth.
+  Answers `{on, lens, lenses, chains}`: `on` the node read (address, kind, state and visibility); `lens` the node itself, whole, where it is a lens, so either end of a trigger reads the other, and null otherwise; `lenses` the lenses whose `part_of` tuple points at the node, in the order they were invoked, the `seq` of that tuple, so a later write of a lens's row does not move it.
+  Each lens carries its address `dispatch://lens/<uuid>`, its `kind` (`{id, words}`, the `lens_kind` its `has_kind` tuple names), `on` (the node it stands on, null where the caller may not see it), `author` (the person or session its `authored_by` tuple names, null on the shared bearer), `created_at`, `verdict`, `state`, `visibility`, `triggered_by` (the lenses its `triggered_by` tuples point at) and `triggered` (the lenses whose `triggered_by` tuples point at it), each by address in the order the tuples were written, since the store holds `triggered_by` as many-valued.
+  Its `findings` come in rank order, each `{address, text, rank, state, visibility}`, `rank` being the `seq` of its `part_of` tuple, a sparse key; its `risks` in the order of their `part_of` tuples, each `{address, heading, early_warning, prevention, prevented_by, state, visibility}`, `prevented_by` the address of each check that prevents it and `[]` where none does.
+  A chain is `{lenses, stopped_at}`: the lenses joined to one another by `triggered_by` tuples the caller may see, walked both ways, breadth first, from the node itself where it is a lens and from each lens on the node, in that order, that no earlier chain lists; a visited set lists each lens once, so a cycle is read once, and the chain lists its lenses whole in the order they were invoked.
+  A chain lists at most `lensChainDepth` (50) lenses, the depth counted in lenses: past them `stopped_at` names the first lens the walk reached and did not list, and a lens on the node past that cut begins a chain of its own; a chain of exactly 50 has `stopped_at` null.
+  A chain holds two lenses or more.
+  A lens, a finding or a risk the caller may not see is in no list, no chain and no count, and no chain passes through a lens the caller may not see, so a lens reached only through one is in none of that caller's chains.
 
 - `/api/v1/issues` (POST; cookie, trusted header, or bearer)
 
@@ -4192,6 +4483,9 @@ Each item below names a path with its method and identity, then its purpose.
   A reply may name the block of the comment `reply_to` names that it answers, `reply_to_block` (`b2`), checked against that comment before `reply_to` climbs to its thread's head, and against that comment even when the climb reaches an ask;
   with `ask_id` instead of `reply_to` it names a part of that ask.
   `400 INVALID_COMMENT` with neither `reply_to` nor `ask_id`, and for a block or part the named item does not hold now.
+  `visibility` is optional: `project`, or none, writes the comment as every comment is written, for every reader its issue or document has;
+  `author` is `400 VISIBILITY_NOT_ADMITTED`, naming the kind `comment`, because not every read of a comment binds the visibility predicate, and on the deployment's shared bearer `403 AUTHOR_NAMES_NOBODY`;
+  any other word is `400 INVALID_ATTRIBUTE_VALUE`, and each refusal stores nothing.
   The delivery callback `POST /api/v1/comments/{id}/reply` takes `reply_to_block` for a block of comment `{id}`, never for a part of the ask its thread hangs under.
   A comment's record in its document's margin - its body and replies, or a suggestion's and its replacement - holds at most 256 KiB of text, and a document's margin 1 MiB:
   a comment, reply or suggestion that would leave either past its bound and bigger is `413 CAP_EXCEEDED`, naming the bound and both sizes.
@@ -4342,6 +4636,8 @@ Each item below names a path with its method and identity, then its purpose.
   Nothing is written on a push: a push that moves a pull request's head leaves the result at the old head standing at no basis, by itself.
   An issue with no Verification document answers no checks.
 
+- `/api/v1/issues/{key}/results`, its POST (the route of the item above)
+
   POST records one result: `{check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?, actor?}`.
   What it takes, and what it refuses:
 
@@ -4364,18 +4660,22 @@ Each item below names a path with its method and identity, then its purpose.
   The result is appended as `result.recorded` on the check's own issue, naming the recording issue.
   A closed issue, the recording one or the check's, takes a result only for a check whose `when` is `after_merge` or `default_branch` — the production check after the merge
   — and refuses every other with `409 ISSUE_CLOSED`; every other write on a closed issue stays refused.
+  A pass of a `before_merge` check states the negative control that would have caught its failure:
+  one whose `negative_control` is empty or whitespace alone is `400 NEGATIVE_CONTROL_REQUIRED`, naming the field and the check's block id, asked after the closed-issue refusal, so a closed issue still answers `409 ISSUE_CLOSED` first.
+  A pass of an `after_merge` or `default_branch` check and any fail may leave the field empty, and a row stored with an empty one reads back as it was stored.
   The answer is `{result, line}`, `line` the pull-request body line the result implies, which carries no link to Dispatch.
 
 - `/api/v1/issues/{key}/coverage` (GET; cookie, trusted header, or bearer)
 
   What each requirement of the issue's spec lacks: `{issue, spec_artifact_id, has_plan, requirements, gaps}`.
 
-  A requirement is a `requirement` block of the spec, and `requirements` lists them in document order, each with its block reference, its words, and how many `check` and `plan_task` blocks name it in `serves`.
+  A requirement is a `requirement` block of the spec, and `requirements` lists them in document order, each with its block reference, its words, its block's node `state` (read from `graph_nodes` in one statement with the predicate bound, `live` where the store holds no row), and how many `check` and `plan_task` blocks name it in `serves`.
 
   A block counts when it is in any document of the issue or of any descendant issue, at any status;
   the descendants are one recursive `child_of` walk bounded by `refs.IssueDepthCap` (`refs.IssueDescendants`).
 
   `gaps` is one line per gap, `<block id> has no check` and `<block id> has no plan task`, the second only once the issue has a plan document, or the single line `the spec marks no requirements` for a spec that marks none.
+  A requirement at `proposed` is a question still open and raises neither gap, here or in an approval request's answer (`missingCheckGaps`); one at `settled` or `live` is counted as every requirement is.
 
   Nothing is ever refused for a gap.
 
@@ -4401,6 +4701,75 @@ Each item below names a path with its method and identity, then its purpose.
 
   One handoff by id with its body; `404 HANDOFF_NOT_FOUND` when there is none, `400 HANDOFF_ID_INPUT` for an id that is not a uuid.
 
+- `/api/v1/issues/{key}/lenses` (POST; cookie, trusted header, or bearer)
+
+  Invoke a lens on one node of the issue, `{on, kind, verdict?, findings?, triggered_by?, visibility?}`: one analysis of one kind of the lens catalogue, a `lens` node of the node and tuple store.
+  `on` is the `dispatch://` address, or the store address `/nodes/{id}` takes, of a node the caller may see under the issue: the issue itself, a document or a block of one, an ask, a comment or a message or a block of one, or a lens, a finding, a risk or a constraint of the issue.
+  The lens stands on that node by its `part_of` tuple and holds one `has_kind` tuple to the `lens_kind` node `kind` names; `GET /api/v1/schema/blocks` lists the kinds under `lens_kinds`.
+  `verdict` is stored as the lens's verdict, `triggered_by` is a `triggered_by` tuple to the lens of the issue it names, and each of `findings` is one finding: a `block` node under the lens at a random block id, addressed `dispatch://lens/<uuid>#b-<id>`, ranked in the order it was written.
+  `visibility: "author"` keeps the lens and its findings to their author, and is `403 AUTHOR_NAMES_NOBODY` on a credential that proves no author, the deployment's shared bearer.
+  A missing kind is `400 LENS_KIND_REQUIRED`, an id no `lens_kind` node holds `400 INVALID_POINTER`, and an `on` or a `triggered_by` the caller may not see under the issue `404 NOT_FOUND`; a refused write stores nothing.
+  The write appends no event and sends no delivery.
+  Answers `201` with the lens: its address `dispatch://lens/<uuid>`, `kind`, `on`, `verdict`, `triggered_by`, `author` (the person or session its `authored_by` tuple names, null on the shared bearer), `created_at`, `state`, `visibility`, and each finding with its address, text, author, state and visibility.
+
+- `/api/v1/issues/{key}/nodes/{id}/findings` (POST; cookie, trusted header, or bearer)
+
+  Add one finding to the lens `{id}` names, `{text, visibility?}`: a `block` node under the lens at a random block id, after every finding it holds.
+  `{id}` is the lens's store address under the issue (`lens/<uuid>`, or its `dispatch://` address), percent-encoded as one path segment.
+  The finding carries its lens's visibility unless `visibility` is `author`.
+  A node the caller may not see under the issue is `404 NOT_FOUND`, a node that is no lens `400 INVALID_POINTER`, and an empty text `400 FINDING_INPUT`.
+  Answers `201` with the finding: its address, `id`, `block_id`, its lens's address, `text`, `author`, `created_at`, `state` and `visibility`.
+
+- `/api/v1/issues/{key}/risks` (POST; cookie, trusted header, or bearer)
+
+  Write one risk under a pre-mortem lens of the issue, `{lens, heading, early_warning, prevention, prevented_by?, visibility?}`: the failure it names, the sign it is seen coming by and what keeps it from happening, as attributes of the risk, under the lens by its `part_of` tuple.
+  `prevented_by` is the address of a check block of the issue's documents that covers the risk, a `prevented_by` tuple.
+  The store holds a risk to a lens of kind `pre-mortem`: a lens of any other kind, a node that is no lens and a `prevented_by` at a block that is no check are `400 INVALID_POINTER`, the first saying a risk belongs under a lens of kind pre-mortem.
+  A blank field is `400 RISK_INPUT`, and a lens or a check the caller may not see under the issue `404 NOT_FOUND`.
+  Answers `201` with the risk: its address `dispatch://risk/<uuid>`, `lens`, `heading`, `early_warning`, `prevention`, `prevented_by` (each check's address), `author`, `created_at`, `state` and `visibility`.
+
+- `/api/v1/issues/{key}/constraints` (GET, POST; cookie, trusted header, or bearer)
+
+  POST writes one constraint under the issue, `{standard, reference}` or `{measurement, value, taken_where}`, with `visibility?`: what forced a requirement from outside the conversation, as attributes of the constraint, under the issue by its `part_of` tuple.
+  A body that is neither shape, leaves a field of its shape blank or names fields of both is `400 CONSTRAINT_INPUT`.
+  A requirement points at a constraint through `POST /api/v1/issues/{key}/nodes/{id}/pointers` (`constrained_by`).
+  GET answers `{issue, constraints}`: the constraints under the issue the caller may see, in the order they were written there, each with its address `dispatch://constraint/<uuid>`, `id`, `standard`, `reference`, `measurement`, `value` and `taken_where` (null where it holds none), `author`, `created_at`, `state` and `visibility`.
+  A constraint reserved for its author is in its author's list alone, and an issue Dispatch does not hold is `404 NOT_FOUND`.
+
+- `/api/v1/issues/{key}/nodes/{id}/pointers` (POST; cookie, trusted header, or bearer)
+
+  Append, retract or retarget one pointer tuple out of the node `{id}` names, `{kind, action, to, from?}`; `{id}` is the node's store address under the issue, percent-encoded as one path segment.
+  `kind` is `has_kind` (a lens to its `lens_kind`, `to` and `from` being `lens_kind` ids), `triggered_by` (a lens to the lens of the issue that asked for it), `constrained_by` (a requirement block to a constraint of the issue or of the catalogue) or `prevented_by` (a risk to a check block).
+  `append` asserts a tuple at `to`, `retract` retracts the one at `to`, and `retarget` moves the one at `from` to `to`, retracting the old and asserting the new in one write and touching no `part_of` tuple.
+  The store holds each tuple to its type rule: a far end of the wrong type, a lens triggered by itself and a lens left with no kind are `400 INVALID_POINTER`, and a second `has_kind` or a retarget of a pre-mortem's kind away from `pre-mortem` is `409 POINTER_ALREADY_ASSERTED`, one body whatever hangs under the lens.
+  A node or a far end the caller may not see under the issue, and a tuple to retract or retarget that the node does not hold, are `404 NOT_FOUND`; `part_of`, which moves through the node's parent route, or any other kind or action, is `400 POINTER_INPUT`.
+  Answers `200 {node, kind, action, to, from}`, each end with its address, kind, state and visibility, and `from` null but for a retarget.
+
+- `/api/v1/issues/{key}/nodes/{id}/state` (POST; cookie, trusted header, or bearer)
+
+  Write the node state of the node `{id}` names, `{state, actor?}`; `{id}` is the node's store address under the issue (`<ref_key>#<block id>` for a block of a document, `lens/<uuid>`, or its whole `dispatch://` address), percent-encoded as one path segment (`api/node_state.go`, `writeNodeStateRoute`).
+  The value is checked first (`graphstore.CheckAttributeValue`): a word that is none of `live`, `gone`, `proposed`, `settled` and `overtaken` is `400 INVALID_ATTRIBUTE_VALUE`, naming the attribute `state` and the word, and nothing is read or stored.
+  A node the caller may not see under the issue is `404 NOT_FOUND`, in `FindNodeUnderIssue`'s words.
+  It writes `proposed` and `overtaken` on any node, `live` on any node that is not `gone`, and `gone` only on a node that belongs to no document - a lens, a finding, a risk or a constraint - since a document's own write removes its block.
+  `409 NODE_STATE_NOT_WRITABLE`, naming the node's kind, its state and the value asked for, refuses `settled` (the settle below writes it), `gone` on a block of a document or on an issue, a document, an ask, a comment or a message, and every value on a gone node: a gone node takes no state here, `live` or otherwise, because `proposed` or `overtaken` would bring it back as surely as `live`, and a block of a document a version dropped would then read as a present block no version holds.
+  The write appends one `state` tuple written by the caller, through `graphstore.Write` and at no event, so every read of the node answers the new state at once; a write of the state the node holds appends nothing.
+  Answers `200 {node: {address, kind, state, visibility}, previous}`, `previous` the state it held before.
+
+- `/api/v1/issues/{key}/nodes/{id}/settle` (POST; cookie, trusted header, or bearer)
+
+  Settle the proposed node `{id}` names, `{actor?}` (an empty body too): one `state` tuple at `settled`, written by the caller, at no event (`settleNode`).
+  A node the caller may not see under the issue is `404 NOT_FOUND`, the bytes a node nobody wrote answers but for the id; a node not at `proposed` is `409 NODE_NOT_PROPOSED`.
+  A person settles any proposal - a browser's cookie, or a token holding the `person` scope, whose settle is written as the person it acts for (`actingPerson`) - and any other caller only a proposal its own proving credential wrote, the node's `made_by` compared with it by `model.Actor.SameCredential`; any other caller is `403 SETTLE_NOT_PERMITTED`, naming the node.
+  A block's author is the writer of the version that first held the block, never whoever marked it proposed; the deployment's shared agent token proves no author, so it settles nothing.
+  Answers `200 {node: {address, kind, state, visibility}, previous}`.
+
+- `/api/v1/issues/{key}/proposed` (GET; cookie, trusted header, or bearer)
+
+  The nodes under the issue at node state `proposed` that the caller may see, `{issue, nodes}`, each `{node, excerpt}`: `node` the `GraphNode` every read answers (kind, address, state, visibility and the rest) and `excerpt` the words an edge at it shows, null where it has none (`listIssueProposed`).
+  A node under the issue is one whose standing issue is `{key}` (`refs.StandingIssueSQL`): the issue itself, its documents and their blocks, its asks, comments and messages and their blocks, and the lenses, findings, risks and constraints standing under one of those, in the order of their kind and their id.
+  The read takes the store's rows at `proposed` through the partial index `graph_nodes_proposed` (migration `20261116172615`), binds each row's own predicate, and answers each through its kind's loader (`refs.ExcerptedNodes`).
+  It takes no query; an issue Dispatch does not hold is `404 NOT_FOUND`.
+
 - `/api/v1/issues/{key}/artifacts` (GET, POST; cookie, trusted header, or bearer)
 
   List issue artifacts or create a version from a multipart `file` or JSON `{name, content, summary?, actor?}`.
@@ -4416,6 +4785,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   - A document stored under one of those names before its role existed carries no role, and a reader finds it by its slug instead;
     the next upload of that name sets the role on the row it already has.
+    Only a markdown document (`kind` `doc`) is found so: a file or an image uploaded under one of those names, bytes that are not markdown, plays no role, whatever its slug.
 
   - A role decides what a document is for: `POST /api/v1/artifacts/{id}/plan-reviews` takes only a `plan`, `POST /api/v1/artifacts/{id}/approval-requests` refuses one, and `--include-verification` and `GET .../results` read the `verification` document's `check` blocks.
 
@@ -4538,7 +4908,7 @@ Each item below names a path with its method and identity, then its purpose.
   Record a plan review's approval of a plan version: `{version}`, the version the review read.
   It writes an `approved` review of kind `plan_review` and emits `artifact.approved`, so every read of the document shows it approved and a later version makes it stale, as a spec's approval goes stale.
   It is `409 NOT_PLAN_DOCUMENT` on any document that is not the issue's plan, the issue's spec and a project document named `plan.md` included
-  — an issue document whose `role` is `plan`, or an issue document a rolling deploy left with no role whose slug is `plan-md`, is the plan
+  — an issue document whose `role` is `plan`, or an issue's markdown document a rolling deploy left with no role whose slug is `plan-md`, is the plan, and a file uploaded as `plan.md` is not
   — `409 NO_VERSION` on a plan with no settled version, and `400 INVALID_REVIEW` for a version the plan does not have.
   No person is ever asked to approve a plan, which is why `/api/v1/artifacts/{id}/approval-requests` refuses one.
   A review Dispatch carries to a later version keeps the `kind` of the review it carries, so a plan version restored to the text its plan review approved is still `plan_review` and no carry ever records a plan's approval as a person's.
@@ -4550,6 +4920,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/artifacts/{id}/comments` (GET, POST; cookie, trusted header, or bearer)
 
   List or create comments and suggestions on an unlinked document.
+  The create takes `visibility` as `POST /api/v1/issues/{key}/comments` does, with the same refusals.
 
 - `/api/v1/artifacts/{id}/events` (GET; cookie, trusted header, or bearer)
 
@@ -4794,6 +5165,32 @@ Each item below names a status and code, then its meaning.
   — fewer than 8 characters, or not hex — gets the answer it has always had.
   The ids this covers are an ask's, a comment's, a message's, a document's and a document block's;
   an id in a request body (`reply_to`, `ask_id`, `in_reply_to`) and the `artifact=` filters are read whole, since the programs that write them hold the whole id.
+
+- `400 INVALID_ATTRIBUTE_VALUE`
+
+  A write states a node's `state` at a value none of `live`, `gone`, `proposed`, `settled` and `overtaken`, or its `visibility` at one neither `project` nor `author`, a comment's `visibility` among them.
+  The message names the attribute, the value and the values it takes (`the node visibility "public" is none of project, author`); nothing is written.
+
+- `403 AUTHOR_NAMES_NOBODY`
+
+  A write asks for `visibility` `author` on a credential that proves no author, the deployment's shared bearer, whose every holder presents one value, so the node would be nobody's to read; nothing is written.
+  The going POST refuses the same asker `403 GOING_ASKER_NAMES_NOBODY`, and both decide by `graphstore.ProvesAuthor`.
+
+- `400 VISIBILITY_NOT_ADMITTED`
+
+  A write asks for `visibility` `author` on a node of a kind that takes no node reserved for its author, because not every read of that kind binds the visibility predicate: every kind but those the read registry flags (`packages/envoy/AGENTS.md`, "References form one graph"), a comment among them.
+  The message names the kind (`the node kind comment takes no node reserved for its author, …`); nothing is written.
+
+- `400 INVALID_POINTER`
+
+  A pointer tuple a write states is at a node its type rule does not allow: a `has_kind` other than from a lens to a lens kind, a `triggered_by` other than from a lens to another lens, a `constrained_by` other than from a requirement block or a lens kind to a constraint, a `prevented_by` other than from a risk to a check block, or a risk's `part_of` to anything but a lens of kind `pre-mortem`;
+  or a lens's `has_kind` is retracted with none asserted in its place.
+  The message names the tuple kind, the near end, the far end's kind and what the rule allows; nothing is written.
+
+- `409 POINTER_ALREADY_ASSERTED`
+
+  A write asserts a second `has_kind` of a lens, which holds exactly one kind and is retargeted rather than given another, or retracts or moves the `pre-mortem` kind of a lens, which a pre-mortem keeps; a move to `pre-mortem` is taken.
+  The body is one for each case, whatever hangs under the lens, so it tells nothing of a risk the caller may not see; nothing is written.
 
 ## Document errors
 

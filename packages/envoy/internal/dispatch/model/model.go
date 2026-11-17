@@ -1206,6 +1206,15 @@ const (
 	ArtifactRoleDecisions    = "decisions"
 )
 
+// ArtifactSlugVerification and ArtifactSlugPlan are the slugs that name an issue's Verification
+// and Plan documents: a document whose row a rolling deploy left with no role, or whose role the
+// issue room's conversion cleared, plays the part its slug names (api's roleSlugs, and the band
+// a block's rank stands in, refs.DocumentBandSQL).
+const (
+	ArtifactSlugVerification = "verification-md"
+	ArtifactSlugPlan         = "plan-md"
+)
+
 // ArtifactReview is one human review of a document, pinned to the version it was
 // given on: an approval, or a request for changes with a reason. EventSeq is the
 // sequence of the artifact.* event the review appended on its document's owner, nil
@@ -1515,12 +1524,18 @@ type IssueCoverage struct {
 // any status, that name it in `serves`. Gaps is this requirement's own gap lines, the ones
 // IssueCoverage.Gaps carries for it, so a reader draws them beside the requirement without
 // parsing the sentence back. Text and TextTree are the requirement's words as a CheckBlock's
-// are: the words with no link or reference, and the block's whole content as a tree.
+// are: the words with no link or reference, and the block's whole content as a tree. State is
+// the node state the store holds for the requirement's block (graphstore.NodeStates), live where
+// it holds no row: a requirement at proposed is a question still open, which raises no gap
+// (dispatch://INFRA-1950/spec#b-r-proposed). A server of the release before answers no State
+// during a roll, so the OpenAPI document marks it optional (`required:"false"`) and a reader
+// takes a requirement that carries none as live.
 type RequirementCoverage struct {
 	BlockID   string      `json:"block_id"`
 	Ref       string      `json:"ref"`
 	Text      string      `json:"text"`
 	TextTree  DisplayTree `json:"text_tree,omitempty"`
+	State     string      `json:"state" enum:"live,gone,proposed,settled,overtaken" required:"false"`
 	Checks    int         `json:"checks"`
 	PlanTasks int         `json:"plan_tasks"`
 	Gaps      []string    `json:"gaps"`
@@ -3167,22 +3182,36 @@ type ArtifactReferences struct {
 // GraphNode is one end of a reference-graph edge. IssueKey and Project locate it; an artifact an
 // agent's conversation owns has neither and is located by Ref alone
 // (`dispatch://agent/<session id>/artifact/<slug>`). Ref is its dispatch:// address and is empty
-// for session nodes, which have none. The edges into and out of a node are the reads `?to=` and
-// `?from=` of its Ref.
+// for a person, a role, a session and a page, none of which has one (graphstore.KindPerson and
+// the kinds beside it, which that doc names the id of). The edges into and out of a node are the
+// reads `?to=` and `?from=` of its Ref.
 //
-// Every node carries six facts, whatever its kind: MadeBy and MadeAt, who made it and when;
+// Kind is one of the node kinds the read registry holds (refs.VisibilityKinds), and the OpenAPI
+// document closes it over them: a kind a later build registers is a member that build adds, and
+// api's TestTheGraphNodeKindEnumIsTheRegistrysKinds holds the tag to the registry. A reader that
+// meets a kind it does not know skips that node rather than failing on it.
+//
+// Every node carries eight facts, whatever its kind: MadeBy and MadeAt, who made it and when;
 // ChangedBy and ChangedAt, who last changed its own text or fields and when (its maker while
-// nothing has changed it since); Parent, the node it belongs to; and ParentVersion, the version of
-// the parent it belongs to. A fact Dispatch never recorded is empty: MadeBy and ChangedBy are then
-// `[]`, never null, and the others null.
+// nothing has changed it since); Parent, the node it belongs to; ParentVersion, the version of
+// the parent it belongs to; and State and Visibility, the node state and the visibility the node
+// and tuple store holds for it (graphstore.NodeStates; graphstore.VisibilityProject or
+// VisibilityAuthor), which are live and project for a node the store holds no row of. A node
+// reserved for its author reaches that author alone, so only its author reads Visibility author.
+// Every answer of this build carries both, but a server of the release before answers the same
+// reads without them during a roll, so the OpenAPI document marks them optional
+// (`required:"false"`) and a reader takes a node that carries neither as live and project.
+// A fact Dispatch never recorded is empty: MadeBy and ChangedBy are then `[]`, never null, and
+// the others null.
 //
 // A block node (kind `block`, id `<document ref_key>#<block id>`) also carries BlockID, its
 // document's reference as Document, and ChangedVersion, the document version in which its text
-// last changed (ChangedAt is that version's time). Text and Pin are set only on the node a
-// reference read names: Text is the block's whole current text, and Pin answers a reference pinned
-// to a version.
+// last changed (ChangedAt is that version's time). A finding of a lens (kind `lens_block`, id
+// `lens/<uuid>#<block id>`) carries BlockID and no Document, and its parent is its lens. Text and
+// Pin are set only on the node a reference read names: Text is the block's whole current text,
+// and Pin answers a reference pinned to a version.
 type GraphNode struct {
-	Kind           string      `json:"kind"`
+	Kind           string      `json:"kind" enum:"artifact,ask,ask_block,attribute,block,comment,comment_block,component,constraint,issue,lens,lens_block,lens_kind,message,message_block,page,person,risk,role,session,supertag"`
 	ID             string      `json:"id"`
 	BlockID        string      `json:"block_id,omitempty"`
 	IssueKey       *string     `json:"issue_key,omitempty"`
@@ -3196,6 +3225,8 @@ type GraphNode struct {
 	ChangedAt      *time.Time  `json:"changed_at"`
 	Parent         *NodeParent `json:"parent"`
 	ParentVersion  *int        `json:"parent_version"`
+	State          string      `json:"state" enum:"live,gone,proposed,settled,overtaken" required:"false"`
+	Visibility     string      `json:"visibility" enum:"project,author" required:"false"`
 	Text           string      `json:"text,omitempty"`
 	Pin            *BlockPin   `json:"pin,omitempty"`
 }
@@ -3228,10 +3259,15 @@ type GraphExcerpt struct {
 	Text    string `json:"text"`
 }
 
-// GraphEdgeKinds is every structural edge kind graph_edges emits. A typed block's `block[]`
-// attribute makes edges of a kind named by the attribute (pmdoc.LinkKinds), which is never one of
-// these: a schema name equal to one would merge silently with it in every reader.
-var GraphEdgeKinds = []string{"mentions", "child_of", "blocked_by", "attached_to", "anchored_to", "owned_by", "replies_to", "answers", "followed_by", "part_of", "depends_on", "affects"}
+// GraphEdgeKinds is every structural edge kind graph_edges emits: the kinds its arms over the
+// projections write, and the six the node and tuple store states with no projection row behind
+// them (graphstore.TupleChangedByRun and the four beside it, and graphstore.TupleAuthoredBy of
+// the kinds dispatch://INFRA-1950 adds), which the view answers from the tuples alone. A typed
+// block's `block[]` attribute makes edges of a kind named by the attribute (pmdoc.LinkKinds),
+// which is never one of these: a schema name equal to one would merge silently with it in every
+// reader.
+var GraphEdgeKinds = []string{"mentions", "child_of", "blocked_by", "attached_to", "anchored_to", "owned_by", "replies_to", "answers", "followed_by", "part_of", "depends_on", "affects",
+	"changed_by_run", "has_kind", "triggered_by", "constrained_by", "prevented_by", "authored_by"}
 
 // GraphEdge is one typed, timestamped edge of graph_edges seen from the queried node: Node is
 // the other end, Direction is "in" for edges pointing at the queried node and "out" for edges

@@ -13,8 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -744,24 +746,15 @@ func (pause *repairCommitPause) let() {
 	pause.release.Do(func() { close(pause.proceed) })
 }
 
-// answerBlockAsk answers the document's one indexed ask in its row alone, so the block disagrees
+// answerBlockAsk answers the document's one indexed ask through the one writer of an ask's answer
+// state (asks.Settle), on its node and its row and nowhere in its document, so the block disagrees
 // with it until settlement repairs the block.
 func answerBlockAsk(t *testing.T, service *Service, artifactID string) model.AskAnswer {
 	t.Helper()
 	answer := model.AskAnswer{User: "alice", Selected: []string{}, At: time.Now().UTC()}
-	answerJSON, err := json.Marshal(answer)
-	if err != nil {
-		t.Fatalf("encode answer: %v", err)
-	}
-	tag, err := service.store.Pool.Exec(context.Background(), `
-		update asks set state = 'answered', answer = $2 where block_artifact_id = $1
-	`, artifactID, answerJSON)
-	if err != nil {
-		t.Fatalf("answer indexed ask: %v", err)
-	}
-	if tag.RowsAffected() != 1 {
-		t.Fatalf("answered %d asks, want the document's one", tag.RowsAffected())
-	}
+	change := asks.Answered(answer)
+	change.Who, change.At = model.Actor{Kind: "user", ID: "alice"}, answer.At
+	settleTheDocumentsAsk(t, service, artifactID, change)
 	return answer
 }
 
@@ -769,10 +762,34 @@ func answerBlockAsk(t *testing.T, service *Service, artifactID string) model.Ask
 // answer it again.
 func reopenBlockAsk(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
-	if _, err := service.store.Pool.Exec(context.Background(), `
-		update asks set state = 'open', answer = null where block_artifact_id = $1
-	`, artifactID); err != nil {
-		t.Fatalf("reopen indexed ask: %v", err)
+	change := asks.Reopened()
+	change.Who, change.At = model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC()
+	settleTheDocumentsAsk(t, service, artifactID, change)
+}
+
+// settleTheDocumentsAsk writes change on the document's one indexed ask, in a transaction of its
+// own, as a route writes an answer state.
+func settleTheDocumentsAsk(t *testing.T, service *Service, artifactID string, change asks.Change) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := service.store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the answer state's write: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx, `select id::text from asks where block_artifact_id = $1`, artifactID)
+	if err != nil {
+		t.Fatalf("read the document's asks: %v", err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("the document holds asks %v (%v), want its one", ids, err)
+	}
+	if _, err := asks.Settle(ctx, tx, ids[0], change); err != nil {
+		t.Fatalf("write the answer state of ask %s: %v", ids[0], err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the answer state's write: %v", err)
 	}
 }
 

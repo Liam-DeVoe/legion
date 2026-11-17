@@ -111,7 +111,8 @@ func askRepairDrops(ask *pmdoc.Node) (drop []*pmdoc.Node, changed []string) {
 	kept := ask.Children
 	if askBreaksItsOwnRule(ask) {
 		var own []*pmdoc.Node
-		own, kept = askBlocksToDrop(ask.Children)
+		content, _ := pmdoc.TypedContent(ask)
+		own, kept = askBlocksToDrop(content)
 		drop = append(drop, own...)
 	}
 	var nested []string
@@ -141,7 +142,8 @@ func askRepairKeepsNothingOfItsOwn(ask *pmdoc.Node) bool {
 	if !askBreaksItsOwnRule(ask) {
 		return false
 	}
-	_, kept := askBlocksToDrop(ask.Children)
+	content, _ := pmdoc.TypedContent(ask)
+	_, kept := askBlocksToDrop(content)
 	return len(kept) == 0
 }
 
@@ -192,13 +194,14 @@ func nestedAsks(blocks []*pmdoc.Node) []*pmdoc.Node {
 	return found
 }
 
-// askBlocksToDrop splits the children of a broken ask into the ones to delete and the ones to
-// keep, each in document order. It keeps the run of paragraphs starting at the first paragraph
-// holding text, up to the next other block, and the bullet list right after them; it drops every
-// other child, the paragraphs holding no text before that run among them, since a question read
-// from those alone is empty. The caller checks what the kept children leave reads strictly: a
-// decision nested in them can still break the rule, and a kept list can hold an option the parse
-// cannot read.
+// askBlocksToDrop splits the children of a broken ask's content (pmdoc.TypedContent, which leaves
+// out the readings the ask closes with, a repair keeping them as they stand) into the ones to
+// delete and the ones to keep, each in document order. It keeps the run of paragraphs starting
+// at the first paragraph holding text, up to the next other block, and the bullet list right
+// after them; it drops every other child, the paragraphs holding no text before that run among
+// them, since a question read from those alone is empty. The caller checks what the kept children
+// leave reads strictly: a decision nested in them can still break the rule, and a kept list can
+// hold an option the parse cannot read.
 //
 // A decision no paragraph of which holds text keeps nothing: it asks nothing, and no document
 // edit can give it a question (refuseEmptyQuestionEdit holds that reason). Where it is the
