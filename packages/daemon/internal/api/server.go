@@ -498,9 +498,9 @@ type route struct {
 }
 
 // routeMux is the mux the daemon's API is served from, with the pattern of every route mounted on
-// it in the order NewServer mounted them. handle is the one way to mount a route on it, so its
+// it in the order NewServer mounted them. NewServer mounts every route through handle, so its
 // patterns are what the server serves, a route mounted beside the table included, and a test of a
-// rule every route keeps walks them (TestNoRouteTakesABodyStringHoldingANul).
+// rule every route keeps walks them (mountedPatterns) rather than the table.
 type routeMux struct {
 	mux      *http.ServeMux
 	patterns []string
@@ -516,10 +516,7 @@ func (m *routeMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	m.mux.ServeHTTP(w, r)
 }
 
-// routes is every route the API serves, the one table NewServer mounts. A route is mounted through
-// routeMux.handle and nowhere else, and a test of a rule every route keeps walks what the server's
-// mux recorded (TestNoRouteTakesABodyStringHoldingANul) rather than a list of its own that a new
-// route never joins, so a route mounted beside the table is walked too.
+// routes is every route the API serves, the one table NewServer mounts.
 func (s *server) routes() []route {
 	return []route{
 		{"GET /legion/v1/state", s.stateRoute},

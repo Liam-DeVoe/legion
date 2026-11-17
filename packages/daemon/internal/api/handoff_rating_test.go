@@ -496,9 +496,8 @@ func TestAnOldPluginOutsideATurnIsRefusedStale(t *testing.T) {
 // at PlanRatingContract must send: Go writes it from HandoffCompleteRequest (`-update`), and
 // `packages/contracts/src/legion-api.test.ts` parses it with LegionHandoffCompleteRequest, a strict
 // schema, so a JSON name of the rating Go writes and the contract does not read, or the reverse,
-// fails there. Every other Go test of the rating marshals this same struct, so a renamed tag moves
-// both ends of it at once. The rating and its reason are values no default and no other field of
-// the body holds.
+// fails there. The rating and its reason are values no default and no other field of the body
+// holds.
 func TestHandoffCompleteRequestRatedGolden(t *testing.T) {
 	golden(t, "handoff-complete-request-rated.json", HandoffCompleteRequest{
 		GrantID: "grant-for-one-command", Summary: "Retro done.", Commit: "c0ffee5a1d2b3c4d5e6f708192a3b4c5d6e7f809",
@@ -529,12 +528,12 @@ type planRatingCase struct {
 }
 
 // The daemon is the rule of a rating, and the contract's schema and the plugin's tool state it
-// again in TypeScript, where blank is a set written out by hand (goBlankPattern) because
-// JavaScript's trim is another set: it keeps U+0085, which Go's strings.TrimSpace strips, and
-// strips U+FEFF, which Go keeps. So the cases a rule of the scale, of the pair, of blank or of
-// length can part on are a golden. Each is posted as its raw body to
-// the completion that ends a retro, from a plugin at PlanRatingContract, and the route's answer is
-// the verdict Go writes (`-update`), never one typed here; `packages/contracts` and the plugin hold
+// again in TypeScript, where blank is Go's set written out by hand: goBlankPattern, whose comment
+// in `packages/contracts/src/go-blank.ts` names the characters JavaScript's trim and Go's
+// strings.TrimSpace part on. So the cases a rule of the scale, of the pair, of blank or of length
+// can part on are a golden. Each is posted as its raw body to the completion that ends a retro,
+// from a plugin at PlanRatingContract, and the route's answer is the verdict Go writes
+// (`-update`), never one typed here; `packages/contracts` and the plugin hold
 // their own verdicts to the file. An answer that is neither a 200 nor a 400 of the rating fails
 // the test, so no trouble of the harness is written down as a verdict, and an accepted case's fact
 // carries the rating and the reason as they were sent.
