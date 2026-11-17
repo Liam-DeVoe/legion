@@ -77,6 +77,14 @@ type subjectsPage struct {
 // after through holds it. A list whose pages or that last ask differ, or that falls short of the
 // total, is ErrIncompleteKeyList.
 //
+// That rule has a liveness bound. Any write to the bucket moves the stream's last sequence, a
+// replacement of a key it already holds included, so a bucket of more than 100,000 keys that is
+// written to steadily can change between the pages of every list, and every read of it fails; the
+// watcher's ReadErr then reports it, once the reads have failed for the stale bound. No list is
+// tried again here: one page covers the scale the listener's buckets run at (1,055 sessions in
+// production on 2026-11-17), and a retry would be a whole list again, which the same writes can
+// fail again.
+//
 // ctx bounds the whole list, every page included. A ctx carrying no deadline is bounded by
 // RequestTimeout, as every other read of a bucket's stream through this handle is. The request is
 // sent to the default JetStream API prefix (`$JS.API.`), as the handle's own jetstream context,
