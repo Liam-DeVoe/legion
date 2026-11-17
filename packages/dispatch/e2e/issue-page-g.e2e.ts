@@ -303,8 +303,8 @@ async function belowWhatStays(row: Locator): Promise<number | undefined> {
 // scroll of the browser's own (`preventScroll`, as a chord or an address puts the focus), so
 // only the row's own placement (`useRowOnScreen`) can move it: under part G the header publishes
 // no band, and `bringOnScreen` alone leaves the row where it is. Then `t s` puts the focus on the
-// Spec view's tab-stop row from the page's foot, which the chord shows and the row places: part J
-// fills the Spec view, so the row reads `t s` alone again (decision 159).
+// Spec view's tab-stop row from the page's foot, which the chord shows and the row places: the
+// Spec view draws its statements as rows, so `t s` alone reaches one.
 // SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, a
 // focus and a chord each waited out.
 test("at 390 px a focused row stands below the view row that stays at the top, after a focus that does not scroll and after t s", async ({

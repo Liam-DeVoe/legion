@@ -10,11 +10,11 @@ import { PROJECT } from "./issue-layout-seed-support";
  * frame), `e2e/issue-page-g.ts` (one node's row, and the tree as rows) and `e2e/issue-page-i.ts`
  * (the outline) do not hold, and the one seed of the view's own.
  *
- * What part J draws, beyond what those files name:
+ * What the Spec view and the Contents slot draw, beyond what those files name:
  *
  * - **The issue's three sentences** `[data-testid="issue-three-things"]`, each an `li` whose
  *   label is `[data-page-chrome]` and whose sentence is `[data-author-text]`: in the Contents
- *   slot (part D's pane and Outline sheet), and as the Spec view's first group.
+ *   slot (the Contents pane and the Outline sheet), and as the Spec view's first group.
  * - **The Contents list**, one `[data-contents-entry="<node id>"]` per entry, its line
  *   `[data-contents-line]`, and above it the toggle named `CONTROL_LABELS.focus_branch`.
  * - **The Spec view** `[data-spec-body]`: its legend `[data-spec-legend]` of four
