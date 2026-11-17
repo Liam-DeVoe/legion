@@ -801,8 +801,9 @@ function askNodeId(ask: TreeAsk, slugOf: (artifactId: string) => string | undefi
 }
 
 /** A block as the blocks read answers one, with the words the tree read answers beside it, so a
- *  reader of the blocks read reads a block of the tree read with no change. */
-interface TreeBlock extends ArtifactBlock {
+ *  reader of the blocks read reads a block of the tree read with no change, and a reader of the
+ *  words finds them here (dispatch://INFRA-4062 R5). */
+export interface TreeBlock extends ArtifactBlock {
   readonly text: string;
   readonly text_tree?: DisplayTree;
 }
@@ -918,7 +919,7 @@ export function blocksOfRole(
   answer: TreeAnswer | undefined,
   role: TreeFilter,
   issue: IssueDetails
-): ArtifactBlock[] | undefined {
+): TreeBlock[] | undefined {
   if (answer === undefined) return undefined;
   const hung = hungUnder(answer);
   const documentId = roleDocumentId(answer, role, issue);

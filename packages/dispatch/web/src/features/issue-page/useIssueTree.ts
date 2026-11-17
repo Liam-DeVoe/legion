@@ -21,6 +21,7 @@ import {
 import { usePublishReferenceNames } from "./reference-names";
 import { citedReferences } from "./row-references";
 import {
+  REFRESHED_BY_EVENTS,
   type TreeBlocksRead,
   type TreeFilter,
   useTreeRead,
@@ -119,19 +120,24 @@ const NO_AMBIGUOUS_TARGETS: ReadonlySet<string> = new Set();
 export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const key = issue.key;
   const read = useTreeRead(issue);
-  const coverage = useQuery(issueCoverageQuery(key));
-  const results = useQuery(issueResultsQuery(key));
+  // Each read an event refreshes is read again by that event alone, never by its age, so a slot
+  // the stage mounts again later sends none of them (`REFRESHED_BY_EVENTS`).
+  const coverage = useQuery({ ...issueCoverageQuery(key), ...REFRESHED_BY_EVENTS });
+  const results = useQuery({ ...issueResultsQuery(key), ...REFRESHED_BY_EVENTS });
   const asks = useQuery({
+    ...REFRESHED_BY_EVENTS,
     queryKey: ["asks", key],
     queryFn: () => api.listIssueAsks(key, "all"),
   });
   // Under the keys the margin, the history and the focused row's facts read too, so a reader
   // opening the panel after the tree finds them answered rather than read a second time.
   const comments = useQuery({
+    ...REFRESHED_BY_EVENTS,
     queryKey: ["comments", key],
     queryFn: () => api.listComments(key),
   });
   const messages = useQuery({
+    ...REFRESHED_BY_EVENTS,
     queryKey: ["issue-messages", key],
     queryFn: () => api.listIssueMessages(key),
   });
@@ -214,6 +220,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // long as one read, where a dropped one is the whole page's names at once.
   const targets = useQuery({
     ...referenceTargetsQuery(answered ? refs : []),
+    ...REFRESHED_BY_EVENTS,
     placeholderData: keepPreviousData,
   });
   const first = useMemo(
@@ -235,6 +242,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   }, [first, firstTree, refs]);
   const more = useQuery({
     ...referenceTargetsQuery(extra),
+    ...REFRESHED_BY_EVENTS,
     placeholderData: keepPreviousData,
   });
   // Both answers, the second's standing for an address both name. Where nothing is left for the

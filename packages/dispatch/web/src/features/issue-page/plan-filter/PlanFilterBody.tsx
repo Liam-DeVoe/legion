@@ -1,4 +1,3 @@
-import { useQueries } from "@tanstack/react-query";
 import {
   type ComponentProps,
   memo,
@@ -12,7 +11,7 @@ import {
 } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { artifactBlocksQuery } from "../../../api/queries";
+import type { ArtifactBlock } from "../../../api/types";
 
 import {
   focusVisibleRing,
@@ -83,7 +82,7 @@ import {
  *
  * - **The plan's own order** is the order the tasks are written in (`plan-order.ts`'s
  *   `writtenOrder`), read from the blocks of the plan document the page already holds
- *   (`useIssueTree.ts` reads them under the same key, so this costs no request): the filter's
+ *   (`useIssueTree`'s `blocksOf("plan")`, so this costs no request): the filter's
  *   view hands the tasks over grouped by the statement each serves, which is the spec's order
  *   and not the plan's (the tester's F19).
  * - **A bar's place** is worked out here from the `needs` the plan document holds. The place
@@ -101,6 +100,7 @@ import {
  */
 export function PlanFilterBody({
   plan,
+  planBlocks,
   root,
   ...tree
 }: ComponentProps<typeof IssueTree> & {
@@ -108,6 +108,10 @@ export function PlanFilterBody({
    *  (`slots/view-plan.tsx`): the order and the chart's places are worked out from them, and
    *  `root`, the view, chooses which of those places are drawn (dispatch://INFRA-3938 R4). */
   plan: readonly TreeNode[];
+  /** The plan document's typed blocks in the order it writes them, or undefined while the tree
+   *  read is out (`slots/view-plan.tsx`, from `useIssueTree`'s `blocksOf("plan")`): the plan's
+   *  own order (`writtenOrder`). */
+  planBlocks: readonly ArtifactBlock[] | undefined;
 }): ReactNode {
   // Which of the two the reader is looking at: the chart, which the filter opens on, or the
   // ordered steps.
@@ -117,10 +121,12 @@ export function PlanFilterBody({
   // written (`writtenOrder`): every task of the plan, so a words filter changes no task's place
   // (R2).
   const documentIds = useMemo(() => taskDocumentIds(plan, artifacts), [artifacts, plan]);
-  const written = useQueries({
-    combine: blockIdsOf,
-    queries: documentIds.map((id) => artifactBlocksQuery(id)),
-  });
+  // The tree read answers the order of the plan document alone (`planBlocks`), so each document
+  // is read against the plan's block ids.
+  const written = useMemo(() => {
+    const ids = planBlocks?.map((block) => block.id);
+    return documentIds.map(() => ids);
+  }, [documentIds, planBlocks]);
   const entries = useMemo(
     () =>
       planOrder(
@@ -235,15 +241,6 @@ export function PlanFilterBody({
       )}
     </div>
   );
-}
-
-/** Each document's block ids in the order they are written, or undefined while its read is
- *  out. It is one function for every render, so the reads' answer is one value until a read
- *  changes (`useQueries`' `combine`). */
-function blockIdsOf(
-  answers: readonly { readonly data?: readonly { readonly id: string }[] | undefined }[]
-): readonly (readonly string[] | undefined)[] {
-  return answers.map((answer) => answer.data?.map((block) => block.id));
 }
 
 /** The key of a cycle's place: its tasks' ids, one space between two. */

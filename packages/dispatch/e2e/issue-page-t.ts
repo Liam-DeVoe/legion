@@ -1,7 +1,14 @@
-import { expect, type Page } from "@playwright/test";
+import { readFileSync } from "node:fs";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 
-import { CONTROL_LABELS, GAP_LINES } from "../web/src/features/issue-page/page-words";
+import type { IssueTreeAnswer } from "../web/src/api/client";
+import type { IssueDecisions } from "../web/src/api/types";
+import { CONTROL_LABELS, GAP_LINES, type Preset } from "../web/src/features/issue-page/page-words";
+import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { parseNodeReference } from "../web/src/features/refs/routes";
+import { nextFrames } from "./frames";
 import { blockNode, focusThePage, nodeRows, rowBody } from "./issue-page-g";
+import { type ApiRequest, type ApiRequests, expectLoadSettled } from "./traffic";
 
 /**
  * What part T of dispatch://INFRA-1196 (dispatch://INFRA-4062) reads of the rows of the new issue
@@ -45,6 +52,16 @@ import { blockNode, focusThePage, nodeRows, rowBody } from "./issue-page-g";
  * `seedKeys` and `keyedRows` name each row by what the seed returned rather than by an id the
  * server minted (a comment's, an ask's, a result's, a block's UUID), and write each time as the
  * source it was drawn from rather than as an instant.
+ *
+ * The rows of `e2e/issue-page-t.e2e.ts` read what the page received besides what it drew:
+ * `treeAnswerOf` and `viewAnswerOf` keep each answer of the tree read
+ * (`GET /api/v1/issues/{key}/tree`) and of one of its views (`?view=`), every page of a read
+ * merged; `decisionsReadOf` keeps the decisions read; `viewNodeIds` names the rows root R2 lets a
+ * view draw. `treeReads` and `blocksReads` count what a load or a press sent. Each row's gate is
+ * one `owedUnless` call on a probe (`treeReadGate`, `convertedGate`, `decisionsViewGate`,
+ * `decisionNodesGate`, `partUGate`, `footLineGate`): where the gate is not on T's base the row
+ * skips, naming the gate and the decisions that make it owed, and never passes (INFRA-1196
+ * decision 170, reading decisions 127 and 135).
  */
 
 /** A row's kind: the model's token for it, and the tag its group draws (a typed kind's word, or a
@@ -524,7 +541,7 @@ export function keyedRows(
 }
 
 /** The place of the row `index` is drawn under: the nearest row before it one level up. */
-function parentIndex(readings: readonly RowReading[], index: number): number | undefined {
+export function parentIndex(readings: readonly RowReading[], index: number): number | undefined {
   const level = readings[index]?.level ?? null;
   if (level === null) return undefined;
   for (let before = index - 1; before >= 0; before -= 1) {
@@ -554,4 +571,520 @@ function timeSourceOf(reading: RowReading, key: string): TimeSource | null {
     );
   }
   return source;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The fixture the rows compare with, and the recorder's steady reading.
+// ---------------------------------------------------------------------------------------------
+
+/** One filter of a seed in the fixture: the keys of the rows it drew, and its control's count. */
+export interface FilterFixture {
+  readonly count: number;
+  readonly rows: readonly string[];
+}
+
+/** One seed in the fixture `e2e/tools/issue-page-t-record.ts` writes. */
+export interface SeedFixture {
+  readonly filters: Readonly<Partial<Record<TreeView, FilterFixture>>>;
+  readonly loadRequests: number;
+  readonly opened: readonly KeyedRow[];
+  readonly rows: readonly KeyedRow[];
+}
+
+/** The part of the fixture the rows read. */
+interface RowsFixture {
+  readonly seeds: Readonly<Partial<Record<string, SeedFixture>>>;
+}
+
+const FIXTURE_FILE = new URL("./fixtures/issue-page-t-rows.json", import.meta.url);
+
+let rowsFixture: RowsFixture | undefined;
+
+/** What the fixture recorded of `seed`. The file is read, never imported: Playwright loads a spec
+ *  under Node, which refuses a JSON import that names no `type: json`, and one such import stops
+ *  the listing of the whole suite. */
+export function fixtureSeed(seed: string): SeedFixture {
+  rowsFixture ??= JSON.parse(readFileSync(FIXTURE_FILE, "utf8")) as RowsFixture;
+  const recorded = rowsFixture.seeds[seed];
+  if (recorded === undefined) throw new Error(`the fixture records no seed named ${seed}`);
+  return recorded;
+}
+
+/** How many readings `steadily` takes before it gives up on the page settling. */
+const STEADY_TRIES = 20;
+
+/**
+ * Reads `read` until two readings in a row are the same, as the recorder read what the fixture
+ * holds: before each reading the page goes quiet (`expectLoadSettled`), and after it two frames
+ * pass, so a row or a count that is still arriving is not read half drawn. A page that never
+ * settles fails the row.
+ */
+export async function steadily<T>(
+  page: Page,
+  traffic: ApiRequests,
+  what: string,
+  read: () => Promise<T>
+): Promise<T> {
+  let last: string | undefined;
+  for (let tries = 0; tries < STEADY_TRIES; tries += 1) {
+    await expectLoadSettled(traffic);
+    const reading = await read();
+    const said = JSON.stringify(reading);
+    if (said === last) return reading;
+    last = said;
+    await nextFrames(page);
+  }
+  throw new Error(`${what} changed at each of ${STEADY_TRIES} readings, so it never settled`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// What the page received of the tree read and its views, and what a load or a press sent.
+// ---------------------------------------------------------------------------------------------
+
+/** One of the four filters, by the `view` its read of the tree sends. */
+export type TreeView = Exclude<Preset, "conversation">;
+
+/** The tree read's path, whatever issue it reads. */
+const TREE_PATH = /^\/api\/v1\/issues\/[^/]+\/tree$/;
+
+/** The path of issue `key`'s tree read. */
+function treePath(key: string): string {
+  return `/api/v1/issues/${encodeURIComponent(key)}/tree`;
+}
+
+/** What the page received of the tree route, for one view or none. */
+export interface TreeAnswerWatch {
+  /** The newest read whose every page has answered, its pages merged; undefined until one has. */
+  answer(): IssueTreeAnswer | undefined;
+}
+
+/** One page of a read as the page received it: in which place it arrived, the cursor its request
+ *  sent (none for a read's first page), and the page. */
+interface ReceivedPage {
+  readonly arrived: number;
+  readonly cursor: string | null;
+  readonly page: IssueTreeAnswer;
+}
+
+/** Keeps every answer of the tree route whose `view` is `view` (none for null), from now on. */
+function watchTreeRoute(page: Page, view: TreeView | null): TreeAnswerWatch {
+  const received: ReceivedPage[] = [];
+  let arrivals = 0;
+  page.on("response", (response) => {
+    const url = new URL(response.url());
+    if (
+      response.request().method() !== "GET" ||
+      !TREE_PATH.test(url.pathname) ||
+      url.searchParams.get("view") !== view ||
+      !response.ok()
+    ) {
+      return;
+    }
+    const arrived = arrivals;
+    arrivals += 1;
+    const cursor = url.searchParams.get("cursor");
+    void response.json().then(
+      (body: IssueTreeAnswer) => {
+        received.push({ arrived, cursor, page: body });
+      },
+      // A body the browser let go of before it was read, as the page moved on, is no answer.
+      () => undefined
+    );
+  });
+  return { answer: () => newestRead(received) };
+}
+
+/** The newest read every page of which has answered: a read starts at a page its request sent no
+ *  cursor for, and goes on with each page whose cursor the page before it answered. */
+function newestRead(received: readonly ReceivedPage[]): IssueTreeAnswer | undefined {
+  const reads: IssueTreeAnswer[][] = [];
+  for (const { cursor, page } of [...received].sort((a, b) => a.arrived - b.arrived)) {
+    const read = reads[reads.length - 1];
+    if (cursor === null) reads.push([page]);
+    else if (read !== undefined && read[read.length - 1]?.cursor === cursor) read.push(page);
+  }
+  for (let at = reads.length - 1; at >= 0; at -= 1) {
+    const [first, ...rest] = reads[at] ?? [];
+    if (first !== undefined && (rest[rest.length - 1] ?? first).cursor === null) {
+      return mergedPages(first, rest);
+    }
+  }
+  return undefined;
+}
+
+/** The pages of one read as one answer, as `tree-read/tree-read.ts`' `mergeTreePages` merges
+ *  them: every page's nodes and tuples in the order the pages came, and what describes the issue
+ *  rather than a page from the first. That module is not imported here: it reaches the document
+ *  editor's code, whose JSON a spec loaded under Node cannot import. */
+function mergedPages(first: IssueTreeAnswer, rest: readonly IssueTreeAnswer[]): IssueTreeAnswer {
+  if (rest.length === 0) return first;
+  const pages = [first, ...rest];
+  return {
+    ...first,
+    cursor: null,
+    nodes: pages.flatMap((one) => one.nodes),
+    tuples: pages.flatMap((one) => one.tuples),
+  };
+}
+
+/** The tree read the page receives with no view, every page of its newest read merged. Start it
+ *  before the navigation, so the first load's read is kept. */
+export function treeAnswerOf(page: Page): TreeAnswerWatch {
+  return watchTreeRoute(page, null);
+}
+
+/** `treeAnswerOf` for the read of one view, `?view=<filter>`. */
+export function viewAnswerOf(page: Page, filter: TreeView): TreeAnswerWatch {
+  return watchTreeRoute(page, filter);
+}
+
+/** Waits until `watch` holds a read whose every page answered, and answers it. */
+export async function heldAnswer(watch: TreeAnswerWatch, what: string): Promise<IssueTreeAnswer> {
+  const message = `${what} never answered its last page`;
+  await expect.poll(() => watch.answer() !== undefined, { message }).toBe(true);
+  const answer = watch.answer();
+  if (answer === undefined) throw new Error(message);
+  return answer;
+}
+
+/** Root R2's rows of each filter (dispatch://INFRA-1196 R2): the kinds a view draws as rows of
+ *  its own, the nodes its query took, and as context, the nodes it holds to place them. Spec
+ *  draws the statements; Verification each statement as context, with the checks under it and
+ *  their results; Plan the plan tasks; Decisions the questions and the decisions. */
+export const R2_ROW_KINDS: Readonly<
+  Record<TreeView, { readonly context: readonly string[]; readonly query: readonly string[] }>
+> = {
+  decisions: { context: [], query: ["ask", "decision"] },
+  plan: { context: [], query: ["plan_task"] },
+  spec: { context: [], query: ["requirement"] },
+  verification: { context: ["requirement"], query: ["check", "result"] },
+};
+
+/** The main kind each filter's control counts (R2). */
+export const R2_COUNTED_KINDS: Readonly<Record<TreeView, readonly string[]>> = {
+  decisions: ["ask", "decision"],
+  plan: ["plan_task"],
+  spec: ["requirement"],
+  verification: ["check"],
+};
+
+/** A node a view draws as a row, by the id its row carries, and how its view marks it. */
+export interface ViewNodeId {
+  readonly id: string;
+  readonly mark: "context" | "query";
+}
+
+/**
+ * The rows root R2 lets `filter` draw of its view read `answer`: each node of this issue of the
+ * filter's own kinds that the view's query took, and each of its context kinds the view holds as
+ * context, by the id `treeIdOf` gives it (the id its row carries, F's form), once each, in the
+ * answer's order. `reads` are the issue read and the asks read, which `treeIdOf` names an
+ * issue's documents and an ask's block by.
+ */
+export function viewNodeIds(
+  answer: IssueTreeAnswer,
+  filter: TreeView,
+  reads: TreeIdReads
+): ViewNodeId[] {
+  const idOf = treeIdOf(answer, reads);
+  const kinds = R2_ROW_KINDS[filter];
+  const named = new Set<string>();
+  return answer.nodes.flatMap((node): ViewNodeId[] => {
+    const mark = node.mark === "query" ? "query" : "context";
+    const foreign = node.issue !== undefined && node.issue !== reads.issue.key;
+    const id = idOf(node.id);
+    if (foreign || !kinds[mark].includes(node.supertag) || named.has(id)) return [];
+    named.add(id);
+    return [{ id, mark }];
+  });
+}
+
+/** What `filter`'s control counts of its view read `answer`: the nodes of its main kind the
+ *  view's query took, each once (R2, dispatch://INFRA-4062 R4). */
+export function viewCount(answer: IssueTreeAnswer, filter: TreeView): number {
+  const kinds = R2_COUNTED_KINDS[filter];
+  return new Set(
+    answer.nodes.flatMap((node) =>
+      node.mark === "query" && kinds.includes(node.supertag) ? [node.id] : []
+    )
+  ).size;
+}
+
+/** How many reads of issue `key`'s tree `requests` hold for `view` (none for null): each read's
+ *  first page, a request that sends no cursor, since a read asks for its next pages itself. */
+export function treeReads(
+  requests: readonly ApiRequest[],
+  key: string,
+  view: TreeView | null
+): number {
+  return requests.filter((request) => {
+    const url = new URL(request.path, "http://requests.invalid");
+    return (
+      request.method === "GET" &&
+      url.pathname === treePath(key) &&
+      url.searchParams.get("view") === view &&
+      !url.searchParams.has("cursor")
+    );
+  }).length;
+}
+
+/** Every request of `requests` that is no page of a read of issue `key`'s view `view`, as its
+ *  method and path: what a press sent beside its view's own read. */
+export function besideViewRead(
+  requests: readonly ApiRequest[],
+  key: string,
+  view: TreeView
+): string[] {
+  return requests.flatMap((request) => {
+    const url = new URL(request.path, "http://requests.invalid");
+    const own =
+      request.method === "GET" &&
+      url.pathname === treePath(key) &&
+      url.searchParams.get("view") === view;
+    return own ? [] : [`${request.method} ${request.path}`];
+  });
+}
+
+/** The reads of a document's blocks (`GET /api/v1/artifacts/{id}/blocks`) `requests` hold, by
+ *  path. */
+export function blocksReads(requests: readonly ApiRequest[]): string[] {
+  return requests.flatMap((request) =>
+    request.method === "GET" && request.route === "/api/v1/artifacts/:id/blocks"
+      ? [request.path]
+      : []
+  );
+}
+
+/** The decisions read the page received: today's (`GET /api/v1/issues/{key}/decisions`), or once
+ *  INFRA-1253's t16c moves it, the tree read's view `?view=decisions`. */
+export type DecisionsRead =
+  | { readonly answer: IssueDecisions; readonly kind: "decisions" }
+  | { readonly answer: IssueTreeAnswer; readonly kind: "view" };
+
+/** What the page received of its decisions read. */
+export interface DecisionsReadWatch {
+  /** The newest answer, the view's where the page read the view; undefined before one came. */
+  read(): DecisionsRead | undefined;
+}
+
+/** Keeps the decisions read of issue `key` the page receives from now on, in either form. */
+export function decisionsReadOf(page: Page, key: string): DecisionsReadWatch {
+  const view = viewAnswerOf(page, "decisions");
+  const path = `/api/v1/issues/${encodeURIComponent(key)}/decisions`;
+  let newest: IssueDecisions | undefined;
+  page.on("response", (response) => {
+    const url = new URL(response.url());
+    if (response.request().method() !== "GET" || url.pathname !== path || !response.ok()) return;
+    void response.json().then(
+      (body: IssueDecisions) => {
+        newest = body;
+      },
+      () => undefined
+    );
+  });
+  return {
+    read: () => {
+      const answer = view.answer();
+      if (answer !== undefined) return { answer, kind: "view" };
+      return newest === undefined ? undefined : { answer: newest, kind: "decisions" };
+    },
+  };
+}
+
+/** When each decision of `read` last changed (`changed_at`), by every id a row may draw it by:
+ *  its block's id alone, and `<slug>#b-<block id>` for each of `slugs`, the slugs of the issue's
+ *  documents; for a decision node of a view, its own id and its document's form of it. */
+export function decisionTimes(
+  read: DecisionsRead | undefined,
+  slugs: readonly string[]
+): ReadonlyMap<string, string> {
+  const times = new Map<string, string>();
+  const at = (block: string, own: readonly string[], changed: unknown): void => {
+    if (typeof changed !== "string") return;
+    for (const id of [block, ...own, ...slugs.map((slug) => blockNode(slug, block))]) {
+      times.set(id, changed);
+    }
+  };
+  if (read?.kind === "decisions") {
+    for (const decision of read.answer.decisions ?? []) {
+      at(decision.block_id, [], decision.changed_at);
+    }
+  } else if (read?.kind === "view") {
+    for (const node of read.answer.nodes) {
+      if (node.supertag !== "decision") continue;
+      const own = node.document === undefined ? [] : [blockNode(node.document.slug, node.id)];
+      at(node.id, own, node.changed_at);
+    }
+  }
+  return times;
+}
+
+/** Whether the seed's decisions are nodes of the tree read `answer`: it holds a decision node of
+ *  this issue, and every decision the decisions read answers is one - a decision node of this
+ *  issue whose id is the decision's `block_id`, in the document the decision's `ref` names where
+ *  the node names its document - where a section of `decisions.md` is none. The check is this
+ *  file's own, so the page's matching of decisions to nodes can move under it. */
+export function decisionsAreNodes(
+  answer: IssueTreeAnswer,
+  read: DecisionsRead | undefined
+): boolean {
+  const own = new Map(
+    answer.nodes.flatMap((node) =>
+      node.supertag === "decision" && node.issue === undefined ? [[node.id, node] as const] : []
+    )
+  );
+  if (own.size === 0 || read === undefined) return false;
+  if (read.kind === "view") return true;
+  return (read.answer.decisions ?? []).every((decision) => {
+    const node = own.get(decision.block_id);
+    if (node === undefined) return false;
+    if (node.document === undefined) return true;
+    const route = parseNodeReference(decision.ref);
+    return route?.kind === "artifact" && route.slug === node.document.slug;
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// The gates: a row, or a clause in a row of its own, whose gate is not on T's base skips.
+// ---------------------------------------------------------------------------------------------
+
+/** One gate a row waits on: whether its probe found it on T's base, and what the row owes while
+ *  it is not, naming the gate, what the probe read and the decisions that make it owed. */
+export interface Gate {
+  readonly met: boolean;
+  readonly owed: string;
+}
+
+/** The decisions every owed row cites (INFRA-1196's 61, 127 and 135, as decision 170 reads them). */
+const OWED_BY = "decisions 61, 127, 135";
+
+/**
+ * Goes on where `gate` is met; where it is not, records an `owed` annotation naming it and skips
+ * the row, which then counts as skipped and never as passed (INFRA-1196 decision 170). Call it
+ * first thing a gate can be read, before the row asserts anything it waits on.
+ */
+export function owedUnless(gate: Gate): void {
+  if (gate.met) return;
+  test.info().annotations.push({ description: gate.owed, type: "owed" });
+  test.skip(true, gate.owed);
+}
+
+/** G1: INFRA-1253's t16a, the tree read, which answers 404 for issue `key` while the route is
+ *  absent. Read through the signed-in page's own request context. */
+export async function treeReadGate(page: Page, key: string): Promise<Gate> {
+  const response = await page.request.get(treePath(key));
+  return {
+    met: response.status() !== 404,
+    owed: `owed on G1: INFRA-1253's t16a (the tree read answers 404 here); ${OWED_BY}`,
+  };
+}
+
+/** G3: INFRA-1253's T12b, an issue born converted, which issue `key`'s tree read says it is. */
+export async function convertedGate(page: Page, key: string): Promise<Gate> {
+  const path = treePath(key);
+  const response = await page.request.get(path);
+  expect(response.ok(), `GET ${path} answers ${response.status()}`).toBe(true);
+  const { converted } = (await response.json()) as IssueTreeAnswer;
+  return {
+    met: converted === true,
+    owed: `owed on G3: INFRA-1253's T12b (the tree read answers converted: false here); ${OWED_BY}`,
+  };
+}
+
+/** G2: INFRA-1253's t16b and t16c, the decisions read moved onto the tree read: what the page
+ *  sent, `requests`, holds a read of issue `key`'s tree with `view=decisions`. */
+export function decisionsViewGate(requests: readonly ApiRequest[], key: string): Gate {
+  return {
+    met: treeReads(requests, key, "decisions") > 0,
+    owed:
+      "owed on G2: INFRA-1253's t16b and t16c (the page reads its decisions here with no " +
+      `view=decisions read of the tree); ${OWED_BY}`,
+  };
+}
+
+/** What the G5 probe and part U's read: the seed's decisions are sections of `decisions.md`. */
+const DECISIONS_ARE_SECTIONS =
+  "the seed's decisions are sections of decisions.md here, not nodes of the tree read";
+
+/** G5: INFRA-1150's T7, T8, T11 and T12 and part U's seed commit, which make the seeds'
+ *  decisions nodes of the tree read (`decisionsAreNodes`). */
+export function decisionNodesGate(answer: IssueTreeAnswer, read: DecisionsRead | undefined): Gate {
+  return {
+    met: decisionsAreNodes(answer, read),
+    owed:
+      "owed on G5: INFRA-1150's T7, T8, T11 and T12 and part U's seed commit " +
+      `(${DECISIONS_ARE_SECTIONS}); ${OWED_BY}`,
+  };
+}
+
+/** Part U, dispatch://INFRA-4097, once INFRA-1150's T8 is on T's base: the page draws the
+ *  decisions from the tree read's nodes, which the seeds then write (`decisionsAreNodes`). */
+export function partUGate(answer: IssueTreeAnswer, read: DecisionsRead | undefined): Gate {
+  return {
+    met: decisionsAreNodes(answer, read),
+    owed:
+      "owed on part U, dispatch://INFRA-4097, once INFRA-1150's T8 is on T's base " +
+      `(${DECISIONS_ARE_SECTIONS}); decisions 61, 109, 127, 135`,
+  };
+}
+
+/** How many frames the page's writer looks for its line in after a Reply (`outline-writer.tsx`:
+ *  ten after the first), and one more, as G's rows wait them out. */
+const WRITER_FRAMES = 12;
+
+/** Part L's line at the foot of the outline, which a row's Reply puts the caret in: once a Reply
+ *  was pressed, the focus is on a field the reader types in, inside the page. Part L draws the
+ *  line (`slots/foot.tsx` draws nothing until it does), and it is not under T's base. */
+export async function footLineGate(page: Page): Promise<Gate> {
+  for (let passed = 0; passed < WRITER_FRAMES; passed += 2) await nextFrames(page);
+  const met = await page.evaluate(() => {
+    const focused = document.activeElement;
+    return (
+      focused instanceof HTMLElement &&
+      focused.closest("[data-issue-page]") !== null &&
+      (focused.isContentEditable ||
+        focused.matches("textarea, input:not([type]), input[type=text]"))
+    );
+  });
+  return {
+    met,
+    owed:
+      "owed on part L's line at the foot of the outline (a Reply puts the caret in no line here: " +
+      `part L, which draws it, is not on T's base); ${OWED_BY}`,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// What the page draws beside the rows.
+// ---------------------------------------------------------------------------------------------
+
+/** The status control of the header part P draws (`header[data-issue-header]`), the one place the
+ *  new page draws the issue's own status: the outline draws no row for the issue. */
+export function headerStatus(page: Page): Locator {
+  return page
+    .locator("[data-issue-page] header[data-issue-header]")
+    .getByRole("combobox", { exact: true, name: "Status" });
+}
+
+/** One node a filter draws: a row, or a check's result inside its row (part V's Verification). */
+export interface DrawnNode {
+  /** Whether it is drawn as context (`data-node-context`). */
+  readonly context: boolean;
+  readonly id: string;
+  readonly type: string;
+}
+
+/** Every node the page draws with its id and its kind (`[data-node-id][data-node-type]`), in
+ *  drawing order: each row, and each result part V draws inside its check's row. */
+export function drawnNodes(page: Page): Promise<DrawnNode[]> {
+  return page.evaluate(() =>
+    Array.from(
+      document.querySelectorAll<HTMLElement>("[data-issue-page] [data-node-id][data-node-type]"),
+      (element) => ({
+        context: element.hasAttribute("data-node-context"),
+        id: element.dataset.nodeId ?? "",
+        type: element.dataset.nodeType ?? "",
+      })
+    )
+  );
 }

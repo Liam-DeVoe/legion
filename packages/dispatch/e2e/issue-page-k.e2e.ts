@@ -151,9 +151,9 @@ async function expectPlainView(page: Page, where: string): Promise<void> {
   ).toEqual([]);
 }
 
-/** Every read of a document's blocks, which the tree's tasks and statements are built from
- *  (`useIssueTree.ts`). */
-const BLOCKS_READ = "**/api/v1/artifacts/*/blocks";
+/** The tree read, which the tree's tasks and statements and the documents' blocks are built from
+ *  (`useIssueTree.ts`): its first page, with no view, of whatever issue it reads. */
+const BLOCKS_READ = "**/api/v1/issues/*/tree";
 
 /** R1 before the reads it needs answer: opened with every document's blocks read held, `path`
  *  draws no line saying the issue has no task and no switch, since a task is a block of the
@@ -206,7 +206,7 @@ async function expectNothingBeforeTheBlocks(page: Page, path: string): Promise<v
 async function expectChartAfterAFailedRead(page: Page, seeded: WholeIssueSeed): Promise<void> {
   let failed = 0;
   const fail = async (route: Route) => {
-    if (route.request().url().includes(seeded.planArtifactId)) failed += 1;
+    if (route.request().url().includes(`/issues/${seeded.key}/tree`)) failed += 1;
     await route.fulfill({ status: 500 });
   };
   await page.route(BLOCKS_READ, fail);

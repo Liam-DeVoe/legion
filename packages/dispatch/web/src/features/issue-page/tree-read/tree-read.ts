@@ -2,6 +2,7 @@ import {
   matchQuery,
   type QueryClient,
   type QueryFilters,
+  type QueryStatus,
   queryOptions,
   useQuery,
 } from "@tanstack/react-query";
@@ -13,8 +14,9 @@ import {
   type IssueTreeNode,
   type IssueTreeTuple,
 } from "../../../api/client";
-import type { ArtifactBlock, IssueDetails } from "../../../api/types";
-import { blocksOfRole } from "./tree-nodes";
+import { refreshQueries } from "../../../api/query-refresh";
+import type { IssueDetails } from "../../../api/types";
+import { blocksOfRole, type TreeBlock } from "./tree-nodes";
 
 /**
  * The issue's tree read (`GET /api/v1/issues/{key}/tree`, dispatch://INFRA-1253 R8): the one
@@ -74,40 +76,69 @@ export function mergeTreePages(pages: readonly [TreeAnswer, ...TreeAnswer[]]): T
  * the page before names (`cursor`), and the pages merged once the last answers, so the tree is
  * built once and never from part of the walk. A page that fails fails the read, and a read made
  * again - a refetch, a retry - starts from the first page, since a cursor names a place in the
- * walk as it stood when the page that gave it was answered.
+ * walk as it stood when the page that gave it was answered. A read TanStack gives up (`signal`:
+ * a reset, the last observer gone) ends its page in flight and asks for no next one.
  */
-async function readTree(key: string, view?: TreeView): Promise<TreeAnswer> {
-  const first = await api.getIssueTree(key, { view });
+async function readTree(
+  key: string,
+  view: TreeView | undefined,
+  signal: AbortSignal
+): Promise<TreeAnswer> {
+  const first = await api.getIssueTree(key, { view }, { signal });
   const pages: [TreeAnswer, ...TreeAnswer[]] = [first];
   let cursor = first.cursor;
   while (cursor !== null) {
-    const page = await api.getIssueTree(key, { cursor, view });
+    signal.throwIfAborted();
+    const page = await api.getIssueTree(key, { cursor, view }, { signal });
     pages.push(page);
     cursor = page.cursor;
   }
   return mergeTreePages(pages);
 }
 
+/**
+ * Window focus reads a query again only while its last answer failed, so a read that failed
+ * recovers on the open page while a healthy one stays quiet: the rule of `refetchFailedOnFocus`
+ * in `features/refs/reference-target.ts`, which that file keeps to itself.
+ */
+export const refetchFailedOnFocus = (query: {
+  readonly state: { readonly status: QueryStatus };
+}) => (query.state.status === "error" ? "always" : false);
+
+/**
+ * How the page's reads are kept fresh (dispatch://INFRA-1196 decision 180): by the events that
+ * can change them, never by age, so a slot the stage mounts again past the app's 30 s
+ * `staleTime` sends no read; only a read whose last answer failed is read again on focus. The
+ * tree read and its views take it, and so does every read of `useIssueTree` that an event
+ * refreshes.
+ */
+export const REFRESHED_BY_EVENTS = {
+  refetchOnWindowFocus: refetchFailedOnFocus,
+  staleTime: Number.POSITIVE_INFINITY,
+} as const;
+
 /** The issue's whole tree, one query over every page (`readTree`). */
 export const issueTreeQuery = (key: string) =>
   queryOptions({
+    ...REFRESHED_BY_EVENTS,
     queryKey: issueTreeKey(key),
-    queryFn: () => readTree(key),
+    queryFn: ({ signal }) => readTree(key, undefined, signal),
   });
 
 /** One view of the issue's tree, one query over every page (`readTree`). A plain query rather
  *  than one per page, so an observer that is never enabled can watch a view a slot read. */
 export const viewQuery = (key: string, view: TreeView) =>
   queryOptions({
+    ...REFRESHED_BY_EVENTS,
     queryKey: viewKey(key, view),
-    queryFn: () => readTree(key, view),
+    queryFn: ({ signal }) => readTree(key, view, signal),
   });
 
 /** One role's blocks from the tree read, answered as the blocks read of that role's document
  *  answered them (`artifactBlocksQuery`), so a caller's lines that read these members stay as
  *  they are. The state is the tree read's own. */
 export interface TreeBlocksRead {
-  readonly data: ArtifactBlock[] | undefined;
+  readonly data: TreeBlock[] | undefined;
   readonly isError: boolean;
   readonly isSuccess: boolean;
   readonly refetch: () => Promise<unknown>;
@@ -184,10 +215,16 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
  * `["issue-messages", key, …]`) is invalidated - a page write's `invalidateQueries`, and an
  * event's own refresh (`api/query-refresh.ts`' `owe`), whose targets name `["issue", key]` for
  * every event of the issue, a Keep's included (`api/event-refresh.ts`) - or written by
- * `setQueryData` - a status change writes that way (TanStack's `success` action with `manual`) -
- * it reads the tree again and drops every view, the decisions view among them, so a held one is
- * gone and the one a slot has on is read again. Every such change of one turn is one refresh,
- * made in the microtask after it.
+ * `setQueryData` - a status change writes that way (TanStack's `success` action with `manual`),
+ * so such a write refreshes the tree while the live feed is down too - it reads the tree again
+ * and drops every view, the decisions view among them, so a held one is gone and the one a slot
+ * has on is read again. Every such change of one turn is one refresh, made in the microtask
+ * after it.
+ *
+ * The tree is read again through the app's refresh scheduler (`refreshQueries`), which never
+ * cancels a read in flight - a walk of many pages is not started over by each event of a burst -
+ * and starts one at most once a second; so a write and the event it raises read the tree once or
+ * twice, never more.
  *
  * The tree's and the views' own keys are no query of the issue, and what its own calls raise is
  * ignored (`calling`), so a refresh never starts another. Nothing is refreshed before the tree
@@ -209,7 +246,7 @@ export function subscribeTreeFreshness(queryClient: QueryClient, key: string): (
     if (stopped) return;
     calling = true;
     try {
-      void queryClient.invalidateQueries({ exact: true, queryKey: issueTreeKey(key) });
+      refreshQueries(queryClient, [{ exact: true, queryKey: issueTreeKey(key) }]);
       for (const view of TREE_VIEWS) {
         void queryClient.resetQueries({ exact: true, queryKey: viewKey(key, view) });
       }

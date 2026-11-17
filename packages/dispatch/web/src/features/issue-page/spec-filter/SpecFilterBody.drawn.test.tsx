@@ -7,7 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
 import { api } from "../../../api/client";
-import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
+import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type { Actor, CheckBlock, IssueCheckResults } from "../../../api/types";
 import { pageFocusedRow } from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
@@ -32,7 +32,14 @@ import {
 import { presetView } from "../presets";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "../reference-names";
 import { decisionBehind } from "../tree-keys";
-import { type TreeAnswerNode, type TreeTuple, viewKey, viewQuery } from "../tree-read/tree-read";
+import {
+  issueTreeQuery,
+  type TreeAnswer,
+  type TreeAnswerNode,
+  type TreeTuple,
+  viewKey,
+  viewQuery,
+} from "../tree-read/tree-read";
 import { check, checkNode, result } from "../verification-filter/verification-fixtures";
 import { SpecFilterBody } from "./SpecFilterBody";
 import {
@@ -113,15 +120,29 @@ function HeldView({
 /** How one of the page's reads stands when the body is drawn. */
 type ReadState = "answered" | "failed" | "out";
 
+/** The two reads the body's tree comes through `getIssueTree` for, by what they ask: the tree
+ *  read with no view (`blocks`), which holds the spec's and the Verification document's blocks,
+ *  and the Spec view read (`specView`, `view: "spec"`), which the column's decisions come from. */
+type TreeRead = "blocks" | "specView";
+
 /** The spies on the page's reads that the body reads, so a case can answer one again. */
 interface Reads {
-  readonly blocks: Mock<typeof api.getArtifactBlocks>;
   readonly coverage: Mock<typeof api.getIssueCoverage>;
   readonly results: Mock<typeof api.getIssueResults>;
-  /** The Spec view read (`?view=spec`), which the column's decisions come from. */
-  readonly specView: Mock<typeof api.getIssueTree>;
+  /** The one `getIssueTree`, which answers each read by the view it asks for. */
+  readonly tree: Mock<typeof api.getIssueTree>;
+  /** Makes one read through `tree` stand as `state` says from then on: answered as the case
+   *  answered it, failed, or never answering. */
+  readonly treeStands: (read: TreeRead, state: ReadState) => void;
   /** Puts every read back as it was. */
   readonly mockRestore: () => void;
+}
+
+/** What a read that stands as `state` gives back: `answer`, a failure, or nothing ever. */
+function answerAs<T>(state: ReadState, answer: T): Promise<T> {
+  if (state === "answered") return Promise.resolve(answer);
+  if (state === "failed") return Promise.reject(new Error("offline"));
+  return new Promise<never>(() => {});
 }
 
 /** The results read over `checks`, as the page's read answers it. */
@@ -129,16 +150,27 @@ function resultsOf(checks: readonly CheckBlock[]): IssueCheckResults {
   return { checks: [...checks], issue: KEY, verification_artifact_id: "" };
 }
 
+/** The tree read's answer with no node in it: each case draws the tree it is given, and the body
+ *  reads from this read only whether the documents' blocks are in. */
+const NO_NODES: TreeAnswer = {
+  converted: false,
+  cursor: null,
+  nodes: [],
+  tree: null,
+  tuples: [],
+  view_of: null,
+};
+
 beforeAll(async () => {
   await warmMarkdownRenderer();
 });
 
 /** The body over `tree`, with `made` as the nodes of the Spec view read's answer, `tuples` as
  *  that answer's tuples and `asks` as the issue's asks read, and `checks` as its results read.
- *  `specView`, `results`, `coverage` and `blocks` (the spec's) each say how that read stands -
+ *  `specView`, `results`, `coverage` and `blocks` (the tree read) each say how that read stands -
  *  answered, failed, or still out - and each is answered unless a case says so; the Spec view
  *  read is held as the page holds it (`HeldView`). `verification`, where a case names it, gives
- *  the issue a Verification document whose blocks read stands so; `names` is what the page's
+ *  the issue a Verification document and the tree read stands so; `names` is what the page's
  *  batched reference read named. The page's provider of the Contents list's requests stands
  *  above the body, so `request` is taken as the page takes it; `redraw(false)` takes the body
  *  off the page and `redraw(true)` draws a new one under the same provider, as the view turned
@@ -195,10 +227,9 @@ function drawBody(
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   const spies = {
-    blocks: spyOn(api, "getArtifactBlocks"),
     coverage: spyOn(api, "getIssueCoverage"),
     results: spyOn(api, "getIssueResults"),
-    specView: spyOn(api, "getIssueTree"),
+    tree: spyOn(api, "getIssueTree"),
   };
   /** Leaves one read as `state` says: answered by `answer`, failed, or never answering. */
   const settle = (
@@ -213,11 +244,28 @@ function drawBody(
     else if (state === "failed") spy.mockRejectedValue(new Error("offline"));
     else spy.mockReturnValue(new Promise<never>(() => {}));
   };
-  settle(specView, spies.specView, () => {
-    const answer = specViewAnswer(made, tuples);
-    client.setQueryData(viewKey(KEY, "spec"), answer);
-    spies.specView.mockResolvedValue(answer);
+  // The tree read holds the blocks of the spec and of the Verification document alike, so where
+  // a case names `verification` that read stands as it says; the Spec view read stands as
+  // `specView` says. Each one answered is held under its key as the page holds it.
+  const treeAnswers: Readonly<Record<TreeRead, TreeAnswer>> = {
+    blocks: NO_NODES,
+    specView: specViewAnswer(made, tuples),
+  };
+  const treeStanding: Record<TreeRead, ReadState> = { blocks: verification ?? blocks, specView };
+  spies.tree.mockImplementation((_key, query) => {
+    const asked =
+      query?.view === undefined ? "blocks" : query.view === "spec" ? "specView" : undefined;
+    if (asked === undefined) {
+      return Promise.reject(new Error(`the body read the ${query?.view} view`));
+    }
+    return answerAs(treeStanding[asked], treeAnswers[asked]);
   });
+  if (treeStanding.blocks === "answered") {
+    client.setQueryData(issueTreeQuery(KEY).queryKey, treeAnswers.blocks);
+  }
+  if (treeStanding.specView === "answered") {
+    client.setQueryData(viewKey(KEY, "spec"), treeAnswers.specView);
+  }
   // The issue's asks, which say which question a person answered (`decisionNodes`).
   client.setQueryData(["asks", KEY], [...asks]);
   settle(results, spies.results, () => {
@@ -228,29 +276,13 @@ function drawBody(
     client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
     spies.coverage.mockResolvedValue(coverageRead([]));
   });
-  settle(blocks, spies.blocks, () => {
-    client.setQueryData(artifactBlocksQuery(issue.primary_artifact_id).queryKey, []);
-    spies.blocks.mockResolvedValue([]);
-  });
-  if (verification !== undefined) {
-    // The Verification document's blocks, which the page reads for the checks under each
-    // statement, stand as `verification` says, and every other document's as `blocks` says.
-    if (verification === "answered") {
-      client.setQueryData(artifactBlocksQuery("artifact-ver").queryKey, []);
-    }
-    spies.blocks.mockImplementation((id) => {
-      const state = id === "artifact-ver" ? verification : blocks;
-      return state === "answered"
-        ? Promise.resolve([])
-        : state === "failed"
-          ? Promise.reject(new Error("offline"))
-          : new Promise<never>(() => {});
-    });
-  }
   const read: Reads = {
     ...spies,
     mockRestore: () => {
       for (const spy of Object.values(spies)) spy.mockRestore();
+    },
+    treeStands: (asked, state) => {
+      treeStanding[asked] = state;
     },
   };
   const page = (drawn: boolean): ReactNode => (
@@ -1383,7 +1415,7 @@ test("a read that fails again over the answer the page holds keeps every mark an
     );
     read.results.mockRejectedValue(new Error("offline"));
     read.coverage.mockRejectedValue(new Error("offline"));
-    read.blocks.mockRejectedValue(new Error("offline"));
+    read.treeStands("blocks", "failed");
     await act(async () => {
       await client.invalidateQueries();
     });
@@ -1416,7 +1448,7 @@ test("a read that fails again over the statements and decisions the page holds k
       EMPTY_STATE_LINES.spec
     );
     empty.read.coverage.mockRejectedValue(new Error("offline"));
-    empty.read.blocks.mockRejectedValue(new Error("offline"));
+    empty.read.treeStands("blocks", "failed");
     await act(async () => {
       await empty.client.invalidateQueries();
     });
@@ -1435,7 +1467,7 @@ test("a read that fails again over the statements and decisions the page holds k
   const { client, read, view } = drawBody(issueTree([statement("r1")]));
   try {
     expect(view.container.querySelector("[data-spec-nothing]")).not.toBeNull();
-    read.specView.mockRejectedValue(new Error("offline"));
+    read.treeStands("specView", "failed");
     await act(async () => {
       await client.resetQueries({ exact: true, queryKey: viewKey(KEY, "spec") });
     });
@@ -1462,7 +1494,7 @@ test("Retry over a failed read of the Verification document's blocks reads them 
   try {
     const alert = await waitFor(() => alertSaying(view, ANSWER_LINES.results_unreadable));
     expect(rowOf(view, "spec#b-r1").hasAttribute("data-spec-mark")).toBe(false);
-    read.blocks.mockResolvedValue([]);
+    read.treeStands("blocks", "answered");
     await user.click(within(alert).getByRole("button", { name: "Retry" }));
     await waitFor(() =>
       expect(rowOf(view, "spec#b-r1").getAttribute("data-spec-mark")).toBe("met")
