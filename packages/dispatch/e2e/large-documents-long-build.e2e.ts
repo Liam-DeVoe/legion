@@ -331,13 +331,15 @@ async function watchThePageMove(page: Page): Promise<ThePageMoving> {
  * name once `stalledAfterMs` has passed since the last such step - or since the wait began,
  * before any. `reaching` carries the most the leg the row runs in leaves the wait however
  * steadily the page moves (`theRoomTheLegLeaves`), with its own message for running out, which
- * this adds the page's last step to.
+ * this adds the page's last step to. `givingUp` is the row's own reason to stop waiting, which
+ * ends the wait with whatever it rejects with, as it is.
  */
 async function whileThePageMoves<T>(
   reaching: Promise<T>,
   moving: ThePageMoving,
   counts: (step: string) => boolean,
-  { stalledAfterMs, stopped, what }: { stalledAfterMs: number; stopped: string; what: string }
+  { stalledAfterMs, stopped, what }: { stalledAfterMs: number; stopped: string; what: string },
+  givingUp?: Promise<never>
 ): Promise<{ longestQuiet: string; reached: T }> {
   const began = Date.now();
   const heard = (): HeardStep[] =>
@@ -373,6 +375,7 @@ async function whileThePageMoves<T>(
         );
       }),
       stalled.promise,
+      ...(givingUp === undefined ? [] : [givingUp]),
     ]);
     const steps = [{ at: began, step: "the wait's start" }, ...heard()];
     const gaps = steps.map((step, index) => ({
@@ -668,7 +671,20 @@ test(`another person's edit reaches ${documentNames.large} while its editor is b
 // layout it has just done, and the draw is indexed once rather than scanned in each batch
 // (`takesTheBuiltBlocks`). This row is what keeps that: the build's own time over the whole
 // drawn document, against the build's own time over a screenful, measured one after the other
-// in one run so the pod's own load is the same for both.
+// in one run.
+//
+// The row holds that ratio in `iphone-long-build-alone` alone (`theRatioIsHeldIn`), and in a
+// `chromium` shard leg it takes the same two builds through the same waits and prints the
+// ratio without holding it. The claim is about the page, and only a reading the load is no part
+// of says anything about the page: this tree moved R11's measuring rows to
+// `iphone-measure-alone` for the same reason. Beside the full lane's shard 3 of 4 with three
+// workers on two CPUs, the ratio of two builds read the shard's other workers as well as the
+// page, whatever shape the readings took (dispatch://INFRA-341, R16): one pair failed it in 1 run
+// of 50 (3.49 times); the medians of three pairs taken in turn in none of 50, with 5 of the 50
+// past the row's deadline; the fastest of two pairs in 3 of 50 (up to 3.22); and one pair after
+// a warm-up build in 6 of 50 (up to 3.26), the warm-up slower than the screenful build after it
+// in all 50. The phone's leg runs one worker alone on a machine of its own, so what its two
+// builds read is the page.
 
 /** How many times longer the build over a page holding the whole drawn document may take than
  *  the build over a page holding one screenful. A page carrying the whole draw beside the
@@ -677,6 +693,21 @@ test(`another person's edit reaches ${documentNames.large} while its editor is b
  *  on this pod. Measured at 1.6 to 2.2 times over the runs this row was written against. */
 const theSameRangeTimes = 3;
 
+/** The one project the row holds the ratio in: the leg that runs alone on a machine of its own
+ *  (the comment above this file's last row says why). */
+const theRatioIsHeldIn = "iphone-long-build-alone";
+
+/** What a whole build the row stopped waiting for ends its wait with, through
+ *  `whileThePageMoves`: it had run past the bar the row holds it to, as long as `atLeastMs`. */
+class TheBuildIsPastTheBar extends Error {
+  readonly atLeastMs: number;
+
+  constructor(atLeastMs: number) {
+    super(`the build had run past the bar, ${atLeastMs} ms into it`);
+    this.atLeastMs = atLeastMs;
+  }
+}
+
 /** How long one editor's build took, on the page's own clock, and how long this side went
  *  without a step of what each wait counted: the readings `thePageStallsAfterMs` is sized from,
  *  printed by the row so each run adds to them. */
@@ -684,18 +715,26 @@ interface TheBuildsTime {
   /** When the reader first had a block of the editor's own in the viewport, which is its
    *  first batch. */
   readonly firstBlockMs: number;
-  /** When the editor opened: its last batch in and its binding live. */
-  readonly openedMs: number;
-  /** The build itself: the time between the two. */
+  /** When the editor opened: its last batch in and its binding live; `undefined` for a build the
+   *  row gave up. */
+  readonly openedMs: number | undefined;
+  /** The build itself: the time between the two. For a build the row gave up, the least it
+   *  took: from its first block to the last batch this side heard land, since the editor cannot
+   *  have opened before its last batch. */
   readonly buildMs: number;
+  /** Whether the row stopped waiting for this build once it had run past its bar. */
+  readonly givenUp: boolean;
+  /** On this side's clock, from the row asking for the build until the build was over, which
+   *  the row prints with it: the room a build takes of the leg, beside the build's own time. */
+  readonly tookMs: number;
   /** The longest gap between steps of the page's own draw, over the wait for it to be whole;
    *  `undefined` for a build whose socket is not held, which waits for no draw. */
   readonly drawQuiet: string | undefined;
   /** The longest gap between steps of the page's opening, over the wait for the first block. */
   readonly openingQuiet: string;
   /** The longest gap between batches, over the wait for the editor to open, the last batch's
-   *  way to that opening included. */
-  readonly buildQuiet: string;
+   *  way to that opening included; `undefined` for a build the row gave up. */
+  readonly buildQuiet: string | undefined;
 }
 
 /**
@@ -707,16 +746,23 @@ interface TheBuildsTime {
  * which is what a reader whose socket answers at once gets. Both numbers are announcements
  * the page makes, so neither is a reading this side takes. Each wait goes on while the page
  * keeps moving (`whileThePageMoves`), for what `within` leaves it at the most
- * (`theRoomTheLegLeaves`).
+ * (`theRoomTheLegLeaves`). With `givesUpPastMs`, the build is given up once a batch lands later
+ * than that after its first block, and answered with how long it had at least run.
  */
 async function theBuildsTime(
   browser: Browser,
   path: string,
   {
+    givesUpPastMs,
     overTheWholeDraw,
     within,
-  }: { overTheWholeDraw?: number; within: (phonesLegMs: number) => number }
+  }: {
+    givesUpPastMs?: number;
+    overTheWholeDraw?: number;
+    within: (phonesLegMs: number) => number;
+  }
 ): Promise<TheBuildsTime> {
+  const asked = Date.now();
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -758,25 +804,72 @@ async function theBuildsTime(
       () => true,
       theOpeningStopped
     );
-    const opened = await whileThePageMoves(
-      reached.editorOpened(
-        within(overTheWholeDraw === undefined ? buildTimeoutMs : theDrawnBuildTimeoutMs)
-      ),
-      moving,
-      (step) => step === "batch",
-      theBuildStalled
-    );
-    return {
-      buildMs: opened.reached - first.reached.at,
-      buildQuiet: opened.longestQuiet,
-      drawQuiet,
-      firstBlockMs: first.reached.at,
-      openedMs: opened.reached,
-      openingQuiet: first.longestQuiet,
-    };
+    const firstHeardAt = Date.now();
+    const givingUp = Promise.withResolvers<never>();
+    // Looked at once a second because a batch lands every few hundred milliseconds to a few
+    // seconds under load, so a second is the most this side lets a build run past its bar.
+    const looking =
+      givesUpPastMs === undefined
+        ? undefined
+        : setInterval(() => {
+            const lastBatch = moving.steps.filter(({ step }) => step === "batch").at(-1);
+            const atLeastMs = Math.max(0, (lastBatch?.at ?? firstHeardAt) - firstHeardAt);
+            if (atLeastMs > givesUpPastMs) {
+              givingUp.reject(new TheBuildIsPastTheBar(atLeastMs));
+            }
+          }, 1_000);
+    const read = { drawQuiet, firstBlockMs: first.reached.at, openingQuiet: first.longestQuiet };
+    try {
+      const opened = await whileThePageMoves(
+        reached.editorOpened(
+          within(overTheWholeDraw === undefined ? buildTimeoutMs : theDrawnBuildTimeoutMs)
+        ),
+        moving,
+        (step) => step === "batch",
+        theBuildStalled,
+        looking === undefined ? undefined : givingUp.promise
+      );
+      return {
+        ...read,
+        buildMs: opened.reached - first.reached.at,
+        buildQuiet: opened.longestQuiet,
+        givenUp: false,
+        openedMs: opened.reached,
+        tookMs: Date.now() - asked,
+      };
+    } catch (error) {
+      if (!(error instanceof TheBuildIsPastTheBar)) {
+        throw error;
+      }
+      return {
+        ...read,
+        buildMs: error.atLeastMs,
+        buildQuiet: undefined,
+        givenUp: true,
+        openedMs: undefined,
+        tookMs: Date.now() - asked,
+      };
+    } finally {
+      clearInterval(looking);
+    }
   } finally {
     await alice.close();
   }
+}
+
+/** One build as the row prints it: its time, how it opened and what the page went longest
+ *  without on the way. */
+function theReading(build: TheBuildsTime): string {
+  const built = build.givenUp
+    ? `over ${Math.round(build.buildMs)} ms (given up past the bar)`
+    : `${Math.round(build.buildMs)} ms`;
+  const opened = build.openedMs === undefined ? "never" : `${Math.round(build.openedMs)} ms`;
+  const draw = build.drawQuiet === undefined ? "" : `draw ${build.drawQuiet}, `;
+  return (
+    `${built} (first block ${Math.round(build.firstBlockMs)} ms, editor open ${opened}, ` +
+    `${Math.round(build.tookMs)} ms from the row asking for it; longest quiet: ${draw}opening ` +
+    `${build.openingQuiet}, build ${build.buildQuiet ?? "given up"})`
+  );
 }
 
 test(`${documentNames.large}'s editor builds over the whole drawn document in the time it takes over one screenful @phone`, async ({
@@ -789,27 +882,32 @@ test(`${documentNames.large}'s editor builds over the whole drawn document in th
   expect(whole).toBeGreaterThan(900);
 
   // One screenful first, because that is the build the two measuring rows are held to: a pod
-  // that has grown slower since would show it there before it showed it in the ratio.
+  // that has grown slower since would show it there before it showed it in the ratio. Where the
+  // ratio is held, the whole build is given up once it has run past the bar, since it fails the
+  // ratio whatever it would have gone on to take: a build that scales with the page ends on the
+  // ratio rather than on its wait. Elsewhere it is waited for whole, and only printed.
+  const holdsTheRatio = testInfo.project.name === theRatioIsHeldIn;
   const screenful = await theBuildsTime(browser, path, { within });
-  const drawn = await theBuildsTime(browser, path, { overTheWholeDraw: whole, within });
+  const drawn = await theBuildsTime(browser, path, {
+    givesUpPastMs: holdsTheRatio ? screenful.buildMs * theSameRangeTimes : undefined,
+    overTheWholeDraw: whole,
+    within,
+  });
   console.log(
-    `R11 build time · over one screenful ${Math.round(screenful.buildMs)} ms ` +
-      `(first block ${Math.round(screenful.firstBlockMs)} ms, editor open ` +
-      `${Math.round(screenful.openedMs)} ms); over the whole drawn document ` +
-      `(${whole} blocks) ${Math.round(drawn.buildMs)} ms (first block ` +
-      `${Math.round(drawn.firstBlockMs)} ms, editor open ${Math.round(drawn.openedMs)} ms); ` +
-      `${(drawn.buildMs / screenful.buildMs).toFixed(2)} times, against ${theSameRangeTimes}. ` +
-      `Longest quiet, over one screenful: opening ${screenful.openingQuiet}, build ` +
-      `${screenful.buildQuiet}; over the whole drawn document: draw ${drawn.drawQuiet}, ` +
-      `opening ${drawn.openingQuiet}, build ${drawn.buildQuiet}.`
+    `R11 build time · over one screenful ${theReading(screenful)}; over the whole drawn ` +
+      `document (${whole} blocks) ${theReading(drawn)}; ` +
+      `${(drawn.buildMs / screenful.buildMs).toFixed(2)} times, against ${theSameRangeTimes}, ` +
+      `${holdsTheRatio ? "held here" : `held in ${theRatioIsHeldIn} alone, not here`}.`
   );
 
   expect(screenful.buildMs).toBeGreaterThan(0);
   expect(drawn.buildMs).toBeGreaterThan(0);
-  expect(
-    drawn.buildMs,
-    "the editor took far longer to build over a page holding the whole drawn document than " +
-      "over one holding a screenful, for the same blocks in the same batches: the build is " +
-      "paying for what the page already holds once per batch again"
-  ).toBeLessThanOrEqual(screenful.buildMs * theSameRangeTimes);
+  if (holdsTheRatio) {
+    expect(
+      drawn.buildMs,
+      "the editor took far longer to build over a page holding the whole drawn document than " +
+        "over one holding a screenful, for the same blocks in the same batches: the build is " +
+        "paying for what the page already holds once per batch again"
+    ).toBeLessThanOrEqual(screenful.buildMs * theSameRangeTimes);
+  }
 });
