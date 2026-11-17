@@ -171,6 +171,9 @@ type finishedIssueRead struct {
 	Title    string    `json:"title"`
 	ClosedAt time.Time `json:"closed_at"`
 	Plan     *struct {
+		ID         string  `json:"id"`
+		Issue      string  `json:"issue"`
+		Generation uint64  `json:"generation"`
 		Source     string  `json:"source"`
 		ArtifactID *string `json:"artifact_id"`
 		Version    *int    `json:"version"`
@@ -197,9 +200,11 @@ func failedStepsSay(issue string, got, want int) string {
 }
 
 // plansHold says whether read lists exactly the issues of want, newest close first, each closed,
-// with the default plan, its rating with its reason on its retro's record (or none), its count of
-// failed steps, and its time: the earliest start and the latest end of the records of its steps,
-// and their difference in whole seconds. The error names the first issue that is missing or wrong.
+// with the default plan of its own run (the plan node the daemon wrote for that issue and the
+// generation of its records, workflow.PlanID, so no two issues list one plan), its rating with its
+// reason on its retro's record (or none), its count of failed steps, and its time: the earliest
+// start and the latest end of the records of its steps, and their difference in whole seconds. The
+// error names the first issue that is missing or wrong.
 func plansHold(read projectPlansRead, want []ratedWant) error {
 	if len(read.Issues) != len(want) {
 		return fmt.Errorf("the read lists %d finished issues, want %d", len(read.Issues), len(want))
@@ -209,22 +214,30 @@ func plansHold(read projectPlansRead, want []ratedWant) error {
 			return fmt.Errorf("%s closed at %s is listed after %s closed at %s, want the newest close first", after.Issue, after.ClosedAt, before.Issue, before.ClosedAt)
 		}
 	}
+	plans := map[string]string{}
 	for _, w := range want {
 		at := slices.IndexFunc(read.Issues, func(listed finishedIssueRead) bool { return listed.Issue == w.issue })
 		if at < 0 {
 			return fmt.Errorf("the read lists no %s", w.issue)
 		}
 		got := read.Issues[at]
+		retro := w.steps.find("retro", 0, 1)
 		switch plan := got.Plan; {
 		case got.ClosedAt.IsZero():
 			return fmt.Errorf("%s is listed with no close", w.issue)
 		case plan == nil:
 			return fmt.Errorf("%s lists no plan, want the default plan", w.issue)
+		case plan.Issue != w.issue || plan.Generation != retro.Generation || plan.ID != workflow.PlanID(w.issue, retro.Generation):
+			return fmt.Errorf("%s lists the plan %s of %s at generation %d, want its own, %s of %s at the generation of its records, %d",
+				w.issue, plan.ID, plan.Issue, plan.Generation, workflow.PlanID(w.issue, retro.Generation), w.issue, retro.Generation)
+		case plans[plan.ID] != "":
+			return fmt.Errorf("%s lists the plan %s, which %s lists too", w.issue, plan.ID, plans[plan.ID])
 		case plan.Source != "default" || plan.ArtifactID != nil || plan.Version != nil || len(plan.Tasks) != 1 ||
 			plan.Tasks[0].ID != "default" || !slices.Equal(plan.Tasks[0].Steps, workflow.DefaultSteps()):
 			return fmt.Errorf("%s lists the plan %+v, want source default with no document and the one task default of %v", w.issue, *plan, workflow.DefaultSteps())
+		default:
+			plans[plan.ID] = w.issue
 		}
-		retro := w.steps.find("retro", 0, 1)
 		switch {
 		case w.rating == 0 && len(got.Ratings) != 0:
 			return fmt.Errorf("%s lists the ratings %+v, want none", w.issue, got.Ratings)
