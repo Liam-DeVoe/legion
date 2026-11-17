@@ -385,7 +385,8 @@ const outDir = "the directory --out (or AGENT_SECRETS_KEY_DIR) names"
 // and content that is no PEM file, no PKCS#8 key or no ECDSA key is refused in this function's
 // own fixed text, never in the parser's words about the key's bytes. It parses the key itself
 // rather than through main.go's parseKeyPEM, so what it prints depends on no other function's
-// wrapping. dispatch://INFRA-4152 merges it with main.go's loadKey after the stack lands.
+// wrapping. It merges with main.go's loadKey once the open agent-secrets stack, which owns
+// main.go, has landed.
 func loadOutKey(path string) (*ecdsa.PrivateKey, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
