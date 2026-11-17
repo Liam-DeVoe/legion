@@ -380,11 +380,11 @@ func TestAcceptingAndAMergeGitHubMadeGetAStart(t *testing.T) {
 }
 
 // The acceptance of a child is its tree's architect's work, not an architect of the child's own:
-// the record of step 5 names the root's architect token, and the session and the model the daemon
-// reads of that token, at the start the review's approval writes and at the end the sign-off
-// writes, and so does the end of a run of accepting the release before started, which no start
-// counted. Each architect answers with a session and a model of its own, so a record that named
-// the child's architect would carry the child's.
+// the record of step 5 names the root's architect token at the start the review's approval writes
+// and at the end the sign-off writes, and the end names the session and the model the daemon reads
+// of that token (the start names neither: startStep); so does the end of a run of accepting the
+// release before started, which no start counted. Each architect answers with a session and a
+// model of its own, so a record that named the child's architect would carry the child's.
 func TestAChildsAcceptanceIsItsTreeArchitects(t *testing.T) {
 	architect, own := treeRoleToken(t, "LEGION-208", claim.RoleArchitect), treeRoleToken(t, "LEGION-209", claim.RoleArchitect)
 	reads := map[string]StepAgent{
@@ -417,6 +417,12 @@ func TestAChildsAcceptanceIsItsTreeArchitects(t *testing.T) {
 		t.Helper()
 		if w.Agent != architect || w.Agent == own || w.Role != "acceptance" || w.Generation != 3 {
 			t.Fatalf("the record of LEGION-209's acceptance = %+v, want agent %s, the tree's architect, not the child's %s", w, architect, own)
+		}
+		if !isEnd(w) {
+			if w.Session != nil || w.Model != nil {
+				t.Fatalf("the start of LEGION-209's acceptance names session %v and model %v, want neither: the end names the pair", w.Session, w.Model)
+			}
+			return
 		}
 		if w.Session == nil || *w.Session != "ses-root-architect" {
 			t.Fatalf("the record of LEGION-209's acceptance names session %v, want the tree architect's ses-root-architect", w.Session)
