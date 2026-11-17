@@ -38,7 +38,11 @@
 # (n) wait_for_window prints the window start of a step that opens its window, not the zero time
 # its meta.json holds until then, never takes the window of an earlier run left in the step's
 # directory, and returns non-zero within a second of the end of a step that ends without a window,
-# giving its not-run record's exit status and reason, or saying that it left none.
+# giving its not-run record's exit status and reason, or saying that it left none; (o) the pin's
+# check (check_cpu_affinity, its timings faked) passes on a try after two that fall short, refuses
+# after three that fall short naming all three, keeps no verdict of a pin that does not bind, keeps
+# one that binds for the later steps of the same boot, which take it without measuring, and
+# measures again on a boot whose id differs or cannot be read.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -623,6 +627,80 @@ case_cpu_affinity() {
   printf 'PASS: a pin that does not slow two busy loops 1.6x is refused, with the measurement and gVisor when it shows\n'
 }
 
+# affinity_with ROOT BOOT TIMES...: check_cpu_affinity on ROOT under LOADTEST_SERVER_CPUS=0, with
+# LOADTEST_BOOT_ID_FILE holding BOOT (no file when BOOT is -) and busy_pair_seconds faked: its Nth
+# call prints the Nth of TIMES, which go unpinned then pinned, try after try, and each call appends
+# its arguments to pair-calls. Sets rc, out (what it printed) and calls (the count of fake calls).
+affinity_with() {
+  local root=$1 boot=$2 boot_file="${temporary_dir}/boot_id"
+  shift 2
+  printf '%s\n' "$@" >"${temporary_dir}/pair-times"
+  : >"${temporary_dir}/pair-calls"
+  if [[ $boot == - ]]; then rm -f "$boot_file"; else printf '%s\n' "$boot" >"$boot_file"; fi
+  rc=0
+  out=$(env -u LOADTEST_GENERATOR_CPUS -u LOADTEST_GOMAXPROCS LOADTEST_SERVER_CPUS=0 LOADTEST_ROOT="$root" \
+    LOADTEST_BOOT_ID_FILE="$boot_file" PAIR_TIMES="${temporary_dir}/pair-times" PAIR_CALLS="${temporary_dir}/pair-calls" \
+    bash -c 'source "$1"
+      busy_pair_seconds() {
+        local n
+        n=$(wc -l <"$PAIR_CALLS")
+        printf "%s\n" "$*" >>"$PAIR_CALLS"
+        awk -v n="$((n + 1))" "NR == n" "$PAIR_TIMES"
+      }
+      resolve_paths
+      check_cpu_affinity' affinity "$helper" 2>&1) || rc=$?
+  calls=$(wc -l <"${temporary_dir}/pair-calls")
+}
+
+# case_affinity_kept_verdict: a step that follows another on the same stack measures the pin on a
+# box still busy with what that step left, and a pin that binds then reads short of the 1.6x bar
+# (a runc bed after a 10x step: 1.39 s pinned against 1.13 s unpinned, 1.23x). So the check tries
+# three times, and a verdict that the pin binds is kept in the root for the rest of the boot.
+case_affinity_kept_verdict() {
+  out=""
+  local root="${temporary_dir}/root-o" refused_root="${temporary_dir}/root-o-refused" kept
+  local boot_a=0f1e2d3c-0000-4000-8000-00000000000a boot_b=0f1e2d3c-0000-4000-8000-00000000000b
+  mkdir -p "$root" "$refused_root"
+  kept="${root}/affinity.json"
+
+  # Two tries short of the bar, then one past it: the pin binds, and the verdict is kept.
+  affinity_with "$root" "$boot_a" 1.13 1.39 1.10 1.40 1.00 2.10
+  ((rc == 0 && calls == 6)) || { fail "(o) a third try past the bar, after two short of it, did not pass (rc $rc, $calls timings)"; return; }
+  [[ $out == *"CPU affinity binds: two busy loops pinned to CPU 0 took 2.10 s against 1.00 s unpinned (2.10x) on try 3 of 3, after 1.39 s against 1.13 s (1.23x), 1.40 s against 1.10 s (1.27x); kept in ${kept}"* ]] ||
+    { fail "(o) the pass does not name its try, the tries before it and the kept file"; return; }
+  jq -e --arg b "$boot_a" '.boot_id == $b and .cpu == 0 and .unpinned_s == 1 and .pinned_s == 2.1 and (.tries | length) == 3' "$kept" >/dev/null ||
+    { out="$(cat "$kept" 2>&1)" fail "(o) ${kept} does not hold the verdict with its boot, CPU, times and tries"; return; }
+
+  # A later step of the same boot takes the kept verdict: it measures nothing, so the box's state
+  # (here, times that would be refused) cannot refuse it.
+  affinity_with "$root" "$boot_a" 1.13 1.39 1.10 1.40 1.12 1.35
+  ((rc == 0 && calls == 0)) || { fail "(o) a step on the boot of a kept verdict measured again (rc $rc, $calls timings)"; return; }
+  [[ $out == *"CPU affinity binds, as a step measured at "*" on this boot ("*"${boot_a}, kept in ${kept}): two busy loops pinned to CPU 0 took 2.10 s against 1.00 s unpinned (2.10x); not measured again"* ]] ||
+    { fail "(o) a step that took the kept verdict does not say so"; return; }
+
+  # Another boot measures again, and keeps its own verdict; a boot whose id cannot be read measures
+  # again and keeps none.
+  affinity_with "$root" "$boot_b" 1.00 2.00
+  ((rc == 0 && calls == 2)) || { fail "(o) a step on another boot did not measure again (rc $rc, $calls timings)"; return; }
+  jq -e --arg b "$boot_b" '.boot_id == $b' "$kept" >/dev/null || { out="$(cat "$kept")" fail "(o) the other boot's verdict was not kept"; return; }
+  affinity_with "$root" - 1.00 2.00
+  ((rc == 0 && calls == 2)) || { fail "(o) a step whose boot id cannot be read did not measure again (rc $rc, $calls timings)"; return; }
+  [[ $out == *"not kept for later steps: ${temporary_dir}/boot_id holds no boot id"* ]] &&
+    jq -e --arg b "$boot_b" '.boot_id == $b' "$kept" >/dev/null ||
+    { fail "(o) a verdict without a boot id was kept, or the step did not say why it kept none"; return; }
+
+  # Three tries short of the bar, on a root that holds no verdict: refused, naming every try, and
+  # nothing kept.
+  affinity_with "$refused_root" "$boot_a" 1.13 1.39 1.10 1.40 1.12 1.35
+  ((rc != 0 && calls == 6)) || { fail "(o) three tries short of the bar were not refused after three tries (rc $rc, $calls timings)"; return; }
+  [[ $out == *"two busy loops pinned to CPU 0 with taskset took 1.39 s against 1.13 s for the same two unpinned (1.23x), then 1.40 s against 1.10 s (1.27x), then 1.35 s against 1.12 s (1.21x) in 3 tries"* ]] ||
+    { fail "(o) the refusal does not name all three tries"; return; }
+  [[ ! -e "${refused_root}/affinity.json" ]] ||
+    { out="$(cat "${refused_root}/affinity.json")" fail "(o) a refused verdict was kept in ${refused_root}/affinity.json"; return; }
+  out=""
+  printf 'PASS: the pin passes on a third try, refuses after three naming all, keeps a binding verdict for its boot alone and never a refused one\n'
+}
+
 # case_gomaxprocs: Dispatch's GOMAXPROCS is the number of CPUs in LOADTEST_SERVER_CPUS, each CPU
 # counted once, when the list is set, and nproc otherwise. A LOADTEST_GOMAXPROCS equal to the count
 # passes; one that differs is refused naming both numbers, and so is one that is not a positive
@@ -759,9 +837,10 @@ case_stack_ports || failed=$((failed + 1))
 case_ephemeral_ports || failed=$((failed + 1))
 case_cpu_lists || failed=$((failed + 1))
 case_cpu_affinity || failed=$((failed + 1))
+case_affinity_kept_verdict || failed=$((failed + 1))
 case_gomaxprocs || failed=$((failed + 1))
 case_wait_for_window || failed=$((failed + 1))
 if ((failed > 0)); then
-  printf 'FAIL: %d of 15 cases failed\n' "$failed" >&2
+  printf 'FAIL: %d of 16 cases failed\n' "$failed" >&2
   exit 1
 fi

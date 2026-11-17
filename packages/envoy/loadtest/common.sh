@@ -39,8 +39,9 @@
 # CPU count when it is set (server_cpu_count), and refuses a LOADTEST_GOMAXPROCS that differs from
 # that count; check_cpu_affinity refuses a runtime that does not enforce the pin (gVisor sets the
 # mask and ignores it), timing two busy loops pinned to one CPU against the same two unpinned
-# (affinity_verdict decides from the two times). run-step.sh and run-series.sh run all three
-# before anything starts (check_cpu_pinning).
+# (affinity_verdict decides from the two times), up to AFFINITY_TRIES times, and keeps a verdict
+# that the pin binds in ROOT/affinity.json for the later steps of the same boot. run-step.sh and
+# run-series.sh run all three before anything starts (check_cpu_pinning).
 #
 # lock_root ROOT: one run at a time per root (README.md, "One run at a time"). It takes an
 # exclusive, non-blocking flock on ROOT/.run.lock and keeps it on file descriptor 9. The lock lasts
@@ -219,6 +220,20 @@ check_ephemeral_ports() {
 AFFINITY_MIN_SLOWDOWN=1.6
 AFFINITY_LOOP_ITERATIONS=1000000
 
+# AFFINITY_TRIES is how many times check_cpu_affinity measures before it refuses: a step is refused
+# only when no try reaches AFFINITY_MIN_SLOWDOWN. A noisy try does not pass a pin that does not
+# bind: on a runtime that ignores the mask the pinned pair is the unpinned pair run again, so its
+# ratio sits near 1 (gVisor's 1.06x), and to reach the bar other work would have to slow the pinned
+# run alone by 60%, while work that runs through both pairs pulls the ratio toward 1. What retrying
+# does pass is a pin that binds on a box still busy with what an earlier step left: on a runc bed
+# after a 10x step, one try read 1.39 s pinned against 1.13 s unpinned (1.23x).
+AFFINITY_TRIES=3
+
+# BOOT_ID_FILE is where the boot's id is read from (affinity_boot_id), the kernel's random id of
+# this boot: a kept verdict (check_cpu_affinity) is taken only on the boot it was measured on. A
+# test points LOADTEST_BOOT_ID_FILE at a file of its own.
+BOOT_ID_FILE=${LOADTEST_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}
+
 # PROC_VERSION_FILE is where the kernel's name is read from (affinity_runtime). A test points
 # LOADTEST_PROC_VERSION_FILE at a file of its own.
 PROC_VERSION_FILE=${LOADTEST_PROC_VERSION_FILE:-/proc/version}
@@ -344,29 +359,89 @@ affinity_runtime() {
   [ -z "$v" ] || printf 'gVisor (dmesg: %s)\n' "$v"
 }
 
-# affinity_refusal CPU UNPINNED PINNED RATIO: why a step is refused when the pin did not bind: the
-# measurement, and the runtime when affinity_runtime names it.
+# affinity_refusal CPU UNPINNED PINNED RATIO [UNPINNED PINNED RATIO...]: why a step is refused when
+# the pin did not bind: every try's measurement, and the runtime when affinity_runtime names it.
 affinity_refusal() {
-  local runtime msg
+  local cpu=$1 runtime msg tries=1
+  shift
+  msg="this runtime ignores CPU affinity: two busy loops pinned to CPU $cpu with taskset took $2 s against $1 s for the same two unpinned (${3}x)"
+  shift 3
+  while [ $# -ge 3 ]; do
+    msg+=", then $2 s against $1 s (${3}x)"
+    tries=$((tries + 1))
+    shift 3
+  done
+  ((tries == 1)) || msg+=" in $tries tries"
+  msg+=", where a pin that binds holds both on one CPU and makes them at least ${AFFINITY_MIN_SLOWDOWN}x slower"
   runtime=$(affinity_runtime)
-  msg="this runtime ignores CPU affinity: two busy loops pinned to CPU $1 with taskset took $3 s against $2 s for the same two unpinned (${4}x), where a pin that binds holds both on one CPU and makes them at least ${AFFINITY_MIN_SLOWDOWN}x slower"
   [ -z "$runtime" ] || msg+="; this is $runtime, which records the mask and does not enforce it"
   printf '%s. LOADTEST_SERVER_CPUS and LOADTEST_GENERATOR_CPUS would pin nothing here: unset them, or run where the pin binds (runc)\n' "$msg"
 }
 
+# affinity_boot_id: this boot's id, from BOOT_ID_FILE; nothing when the file cannot be read or does
+# not hold one.
+affinity_boot_id() {
+  local id=""
+  { read -r id <"$BOOT_ID_FILE"; } 2>/dev/null || true
+  [[ ! $id =~ ^[0-9A-Fa-f-]+$ ]] || printf '%s\n' "$id"
+}
+
 # check_cpu_affinity: when either list is set, die unless a pin to the first CPU of the server
-# list (else the generator's) slows two busy loops by AFFINITY_MIN_SLOWDOWN (affinity_refusal says
-# why), and note the measurement when it does.
+# list (else the generator's) slows two busy loops by AFFINITY_MIN_SLOWDOWN in one of
+# AFFINITY_TRIES tries (affinity_refusal names every try), and note the measurement when it does.
+#
+# A verdict that the pin binds is kept in ROOT/affinity.json (resolve_paths sets ROOT), with its
+# measurement, every try, the CPU and this boot's id (affinity_boot_id), and a later step of the
+# same boot takes it and says so instead of measuring again. Whether the runtime enforces the mask
+# does not change while the kernel runs, and a step that follows another on the same stack measures
+# on a box still busy with what that step left. A kept verdict is taken only on the boot it names
+# and only while its own times pass the bar; a boot whose id differs or cannot be read, or a file
+# that cannot be read, measures again. A verdict that the pin does not bind is never kept, so the
+# next run after a refusal measures again. The file is written whole, by a rename, since a run
+# checks the pin before it takes the root's lock.
 check_cpu_affinity() {
   local list=${LOADTEST_SERVER_CPUS:-${LOADTEST_GENERATOR_CPUS:-}}
   [ -n "$list" ] || return 0
-  local -a cpus
+  local -a cpus tries=()
   mapfile -t cpus < <(cpu_list_cpus "$list")
-  local unpinned pinned ratio
-  unpinned=$(busy_pair_seconds)
-  pinned=$(busy_pair_seconds taskset -c "${cpus[0]}")
-  ratio=$(affinity_verdict "$unpinned" "$pinned") || die "$(affinity_refusal "${cpus[0]}" "$unpinned" "$pinned" "$ratio")"
-  note "CPU affinity binds: two busy loops pinned to CPU ${cpus[0]} took $pinned s against $unpinned s unpinned (${ratio}x)"
+  local file=$ROOT/affinity.json boot kept at cpu unpinned pinned ratio binds try earlier="" json="" said
+  boot=$(affinity_boot_id)
+  if [ -n "$boot" ] &&
+    kept=$(jq -er --arg b "$boot" 'select(.boot_id == $b) | "\(.at) \(.cpu) \(.unpinned_s) \(.pinned_s)"' "$file" 2>/dev/null); then
+    # Two decimals, as busy_pair_seconds prints them: a jq may print 2.10 back as 2.1.
+    read -r at cpu unpinned pinned < <(awk '{ printf "%s %s %.2f %.2f\n", $1, $2, $3, $4 }' <<<"$kept")
+    if ratio=$(affinity_verdict "$unpinned" "$pinned"); then
+      note "CPU affinity binds, as a step measured at $at on this boot ($BOOT_ID_FILE $boot, kept in $file): two busy loops pinned to CPU $cpu took $pinned s against $unpinned s unpinned (${ratio}x); not measured again"
+      return 0
+    fi
+  fi
+  for ((try = 1; try <= AFFINITY_TRIES; try++)); do
+    unpinned=$(busy_pair_seconds)
+    pinned=$(busy_pair_seconds taskset -c "${cpus[0]}")
+    binds=true
+    ratio=$(affinity_verdict "$unpinned" "$pinned") || binds=false
+    json+="${json:+,}{\"unpinned_s\":$unpinned,\"pinned_s\":$pinned,\"ratio\":$ratio}"
+    if $binds; then
+      said="CPU affinity binds: two busy loops pinned to CPU ${cpus[0]} took $pinned s against $unpinned s unpinned (${ratio}x)"
+      ((try == 1)) || said+=" on try $try of $AFFINITY_TRIES, after $earlier"
+      if [ -z "$boot" ]; then
+        said+="; not kept for later steps: $BOOT_ID_FILE holds no boot id"
+      elif jq -n --arg b "$boot" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson cpu "${cpus[0]}" \
+        --argjson u "$unpinned" --argjson p "$pinned" --argjson r "$ratio" --argjson tries "[$json]" \
+        '{boot_id: $b, at: $at, cpu: $cpu, unpinned_s: $u, pinned_s: $p, ratio: $r, tries: $tries}' \
+        >"$file.$$.tmp" 2>/dev/null && mv -f -- "$file.$$.tmp" "$file"; then
+        said+="; kept in $file for the later steps of this boot ($BOOT_ID_FILE $boot)"
+      else
+        rm -f -- "$file.$$.tmp"
+        said+="; not kept for later steps: $file could not be written"
+      fi
+      note "$said"
+      return 0
+    fi
+    earlier+="${earlier:+, }$pinned s against $unpinned s (${ratio}x)"
+    tries+=("$unpinned" "$pinned" "$ratio")
+  done
+  die "$(affinity_refusal "${cpus[0]}" "${tries[@]}")"
 }
 
 # check_cpu_pinning: check_cpu_lists, then gomaxprocs (a LOADTEST_GOMAXPROCS other than the server
