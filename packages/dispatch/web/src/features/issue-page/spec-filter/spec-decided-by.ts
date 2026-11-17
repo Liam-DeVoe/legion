@@ -44,9 +44,9 @@ import { statementStandings } from "../verification-filter/statement-state";
  * `firstSentenceOf`), with each reference in it named in plain words once the sentence is cut
  * (`referenceStandIns`), or, where they wrote none, the options they chose; the whole answer is
  * carried beside it as stored, for the focus on the line to draw character for character (R5).
- * A section of `decisions.md` the server marks a person's whose answered question this tree
- * does not hold is the agent's record of that decision, so it is drawn as an agent's words and
- * never quoted as the person's (R9).
+ * A decision node the server marks a person's whose answered question this tree does not hold
+ * is the agent's record of that decision, so it is drawn as an agent's words and never quoted as
+ * the person's (R9).
  *
  * An agent's decision carries its own text whole, which the cell draws as a row draws a node's
  * words (`RowText`), and is quoted by its first line, by R1's one-line rule (`lineWordsRaw`,

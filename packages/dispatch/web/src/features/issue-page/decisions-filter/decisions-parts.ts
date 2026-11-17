@@ -48,12 +48,11 @@ import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
  * so the view holds it, and the filter draws it as a row of its own kind, which the page focuses.
  *
  * What the filter draws none of is an agent's reading of a person's answer (R2, R9: "No
- * restatement of a person's answer appears anywhere in the view"). Today's nearest thing to a
- * `reading` node is a section of `decisions.md` the server marks a person's because its blocks
- * name an ask (`Decision.kind`, `api/decisions.go`): where that ask is an answered ask of this
- * issue, the section restates the answer, the ask's own row is the decision, and the section is
- * drawn under the ask in the outline and nowhere in this filter (`isReading`). That section is
- * where today's read holds the decision's `shaped` ties, so the ask's entry carries the
+ * restatement of a person's answer appears anywhere in the view"). The decision `decisionNodes`
+ * makes of an answered ask (`decision-nodes.ts`' `fromAnsweredAsk`) is of the kind `person` and
+ * names that ask, so it is such a reading: where the ask is an answered ask of this issue, the
+ * ask's own row is the decision, in the person's words, and the reading is drawn nowhere in this
+ * filter (`isReading`). The reading holds the ask's `shaped` ties, so the ask's entry carries the
  * statements they name: the person's decision reaches every statement it shaped.
  *
  * This module is pure. It holds no React and makes no request, so the body
@@ -114,8 +113,7 @@ interface EntryBase {
   /** The address of the node in the conversation, which the entry links to. */
   readonly path?: string;
   /** The statements of this issue the entry's `shaped` ties name, each once, in the ties' own
-   *  order: a decision's own, and for an answered ask those of the section of `decisions.md`
-   *  that restates its answer. */
+   *  order: a decision's own, and for an answered ask those of the decision node made of it. */
   readonly shapes: readonly ShapedStatement[];
 }
 
@@ -454,8 +452,8 @@ function pathOf(node: TreeNode): { readonly path?: string } {
 
 /**
  * Whether `row` is an agent's reading of a person's answer, which the filter draws none of
- * (R2, R9): a section the server marks a person's - its blocks name an ask - where one of those
- * asks is an answered ask of this issue. The ask's own row is that decision, in the person's
+ * (R2, R9): a decision the server marks a person's that names an answered ask of this issue, as
+ * the decision node made of that ask does. The ask's own row is that decision, in the person's
  * words.
  */
 function isReading(row: Decision, answered: ReadonlySet<string>): boolean {
