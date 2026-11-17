@@ -9,11 +9,12 @@ export const badgeSelectWrapper = `${badgeSelectFrame} md:min-h-8 has-focus-visi
  *  the rail's other controls, so it never makes the rail's row taller. */
 export const badgeSelectRailWrapper = `${badgeSelectFrame} md:min-h-7 has-focus-visible:ring-2 ${hasFocusVisibleRing}`;
 /** The trigger of a menu drawn as the same badge (`ChoiceMenu`: the snooze, the priority): the
- *  button is the 44 px tap target (32 px from `md`) and draws its own keyboard focus ring. */
-export const badgeMenuTrigger = `${badgeSelectFrame} cursor-pointer outline-none md:min-h-8 focus-visible:ring-2 ${focusVisibleRing} disabled:cursor-not-allowed disabled:opacity-50`;
+ *  button is the 44 px tap target (32 px from `md`) and draws its own keyboard focus ring. It
+ *  looks the same disabled or held (`refused:`, `styles.css`). */
+export const badgeMenuTrigger = `${badgeSelectFrame} cursor-pointer outline-none md:min-h-8 focus-visible:ring-2 ${focusVisibleRing} refused:cursor-not-allowed refused:opacity-50`;
 /** The visible badge; the caller appends its tone's `bg` and `text`. */
 export const badgeSelectBadge =
   "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold";
 /** The native select laid over the badge, invisible but the thing that receives the pick. */
 export const badgeSelectOverlay =
-  "absolute inset-0 size-full cursor-pointer appearance-none opacity-0 disabled:cursor-not-allowed";
+  "absolute inset-0 size-full cursor-pointer appearance-none opacity-0 refused:cursor-not-allowed";

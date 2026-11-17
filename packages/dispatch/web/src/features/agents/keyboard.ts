@@ -202,8 +202,8 @@ export function useAgentsKeymap(
       // than toggles: a list the reader left open - opened before its issues came, and roved
       // away from - is still open, so the key goes into its text box instead of clicking it
       // shut. A row not yet opened has no picker at all and a collapsed one's is hidden, so the
-      // row says whether one can open; an open row's picker is disabled while its message is in
-      // flight.
+      // row says whether one can open; an open row's picker is held (`aria-disabled`) while its
+      // message is in flight.
       run: () =>
         inOpenRow((row) => {
           const toggle = row.querySelector<HTMLElement>(ISSUE_PICKER_SELECTOR);
@@ -217,7 +217,9 @@ export function useAgentsKeymap(
         const row = focusedAgentRow();
         return (
           row?.hasAttribute("data-agent-can-pick-issue") === true &&
-          row.querySelector<HTMLButtonElement>(ISSUE_PICKER_SELECTOR)?.disabled !== true
+          row
+            .querySelector<HTMLButtonElement>(ISSUE_PICKER_SELECTOR)
+            ?.matches(':disabled, [aria-disabled="true"]') !== true
         );
       },
     },

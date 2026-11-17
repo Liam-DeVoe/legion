@@ -67,7 +67,7 @@ export function ReplyTurn({
   markRef,
   onReply,
   quote,
-  replyDisabled = false,
+  replyHeld = false,
   turnID,
 }: {
   actions?: ReactNode;
@@ -90,7 +90,7 @@ export function ReplyTurn({
     readonly to?: string;
   };
   /** Holds the Reply button while the composer it would address is busy with a send. */
-  replyDisabled?: boolean;
+  replyHeld?: boolean;
   turnID: string;
 }): ReactNode {
   // The retry row a delivered reply keeps until the session answers it or took it as its turn.
@@ -149,7 +149,7 @@ export function ReplyTurn({
       </div>
       <TurnActions>
         {actions}
-        {onReply === undefined ? null : <ReplyButton disabled={replyDisabled} onClick={onReply} />}
+        {onReply === undefined ? null : <ReplyButton held={replyHeld} onClick={onReply} />}
       </TurnActions>
     </li>
   );

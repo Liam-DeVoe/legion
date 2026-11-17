@@ -79,7 +79,8 @@ export type AskThreadQuery = UseQueryResult<AskRead, Error>;
  * The reply form under an answered ask. It posts to the ask's issue, or to its document for a
  * project-document ask, then invalidates the shared thread so the reply shows first. Its draft is
  * the ask's (`reply-drafts.ts`), and its send is the ask's too: while any composer's reply to this
- * ask is out, every composer for it, including one mounted since, shows the draft disabled. A file
+ * ask is out, every composer for it, including one mounted since, shows the draft held: the field
+ * and Reply keep the focus and their Tab stops and send nothing more (`heldPress`). A file
  * pasted or dropped into the field uploads to `uploadOwner` and its text joins the draft.
  */
 export function AskReplyComposer({
@@ -104,6 +105,7 @@ export function AskReplyComposer({
   const { sending } = useSending(mutationKey);
   const upload = useDraftUpload((text) => setBody((current) => appendToDraft(current, text)));
   const uploading = upload.pending > 0;
+  const held = sending;
   // The form shows a refused reply itself, with Retry, under the draft it kept.
   const submit = useKeyedWrite({
     write: (text: string, bounds) => {
@@ -139,24 +141,30 @@ export function AskReplyComposer({
       <label className={`block text-sm font-medium ${textSecondaryOnCanvas}`} htmlFor={fieldId}>
         Reply
         <textarea
-          className={`mt-1 block w-full rounded-lg px-3 py-2 font-normal outline-none ${inputClasses(true)}`}
-          disabled={sending}
+          aria-disabled={held || undefined}
+          className={`mt-1 block w-full rounded-lg px-3 py-2 font-normal outline-none aria-disabled:opacity-50 ${inputClasses(true)}`}
           id={fieldId}
           onChange={(event) => setBody(event.target.value)}
           onDrop={
-            uploadOwner === undefined ? undefined : (event) => upload.drop(event, uploadOwner)
+            uploadOwner === undefined || held
+              ? undefined
+              : (event) => upload.drop(event, uploadOwner)
           }
           onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading })}
           onPaste={
-            uploadOwner === undefined ? undefined : (event) => upload.paste(event, uploadOwner)
+            uploadOwner === undefined || held
+              ? undefined
+              : (event) => upload.paste(event, uploadOwner)
           }
+          readOnly={held}
           value={body}
         />
       </label>
       <DraftUploadStatus upload={upload} />
       <button
-        className={`self-start rounded-lg border px-3 py-1.5 text-sm font-medium ${borderStrong} ${textSecondaryOnSurface} ${enabledCardHoverBorder} disabled:cursor-not-allowed disabled:opacity-50`}
-        disabled={body.trim() === "" || sending || uploading}
+        aria-disabled={held || undefined}
+        className={`self-start rounded-lg border px-3 py-1.5 text-sm font-medium ${borderStrong} ${textSecondaryOnSurface} ${enabledCardHoverBorder} refused:cursor-not-allowed refused:opacity-50`}
+        disabled={body.trim() === "" || uploading}
         type="submit"
       >
         {sending ? "Replying…" : "Reply"}

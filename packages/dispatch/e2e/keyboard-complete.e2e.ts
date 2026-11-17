@@ -24,6 +24,7 @@ import { replyRowId, seedCommentThread, THREAD_SESSION } from "./inbox-threads";
 import {
   asker,
   contrastOf,
+  holdWrites,
   issueWrites,
   returnMornings,
   snoozedUntil,
@@ -793,4 +794,88 @@ test("k-phone: a tap opens the Snooze and the priority menus, whose choices take
     .toBe(1);
   expect(priorityWrites[0]?.input, "k-phone: a tap on P1 writes P1").toEqual({ priority: 1 });
   expect(sent(), "k-phone: a tap on P1 sends nothing else").toBe(2);
+});
+
+// ---------------------------------------------------------------------------
+// held-press (dispatch://INFRA-4248, folded into this issue: no check of the Verification names
+// it). A control whose write is out is held, not disabled, so the keyboard's focus stays on it.
+// ---------------------------------------------------------------------------
+
+/** Whether `control` is the page's `document.activeElement`. */
+function isActive(control: Locator): Promise<boolean> {
+  return control.evaluate((element) => element === document.activeElement);
+}
+
+/** Presses `control` by the keyboard with `key`, and again while the write it sent is held, and
+ *  reads that the focus stays on it while the write is out and once it has landed, and that the
+ *  two presses sent one write (`writes`, as `holdWrites` caught them). */
+async function pressTwiceWhileHeld(
+  page: Page,
+  control: Locator,
+  key: "Enter" | "Space",
+  what: string,
+  writes: readonly string[]
+): Promise<void> {
+  await control.focus();
+  expect(await isActive(control), `held-press: ${what} takes the focus`).toBe(true);
+  await page.keyboard.press(key);
+  await expect(
+    control,
+    `held-press: ${what} is held (aria-disabled) while its write is out`
+  ).toHaveAttribute("aria-disabled", "true");
+  expect(
+    await isActive(control),
+    `held-press: ${what} keeps the focus while its write is out`
+  ).toBe(true);
+  await page.keyboard.press(key);
+  expect(
+    await isActive(control),
+    `held-press: ${what} keeps the focus after a second ${key} while held`
+  ).toBe(true);
+  await expect(control, `held-press: ${what} lets go once its write lands`).not.toHaveAttribute(
+    "aria-disabled",
+    "true"
+  );
+  expect(await isActive(control), `held-press: ${what} keeps the focus once its write lands`).toBe(
+    true
+  );
+  expect(writes, `held-press: ${what} sent exactly one write for two presses`).toHaveLength(1);
+}
+
+// SLOW(>=2s): three writes each held 400 ms, on the issue page and on Settings.
+test("held-press: a button, a form's submit and a checkbox keep the keyboard's focus while their write is out, and two presses send one write", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const title = "Ledger rollout";
+  const issue = await createIssue({ project: "CORE", title });
+  await page.setViewportSize(WIDE);
+
+  // A plain button: the issue header's pin.
+  const pins = await holdWrites(page, "PUT", new RegExp(`^/api/v1/me/issues/${issue.key}/state$`));
+  await openIssue(page, issue.key, title);
+  const pin = page.getByTestId("issue-header").getByRole("button", { name: /^(Un)?pin issue$/i });
+  await pressTwiceWhileHeld(page, pin, "Enter", "the issue's Pin button", pins);
+  await expect(pin, "held-press: the pin landed").toHaveAccessibleName("Unpin issue");
+
+  // A form's submit: Settings' New token.
+  const mints = await holdWrites(page, "POST", /^\/api\/v1\/me\/agent-tokens$/);
+  const scopeWrites = await holdWrites(page, "PATCH", /^\/api\/v1\/me\/agent-tokens\/[^/]+$/);
+  await page.goto("/settings");
+  await page.getByLabel("Token label").fill("Held press");
+  const mint = page.getByRole("button", { exact: true, name: "New token" });
+  await pressTwiceWhileHeld(page, mint, "Enter", "Settings' New token submit", mints);
+  const approve = page.getByRole("checkbox", {
+    exact: true,
+    name: "Approve and control credentials (Held press)",
+  });
+  await expect(approve, "held-press: the minted token holds Approve").toBeChecked();
+
+  // A checkbox: the minted token's Approve scope.
+  await pressTwiceWhileHeld(page, approve, "Space", "the token's Approve checkbox", scopeWrites);
+  await expect(approve, "held-press: the one write cleared Approve").not.toBeChecked();
+  expect(
+    JSON.parse(scopeWrites[0] ?? "{}"),
+    "held-press: the write names Act as you alone"
+  ).toEqual({ scopes: ["person"] });
 });

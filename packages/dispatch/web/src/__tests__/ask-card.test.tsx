@@ -2130,7 +2130,7 @@ test("AskCard with no replies offers Write a reply only after an answer, and ret
   }
 });
 
-test("a reply composer remounted while its send is out shows the draft disabled and posts once", async () => {
+test("a reply composer remounted while its send is out shows the draft held and posts once", async () => {
   const user = userEvent.setup();
   const input = answered(ask(), []);
   const sent = Promise.withResolvers<Comment>();
@@ -2159,16 +2159,19 @@ test("a reply composer remounted while its send is out shows the draft disabled 
   try {
     const field = second.getByRole("textbox", { name: "Reply" }) as HTMLTextAreaElement;
     expect(field.value).toBe("hello");
-    expect(field.disabled).toBe(true);
+    expect(field).toHaveAttribute("aria-disabled", "true");
+    expect(field.readOnly).toBe(true);
     const send = second.getByRole("button", { name: /^Repl/ }) as HTMLButtonElement;
-    expect(send.disabled).toBe(true);
-    // The send holds this one disabled, and user-event refuses a disabled control; the point of
-    // this line is that the press the browser still delivers posts nothing a second time.
-    fireEvent.click(send);
+    expect(send).toHaveAttribute("aria-disabled", "true");
+    // The send holds this one rather than disabling it, so it keeps the focus; a press on it
+    // posts nothing a second time.
+    await user.click(send);
+    expect(bodies).toEqual(["hello"]);
 
     await act(async () => sent.resolve(reply({ body: "hello" })));
     await waitFor(() => expect(field.value).toBe(""));
-    expect(field.disabled).toBe(false);
+    expect(field).not.toHaveAttribute("aria-disabled");
+    expect(field.readOnly).toBe(false);
     expect(bodies).toEqual(["hello"]);
   } finally {
     second.unmount();
@@ -2201,8 +2204,12 @@ test("two reply composers for one ask share its draft and its send", async () =>
 
     await user.click(view.getAllByRole("button", { name: "Reply" })[1] as HTMLElement);
     await waitFor(() => expect(bodies).toEqual(["One draft"]));
-    expect(margin.disabled).toBe(true);
-    expect(block.disabled).toBe(true);
+    expect(margin).toHaveAttribute("aria-disabled", "true");
+    expect(block).toHaveAttribute("aria-disabled", "true");
+    expect(margin.readOnly && block.readOnly).toBe(true);
+    // Either composer's Reply is held while the shared send is out: a press posts nothing more.
+    await user.click(view.getAllByRole("button", { name: /^Repl/ })[0] as HTMLElement);
+    expect(bodies).toEqual(["One draft"]);
 
     await act(async () => sent.resolve(reply({ body: "One draft" })));
     await waitFor(() => expect(margin.value).toBe(""));
@@ -2534,18 +2541,20 @@ test("AskCard compact variant keeps an open note visible when a real option is p
   }
 });
 
-test("AskCard compact variant hands focus to the row when Answer disables under it", async () => {
+test("AskCard compact variant keeps the focus on Answer, held, while its answer is out", async () => {
   const user = userEvent.setup();
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
   let release: (value: Ask) => void = () => {};
+  let answers = 0;
   const { view } = renderCard(
     <div data-testid="row" tabIndex={-1}>
       <AskCard
-        answerAsk={() =>
-          new Promise<Ask>((resolve) => {
-            release = resolve;
-          })
-        }
+        answerAsk={() => {
+          answers += 1;
+          const out = Promise.withResolvers<Ask>();
+          release = out.resolve;
+          return out.promise;
+        }}
         ask={input}
         getAskThread={emptyThread(input)}
         variant="compact"
@@ -2560,8 +2569,12 @@ test("AskCard compact variant hands focus to the row when Answer disables under 
     answer.focus();
     expect(answer).toHaveFocus();
     await user.click(answer);
-    await waitFor(() => expect(answer.hasAttribute("disabled")).toBe(true));
-    expect(view.getByTestId("row")).toHaveFocus();
+    await waitFor(() => expect(answer).toHaveAttribute("aria-disabled", "true"));
+    expect(answer.hasAttribute("disabled")).toBe(false);
+    expect(answer).toHaveFocus();
+    // A second press while the answer is out sends nothing more.
+    await user.click(answer);
+    expect(answers).toBe(1);
     release(answered(input, ["Ship"]));
     await view.findByRole("img", { name: "Selected" });
   } finally {

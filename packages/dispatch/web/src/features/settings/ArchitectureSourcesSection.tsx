@@ -3,6 +3,7 @@ import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
 import { architectureSourcesQuery, projectsQuery } from "../../api/queries";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
   TableBody,
@@ -86,8 +87,13 @@ export function ArchitectureSourcesSection(): ReactNode {
     onSettled: () =>
       void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey }),
   });
+  // The form is held while a save or a delete is out: each control keeps the focus the press
+  // gave it (`heldPress`), and the form sends nothing more until the write lands.
+  const saveHeld = saveSource.isPending;
+  const formHeld = saveHeld || deleteSource.isPending;
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (deleteSource.isPending) return;
     submitGuard.guard(() => saveSource.mutate({ branch, project, repo: repository }));
   };
 
@@ -177,13 +183,11 @@ export function ArchitectureSourcesSection(): ReactNode {
                     <TableCell align="right">
                       <button
                         aria-label={`Refresh architecture source ${source.repo} for ${source.project}`}
-                        className={`mr-4 font-medium disabled:cursor-not-allowed disabled:opacity-50 ${linkText} ${linkHoverText}`}
-                        disabled={
-                          refreshSource.isPending || deleteSource.isPending || saveSource.isPending
-                        }
-                        onClick={() =>
-                          refreshSource.mutate({ project: source.project, repo: source.repo })
-                        }
+                        className={`mr-4 font-medium refused:cursor-not-allowed refused:opacity-50 ${linkText} ${linkHoverText}`}
+                        {...heldPress(
+                          refreshSource.isPending || deleteSource.isPending || saveSource.isPending,
+                          () => refreshSource.mutate({ project: source.project, repo: source.repo })
+                        )}
                         type="button"
                       >
                         {refreshSource.isPending &&
@@ -194,11 +198,10 @@ export function ArchitectureSourcesSection(): ReactNode {
                       </button>
                       <button
                         aria-label={`Delete architecture source ${source.repo} for ${source.project}`}
-                        className={`font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
-                        disabled={deleteSource.isPending || saveSource.isPending}
-                        onClick={() =>
+                        className={`font-medium refused:cursor-not-allowed refused:opacity-50 ${dangerText} ${dangerHoverText}`}
+                        {...heldPress(formHeld, () =>
                           deleteSource.mutate({ project: source.project, repo: source.repo })
-                        }
+                        )}
                         type="button"
                       >
                         Delete
@@ -217,7 +220,7 @@ export function ArchitectureSourcesSection(): ReactNode {
             <label className={settingsFieldLabel} htmlFor="architecture-source-project">
               Source project
               <ProjectSelect
-                disabled={saveSource.isPending}
+                held={saveHeld}
                 id="architecture-source-project"
                 onChange={setProject}
                 projects={projects.data}
@@ -227,12 +230,13 @@ export function ArchitectureSourcesSection(): ReactNode {
             <label className={settingsFieldLabel} htmlFor="architecture-source-repository">
               Source repository
               <input
-                className={settingsMonoInput}
-                disabled={saveSource.isPending}
+                aria-disabled={saveHeld || undefined}
+                className={`${settingsMonoInput} aria-disabled:opacity-50`}
                 id="architecture-source-repository"
                 onChange={(event) => setRepository(event.target.value)}
                 pattern={ownerRepoPattern}
                 placeholder="owner/repo"
+                readOnly={saveHeld}
                 required
                 value={repository}
               />
@@ -240,17 +244,18 @@ export function ArchitectureSourcesSection(): ReactNode {
             <label className={settingsFieldLabel} htmlFor="architecture-source-branch">
               Branch
               <input
-                className={settingsMonoInput}
-                disabled={saveSource.isPending}
+                aria-disabled={saveHeld || undefined}
+                className={`${settingsMonoInput} aria-disabled:opacity-50`}
                 id="architecture-source-branch"
                 onChange={(event) => setBranch(event.target.value)}
+                readOnly={saveHeld}
                 required
                 value={branch}
               />
             </label>
             <button
+              aria-disabled={formHeld || undefined}
               className={settingsSubmitButton}
-              disabled={saveSource.isPending || deleteSource.isPending}
               type="submit"
             >
               Add source

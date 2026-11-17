@@ -21,16 +21,19 @@ import { useIssueRepo } from "./useIssueRepo";
  * item. A failed read beside a resolved repository shows the same failure next to the picker. The
  * badge is hidden from assistive technology; the select's description names what it shows: the
  * repository, `, inherited or the project's default` when it is not the issue's own, or
- * `No repository`.
+ * `No repository`. `held` is the host's own write out (the issue page's other field writes): the
+ * select keeps the focus and its Tab stop, and a pick made then is dropped (`heldPress`).
  */
 export function RepoControl({
   disabled = false,
+  held = false,
   issueKey,
   project,
   repo,
   resolvedRepo,
 }: {
   disabled?: boolean;
+  held?: boolean;
   issueKey: string;
   project: string;
   repo: string | null;
@@ -76,7 +79,7 @@ export function RepoControl({
   const picker =
     resolvedRepo === null && mappings.isError ? null : (
       <span
-        className={`${badgeSelectRailWrapper} ${disabled ? "opacity-50" : ""}`}
+        className={`${badgeSelectRailWrapper} ${disabled || held ? "opacity-50" : ""}`}
         title={
           repo === null && resolvedRepo !== null ? "Inherited or the project's default" : undefined
         }
@@ -89,6 +92,7 @@ export function RepoControl({
         </span>
         <select
           aria-describedby={descriptionId}
+          aria-disabled={held || undefined}
           aria-label={`Repository of ${issueKey}`}
           className={badgeSelectOverlay}
           disabled={disabled}
@@ -101,6 +105,7 @@ export function RepoControl({
             want();
           }}
           onChange={(event) => {
+            if (held) return;
             const { value } = event.target;
             write.submit(value === "" ? null : value);
           }}

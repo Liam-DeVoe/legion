@@ -4,6 +4,7 @@ import { type ReactNode, useId, useRef, useState } from "react";
 import { api, apiErrorMessage, type WriteBounds } from "../../api/client";
 import { isLiveQuery } from "../../api/query-refresh";
 import type { DeliverySessionGroup } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
@@ -35,19 +36,19 @@ const sectionLabel = `text-xs tracking-wide uppercase ${textMutedOnSurface}`;
 const fieldClass = `h-8 min-w-0 flex-1 rounded border px-2 text-sm ${inputClasses(true)} ${textPrimaryOnSurface}`;
 
 /** One group: its name, renamable, its members, each removable, and the window's selected
- *  sessions to add. While any group write is pending, every mutating button is disabled so a
- *  second click cannot race the one request that decides the membership. */
+ *  sessions to add. While any group write is out, every mutating button is held (`heldPress`),
+ *  so a second press cannot race the one request that decides the membership. */
 function GroupCard({
   group,
+  held,
   storedTitle,
   selected,
-  pending,
   write,
 }: {
   group: DeliverySessionGroup;
+  held: boolean;
   storedTitle: (session: string) => string | undefined;
   selected: readonly string[];
-  pending: boolean;
   write: (change: GroupChange) => void;
 }): ReactNode {
   const id = useId();
@@ -68,14 +69,14 @@ function GroupCard({
         />
         <button
           className={secondaryButtonCompact}
-          disabled={pending || name.trim() === "" || name.trim() === group.name}
-          onClick={() =>
+          disabled={name.trim() === "" || name.trim() === group.name}
+          {...heldPress(held, () =>
             write({
               label: `Rename of the group ${group.name}`,
               run: (bounds) =>
                 api.updateDeliverySessionGroup(group.id, { name: name.trim() }, bounds),
             })
-          }
+          )}
           type="button"
         >
           Rename
@@ -94,15 +95,14 @@ function GroupCard({
             />
             <button
               aria-label={`Remove ${text.sessionText(session, storedTitle(session))}`}
-              className={dismissButtonText}
-              disabled={pending}
-              onClick={() =>
+              className={`refused:cursor-not-allowed refused:opacity-50 ${dismissButtonText}`}
+              {...heldPress(held, () =>
                 write({
                   label: `Removal of ${text.sessionText(session, storedTitle(session))} from ${group.name}`,
                   run: (bounds) =>
                     api.updateDeliverySessionGroup(group.id, { remove: [session] }, bounds),
                 })
-              }
+              )}
               type="button"
             >
               ✕
@@ -113,26 +113,25 @@ function GroupCard({
       <div className="flex gap-2">
         <button
           className={secondaryButtonCompact}
-          disabled={pending || addable.length === 0}
-          onClick={() =>
+          disabled={addable.length === 0}
+          {...heldPress(held, () =>
             write({
               label: `Sessions added to ${group.name}`,
               run: (bounds) => api.updateDeliverySessionGroup(group.id, { add: addable }, bounds),
             })
-          }
+          )}
           type="button"
         >
           Add selected
         </button>
         <button
           className={`${secondaryButtonCompact} ${dangerText}`}
-          disabled={pending}
-          onClick={() =>
+          {...heldPress(held, () =>
             write({
               label: `Deletion of the group ${group.name}`,
               run: (bounds) => api.deleteDeliverySessionGroup(group.id, bounds),
             })
-          }
+          )}
           type="button"
         >
           Delete group
@@ -288,8 +287,8 @@ export function SessionGroupsEditor({
           />
           <button
             className={secondaryButtonCompact}
-            disabled={name.trim() === "" || selected.length === 0 || save.isPending}
-            onClick={create}
+            disabled={name.trim() === "" || selected.length === 0}
+            {...heldPress(save.isPending, create)}
             type="button"
           >
             Create group
@@ -309,7 +308,7 @@ export function SessionGroupsEditor({
             <GroupCard
               group={group}
               key={`${group.id}:${group.updated_at}`}
-              pending={save.isPending}
+              held={save.isPending}
               selected={selected}
               storedTitle={storedTitle}
               write={(change) => save.mutate(change)}

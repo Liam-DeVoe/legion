@@ -204,7 +204,7 @@ export function AgentMessageComposer({
     <div className={`mt-3 border-t pt-3 ${borderDefault}`} ref={box}>
       {replyTo === null ? (
         <MultiSelect
-          disabled={sending}
+          ariaDisabled={sending}
           emptyMessage={issues.isPending ? "Loading issues…" : "No issue matches that."}
           error={issues.isError ? "Could not load issues." : null}
           focusOnOpen={false}
@@ -231,7 +231,7 @@ export function AgentMessageComposer({
           options={issueOptions}
           searchLabel="Issue"
           triggerAriaLabel="Choose issue"
-          triggerClassName={`min-h-11 rounded-lg border px-3 text-sm font-medium disabled:cursor-not-allowed ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+          triggerClassName={`min-h-11 rounded-lg border px-3 text-sm font-medium refused:cursor-not-allowed ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
           value={issueKey}
         >
           Issue: {issueKey === "" ? "No issue" : committedLabel}

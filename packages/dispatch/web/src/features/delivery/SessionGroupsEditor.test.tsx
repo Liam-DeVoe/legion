@@ -178,13 +178,11 @@ test("rename, add, remove and delete each write their one change", async () => {
   }
 });
 
-test("group actions are disabled while a save is pending", async () => {
+test("group actions are held while a save is pending", async () => {
   const user = userEvent.setup();
-  let settle: (value: DeliverySessionGroup) => void = () => {};
-  const pending = new Promise<DeliverySessionGroup>((resolve) => {
-    settle = resolve;
-  });
-  const update = spyOn(api, "updateDeliverySessionGroup").mockImplementation(() => pending);
+  const pending = Promise.withResolvers<DeliverySessionGroup>();
+  const update = spyOn(api, "updateDeliverySessionGroup").mockImplementation(() => pending.promise);
+  const remove = spyOn(api, "deleteDeliverySessionGroup");
   renderEditor([crew]);
   try {
     const group = screen.getByRole("group", { name: "Release crew" });
@@ -198,15 +196,20 @@ test("group actions are disabled while a save is pending", async () => {
       expect(update).toHaveBeenCalledWith(crew.id, { name: "Ship crew" }, keyedAttempt)
     );
 
+    // Held, not disabled, so whichever holds the focus keeps it, and a press on any of them
+    // sends nothing while the save is out.
     for (const name of ["Rename", "Add selected", "Remove Planner two", "Delete group"]) {
-      expect((within(group).getByRole("button", { name }) as HTMLButtonElement).disabled).toBe(
-        true
-      );
+      const button = within(group).getByRole("button", { name });
+      expect(button).toHaveAttribute("aria-disabled", "true");
+      await user.click(button);
     }
-    settle(crew);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(remove).not.toHaveBeenCalled();
+    pending.resolve(crew);
   } finally {
     cleanup();
     update.mockRestore();
+    remove.mockRestore();
   }
 });
 

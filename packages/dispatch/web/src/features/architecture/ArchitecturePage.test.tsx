@@ -422,7 +422,10 @@ test("never synced: the source line says so and an empty model shows the Refresh
       name: "Refreshing legion/legion…",
     });
     expect(refreshing.textContent).toBe("Refreshing…");
-    expect(refreshing.hasAttribute("disabled")).toBe(true);
+    // Held while the sync is out: it keeps its focus, and a second press sends no second sync.
+    expect(refreshing).toHaveAttribute("aria-disabled", "true");
+    await user.click(refreshing);
+    expect(pane.syncArchitectureSource).toHaveBeenCalledTimes(1);
     settle?.();
     await screen.findByRole("button", { name: "Refresh legion/legion" });
   } finally {

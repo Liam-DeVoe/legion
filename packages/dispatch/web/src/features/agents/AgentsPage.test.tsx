@@ -3969,10 +3969,10 @@ test("a row back after its session left mid-send holds the send it left until it
     // The composer's own form submit, which user-event has no form for.
     fireEvent.submit(within(planner).getByRole("form", { name: "Comment composer" }));
     await waitFor(() =>
-      expect(
-        (within(planner).getByRole("button", { name: "Choose issue" }) as HTMLButtonElement)
-          .disabled
-      ).toBe(true)
+      expect(within(planner).getByRole("button", { name: "Choose issue" })).toHaveAttribute(
+        "aria-disabled",
+        "true"
+      )
     );
 
     page.listAgents.mockResolvedValue([agents[1]]);
@@ -3996,7 +3996,10 @@ test("a row back after its session left mid-send holds the send it left until it
       within(back).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement;
     // The composer holds its draft through its control fieldset.
     const held = () => field().closest("fieldset")?.disabled;
-    expect(choose().disabled).toBe(true);
+    expect(choose()).toHaveAttribute("aria-disabled", "true");
+    // Held, not disabled: it keeps its Tab stop, and a press on it opens no list mid-send.
+    await user.click(choose());
+    expect(screen.queryByRole("listbox", { name: "Issue" })).not.toBeInTheDocument();
     expect(held()).toBe(true);
     expect(field().value).toBe("Status please");
 
@@ -4004,7 +4007,7 @@ test("a row back after its session left mid-send holds the send it left until it
       sent.resolve(message("Status please"));
       await sent.promise;
     });
-    await waitFor(() => expect(choose().disabled).toBe(false));
+    await waitFor(() => expect(choose()).not.toHaveAttribute("aria-disabled"));
     expect(held()).toBe(false);
     expect(field().value).toBe("");
   } finally {

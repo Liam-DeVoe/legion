@@ -5,6 +5,7 @@ import { type FormEvent, type ReactNode, useState } from "react";
 import { api, apiErrorMessage } from "../../api/client";
 import { projectsQuery } from "../../api/queries";
 import type { RepoProject } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
   TableBody,
@@ -170,8 +171,12 @@ export function SettingsPage(): ReactNode {
       deleteMapping.mutate(failedAction.repo);
     }
   };
+  // Every mapping control is held, not disabled, while either mapping write is out: it keeps the
+  // focus the press gave it (`heldPress`), and a press on it then sends nothing.
+  const mappingHeld = putMapping.isPending || deleteMapping.isPending;
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (mappingHeld) return;
     const [owner, repo] = repository.split("/", 2);
     putMapping.mutate({ project, repo: canonicalRepo(owner ?? "", repo ?? "") });
   };
@@ -250,27 +255,27 @@ export function SettingsPage(): ReactNode {
                         <TableCell tone="secondary">{mapping.project}</TableCell>
                         <TableCell>
                           <input
+                            aria-disabled={mappingHeld || undefined}
                             aria-label={`Default repository of ${mapping.project}: ${mapping.repo}`}
                             checked={mapping.default}
-                            className="size-4 cursor-pointer disabled:cursor-not-allowed"
-                            disabled={deleteMapping.isPending || putMapping.isPending}
+                            className="size-4 cursor-pointer refused:cursor-not-allowed aria-disabled:opacity-50"
                             name={`default-repository-${mapping.project}`}
-                            onChange={() =>
+                            onChange={() => {
+                              if (mappingHeld) return;
                               putMapping.mutate({
                                 default: true,
                                 project: mapping.project,
                                 repo: mapping.repo,
-                              })
-                            }
+                              });
+                            }}
                             type="radio"
                           />
                         </TableCell>
                         <TableCell align="right">
                           <button
                             aria-label={`Delete mapping for ${mapping.repo}`}
-                            className={`font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
-                            disabled={deleteMapping.isPending || putMapping.isPending}
-                            onClick={() => deleteMapping.mutate(mapping.repo)}
+                            className={`font-medium refused:cursor-not-allowed refused:opacity-50 ${dangerText} ${dangerHoverText}`}
+                            {...heldPress(mappingHeld, () => deleteMapping.mutate(mapping.repo))}
                             type="button"
                           >
                             Delete
@@ -308,8 +313,8 @@ export function SettingsPage(): ReactNode {
                   />
                 </label>
                 <button
+                  aria-disabled={mappingHeld || undefined}
                   className={settingsSubmitButton}
-                  disabled={putMapping.isPending || deleteMapping.isPending}
                   type="submit"
                 >
                   Add mapping

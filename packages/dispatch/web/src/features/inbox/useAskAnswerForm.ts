@@ -367,7 +367,8 @@ export function useAskAnswerForm({
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!canAnswer) return;
+    // Held while an answer or a question back is out: Ctrl+Enter in the field sends nothing more.
+    if (!canAnswer || isSubmitting) return;
     if (
       !isApproval &&
       !otherSelected &&

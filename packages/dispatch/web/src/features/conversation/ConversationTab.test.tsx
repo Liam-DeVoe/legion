@@ -411,8 +411,9 @@ test("Conversation holds Reply while its composer sends", async () => {
     await user.paste("Status please");
     await user.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(field.closest("fieldset")?.disabled).toBe(true));
-    const reply = screen.getByRole("button", { name: "Reply" }) as HTMLButtonElement;
-    expect(reply.disabled).toBe(true);
+    const reply = screen.getByRole("button", { name: "Reply" });
+    expect(reply).toHaveAttribute("aria-disabled", "true");
+    expect(reply.hasAttribute("disabled")).toBe(false);
     await user.click(reply);
     expect(screen.queryByRole("button", { name: "Cancel reply" })).not.toBeInTheDocument();
 

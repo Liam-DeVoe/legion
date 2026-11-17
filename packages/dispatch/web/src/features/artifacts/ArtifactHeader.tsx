@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { Artifact, Version } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { MultiSelect } from "../../components/MultiSelect";
 import { useAddressNavigate } from "../../lib/page-address";
 import {
@@ -14,6 +15,7 @@ import {
   linkHoverText,
   linkText,
   secondaryButtonBorder,
+  secondaryButtonDisabledText,
   secondaryButtonHoverBorder,
   secondaryButtonText,
   textMutedOnCanvas,
@@ -127,9 +129,9 @@ export function ArtifactHeader({
   const nameVersion =
     toolbar === undefined ? null : (
       <button
-        className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-        disabled={isClosed || toolbar.isNamingVersion}
-        onClick={toolbar.requestNamedVersion}
+        className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+        disabled={isClosed}
+        {...heldPress(toolbar.isNamingVersion, toolbar.requestNamedVersion)}
         type="button"
       >
         Name version

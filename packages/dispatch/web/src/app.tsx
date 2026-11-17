@@ -8,6 +8,7 @@ import { useLiveSocketPill } from "./api/live-socket";
 import { userAgentStateQuery, whoAmIQuery } from "./api/queries";
 import type { AuthenticatedUser } from "./api/types";
 import { useFocusRescue } from "./components/focus-place";
+import { heldPress } from "./components/held-press";
 import { useLiveViews } from "./features/agent-view/live-views";
 import { LiveViewRoute, MountedLiveViews } from "./features/agent-view/MountedLiveViews";
 import { legacyPinnedIds, useAgentPinWrite, usePinnedAgents } from "./features/agents/pins";
@@ -388,9 +389,8 @@ function NavigationContents({
       <div className={`mt-auto border-t pt-4 ${railBorder}`}>
         <p className={`px-2 text-sm ${railMutedText}`}>Signed in as {user.login}</p>
         <button
-          className={`mt-1 px-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${railAccentText} ${railAccentHoverText}`}
-          disabled={signOutPending}
-          onClick={onSignOut}
+          className={`mt-1 px-2 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${railAccentText} ${railAccentHoverText}`}
+          {...heldPress(signOutPending, onSignOut)}
           type="button"
         >
           Sign out

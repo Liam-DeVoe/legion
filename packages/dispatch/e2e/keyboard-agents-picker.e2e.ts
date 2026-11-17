@@ -252,7 +252,7 @@ test.describe("agents page", () => {
       await page.keyboard.press("Control+Enter");
 
       await expect(field).toBeDisabled();
-      await expect(toggle).toBeDisabled();
+      await expect(toggle).toHaveAttribute("aria-disabled", "true");
       // `?` says so as well: from the row, `i` is greyed while the picker it would open is held.
       await row.focus();
       await page.keyboard.press("?");
@@ -448,7 +448,7 @@ test.describe("agents page", () => {
       await page.keyboard.type("Status please");
       await page.keyboard.press("Control+Enter");
       await expect(field).toBeDisabled();
-      await expect(reply).toBeDisabled();
+      await expect(reply).toHaveAttribute("aria-disabled", "true");
       refuse();
 
       await expect(row.getByText(messageRefused)).toBeVisible();
@@ -972,8 +972,8 @@ test.describe("agents page", () => {
       await page.keyboard.type("Status please");
       await page.keyboard.press("Control+Enter");
       await expect(field).toBeDisabled();
-      await expect(toggle).toBeDisabled();
-      await expect(reply).toBeDisabled();
+      await expect(toggle).toHaveAttribute("aria-disabled", "true");
+      await expect(reply).toHaveAttribute("aria-disabled", "true");
 
       // Away to the Inbox and back without a reload, so the app - and the send - stay loaded,
       // by the sidebar's own links, which openFromSidebar explains.
@@ -984,8 +984,8 @@ test.describe("agents page", () => {
 
       await expect(field).toBeDisabled();
       await expect(field).toHaveValue("Status please");
-      await expect(toggle).toBeDisabled();
-      await expect(reply).toBeDisabled();
+      await expect(toggle).toHaveAttribute("aria-disabled", "true");
+      await expect(reply).toHaveAttribute("aria-disabled", "true");
       send.release();
       await expect(field).toHaveValue("");
       await expect(field).toBeEnabled();

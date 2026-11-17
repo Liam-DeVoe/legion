@@ -6,6 +6,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { ApiError, api, type WriteBounds } from "../../api/client";
 import { projectsQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -18,6 +19,7 @@ import {
   primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
   secondaryButtonBorder,
+  secondaryButtonDisabledText,
   secondaryButtonHoverBorder,
   secondaryButtonText,
   textMutedOnSurface,
@@ -90,7 +92,12 @@ export function CreateIssueDialog({
     "";
   const trimmedTitle = title.trim();
   const trimmedSpec = spec.trim();
-  const canSubmit = selectedProject !== "" && trimmedTitle !== "" && !mutation.isPending;
+  // A draft with no project or no title cannot be filed: Create is disabled. While the create is
+  // out the dialog is held instead (`heldPress`): whichever control holds the focus keeps it, and
+  // nothing sends a second create.
+  const ready = selectedProject !== "" && trimmedTitle !== "";
+  const held = mutation.isPending;
+  const canSubmit = ready && !held;
   const submit = (force: boolean) =>
     submitGuard.guard(() =>
       mutation.mutate({
@@ -131,9 +138,12 @@ export function CreateIssueDialog({
           <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
             Project
             <select
-              className={`mt-1 block min-h-11 w-full rounded-lg border px-3 py-2 text-sm font-normal outline-none ${inputClasses(true)} ${textPrimaryOnSurface}`}
-              disabled={mutation.isPending || available.length === 0}
-              onChange={(event) => setProject(event.target.value)}
+              aria-disabled={held || undefined}
+              className={`mt-1 block min-h-11 w-full rounded-lg border px-3 py-2 text-sm font-normal outline-none aria-disabled:opacity-50 ${inputClasses(true)} ${textPrimaryOnSurface}`}
+              disabled={available.length === 0}
+              onChange={(event) => {
+                if (!held) setProject(event.target.value);
+              }}
               value={selectedProject}
             >
               {available.map((candidate) => (
@@ -158,13 +168,14 @@ export function CreateIssueDialog({
           <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
             Title
             <input
-              className={`mt-1 block min-h-11 w-full rounded-lg border px-3 py-2 text-sm font-normal outline-none ${inputClasses(true)}`}
-              disabled={mutation.isPending}
+              aria-disabled={held || undefined}
+              className={`mt-1 block min-h-11 w-full rounded-lg border px-3 py-2 text-sm font-normal outline-none aria-disabled:opacity-50 ${inputClasses(true)}`}
               maxLength={ISSUE_TITLE_MAX}
               onChange={(event) => {
                 mutation.forgetUnanswered();
                 setTitle(event.target.value);
               }}
+              readOnly={held}
               ref={titleRef}
               type="text"
               value={title}
@@ -173,10 +184,11 @@ export function CreateIssueDialog({
           <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
             Spec <span className={`font-normal ${textMutedOnSurface}`}>(optional)</span>
             <textarea
-              className={`mt-1 block w-full rounded-lg border px-3 py-2 text-sm font-normal outline-none ${inputClasses(true)}`}
-              disabled={mutation.isPending}
+              aria-disabled={held || undefined}
+              className={`mt-1 block w-full rounded-lg border px-3 py-2 text-sm font-normal outline-none aria-disabled:opacity-50 ${inputClasses(true)}`}
               onChange={(event) => setSpec(event.target.value)}
               onKeyDown={(event) => submitOnModifiedEnter(event)}
+              readOnly={held}
               rows={3}
               value={spec}
             />
@@ -212,17 +224,18 @@ export function CreateIssueDialog({
             </button>
             {duplicate === undefined ? null : (
               <button
-                className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-                disabled={!canSubmit}
-                onClick={() => submit(true)}
+                className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+                disabled={!ready}
+                {...heldPress(held, () => submit(true))}
                 type="button"
               >
                 Create anyway
               </button>
             )}
             <button
+              aria-disabled={held || undefined}
               className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-              disabled={!canSubmit}
+              disabled={!ready}
               type="submit"
             >
               {mutation.isPending ? "Creating…" : "Create"}

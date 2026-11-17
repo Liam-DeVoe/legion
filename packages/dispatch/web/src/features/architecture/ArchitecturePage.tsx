@@ -9,6 +9,7 @@ import type {
   ArchitectureTreeComponent,
   ArchitectureTreeSource,
 } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -510,9 +511,8 @@ function SourceLine({
         <span aria-hidden="true">·</span>
         <button
           aria-label={refreshing ? `Refreshing ${source.repo}…` : `Refresh ${source.repo}`}
-          className={`min-h-11 font-medium disabled:cursor-not-allowed disabled:opacity-50 md:min-h-0 ${linkText} ${linkHoverText}`}
-          disabled={refresh?.pending === true}
-          onClick={onRefresh}
+          className={`min-h-11 font-medium refused:cursor-not-allowed refused:opacity-50 md:min-h-0 ${linkText} ${linkHoverText}`}
+          {...heldPress(refresh?.pending === true, onRefresh)}
           type="button"
         >
           {refreshing ? "Refreshing…" : "Refresh"}

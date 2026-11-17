@@ -1,5 +1,6 @@
 import { type FormEvent, type ReactNode, useEffect, useRef } from "react";
 
+import { heldPress } from "../../components/held-press";
 import { RefusableButton } from "../../components/RefusableButton";
 import { dangerText, inputClasses, linkHoverText, linkText } from "../../theme/classes";
 import { focusOnDocument } from "../shell/roving";
@@ -106,9 +107,8 @@ export function TitleForm({
             {submitLabel}
           </RefusableButton>
           <button
-            className={`min-h-11 shrink-0 text-sm font-medium ${linkText} ${linkHoverText}`}
-            disabled={pending}
-            onClick={onCancel}
+            className={`min-h-11 shrink-0 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${linkText} ${linkHoverText}`}
+            {...heldPress(pending, onCancel)}
             type="button"
           >
             Cancel

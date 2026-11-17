@@ -20,6 +20,7 @@ import {
 } from "../../api/client";
 import { artifactBlocksQuery } from "../../api/queries";
 import type { Artifact, AuthenticatedUser, Version } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { TruncatedText } from "../../components/TruncatedText";
 import { copyText } from "../../lib/clipboard";
 import {
@@ -1091,8 +1092,7 @@ export function ProofDocument({
           </p>
           <button
             className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-            disabled={rebuild.isPending}
-            onClick={() => {
+            {...heldPress(rebuild.isPending, () => {
               if (
                 window.confirm(
                   "Rebuild this document from its latest version? This discards its unreadable history."
@@ -1100,7 +1100,7 @@ export function ProofDocument({
               ) {
                 rebuild.mutate();
               }
-            }}
+            })}
             type="button"
           >
             {rebuild.isPending ? "Rebuilding…" : "Rebuild from the latest version"}

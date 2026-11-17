@@ -19,15 +19,19 @@ import { useIssueAssignee } from "./useIssueAssignee";
  * partitions update at once and roll back together; a refused person shows the server's
  * reason. Like `PriorityControl`, the select stays enabled while a save is in flight - a
  * disabled control drops the focus it holds and leaves the tab order - and a pick made meanwhile
- * is queued behind the save. Labelled `Assignee of <KEY>`.
+ * is queued behind the save. Labelled `Assignee of <KEY>`. `held` is the host's own write out
+ * (the issue page's other field writes): the select keeps the focus and its Tab stop, and a pick
+ * made then is dropped (`heldPress`).
  */
 export function AssigneeControl({
   assignee,
   disabled = false,
+  held = false,
   issueKey,
 }: {
   assignee: string | null;
   disabled?: boolean;
+  held?: boolean;
   issueKey: string;
 }): ReactNode {
   const [wanted, setWanted] = useState(false);
@@ -41,11 +45,12 @@ export function AssigneeControl({
   const tone = assignee === null ? badgeLow : badgePrimary;
   return (
     <>
-      <span className={`${badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}>
+      <span className={`${badgeSelectWrapper} ${disabled || held ? "opacity-50" : ""}`}>
         <span aria-hidden="true" className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
           {assignee ?? "Unassigned"}
         </span>
         <select
+          aria-disabled={held || undefined}
           aria-label={`Assignee of ${issueKey}`}
           className={badgeSelectOverlay}
           disabled={disabled}
@@ -58,6 +63,7 @@ export function AssigneeControl({
             want();
           }}
           onChange={(event) => {
+            if (held) return;
             const { value } = event.target;
             write.submit(value === "" ? null : value);
           }}

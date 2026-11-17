@@ -79,6 +79,9 @@ export function ProjectsSection(): ReactNode {
   // the form starts on; the reader may pick anyone else who has signed in.
   const viewer = useQuery(whoAmIQuery()).data?.login;
   const newProjectAssignee = projectAssignee ?? viewer ?? "";
+  // The form is held, not disabled, while a create is out: each control keeps the focus the
+  // press gave it (`heldPress`), and `projectSubmitGuard` sends no second create.
+  const createHeld = createProject.isPending;
   const submitProject = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     // An emptied form - a create that landed - sends nothing, whatever submits it, and so does
@@ -175,14 +178,15 @@ export function ProjectsSection(): ReactNode {
             <label className={settingsFieldLabel} htmlFor="project-key">
               Key
               <input
-                className={settingsMonoInput}
-                disabled={createProject.isPending}
+                aria-disabled={createHeld || undefined}
+                className={`${settingsMonoInput} aria-disabled:opacity-50`}
                 id="project-key"
                 onChange={(event) => {
                   createProject.forgetUnanswered();
                   setProjectKey(event.target.value.trim().toUpperCase());
                 }}
                 placeholder="CORE"
+                readOnly={createHeld}
                 required
                 value={projectKey}
               />
@@ -190,12 +194,13 @@ export function ProjectsSection(): ReactNode {
             <label className={settingsFieldLabel} htmlFor="project-name">
               Name
               <input
-                className={`rounded-md px-3 py-2 ${inputClasses(false)} ${textPrimaryOnSurface}`}
-                disabled={createProject.isPending}
+                aria-disabled={createHeld || undefined}
+                className={`rounded-md px-3 py-2 aria-disabled:opacity-50 ${inputClasses(false)} ${textPrimaryOnSurface}`}
                 id="project-name"
                 maxLength={PROJECT_NAME_MAX}
                 onChange={(event) => setProjectName(event.target.value)}
                 placeholder="Core"
+                readOnly={createHeld}
                 required
                 value={projectName}
               />
@@ -203,10 +208,13 @@ export function ProjectsSection(): ReactNode {
             <label className={settingsFieldLabel} htmlFor="project-default-assignee">
               Default assignee
               <select
-                className={`w-full min-w-0 rounded-md px-3 py-2 ${inputClasses(false)} ${textPrimaryOnSurface}`}
-                disabled={createProject.isPending || newProjectAssignee === ""}
+                aria-disabled={createHeld || undefined}
+                className={`w-full min-w-0 rounded-md px-3 py-2 aria-disabled:opacity-50 ${inputClasses(false)} ${textPrimaryOnSurface}`}
+                disabled={newProjectAssignee === ""}
                 id="project-default-assignee"
-                onChange={(event) => setProjectAssignee(event.target.value)}
+                onChange={(event) => {
+                  if (!createHeld) setProjectAssignee(event.target.value);
+                }}
                 onFocus={() => setWantUsers(true)}
                 onPointerEnter={() => setWantUsers(true)}
                 onTouchStart={() => setWantUsers(true)}
@@ -227,8 +235,8 @@ export function ProjectsSection(): ReactNode {
               </select>
             </label>
             <button
+              aria-disabled={createHeld || undefined}
               className={settingsSubmitButton}
-              disabled={createProject.isPending}
               type="submit"
             >
               New project

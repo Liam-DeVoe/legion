@@ -2,6 +2,7 @@ import type { UseQueryResult } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import { apiErrorMessage, type WriteBounds } from "../../api/client";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
   TableBody,
@@ -145,9 +146,8 @@ export function RevocableList<Row>({
                       </span>
                     ) : (
                       <button
-                        className={`min-h-11 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-50 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText} ${hoverToDangerText}`}
-                        disabled={mutation.isPending}
-                        onClick={() => press(row)}
+                        className={`min-h-11 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap refused:cursor-not-allowed refused:opacity-50 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText} ${hoverToDangerText}`}
+                        {...heldPress(mutation.isPending, () => press(row))}
                         type="button"
                       >
                         Revoke

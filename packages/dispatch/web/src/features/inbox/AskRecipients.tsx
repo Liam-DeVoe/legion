@@ -4,6 +4,7 @@ import { type ReactNode, useState } from "react";
 import { api, type WriteBounds } from "../../api/client";
 import type { Ask, AskFollower, IssueDetails, Subscriber } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import { textMutedOnSurface } from "../../theme/classes";
@@ -336,10 +337,9 @@ export function AskRecipients({
                   </span>
                   <button
                     className={sessionRemoveButtonClassName}
-                    disabled={unfollow.isPending}
-                    onClick={() =>
+                    {...heldPress(unfollow.isPending, () =>
                       setConfirming({ kind: "follower", sessionId: follower.session_id })
-                    }
+                    )}
                     type="button"
                   >
                     Unfollow
@@ -391,10 +391,9 @@ export function AskRecipients({
                     {subscriber.removable ? (
                       <button
                         className={sessionRemoveButtonClassName}
-                        disabled={unsubscribe.isPending}
-                        onClick={() =>
+                        {...heldPress(unsubscribe.isPending, () =>
                           setConfirming({ kind: "subscriber", sessionId: subscriber.session_id })
-                        }
+                        )}
                         type="button"
                       >
                         Unsubscribe

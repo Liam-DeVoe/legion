@@ -3,6 +3,7 @@ import { type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { GraphEdge } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import {
   borderDefault,
   linkHoverText,
@@ -276,9 +277,8 @@ export function ReferencedBy({
         <p className={`flex flex-wrap items-center gap-2 text-sm ${textMutedOnSurface}`}>
           <span>Referenced by unavailable.</span>
           <button
-            className={`font-medium underline ${linkText} ${linkHoverText}`}
-            disabled={query.isFetching}
-            onClick={() => void query.refetch()}
+            className={`font-medium underline refused:cursor-not-allowed refused:opacity-50 ${linkText} ${linkHoverText}`}
+            {...heldPress(query.isFetching, () => void query.refetch())}
             type="button"
           >
             Retry

@@ -4,6 +4,7 @@ import { type ReactNode, useId, useRef, useState } from "react";
 import { api, type CreateArtifactReviewInput, isCapExceeded } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { Artifact, ArtifactApproval } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { approvalPillClassName } from "../../components/Pill";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -16,6 +17,7 @@ import {
   primaryButtonDisabled,
   primaryButtonEnabledHoverBg,
   secondaryButtonBorder,
+  secondaryButtonDisabledText,
   secondaryButtonHoverBorder,
   secondaryButtonText,
   textMutedOnSurface,
@@ -138,15 +140,17 @@ function ReviewsDialog({
 
 function RequestChangesDialog({
   error,
+  held,
   onClose,
   onSubmit,
-  saving,
 }: {
   /** What the server answered the last request with, or null while none was refused. */
   error: Error | null;
+  /** The request is out: the reason and both buttons keep the focus and their Tab stops, and
+   *  send or close nothing (`heldPress`). */
+  held: boolean;
   onClose: () => void;
   onSubmit: (reason: string) => void;
-  saving: boolean;
 }): ReactNode {
   const [reason, setReason] = useState("");
   const reasonId = useId();
@@ -172,19 +176,20 @@ function RequestChangesDialog({
           >
             Reason
             <textarea
-              className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none ${inputClasses(false)}`}
-              disabled={saving}
+              aria-disabled={held || undefined}
+              className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none aria-disabled:opacity-50 ${inputClasses(false)}`}
               id={reasonId}
               onChange={(event) => setReason(event.target.value)}
               onKeyDown={(event) =>
                 submitOnModifiedEnter(event, {
                   onFormlessSubmit: () => {
-                    if (trimmed !== "" && !saving) {
+                    if (trimmed !== "" && !held) {
                       onSubmit(trimmed);
                     }
                   },
                 })
               }
+              readOnly={held}
               ref={textareaRef}
               value={reason}
             />
@@ -198,20 +203,19 @@ function RequestChangesDialog({
           )}
           <div className="flex items-center justify-end gap-2">
             <button
-              className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-              disabled={saving}
-              onClick={onClose}
+              className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+              {...heldPress(held, onClose)}
               type="button"
             >
               Cancel
             </button>
             <button
               className={`rounded-lg px-3 py-1.5 text-sm font-medium ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-              disabled={trimmed === "" || saving}
-              onClick={() => onSubmit(trimmed)}
+              disabled={trimmed === ""}
+              {...heldPress(held, () => onSubmit(trimmed))}
               type="button"
             >
-              {saving ? "Submitting…" : "Request changes"}
+              {held ? "Submitting…" : "Request changes"}
             </button>
           </div>
         </div>
@@ -309,17 +313,17 @@ export function ApprovalChip({
             // two outline buttons made a reader choose before reading either.
             <button
               className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-              disabled={review.isPending}
-              onClick={() => submitGuard.guard(() => review.mutate({ state: "approved" }))}
+              {...heldPress(review.isPending, () =>
+                submitGuard.guard(() => review.mutate({ state: "approved" }))
+              )}
               type="button"
             >
               {approveLabel}
             </button>
           )}
           <button
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-            disabled={review.isPending}
-            onClick={() => setRequestChangesOpen(true)}
+            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+            {...heldPress(review.isPending, () => setRequestChangesOpen(true))}
             type="button"
           >
             Request changes
@@ -332,6 +336,7 @@ export function ApprovalChip({
       {requestChangesOpen ? (
         <RequestChangesDialog
           error={review.isError ? review.error : null}
+          held={review.isPending}
           onClose={() => {
             review.reset();
             setRequestChangesOpen(false);
@@ -339,7 +344,6 @@ export function ApprovalChip({
           onSubmit={(reason) =>
             submitGuard.guard(() => review.mutate({ reason, state: "changes_requested" }))
           }
-          saving={review.isPending}
         />
       ) : null}
     </div>

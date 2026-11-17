@@ -52,14 +52,18 @@ export function PriorityControl({
  * The host passes the write when it has other ways to set the same priority: the issue page
  * creates one for the page and shares it with the keyboard's `0`–`3` and the palette's Set
  * priority rows, so one refusal is reported once, here, by the control the reader is looking at.
+ * `held` is the host's own write out (the issue page's other field writes): the trigger keeps the
+ * focus and its Tab stop and opens nothing (`ChoiceMenu`'s `held`).
  */
 export function PriorityEditor({
   disabled = false,
+  held = false,
   issueKey,
   priority,
   write,
 }: {
   disabled?: boolean;
+  held?: boolean;
   issueKey: string;
   priority: IssuePriority | null;
   write: IssuePriorityWrite;
@@ -71,6 +75,7 @@ export function PriorityEditor({
         checked={priority === null ? "" : `${priority}`}
         choices={priorityChoices}
         disabled={disabled}
+        held={held}
         label={`Priority of ${issueKey}`}
         marks={{ "data-priority-menu": "" }}
         onChoose={(value) => write.submit(value === "" ? null : (Number(value) as IssuePriority))}

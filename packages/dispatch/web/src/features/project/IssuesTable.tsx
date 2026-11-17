@@ -10,6 +10,7 @@ import {
 } from "../../components/DataTable";
 import type { FilterChip } from "../../components/filter-chips";
 import { useFocusPlace } from "../../components/focus-place";
+import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import type { PagerOptions } from "../../components/Pager";
 import { useTableLayout } from "../../components/table-layout";
@@ -511,9 +512,12 @@ export function IssuesTable({
               <div role="alert" className={textSecondaryOnCanvas}>
                 <p>{duplicateEpic.message}</p>
                 <button
+                  className="refused:cursor-not-allowed refused:opacity-50"
                   type="button"
-                  disabled={busy}
-                  onClick={() => void newEpic(duplicateEpic.keys, duplicateEpic.title, true)}
+                  {...heldPress(
+                    busy,
+                    () => void newEpic(duplicateEpic.keys, duplicateEpic.title, true)
+                  )}
                 >
                   Create anyway
                 </button>

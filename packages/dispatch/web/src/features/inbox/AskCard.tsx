@@ -23,6 +23,7 @@ import type {
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { focusOnMount } from "../../components/focus-place";
+import { heldPress } from "../../components/held-press";
 import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -431,6 +432,9 @@ export function AskCard({
     setQuestionChoice(false);
   });
   const uploading = upload.pending > 0;
+  // While the answer or the question back is out, the form's controls are held rather than
+  // disabled: whichever holds the focus keeps it (`heldPress`), and none sends a second write.
+  const held = isSubmitting;
   const answerFieldRef = useRef<HTMLTextAreaElement>(null);
   // Picking Request changes moves the person straight to the field the server insists
   // on. Keyed on the field actually being mounted, not just on the option: the compact variant
@@ -456,10 +460,11 @@ export function AskCard({
       answerFieldRef.current?.focus();
     }
   }, [ownWordsOpen]);
-  // A control that disables itself under the reader's focus - Ask back while sending and once
-  // its text is sent - would have the browser drop focus to the document body (in the Inbox, out
-  // of the row, which then lets the row go) with nothing the card could act on afterwards; the
-  // same hand-off as a vanishing form, in the commit that disables it, before the browser looks.
+  // A control that disables itself under the reader's focus - Ask back once its text is sent,
+  // since a send that is out only holds it - would have the browser drop focus to the document
+  // body (in the Inbox, out of the row, which then lets the row go) with nothing the card could
+  // act on afterwards; the same hand-off as a vanishing form, in the commit that disables it,
+  // before the browser looks.
   const [formRef, trackForm] = useFormRef();
   useLayoutEffect(() => {
     const form = formRef.current;
@@ -580,22 +585,27 @@ export function AskCard({
           {reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
         </span>
         <textarea
-          className={`block w-full rounded-lg px-3 py-2 font-normal outline-none ${inputClasses(true)}`}
+          aria-disabled={held || undefined}
+          className={`block w-full rounded-lg px-3 py-2 font-normal outline-none aria-disabled:opacity-50 ${inputClasses(true)}`}
           data-ask-answer=""
-          disabled={isSubmitting}
           id={answerFieldId}
           onChange={(event) => {
             setAnswerText(event.target.value);
             setQuestionChoice(false);
           }}
           onDrop={
-            uploadOwner === undefined ? undefined : (event) => upload.drop(event, uploadOwner)
+            uploadOwner === undefined || held
+              ? undefined
+              : (event) => upload.drop(event, uploadOwner)
           }
           onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading })}
           onPaste={
-            uploadOwner === undefined ? undefined : (event) => upload.paste(event, uploadOwner)
+            uploadOwner === undefined || held
+              ? undefined
+              : (event) => upload.paste(event, uploadOwner)
           }
           placeholder={answerPlaceholder}
+          readOnly={held}
           ref={answerFieldRef}
           rows={2}
           value={answerText}
@@ -607,8 +617,9 @@ export function AskCard({
   const submitButton = (
     <button
       aria-describedby={submitHint === undefined ? undefined : submitHintId}
+      aria-disabled={held || undefined}
       className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-      disabled={!canAnswer || isSubmitting || uploading}
+      disabled={!canAnswer || uploading}
       title={submitHint}
       type="submit"
     >
@@ -631,17 +642,15 @@ export function AskCard({
     <fieldset aria-label="Question-shaped answer" className="flex gap-2">
       <button
         className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-        disabled={isSubmitting}
-        onClick={sendClarification}
+        {...heldPress(held, sendClarification)}
         ref={focusOnMount}
         type="button"
       >
         {clarification.isPending ? "Sending…" : "Ask back instead"}
       </button>
       <button
-        className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
-        disabled={isSubmitting}
-        onClick={() => sendAnswer(answerText)}
+        className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
+        {...heldPress(held, () => sendAnswer(answerText))}
         type="button"
       >
         Answer with it anyway
@@ -653,18 +662,17 @@ export function AskCard({
         {submitButton}
         {changing ? (
           <button
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
-            disabled={isSubmitting}
-            onClick={cancelChanging}
+            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
+            {...heldPress(held, cancelChanging)}
             type="button"
           >
             Cancel
           </button>
         ) : (
           <button
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
-            disabled={trimmedAnswer === "" || isSubmitting || uploading}
-            onClick={sendClarification}
+            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
+            disabled={trimmedAnswer === "" || uploading}
+            {...heldPress(held, sendClarification)}
             type="button"
           >
             {clarification.isPending ? "Sending…" : "Ask back"}
@@ -887,7 +895,7 @@ export function AskCard({
             {(displayedAsk.options ?? []).map((option) => (
               <AskChoiceRow
                 checked={selected.includes(option.label)}
-                disabled={isSubmitting}
+                held={held}
                 hotkey
                 key={option.label}
                 multiple={displayedAsk.multiple}
@@ -903,7 +911,7 @@ export function AskCard({
             {isApproval ? null : (
               <AskChoiceRow
                 checked={otherSelected}
-                disabled={isSubmitting}
+                held={held}
                 multiple={displayedAsk.multiple}
                 name={`ask-${displayedAsk.id}`}
                 onChange={() => {

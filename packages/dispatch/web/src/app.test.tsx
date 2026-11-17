@@ -391,9 +391,11 @@ test("signing out asks first, then drops every write here and tells every other 
     expect(keptWrites()).toHaveLength(2);
 
     answer = true;
-    // The declined question leaves the sign-out's write settling, and the control disabled until
-    // it has: a press lands on it once it is pressable again.
-    await waitFor(() => expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled());
+    // The declined question leaves the sign-out's write settling, and the control held until it
+    // has (`aria-disabled`, a press on it doing nothing): a press lands on it once it lets go.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Sign out" })).not.toHaveAttribute("aria-disabled")
+    );
     await user.click(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(writesOf(queryClient).rows()).toEqual([]));
     await screen.findByRole("link", { name: "Sign in with Google" });

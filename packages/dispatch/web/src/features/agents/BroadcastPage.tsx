@@ -10,6 +10,7 @@ import type {
   MessageDeliveryMode,
 } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
+import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
 import { useNavigationState } from "../../lib/page-address";
@@ -20,6 +21,7 @@ import {
   linkHoverText,
   linkText,
   secondaryButtonBorder,
+  secondaryButtonDisabledText,
   secondaryButtonText,
   textMutedOnCanvas,
   textPrimaryOnCanvas,
@@ -146,9 +148,8 @@ function BroadcastRecipientRow({
         // by its dedupe key while a different mode is a new key - that would be a second delivery.
         <div className="mt-3">
           <button
-            className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText}`}
-            disabled={retry.isPending}
-            onClick={() => retry.mutate(latest?.delivery ?? delivery)}
+            className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
+            {...heldPress(retry.isPending, () => retry.mutate(latest?.delivery ?? delivery))}
             type="button"
           >
             Retry

@@ -39,11 +39,12 @@ function OptionText({ option }: { option: AskOptionWithTrees }): ReactNode {
 
 /** A choosable option: a radio or checkbox row. The `name` groups radios per ask. `hotkey` marks
  * the input `data-ask-option` so the Inbox's number keys 1–9 pick it (the real options of the
- * focused ask, not Other). */
+ * focused ask, not Other). `held` while the card's answer is out: the input keeps the focus and
+ * its Tab stop, and a pick made then changes nothing (`heldPress`). */
 export function AskChoiceRow({
   checked,
   className = "",
-  disabled = false,
+  held = false,
   hotkey = false,
   multiple,
   name,
@@ -52,7 +53,7 @@ export function AskChoiceRow({
 }: {
   checked: boolean;
   className?: string;
-  disabled?: boolean;
+  held?: boolean;
   hotkey?: boolean;
   multiple: boolean;
   name: string;
@@ -66,11 +67,14 @@ export function AskChoiceRow({
       className={`${ROW_CLASS} cursor-pointer ${checked ? `${selectedCardBorder} ${selectedCardBg}` : cardHoverBorder} ${className}`}
     >
       <input
+        aria-disabled={held || undefined}
         checked={checked}
+        className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
         data-ask-option={hotkey ? "" : undefined}
-        disabled={disabled}
         name={name}
-        onChange={onChange}
+        onChange={() => {
+          if (!held) onChange();
+        }}
         type={multiple ? "checkbox" : "radio"}
       />
       <OptionText option={option} />

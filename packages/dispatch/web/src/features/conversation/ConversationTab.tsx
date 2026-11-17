@@ -13,6 +13,7 @@ import type {
   MessageWithTrees,
   UserState,
 } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { PinButton } from "../../components/PinButton";
 import { useSending } from "../../hooks/useSending";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -195,7 +196,7 @@ function ConversationReply({
   markRef,
   onReply,
   reply,
-  replyDisabled,
+  replyHeld,
   root,
 }: {
   agents: readonly Agent[] | undefined;
@@ -205,7 +206,7 @@ function ConversationReply({
   markRef?: DwellRef;
   onReply: (target: ReplyTarget) => void;
   reply: MessageWithTrees;
-  replyDisabled: boolean;
+  replyHeld: boolean;
   root: MessageConversation;
 }): ReactNode {
   const queryClient = useQueryClient();
@@ -267,7 +268,7 @@ function ConversationReply({
             ? undefined
             : buildIssuePath({ id: reply.in_reply_to, key: issueKey, kind: "message" }),
       }}
-      replyDisabled={replyDisabled}
+      replyHeld={replyHeld}
       turnID={conversationItemId("message", reply.id)}
     />
   );
@@ -278,14 +279,14 @@ function Thread({
   currentReplyId,
   issueKey,
   onReply,
-  replyDisabled,
+  replyHeld,
   root,
 }: {
   agents: readonly Agent[] | undefined;
   currentReplyId: string | undefined;
   issueKey: string;
   onReply: (target: ReplyTarget) => void;
-  replyDisabled: boolean;
+  replyHeld: boolean;
   root: MessageConversation;
 }): ReactNode {
   // The shared thread read mark: the thread is read once its newest reply has been on screen.
@@ -313,7 +314,7 @@ function Thread({
           markRef={reply === newest ? markRef : undefined}
           onReply={onReply}
           reply={reply}
-          replyDisabled={replyDisabled}
+          replyHeld={replyHeld}
           root={root}
         />
       ))}
@@ -336,7 +337,7 @@ function MessageTurn({
   onReply,
   pinned,
   register,
-  replyDisabled,
+  replyHeld,
 }: {
   agents: readonly Agent[] | undefined;
   current: boolean;
@@ -348,7 +349,7 @@ function MessageTurn({
   onReply: (target: ReplyTarget) => void;
   pinned: boolean;
   register?: DwellRef;
-  replyDisabled: boolean;
+  replyHeld: boolean;
 }): ReactNode {
   const author = item.root.author;
   return (
@@ -376,7 +377,7 @@ function MessageTurn({
         <TurnActions>
           <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "message" }} />
           <ReplyButton
-            disabled={replyDisabled}
+            held={replyHeld}
             onClick={() => onReply(replyTargetFor(item.root, item, issueKey))}
           />
           <TurnPin onPin={onPin} pinned={pinned} />
@@ -387,7 +388,7 @@ function MessageTurn({
         currentReplyId={currentReplyId}
         issueKey={issueKey}
         onReply={onReply}
-        replyDisabled={replyDisabled}
+        replyHeld={replyHeld}
         root={item}
       />
     </li>
@@ -592,9 +593,8 @@ function CommentDeliveryList({
             </span>
             {!canRetry || !safeRetry ? null : (
               <button
-                className={`min-h-8 font-medium ${linkText}`}
-                disabled={retrying}
-                onClick={() => onRetry(delivery)}
+                className={`min-h-8 font-medium refused:cursor-not-allowed refused:opacity-50 ${linkText}`}
+                {...heldPress(retrying, () => onRetry(delivery))}
                 type="button"
               >
                 Retry
@@ -637,7 +637,7 @@ function CommentTurn({
   pendingAction,
   pinned,
   register,
-  replyDisabled,
+  replyHeld,
   sendKey,
   setExpanded,
   viewerLogin,
@@ -677,7 +677,7 @@ function CommentTurn({
   pendingAction: boolean;
   pinned: boolean;
   register?: DwellRef;
-  replyDisabled: boolean;
+  replyHeld: boolean;
   /** The tab's send name, beneath which the thread card's own reply composer names its send
    *  (`threadReplySendKey`). */
   sendKey: MutationKey;
@@ -805,9 +805,8 @@ function CommentTurn({
         {forceExpanded ? null : (
           <button
             aria-expanded={currentExpanded}
-            className={`min-h-8 font-medium disabled:cursor-not-allowed disabled:opacity-50 ${linkText}`}
-            disabled={currentExpanded && replySending}
-            onClick={toggleThread}
+            className={`min-h-8 font-medium refused:cursor-not-allowed refused:opacity-50 ${linkText}`}
+            {...heldPress(currentExpanded && replySending, toggleThread)}
             type="button"
           >
             {currentExpanded ? "Collapse thread" : "Expand thread"}
@@ -815,7 +814,7 @@ function CommentTurn({
         )}
         <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "comment" }} />
         <ReplyButton
-          disabled={replyDisabled}
+          held={replyHeld}
           onClick={() => {
             if (onReply(commentReplyTarget(item.root, agentText, issueKey)) && !isPhone) {
               setExpanded(true);
@@ -836,7 +835,7 @@ function TargetedMessageTurn({
   item,
   onReply,
   register,
-  replyDisabled,
+  replyHeld,
 }: {
   agents: readonly Agent[] | undefined;
   current: boolean;
@@ -845,7 +844,7 @@ function TargetedMessageTurn({
   item: Extract<Conversation, { kind: "targeted-message" }>;
   onReply: (target: ReplyTarget) => void;
   register?: DwellRef;
-  replyDisabled: boolean;
+  replyHeld: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
   const text = useAgentText();
@@ -887,7 +886,7 @@ function TargetedMessageTurn({
       onReply={() => onReply(replyTargetFor(item.root, item, issueKey))}
       onRetry={retry.mutate}
       register={register}
-      replyDisabled={replyDisabled}
+      replyHeld={replyHeld}
       retrying={retry.isPending}
       targetName={targetName}
       thread={
@@ -896,7 +895,7 @@ function TargetedMessageTurn({
           currentReplyId={currentReplyId}
           issueKey={issueKey}
           onReply={onReply}
-          replyDisabled={replyDisabled}
+          replyHeld={replyHeld}
           root={item}
         />
       }
@@ -1323,7 +1322,7 @@ export function ConversationTab({
                 key={item.id}
                 onReply={beginReply}
                 register={register}
-                replyDisabled={composerSending}
+                replyHeld={composerSending}
               />
             );
           }
@@ -1340,7 +1339,7 @@ export function ConversationTab({
                 onReply={beginReply}
                 pinned={pinned}
                 register={register}
-                replyDisabled={composerSending}
+                replyHeld={composerSending}
               />
             );
           }
@@ -1383,7 +1382,7 @@ export function ConversationTab({
                 onReply={isPhoneViewport ? phone.beginReply : beginReply}
                 pinned={pinned}
                 register={register}
-                replyDisabled={composerSending}
+                replyHeld={composerSending}
                 sendKey={sendKey}
                 setExpanded={(open) => setThreadOpen(item.root.id, open)}
                 viewerLogin={viewer.data?.login ?? ""}
@@ -1439,9 +1438,8 @@ export function ConversationTab({
         >
           <header className={`flex items-center border-b px-4 py-3 ${borderDefault}`}>
             <button
-              className={`min-h-11 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${textPrimaryOnSurface}`}
-              disabled={phone.cardReplySending}
-              onClick={phone.leave}
+              className={`min-h-11 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${textPrimaryOnSurface}`}
+              {...heldPress(phone.cardReplySending, phone.leave)}
               type="button"
             >
               Back
@@ -1478,7 +1476,7 @@ export function ConversationTab({
                 onReply={phone.beginReply}
                 pinned={isPinnedConversation(issueState.dismissed ?? [], phoneThread.id)}
                 register={phoneThreadIsNewest ? registerNewest : undefined}
-                replyDisabled={composerSending}
+                replyHeld={composerSending}
                 sendKey={sendKey}
                 setExpanded={(open) => setThreadOpen(phoneThread.root.id, open)}
               />

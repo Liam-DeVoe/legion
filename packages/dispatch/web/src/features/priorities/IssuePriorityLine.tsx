@@ -6,6 +6,7 @@ import { Link } from "react-router-dom";
 import { apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { Issue, PriorityRow } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import {
   dangerText,
   dismissButtonText,
@@ -94,7 +95,9 @@ export function IssuePriorityLine({
   });
   const writeOwn = (ids: string[]) =>
     write.mutate({ advances: ids, advances_revision: issue.advances_revision });
-  const busy = disabled || write.isPending;
+  // Disabled on a closed issue; held while a write is out, so each control keeps the focus the
+  // press gave it and sends nothing more until the write lands (`heldPress`).
+  const held = write.isPending;
   // A priority the issue already advances is no choice: the line names it, whether the relation
   // is the issue's own or an ancestor's.
   const choices = rows.filter((row) => !advances.some((entry) => entry.id === row.id));
@@ -102,7 +105,7 @@ export function IssuePriorityLine({
 
   const add = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (picked === "") return;
+    if (picked === "" || held) return;
     writeOwn([...own, picked]);
     setPicked("");
     setAdding(false);
@@ -130,9 +133,9 @@ export function IssuePriorityLine({
             ) : (
               <button
                 aria-label={`Remove ${label} from ${issue.key}`}
-                className={`shrink-0 ${dismissButtonText}`}
-                disabled={busy}
-                onClick={() => writeOwn(own.filter((id) => id !== entry.id))}
+                className={`shrink-0 refused:cursor-not-allowed refused:opacity-50 ${dismissButtonText}`}
+                disabled={disabled}
+                {...heldPress(held, () => writeOwn(own.filter((id) => id !== entry.id)))}
                 type="button"
               >
                 ✕
@@ -166,8 +169,9 @@ export function IssuePriorityLine({
             ))}
           </select>
           <button
-            className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
-            disabled={busy || picked === ""}
+            aria-disabled={held || undefined}
+            className={`min-h-11 rounded px-2 py-1 text-sm font-medium refused:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
+            disabled={disabled || picked === ""}
             type="submit"
           >
             Add
@@ -194,9 +198,9 @@ export function IssuePriorityLine({
           // plain "+" (U+002B): the fullwidth "＋" this line held draws as an empty box where
           // no CJK font is installed, which is this pod's Chromium and some readers' browsers.
           aria-label={`Add a priority to ${issue.key}`}
-          className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}`}
-          disabled={busy}
-          onClick={() => setAdding(true)}
+          className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none refused:cursor-not-allowed refused:opacity-50 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}`}
+          disabled={disabled}
+          {...heldPress(held, () => setAdding(true))}
           title={`Add a priority to ${issue.key}`}
           type="button"
         >

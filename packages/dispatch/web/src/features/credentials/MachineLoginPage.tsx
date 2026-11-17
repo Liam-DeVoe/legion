@@ -80,6 +80,7 @@ export function MachineLoginPage(): ReactNode {
   const record = lookup.data ?? undefined;
   // The code the shown record was looked up by, not whatever the field holds now.
   const lookedUpCode = lookup.variables ?? "";
+  const lookingUp = lookup.isPending;
 
   // Each is typed by its answer, which its callbacks read.
   const approve = useKeyedWrite<DecisionResponse>({
@@ -161,9 +162,12 @@ export function MachineLoginPage(): ReactNode {
             value={code}
           />
         </div>
+        {/* Held rather than disabled while the lookup is out, so it keeps the focus Enter gave
+            it (`heldPress`); `submit`'s guard sends no second lookup. */}
         <button
+          aria-disabled={lookingUp || undefined}
           className={`min-h-11 rounded-lg px-4 py-2 text-sm font-medium ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-          disabled={lookup.isPending || code.trim() === ""}
+          disabled={code.trim() === ""}
           type="submit"
         >
           Look up

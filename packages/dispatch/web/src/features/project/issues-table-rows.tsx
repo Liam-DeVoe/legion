@@ -3,6 +3,7 @@ import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 import type { IssueSummary } from "../../api/types";
 import { DataTableCells, DataTableGroupRow } from "../../components/DataTable";
+import { heldPress } from "../../components/held-press";
 import { MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import { useNestedPanels } from "../../components/useNestedPanels";
@@ -62,11 +63,8 @@ export function IssueRow({
         trailing={
           queue !== undefined && queue > 1 ? (
             <button
-              aria-disabled={busy || undefined}
               className={`rounded-md border px-2 py-0.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 focus:opacity-100 ${borderDefault} ${surfaceBg}`}
-              onClick={() => {
-                if (!busy) onStartNext(issue.key);
-              }}
+              {...heldPress(busy, () => onStartNext(issue.key))}
               type="button"
             >
               Start next

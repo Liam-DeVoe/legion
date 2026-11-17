@@ -9,6 +9,8 @@
  *
  *  Every document, project, person and host here is made up: this repository is public, so
  *  nothing names a real one. */
+
+import { setTimeout as sleep } from "node:timers/promises";
 import {
   type InboxDismissRequest,
   type InboxDismissResponse,
@@ -297,6 +299,28 @@ export function answerWrites(page: Page, askId: string): KeyedWrite<unknown>[] {
 /** Every dismissal and every Move to Inbox `page` posts: `POST /api/v1/me/inbox/dismiss`. */
 export function dismissWrites(page: Page): KeyedWrite<unknown>[] {
   return watchWrites(page, "POST", DISMISS_PATH);
+}
+
+/** How long `holdWrites` keeps each write it catches out before letting it reach Dispatch. */
+export const HELD_WRITE_MS = 400;
+
+/** Every `method` request `page` sends from here on to a path `path` matches, each held
+ *  `HELD_WRITE_MS` and then sent on to Dispatch unchanged, in the order sent: a control's write
+ *  stays out long enough for a row to press the control again while it is. */
+export async function holdWrites(page: Page, method: string, path: RegExp): Promise<string[]> {
+  const held: string[] = [];
+  await page.route(
+    (url) => path.test(url.pathname),
+    async (route) => {
+      if (route.request().method() !== method) return route.fallback();
+      held.push(route.request().postData() ?? "");
+      // The hold is the row's subject: the write stays out this long so the control is
+      // pressed again while it is in flight, then the write goes on to Dispatch as sent.
+      await sleep(HELD_WRITE_MS);
+      return route.continue();
+    }
+  );
+  return held;
 }
 
 // ---------------------------------------------------------------------------

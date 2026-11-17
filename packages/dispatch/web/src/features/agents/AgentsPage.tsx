@@ -33,6 +33,7 @@ import { ChevronIcon, DisclosureToggle } from "../../components/DisclosureToggle
 import { EmptyState } from "../../components/EmptyState";
 import { filterChips } from "../../components/filter-chips";
 import { useFocusPlace } from "../../components/focus-place";
+import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
@@ -195,14 +196,14 @@ function AgentExchangeReply({
   onReply,
   read,
   reply,
-  replyDisabled,
+  replyHeld,
 }: {
   agent: Agent;
   liveAgents: readonly Agent[] | undefined;
   onReply: (reply: AgentReply) => void;
   read: MessageRead;
   reply: MessageWithTrees;
-  replyDisabled: boolean;
+  replyHeld: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
   const text = useAgentText();
@@ -262,7 +263,7 @@ function AgentExchangeReply({
                   }),
             }
       }
-      replyDisabled={replyDisabled}
+      replyHeld={replyHeld}
       turnID={`message:${reply.id}`}
     />
   );
@@ -273,13 +274,13 @@ function AgentTargetedMessage({
   liveAgents,
   onReply,
   read,
-  replyDisabled,
+  replyHeld,
 }: {
   agent: Agent;
   liveAgents: readonly Agent[] | undefined;
   onReply: (reply: AgentReply) => void;
   read: MessageRead;
-  replyDisabled: boolean;
+  replyHeld: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
   const text = useAgentText();
@@ -316,7 +317,7 @@ function AgentTargetedMessage({
       header={null}
       onReply={() => onReply(agentReplyTo(agent, read, read.message))}
       onRetry={retry.mutate}
-      replyDisabled={replyDisabled}
+      replyHeld={replyHeld}
       retrying={retry.isPending}
       targetName={rowTarget(agent)}
       thread={
@@ -330,7 +331,7 @@ function AgentTargetedMessage({
                 onReply={onReply}
                 read={read}
                 reply={reply}
-                replyDisabled={replyDisabled}
+                replyHeld={replyHeld}
               />
             ))}
           </ThreadReplies>
@@ -364,7 +365,7 @@ function AgentMessageList({
   liveAgents,
   onReply,
   open,
-  replyDisabled,
+  replyHeld,
 }: {
   agent: Agent;
   liveAgents: readonly Agent[] | undefined;
@@ -373,7 +374,7 @@ function AgentMessageList({
    *  there: a reply is read once it is on screen. */
   open: boolean;
   /** Holds every Reply while the row's send is in flight, as the picker is held. */
-  replyDisabled: boolean;
+  replyHeld: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
   const messages = useQuery(agentMessagesQuery(agent.session_id));
@@ -425,7 +426,7 @@ function AgentMessageList({
       liveAgents={liveAgents}
       onReply={onReply}
       read={read}
-      replyDisabled={replyDisabled}
+      replyHeld={replyHeld}
     />
   );
   return (
@@ -465,15 +466,14 @@ function AgentMessageList({
         )}
         {visible.length === 0 ? null : (
           <button
-            className={`ml-auto inline-flex min-h-11 items-center text-sm md:min-h-8 ${textMutedHoverToSecondary}`}
-            disabled={clear.isPending}
-            onClick={() =>
+            className={`ml-auto inline-flex min-h-11 items-center text-sm refused:cursor-not-allowed refused:opacity-50 md:min-h-8 ${textMutedHoverToSecondary}`}
+            {...heldPress(clear.isPending, () =>
               clear.mutate(
                 visible
                   .map(exchangeActivityAt)
                   .reduce((latest, at) => (compareTimestamps(at, latest) > 0 ? at : latest))
               )
-            }
+            )}
             type="button"
           >
             Clear conversation
@@ -840,7 +840,7 @@ function AgentRowDetails({
         // a collapsed one, so it marks nothing read, and showing it again is an open that
         // freezes its unread set afresh.
         open={expanded && !hidden}
-        replyDisabled={hold.sending}
+        replyHeld={hold.sending}
       />
       <div data-agent-composer="">
         <AgentMessageComposer

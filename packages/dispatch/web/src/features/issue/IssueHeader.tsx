@@ -23,6 +23,7 @@ import { projectsQuery, userStateQuery } from "../../api/queries";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { ChoiceMenu } from "../../components/ChoiceMenu";
 import { focusOnMount } from "../../components/focus-place";
+import { heldPress } from "../../components/held-press";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -214,7 +215,7 @@ export function IssueHeader({
     {
       action: "issue.close",
       run: () => drafts.requestStatusSubmit("done"),
-      // `disabled={updateIssue.isPending}` on the button, and `isClosed` decides whether it is
+      // The button is held while `updateIssue` is pending, and `isClosed` decides whether it is
       // rendered at all; a row offered while the write is in flight would submit a second one.
       when: () => !isClosed && !updateIssue.isPending,
     },
@@ -226,7 +227,7 @@ export function IssueHeader({
     ...([0, 1, 2, 3] as const).map((level) => ({
       action: `issue.set-p${level}` as const,
       run: () => priorityWrite.submit(level),
-      // The same condition as `PriorityEditor`'s `disabled` below.
+      // The same condition as `PriorityEditor`'s `disabled` and `held` below.
       when: () => !(isClosed || updateIssue.isPending),
     })),
   ]);
@@ -304,6 +305,11 @@ export function IssueHeader({
       event.currentTarget.blur();
     }
   };
+  // While a field write is out every header control that writes the issue is held rather than
+  // disabled: it keeps the focus the press gave it (`heldPress`). The route and parent forms'
+  // submits need no guard of their own: `useIssueDrafts` keeps a draft submitted meanwhile and
+  // sends it once the write out lands, never beside it.
+  const fieldHeld = updateIssue.isPending;
   const saveRoute = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (drafts.requestRouteSubmit()) {
@@ -378,8 +384,7 @@ export function IssueHeader({
           <button
             aria-label="Reopen issue"
             className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-            disabled={updateIssue.isPending}
-            onClick={() => drafts.requestStatusSubmit("backlog")}
+            {...heldPress(fieldHeld, () => drafts.requestStatusSubmit("backlog"))}
             title="Reopen into Backlog"
             type="button"
           >
@@ -451,7 +456,7 @@ export function IssueHeader({
               </h1>
             )}
             <PinButton
-              disabled={updateState.isPending}
+              held={updateState.isPending}
               label={state.pinned ? "Unpin issue" : "Pin issue"}
               onClick={() => pinGuard.guard(() => updateState.mutate(!state.pinned))}
               pinned={state.pinned}
@@ -484,14 +489,16 @@ export function IssueHeader({
             {statusText(pendingStatus ?? issue.status)}
           </ChoiceMenu>
           <PriorityEditor
-            disabled={isClosed || updateIssue.isPending}
+            disabled={isClosed}
+            held={fieldHeld}
             issueKey={issue.key}
             priority={issuePriority(issue.priority)}
             write={priorityWrite}
           />
           <AssigneeControl
             assignee={issue.assignee}
-            disabled={isClosed || updateIssue.isPending}
+            disabled={isClosed}
+            held={fieldHeld}
             issueKey={issue.key}
           />
           {/* Progress is state about how far the work has got, like the status and the claim,
@@ -546,8 +553,7 @@ export function IssueHeader({
               <button
                 aria-label={`Release the claim on ${issue.key}`}
                 className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-                disabled={releaseClaim.isPending}
-                onClick={() => releaseClaim.mutate()}
+                {...heldPress(releaseClaim.isPending, () => releaseClaim.mutate())}
                 title="Release this claim so another agent can take the issue"
                 type="button"
               >
@@ -559,8 +565,7 @@ export function IssueHeader({
             <button
               aria-label="Close issue"
               className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-              disabled={updateIssue.isPending}
-              onClick={() => drafts.requestStatusSubmit("done")}
+              {...heldPress(fieldHeld, () => drafts.requestStatusSubmit("done"))}
               type="button"
             >
               {pendingStatus === "done" ? (
@@ -677,7 +682,8 @@ export function IssueHeader({
               row above must keep every control on one row at a phone width. An issue whose
               project maps no repository has no item here. */}
           <RepoControl
-            disabled={isClosed || updateIssue.isPending}
+            disabled={isClosed}
+            held={fieldHeld}
             issueKey={issue.key}
             project={issue.project}
             repo={issue.repo}
@@ -729,8 +735,9 @@ export function IssueHeader({
             value={drafts.route}
           />
           <button
-            className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
-            disabled={isClosed || !drafts.routeIsValid || updateIssue.isPending}
+            aria-disabled={fieldHeld || undefined}
+            className={`min-h-11 rounded px-2 py-1 text-sm font-medium refused:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
+            disabled={isClosed || !drafts.routeIsValid}
             type="submit"
           >
             Save route
@@ -778,8 +785,9 @@ export function IssueHeader({
             value={drafts.parent}
           />
           <button
-            className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
-            disabled={isClosed || updateIssue.isPending}
+            aria-disabled={fieldHeld || undefined}
+            className={`min-h-11 rounded px-2 py-1 text-sm font-medium refused:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
+            disabled={isClosed}
             type="submit"
           >
             Save parent

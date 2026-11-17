@@ -4,6 +4,7 @@ import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api } from "../../api/client";
 import type { AgentToken, CreatedAgentToken, DispatchScope } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
   TableBody,
@@ -119,15 +120,19 @@ function scopesAfterChoice(
 }
 
 /** The two scope boxes, for a token's row and for the mint form. `subject` is the token they
- *  belong to, so the boxes of one row are told from another row's by name. */
+ *  belong to, so the boxes of one row are told from another row's by name. `disabled` boxes are
+ *  a revoked token's; `held` boxes keep the focus and their Tab stop while a write of theirs is
+ *  out, and a press on one then changes nothing (`heldPress`). */
 function TokenScopeChoices({
   chosen,
-  disabled,
+  disabled = false,
+  held,
   onChoose,
   subject,
 }: {
   chosen: readonly DispatchScope[];
-  disabled: boolean;
+  disabled?: boolean;
+  held: boolean;
   onChoose: (scopes: DispatchScope[]) => void;
   subject: string;
 }): ReactNode {
@@ -139,13 +144,15 @@ function TokenScopeChoices({
             className={`flex items-center gap-2 text-sm font-medium ${textSecondaryOnSurface}`}
           >
             <input
+              aria-disabled={held || undefined}
               aria-label={`${scope.label} (${subject})`}
               checked={chosen.includes(scope.id)}
-              className={`size-4 shrink-0 rounded ${checkboxAccent}`}
+              className={`size-4 shrink-0 rounded aria-disabled:opacity-50 ${checkboxAccent}`}
               disabled={disabled}
-              onChange={(event) =>
-                onChoose(scopesAfterChoice(chosen, scope.id, event.target.checked))
-              }
+              onChange={(event) => {
+                if (held) return;
+                onChoose(scopesAfterChoice(chosen, scope.id, event.target.checked));
+              }}
               type="checkbox"
             />
             {scope.label}
@@ -225,8 +232,9 @@ export function AgentTokensSection(): ReactNode {
   const listedIds = () => (tokens.data ?? []).map((token) => token.id);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    // An emptied form - a mint that landed - sends nothing, whatever submits it.
-    if (name.trim() === "") return;
+    // An emptied form - a mint that landed - sends nothing, whatever submits it, and neither does
+    // a second press while the first mint is out.
+    if (name.trim() === "" || createToken.isPending) return;
     createToken.mutate({ before: listedIds(), name, scopes: newScopes });
   };
   /** A mint whose value was lost with its answer, until the next mint or the reader writes
@@ -263,6 +271,7 @@ export function AgentTokensSection(): ReactNode {
     });
   };
   const replacing = revokeToken.isPending || createToken.isPending;
+  const minting = createToken.isPending;
   const copyToken = () => {
     if (shownToken === undefined) {
       return;
@@ -335,7 +344,8 @@ export function AgentTokensSection(): ReactNode {
                   <TableCell>
                     <TokenScopeChoices
                       chosen={heldScopes(token.scopes)}
-                      disabled={token.revoked_at !== null || setTokenScopes.isPending}
+                      disabled={token.revoked_at !== null}
+                      held={setTokenScopes.isPending}
                       onChoose={(scopes) =>
                         setTokenScopes.mutate({ id: token.id, name: token.name, scopes })
                       }
@@ -346,9 +356,8 @@ export function AgentTokensSection(): ReactNode {
                     {token.revoked_at === null ? (
                       <button
                         aria-label={`Revoke ${token.name}`}
-                        className={`min-h-11 px-2 font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
-                        disabled={revokeToken.isPending}
-                        onClick={() => revoke(token)}
+                        className={`min-h-11 px-2 font-medium refused:cursor-not-allowed refused:opacity-50 ${dangerText} ${dangerHoverText}`}
+                        {...heldPress(revokeToken.isPending, () => revoke(token))}
                         type="button"
                       >
                         Revoke
@@ -386,13 +395,17 @@ export function AgentTokensSection(): ReactNode {
               value={name}
             />
           </label>
-          <button className={settingsSubmitButton} disabled={createToken.isPending} type="submit">
+          <button
+            aria-disabled={minting || undefined}
+            className={settingsSubmitButton}
+            type="submit"
+          >
             New token
           </button>
         </div>
         <TokenScopeChoices
           chosen={newScopes}
-          disabled={createToken.isPending}
+          held={minting}
           onChoose={setNewScopes}
           subject="new token"
         />
@@ -415,8 +428,9 @@ export function AgentTokensSection(): ReactNode {
           ) : candidates.length === 1 ? (
             <button
               className={settingsSubmitButton}
-              disabled={replacing}
-              onClick={() => candidates[0] !== undefined && replaceLost(candidates[0])}
+              {...heldPress(replacing, () => {
+                if (candidates[0] !== undefined) replaceLost(candidates[0]);
+              })}
               type="button"
             >
               Revoke it and mint another
@@ -432,8 +446,7 @@ export function AgentTokensSection(): ReactNode {
                   <li key={token.id}>
                     <button
                       className={settingsSubmitButton}
-                      disabled={replacing}
-                      onClick={() => replaceLost(token)}
+                      {...heldPress(replacing, () => replaceLost(token))}
                       type="button"
                     >
                       Revoke the one created {new Date(token.created_at).toLocaleString()}

@@ -1,5 +1,6 @@
 import { type ReactNode, useState } from "react";
 
+import { heldPress } from "../../components/held-press";
 import { MultiSelect } from "../../components/MultiSelect";
 import {
   dangerText,
@@ -77,8 +78,8 @@ export function SpecToolbar({
       <button
         aria-label="Name version"
         className={`${toolbarButton} ${secondaryButtonDisabledText}`}
-        disabled={isClosed || toolbar.isNamingVersion}
-        onClick={toolbar.requestNamedVersion}
+        disabled={isClosed}
+        {...heldPress(toolbar.isNamingVersion, toolbar.requestNamedVersion)}
         type="button"
       >
         Name

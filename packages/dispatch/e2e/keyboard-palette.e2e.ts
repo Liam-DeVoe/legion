@@ -306,9 +306,7 @@ test("a query that holds a card move further in moves no card on Enter", async (
   }
 });
 
-test("a header write in flight withdraws the rows whose buttons it disables", async ({
-  browser,
-}) => {
+test("a header write in flight withdraws the rows whose buttons it holds", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "In-flight guard" });
   const context = await asUser(browser, "alice");
@@ -327,8 +325,13 @@ test("a header write in flight withdraws the rows whose buttons it disables", as
 
     const closeButton = page.getByRole("button", { name: "Close issue" });
     await closeButton.click();
-    await expect(closeButton).toBeDisabled();
-    await expect(page.getByLabel(`Priority of ${issue.key}`)).toBeDisabled();
+    // Held, not disabled: the Close button keeps the focus the click gave it.
+    await expect(closeButton).toHaveAttribute("aria-disabled", "true");
+    await expect(closeButton).toBeFocused();
+    await expect(page.getByLabel(`Priority of ${issue.key}`)).toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
 
     await page.locator("body").focus();
     await page.keyboard.press("Control+k");

@@ -1,8 +1,10 @@
 import type { ReactNode } from "react";
 
 import type { Actor, Agent, DeliveryAttemptState, MessageDeliveryMode } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import {
   secondaryButtonBorder,
+  secondaryButtonDisabledText,
   secondaryButtonText,
   surfaceMutedHoverBg,
   textMutedOnSurface,
@@ -215,9 +217,9 @@ export function DeliveryRetry({
       {!sameModeRetry ? null : (
         <div>
           <button
-            className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText}`}
-            disabled={retrying || !supports[mode]}
-            onClick={() => onRetry(mode)}
+            className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
+            disabled={!supports[mode]}
+            {...heldPress(retrying, () => onRetry(mode))}
             type="button"
           >
             Retry
@@ -232,9 +234,9 @@ export function DeliveryRetry({
       {mode === "btw" ? null : (
         <div>
           <button
-            className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText}`}
-            disabled={retrying || !canBtw}
-            onClick={() => onRetry("btw")}
+            className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
+            disabled={!canBtw}
+            {...heldPress(retrying, () => onRetry("btw"))}
             type="button"
           >
             Use {MODE_LABELS.btw} instead
@@ -249,9 +251,9 @@ export function DeliveryRetry({
       {mode === "steer" ? null : (
         <div>
           <button
-            className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText}`}
-            disabled={retrying || !canSteer}
-            onClick={() => onRetry("steer")}
+            className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
+            disabled={!canSteer}
+            {...heldPress(retrying, () => onRetry("steer"))}
             type="button"
           >
             Use {MODE_LABELS.steer} instead
@@ -286,7 +288,7 @@ interface TargetedMessageCardProps {
   readonly onReply?: () => void;
   readonly onRetry?: (delivery: MessageDeliveryMode) => void;
   /** Holds the Reply button while the composer it would address is busy with a send. */
-  readonly replyDisabled?: boolean;
+  readonly replyHeld?: boolean;
   readonly register?: DwellRef;
   readonly retrying?: boolean;
   /** Who the message went to (`DeliveryStatus`). */
@@ -309,7 +311,7 @@ export function TargetedMessageCard({
   onReply,
   onRetry,
   register,
-  replyDisabled = false,
+  replyHeld = false,
   retrying = false,
   targetName,
   thread,
@@ -328,7 +330,7 @@ export function TargetedMessageCard({
         {header}
         <div className="min-w-0 flex-1">{body}</div>
         {onReply === undefined ? null : (
-          <ReplyButton className="self-start" disabled={replyDisabled} onClick={onReply} />
+          <ReplyButton className="self-start" held={replyHeld} onClick={onReply} />
         )}
       </div>
       <DeliveryStatus
