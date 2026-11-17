@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
   DISPATCH_GENERATED_TEXT_HEADER,
-  dispatchIssueSubject,
   type Envelope,
+  legacyDispatchIssueSubject,
 } from "@legion/contracts";
 import { decode } from "@toon-format/toon";
 import { bearerCredential } from "../bearer";
@@ -54,7 +54,7 @@ function dispatchEvent(
       event_id: "dispatch-1",
       source: "dispatch",
       source_event_id: "1",
-      topic: dispatchIssueSubject("DSP-1", ">"),
+      topic: legacyDispatchIssueSubject("DSP-1", ">"),
       payload_summary: "Dispatch update",
       payload: JSON.stringify({
         id: 1,
@@ -696,6 +696,30 @@ describe("renderInbound dispatch events", () => {
     expect(other.envoy.dispatch.payload.target).toBe(
       "session:01a01111-2222-7333-4444-555555555555"
     );
+  });
+
+  // A session's inbox has two forms while every reader takes both (dispatch://INFRA-3862): the
+  // session alone, and the session under a project (`_` for none). A message on either form is
+  // this session's own, so its card names it the recipient; another session's inbox is not, in
+  // either form.
+  test("names the session the recipient of a message on its inbox in either form", () => {
+    const otherSession = "01a02222-3333-7444-8555-666666666666";
+    for (const topic of [
+      `notifications.agent.${reader}`,
+      `notifications.agent._.${reader}`,
+      `notifications.agent.PRIV.${reader}`,
+    ]) {
+      const raw = JSON.stringify(envelope({ source: "agent", topic, payload: "hello" }));
+      const intended = decode(renderInbound(raw, reader, topic).content) as {
+        envoy: { to?: string };
+      };
+      const other = decode(renderInbound(raw, otherSession, topic).content) as {
+        envoy: { to?: string };
+      };
+
+      expect(intended.envoy.to, topic).toBe(`you (${reader})`);
+      expect(other.envoy.to, topic).toBeUndefined();
+    }
   });
 
   test("keeps rendering a targeted Dispatch message when its payload grows", () => {
@@ -1552,7 +1576,7 @@ describe("renderInbound dispatch events", () => {
         quiet: false,
       }),
       reader,
-      dispatchIssueSubject("DSP-1", "comment.created")
+      legacyDispatchIssueSubject("DSP-1", "comment.created")
     );
 
     expect(rendered.skip).toBe(false);
@@ -1571,7 +1595,7 @@ describe("renderInbound dispatch events", () => {
           quiet: true,
         }),
         reader,
-        dispatchIssueSubject("DSP-1", "comment.delivery")
+        legacyDispatchIssueSubject("DSP-1", "comment.delivery")
       )
     ).toMatchObject({ skip: true, content: "" });
     expect(
@@ -1583,7 +1607,7 @@ describe("renderInbound dispatch events", () => {
           { notify: false, quiet: true }
         ),
         reader,
-        dispatchIssueSubject("DSP-1", "artifact.version")
+        legacyDispatchIssueSubject("DSP-1", "artifact.version")
       )
     ).toMatchObject({ skip: true, content: "" });
   });
@@ -1597,7 +1621,7 @@ describe("renderInbound dispatch events", () => {
           notify: false,
         }),
         reader,
-        dispatchIssueSubject("DSP-1", "comment.created")
+        legacyDispatchIssueSubject("DSP-1", "comment.created")
       )
     ).toMatchObject({ skip: true, content: "" });
     expect(
@@ -1609,7 +1633,7 @@ describe("renderInbound dispatch events", () => {
           { notify: true }
         ),
         reader,
-        dispatchIssueSubject("DSP-1", "comment.created")
+        legacyDispatchIssueSubject("DSP-1", "comment.created")
       ).skip
     ).toBe(false);
   });
