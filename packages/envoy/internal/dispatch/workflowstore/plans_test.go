@@ -312,9 +312,9 @@ func issuePlanText(issue IssuePlan) string {
 // The read of a project lists each issue of it that is done and closed, newest close first, with
 // its plan, the rating of its retro, the first start and the last end of its records and its
 // count of failed steps of kind step, all in one statement: a failed retro and a failed merge are
-// no failed step. An issue still open, an issue of another project and a record of another issue
-// are not read into it; a finished issue Legion never ran is listed with no plan, no rating, no
-// time and no failed step.
+// no failed step. An issue still open, an issue done with no close, an issue closed that is not
+// done, an issue of another project and a record of another issue are not read into it; a finished
+// issue Legion never ran is listed with no plan, no rating, no time and no failed step.
 func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	closedFirst, closedSecond, closedThird := t0.Add(time.Hour), t0.Add(2*time.Hour), t0.Add(3*time.Hour)
@@ -323,6 +323,8 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 		seededIssue{"LEG-2", "done", &closedThird},
 		seededIssue{"LEG-3", "in_progress", nil},
 		seededIssue{"LEG-4", "done", &closedFirst},
+		seededIssue{"LEG-5", "done", nil},
+		seededIssue{"LEG-6", "in_progress", &closedThird},
 	)
 	seedIssues(t, pool, "OTH", seededIssue{"OTH-1", "done", &closedThird})
 
