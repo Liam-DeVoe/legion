@@ -62,6 +62,30 @@ func TestOnlyTheForksAndTheUpstreamsRemoteTrackingRefsHoldACommitForTheKnivesPas
 				run(repo, "git", "update-ref", "refs/remotes/fork/earlier", head)
 			},
 		},
+		{
+			// git writes the refs of a remote named fork/rehearsal at refs/remotes/fork/rehearsal/*,
+			// under the fork's remote's own refs/remotes/fork/, with no ref written by hand.
+			name: "a local bare remote whose name is the fork's remote's name and a slash",
+			hold: func(t *testing.T, run func(string, ...string) string, repo, _ string) {
+				rehearsal := filepath.Join(t.TempDir(), "rehearsal.git")
+				run(repo, "git", "init", "--quiet", "--bare", rehearsal)
+				run(repo, "git", "remote", "add", "fork", knivesOrigin)
+				run(repo, "git", "remote", "add", "fork/rehearsal", rehearsal)
+				run(repo, "git", "push", "--quiet", "fork/rehearsal", "HEAD:refs/heads/rehearsal")
+			},
+			want: refused,
+		},
+		{
+			name: "a local bare remote whose name is the upstream's remote's name and a slash",
+			hold: func(t *testing.T, run func(string, ...string) string, repo, _ string) {
+				rehearsal := filepath.Join(t.TempDir(), "rehearsal.git")
+				run(repo, "git", "init", "--quiet", "--bare", rehearsal)
+				run(repo, "git", "remote", "add", "upstream", "https://github.com/upstream-org/invented-repo")
+				run(repo, "git", "remote", "add", "upstream/rehearsal", rehearsal)
+				run(repo, "git", "push", "--quiet", "upstream/rehearsal", "HEAD:refs/heads/rehearsal")
+			},
+			want: refused,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture, repo, base, head := knivesCommit(t, map[string]string{"notes.md": "a line of ordinary prose\nthe QUILLWORTHY build\n"})
