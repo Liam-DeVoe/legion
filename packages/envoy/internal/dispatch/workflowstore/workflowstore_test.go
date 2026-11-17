@@ -122,8 +122,8 @@ func TestTheEndWriteKeepsTheStart(t *testing.T) {
 		if step.StartedAt == nil || !step.StartedAt.Equal(minute(0)) {
 			t.Errorf("%s holds started_at %v, want the start's %s", name, step.StartedAt, minute(0))
 		}
-		if step.Result != ResultFailed || step.EndedAt == nil || !step.EndedAt.Equal(minute(1)) || step.ReturnedTo != 2 {
-			t.Errorf("%s holds result %q ended %v returned_to %d, want failed at %s to step 2",
+		if step.Result != ResultFailed || step.EndedAt == nil || !step.EndedAt.Equal(minute(1)) || step.ReturnedTo == nil || *step.ReturnedTo != 2 {
+			t.Errorf("%s holds result %q ended %v returned_to %v, want failed at %s to step 2",
 				name, step.Result, step.EndedAt, step.ReturnedTo, minute(1))
 		}
 		if step.Model != "anthropic/claude-opus-5" || step.Report != report {

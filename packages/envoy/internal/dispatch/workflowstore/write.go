@@ -145,7 +145,7 @@ type attribute struct {
 
 // attributes checks every field the write states against its form and answers the write's id in
 // its canonical spelling with the fields it states, in one order whatever order they were given
-// in. A text field that is empty states nothing, and a ReturnedTo of 0 states nothing.
+// in. A text field that is empty states nothing; ReturnedTo 0 names a return to the retro.
 func (write StepWrite) attributes() (string, []attribute, error) {
 	parsed, err := uuid.Parse(write.ID)
 	if err != nil {
@@ -222,7 +222,7 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 		return "", nil, inputError("result %s is written with ended_at, the moment the run ended, and this write names none", result)
 	}
 	moment(AttributeEndedAt, write.EndedAt)
-	if write.ReturnedTo != nil && *write.ReturnedTo != 0 {
+	if write.ReturnedTo != nil {
 		returned := *write.ReturnedTo
 		if returned < 0 {
 			return "", nil, inputError("returned_to %d is no place of a step", returned)
@@ -316,7 +316,7 @@ type stepAttributes struct {
 	StartedAt  *time.Time `json:"started_at"`
 	EndedAt    *time.Time `json:"ended_at"`
 	Result     string     `json:"result"`
-	ReturnedTo int        `json:"returned_to"`
+	ReturnedTo *int       `json:"returned_to"`
 	Report     string     `json:"report"`
 }
 

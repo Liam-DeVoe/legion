@@ -106,18 +106,19 @@ var (
 
 // Step is one run of one step, as its node holds it. Place is the step's place in its task, the
 // attribute `step`: from 1 for kind step, 0 for a retro and a merge; it is not named Step, which
-// StepRead's embedded Step would shadow. A text field the node does not hold reads "", Place and
-// ReturnedTo 0, and a time nil.
+// StepRead's embedded Step would shadow. A text field the node does not hold reads "", Place 0,
+// and a time or ReturnedTo nil. A return to the retro holds a non-nil ReturnedTo of 0.
 type Step struct {
 	ID, Issue, Project, Task, Kind, Role, Type, Agent, Session, Model, Result, Report string
 	Generation                                                                        int64
-	Place, ReturnedTo                                                                 int
+	Place                                                                             int
+	ReturnedTo                                                                        *int
 	StartedAt, EndedAt                                                                *time.Time
 }
 
 // StepWrite is one write of a run: the id and the issue it writes, and each field it states, nil
-// where it states nothing. An empty text and a ReturnedTo of 0 state nothing either, so a write
-// that knows no model leaves the model to a later write that knows it.
+// where it states nothing. An empty text states nothing either, so a write that knows no model
+// leaves the model to a later write that knows it. ReturnedTo 0 names a return to the retro.
 type StepWrite struct {
 	ID, Issue                                                              string
 	Project, Task, Kind, Role, Type, Agent, Session, Model, Result, Report *string

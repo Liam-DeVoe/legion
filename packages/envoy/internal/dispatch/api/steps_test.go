@@ -336,6 +336,7 @@ func TestAStepWriteRefusesItsBadValues(t *testing.T) {
 		{"a result that is no result", "", with(start, map[string]any{"result": "done", "ended_at": stepEnd}), "result"},
 		{"an end with no result", "", with(start, map[string]any{"ended_at": stepEnd}), "ended_at"},
 		{"a step returned to by a run that passed", "", with(start, map[string]any{"result": "passed", "ended_at": stepEnd, "returned_to": 2}), "returned_to"},
+		{"a retro returned to by a run that passed", "", with(start, map[string]any{"result": "passed", "ended_at": stepEnd, "returned_to": 0}), "returned_to"},
 		{"a first write with no role", "", noRole, "role"},
 		{"a report that is no uuid", "", with(start, map[string]any{"result": "passed", "ended_at": stepEnd, "report": "plan-1"}), "report"},
 		{"a task that is no task id", "", with(start, map[string]any{"task": "Default"}), "task"},
@@ -438,6 +439,50 @@ func TestAnEndPutTwiceKeepsItsFirstEnd(t *testing.T) {
 	}
 	if steps := stepsOf(t, handler, issue); len(steps) != 1 || steps[0].Result != "stopped" || !steps[0].EndedAt.Equal(stepEnd) {
 		t.Fatalf("the read lists %+v, want the one run ended stopped at %s", steps, stepEnd)
+	}
+}
+
+// A backward move to the retro returns to place 0, not to no place. Both delivery orders and a
+// later end keep that first return destination in the write's answer and in the issue's read.
+func TestAStepReturnedToRetroKeepsPlaceZero(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
+	for _, endFirst := range []bool{false, true} {
+		t.Run(strconv.FormatBool(endFirst), func(t *testing.T) {
+			id := uuid.NewString()
+			identity := map[string]any{
+				"actor": daemonSession("LEG"), "task": "default", "step": 0, "kind": "merge",
+				"role": "merger", "type": "", "agent": "legion-leg-leg-1-merger", "generation": 1,
+			}
+			start := with(identity, map[string]any{"started_at": stepStart})
+			end := with(identity, map[string]any{"ended_at": stepEnd, "result": "failed", "returned_to": 0})
+			if !endFirst {
+				started := putStepOK(t, handler, issue, id, start)
+				if started.ReturnedTo != nil {
+					t.Fatalf("a start returned to %v, want no destination", started.ReturnedTo)
+				}
+			}
+			ended := putStepOK(t, handler, issue, id, end)
+			if ended.ReturnedTo == nil || *ended.ReturnedTo != 0 {
+				t.Fatalf("the end answers %s, want returned_to 0, not null", stepJSON(t, ended))
+			}
+			if endFirst {
+				putStepOK(t, handler, issue, id, start)
+			}
+			again := putStepOK(t, handler, issue, id, with(end, map[string]any{"returned_to": 2}))
+			if again.ReturnedTo == nil || *again.ReturnedTo != 0 {
+				t.Fatalf("the later end answers %s, want the first return to place 0", stepJSON(t, again))
+			}
+			for _, step := range stepsOf(t, handler, issue) {
+				if step.ID == id {
+					if step.ReturnedTo == nil || *step.ReturnedTo != 0 {
+						t.Fatalf("the read lists %s, want returned_to 0, not null", stepJSON(t, step))
+					}
+					return
+				}
+			}
+			t.Fatalf("the read does not list the run %s", id)
+		})
 	}
 }
 
