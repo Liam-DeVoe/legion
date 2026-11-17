@@ -1185,6 +1185,137 @@ test("a fill submitted while the setting is still read sends nothing once a chip
   }
 });
 
+/** A step of a press of the run the bar asked first (`press` drives the bar to it, `step` is the
+ *  test id of what it shows), with the person's setting, and what the run a chip change makes
+ *  current next streams (`next`) and draws once its proposal landed (`row`). */
+interface PressOfAnEarlierRun {
+  readonly confirmWrites: boolean;
+  readonly next: readonly GoingEvent[];
+  readonly press: (user: UserEvent) => Promise<void>;
+  readonly row: RegExp;
+  readonly step: string;
+}
+
+// Every step of a press is of the run the person pressed on. A chip change with the same words
+// makes another run current, whose decision acts and whose proposal runs at once on a submit or
+// asks first: the step closes, and nothing of the press goes to that run. A submit waiting for the
+// decision, one made inside the pause before its run's id was known, a fill step holding values
+// typed for this run's invocations, and a confirm step.
+const pressesOfAnEarlierRun: Readonly<Record<string, PressOfAnEarlierRun>> = {
+  "a submit waiting for the decision": {
+    confirmWrites: false,
+    next: [decision(true, ["dispatch_issue_update"]), proposal, ended],
+    press: async (user) => {
+      await ask(user, "astrolabe");
+      await submit(user);
+    },
+    row: /^Run issue update/,
+    step: "going-operation-preparing",
+  },
+  "a submit made before its run's id was known": {
+    confirmWrites: false,
+    next: [decision(true, ["dispatch_issue_update"]), proposal, ended],
+    press: async (user) => {
+      await user.click(screen.getByRole("combobox", { name: "Search" }));
+      await user.keyboard("astrolabe");
+      await tick(KEYSTROKE_DEBOUNCE_MS);
+      await waitFor(() => expect(screen.getAllByRole("option").length).toBeGreaterThan(0));
+      // Inside the pause nothing is asked yet: the submit asks at once, and the id of the run it
+      // asked arrives after it.
+      expect(spies.createGoingRequest).not.toHaveBeenCalled();
+      await submit(user);
+      await waitFor(() => expect(streams).toHaveLength(1));
+    },
+    row: /^Run issue update/,
+    step: "going-operation-preparing",
+  },
+  "a fill step holding the values typed for this run": {
+    confirmWrites: false,
+    next: [decision(true, ["dispatch_follow"]), follows, ended],
+    press: async (user) => {
+      await ask(user, "astrolabe");
+      stream(decision(true, ["dispatch_follow"]), follows, ended);
+      await screen.findByRole("option", { name: /^Run follow on ask-1 and ask-2/ });
+      await submit(user);
+      await user.type(
+        await screen.findByRole("textbox", { name: "Fill the session for ask-1" }),
+        "Planner"
+      );
+      await user.type(
+        screen.getByRole("textbox", { name: "Fill the session for ask-2" }),
+        "Tester"
+      );
+    },
+    row: /^Run follow on ask-1 and ask-2/,
+    step: "going-operation-fill",
+  },
+  "a confirm step": {
+    confirmWrites: true,
+    next: [decision(true, ["dispatch_issue_update"]), proposal, ended],
+    press: async (user) => {
+      await ask(user, "astrolabe");
+      stream(decision(true, ["dispatch_issue_update"]), proposal, ended);
+      await screen.findByRole("option", { name: /^Run issue update/ });
+      await submit(user);
+    },
+    row: /^Run issue update/,
+    step: "going-confirm-step",
+  },
+};
+
+test.each(
+  Object.entries(pressesOfAnEarlierRun)
+)("every step of a press closes and sends nothing once a chip change makes another run of the same words current: %s", async (_name, press) => {
+  settings.mockResolvedValue({ confirm_writes: press.confirmWrites });
+  const projects = spyOnProjects();
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await press.press(user);
+    await screen.findByTestId(press.step);
+    expect(written).not.toHaveBeenCalled();
+
+    await askOfAnotherProject(user, ...press.next);
+
+    await screen.findByRole("option", { name: press.row });
+    expect(screen.queryByTestId(press.step)).not.toBeInTheDocument();
+    await tick(1000);
+    expect(written).not.toHaveBeenCalled();
+  } finally {
+    bar.unmount();
+    projects.mockRestore();
+  }
+});
+
+// A submit inside the pause asks at once, before Dispatch has said the id of the run it asked: the
+// press is of that run once its id arrives, and runs on it when its proposal lands.
+test("a submit inside the pause runs each invocation on the run it asked, once that run's proposal lands", async () => {
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await user.click(screen.getByRole("combobox", { name: "Search" }));
+    await user.keyboard("astrolabe");
+    await tick(KEYSTROKE_DEBOUNCE_MS);
+    await waitFor(() => expect(screen.getAllByRole("option").length).toBeGreaterThan(0));
+    expect(spies.createGoingRequest).not.toHaveBeenCalled();
+
+    await submit(user);
+    await waitFor(() => expect(streams).toHaveLength(1));
+    await screen.findByTestId("going-operation-preparing");
+    stream(decision(true, ["dispatch_issue_update"]), proposal, ended);
+
+    await waitFor(() =>
+      expect(sent()).toEqual([
+        { approved: "auto", invocation: 0, offer: "dispatch_issue_update" },
+        { approved: "auto", invocation: 1, offer: "dispatch_issue_update" },
+      ])
+    );
+    expect(written.mock.calls.map(([run]) => run)).toEqual(["run-1", "run-1"]);
+  } finally {
+    bar.unmount();
+  }
+});
+
 test("a new issue the run made is the issue its write names, with no read of it that could fail", async () => {
   const newIssueSettings = spyOn(api, "getNewIssueSettings").mockResolvedValue({
     label: "",

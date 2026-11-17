@@ -70,6 +70,10 @@ interface Wanted {
   readonly approved: GoingApproval;
   readonly fills: Fills;
   readonly picked?: readonly number[];
+  /** The run current when the person pressed, whose writes alone the press sends (`isPressOf`);
+   *  `undefined` for a press made before that run's id was known, until the preparing effect
+   *  binds it to that run as the id arrives. */
+  readonly pressedOn: string | undefined;
 }
 
 /**
@@ -79,8 +83,9 @@ interface Wanted {
  * proposal offered nothing to run for, or one whose every invocation names an item neither the
  * page nor the words named, which runs only when the person picks it (`picks`). Nothing submitted
  * is no state at all, and so is a submit that had nothing to run (`idle`); once a write has gone,
- * its lines say the rest. The fill step and the confirm step ask about the writes of the run they
- * opened for (`runId`), and are idle once another run is current.
+ * its lines say the rest. Every step of a press - preparing, the fill step and the confirm step -
+ * is of the run the person pressed on (`pressedOn`): it is idle once another run is current, and
+ * the one send (`run`) sends nothing of it to another run.
  */
 type Stage =
   | ({ readonly kind: "preparing"; readonly words: string } & Wanted)
@@ -88,14 +93,13 @@ type Stage =
       readonly kind: "filling";
       readonly words: string;
       readonly action: string;
-      readonly runId: string;
     } & Omit<Wanted, "action">)
   | {
       readonly kind: "confirming";
       readonly words: string;
       readonly action: string;
       readonly fills: Fills;
-      readonly runId: string;
+      readonly pressedOn: string | undefined;
     }
   | { readonly kind: "unoffered"; readonly words: string; readonly action: string }
   | { readonly kind: "picks"; readonly words: string; readonly action: string }
@@ -110,7 +114,15 @@ type Step =
       readonly approved: GoingApproval;
       readonly fills: Fills;
       readonly picked: readonly number[] | undefined;
+      readonly pressedOn: string | undefined;
     };
+
+/** Whether a press made on the run `pressedOn` is a press of the run `runId`: a press sends only
+ *  the writes of the run that was current when the person pressed, never another run's - a chip
+ *  change asks the same words again, and another run of them is current. */
+function isPressOf(pressedOn: string | undefined, runId: string | undefined): boolean {
+  return pressedOn === runId;
+}
 
 /** The offer of `action` the proposal offered something to run for. */
 function offerOf(proposal: Proposal | undefined, action: string): GoingOffer | undefined {
@@ -233,13 +245,19 @@ function nextStep(
       fills: wanted.fills,
       kind: "filling",
       picked: wanted.picked,
-      runId: answer.runId,
+      pressedOn: wanted.pressedOn,
       words,
     };
   if (wanted.approved === "auto") {
     if (confirmWrites === undefined) return { ...wanted, action, kind: "preparing", words };
     if (confirmWrites) {
-      return { action, fills: wanted.fills, kind: "confirming", runId: answer.runId, words };
+      return {
+        action,
+        fills: wanted.fills,
+        kind: "confirming",
+        pressedOn: wanted.pressedOn,
+        words,
+      };
     }
   }
   return {
@@ -248,6 +266,7 @@ function nextStep(
     fills: wanted.fills,
     kind: "run",
     picked: wanted.picked,
+    pressedOn: wanted.pressedOn,
   };
 }
 
@@ -333,10 +352,15 @@ export function useGoingOperations({
   const confirmWrites =
     settings.isError && settings.data === undefined ? false : settings.data?.confirm_writes;
   const [held, setStage] = useWordsState<Stage>(words);
-  // A fill step or a confirm step of a run that is no longer current - a chip change asked the
-  // same words again - is idle: it closes, and sends nothing of the run now current.
+  // Every step of a press - preparing, the fill step, the confirm step - made on a run that is no
+  // longer current (a chip change asked the same words again) is idle: it closes, so neither the
+  // preparing effect nor a Run or Confirm sends it to the run now current (`isPressOf`, which the
+  // one send reads too). A press made before its run's id was known is of no run yet: the
+  // preparing effect below binds it or closes it.
   const stage: Stage | undefined =
-    (held?.kind === "filling" || held?.kind === "confirming") && held.runId !== runId
+    (held?.kind === "preparing" || held?.kind === "filling" || held?.kind === "confirming") &&
+    held.pressedOn !== undefined &&
+    !isPressOf(held.pressedOn, runId)
       ? { kind: "idle", words }
       : held;
   const turn = useTurn(runId);
@@ -362,12 +386,19 @@ export function useGoingOperations({
     field?.focus();
   }, []);
 
+  // The one send of every step's writes: those of a press made on another run than the one now
+  // current are never sent, and the step closes.
   const run = (
+    pressedOn: string | undefined,
     action: string,
     approved: GoingApproval,
     fills: Fills,
     picked?: readonly number[]
   ) => {
+    if (!isPressOf(pressedOn, runId)) {
+      setStage({ kind: "idle", words });
+      return;
+    }
     const offer = offerOf(proposal, action);
     if (runId === undefined || current === undefined || offer === undefined) return;
     setStage({ kind: "idle", words });
@@ -399,20 +430,34 @@ export function useGoingOperations({
     );
   };
   const apply = (step: Step) => {
-    if (step.kind === "run") run(step.action, step.approved, step.fills, step.picked);
+    if (step.kind === "run")
+      run(step.pressedOn, step.action, step.approved, step.fills, step.picked);
     else setStage(step);
   };
   const begin = (wanted: Wanted) => apply(nextStep(words, wanted, current, turn, confirmWrites));
 
   // A submit made before the run could say what to run waits for it: the decision, its proposal
-  // and the setting, each as it arrives.
+  // and the setting, each as it arrives. One made before its run's id was known (`askNow` set a
+  // fresh answer in the same event) is bound to that run as the id arrives, and goes on from
+  // there; where the request it waited for was dropped first - a chip change, or the bar turning
+  // off - it closes instead, so it can never bind to the run the next ask starts.
   const preparing = stage?.kind === "preparing" ? stage : undefined;
   // biome-ignore lint/correctness/useExhaustiveDependencies: `apply` reads this render's run, and the step changes only with what it is computed from
   useEffect(() => {
     if (preparing === undefined) return;
+    if (preparing.pressedOn === undefined) {
+      if (current === undefined) {
+        setStage({ kind: "idle", words });
+        return;
+      }
+      if (runId !== undefined) {
+        setStage({ ...preparing, pressedOn: runId });
+        return;
+      }
+    }
     const step = nextStep(words, preparing, current, turn, confirmWrites);
     if (step.kind !== "preparing") apply(step);
-  }, [preparing, current, turn, confirmWrites, words]);
+  }, [preparing, current, runId, turn, confirmWrites, words]);
 
   const submit = () => {
     if (stage?.kind === "filling") {
@@ -421,12 +466,13 @@ export function useGoingOperations({
         approved: stage.approved,
         fills: stage.fills,
         picked: stage.picked,
+        pressedOn: stage.pressedOn,
       });
       return;
     }
     if (stage?.kind === "confirming" || stage?.kind === "preparing") return;
     if (current === undefined && !askNow()) return;
-    begin({ action: undefined, approved: "auto", fills: {} });
+    begin({ action: undefined, approved: "auto", fills: {}, pressedOn: runId });
   };
 
   const options: OperationOption[] = [];
@@ -482,7 +528,14 @@ export function useGoingOperations({
             id: offerOptionId(acted),
             kind: "offer",
             label,
-            select: () => begin({ action: acted, approved: "person", fills: {}, picked: offered }),
+            select: () =>
+              begin({
+                action: acted,
+                approved: "person",
+                fills: {},
+                picked: offered,
+                pressedOn: runId,
+              }),
           },
         });
       }
@@ -499,7 +552,7 @@ export function useGoingOperations({
             id: offerOptionId(action),
             kind: "offer",
             label,
-            select: () => begin({ action, approved: "person", fills: {} }),
+            select: () => begin({ action, approved: "person", fills: {}, pressedOn: runId }),
           },
         });
       }
@@ -612,7 +665,9 @@ export function useGoingOperations({
             action={stage.action}
             offer={offerOf(proposal, stage.action)}
             onCancel={() => setStage({ kind: "idle", words })}
-            onConfirm={() => run(stage.action, "confirmed", stage.fills, confirming)}
+            onConfirm={() =>
+              run(stage.pressedOn, stage.action, "confirmed", stage.fills, confirming)
+            }
             runs={confirming}
           />
         ) : null}
