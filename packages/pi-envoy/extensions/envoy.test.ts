@@ -29,7 +29,6 @@ import {
 import { hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import {
-  agentStreamControlSubject,
   canonicalTopic,
   legacyDispatchIssueSubject,
   type SessionAnswer,
@@ -65,10 +64,10 @@ import {
 import {
   type NatsServer,
   sessionGrantConfig,
-  sessionReplySubject,
   startNatsServerWithConfig,
   useNatsServerDirectory,
 } from "@legion/envoy-client/test/nats-server";
+import { runReplayGrantScenario } from "@legion/envoy-client/test/replay-grant-scenario";
 import { startStallProxy } from "@legion/envoy-client/test/stall-proxy";
 import { runFreezeScenario } from "@legion/envoy-client/test/stall-scenario";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
@@ -97,7 +96,7 @@ import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/en
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { decode } from "@toon-format/toon";
-import { createInbox, type NatsConnection, nkeys, connect as realConnect } from "nats";
+import { nkeys, connect as realConnect } from "nats";
 import { z } from "zod";
 import { version as packageVersion } from "../package.json" with { type: "json" };
 import { resetEnvoySessionsForTests } from "../src/envoy-session";
@@ -22030,14 +22029,14 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
 });
 
 // The live view's replay answer (`pumpAgentStreamControl`) through a real nats-server, on the
-// session's own connection authenticated as a session user whose grant is the one the NATS auth
-// service gives a session: publish its replies under `_INBOX.*.<session id>.>` alone
-// (`sessionGrantConfig`). Dispatch asks for the replay on a reply subject naming the session
-// (`sessionReplySubject`), and the answer arrives. Asked on the reply subject Dispatch used before,
-// nats.go's own request inbox, the same answer is refused by the server, which logs the refusal,
-// and reaches nobody: the control that the grant is enforced and that the requester hears what
-// the session publishes. Docker-backed: the pi-envoy job runs this suite with LEGION_E2E=1, its
-// NATS service having pulled the image.
+// session's own connection authenticated as a session user holding the grant the NATS auth
+// service gives a session (`sessionGrantConfig`, `natsgrant.Session` itself): publish its replies
+// under `_INBOX.*.<session id>.>` alone. The scenario is the one claude-envoy's row runs too
+// (`runReplayGrantScenario`): a replay asked on a reply subject naming the session is answered;
+// one asked on nats.go's own request inbox, the subject Dispatch used before, is refused by the
+// server and reaches nobody; the session then answers on its own prefix again. This row keeps the
+// extension's own boot, connection and shutdown. Docker-backed: the pi-envoy job runs this suite
+// with LEGION_E2E=1, its NATS service having pulled the image.
 const replyGrantServerDirectory = useNatsServerDirectory();
 
 describe.skipIf(process.env.LEGION_E2E !== "1")(
@@ -22059,29 +22058,6 @@ describe.skipIf(process.env.LEGION_E2E !== "1")(
       );
     }, 120_000);
     afterAll(() => server?.stop(), 60_000);
-
-    /** Asks `connection` for the session's replay on `reply` and answers the first answer's text,
-     *  or undefined when none arrives within `withinMs`. */
-    async function askReplay(
-      connection: NatsConnection,
-      reply: string,
-      withinMs: number
-    ): Promise<string | undefined> {
-      const answers = connection.subscribe(reply, { max: 1 });
-      await connection.flush();
-      connection.publish(
-        agentStreamControlSubject(SESSION),
-        new TextEncoder().encode(JSON.stringify({ v: 1, type: "replay" })),
-        { reply }
-      );
-      const timer = setTimeout(() => answers.unsubscribe(), withinMs);
-      try {
-        for await (const answer of answers) return answer.string();
-        return undefined;
-      } finally {
-        clearTimeout(timer);
-      }
-    }
 
     test("answers a replay asked on its own reply prefix, and nothing on nats.go's request inbox", async () => {
       if (server === undefined) throw new Error("the NATS server did not start");
@@ -22111,41 +22087,7 @@ describe.skipIf(process.env.LEGION_E2E !== "1")(
       const context = sessionContext(SESSION);
       try {
         await fixture.handlers.get("session_start")?.({}, context);
-        // The control subscription is the session's own; the first replay answered says it is in
-        // place, and the server has taken its SUB before any later request.
-        const deadline = Date.now() + 10_000;
-        let answer: string | undefined;
-        while (answer === undefined) {
-          if (Date.now() > deadline)
-            throw new Error("no replay answer on the session's own prefix");
-          answer = await askReplay(requester, sessionReplySubject(createInbox(), SESSION), 500);
-        }
-        expect(JSON.parse(answer)).toMatchObject({ v: 1, session_id: SESSION });
-
-        // The control: the reply subject Dispatch asked on before, nats.go's request inbox.
-        const before = `${createInbox()}.1`;
-        expect(await askReplay(requester, before, 1_500)).toBeUndefined();
-        let logged = "";
-        const logDeadline = Date.now() + 10_000;
-        while (
-          !logged
-            .split("\n")
-            .some((line) => line.includes("Publish Violation") && line.includes(`"${before}"`))
-        ) {
-          if (Date.now() > logDeadline) {
-            throw new Error(`the server never logged a refused publish to ${before}:\n${logged}`);
-          }
-          logged = await server.log();
-        }
-        // And the session still answers on its own prefix after the refusal.
-        const again = await askReplay(
-          requester,
-          sessionReplySubject(createInbox(), SESSION),
-          5_000
-        );
-        expect(again === undefined ? undefined : JSON.parse(again)).toMatchObject({
-          session_id: SESSION,
-        });
+        await runReplayGrantScenario({ requester, server, sessionID: SESSION });
       } finally {
         await fixture.handlers.get("session_shutdown")?.({}, context);
         await requester.close();

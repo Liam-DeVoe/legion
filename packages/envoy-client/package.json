@@ -166,6 +166,10 @@
       "types": "./test/nats-server.ts",
       "bun": "./test/nats-server.ts"
     },
+    "./test/replay-grant-scenario": {
+      "types": "./test/replay-grant-scenario.ts",
+      "bun": "./test/replay-grant-scenario.ts"
+    },
     "./test/stall-proxy": {
       "types": "./test/stall-proxy.ts",
       "bun": "./test/stall-proxy.ts"

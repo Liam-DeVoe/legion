@@ -1,29 +1,28 @@
 /**
  * The live view's replay answer on a Claude Code session (`startAgentStream`,
  * `../src/agent-stream-runner`) through a real nats-server, on a connection authenticated as a
- * session user whose grant is the one the NATS auth service gives a session: publish its replies
- * under `_INBOX.*.<session id>.>` alone (`sessionGrantConfig`). Dispatch asks for the replay on a
- * reply subject naming the session (`sessionReplySubject`), and the answer arrives. Asked on the
- * reply subject Dispatch used before, nats.go's own request inbox, the same answer is refused by
- * the server, which logs the refusal, and reaches nobody: the control that the grant is enforced
- * and that the requester hears what the session publishes.
+ * session user holding the grant the NATS auth service gives a session (`sessionGrantConfig`,
+ * `natsgrant.Session` itself): publish its replies under `_INBOX.*.<session id>.>` alone. The
+ * scenario is the one pi-envoy's row runs too (`runReplayGrantScenario`): a replay asked on a
+ * reply subject naming the session is answered; one asked on nats.go's own request inbox, the
+ * subject Dispatch used before, is refused by the server and reaches nobody; the session then
+ * answers on its own prefix again. This row keeps the plugin's own boot, connection and shutdown.
  *
  * The mod is a silent stand-in: the replay answer is taken from the stream's own ring, which a
  * session no mod has spoken to holds empty, and the subject it goes to is what this row is about.
  *
  * Docker-backed: the claude-envoy job runs this suite with LEGION_E2E=1 after pulling the image.
  */
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { agentStreamControlSubject } from "@legion/contracts"
+import { afterAll, beforeAll, describe, test } from "bun:test"
 import { natsConnectionOptions } from "@legion/envoy-client/nats-connection"
 import {
   type NatsServer,
   sessionGrantConfig,
-  sessionReplySubject,
   startNatsServerWithConfig,
   useNatsServerDirectory,
 } from "@legion/envoy-client/test/nats-server"
-import { connect, createInbox, type NatsConnection, nkeys } from "nats"
+import { runReplayGrantScenario } from "@legion/envoy-client/test/replay-grant-scenario"
+import { connect, type NatsConnection, nkeys } from "nats"
 import type { ModEvent } from "../hooks/mod-protocol"
 import { startAgentStream } from "../src/agent-stream-runner"
 import type { ModLink } from "../src/mod-link"
@@ -62,29 +61,6 @@ function silentLink(): { readonly link: ModLink; readonly close: () => void } {
     socketPath: "/scratch/claude-envoy-reply-grant.sock",
   }
   return { close: () => ending.resolve(), link }
-}
-
-/** Asks `connection` for the session's replay on `reply` and answers the first answer's text, or
- *  undefined when none arrives within `withinMs`. */
-async function askReplay(
-  connection: NatsConnection,
-  reply: string,
-  withinMs: number,
-): Promise<string | undefined> {
-  const answers = connection.subscribe(reply, { max: 1 })
-  await connection.flush()
-  connection.publish(
-    agentStreamControlSubject(SESSION),
-    new TextEncoder().encode(JSON.stringify({ type: "replay", v: 1 })),
-    { reply },
-  )
-  const timer = setTimeout(() => answers.unsubscribe(), withinMs)
-  try {
-    for await (const answer of answers) return answer.string()
-    return undefined
-  } finally {
-    clearTimeout(timer)
-  }
 }
 
 describe.skipIf(LEGION_E2E !== "1")("the replay answer under a session's own NATS grant", () => {
@@ -141,35 +117,7 @@ describe.skipIf(LEGION_E2E !== "1")("the replay answer under a session's own NAT
       warn: () => undefined,
     })
     try {
-      // The control subscription is the runner's own; the first replay answered says it is
-      // in place, and the server has taken its SUB before any later request.
-      const deadline = Date.now() + 10_000
-      let answer: string | undefined
-      while (answer === undefined) {
-        if (Date.now() > deadline) throw new Error("no replay answer on the session's own prefix")
-        answer = await askReplay(requester, sessionReplySubject(createInbox(), SESSION), 500)
-      }
-      expect(JSON.parse(answer)).toMatchObject({ session_id: SESSION, v: 1 })
-
-      // The control: the reply subject Dispatch asked on before, nats.go's request inbox.
-      const before = `${createInbox()}.1`
-      expect(await askReplay(requester, before, 1_500)).toBeUndefined()
-      const refused = `Publish Violation`
-      let logged = ""
-      const logDeadline = Date.now() + 10_000
-      while (
-        !logged.split("\n").some((line) => line.includes(refused) && line.includes(`"${before}"`))
-      ) {
-        if (Date.now() > logDeadline) {
-          throw new Error(`the server never logged a refused publish to ${before}:\n${logged}`)
-        }
-        logged = await server.log()
-      }
-      // And the session still answers on its own prefix after the refusal.
-      const again = await askReplay(requester, sessionReplySubject(createInbox(), SESSION), 5_000)
-      expect(again === undefined ? undefined : JSON.parse(again)).toMatchObject({
-        session_id: SESSION,
-      })
+      await runReplayGrantScenario({ requester, server, sessionID: SESSION })
     } finally {
       runner.stop()
       mod.close()
