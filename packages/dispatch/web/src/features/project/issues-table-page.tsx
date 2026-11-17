@@ -11,6 +11,7 @@ import {
   type FilterChip,
   filterChips,
 } from "../../components/filter-chips";
+import { MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import { SearchBox } from "../../components/SearchBox";
 import { SelectionBar } from "../../components/SelectionBar";
@@ -328,6 +329,8 @@ export function IssueTableSelection({
   const setSelection = table.setRowSelection;
   /** The epic the reader has picked to move the selection into; no write has been sent yet. */
   const [epic, setEpic] = useState("");
+  const [picking, setPicking] = useState(false);
+  const epicTitles = new Map(epics.map((option) => [option.key, option.title]));
   return (
     // Over the list, not in it: selecting a row moves no row (INFRA-3135, R4).
     <SelectionBar count={selectedKeys.length} label="Selected issues" returnFocus={returnFocus}>
@@ -346,26 +349,28 @@ export function IssueTableSelection({
       >
         Start next
       </StepButton>
-      {/* Two steps: the select stages an epic and Move commits it. A closed `<select>`
-          commits on an arrow key in Chrome on Linux and Windows, and this one reparents
-          every selected issue. While a press is out it is held as a `StepButton` is, and for
-          the same reason. */}
-      <select
-        aria-disabled={busy || undefined}
-        aria-label="Move to epic"
-        className={`rounded-lg border px-2 py-1 refused:opacity-40 ${borderDefault} ${surfaceBg}`}
-        onChange={(event) => {
-          if (!busy) setEpic(event.target.value);
+      {/* Two steps, since a Move reparents every selected issue: the list stages an epic and
+          Move commits it, so no press or key in the list writes anything. While a press is out
+          the list is held as a `StepButton` is, and for the same reason: it opens on nothing,
+          and a pick stages nothing. */}
+      <MultiSelect
+        ariaDisabled={busy}
+        emptyMessage={epics.length === 0 ? "No epics yet." : "No epic matches that."}
+        label="Move to epic"
+        mode="single"
+        onOpenChange={(next) => setPicking(next && !busy)}
+        onPick={(picked) => {
+          if (!busy) setEpic(picked);
         }}
-        value={epic}
+        open={picking}
+        optionLabel={(key) => epicTitles.get(key) ?? key}
+        options={epics.map((option) => option.key)}
+        searchLabel="Search epics"
+        triggerClassName={`max-w-60 truncate rounded-lg border px-2 py-1 text-left refused:opacity-40 ${borderDefault} ${surfaceBg}`}
+        value={epic === "" ? undefined : epic}
       >
-        <option value="">Move to epic…</option>
-        {epics.map((option) => (
-          <option key={option.key} value={option.key}>
-            {option.title}
-          </option>
-        ))}
-      </select>
+        {epic === "" ? "Move to epic…" : undefined}
+      </MultiSelect>
       <StepButton
         ariaDisabled={busy || epic === ""}
         onClick={() => {

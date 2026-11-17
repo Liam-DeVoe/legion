@@ -3,7 +3,9 @@ import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 import type { IssueSummary } from "../../api/types";
 import { DataTableCells, DataTableGroupRow } from "../../components/DataTable";
+import { MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
+import { useNestedPanels } from "../../components/useNestedPanels";
 import {
   borderDefault,
   focusVisibleRing,
@@ -209,6 +211,7 @@ function EpicActions({
   /** The epic the reader has picked to merge into, which no write has been sent for yet. */
   const [target, setTarget] = useState("");
   const [open, setOpen] = useState(false);
+  const innerPanel = useNestedPanels<"merge">(open);
   return (
     <span className="ml-auto">
       <PanelTrigger
@@ -218,69 +221,79 @@ function EpicActions({
         open={open}
         size="compact"
       >
-        {(close) => (
-          <>
-            <button
-              className={`rounded px-2 py-1 text-left ${surfaceMutedHoverBg}`}
-              onClick={() => {
-                close();
-                onRename();
-              }}
-              type="button"
-            >
-              Rename
-            </button>
-            <button
-              className={`rounded px-2 py-1 text-left ${surfaceMutedHoverBg}`}
-              onClick={() => {
-                close();
-                onStartAll();
-              }}
-              type="button"
-            >
-              Start all its queued issues next
-            </button>
-            {onMerge === undefined ? null : (
-              <>
-                {/* Two steps, because a merge closes an issue: the select stages a target, and
-                    Merge… asks before anything is written. A closed `<select>` commits on an
-                    arrow key in Chrome on Linux and Windows, which is one keystroke from a
-                    closed epic. */}
-                <label className={`px-2 py-1 text-xs ${textMutedOnCanvas}`}>
-                  Merge into another epic
-                  <select
-                    className={`mt-1 block w-full rounded-md border px-1 py-1 text-sm ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
-                    onChange={(event) => setTarget(event.target.value)}
-                    value={target}
+        {(close) => {
+          const others = epics.filter((epic) => epic.key !== epicKey);
+          const titles = new Map(others.map((epic) => [epic.key, epic.title]));
+          return (
+            <>
+              <button
+                className={`rounded px-2 py-1 text-left ${surfaceMutedHoverBg}`}
+                onClick={() => {
+                  close();
+                  onRename();
+                }}
+                type="button"
+              >
+                Rename
+              </button>
+              <button
+                className={`rounded px-2 py-1 text-left ${surfaceMutedHoverBg}`}
+                onClick={() => {
+                  close();
+                  onStartAll();
+                }}
+                type="button"
+              >
+                Start all its queued issues next
+              </button>
+              {onMerge === undefined ? null : (
+                <>
+                  {/* Two steps, because a merge closes an issue: the list stages a target, and
+                      Merge… asks before anything is written, so no press or key in the list
+                      closes an epic. The list is a panel of this one (`useNestedPanels`): a
+                      press in it closes neither, and Escape in it closes it alone. The words
+                      over it are its trigger's name, which a screen reader hears from the
+                      trigger itself. */}
+                  <div className={`px-2 py-1 text-xs ${textMutedOnCanvas}`}>
+                    <span aria-hidden="true">Merge into another epic</span>
+                    <MultiSelect
+                      {...innerPanel("merge")}
+                      emptyMessage={
+                        others.length === 0
+                          ? "No other epic to merge into."
+                          : "No epic matches that."
+                      }
+                      label="Merge into another epic"
+                      mode="single"
+                      onPick={setTarget}
+                      optionLabel={(key) => titles.get(key) ?? key}
+                      options={others.map((epic) => epic.key)}
+                      searchLabel="Search epics"
+                      triggerClassName={`mt-1 block w-full truncate rounded-md border px-1 py-1 text-left text-sm ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
+                      value={target === "" ? undefined : target}
+                    >
+                      {target === "" ? "Choose an epic…" : undefined}
+                    </MultiSelect>
+                  </div>
+                  <button
+                    className={`mx-2 my-1 rounded border px-2 py-1 text-sm disabled:opacity-40 ${borderDefault} ${surfaceMutedHoverBg}`}
+                    disabled={target === ""}
+                    onClick={() => {
+                      close();
+                      onMerge(target);
+                    }}
+                    type="button"
                   >
-                    <option value="">Choose an epic…</option>
-                    {epics
-                      .filter((epic) => epic.key !== epicKey)
-                      .map((epic) => (
-                        <option key={epic.key} value={epic.key}>
-                          {epic.title}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-                <button
-                  className={`mx-2 my-1 rounded border px-2 py-1 text-sm disabled:opacity-40 ${borderDefault} ${surfaceMutedHoverBg}`}
-                  disabled={target === ""}
-                  onClick={() => {
-                    close();
-                    onMerge(target);
-                  }}
-                  type="button"
-                >
-                  Merge…
-                </button>
-                <span className={`px-2 py-1 text-xs ${textMutedOnCanvas}`}>
-                  To split it, tick some of its issues and choose “New epic from these”.
-                </span>
-              </>
-            )}
-          </>
-        )}
+                    Merge…
+                  </button>
+                  <span className={`px-2 py-1 text-xs ${textMutedOnCanvas}`}>
+                    To split it, tick some of its issues and choose “New epic from these”.
+                  </span>
+                </>
+              )}
+            </>
+          );
+        }}
       </PanelTrigger>
     </span>
   );
