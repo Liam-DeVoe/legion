@@ -168,6 +168,36 @@ test("the Steps tab draws each of two tasks as its own table, with its own runs"
   }
 });
 
+// A run's start and end are what a person reads off the row, so the cells show the clock time
+// and day of each instant, not only carry it in `datetime`. The instants are built from local
+// components, so the hour and minute each cell must show hold in any time zone, and differ in day
+// and time, so a cell that shows one fixed instant, or the other cell's, cannot pass.
+test("the Steps tab shows each run's own start and end, as a clock and calendar read them", async () => {
+  const tab = renderTab(async () => ({
+    issue: "CORE-1",
+    tasks: [
+      {
+        steps: [
+          record({
+            ended_at: new Date(2026, 10, 17, 14, 40).toISOString(),
+            id: "implement-1",
+            started_at: new Date(2026, 10, 16, 9, 5).toISOString(),
+          }),
+        ],
+        task: "default",
+      },
+    ],
+  }));
+  try {
+    const table = await screen.findByRole("table", { name: "Steps of task default" });
+    const [cells] = bodyRows(table);
+    expect(cells?.[6]).toMatch(/\b16\b.*\b0?9:05\b/u);
+    expect(cells?.[7]).toMatch(/\b17\b.*\b(?:14|0?2):40\b/u);
+  } finally {
+    tab.restore();
+  }
+});
+
 // "step 1" is one phrase. A narrow Result column (a phone) wraps "stopped, returned to step 1"
 // between its words, and the last break must not fall inside the phrase: at 390 px it left the
 // number alone on the last line.
