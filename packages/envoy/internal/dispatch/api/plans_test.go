@@ -277,6 +277,27 @@ func TestARatingWriteRefusesItsBadValues(t *testing.T) {
 	}
 }
 
+// A rating reason holding a NUL character (U+0000), which PostgreSQL's text cannot hold, is refused
+// by the body's decoder before the route reads it (decodeJSON, unstorableJSON): 400 NUL_CHARACTER
+// naming rating_reason and where in it the NUL stands, with nothing written. The same rating with
+// the NUL taken out lands, which is the control.
+func TestARatingReasonHoldingANulIsRefused(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := stepIssues(t, handler, "LEG", 1)[0]
+	retro := retroIdentity(daemonSession("LEG"), 1)
+	id := uuid.NewString()
+
+	refused := putRating(t, handler, issue, id, with(retro, map[string]any{"rating": 3, "rating_reason": "The plan\x00 was late."}))
+	requireStepRefusal(t, "a reason holding a NUL", refused, http.StatusBadRequest, "NUL_CHARACTER",
+		"rating_reason holds a NUL character (U+0000) at character 9, which Dispatch cannot store")
+	if steps := stepsOf(t, handler, issue); len(steps) != 0 {
+		t.Fatalf("the refused rating left %d records, want none", len(steps))
+	}
+	if rated := putRatingOK(t, handler, issue, id, with(retro, map[string]any{"rating": 3, "rating_reason": "The plan was late."})); rated.RatingReason == nil || *rated.RatingReason != "The plan was late." {
+		t.Fatalf("the rating with no NUL answers %s, want its reason", stepJSON(t, rated))
+	}
+}
+
 // A rating is written once, and the retro's end that lands after it keeps it: the daemon's two rows
 // for one retro land in either order.
 func TestARatingIsWrittenOnceInEitherOrder(t *testing.T) {
