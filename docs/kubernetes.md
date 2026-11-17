@@ -2019,7 +2019,7 @@ The kind check keeps the name after the rollback, and the rollback needs no stat
 #### Rolling back the release that records each step
 
 This release adds one outbox kind, `step_record`, and the table `step_starts` with what its rollback keeps; its migration `20261117000528_outbox_kinds_with_the_step_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
-That migration writes the whole list, the two merge-queue kinds among its kinds, and its version stands above `20261114031356_merge_queue_removal`, so it writes the list last on any database.
+That migration writes the whole list, the role-holders publication's kind and the two merge-queue kinds among its kinds, and its version stands above `20261116165926_role_holders_publish`, so it writes the list last on any database.
 A `step_record` row writes one start or one end of one step of an issue onto Dispatch's record of that step (`PUT /api/v1/issues/{key}/steps/{id}`).
 That migration changes no column.
 
@@ -2618,7 +2618,7 @@ reverse such a migration by its own way back first, and run this block after it.
 The migrations recorded above this one are these.
 20261112180548_claim_leak_check_cause adds `claims.leak_check_cause` and touches none of the six, so the block holds over it and leaves it and its column standing.
 20261113082214_outbox_kinds_with_the_update_ask and 20261113110610_drop_claim_update_answer_marks, of cybermonklabs/legion#3982, and 20261114031356_merge_queue_removal, of dispatch://INFRA-3274, touch none of the six either, so the block holds over them too, and a rollback to a release before them reverses them by their own steps.
-20261117000528_outbox_kinds_with_the_step_record writes the outbox's kind check again with `step_record` added and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step).
+20261117000528_outbox_kinds_with_the_step_record writes the outbox's kind check again with `step_record` added to the role-holders publication's list and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step).
 20261113090512_phase_entry_moved_back, of cybermonklabs/legion#3793, adds `phases.entry_moved_back` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release's inserts fill with its default, false.
 20261112070503_pull_request_state_read_at, of cybermonklabs/legion#3937, adds `pull_requests.state_read_at` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release's inserts fill with its default, the zero time.
 20261113082415_claim_ended_work, of cybermonklabs/legion#3983, adds `claims.ended_work` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement.
