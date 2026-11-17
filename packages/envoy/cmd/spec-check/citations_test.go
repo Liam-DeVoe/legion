@@ -679,7 +679,10 @@ func TestCitationsCommand(t *testing.T) {
 // test is cited. The superproject is made twice: once as git submodule add writes .gitmodules, and
 // once with ignore = all for sub in the .gitmodules of both commits, a setting that the writer of
 // a change controls and with which git diff leaves a moved submodule out of its list; changed must
-// list sub whatever .gitmodules says.
+// list sub whatever .gitmodules says. The head's gitlink is written by update-index, which no
+// ignore setting changes: git add leaves the gitlink of a submodule with ignore = all as it is in
+// git 2.56.1, the git of the CI runner, where git 2.43.0 stages the move. Before the command, each
+// row asserts its fixture: the gitlink of each commit, and git diff's list under the setting.
 func TestCitationsSeesAChangedSubmodule(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
@@ -707,14 +710,22 @@ func TestCitationsSeesAChangedSubmodule(t *testing.T) {
 			}
 			base := commitAll(t, f.repo, f.head, "add the submodule")
 			sub := filepath.Join(f.repo, "sub")
+			before := gitIn(t, sub, "rev-parse", "HEAD")
 			writeFile(t, filepath.Join(sub, "answer.txt"), []byte("0\n"))
-			commitAll(t, sub, gitIn(t, sub, "rev-parse", "HEAD"), "another answer")
+			after := commitAll(t, sub, before, "another answer")
+			gitIn(t, f.repo, "update-index", "--cacheinfo", "160000,"+after+",sub")
 			head := commitAll(t, f.repo, base, "move the submodule")
-			if entry := gitIn(t, f.repo, "ls-tree", head, "sub"); !strings.HasPrefix(entry, "160000 commit ") {
-				t.Fatalf("sub at the head is %q; want a gitlink", entry)
+			for _, at := range []struct{ name, commit, gitlink string }{{"base", base, before}, {"head", head, after}} {
+				if entry, want := gitIn(t, f.repo, "ls-tree", at.commit, "sub"), "160000 commit "+at.gitlink+"\tsub"; entry != want {
+					t.Fatalf("the fixture: sub at the %s is %q; want %q", at.name, entry, want)
+				}
 			}
-			if moved := gitIn(t, f.repo, "ls-tree", base, "sub") != gitIn(t, f.repo, "ls-tree", head, "sub"); !moved {
-				t.Fatal("the gitlink of sub is the same at the base and at the head; want a move")
+			plain := "sub"
+			if setting.ignore == "all" {
+				plain = ""
+			}
+			if got := gitIn(t, f.repo, "diff", "--name-only", base, head); got != plain {
+				t.Fatalf("the fixture: git diff --name-only from the base to the head lists %q; want %q under this setting", got, plain)
 			}
 			list := runBinaryIn(t, binary, "", gitEnv, "changed", "--repo", f.repo, "--base", base)
 			expect(t, list, result{stdout: "base " + base + "\nsub\n", stderr: "spec-check: " + f.repo + ": 1 path changed from " + base + " to HEAD\n"})
