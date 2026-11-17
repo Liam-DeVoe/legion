@@ -166,18 +166,47 @@ func TestAnotherSessionsDoneMovesNoFrameAndTheSessionIsStillDeliveredIt(t *testi
 	forged := inbox + "." + s1.id + "." + token
 	t.Logf("s1's own frame was answered on %s; s2's frame waits on %s; s1 forges %s", ownFrame.msg.Reply, heldFrame.msg.Reply, forged)
 
+	// First forgery: s1's done on s2's own reply subject. The server refuses it under s1's grant;
+	// under a grant admitting every _INBOX. subject it reaches the relay as s2's own done and the
+	// frame is acknowledged away, which this wait names as soon as it sees it.
 	one.reply(heldFrame, relayReplyDone)
-	one.reply(relayedFrame{msg: &natsgo.Msg{Reply: forged}}, relayReplyDone)
-	listener.WaitForOutput(t, `"msg":"`+relayRefusedReplyLine+`"`, `"session_id":"`+s2.id+`"`, `"reply_session_id":"`+s1.id+`"`)
 	deadline := time.Now().Add(5 * time.Second)
 	for !slices.Contains(s1.refusals(), heldFrame.msg.Reply) {
+		info, err := consumers.Info(t.Context(), s2.id)
+		if err != nil {
+			t.Fatalf("read the consumer of %s: %v", s2.id, err)
+		}
+		if info.NumAckPending == 0 || info.AckFloor.Stream >= heldFrame.seq {
+			t.Fatalf("s1's done on s2's reply subject %s acknowledged s2's frame (seq %d) away: the consumer of s2 has %d pending ack, ack floor %d",
+				heldFrame.msg.Reply, heldFrame.seq, info.NumAckPending, info.AckFloor.Stream)
+		}
 		if time.Now().After(deadline) {
 			t.Fatalf("the server never refused s1's done on s2's reply subject %s; it refused %v", heldFrame.msg.Reply, s1.refusals())
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	// The forged reply has been handled (the line above), and the server answered the other
-	// publish before any later one on s1's connection, so a frame either moved would show now.
+	// Second forgery: s1's done on its own reply prefix, which its grant admits, carrying s2's
+	// frame token. The relay refuses it and says so; a relay that took it would acknowledge s2's
+	// frame away, which this wait names as soon as it sees it.
+	one.reply(relayedFrame{msg: &natsgo.Msg{Reply: forged}}, relayReplyDone)
+	refusedLine := []string{`"msg":"` + relayRefusedReplyLine + `"`, `"session_id":"` + s2.id + `"`, `"reply_session_id":"` + s1.id + `"`}
+	deadline = time.Now().Add(10 * time.Second)
+	for !slices.ContainsFunc(strings.Split(listener.Output.String(), "\n"), func(line string) bool {
+		return !slices.ContainsFunc(refusedLine, func(field string) bool { return !strings.Contains(line, field) })
+	}) {
+		info, err := consumers.Info(t.Context(), s2.id)
+		if err != nil {
+			t.Fatalf("read the consumer of %s: %v", s2.id, err)
+		}
+		if info.NumAckPending == 0 || info.AckFloor.Stream >= heldFrame.seq {
+			t.Fatalf("s1's done on %s, its own prefix carrying s2's frame token, acknowledged s2's frame (seq %d) away: the consumer of s2 has %d pending ack, ack floor %d",
+				forged, heldFrame.seq, info.NumAckPending, info.AckFloor.Stream)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the listener never logged that it refused s1's done on %s", forged)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	requireStillPending(t, consumers, s2.id, heldFrame.seq)
 
 	// s2 restarts and registers a new epoch: the relay restarts at the ack floor and sends it the
