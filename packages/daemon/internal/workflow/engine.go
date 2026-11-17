@@ -133,7 +133,8 @@ type Config struct {
 	StepAgent func(claim.Token) StepAgent
 }
 
-// Engine interprets Table and writes only records and outbox rows through the supplied Store.
+// Engine interprets the table of each issue's walk (Walk: Table, or the table of its plan's line)
+// and writes only records and outbox rows through the supplied Store.
 type Engine struct {
 	store record.Store
 	cfg   Config
