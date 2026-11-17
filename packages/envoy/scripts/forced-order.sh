@@ -5,8 +5,9 @@
 # TestForcedOrder…, built with -tags odatrace and -race, against a nats-server whose own code
 # carries the hold points internal/testnats/hooks.go drives. The hooks are no fork: the script
 # copies nats-server's module at that version out of the module cache, applies
-# packages/envoy/internal/testnats/testdata/hooked/v<server>/server.patch to the copy, adds that
-# directory's zz_measure.go to its server package, and builds the tests against the copy through
+# packages/envoy/internal/testnats/testdata/hooked/v<server>/server.patch to the copy, adds the
+# shared testdata/hooked/zz_measure.go and that version's zz_measure_write.go to its server
+# package, and builds the tests against the copy through
 # a replace directive (go refuses an -overlay of a file in the module cache). A module of the
 # workspace (go.work) builds in a copy of the workspace file, with absolute `use` paths and the
 # replace added, so every other module version is the one CI's own build of it links, on either
@@ -106,8 +107,8 @@ else
 fi
 [ -n "$server" ] || server="${linked#v}"
 patch_dir="$hooked/v$server"
-[ -f "$patch_dir/server.patch" ] && [ -f "$patch_dir/zz_measure.go" ] ||
-  die "no hooks for nats-server $server: $patch_dir holds no server.patch and zz_measure.go"
+[ -f "$patch_dir/server.patch" ] && [ -f "$patch_dir/zz_measure_write.go" ] ||
+  die "no hooks for nats-server $server: $patch_dir holds no server.patch and zz_measure_write.go"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -123,14 +124,16 @@ grep -qF "VERSION = \"$server\"" "$copy/server/const.go" ||
   die "$source_dir is not nats-server $server: its server/const.go declares another VERSION"
 patch --batch --forward --fuzz=0 --no-backup-if-mismatch --quiet -p1 -d "$copy" <"$patch_dir/server.patch" ||
   die "$patch_dir/server.patch does not apply to nats-server v$server's own files"
-cp "$patch_dir/zz_measure.go" "$copy/server/zz_measure.go"
+# The hooks' declarations, shared by every version, and the version's own state writer.
+cp "$hooked/zz_measure.go" "$copy/server/zz_measure.go"
+cp "$patch_dir/zz_measure_write.go" "$copy/server/zz_measure_write.go"
 
 # -drop: every line of the hooked files that names the point, as the string its hook passes.
 hooked_files=()
 while IFS= read -r file; do
   hooked_files+=("$copy/server/$file")
 done < <(sed -n 's|^+++ b/server/\(.*\.go\)$|\1|p' "$patch_dir/server.patch")
-hooked_files+=("$copy/server/zz_measure.go")
+hooked_files+=("$copy/server/zz_measure.go" "$copy/server/zz_measure_write.go")
 for point in ${drops[@]+"${drops[@]}"}; do
   removed=0
   for path in "${hooked_files[@]}"; do

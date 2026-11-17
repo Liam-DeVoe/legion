@@ -373,8 +373,10 @@ packages/envoy/scripts/forced-order.sh -drop write.preIO ./internal/testnats/hoo
 ```
 
 It copies nats-server's module at the version it runs out of the module cache, applies
-`internal/testnats/testdata/hooked/v<version>/server.patch` to the copy and adds that directory's
-`zz_measure.go`, then runs `go test -tags odatrace -race -v -run '^TestForcedOrder'` with
+`internal/testnats/testdata/hooked/v<version>/server.patch` to the copy, and adds the shared
+`testdata/hooked/zz_measure.go` (the event, the hook and the reporting helpers) and that version's
+`zz_measure_write.go` (its consumer state writer). It then runs
+`go test -tags odatrace -race -v -run '^TestForcedOrder'` with
 nats-server replaced by the copy: for a module of the workspace, in a copy of `go.work` with
 absolute `use` paths, so every other module version is the one CI's own build links; for a module
 outside it, on a copy of the module's `go.mod`. Nothing else of nats-server changes, the

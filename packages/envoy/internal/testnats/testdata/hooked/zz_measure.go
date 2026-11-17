@@ -1,13 +1,12 @@
-// Forced-order hooks for nats-server v2.10.29. packages/envoy/scripts/forced-order.sh adds this
-// file to the server package of a copy of the module, beside server.patch, which puts the calls
-// into the server's own code. Not part of nats-server: MeasureHook is nil unless a test of
-// internal/testnats's hooks.go sets it, and every call below then returns at once.
+// Forced-order hooks, shared by every hooked nats-server version. packages/envoy/scripts/forced-order.sh
+// adds this file to the server package of a copy of the module, beside the version's
+// zz_measure_write.go and server.patch, which puts the calls into the server's own code. Not part
+// of nats-server: MeasureHook is nil unless a test of internal/testnats's hooks.go sets it, and
+// every call below then returns at once.
 package server
 
 import (
 	"encoding/json"
-	"io/fs"
-	"os"
 	"sync/atomic"
 )
 
@@ -111,30 +110,4 @@ func measureApply(s *Server, mset *stream, subject string, seq uint64, recoverin
 	}
 	measure(&MeasureEvent{Point: point, Server: s.Name(), Store: s.getOpts().StoreDir, Account: mset.accName(),
 		Stream: mset.name(), Subject: subject, Seq: seq, Recovering: recovering})
-}
-
-// measureWriteFile is v2.10.29's writeFileWithOptionalSync: writeFileWithSync under SyncAlways,
-// otherwise os.WriteFile under the dios semaphore. Both write the final path directly
-// (O_WRONLY|O_CREATE|O_TRUNC), so this server has no temporary file and no rename, and no
-// write.preRename point. Unchanged except for the measure calls between the steps.
-func (o *consumerFileStore) measureWriteFile(name string, data []byte, perm fs.FileMode) error {
-	<-dios
-	defer func() {
-		dios <- struct{}{}
-	}()
-	flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
-	if o.fs.fcfg.SyncAlways {
-		flags |= os.O_SYNC
-	}
-	f, err := os.OpenFile(name, flags, perm)
-	if err != nil {
-		measure(o.mev("write.openErr", data, 0, err))
-		return err
-	}
-	_, err = f.Write(data)
-	if err1 := f.Close(); err1 != nil && err == nil {
-		err = err1
-	}
-	measure(o.mev("write.written", data, 0, err))
-	return err
 }
