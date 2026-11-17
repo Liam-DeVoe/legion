@@ -56,7 +56,8 @@ does not carry it out yet.` names a plan a later release takes: write the plan a
 rules above. The reasons, with `<…>` filled in:
 
 - `the plan has <n> tasks (<ids>), and this release runs one task for each issue.`
-- `task <id> needs <ids>.`
+- `the plan has <n> tasks that no task needs (<ids>), and the work of each would merge by itself.`
+- `task <id> needs <ids>.` (each need by the id of the task it names)
 - `task <id> names <role> at step <i> after <role> at step <j>, and this release runs the steps in the order planner, implementer, tester, reviewer, acceptance.`
 - `task <id> has no step implementer.`
 - `task <id> names the role <role> at steps <i> and <j>.`
@@ -65,9 +66,12 @@ rules above. The reasons, with `<…>` filled in:
 - `the plan defines the role <role>.` (a `plan_role` block)
 - `task <id> names merges.`, `task <id> names owner.`, `task <id> names part_of.`
 
-Two reasons end with no "yet", because no release takes such a plan:
-`step <i> of task <id> names the role <role>, which neither the deployment nor the plan defines.`
-and `the plan has no task block, so it gives Legion no work.`
+These reasons end with no "yet", because no release takes such a plan:
+
+- `the plan has no task block, so it gives Legion no work.`
+- `task <id> needs <word>, which names no task of this plan.` (a `needs` word that names no `plan_task` block of the document, as the block writes it)
+- `step <i> of task <id> names the role <role>, which neither the deployment nor the plan defines.`
+- `task <id> needs itself: <chain>.` (a cycle of needs, named by its first task in id order, `<chain>` its needs from that task, such as `a needs b, b needs a`)
 
 ## When to give it
 

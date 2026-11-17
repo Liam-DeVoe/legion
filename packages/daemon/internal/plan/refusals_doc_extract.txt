@@ -1,0 +1,21 @@
+# Each reason Validate and Supported give, as the owner's guide to register_plan lists it
+# (skills/legion-architect/references/plan.md, "What Legion refuses"): one line each, with each
+# name of the plan written as a placeholder in angle brackets and the closing "This release of
+# Legion does not carry it out yet." of a Supported reason left out. refusals_doc_test.go holds the
+# code to these lines, and internal/textcheck's refusals_doc_test.go holds the guide to them.
+the plan has <n> tasks (<ids>), and this release runs one task for each issue.
+the plan has <n> tasks that no task needs (<ids>), and the work of each would merge by itself.
+task <id> needs <ids>.
+task <id> names <role> at step <i> after <role> at step <j>, and this release runs the steps in the order planner, implementer, tester, reviewer, acceptance.
+task <id> has no step implementer.
+task <id> names the role <role> at steps <i> and <j>.
+step <i> of task <id> names acceptance with no key, which asks for a fresh agent of the role acceptance.
+step <i> of task <id> names the key <key>.
+the plan defines the role <role>.
+task <id> names merges.
+task <id> names owner.
+task <id> names part_of.
+the plan has no task block, so it gives Legion no work.
+task <id> needs <word>, which names no task of this plan.
+step <i> of task <id> names the role <role>, which neither the deployment nor the plan defines.
+task <id> needs itself: <chain>.
