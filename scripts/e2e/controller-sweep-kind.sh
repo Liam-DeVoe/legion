@@ -29,6 +29,8 @@ mkdir -p "$evidence"
 transcript_to "$evidence/transcript.log"
 # shellcheck source-path=SCRIPTDIR source=lib/kind-sandbox.sh
 . "$root/scripts/e2e/lib/kind-sandbox.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
 
 # The store's image: the pinned Postgres the repository's CI tests against.
 pg_image=mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
@@ -126,7 +128,10 @@ kind_sandbox_internal_kubeconfig "$work/kubeconfig-internal"
 pass
 
 begin store
-docker run -d --name "$pg" --cpus 2 --memory 2g --network kind --tmpfs /var/lib/postgresql -e POSTGRES_PASSWORD=p "$pg_image" >/dev/null
+# The Postgres of a dead stack goes first, and this run's carries its mark (lib/leftovers.sh).
+remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
+pg_mark=$(postgres_mark "$work" "$pg") || fail "the mark of $pg could not be made"
+docker run -d --name "$pg" --label "$pg_mark" --cpus 2 --memory 2g --network kind --tmpfs /var/lib/postgresql -e POSTGRES_PASSWORD=p "$pg_image" >/dev/null
 for _ in $(seq 1 60); do
   docker exec "$pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres >/dev/null 2>&1 && break
   sleep 1

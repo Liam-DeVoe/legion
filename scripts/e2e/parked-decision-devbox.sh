@@ -92,9 +92,10 @@ state="$work/state"
 omp_home="$work/omp-home"
 profile_agent="$omp_home/.omp/profiles/$profile/agent"
 repo="sjawhar/legion-smoke"
-# Random bytes, never the pid, which a run in another PID namespace on one Docker daemon can share;
-# the containers are removed by the ids their creates printed (start_container, lib/rig.sh).
-containers_tag=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+# The driver's pid, which refuse_leftovers (lib/leftovers.sh) judges a dead run's container by, and
+# random bytes after it, since a run in another PID namespace on one Docker daemon can share the
+# pid; the containers are removed by the ids their creates printed (start_container, lib/rig.sh).
+containers_tag=$$-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
 pg_container="legion-e2e-pd-pg-$containers_tag"
 nats_container="legion-e2e-pd-nats-$containers_tag"
 # shellcheck disable=SC2034 # start_container and remove_containers fill and read it by its name
@@ -683,8 +684,11 @@ while IFS= read -r line; do note "$line"; done <<<"$built"
 docker ps >/dev/null
 # Docker chooses each container's host port and binds it itself, trying the next port when one is
 # taken, so no port is free between its choice and its bind; the start fails only when ten ports
-# in a row are taken. The Postgres image and its data path are Stage 3's.
-start_container containers "$pg_container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
+# in a row are taken. The Postgres image and its data path are Stage 3's. The Postgres of a dead
+# stack goes first, and this run's carries its mark (lib/leftovers.sh).
+remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
+pg_mark=$(postgres_mark "$work" "$pg_container") || fail "the mark of $pg_container could not be made"
+start_container containers "$pg_container" --label "$pg_mark" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
   -e POSTGRES_USER=legion -e POSTGRES_PASSWORD="$(cat "$work/postgres-password")" -e POSTGRES_DB=dispatch \
   -p "127.0.0.1::5432" mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
 port_pg=$(docker port "$pg_container" 5432/tcp | sed -n '1s/.*://p')

@@ -194,6 +194,8 @@ fail() {
 . "$root/scripts/e2e/lib/teardown.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/github-apps.sh
 . "$root/scripts/e2e/lib/github-apps.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
 
 trap cleanup EXIT
 trap 'exit 129' HUP
@@ -396,7 +398,10 @@ session_db_password=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
 )
 unset session_db_password
 session_db_started=1
-docker run -d --name "$session_db" --cpus 2 --memory 4g --mount type=tmpfs,destination=/var/lib/postgresql \
+# The Postgres of a dead stack goes first, and this one carries the run's mark (lib/leftovers.sh).
+remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
+session_db_mark=$(postgres_mark "$work" "$session_db") || fail "the mark of $session_db could not be made"
+docker run -d --name "$session_db" --label "$session_db_mark" --cpus 2 --memory 4g --mount type=tmpfs,destination=/var/lib/postgresql \
   --env-file "$work/session-db.env" -p "$bind_host:$session_db_port:5432" "$session_db_image" >/dev/null ||
   fail "docker could not start the scratch session database $session_db on $bind_host:$session_db_port"
 ready=

@@ -426,6 +426,40 @@ test.skipIf(!onLinux)(
   }
 );
 
+test.skipIf(!onLinux)(
+  "v-no-leftover-postgres: where the target of a TMPDIR link changed between the write of a mark and the teardown, the teardown reads the stack's postmaster under the mark's one spelling, the path the sweep acts on",
+  () => {
+    const { tmp } = scratch();
+    const link = `${tmp}-link`;
+    const moved = `${tmp}-moved`;
+    let postmaster: StandIn | undefined;
+    try {
+      const first = join(tmp, "first");
+      mkdirSync(first);
+      symlinkSync(first, link);
+      // The run directory as its stack spells it, through the link; its postmaster serves from the
+      // one spelling, which the mark holds.
+      const run = mkdtempSync(join(link, runDirectoryPrefix));
+      const identity = marks.identityOf(run);
+      const served = join(identity, "worker-0", "pgdata");
+      postmaster = standInPostmaster(join(tmp, "bin"), served);
+      writeMark(run, owners().runs, join(run, "worker-0", "pgdata"), join(tmp, "bin"));
+      // The link now leads to a copy of that run directory, marks and all, elsewhere.
+      mkdirSync(moved);
+      Bun.spawnSync(["cp", "-a", identity, join(moved, basename(run))]);
+      rmSync(link);
+      symlinkSync(moved, link);
+
+      expect(marks.servingPostmasters(run)).toEqual([served]);
+    } finally {
+      postmaster?.stop();
+      rmSync(link, { force: true });
+      rmSync(moved, { recursive: true, force: true });
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+);
+
 /** A stubbed `lstat` over `entries`, path to what it says; any other path is gone. */
 function stubbedLstat(
   entries: Record<string, { kind: "directory" | "file" | "link"; uid: number; mode: number }>

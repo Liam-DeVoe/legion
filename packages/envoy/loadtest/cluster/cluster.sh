@@ -393,25 +393,33 @@ kube_for() {
 # kube_read ARGS: kube ARGS for a call that only reads (an exec that reads a file, a psql query,
 # a nats-box listing), retried once TRANSIENT_RETRY_SECONDS later when it fails with a
 # TRANSIENT_RE line on its standard error, saying so. Its standard output and error are those of
-# the last try (held in files until then, so a failed try leaves nothing on them); its exit
-# status is the last try's. Never for a write: a write's failure is never retried.
+# the last try, in that order (held until then, so a failed try leaves nothing on them); its exit
+# status is the last try's. Never for a write: a write's failure is never retried. No file holds
+# either stream: both come over one pipe, kubectl's standard error as it writes it, then a NUL, its
+# standard output with an x after it (which keeps its trailing newlines), a NUL and its status. A
+# file made for them stays behind when the read is killed, and a kill no trap can take is one a
+# caller inside a watcher gets (pg_disk_watch_stop's SIGKILL at its bound). What the reads read is
+# text, which holds no NUL.
 kube_read() {
-  local out err rc try
-  out=$(mktemp "${TMPDIR:-/tmp}/cluster-read.XXXXXX") || return 1
-  err=$(mktemp "${TMPDIR:-/tmp}/cluster-read.XXXXXX") || {
-    rm -f -- "$out"
-    return 1
-  }
+  local out err rc try line transient
   for try in 1 2; do
-    rc=0
-    kube "$@" >"$out" 2>"$err" || rc=$?
-    if ((rc == 0 || try == 2)) || ! grep -qE -- "$TRANSIENT_RE" "$err"; then break; fi
-    note "kubectl $1 failed on a transient API server error ($(grep -m1 -E -- "$TRANSIENT_RE" "$err")); retrying once in $TRANSIENT_RETRY_SECONDS s"
+    {
+      IFS= read -r -d '' err
+      IFS= read -r -d '' out
+      IFS= read -r -d '' rc
+    } < <({ printf '\0%s\0%s\0' "$(kube "$@" 2>&3 3>&-; s=$?; printf x; exit "$s")" "$?"; } 3>&1)
+    out=${out%x}
+    ((rc == 0 || try == 2)) && break
+    transient=
+    while IFS= read -r line; do
+      if [[ $line =~ $TRANSIENT_RE ]]; then transient=$line && break; fi
+    done < <(printf '%s\n' "$err")
+    [ -n "$transient" ] || break
+    note "kubectl $1 failed on a transient API server error ($transient); retrying once in $TRANSIENT_RETRY_SECONDS s"
     sleep "$TRANSIENT_RETRY_SECONDS"
   done
-  cat -- "$out"
-  cat -- "$err" >&2
-  rm -f -- "$out" "$err"
+  printf '%s' "$out"
+  printf '%s' "$err" >&2
   return "$rc"
 }
 
