@@ -52,6 +52,21 @@ import { DISPATCH_KEY_PATTERN, isLegionRole, LEGION_ROLES } from "./legion-roles
 
 const fixtureDir = path.join(import.meta.dir, "..", "fixtures", "daemon-api");
 
+/** `plan-rating-cases.json`: a rating and a reason a retro's completion carries, either left out
+ * where the case leaves it out, and the daemon's verdict on it, `accepted` or its refusal code. */
+const PlanRatingCases = z.strictObject({
+  cases: z
+    .array(
+      z.strictObject({
+        name: z.string().min(1),
+        planRating: z.number().int().optional(),
+        planReason: z.string().optional(),
+        verdict: z.union([z.literal("accepted"), z.string().startsWith("PLAN_RATING_")]),
+      })
+    )
+    .min(1),
+});
+
 /** Every fixture the Go golden test writes, with the schema that must accept it. A new fixture
  * with no entry here fails the first test rather than going unchecked. */
 const schemas: Record<string, z.ZodType> = {
@@ -145,6 +160,11 @@ const schemas: Record<string, z.ZodType> = {
     most: z.number().int(),
     reasonMost: z.number().int().positive(),
   }),
+  // Nor this one: the daemon's verdict on each case of a rating, which internal/api's
+  // TestPlanRatingCasesGolden posts as its raw body to the completion that ends a retro and writes
+  // down as the route answered it, so that the case "the request schema takes exactly the ratings
+  // the daemon takes" below, and the plugin's tool in packages/pi-shared, hold their own rule to it.
+  "plan-rating-cases.json": PlanRatingCases,
 };
 
 function fixture(name: string): unknown {
@@ -966,6 +986,32 @@ test("the rating's bounds are the daemon's", () => {
     most: LEGION_PLAN_RATING_MOST,
     reasonMost: LEGION_PLAN_REASON_MAX,
   });
+});
+
+// A rating's rule is the daemon's, and the request schema states it again: the scale, the pair,
+// blank and the bound. Blank is Go's strings.TrimSpace on the daemon's side, so the schema reads
+// it by goBlankPattern rather than by JavaScript's trim, which keeps U+0085 and strips U+FEFF
+// (`./go-blank.ts`). Every case the daemon's golden test answered is run through the schema, and
+// the schema must take exactly the ones the daemon accepted.
+test("the request schema takes exactly the ratings the daemon takes", () => {
+  const { cases } = PlanRatingCases.parse(fixture("plan-rating-cases.json"));
+  expect(cases.some((c) => c.verdict === "accepted")).toBeTrue();
+  expect(cases.some((c) => c.verdict !== "accepted")).toBeTrue();
+  // The two characters the two languages' blank parts on are among the cases.
+  expect(cases.map((c) => c.planReason)).toEqual(expect.arrayContaining(["\u0085", "\uFEFF"]));
+  const parted = cases
+    .filter((c) => {
+      const { name: _name, verdict, ...rating } = c;
+      const taken = LegionHandoffCompleteRequest.safeParse({
+        grantId: "g",
+        summary: "s",
+        verdict: "",
+        ...rating,
+      }).success;
+      return taken !== (verdict === "accepted");
+    })
+    .map((c) => `${c.name}: the daemon answers ${c.verdict}`);
+  expect(parted).toEqual([]);
 });
 
 // The state shows the record a worker's completion of its current file-backed phase named, its id

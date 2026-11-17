@@ -394,6 +394,61 @@ test("a rating is sent on a completion at any phase: the late retro's at merging
   });
 });
 
+// A rating's rule is the daemon's, and this tool states it again so that it refuses a rating by
+// the field's name before any request. Every case the daemon's golden test answered
+// (`plan-rating-cases.json`, internal/api's TestPlanRatingCasesGolden) goes through the executor
+// as the retro's completion: the tool takes exactly the cases the daemon accepted and posts each
+// rating and reason as it was given, and refuses every other case naming a rating field, with no
+// request sent. Blank is Go's strings.TrimSpace on the daemon's side, where JavaScript's trim
+// keeps U+0085 and strips U+FEFF (`@legion/contracts/go-blank`).
+test("the tool takes exactly the ratings the daemon takes, and sends a refused one nowhere", async () => {
+  const { cases } = daemonFixture("plan-rating-cases.json") as {
+    readonly cases: readonly {
+      readonly name: string;
+      readonly planRating?: number;
+      readonly planReason?: string;
+      readonly verdict: string;
+    }[];
+  };
+  expect(cases.some((c) => c.verdict === "accepted")).toBe(true);
+  expect(cases.some((c) => c.verdict !== "accepted")).toBe(true);
+  expect(cases.map((c) => c.planReason)).toEqual(expect.arrayContaining(["\u0085", "\uFEFF"]));
+  const parted: string[] = [];
+  for (const c of cases) {
+    const { ops, routes, posted } = runtime(implementer, stateAtPhase("retro"));
+    const rating = {
+      ...(c.planRating === undefined ? {} : { plan_rating: c.planRating }),
+      ...(c.planReason === undefined ? {} : { plan_reason: c.planReason }),
+    };
+    const refusal = await executePhaseOp(ops, {
+      op: "handoff_complete",
+      summary: "Retro done.",
+      ...rating,
+    }).then(
+      () => undefined,
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    );
+    const told = `${c.name}: the daemon answers ${c.verdict}, the tool`;
+    if (refusal === undefined) {
+      const sent = posted.at(-1);
+      const want = {
+        grantId: "grant-for-one-command",
+        summary: "Retro done.",
+        verdict: "",
+        ...REPORT,
+        planRating: c.planRating,
+        planReason: c.planReason,
+      };
+      if (c.verdict !== "accepted") parted.push(`${told} took it`);
+      else if (!Bun.deepEquals(sent, want)) parted.push(`${told} sent ${JSON.stringify(sent)}`);
+    } else if (c.verdict === "accepted") parted.push(`${told} refused it: ${refusal}`);
+    else if (routes.length > 0 || !/plan_rating|plan_reason/.test(refusal)) {
+      parted.push(`${told} refused it after ${routes.join(", ") || "no request"}: ${refusal}`);
+    }
+  }
+  expect(parted).toEqual([]);
+});
+
 // The description is where every host's agent reads what the completion that ends the retro
 // carries: the two fields, the scale, and the daemon's refusals of a rating.
 test("the description tells the agent that does the retro to rate the plan in its completion, and names the daemon's refusals of a rating", () => {

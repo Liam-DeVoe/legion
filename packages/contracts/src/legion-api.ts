@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { goBlankPattern } from "./go-blank";
 import { DISPATCH_KEY_PATTERN, GATED_STEPS, LEGION_ROLES } from "./legion-roles";
 
 /**
@@ -1617,11 +1618,12 @@ export const LEGION_PLAN_RATING_MOST = 5;
 export const LEGION_PLAN_REASON_MAX = 2000;
 
 /** `planReason`: why the retro rated the plan as it did, one to `LEGION_PLAN_REASON_MAX`
- * characters that are not all blank. A string's `length` counts UTF-16 units, so the bound counts
- * code points. */
+ * characters that are not all blank, blank as the daemon's strings.TrimSpace reads it
+ * (`goBlankPattern`), which is not JavaScript's trim. A string's `length` counts UTF-16 units, so
+ * the bound counts code points. */
 const legionPlanReason = z
   .string()
-  .refine((reason) => reason.trim() !== "", { message: "planReason says why" })
+  .refine((reason) => !goBlankPattern.test(reason), { message: "planReason says why" })
   .refine((reason) => [...reason].length <= LEGION_PLAN_REASON_MAX, {
     message: `planReason holds at most ${LEGION_PLAN_REASON_MAX} characters`,
   });
