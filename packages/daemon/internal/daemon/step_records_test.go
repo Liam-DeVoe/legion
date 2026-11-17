@@ -963,6 +963,132 @@ func (g *stepRecordsGitHub) pullRequest(branch string, number int) string {
 		number, state, merged, "merge-"+stepRecordsHead, mergeable, branch, stepRecordsHead)
 }
 
+// v-records on a member of a tree: a child's acceptance is its tree's work, so the record of its
+// step 5 names the architect of the tree's root, with the session that architect's claim holds and
+// the model that answered it, and never an architect of the child's own, whom no claim serves. The
+// child stands in reviewing under the walk's root, on a pull request of its own; a person's
+// approval moves it to accepting, and the root's architect signs it off through its own route.
+func TestAChildsAcceptanceRecordNamesItsTreeArchitect(t *testing.T) {
+	r := newStepRecordsRig(t)
+	child, number := r.seedChildInReviewing()
+	r.reviews++
+	payload, err := json.Marshal(map[string]string{
+		"action": "submitted", "kind": "review", "repo": liveRepo, "number": strconv.Itoa(number), "state": "APPROVED",
+		"commit_id": stepRecordsHead, "head_sha": stepRecordsHead, "author": stepRecordsPerson, "body": "the child's round",
+		"review_id": strconv.Itoa(number*10 + r.reviews), "submitted_at": time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.publish(fmt.Sprintf("notifications.github.%s.pr.%d.review", r.subjectRepo(), number), "github", fmt.Sprintf("review-%d-%d", number, r.reviews), string(payload))
+	r.waitPhaseOf(child, phase.Accepting)
+	architect := r.worker(claim.RoleArchitect)
+	architect.ownTurn()
+	if status, body := r.d.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(), "issue": child}, false); status != http.StatusOK {
+		t.Fatalf("the tree architect's sign-off of %s = %d %s, want 200", child, status, body)
+	}
+	r.waitPhaseOf(child, phase.Retro)
+	own, err := claim.NewToken(r.project, child, claim.RoleArchitect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := r.token(claim.RoleArchitect)
+	var last error
+	if !testwait.Holds(stepRecordsWait, time.Second, func() bool {
+		read, err := r.readStepsOf(child)
+		if err != nil {
+			last = err
+			return false
+		}
+		got := read.find("step", 5, 1)
+		switch {
+		case got.ID == "":
+			last = fmt.Errorf("the read of %s holds no record of step 5: %+v", child, read)
+		case got.Role != "acceptance" || got.EndedAt == nil || got.Result != "passed":
+			last = fmt.Errorf("the acceptance of %s is %+v, want role acceptance, ended passed", child, got)
+		case got.Agent != string(tree) || got.Agent == string(own):
+			last = fmt.Errorf("the acceptance of %s names agent %q, want the tree architect %s, not the child's own %s", child, got.Agent, tree, own)
+		case got.Session != architect.session || got.Model != stepRecordsModel:
+			last = fmt.Errorf("the acceptance of %s names session %q and model %q, want the tree architect's %s and %s", child, got.Session, got.Model, architect.session, stepRecordsModel)
+		default:
+			last = nil
+		}
+		return last == nil
+	}) {
+		t.Fatalf("the child's acceptance never reached Dispatch as the tree architect's: %v", last)
+	}
+}
+
+// seedChildInReviewing records a child of the walk's root, created in Dispatch and held by the
+// daemon's store in reviewing at generation 1, on an open pull request of its own at
+// stepRecordsHead that GitHub reports clean, and answers its key and its pull request's number.
+func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
+	t := r.t
+	t.Helper()
+	var created struct {
+		Key     string `json:"key"`
+		Rank    string `json:"rank"`
+		LastSeq int64  `json:"last_seq"`
+	}
+	r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": "A child the tree's architect accepts"}, http.StatusCreated, &created)
+	number := r.number + 1
+	parent := r.key
+	ctx := context.Background()
+	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := r.records.PutIssue(ctx, tx, record.Issue{
+			Key: created.Key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.key, Parent: &parent, Project: r.cfg.Project,
+			Title: "A child the tree's architect accepts", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", DispatchStatus: "needs_review",
+			Rank: created.Rank, LastDispatchSeq: created.LastSeq, HandedOver: true,
+		}); err != nil {
+			return err
+		}
+		return r.records.PutPullRequest(ctx, tx, record.PullRequest{
+			State: record.PullRequestOpen, Issue: created.Key, Repo: liveRepo, Number: number, Branch: "legion/" + created.Key,
+			HeadSHA: stepRecordsHead, MergeState: record.MergeStateClean, Failing: []string{},
+		})
+	}); err != nil {
+		t.Fatalf("seed %s: %v", created.Key, err)
+	}
+	return created.Key, number
+}
+
+// waitPhaseOf waits for issue to stand in want.
+func (r *stepRecordsRig) waitPhaseOf(issue string, want phase.Phase) {
+	r.t.Helper()
+	var last string
+	if !testwait.Holds(stepRecordsWait, 100*time.Millisecond, func() bool {
+		got, ok := r.d.state().Issues[issue]
+		last = string(got.Phase)
+		return ok && last == string(want)
+	}) {
+		r.t.Fatalf("%s stands in %q, want %s", issue, last, want)
+	}
+}
+
+// readStepsOf is GET /api/v1/issues/{issue}/steps as a person of the project reads it, or the
+// error that the read met.
+func (r *stepRecordsRig) readStepsOf(issue string) (stepRecordsRead, error) {
+	request, err := http.NewRequest(http.MethodGet, r.dispatch.base+"/api/v1/issues/"+issue+"/steps", nil)
+	if err != nil {
+		return stepRecordsRead{}, err
+	}
+	request.Header.Set("X-Dispatch-User", "step-records")
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	if err != nil {
+		return stepRecordsRead{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		answer, _ := io.ReadAll(response.Body)
+		return stepRecordsRead{}, fmt.Errorf("GET steps of %s = %d %s", issue, response.StatusCode, answer)
+	}
+	var read stepRecordsRead
+	if err := json.NewDecoder(response.Body).Decode(&read); err != nil {
+		return stepRecordsRead{}, err
+	}
+	return read, nil
+}
+
 // A model whose name holds U+0000 is a name no store can hold: PostgreSQL's text and jsonb, the
 // daemon's outbox payload and Dispatch's record among them, refuse that character. The planner's
 // model answers with one and the planner completes: the completion moves the issue on, and the
