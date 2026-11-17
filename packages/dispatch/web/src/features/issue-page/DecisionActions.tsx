@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createContext, type ReactNode, useContext, useId, useMemo, useState } from "react";
 
 import { api } from "../../api/client";
+import { refreshQueries } from "../../api/query-refresh";
 import type { Artifact } from "../../api/types";
 import {
   borderDefault,
@@ -187,10 +188,12 @@ function DecisionControls({
       api.keepDecision(id, decision.block_id, decision.text_sha256, bounds),
     // However the Keep ends - taken, or refused because the decision changed since - the tree is
     // read again, and the Decisions view with it where it is open, so both draw the decision as
-    // it now stands: kept, or in its new words with Keep to press again. A refusal is said below,
+    // it now stands: kept, or in its new words with Keep to press again. The tree is refreshed as
+    // the page refreshes it on an event (`subscribeTreeFreshness`'s `refreshQueries`), so a walk
+    // of its pages already in flight is waited for rather than cut off. A refusal is said below,
     // on the decision, until the next press (dispatch://INFRA-4097's plan, choices 4 and 5).
     onSettled: () => {
-      void queryClient.invalidateQueries({ exact: true, queryKey: issueTreeKey(issueKey) });
+      refreshQueries(queryClient, [{ exact: true, queryKey: issueTreeKey(issueKey) }]);
       void queryClient.resetQueries({ exact: true, queryKey: viewKey(issueKey, "decisions") });
     },
   });
