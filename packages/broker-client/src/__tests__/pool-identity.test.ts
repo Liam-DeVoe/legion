@@ -29,7 +29,7 @@ import {
 import { personIdentity } from "../person-identity";
 import { poolIdentity } from "../pool-identity";
 import { projectedToken } from "../projected-token";
-import { BrokerTokenClient } from "../token-client";
+import { BrokerTokenClient, TradeRetryingError } from "../token-client";
 import {
   ACTOR_TOKEN_TYPE_MACHINE,
   SUBJECT_TOKEN_TYPE_GOOGLE,
@@ -352,6 +352,7 @@ async function personOnPoolMachine(sts: string, iam: string, brokerUrl: string) 
     }),
     actor: await poolAt(sts, iam),
     session: "ses_01a9",
+    log: () => {},
   });
   return { client, issuer };
 }
@@ -371,13 +372,18 @@ test("a person's trade on a pool machine shows the broker the minted token as th
   expect(form?.get("actor_token_type")).toBe(ACTOR_TOKEN_TYPE_MACHINE);
 });
 
+// An identity source's failure is traded again on the retry loop's long schedule, as the Go
+// client trades again on every failure but the broker's permanent refusals, so a caller is told it
+// at its deadline, in the source's own words (`TradeRetryingError`).
 test("with the security token service refusing, a person's trade fails naming it and the broker is asked nothing", async () => {
   const sts = stubService(() => ({ status: 400, body: '{"error":"invalid_grant"}' }));
   const iam = stubService(minting);
   const broker = stubBroker(() => ({ body: accepted("never", 600) }));
   stops.push(broker.stop);
   const { client } = await personOnPoolMachine(sts.url, iam.url, broker.url);
-  const refusal = await refusalOf(() => client.token());
+  stops.push(() => client.close());
+  const refusal = await refusalOf(() => client.token(AbortSignal.timeout(1_000)));
+  expect(refusal).toBeInstanceOf(TradeRetryingError);
   expect(refusal?.message).toContain(
     `the security token service ${sts.url}/v1/token: HTTP 400 invalid_grant`
   );
@@ -392,7 +398,9 @@ test("with generateIdToken refusing, a person's trade fails naming it and the br
   const broker = stubBroker(() => ({ body: accepted("never", 600) }));
   stops.push(broker.stop);
   const { client } = await personOnPoolMachine(sts.url, iam.url, broker.url);
-  const refusal = await refusalOf(() => client.token());
+  stops.push(() => client.close());
+  const refusal = await refusalOf(() => client.token(AbortSignal.timeout(1_000)));
+  expect(refusal).toBeInstanceOf(TradeRetryingError);
   expect(refusal?.message).toContain(
     `mint this machine's identity token at ${iam.url}/v1/projects/-/serviceAccounts/${SERVICE_ACCOUNT}:generateIdToken: HTTP 403`
   );

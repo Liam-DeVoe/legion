@@ -19685,9 +19685,10 @@ console.log(JSON.stringify(args));
   });
 
   test("after a switch whose move failed, the old session's viewer is replayed nothing of the new one", async () => {
-    // The move to the new session's token fails (its trade is refused), so the new session's
-    // agent-stream subject never opens. What the host records next is the new session's, and the
-    // old session's control subject must not answer a replay with it.
+    // The move to the new session's token fails (its trade is refused outright, a refusal no
+    // trade cures, so the move fails at once rather than at the follow's deadline), so the new
+    // session's agent-stream subject never opens. What the host records next is the new session's,
+    // and the old session's control subject must not answer a replay with it.
     const tokenFile = join(configDirectory, "projected-token");
     writeFileSync(tokenFile, `${MACHINE_IDENTITY_TOKEN}\n`);
     process.env.NATS_AUTH = "broker";
@@ -19699,7 +19700,9 @@ console.log(JSON.stringify(args));
       if (new URL(request.url).host !== "broker.test")
         return responseWithRegistration(input, init, []);
       const session = new URLSearchParams(await request.text()).get("session") ?? "";
-      if (session !== "ses_failed_from") return new Response("the broker is away", { status: 503 });
+      if (session !== "ses_failed_from") {
+        return Response.json({ error: "invalid_client" }, { status: 401 });
+      }
       return Response.json({
         access_token: fixtureSecret("nats"),
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",

@@ -74,13 +74,16 @@ describe("tradeFailureReason", () => {
         read: async () => ({ token: token(), tokenType: "urn:ietf:params:oauth:token-type:jwt" }),
         describe: () => "probe",
       },
+      log: () => {},
     });
-    const failure = await client.token().then(
+    // The retry loop trades again on a refused connection, so the caller is told at its deadline.
+    const failure = await client.token(AbortSignal.timeout(1_000)).then(
       () => undefined,
       (error: unknown) => error
     );
+    client.close();
     expect(tradeFailureReason(failure)).toBe(
-      "trade probe at http://127.0.0.1:1/v1/oauth/token: ECONNREFUSED"
+      "trade probe at http://127.0.0.1:1/v1/oauth/token: ECONNREFUSED, and the trade is being retried in the background"
     );
   });
 });

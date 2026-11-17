@@ -451,7 +451,7 @@ async function runWorker(options: {
         CLAUDE_CODE_DISABLE_CRON: "1",
         // The stand-in Anthropic API drives the model, and nothing else may reach a real one.
         ANTHROPIC_BASE_URL: base,
-        ANTHROPIC_API_KEY: "standin-key",
+        ANTHROPIC_API_KEY: fixtureSecret("standin"),
         ANTHROPIC_MODEL: "standin-model",
         DISABLE_AUTOUPDATER: "1",
         DISABLE_TELEMETRY: "1",

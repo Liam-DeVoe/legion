@@ -104,14 +104,24 @@ const BROKER_URL_SETTING = "the broker URL";
  *  description begins {@link POD_SESSION_NOT_REGISTERED} and a colon. */
 const INVALID_GRANT = "invalid_grant";
 
-/** The first wait before trading again on a missing registration, doubling to
- *  {@link UNREGISTERED_MAX_WAIT_MS}: the Go client's `defaultRetryWait` and `maxRetryWait`. */
-const UNREGISTERED_FIRST_WAIT_MS = 15_000;
-const UNREGISTERED_MAX_WAIT_MS = 5 * 60_000;
+/** The first wait before trading again after a trade the broker did not answer, answered with a
+ *  5xx, its 429 or a DPoP refusal, or that failed before it reached the broker, doubling to
+ *  {@link RETRY_MAX_WAIT_MS} until a trade lands: the Go client's `defaultRetryWait` and
+ *  `maxRetryWait` (packages/envoy/internal/brokerclient/brokerclient.go). */
+export const RETRY_FIRST_WAIT_MS = 15_000;
+export const RETRY_MAX_WAIT_MS = 5 * 60_000;
 
-/** How often a client says again that the broker holds no registration for its session, after
- *  saying so at the first such refusal (the Go client's `unregisteredLogEvery`). */
-const UNREGISTERED_LOG_EVERY_MS = 30 * 60_000;
+/** The first wait before trading again on a pod session the broker holds no registration for
+ *  yet, doubling to {@link PENDING_MAX_WAIT_MS}. Shorter than the other schedule: a registration
+ *  usually lands within seconds, and no caller cuts a wait short, so the cap is the longest a
+ *  pod waits between its registration landing and the trade that takes its token. */
+export const PENDING_FIRST_WAIT_MS = 2_000;
+export const PENDING_MAX_WAIT_MS = 30_000;
+
+/** The most one trade may take, from the subject token's read to the broker's answer, before it
+ *  is a trade the broker did not answer: the Go client's `callTimeout`
+ *  (packages/envoy/internal/brokerclient/environment.go). */
+export const TRADE_ATTEMPT_MS = 30_000;
 
 /** Waits `ms`, or less when `signal` aborts first: the default of
  *  {@link BrokerTokenClientOptions.sleep}. Its timer holds no process open: the wait runs behind
@@ -242,7 +252,33 @@ export class RegistrationPendingError extends Error {
   }
 }
 
-/** One caller waiting on a client's shared trade: how to tell it the trade's answer. */
+/**
+ * A call that stopped waiting, its signal ended by its own deadline, while the client's retry
+ * loop was trading again after a failure a later trade may cure, other than a pod session not
+ * registered yet ({@link RegistrationPendingError}): no answer within {@link TRADE_ATTEMPT_MS},
+ * no connection, a 5xx, the broker's 429 or a DPoP refusal, or a trade that could not be made.
+ * The loop goes on, so it is not final ({@link isFinalRefusal}). Its message is the loop's own
+ * line for that failure (`Retried.said`), which names nothing a peer wrote.
+ */
+export class TradeRetryingError extends Error {
+  constructor(said: string) {
+    super(`${said}, and the trade is being retried in the background`);
+    this.name = "TradeRetryingError";
+  }
+}
+
+/**
+ * A failed trade of the retry loop that a later trade may cure, by its class, with the text that
+ * says what it was (`#failure`): `pending`, a pod session the broker holds no registration for
+ * yet; `busy`, the broker's 429 or a DPoP refusal; `unanswered`, no answer within the attempt's
+ * time, no connection, a 5xx, or an answer that is not this grant's; `unsent`, a trade that
+ * failed before it reached the broker, its identity's source unreadable this once.
+ */
+type Retried =
+  | { readonly kind: "pending"; readonly said: string; readonly refusal: BrokerRefusedError }
+  | { readonly kind: "busy" | "unanswered" | "unsent"; readonly said: string };
+
+/** One caller waiting on a client's retry loop: how to tell it the loop's answer. */
 interface Waiter {
   readonly resolve: (token: BrokerToken) => void;
   readonly reject: (error: unknown) => void;
@@ -341,11 +377,17 @@ export interface BrokerTokenClientOptions {
   readonly renewBeforeMs?: number | undefined;
   /** `Date.now` unless a test replaces it. */
   readonly now?: (() => number) | undefined;
-  /** Waits `ms` before the next trade on a missing registration, returning early when `signal`
-   *  aborts; a timer unless a test replaces it. */
+  /** How long one trade may take, the subject token's read and the broker's answer together,
+   *  before it is a trade the broker did not answer: {@link TRADE_ATTEMPT_MS} unless a test
+   *  replaces it. */
+  readonly attemptMs?: number | undefined;
+  /** Waits `ms` before the retry loop's next trade, returning early when `signal` aborts (the
+   *  client's {@link BrokerTokenClient.close}); a timer unless a test replaces it. */
   readonly sleep?: ((ms: number, signal?: AbortSignal) => Promise<void>) | undefined;
-  /** Where the client says the broker holds no registration for its session yet;
-   *  `console.warn` unless a caller replaces it. */
+  /** A number in [0, 1) for each wait's jitter; `Math.random` unless a test replaces it. */
+  readonly random?: (() => number) | undefined;
+  /** Where the retry loop says, at each wait, what its last trade came to and when it trades
+   *  again; `console.warn` unless a caller replaces it. */
   readonly log?: ((line: string) => void) | undefined;
   /** The fetch every call goes through; the global one by default. The DPoP proof is signed
    *  around it, so a caller passing its own keeps whatever that one does. */
@@ -401,24 +443,35 @@ export class BrokerTokenClient {
   readonly #launcherCredential: boolean;
   readonly #renewBeforeMs: number;
   readonly #now: () => number;
+  readonly #attemptMs: number;
   readonly #sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   readonly #log: (line: string) => void;
   readonly #fetch: typeof fetch;
+  readonly #random: () => number;
   /** The most recent `DPoP-Nonce` the broker sent, carried in every later proof. */
   #nonce = "";
   #held: BrokerToken | null = null;
-  /** The trade under way, so two callers that need a token at once make one trade. It runs on
-   *  no caller's signal: each caller stops waiting for it on its own (`#joined`). */
-  #trading: Promise<BrokerToken> | null = null;
-  /** The callers waiting on that trade, told its answer by its one completion subscription. A
-   *  caller whose signal ends leaves this set, so the trade, which can stay pending for the
-   *  session's life, holds nothing of a call that has its answer. */
+  /** The retry loop under way (`#run`), so the callers that need a token make one trade per slot
+   *  of its schedule however many they are. It runs on no caller's signal: each caller stops
+   *  waiting for it on its own (`#joined`). */
+  #loop: Promise<void> | null = null;
+  /** The callers waiting on that loop, each told its answer once. A caller whose signal ends
+   *  leaves this set, so the loop, which can trade for the session's life, holds nothing of a
+   *  call that has its answer. */
   readonly #waiters = new Set<Waiter>();
-  /** The missing-registration refusal the trade under way is waiting out, or null. */
-  #pending: BrokerRefusedError | null = null;
-  /** Cuts that wait short, so a call arriving during it trades at once; null outside it. */
-  #wake: (() => void) | null = null;
-  /** Ended by {@link close}, which stops a trade waiting out a missing registration. */
+  /** The loop's last failed trade a later trade may cure, since a token last landed; null where
+   *  none has failed. */
+  #last: Retried | null = null;
+  /** When the first of those failures came, and how many trades have failed since. */
+  #since: number | null = null;
+  #failed = 0;
+  /** The refusal that ended the last loop, answered again with no trade until `#nextAt`. */
+  #refused: unknown = null;
+  /** The earliest time the loop may trade again, and the next wait of each schedule. */
+  #nextAt = 0;
+  #pendingWait = PENDING_FIRST_WAIT_MS;
+  #retryWait = RETRY_FIRST_WAIT_MS;
+  /** Ended by {@link close}, which stops the retry loop. */
   readonly #closed = new AbortController();
 
   constructor(options: BrokerTokenClientOptions) {
@@ -438,9 +491,11 @@ export class BrokerTokenClient {
     this.#launcherCredential = options.launcherCredential ?? true;
     this.#renewBeforeMs = options.renewBeforeMs ?? DEFAULT_RENEW_BEFORE_MS;
     this.#now = options.now ?? Date.now;
+    this.#attemptMs = options.attemptMs ?? TRADE_ATTEMPT_MS;
     this.#sleep = options.sleep ?? sleep;
     this.#log = options.log ?? console.warn;
     this.#fetch = options.fetch ?? fetch;
+    this.#random = options.random ?? Math.random;
   }
 
   /** The key this client proves, whose public half the broker records. */
@@ -455,57 +510,64 @@ export class BrokerTokenClient {
 
   /**
    * A live access token: the one in hand while it is good for longer than the renewal window, and
-   * otherwise a fresh trade. A trade that failed in a way a later trade may not repeat — the
-   * broker did not answer, answered with one of its four refusals a later trade may be answered
-   * differently (`BrokerRefusedError.permanent`), or the identity's source could not be read this
-   * once — answers the token in hand while it is still live, since a client that already holds
-   * an identity need not stop for a broker or an issuer that is merely down, busy, refusing this
-   * moment's proof or waiting on a registration. With nothing live in hand, a pod session the
-   * broker holds no registration for yet is waited out in the background (`#renew`), and a call
-   * arriving during that wait has the client trade at once. A caller whose `signal` ends first
-   * stops waiting with {@link RegistrationPendingError}, naming the session, while the trade goes
-   * on. A final refusal ({@link isFinalRefusal}), and any other failure with nothing live left,
-   * drop the token in hand and throw, so no caller writes with no identity or with one the broker
-   * or the issuer has ended.
+   * otherwise the answer of this client's one retry loop (`#run`), which trades until a token
+   * lands or a refusal no trade cures ends it. A caller waits on that loop; it never starts a
+   * second one and never cuts the loop's wait short, so however many callers ask — a NATS
+   * connection's every reconnect, each Dispatch request — the broker sees one trade per slot of
+   * the loop's schedule.
+   *
+   * - Inside the renewal window, a caller waits for the loop's trade; once a trade of the loop has
+   *   failed, a caller takes the token in hand at once while it is live, since a client that
+   *   already holds an identity need not stop for a broker that is merely down or busy, and the
+   *   loop trades again on its schedule.
+   * - A refusal no trade cures ({@link isFinalRefusal}) ends the loop: it drops the token in hand
+   *   and answers every caller with the refusal, and a caller arriving before the schedule's next
+   *   slot is answered the same, with no trade.
+   * - A caller whose `signal` ends first stops waiting, told {@link RegistrationPendingError}
+   *   where the last trade found the pod's session not registered yet, {@link TradeRetryingError}
+   *   where it failed otherwise, and the signal's own reason where no trade has ended yet. The
+   *   loop goes on. A caller that passes no signal waits until a token lands or a refusal ends it.
    */
   async token(signal?: AbortSignal): Promise<BrokerToken> {
+    const now = this.#now();
     const held = this.#held;
-    if (held !== null && this.#now() < held.expiresAt.getTime() - this.#renewBeforeMs) return held;
-    if (this.#trading === null) {
-      const started = this.#renew();
-      this.#trading = started;
-      started.then(
-        (token) => this.#settled(started, (waiter) => waiter.resolve(token)),
-        (error: unknown) => this.#settled(started, (waiter) => waiter.reject(error))
-      );
-    } else {
-      this.#wake?.();
+    if (held !== null && now < held.expiresAt.getTime() - this.#renewBeforeMs) return held;
+    if (held !== null && now < held.expiresAt.getTime() && this.#last !== null) return held;
+    if (this.#loop === null) {
+      if (this.#refused !== null && now < this.#nextAt) throw this.#refused;
+      this.#refused = null;
+      this.#loop = this.#run();
     }
     return await this.#joined(signal);
   }
 
-  /** Ends `started`, the trade that has just settled, and tells every caller waiting on it. */
-  #settled(started: Promise<BrokerToken>, tell: (waiter: Waiter) => void): void {
-    if (this.#trading === started) this.#trading = null;
+  /** Tells every caller waiting on the loop its answer, once. */
+  #tell(answer: (waiter: Waiter) => void): void {
     const waiters = [...this.#waiters];
     this.#waiters.clear();
-    for (const waiter of waiters) tell(waiter);
+    for (const waiter of waiters) answer(waiter);
+  }
+
+  /** What a caller whose wait ended before the loop's answer is told: the loop's last failure,
+   *  as {@link token} says, or `reason` where no trade has failed yet. */
+  #stopped(reason: unknown): unknown {
+    const last = this.#last;
+    if (last === null) return reason;
+    return last.kind === "pending"
+      ? new RegistrationPendingError(this.#session, last.refusal)
+      : new TradeRetryingError(last.said);
   }
 
   /**
-   * The answer of the trade under way, or what this caller is told when its `signal` ends first:
-   * that the session's registration is still pending, where the trade is waiting one out, and
-   * otherwise the signal's own reason. The trade itself goes on either way; the caller leaves
-   * the waiting set, so nothing of it stays behind.
+   * The loop's answer, or what this caller is told when its `signal` ends first (`#stopped`).
+   * The loop goes on either way; the caller leaves the waiting set, so nothing of it stays
+   * behind.
    */
   #joined(signal: AbortSignal | undefined): Promise<BrokerToken> {
     const { promise, resolve, reject } = Promise.withResolvers<BrokerToken>();
     const stop = (): void => {
       this.#waiters.delete(waiter);
-      const pending = this.#pending;
-      reject(
-        pending === null ? signal?.reason : new RegistrationPendingError(this.#session, pending)
-      );
+      reject(this.#stopped(signal?.reason));
     };
     const waiter: Waiter = {
       resolve: (token) => {
@@ -526,7 +588,8 @@ export class BrokerTokenClient {
     return promise;
   }
 
-  /** Stops a trade waiting out a missing registration, for a caller done with this client. */
+  /** Stops the retry loop, for a caller done with this client; a caller still waiting on it is
+   *  told what a caller whose deadline ended is (`#stopped`). */
   close(): void {
     this.#closed.abort();
   }
@@ -534,65 +597,153 @@ export class BrokerTokenClient {
   /**
    * Forgets the token in hand, so the next {@link token} trades afresh: for a caller a server has
    * told that the token it presented is no longer live, such as one the broker ended at a revoke
-   * before it lapsed. A trade already under way is left alone, since the token it brings back is
+   * before it lapsed. A loop already under way is left alone, since the token it brings back is
    * a fresh one.
    */
   drop(): void {
     this.#held = null;
   }
 
+  /** A wait of `ms` with equal jitter: between half of it and all of it, so clients that failed
+   *  together do not trade again together. */
+  #jittered(ms: number): number {
+    return Math.round(ms / 2 + this.#random() * (ms / 2));
+  }
+
   /**
-   * Trades until a token lands, with what the client does about each failure. A refusal of a pod
-   * session the broker holds no registration for yet, with nothing live in hand, is the one it
-   * trades again on: a pod's trade can reach the broker before its registration does. It waits
-   * {@link UNREGISTERED_FIRST_WAIT_MS}, doubling to {@link UNREGISTERED_MAX_WAIT_MS}, until a
-   * trade lands or the client is closed, and a call arriving during a wait cuts it short. It says
-   * so once, naming the session, and again every {@link UNREGISTERED_LOG_EVERY_MS} while the
-   * refusal lasts.
+   * The retry loop: capped exponential backoff with jitter around a per-trade timeout, the shape
+   * of gRPC's connection backoff (grpc/grpc, doc/connection-backoff.md), whose callers wait for
+   * it within their own deadlines (gRPC's wait-for-ready), and of "Exponential Backoff And
+   * Jitter" (Marc Brooker, AWS Architecture Blog, 2015). Each trade ends at
+   * {@link TRADE_ATTEMPT_MS} where the broker has not answered by then, as a trade it did not
+   * answer. What a trade comes to (`#failure`):
+   *
+   * - a token: every caller is answered with it, and both schedules start over;
+   * - a refusal no trade cures: the loop ends, answering every caller with it;
+   * - a pod session the broker holds no registration for yet: traded again on its own schedule,
+   *   {@link PENDING_FIRST_WAIT_MS} doubling to {@link PENDING_MAX_WAIT_MS};
+   * - no answer, no connection, a 5xx, the broker's 429 or a DPoP refusal, an answer that is not
+   *   this grant's, or a trade that could not be made: traded again on the Go client's schedule,
+   *   {@link RETRY_FIRST_WAIT_MS} doubling to {@link RETRY_MAX_WAIT_MS}.
+   *
+   * It says at each wait what the trade came to, naming the session, and when it trades again.
+   * Only a token landing starts a schedule over: no caller arriving, and no trade failing
+   * differently. The next trade's time is kept on the client, so a loop started after a refusal
+   * ended the last one trades no sooner than the schedule allows.
    */
-  async #renew(): Promise<BrokerToken> {
+  async #run(): Promise<void> {
+    // One turn first, so `token`'s `this.#loop = this.#run()` is in place before the loop can end
+    // and clear it.
+    await null;
     const closed = this.#closed.signal;
-    let wait = UNREGISTERED_FIRST_WAIT_MS;
-    // When the first refusal came, and when the client last said so; null until one has.
-    let since: number | null = null;
-    let logged: number | null = null;
-    try {
-      while (true) {
-        try {
-          const token = await this.#trade(closed);
-          this.#held = token;
-          return token;
-        } catch (error) {
-          const held = this.#held;
-          if (!isFinalRefusal(error) && held !== null && this.#now() < held.expiresAt.getTime()) {
-            return held;
-          }
-          this.#held = null;
-          const unregistered = error instanceof BrokerRefusedError && error.podSessionUnregistered;
-          if (!unregistered || closed.aborted) throw error;
-          this.#pending = error;
-          const now = this.#now();
-          since ??= now;
-          if (logged === null || now - logged >= UNREGISTERED_LOG_EVERY_MS) {
-            logged = now;
-            this.#log(
-              `the secrets broker has no registration for this pod's session ${this.#session} yet (${Math.round((now - since) / 1000)} s so far); trading ${this.describe()} again until it lands`
-            );
-          }
-          const woken = new AbortController();
-          this.#wake = () => woken.abort();
-          try {
-            await this.#sleep(wait, AbortSignal.any([closed, woken.signal]));
-          } finally {
-            this.#wake = null;
-          }
-          if (closed.aborted) throw error;
-          wait = Math.min(wait * 2, UNREGISTERED_MAX_WAIT_MS);
+    while (true) {
+      const delay = this.#nextAt - this.#now();
+      if (delay > 0) await this.#sleep(delay, closed);
+      if (closed.aborted) return this.#end((waiter) => waiter.reject(this.#stopped(closed.reason)));
+      const attempt = AbortSignal.timeout(this.#attemptMs);
+      let token: BrokerToken;
+      try {
+        token = await this.#trade(AbortSignal.any([closed, attempt]));
+      } catch (error) {
+        if (closed.aborted) {
+          return this.#end((waiter) => waiter.reject(this.#stopped(closed.reason)));
         }
+        if (this.#retried(error, attempt.aborted)) continue;
+        return this.#end((waiter) => waiter.reject(error));
       }
-    } finally {
-      this.#pending = null;
+      this.#held = token;
+      this.#last = null;
+      this.#since = null;
+      this.#failed = 0;
+      this.#nextAt = 0;
+      this.#pendingWait = PENDING_FIRST_WAIT_MS;
+      this.#retryWait = RETRY_FIRST_WAIT_MS;
+      return this.#end((waiter) => waiter.resolve(token));
     }
+  }
+
+  /** Ends the loop: no loop runs from here on, so a caller answered below that asks again
+   *  starts the next one, and every caller waiting is told `answer`. */
+  #end(answer: (waiter: Waiter) => void): void {
+    this.#loop = null;
+    this.#tell(answer);
+  }
+
+  /**
+   * Reads a trade that failed, `timedOut` where its own time ran out, and says whether the loop
+   * trades again. A refusal no trade cures does not: the token in hand is dropped, and the next
+   * loop waits out the longer schedule's slot, answering a caller before it with the refusal.
+   * Any other failure is traded again at the next slot of its schedule, with a line saying so;
+   * callers keep waiting, except where a token in hand is still live, which they are answered
+   * with.
+   */
+  #retried(error: unknown, timedOut: boolean): boolean {
+    const now = this.#now();
+    const failure = this.#failure(error, timedOut);
+    if (failure === null) {
+      this.#held = null;
+      this.#last = null;
+      this.#since = null;
+      this.#refused = error;
+      this.#nextAt = now + this.#jittered(this.#retryWait);
+      this.#retryWait = Math.min(this.#retryWait * 2, RETRY_MAX_WAIT_MS);
+      return false;
+    }
+    let wait: number;
+    if (failure.kind === "pending") {
+      wait = this.#jittered(this.#pendingWait);
+      this.#pendingWait = Math.min(this.#pendingWait * 2, PENDING_MAX_WAIT_MS);
+    } else {
+      wait = this.#jittered(this.#retryWait);
+      this.#retryWait = Math.min(this.#retryWait * 2, RETRY_MAX_WAIT_MS);
+    }
+    this.#nextAt = now + wait;
+    this.#last = failure;
+    this.#since ??= now;
+    this.#failed += 1;
+    const held = this.#held;
+    if (held !== null && now < held.expiresAt.getTime()) {
+      this.#tell((waiter) => waiter.resolve(held));
+    } else {
+      this.#held = null;
+    }
+    this.#log(
+      `${failure.said}; trading again in ${Math.ceil(wait / 1000)} s (${this.#failed} failed, the first ${Math.round((now - this.#since) / 1000)} s ago)`
+    );
+    return true;
+  }
+
+  /**
+   * What a failed trade came to, as a class the loop retries ({@link Retried}), or null for a
+   * refusal no trade cures ({@link isFinalRefusal}). Each class's text names the identity traded
+   * and the session and nothing the broker wrote: a refusal prints as it prints
+   * (`BrokerRefusedError.said`), a trade that got no answer as broker-client words it
+   * (`BrokerTradeFailedError`), and a trade its identity's source could not make in that
+   * source's own words, scrubbed: the words a caller of `token` was always handed.
+   */
+  #failure(error: unknown, timedOut: boolean): Retried | null {
+    if (isFinalRefusal(error)) return null;
+    if (error instanceof BrokerRefusedError) {
+      if (error.podSessionUnregistered) {
+        return {
+          kind: "pending",
+          refusal: error,
+          said: `the secrets broker has no registration for this pod's session ${this.#session} yet${error.said === "" ? "" : ` (${error.said})`}`,
+        };
+      }
+      return { kind: "busy", said: error.message };
+    }
+    if (timedOut) {
+      return {
+        kind: "unanswered",
+        said: `the secrets broker did not answer the trade of ${this.describe()} within ${this.#attemptMs / 1000} s`,
+      };
+    }
+    if (error instanceof BrokerTradeFailedError) return { kind: "unanswered", said: error.message };
+    return {
+      kind: "unsent",
+      said: `the trade of ${this.describe()} could not be made: ${scrub(messageOf(error))}`,
+    };
   }
 
   /**

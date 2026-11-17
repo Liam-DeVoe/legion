@@ -2,8 +2,8 @@
 //
 // An Envoy call hands its credential the call's own deadline, so a credential that is still
 // waiting (a pod whose session's registration has not landed) fails the call at that deadline
-// instead of holding it. broker-credential.test.ts covers what the broker credential does with the
-// deadline; this covers that the transport gives it one.
+// instead of holding it. broker-credential-registration.test.ts covers what the broker credential
+// does with the deadline; this covers that the transport gives it one.
 
 import { expect, test } from "bun:test";
 import { createEnvoyClient } from "../transport";
