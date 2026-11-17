@@ -11,14 +11,16 @@ import (
 // conversionCase) over the two versions, as carryNewestApproval feeds carryVerdict: the restore's
 // answered asks in the spec's `## Decisions` part, in place of its pointer line to the issue's
 // decisions document, under the heading the restore adds, and under a new block id, carry the
-// approval, and so does such a block the approved version held elsewhere with the same words; a
+// approval, and so does an open ask block the restore moved there from the decisions document
+// (D1), and such a block the approved version held elsewhere with the same words; a
 // restored block whose words moved does not. The conversion's decisions in that part carry it,
 // and so do the `shaped` pointers it gives an answered ask that stands in the spec already, beside
 // a decision and a reading in one version (spec v42's R9); a decision outside the part does not.
 //
 // Each case takes out only what the step's own write added, as its mark names it
 // (decisionStepCases): out of the new version the ask blocks it restored, the decisions it wrote
-// and the pointers it gave an ask, and out of the approved version the pointer line it took out.
+// and the pointers it gave an ask, and out of the approved version the pointer line it took out,
+// once in a pass of the cases however many identical paragraphs the approved version holds.
 // So a change an agent made since the approval, which the step's version keeps, still supersedes
 // it: a decision the approved version held whose words an agent rewrote, a pointer an agent gave
 // an answered ask, an answered ask block an agent wrote into the part, and a paragraph of the part
@@ -89,8 +91,8 @@ func TestTheRestoreAndTheConversionCarryAnApprovalForTheStepsOwnWriteAlone(t *te
 			ids("q-fresh"), nil, decisionStepCases{restored: ids("q-fresh"), pointerLines: tookPointer}, restored},
 		{"an answered ask returned with its question edited", prose + ask("q1", "Which region goes first?", "") + "\n" + part + pointer,
 			prose + part + ask("q1", "Which region goes last?", ""), ids("q1"), nil, decisionStepCases{restored: ids("q1"), pointerLines: tookPointer}, ""},
-		{"an open ask in the Decisions part", prose + part + pointer, prose + part + ask("q1", "Which region goes first?", ""),
-			map[string]bool{"q1": false}, nil, decisionStepCases{restored: ids("q1"), pointerLines: tookPointer}, ""},
+		{"an open ask the restore moved into the Decisions part", prose + part + pointer, prose + part + ask("q1", "Which region goes first?", ""),
+			map[string]bool{"q1": false}, nil, decisionStepCases{restored: ids("q1"), pointerLines: tookPointer}, restored},
 		{"a decision in place of the pointer line", prose + part + pointer, prose + part + decision, nil, nil,
 			decisionStepCases{decisions: ids("d1"), pointerLines: tookPointer}, converted},
 		{"a decision under the heading the conversion adds", prose, prose + part + decision, nil, nil,
@@ -127,6 +129,9 @@ func TestTheRestoreAndTheConversionCarryAnApprovalForTheStepsOwnWriteAlone(t *te
 		{"a paragraph citing a block of the decisions document, taken out beside the restore's ask", prose + part + pointer + "\n" + cite,
 			prose + part + ask("q1", "Which region goes first?", ""),
 			ids("q1"), nil, decisionStepCases{restored: ids("q1"), pointerLines: tookPointer}, ""},
+		{"two identical pointer lines the approved version held, of which the step's write took out one", prose + part + pointer + "\n" + pointer,
+			prose + part + ask("q1", "Which region goes first?", "") + "\n" + pointer,
+			ids("q1"), nil, decisionStepCases{restored: ids("q1"), pointerLines: tookPointer}, restored},
 	} {
 		approvedText, err := pmdoc.Render(parse(test.approved))
 		if err != nil {
@@ -142,7 +147,7 @@ func TestTheRestoreAndTheConversionCarryAnApprovalForTheStepsOwnWriteAlone(t *te
 			if step {
 				input.steps = test.mark
 				input.steps.restore, input.steps.conversion = true, true
-				input.restored = restoredAskBlocks(approved, version, test.decided, input.steps.restored)
+				input.restored = restoredAskBlocks(approved, version, input.steps.restored)
 			} else if want != "" {
 				// Another writer's version making the same change: a route's, an agent's upload.
 				want = ""

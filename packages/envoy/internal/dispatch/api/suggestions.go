@@ -381,7 +381,7 @@ func (s *server) runRelatedCheck(
 		return suggestions, record
 	}
 	timedOut := "the search behind it did not answer within " + allowance.String()
-	// callerGone reports a check stopped by its request going away, not by the allowance: a
+	// callerGone reports a check stopped by its request going away, not by the allowance: an
 	// ask block's checks run under the edit's one allowance, which ends theirs with the same
 	// cause as their own.
 	callerGone := func() bool {
@@ -1161,7 +1161,7 @@ func relatedRecordRetryable(err error) bool {
 // recordRelatedChecks calls this for an issue source and an ask source alone, so an ask create's
 // cross-project offers are recorded, on an issue and on a project document alike, and a new
 // ask block's offers reach no row. That is what the table admits: it keys such a row by the
-// ask the offer was made on (source_ask_id, which every row of an ask source holds), and a
+// ask the offer was made on (source_ask_id, which every row of an ask source holds), and an
 // ask block's check holds the document block's own id and no ask id. So the role is written
 // for an ask create alone, which is what lets the records route count the writes that offered
 // one by that column (relatedChecksOffersQuery).

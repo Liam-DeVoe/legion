@@ -19,7 +19,7 @@ import (
 // A human's approval is what a request to approve again follows. A request opened on a document
 // with an earlier approval names that approval's version, time and approver in its approval
 // (approval.approved: version, at, by), so the human reads what he is approving since the version
-// he approved rather than from nothing; a first request names none. A person's answer to a
+// he approved rather than from nothing; a first request names none. A person's answer to an
 // ask block is held once, on the ask's node, and changes no byte of the document
 // (dispatch://INFRA-1150 R3), so it writes no version and an approval stands through it; the
 // carries that remain are those of a version restoring the approved text, of R2's readings

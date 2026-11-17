@@ -137,8 +137,9 @@ var attributeRemovalCase = carryCase{
 	},
 }
 
-// restoreCase is R7's (D1): the answered ask blocks the restore writes into the spec's
-// `## Decisions` part, in place of its pointer line, with the `## Decisions` heading it adds to a
+// restoreCase is R7's (D1): the ask blocks the restore writes into the spec's `## Decisions` part
+// - each answered ask it returns, and each ask block of the decisions document it moves, whatever
+// its ask's state - in place of its pointer line, with the `## Decisions` heading it adds to a
 // spec holding no such part, a block under a new id included. It takes out of N only the blocks
 // the restore's own write added (decisionStepCases.restored), and out of A only the pointer line
 // that write took out (pointerLinesTaken); a block an agent wrote into the part is no part of it.
@@ -148,7 +149,7 @@ var attributeRemovalCase = carryCase{
 // difference no case carries. It holds for the restore's own write alone
 // (decisionStepCases.restore): an agent's write that makes the same change carries nothing by it.
 var restoreCase = carryCase{
-	change: "the answered asks its Decisions part holds again, which changed where they stand and not their words",
+	change: "the ask blocks its Decisions part holds again, which changed where they stand and not their words",
 	neutral: func(tree *pmdoc.Node, input carryInput, approved bool) (*pmdoc.Node, bool) {
 		if !input.steps.restore {
 			return tree, false
@@ -252,33 +253,38 @@ type carryInput struct {
 	decided      map[string]bool
 	restored     map[string]bool
 	steps        decisionStepCases
+	// pointersLeft is, within one pass of the cases over the two versions (neutral), the pointer
+	// lines of the step's write that no case has taken out of A yet (pointerLinesTaken).
+	pointersLeft *[]string
 }
 
 // pointerLinesTaken is what restoreCase and conversionCase take out of the `## Decisions` part of
 // one of the two versions beside the blocks the step's write added: of A (approved), each pointer
 // line that write took out of the document (decisionStepCases.pointerLines), as the first
-// paragraph of the part whose markdown is that line's, once each; of N, none, since the write left
-// none of them there. A paragraph a person approved that the write did not take out - one citing
-// a block of the decisions document, which the restore keeps - stays in A. The answer is a fresh
-// drop for one call of withoutDecisionsPartBlocks, which it walks in order.
+// paragraph of the part whose markdown is that line's, once each in a pass of the cases between
+// the two of them (pointersLeft), however many paragraphs of A are that line; of N, none, since
+// the write left none of them there. A paragraph a person approved that the write did not take
+// out - one citing a block of the decisions document, which the restore keeps, or a second copy of
+// the pointer line - stays in A. The answer is a drop for one call of withoutDecisionsPartBlocks,
+// which it walks in order.
 func (input carryInput) pointerLinesTaken(approved bool) func(*pmdoc.Node) bool {
-	if !approved || len(input.steps.pointerLines) == 0 {
+	if !approved || input.pointersLeft == nil || len(*input.pointersLeft) == 0 {
 		return func(*pmdoc.Node) bool { return false }
 	}
-	left := slices.Clone(input.steps.pointerLines)
+	left := input.pointersLeft
 	return func(node *pmdoc.Node) bool {
-		if node.Type != "paragraph" {
+		if node.Type != "paragraph" || len(*left) == 0 {
 			return false
 		}
 		markdown, err := blockMarkdown(node)
 		if err != nil {
 			return false
 		}
-		index := slices.Index(left, markdown)
+		index := slices.Index(*left, markdown)
 		if index < 0 {
 			return false
 		}
-		left = slices.Delete(left, index, index+1)
+		*left = slices.Delete(*left, index, index+1)
 		return true
 	}
 }
@@ -374,7 +380,7 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 		decided: decidedAskBlocks(shown), steps: steps,
 	}
 	if steps.restore {
-		input.restored = restoredAskBlocks(approved, tree, input.decided, steps.restored)
+		input.restored = restoredAskBlocks(approved, tree, steps.restored)
 	}
 	change, carried, err := carryVerdict(input)
 	if err != nil {
@@ -887,8 +893,12 @@ func carryVerdict(input carryInput) (string, bool, error) {
 }
 
 // neutral is input's two trees, A's and N's, each taken through every carry case in carryCases'
-// order but those skipped names, and whether any of those cases took something out of either.
+// order but those skipped names, and whether any of those cases took something out of either. The
+// pass takes each pointer line of the step's write out of A once, whichever of restoreCase and
+// conversionCase takes it (pointersLeft).
 func (input carryInput) neutral(skipped []bool) (approved, version *pmdoc.Node, took bool) {
+	left := slices.Clone(input.steps.pointerLines)
+	input.pointersLeft = &left
 	approved, version = input.approved, input.version
 	for index, carried := range carryCases {
 		if skipped[index] {

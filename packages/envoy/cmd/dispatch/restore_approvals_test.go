@@ -442,7 +442,7 @@ func TestTheRestoreCarriesOrSupersedesTheApprovalOfBothDocuments(t *testing.T) {
 	newest := newestReviewOf(t, current, specA)
 	carriedFrom := fmt.Sprintf("Carried forward from the approval of version %d: ", approvedA.version)
 	if newest.Version != numberA || newest.State != "approved" || newest.Reason == nil || !strings.HasPrefix(*newest.Reason, carriedFrom) ||
-		!strings.Contains(*newest.Reason, "the server-owned attributes of its ask blocks") || !strings.Contains(*newest.Reason, "the answered asks its Decisions part holds again") {
+		!strings.Contains(*newest.Reason, "the server-owned attributes of its ask blocks") || !strings.Contains(*newest.Reason, "the ask blocks its Decisions part holds again") {
 		t.Fatalf("the newest review of spec A is %+v, want the carry to version %d of the approval of version %d across the restore and the attribute removal", newest, numberA, approvedA.version)
 	}
 	t.Logf("spec A: version %d reads approved: %s", numberA, *newest.Reason)

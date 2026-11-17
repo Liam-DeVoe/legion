@@ -15,11 +15,12 @@ import (
 )
 
 // The two shapes of the restore of dispatch://INFRA-1150 R6, which returns each answered ask to
-// the spec it came from. In the main shape, RestoreReturns, the ask's block left its spec and its
-// row still names that spec, so the restore writes the block back under its old address. In the
-// second, RestoreMoves, the ask's block sits in the issue's decisions document, and the restore
-// moves it into the spec, which changes its address: that move is the one a moved_to tuple records
-// (graphstore.TupleMovedTo).
+// the spec it came from and moves every ask block of a decisions document into its spec. In the
+// main shape, RestoreReturns, the answered ask's block left its spec and its row still names that
+// spec, so the restore writes the block back under its old address. In the second, RestoreMoves,
+// an ask's block sits in the issue's decisions document, whatever the ask's state (D1), and the
+// restore moves it into the spec, which changes its address: that move is the one a moved_to
+// tuple records (graphstore.TupleMovedTo).
 const (
 	RestoreReturns = "returns"
 	RestoreMoves   = "moves"
@@ -98,8 +99,7 @@ var restoreWorkRead = `
 		join document_blocks d on d.artifact_id = decisions.id and d.type = 'ask'
 		join asks k on k.block_artifact_id = decisions.id and block_id_key(k.block_id) = block_id_key(d.block_id)
 		join artifacts spec on spec.issue_key = decisions.issue_key and spec.is_primary
-		where ` + answeredAsk + `
-		  and not ` + owesBlockIndex("decisions.id") + `
+		where not ` + owesBlockIndex("decisions.id") + `
 		  and not ` + owesBlockIndex("spec.id") + `
 	) work
 	join artifacts spec on spec.id = work.spec_id
@@ -113,14 +113,16 @@ var restoreWorkRead = `
 //   - RestoreReturns: an answered `question` ask whose row names its issue's spec
 //     (asks.block_artifact_id is the issue's primary document) and whose block the spec does not
 //     hold as an ask block - no document_blocks row of type ask holds the ask's block id in it.
-//     Address is the spec's old address of that block.
-//   - RestoreMoves: an answered ask block a decisions document holds (decisionsDocuments): a
+//     Address is the spec's old address of that block. An ask is answered as its node holds it
+//     (answeredAsk).
+//   - RestoreMoves: an ask block a decisions document holds (decisionsDocuments), open, answered,
+//     declined, resolved or withdrawn alike (D1: "an ask block present in decisions.md moves"): a
 //     document_blocks row of type ask of that document, whose asks row names the document and
 //     that block id. Address is the block's address there.
 //
 // A document that still owes its block index is left out, both the spec and the decisions
 // document, until the index catches up: its rows are not current, so neither what it holds nor
-// what collides with it is known. An ask is answered as its node holds it (answeredAsk).
+// what collides with it is known.
 func ReadRestoreWork(ctx context.Context, q graphstore.Queryer) ([]RestoreWork, error) {
 	rows, err := q.Query(ctx, restoreWorkRead)
 	if err != nil {
@@ -312,23 +314,24 @@ func writeMoves(w io.Writer, dangling DanglingReport, collisions []Collision, ve
 
 // DecisionsCensus is what the census prints of the decisions step's third phase
 // (dispatch://INFRA-1150 R6, R9): the decisions documents that stand (decisions_documents()), the
-// sections they still hold, each one no rule has converted yet, and each spec whose answered asks
-// left it, with those asks. docs' ReadDecisionsCensus reads it, since only docs reads a decisions
+// sections they still hold, each one no rule has converted yet, and each spec the restore owes an
+// ask - an answered ask that left it, or an ask block of the decisions document, which moves into
+// it - with those asks. docs' ReadDecisionsCensus reads it, since only docs reads a decisions
 // document's sections; the census command sets it on the report it prints (StoreReport.Decisions).
 type DecisionsCensus struct {
 	Documents, UnconvertedSections int64
 	SpecsWithMovedAnswers          []SpecWithMovedAnswers
 }
 
-// SpecWithMovedAnswers is one spec whose answered asks left it: its issue, and the id of each ask
-// the restore owes it, in the restore's order (ReadRestoreWork).
+// SpecWithMovedAnswers is one spec the restore owes an ask: its issue, and the id of each ask the
+// restore owes it, in the restore's order (ReadRestoreWork).
 type SpecWithMovedAnswers struct {
 	Issue string
 	Asks  []string
 }
 
-// SpecsWithMovedAnswersOf is each spec the restore owes an answered ask over work, in work's
-// order, each once: the issue whose spec an ask of either shape returns to, with its asks.
+// SpecsWithMovedAnswersOf is each spec the restore owes an ask over work, in work's order, each
+// once: the issue whose spec an ask of either shape returns or moves to, with its asks.
 func SpecsWithMovedAnswersOf(work []RestoreWork) []SpecWithMovedAnswers {
 	var specs []SpecWithMovedAnswers
 	for _, ask := range work {

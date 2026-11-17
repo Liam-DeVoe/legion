@@ -188,11 +188,13 @@ func keepAnswer(t *testing.T, p *dispatchProcess, document, block, sum string) h
 // found nothing owed. The stored steps read `criteria, spec` and `[spec]`. The decision node the
 // kept section became carries the Keep. A heading of the retired document is 404, a Keep on a
 // decision node 200. A new document named decisions.md, or slugged decisions-md, is refused 409
-// DECISIONS_ARE_NODES, saying to write a `decision` block in the spec, and one of another name is
+// DECISIONS_ARE_NODES, saying to write a `decision` block in the spec, on the issue whose
+// decisions document is retired and on an issue that holds none, and one of another name is
 // taken. The old members answer from the store: the same two decision nodes in model.Decision's
-// shape, the linked section's link and the kept decision's Keep, a null `document` and an empty
-// `decisions_artifact_id`. The three checks still admit `decisions`, and no route stored it. A
-// go/parser scan of the api package finds no issueDecisionsDocument, and finds keepDecision.
+// shape, each `ref` naming a node of `entries`, the linked section's link and the kept decision's
+// Keep, a null `document` and an empty `decisions_artifact_id`. The three checks still admit
+// `decisions`, and no route stored it. A go/parser scan of the api package finds no
+// issueDecisionsDocument, and finds keepDecision.
 func TestNoReadReachesTheDecisionsDocument(t *testing.T) {
 	ctx := context.Background()
 	databaseURL := censusDatabase(t)
@@ -410,13 +412,17 @@ func TestNoReadReachesTheDecisionsDocument(t *testing.T) {
 		t.Fatalf("a Keep on the decision node answered %s, want 200", nodeKeep)
 	}
 
-	// A new document of that name is refused by name; one of another name is taken.
-	for _, name := range []string{"decisions.md", "decisions-md"} {
-		body, _ := json.Marshal(map[string]string{"name": name, "content": "# Decisions\n\nOne.\n"})
-		refused := current.send(t, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", string(body), asUser(dispatchTestLogin))
-		if refused.status != http.StatusConflict || refused.code() != "DECISIONS_ARE_NODES" ||
-			!strings.Contains(string(refused.body), "`decision` block") || !strings.Contains(string(refused.body), "spec") {
-			t.Fatalf("a new document named %s answered %s, want 409 DECISIONS_ARE_NODES saying to write a `decision` block in the spec", name, refused)
+	// A new document of that name is refused by name, whether the issue holds a retired decisions
+	// document or none; one of another name is taken.
+	bare, _ := createCensusIssue(t, current, "GONE", "No decisions document", "# Plan\n\nNothing is decided here.\n")
+	for _, target := range []string{issue, bare} {
+		for _, name := range []string{"decisions.md", "decisions-md"} {
+			body, _ := json.Marshal(map[string]string{"name": name, "content": "# Decisions\n\nOne.\n"})
+			refused := current.send(t, http.MethodPost, "/api/v1/issues/"+target+"/artifacts", string(body), asUser(dispatchTestLogin))
+			if refused.status != http.StatusConflict || refused.code() != "DECISIONS_ARE_NODES" ||
+				!strings.Contains(string(refused.body), "`decision` block") || !strings.Contains(string(refused.body), "spec") {
+				t.Fatalf("a new document named %s on %s answered %s, want 409 DECISIONS_ARE_NODES saying to write a `decision` block in the spec", name, target, refused)
+			}
 		}
 	}
 	current.call(t, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", `{"name":"notes.md","content":"# Notes\n\nOne.\n"}`, http.StatusCreated)
@@ -430,10 +436,23 @@ func TestNoReadReachesTheDecisionsDocument(t *testing.T) {
 	if len(compat.Decisions) != 2 {
 		t.Fatalf("the old decisions member answers %d decisions, want the two decision nodes", len(compat.Decisions))
 	}
+	entryNodes := map[string]bool{}
+	for _, entry := range compat.Entries {
+		if entry.Kind == "agent" {
+			entryNodes[entry.Node.Kind+" "+entry.Node.ID] = true
+		}
+	}
+	answered := map[string]bool{}
 	for _, decision := range compat.Decisions {
 		if decision.Kind != "agent" {
 			t.Errorf("the old decisions member answers %s of kind %q, want agent for a decision node", decision.Ref, decision.Kind)
 		}
+		ref, ok := text.ParseRef(decision.Ref, "")
+		node := ref.Kind + " " + text.TargetID(ref)
+		if !ok || !entryNodes[node] || answered[node] {
+			t.Errorf("the old decisions member answers %s, which names %q: want each of the two decision nodes of entries %v once", decision.Ref, node, entryNodes)
+		}
+		answered[node] = true
 		if strings.Contains(decision.Text, "We chose Postgres") {
 			if len(decision.Links) != 1 || decision.Links[0].To.ID != specRefKey+"#r1" {
 				t.Errorf("the linked section's decision answers the links %+v, want one, to %s#r1, from its shaped tuple", decision.Links, specRefKey)

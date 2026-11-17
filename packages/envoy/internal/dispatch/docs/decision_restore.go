@@ -194,6 +194,10 @@ type issueRestore struct {
 	spec      issueDocument
 	decisions *issueDocument
 	rows      map[string]model.Ask
+	// answered is each ask of rows that holds an answer as a reading reads it: its row answered,
+	// and its node too (askAnswers, as refuseReadingsWithoutAnswers reads it), so the pass writes
+	// no reading into the block of an ask a writer of the release before answered on its row alone.
+	answered map[string]bool
 	// specBlocks is every block id the spec's block index holds.
 	specBlocks map[string]bool
 	// documents is every document of the issue that stands, by id, and askBlocks the block id of
@@ -208,8 +212,8 @@ type issueRestore struct {
 	sections []*convertedSection
 	// sectionsLeft is how many sections the decisions document holds once this pass has written
 	// it, and decisionsHoldAsks whether it still holds an ask block then, in a section or outside
-	// every one: an ask block this pass does not move, whose row and node go on naming the
-	// document, which is then not retired (R6).
+	// every one: an ask block this pass does not move - one whose row moved since the finder read
+	// it, or one no row names - which keeps the document from its retirement (R6).
 	sectionsLeft      int
 	decisionsHoldAsks bool
 	// pointerLine is the markdown of the pointer line the spec's write took out of its
@@ -219,7 +223,11 @@ type issueRestore struct {
 	// (stepCasesFor).
 	pointerLine string
 	shapedAdded map[string]map[string][]string
-	result      *DecisionIssue
+	// readingsWritten is the block id of each reading the pass's writes put in an ask block a
+	// document held already, by the document's id (writePresent): a section converted into a
+	// reading whose reading is not among them was written nowhere (refuseUnwrittenReadings).
+	readingsWritten map[string]map[string]bool
+	result          *DecisionIssue
 }
 
 // presentEdits is what this pass writes into the answered ask blocks one document holds already:
@@ -240,10 +248,11 @@ func (r *issueRestore) presentIn(document string) *presentEdits {
 }
 
 // restoreIssueDecisions runs the third phase on issue in tx, which ctx joined (Service.Join):
-// the restore of work, the answered asks the finder read for it, and, where convert, the
-// conversion of its decisions document and that document's retirement once it holds no section
-// and no ask block. It writes nothing that it does not report, and its caller commits or rolls
-// back.
+// the restore of work, the answered asks and the decisions document's ask blocks the finder read
+// for it, and, where convert, the conversion of its decisions document and that document's
+// retirement once it holds no section and no ask block. It writes nothing that it does not report,
+// and its caller commits or rolls back: a pass that would take a section out of the decisions
+// document without writing the reading it became fails (refuseUnwrittenReadings).
 func (s *Service) restoreIssueDecisions(ctx context.Context, tx pgx.Tx, issue string, work []graphcensus.RestoreWork, convert bool) (DecisionIssue, error) {
 	result := DecisionIssue{Issue: issue}
 	// The step's own write, which alone the restore's and the conversion's carry cases reach
@@ -252,7 +261,7 @@ func (s *Service) restoreIssueDecisions(ctx context.Context, tx pgx.Tx, issue st
 	ctx = withOwnerVerified(ctx)
 	r := &issueRestore{
 		service: s, tx: tx, issue: issue, convert: convert, result: &result, present: map[string]*presentEdits{},
-		shapedAdded: map[string]map[string][]string{},
+		shapedAdded: map[string]map[string][]string{}, readingsWritten: map[string]map[string]bool{},
 	}
 	if err := tx.QueryRow(ctx, `select now()`).Scan(&r.at); err != nil {
 		return result, fmt.Errorf("read the time of the restore of %s: %w", issue, err)
@@ -318,6 +327,9 @@ func (s *Service) restoreIssueDecisions(ctx context.Context, tx pgx.Tx, issue st
 	if err := r.writePresentDocuments(ctx); err != nil {
 		return result, err
 	}
+	if err := r.refuseUnwrittenReadings(); err != nil {
+		return result, err
+	}
 	if err := r.writeFacts(ctx, cause); err != nil {
 		return result, err
 	}
@@ -326,7 +338,7 @@ func (s *Service) restoreIssueDecisions(ctx context.Context, tx pgx.Tx, issue st
 	}
 	if r.convert && r.decisions != nil && r.sectionsLeft == 0 && !r.decisionsHoldAsks {
 		retirement, err := RetireDocument(ctx, tx, r.decisions.id, DecisionStepActor,
-			"The decisions step converted every section of the issue's decisions document into the spec's decisions, readings and answered asks.")
+			"The decisions step converted every section of the issue's decisions document into the spec's decisions and readings, and moved every ask block it held into the spec.")
 		if err != nil {
 			return result, err
 		}
@@ -342,9 +354,9 @@ func (s *Service) restoreIssueDecisions(ctx context.Context, tx pgx.Tx, issue st
 }
 
 // readState reads, in the issue's transaction, the rows of every question ask of the issue,
-// locked as a writer of an ask's row takes it (`for no key update`), every document of the issue
-// that stands, and the blocks their block indexes hold: every block of the spec, and every ask
-// block of each.
+// locked as a writer of an ask's row takes it (`for no key update`), and which of them hold an
+// answer on row and node (answered), every document of the issue that stands, and the blocks
+// their block indexes hold: every block of the spec, and every ask block of each.
 func (r *issueRestore) readState(ctx context.Context) error {
 	rows, err := r.tx.Query(ctx, `
 		select `+AskColumns+` from asks a
@@ -367,6 +379,20 @@ func (r *issueRestore) readState(ctx context.Context) error {
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read the asks of %s: %w", r.issue, err)
+	}
+	var answeredRows []string
+	for id, ask := range r.rows {
+		if ask.State == asks.StateAnswered {
+			answeredRows = append(answeredRows, id)
+		}
+	}
+	nodes, err := askAnswers(ctx, r.tx, answeredRows)
+	if err != nil {
+		return err
+	}
+	r.answered = map[string]bool{}
+	for id, answer := range nodes {
+		r.answered[id] = answer.answered
 	}
 	documents, err := r.tx.Query(ctx, `
 		select `+issueDocumentColumns+` from artifacts a
@@ -424,10 +450,11 @@ func (r *issueRestore) readState(ctx context.Context) error {
 
 // planRestores turns the finder's work into the blocks the restore writes, each item read again
 // under the issue's lock, since the finder read the whole pass's work before it took any: each
-// ask still as the finder read it once its row is locked - answered, its block where the finder
-// saw it - keeps its block id unless a block of the spec holds that id as the spec's block index
-// holds it now, when it takes a fresh one no document of the issue holds (R6's collision rule). A
-// work item whose row moved since the finder read it is left to the next pass, and so is a
+// ask still as the finder read it once its row is locked - its block where the finder saw it, and,
+// for a returning ask, answered - keeps its block id unless a block of the spec holds that id as
+// the spec's block index holds it now, when it takes a fresh one no document of the issue holds
+// (R6's collision rule). An ask block of the decisions document moves whatever its ask's state
+// (D1). A work item whose row moved since the finder read it is left to the next pass, and so is a
 // returning ask whose block the spec holds again, which a person put back: a restore of it would
 // write a second block of that ask and leave the person's with no row. An ask the restore moves
 // out of the decisions document moves from the address the finder read (RestoreWork.Address),
@@ -436,7 +463,8 @@ func (r *issueRestore) readState(ctx context.Context) error {
 func (r *issueRestore) planRestores(ctx context.Context, work []graphcensus.RestoreWork) error {
 	for _, item := range work {
 		row, held := r.rows[item.Ask]
-		if !held || row.State != asks.StateAnswered || row.BlockID == nil || *row.BlockID != item.BlockID || row.BlockArtifactID == nil {
+		if !held || row.BlockID == nil || *row.BlockID != item.BlockID || row.BlockArtifactID == nil ||
+			item.Shape == graphcensus.RestoreReturns && row.State != asks.StateAnswered {
 			slog.Warn("dispatch: the decisions step leaves an ask whose row moved since it was read to its next pass",
 				"issue", r.issue, "ask", item.Ask)
 			continue
@@ -545,8 +573,8 @@ func (r *issueRestore) restoreOf(ask string) *restoredBlock {
 // askBlockOf is the document that holds ask's block and the block's id, and whether it has one:
 // the spec, for an ask this pass restores; else the document of the issue its row names, where
 // that document's block index holds the block as an ask block (R9: the ask's "restored or present"
-// block). The decisions document is none of them: an answered ask its row names there is the
-// restore's, which moves it into the spec.
+// block). The decisions document is none of them: an ask its row names there is the restore's,
+// which moves it into the spec whatever its state.
 func (r *issueRestore) askBlockOf(ask string) (issueDocument, string, bool) {
 	if restore := r.restoreOf(ask); restore != nil {
 		return r.spec, restore.id, true
@@ -695,24 +723,24 @@ func (r *issueRestore) planSections(ctx context.Context, tree *pmdoc.Node) (map[
 // planSection decides what becomes of one section (R9), and records the spec blocks it links as
 // the `shaped` pointers of the ask it restates.
 //
-// The ask a section restates is the answered ask whose block it holds, which the restore moves,
-// or else the one answered ask of the issue it cites. A section that restates one and that this
-// pass converts gives that ask's block - the one the restore writes into the spec, or the one a
-// document of the issue holds already (askBlockOf) - its links as `shaped` pointers, and its body,
-// the ask's moved block taken out, becomes a reading in that block; a body that is the ask's
-// answer and nothing more, or nothing at all, is dropped, and writes no reading (the plain-answer
-// rule). A section that cites no answered ask becomes a decision. A section that restates two
-// asks, or whose body a reading cannot hold (a reading holds paragraphs alone), is left where it
-// is: no rule converts it (plan v15, "A section that no rule converts"); so is one whose ask has a
+// The ask a section restates is the ask whose block it holds, which the restore moves whatever the
+// ask's state (D1), or else the one answered ask of the issue it cites. A section that restates one
+// and that this pass converts gives that ask's block - the one the restore writes into the spec,
+// or the one a document of the issue holds already (askBlockOf) - its links as `shaped` pointers
+// where the ask is answered, and its body, the ask's moved block taken out, becomes a reading in
+// that block; a body that is the ask's answer and nothing more, or nothing at all, is dropped, and
+// writes no reading (the plain-answer rule). A section that cites no answered ask becomes a
+// decision. A section that restates two asks, or whose body a reading cannot hold (a reading holds
+// paragraphs alone, and only in an answered ask: a reading reads an answer), is left where it is:
+// no rule converts it (plan v15, "A section that no rule converts"); so is one whose ask has a
 // block in no document of the issue, which nothing could hold its reading; and so is one whose
-// body, the blocks the restore moves taken out, still holds an ask block, wherever in it - an
-// open, declined or resolved ask, an answered one the finder left to a later pass or one answered
-// since it read: such an ask's row and node name the decisions document, and a conversion of the
-// section would take its block out of the document and write it nowhere (R6, R8).
+// body, the blocks the restore moves taken out, still holds an ask block, wherever in it - one
+// whose row moved since the finder read it, or one no row names: a conversion of the section would
+// take that block out of the document and write it nowhere (R6, R8).
 //
 // A restore alone converts only a section that holds a block it moves, so no section is left
-// holding nothing but its heading; it still gives a restored ask the links of every section that
-// restates it, as R6 says.
+// holding nothing but its heading; it still gives a restored answered ask the links of every
+// section that restates it, as R6 says.
 func (r *issueRestore) planSection(ctx context.Context, converted *convertedSection, ties sectionTies, movedBy map[string]*restoredBlock) error {
 	section := converted.section
 	var held []string
@@ -760,9 +788,13 @@ func (r *issueRestore) planSection(ctx context.Context, converted *convertedSect
 		return nil
 	}
 	converted.askDocument, converted.askBlock = document, blockID
-	if restore := r.restoreOf(ask); restore != nil {
+	// An ask that holds no answer takes no pointer: what an answer shaped is the answer's.
+	answered := r.answered[ask]
+	switch restore := r.restoreOf(ask); {
+	case !answered:
+	case restore != nil:
 		restore.shaped = appendUnique(restore.shaped, links...)
-	} else if r.convert {
+	case r.convert:
 		edits := r.presentIn(document.id)
 		edits.shaped[blockID] = appendUnique(edits.shaped[blockID], links...)
 	}
@@ -770,9 +802,9 @@ func (r *issueRestore) planSection(ctx context.Context, converted *convertedSect
 		return nil
 	}
 	switch {
-	case len(body) == 0 || plainAnswer(body, r.rows[ask]):
+	case len(body) == 0 || answered && plainAnswer(body, r.rows[ask]):
 		converted.fate = fateDropped
-	case allParagraphs(body):
+	case answered && allParagraphs(body):
 		reading, err := readingOf(body)
 		if err != nil {
 			return err
@@ -1190,11 +1222,14 @@ func (r *issueRestore) creditSectionAuthors(ctx context.Context, document string
 // answered ask blocks a document holds already - into live, the tree of document as its live
 // write holds it, and, on a fleet of one build (twoBuilds false), takes the server-owned
 // attributes out of every ask block of it (withoutStoredAskAttributes). It records each pointer it
-// gave a block that the block did not hold (shapedAdded), which the version's mark names, and
-// reports whether it changed the tree.
+// gave a block that the block did not hold (shapedAdded), which the version's mark names, and each
+// reading it wrote (readingsWritten), and reports whether it changed the tree. It visits every ask
+// block of the tree: pmdoc.Walk stops at the first node its visit answers false for, so the visit
+// answers true at an ask block too, and the blocks after the first are written as well.
 func (r *issueRestore) writePresent(document string, live *pmdoc.Node, edits *presentEdits, twoBuilds bool) bool {
 	changed := false
 	added := map[string][]string{}
+	written := map[string]bool{}
 	pmdoc.Walk(live, func(node *pmdoc.Node) bool {
 		if node.Type != "ask" {
 			return true
@@ -1217,16 +1252,41 @@ func (r *issueRestore) writePresent(document string, live *pmdoc.Node, edits *pr
 			}
 			if readings := edits.readings[id]; len(readings) > 0 {
 				node.Children = append(node.Children, readings...)
+				for _, reading := range readings {
+					readingID, _ := reading.Attrs[pmdoc.BlockIDAttr].(string)
+					written[readingID] = true
+				}
 				changed = true
 			}
 		}
 		if !twoBuilds && withoutStoredAskAttributes(node) {
 			changed = true
 		}
-		return false
+		return true
 	})
 	r.shapedAdded[document] = added
+	r.readingsWritten[document] = written
 	return changed
+}
+
+// refuseUnwrittenReadings fails the pass where a section it converts into a reading of an ask
+// block a document held already has that reading in no block the pass wrote (readingsWritten):
+// the decisions document's write has taken the section out by then, and the moved_to the pass
+// would state from its heading names a block that holds none of its words. The failure rolls the
+// issue's transaction back, so the section stays where it stood, and no moved_to names it. A
+// reading of an ask the pass restores is in the block restoredAskBlock builds, which holds it.
+func (r *issueRestore) refuseUnwrittenReadings() error {
+	for _, converted := range r.sections {
+		if converted.fate != fateReading || r.restoreOf(converted.ask) != nil {
+			continue
+		}
+		id, _ := converted.reading.Attrs[pmdoc.BlockIDAttr].(string)
+		if !r.readingsWritten[converted.askDocument.id][id] {
+			return fmt.Errorf("the decisions step wrote the reading of the section %q of %s into no block: %s holds no ask block %s to take it, so it converts nothing of %s this pass",
+				converted.section.title, r.decisions.address, converted.askDocument.address, converted.askBlock, r.issue)
+		}
+	}
+	return nil
 }
 
 // writePresentDocuments writes, into each document of the issue other than the spec that holds an

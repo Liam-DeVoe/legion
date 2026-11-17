@@ -310,6 +310,7 @@ jobs:
       check_action_pins_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_action_pins_test }}
       check_private_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_test }}
       check_plugin_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_plugin_names_test }}
+      check_kept_for_one_release_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_kept_for_one_release_test }}
       check_fireevent_reasons_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_fireevent_reasons_test }}
       check_daemon_api_contract_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_daemon_api_contract_test }}
       check_release_credentials_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_release_credentials_test }}
@@ -1418,6 +1419,12 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-plugin-names.test.sh'
               - '.github/scripts/check-plugin-names.sh'
+            check_kept_for_one_release_test: &check_kept_for_one_release_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-kept-for-one-release.test.sh'
+              - '.github/scripts/check-kept-for-one-release.sh'
             check_fireevent_reasons_test: &check_fireevent_reasons_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1646,6 +1653,7 @@ jobs:
               - *check_action_pins_test
               - *check_private_names_test
               - *check_plugin_names_test
+              - *check_kept_for_one_release_test
               - *check_fireevent_reasons_test
               - *check_daemon_api_contract_test
               - *check_release_credentials_test
@@ -4821,6 +4829,7 @@ jobs:
       check_action_pins_test: ${{ needs.changes.outputs.check_action_pins_test }}
       check_private_names_test: ${{ needs.changes.outputs.check_private_names_test }}
       check_plugin_names_test: ${{ needs.changes.outputs.check_plugin_names_test }}
+      check_kept_for_one_release_test: ${{ needs.changes.outputs.check_kept_for_one_release_test }}
       check_fireevent_reasons_test: ${{ needs.changes.outputs.check_fireevent_reasons_test }}
       check_daemon_api_contract_test: ${{ needs.changes.outputs.check_daemon_api_contract_test }}
       check_release_credentials_test: ${{ needs.changes.outputs.check_release_credentials_test }}

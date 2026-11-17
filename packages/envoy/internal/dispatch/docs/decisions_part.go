@@ -207,13 +207,15 @@ func decidedAskBlocks(shown versionAsks) map[string]bool {
 	return decided
 }
 
-// restoredAskBlocks is each answered ask block (decided) that stands in version's `## Decisions`
-// part, that the restore's write added (written, decisionStepCases.restored), and that restoreCase
-// takes out of both versions: one the approved version does not hold under its id, and one it
-// holds under that id with the words the person approved - the question, the options, multiple and
-// urgency (sameAskWording). A block whose words moved since is not among them, so the restore that
-// returns it is a difference no case carries (R7), and neither is a block an agent wrote there.
-func restoredAskBlocks(approved, version *pmdoc.Node, decided, written map[string]bool) map[string]bool {
+// restoredAskBlocks is each ask block that stands in version's `## Decisions` part, that the
+// restore's write added (written, decisionStepCases.restored), and that restoreCase takes out of
+// both versions, whatever its ask's state - an answered ask returned, or an ask block of the
+// decisions document moved, open ones among them (D1): one the approved version does not hold
+// under its id, and one it holds under that id with the words the person approved - the question,
+// the options, multiple and urgency (sameAskWording). A block whose words moved since is not among
+// them, so the restore that returns it is a difference no case carries (R7), and neither is a
+// block an agent wrote there.
+func restoredAskBlocks(approved, version *pmdoc.Node, written map[string]bool) map[string]bool {
 	start, end := decisionsPart(version)
 	if start < 0 {
 		return nil
@@ -222,7 +224,7 @@ func restoredAskBlocks(approved, version *pmdoc.Node, decided, written map[strin
 	restored := map[string]bool{}
 	for _, child := range version.Children[start+1 : end] {
 		id, _ := child.Attrs[pmdoc.BlockIDAttr].(string)
-		if child.Type != "ask" || !decided[id] || !written[id] {
+		if child.Type != "ask" || !written[id] {
 			continue
 		}
 		if held, approvedHeld := before[id]; approvedHeld && !sameAskWording(held, child) {

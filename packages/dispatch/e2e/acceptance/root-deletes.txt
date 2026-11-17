@@ -5,7 +5,7 @@
 # the root's architect reads before deleting it, and the tests that hold it now. Every place in the
 # repository that serves a kept thing carries one comment `kept for one release: <id>`, the id the
 # last thing on its line, in Go, SQL, TypeScript and YAML alike, on the line that serves it or the
-# line above it. TestEveryThingKeptForOneReleaseIsListed (packages/envoy/cmd/dispatch) fails on a
+# line above it. .github/scripts/check-kept-for-one-release.sh (ci.yaml's lint job) fails on a
 # comment whose id this file does not list and on a listed id no comment names, and
 # e2e/acceptance/decisions-gone.sh reads this file for the literal sweep's admitted lines.
 asks-arms	The `anchored_to` and `owned_by` arms of graph_edges over `asks`, the `followed_by` arm over `ask_followers`, and the tuple arm's three joins to those rows	The census's class of unmarked asks and ask_followers rows reads zero (c-census)
@@ -16,6 +16,6 @@ compat-objects	decisions_artifact_id, the Decisions read's `document` and `decis
 contract-read-side	The read side of DocumentRoleSchema and of ProjectSchema.gated_steps (GATED_STEPS) holding `decisions`	No server answers `decisions`
 steps-write-admits	The gated-steps write admitting `decisions`, and the design-gates write admitting and dropping it	No page and no daemon of the release before is served; TestTheGatedStepsWriteTakesTheDecisionsStepAndStoresTheListWithoutIt, TestADesignGateRowOfTheDecisionsStepIsIgnored
 heading-keep	Keep on a heading of an unconverted decisions document	decisions_documents() answers no document; TestAHeadingOfAStandingDecisionsDocumentIsKeptUntilItIsRetired, TestNoReadReachesTheDecisionsDocument
-decisions-documents-fn	The SQL function decisions_documents()	decisions_documents() answers no document
+decisions-documents-fn	The SQL function decisions_documents(boolean)	decisions_documents() answers no document
 design-gate-rows	The design_gates rows of the step `decisions`, in Dispatch and in the daemon, and the daemon's readmitted_approvals rows of that step, which every read leaves out	No row holds `decisions`; TestADesignGateRowOfTheDecisionsStepIsIgnored, TestADecisionsGateRowIsIgnored
 decisions-step	The decisions step (its phases 1 and 3) and /healthz's decisions_step_owed	decisions_step_owed reads zero in production, which the root's architect reads before the root's pull request merges (H3); TestNoReadReachesTheDecisionsDocument

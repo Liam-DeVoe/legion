@@ -31,7 +31,7 @@ func tablePastThePaddingBudget(columns, rows int) string {
 // opener off the body's lines (pmdoc.FindDecisionCard). Three bodies are refused with no card
 // drawn, since the reader's container rule is the floor of the refusal and the ask's own content
 // rule decides nothing here - a question nobody can answer stands in the body whether or not a
-// card is finally drawn for it. A body that is still stored holds no such opener at all: a
+// card is finally drawn for it. A body that is still stored holds no such opener at all: an
 // ask block's text inside a fenced code block, or a container directive of another name
 // (TestCheckStoresABodyTheReaderDrawsNoCardFor).
 //
@@ -533,7 +533,7 @@ var byteOrderMarkRows = []struct {
 	},
 }
 
-// A body the browser reader reads a byte-order mark off is read as that reader reads it: a
+// A body the browser reader reads a byte-order mark off is read as that reader reads it: an
 // ask block behind one mark is refused, naming the block the reader draws its card in, and
 // so is one behind one mark carrying no attributes, while the same body behind two marks is
 // stored, since the reader drops one mark alone and the second leaves it reading a paragraph.

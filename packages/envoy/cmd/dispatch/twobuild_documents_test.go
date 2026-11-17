@@ -29,6 +29,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // ───── stored documents ─────────────────────────────────────────────────────
@@ -427,7 +428,8 @@ func corpusFiles(t *testing.T, dir string) []string {
 // wrote holding every typed block of X's manifest is approved, the answer to its ask block
 // makes Y write the next version, and the approval is carried to it. A body holding every
 // reference form of X's text/testdata keeps its refs rows after Y rewrites it, but for the edges a
-// Y from before the unknown-kind guard drops, which it logs (requireRefsKept).
+// Y from before the unknown-kind guard drops and the rows D10's grammar change makes Y add, each
+// of which it logs (requireRefsKept).
 func TestTwoBuildsReadAndEditEachOthersDocuments(t *testing.T) {
 	builds := newTwoBuilds(t)
 	env := map[string]string{"DISPATCH_SERVER_URL": referenceServerURL}
@@ -671,19 +673,8 @@ func referencesMarkdown(t *testing.T, fixtures string) string {
 		Body   string `json:"body"`
 		Origin string `json:"origin"`
 	}
-	var hrefs []struct {
-		Href string `json:"href"`
-		Ref  string `json:"ref"`
-	}
-	for name, into := range map[string]any{"dispatch-text-references.json": &texts, "dispatch-href-references.json": &hrefs} {
-		raw, err := os.ReadFile(filepath.Join(fixtures, name))
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		if err := json.Unmarshal(raw, into); err != nil {
-			t.Fatalf("decode %s: %v", name, err)
-		}
-	}
+	readFixture(t, fixtures, "dispatch-text-references.json", &texts)
+	hrefs := hrefTable(t, fixtures)
 	paragraphs := []string{"# Every reference form"}
 	for _, row := range texts {
 		switch {
@@ -699,6 +690,66 @@ func referencesMarkdown(t *testing.T, fixtures string) string {
 		paragraphs = append(paragraphs, referenceServerURL+row.Href, row.Ref)
 	}
 	return strings.Join(paragraphs, "\n\n") + "\n"
+}
+
+// hrefRow is a row of a build's text/testdata/dispatch-href-references.json: a dashboard link's
+// path and the reference that build reads it as.
+type hrefRow struct {
+	Href string `json:"href"`
+	Ref  string `json:"ref"`
+}
+
+// hrefTable is the href table of a build's text/testdata.
+func hrefTable(t *testing.T, fixtures string) []hrefRow {
+	t.Helper()
+	var hrefs []hrefRow
+	readFixture(t, fixtures, "dispatch-href-references.json", &hrefs)
+	return hrefs
+}
+
+// readFixture decodes the JSON file name of a build's text/testdata into into.
+func readFixture(t *testing.T, fixtures, name string, into any) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(fixtures, name))
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	if err := json.Unmarshal(raw, into); err != nil {
+		t.Fatalf("decode %s: %v", name, err)
+	}
+}
+
+// hrefReadApart is an href the writer's and the reader's href tables both hold and map to
+// different references: the reference grammar changed between the two builds.
+type hrefReadApart struct {
+	href, writerRef, readerRef string
+}
+
+// hrefsReadApart is each href the reader's own href table maps to another reference than the
+// writer's table does, keyed by the refs row the reader's reference names (`kind id`, as
+// documentRefs reads it). When the reader rewrites a body holding that href, it adds that row by
+// its own grammar. The one such href is D10's grammar change: the Decisions tab's
+// `/issues/KEY/decisions` reads as the issue KEY in a build that carries it, and as the document
+// KEY/decisions-md in a build before it.
+func hrefsReadApart(t *testing.T, writer, reader documentSide) map[string]hrefReadApart {
+	t.Helper()
+	writerRefs := map[string]string{}
+	for _, row := range hrefTable(t, writer.fixtures) {
+		writerRefs[row.Href] = row.Ref
+	}
+	apart := map[string]hrefReadApart{}
+	for _, row := range hrefTable(t, reader.fixtures) {
+		writerRef, both := writerRefs[row.Href]
+		if !both || writerRef == row.Ref {
+			continue
+		}
+		ref, ok := text.ParseRef(row.Ref, "")
+		if !ok {
+			t.Fatalf("the %s's href table maps %s to %s, which names no reference", reader.name, row.Href, row.Ref)
+		}
+		apart[ref.Kind+" "+text.TargetID(ref)] = hrefReadApart{href: row.Href, writerRef: writerRef, readerRef: row.Ref}
+	}
+	return apart
 }
 
 // opensTypedBlock reports whether a line of body starts with the `:::` of a typed block's fence.
@@ -744,10 +795,11 @@ func requireReferencesKeptAcrossBuilds(t *testing.T, builds *twoBuilds, writer, 
 	if len(written) == 0 {
 		t.Fatalf("the %s wrote no refs rows for the body holding every reference form of its text/testdata", writer.name)
 	}
+	apart := hrefsReadApart(t, writer, reader)
 	appendParagraph(t, reader.process, artifactID, "Rewritten on the "+reader.name+".")
-	requireRefsKept(t, documentRefs(t, builds, artifactID), written, "after the "+reader.name+" rewrote the body", writer.name, reader)
+	requireRefsKept(t, documentRefs(t, builds, artifactID), written, apart, "after the "+reader.name+" rewrote the body", writer.name, reader)
 	time.Sleep(referencesSettle)
-	dropped := requireRefsKept(t, documentRefs(t, builds, artifactID), written, "after the "+reader.name+"'s rewrite settled", writer.name, reader)
+	dropped := requireRefsKept(t, documentRefs(t, builds, artifactID), written, apart, "after the "+reader.name+"'s rewrite settled", writer.name, reader)
 	t.Logf("%d of the %d refs rows the %s wrote survived the %s's rewrite", len(written)-len(dropped), len(written), writer.name, reader.name)
 }
 
@@ -763,8 +815,10 @@ func requireReferencesKeptAcrossBuilds(t *testing.T, builds *twoBuilds, writer, 
 // It may add rows, but only of a kind that written holds no row of: a kind it extracts and the
 // writer does not, such as `block` from a `#b-` link when the writer is a build before the block
 // graph. A row it adds of a kind the writer wrote means the two builds read one reference form as
-// different targets. It returns the edges the reader dropped.
-func requireRefsKept(t *testing.T, got, written []string, when, writer string, reader documentSide) []string {
+// different targets, unless the reader's own href table maps an href of the body to that row and
+// the writer's maps it elsewhere (apart, hrefsReadApart): that row is D10's grammar change, which
+// is logged. It returns the edges the reader dropped.
+func requireRefsKept(t *testing.T, got, written []string, apart map[string]hrefReadApart, when, writer string, reader documentSide) []string {
 	t.Helper()
 	keepsUnknownKinds := len(reader.manifest.Nodes) > 0
 	kinds := map[string]bool{}
@@ -777,7 +831,7 @@ func requireRefsKept(t *testing.T, got, written []string, when, writer string, r
 		kind, _, _ := strings.Cut(row, " ")
 		extracted[kind] = true
 	}
-	var lost, dropped, added []string
+	var lost, dropped, added, regrammared []string
 	for _, row := range written {
 		if slices.Contains(got, row) {
 			continue
@@ -789,13 +843,23 @@ func requireRefsKept(t *testing.T, got, written []string, when, writer string, r
 		lost = append(lost, row)
 	}
 	for _, row := range got {
-		if kind, _, _ := strings.Cut(row, " "); kinds[kind] && !slices.Contains(written, row) {
-			added = append(added, row)
+		if kind, _, _ := strings.Cut(row, " "); !kinds[kind] || slices.Contains(written, row) {
+			continue
 		}
+		if href, ok := apart[row]; ok {
+			regrammared = append(regrammared, fmt.Sprintf("\t%s: its href table maps %s to %s, the %s's to %s\n",
+				row, href.href, href.readerRef, writer, href.writerRef))
+			continue
+		}
+		added = append(added, row)
 	}
 	if len(dropped) > 0 {
 		t.Logf("%s, the %s dropped %d of the %d edges the %s wrote, each to a node kind it extracts none of and keeps no edge to:\n%s",
 			when, reader.name, len(dropped), len(written), writer, refRowsText(dropped))
+	}
+	if len(regrammared) > 0 {
+		t.Logf("%s, the %s added %d rows by D10's grammar change, each the reference its own href table maps a link of the body to:\n%s",
+			when, reader.name, len(regrammared), strings.Join(regrammared, ""))
 	}
 	if len(lost) > 0 || len(added) > 0 {
 		t.Fatalf("%s, the body's refs rows lack %d of the %d the %s wrote\n%s\nand hold %d rows of kinds the %s wrote that it did not write\n%s\nall rows now:\n%s",
