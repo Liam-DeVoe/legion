@@ -98,9 +98,10 @@ func Derive(in Input) (State, error) {
 //   - each result (Result.fault), with the current text of its check when it carries that text's
 //     digest, so it is judged by what the judge reads of it, and no two results of one check at one
 //     At and one Seq (sameRecordFault);
-//   - a FixtureHistory, as ReadFixtureHistory refuses it (FixtureHistory.check), and a nil
-//     *FixtureHistory (historyFault): a commit with no files would be an empty tree, and two of them
-//     one tree;
+//   - a FixtureHistory, as ReadFixtureHistory refuses it (FixtureHistory.check), a GitHistory with
+//     no Dir, and a nil value of any type that implements History (historyFault): a commit with no
+//     files would be an empty tree, and two of them one tree, and a nil history would panic where a
+//     result carries. No History is no history, with which no result carries;
 //   - each known tie, as NewTie refuses it: a known tie with no path covers no change;
 //   - JobRuns and Uncited, which only lower a state, set, empty for none: with no job run a leg that
 //     ended with no result would be hidden (R9), and with no map of the checks that CI refused, a
@@ -157,7 +158,7 @@ func (in Input) check(current Tree) error {
 	case in.JobRuns == nil:
 		return errors.New("specgraph: it sets no JobRuns; an Input at a commit where no job ran sets an empty list")
 	case in.Uncited == nil:
-		return errors.New("specgraph: it sets no Uncited; an Input at a commit where CI refused no check sets an empty map")
+		return errors.New("specgraph: it sets no Uncited; an Input in whose history CI refused no check sets an empty map")
 	}
 	for i, r := range in.JobRuns {
 		if fault := r.fault(); fault != "" {

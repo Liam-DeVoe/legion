@@ -50,8 +50,8 @@ func TestAcceptAFailureWithNoSeqIsNeverHidden(t *testing.T) {
 			writeJSONFile(t, filepath.Join(dir, "subjects.json"), []any{map[string]any{"commit": "m2", "deploy": "d1", "now": "2026-11-14T00:00:00Z"}})
 			var results []any
 			readJSONFile(t, filepath.Join(dir, "results.json"), &results)
-			fault := map[string]any{"check": check, "check_version": 1, "kind": "failing_example", "outcome": "fail", "at": "2026-11-12T11:00:00Z", "seq": 5}
-			run := map[string]any{"check": check, "check_version": 1, "kind": "run", "outcome": "fail", "deploy": "d1", "at": "2026-11-12T12:00:00Z"}
+			fault := map[string]any{"check": check, "check_version": 1, "kind": "failing_example", "outcome": "fail", "leg": "", "at": "2026-11-12T11:00:00Z", "seq": 5}
+			run := map[string]any{"check": check, "check_version": 1, "kind": "run", "outcome": "fail", "deploy": "d1", "leg": "", "at": "2026-11-12T12:00:00Z"}
 			if row.seq != nil {
 				run["seq"] = row.seq
 			}

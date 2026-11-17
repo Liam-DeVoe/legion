@@ -53,11 +53,17 @@ func (e *ScenarioError) Error() string {
 
 func (e *ScenarioError) Unwrap() error { return e.Err }
 
-// The files of a scenario: each that it must hold, in the order that ReadScenario names a missing
-// one, and each that it may hold.
+// The files of a scenario, each with its mark: each that it must hold, in the order that
+// ReadScenario names a missing one, and each that it may leave out, with what its absence reads as.
+// A file that says nothing would read as a real value, as a member left out does, so a scenario
+// holds each file that a rule reads: uncited.json, {} when CI refused no check, as jobs.json is []
+// when no job ran (TestNoInputThatSaysNothingMovesAStateTowardTrue takes out each file).
 var (
-	scenarioRequired = []string{"approved.json", "files", "history.json", "jobs.json", "results.json", "subjects.json", "ties.json"}
-	scenarioOptional = []string{"uncited.json", "units.json", "want.txt"}
+	scenarioRequired = []string{"approved.json", "files", "history.json", "jobs.json", "results.json", "subjects.json", "ties.json", "uncited.json"}
+	scenarioOptional = map[string]string{
+		"units.json": "no unit, so no wait and no cycle of waits is read",
+		"want.txt":   "ReadScenario does not read it",
+	}
 )
 
 // scenarioResult is one result of results.json: a Result, whose members its own JSON names give,
@@ -75,7 +81,7 @@ type scenarioResult struct {
 const (
 	subjectForm = `{"commit":"<commit>","branch":"<branch>","deploy":"<deploy>","graph_tx":"<transaction>","now":"` + timeForm + `"}`
 	resultForm  = `{"check":"<check id>","check_version":<whole number from 1>,"kind":"<run or failing_example>","outcome":"<pass, fail or could_not_run>","commit":"<commit>","deploy":"<deploy>","graph_tx":"<transaction>","job":"<job>","leg":"<leg>","attempt":<whole number>,"at":"` + timeForm + `","seq":<whole number from 1>,"fault_author":"<author>","test_authors":["<author>", …],"test_commit":"<commit>"}`
-	jobRunForm  = `{"job":"<job>","leg":"<leg>","commit":"<commit>","ended":true}`
+	jobRunForm  = `{"job":"<job>","leg":"<leg>","commit":"<commit>","ended":<true or false>}`
 	unitForm    = `{"id":"<unit>","serves":["<statement id>", …],"needs":["<unit>", …],"waits_on":["<statement id>", …]}`
 	uncitedForm = `{"<commit>":{"<check id>":"<R48 rule>"}}`
 )
@@ -117,19 +123,22 @@ const (
 //     names an approved version of the check, whose Digest the result carries, and the result is
 //     whole by that version's text (Result.fault): kind is run or failing_example, outcome pass,
 //     fail or could_not_run, it names at most one of the subjects commit, deploy and graph_tx, the
-//     one that it read, and it sets at and seq, from 1; a run, and a failing example of a check of
-//     the code, names the subject of its check's kind, except a run of a check of the graph that
-//     could not run, which read no transaction; a run of a program check that names a job names the
-//     job, and a result of a program check of production or of the graph names test_commit. No two
-//     results of one check have one at and one seq;
-//   - jobs.json, [{"job","leg","commit","ended"}]: each run sets job and commit, and ended true,
-//     since a job run is a run that ended;
-//   - uncited.json (optional), {"<commit>":{"<check id>":"<R48 rule>"}}: with none, or for a
-//     commit that it does not name, CI refused no check;
+//     one that it read, and it sets leg ("" for no matrix), at and seq, from 1; a run, and a
+//     failing example of a check of the code, names the subject of its check's kind, a run of a
+//     check of the graph that could not run too, which names the transaction that it tried to read;
+//     a run of a program check that names a job names the job, and a result of a program check of
+//     production or of the graph names test_commit. No two results of one check have one at and one
+//     seq;
+//   - jobs.json, [{"job","leg","commit","ended"}]: each run sets job and commit, leg ("" for no
+//     matrix), and ended, false for a run that has not ended;
+//   - uncited.json, {"<commit>":{"<check id>":"<R48 rule>"}}: the checks that CI refused at each
+//     commit, {} for none; a commit that it does not name is one at which CI refused no check;
 //   - units.json (optional), [{"id","serves","needs","waits_on"}]: each id once, each of serves,
 //     needs and waits_on set ([] for none), serves and waits_on naming current statements of the
-//     approved spec, needs naming units of the file;
+//     approved spec, needs naming units of the file; with none, no wait is read;
 //   - want.txt (optional), which ReadScenario does not read.
+//
+// A JSON null is refused at each place of each file (decodeJSON).
 func ReadScenario(fsys fs.FS) (Scenario, error) {
 	var s Scenario
 	entries, err := fs.ReadDir(fsys, ".")
@@ -138,7 +147,7 @@ func ReadScenario(fsys fs.FS) (Scenario, error) {
 	}
 	holds := map[string]bool{}
 	for _, entry := range entries {
-		if !slices.Contains(scenarioRequired, entry.Name()) && !slices.Contains(scenarioOptional, entry.Name()) {
+		if _, optional := scenarioOptional[entry.Name()]; !optional && !slices.Contains(scenarioRequired, entry.Name()) {
 			return s, scenarioFault(entry.Name(), "the format of a scenario holds no such file")
 		}
 		holds[entry.Name()] = true
@@ -173,10 +182,8 @@ func ReadScenario(fsys fs.FS) (Scenario, error) {
 	if s.JobRuns, err = readJobRuns(fsys); err != nil {
 		return s, err
 	}
-	if holds["uncited.json"] {
-		if err := readJSON(fsys, "uncited.json", &s.Uncited, uncitedForm); err != nil {
-			return s, err
-		}
+	if err := readJSON(fsys, "uncited.json", &s.Uncited, uncitedForm); err != nil {
+		return s, err
 	}
 	if holds["units.json"] {
 		if s.Units, err = readUnits(fsys, s.Approved); err != nil {
@@ -186,16 +193,11 @@ func ReadScenario(fsys fs.FS) (Scenario, error) {
 	return s, nil
 }
 
-// Input is the input of the derivation at subject i of the scenario. The checks that CI refused at
-// a commit that uncited.json does not name, or of a scenario with no uncited.json, are none.
+// Input is the input of the derivation at subject i of the scenario.
 func (s Scenario) Input(i int) Input {
 	subject := s.Subjects[i]
-	uncited := s.Uncited[subject.Commit]
-	if uncited == nil {
-		uncited = map[string]string{}
-	}
 	return Input{Files: s.Files[subject.Commit], Approved: s.Approved, Results: s.Results, JobRuns: s.JobRuns,
-		Ties: s.Ties, History: s.History, Subject: subject.Point, Now: subject.Now, Uncited: uncited}
+		Ties: s.Ties, History: s.History, Subject: subject.Point, Now: subject.Now, Uncited: s.Uncited}
 }
 
 // readSubjects reads subjects.json.

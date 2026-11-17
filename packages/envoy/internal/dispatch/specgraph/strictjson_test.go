@@ -1,6 +1,7 @@
 package specgraph
 
 import (
+	"encoding/json/jsontext"
 	"strings"
 	"testing"
 	"unicode"
@@ -46,6 +47,48 @@ func TestDecodeJSONCutsALongPlace(t *testing.T) {
 				t.Fatal("decodeJSON accepted the text")
 			}
 			expectOneShortLine(t, err.Error(), row.want)
+		})
+	}
+}
+
+// A JSON null says nothing, so decodeJSON refuses it at every place of every file of a format, with
+// the JSON pointer of its place: a member of an object, a value of a map, an element of a list and
+// the whole text, whatever type v gives that place, since the decoder would read null as the zero
+// value of the type, a real value of the form. It refuses a null in a value that it keeps as JSON
+// text too, such as an element of a file of a list. The text "null" in a string is a string.
+func TestDecodeJSONRefusesNullAtEachPlace(t *testing.T) {
+	t.Parallel()
+	y := func(n int) string { return strings.Repeat("y", n) }
+	for _, row := range []struct {
+		name, json string
+		v          any
+		want       string // "" for no refusal
+	}{
+		{"a member of an object", `{"commits":null}`, &FixtureHistory{}, `it is not in the form <form>: the value at "/commits" is null`},
+		{"a value of a map", `{"c1":{"packages/envoy/go.mod":null}}`, &map[string]map[string]string{},
+			`it is not in the form <form>: the value at "/c1/packages~1envoy~1go.mod" is null`},
+		{"a map of a map", `{"c1":null}`, &map[string]map[string]string{}, `it is not in the form <form>: the value at "/c1" is null`},
+		{"an element of a list", `["a",null]`, &[]string{}, `it is not in the form <form>: the value at "/1" is null`},
+		{"the whole text", `null`, &ApprovedFile{}, `it is not in the form <form>: it is null`},
+		{"a member of an element that the reader keeps as JSON text", `[{"job":"go-checks","leg":null}]`, &[]jsontext.Value{},
+			`it is not in the form <form>: the value at "/0/leg" is null`},
+		{"a null under a long name of a map", `{"c1":{` + jsonLongName + `:null}}`, &map[string]map[string]string{},
+			`it is not in the form <form>: the value at "/c1/KEY\n` + y(42) + `…` + y(46) + `\tEND" is null`},
+		{"control: the same map with a string", `{"c1":{"packages/envoy/go.mod":"1"}}`, &map[string]map[string]string{}, ""},
+		{"control: the text null in a string", `{"c1":{"packages/envoy/go.mod":"null"}}`, &map[string]map[string]string{}, ""},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			err := decodeJSON([]byte(row.json), row.v, "<form>")
+			switch {
+			case row.want == "" && err != nil:
+				t.Fatalf("decodeJSON refused the text: %v", err)
+			case row.want == "":
+			case err == nil:
+				t.Fatal("decodeJSON accepted the text")
+			default:
+				expectOneShortLine(t, err.Error(), row.want)
+			}
 		})
 	}
 }

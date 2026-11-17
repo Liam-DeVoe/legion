@@ -28,6 +28,14 @@ import (
 //     file that leaves it out sets that value;
 //   - input:"one of <member>: <reason>": of it and the other member, exactly one is set, and the
 //     validation refuses neither and both, as the reason says.
+//
+// No mark reads a JSON null: decodeJSON refuses a null at each place of each file. The reason of a
+// mark zero is a decision that a review checks, since the reflection tests read only that a member
+// left out reads as its zero value; the sweep of the scenarios is its guard
+// (TestNoInputThatSaysNothingMovesAStateTowardTrue): a member whose zero value, left out, moves a
+// state toward true has a wrong mark, as leg had. The hand-written rows of seq
+// (TestAcceptAFailureWithNoSeqIsNeverHidden, TestAMissedFailingExampleWithNoSeqIsNeverHidden) pin
+// the one that was wrong before.
 type memberMark struct {
 	kind  string // "nonzero", "present", "zero" or "one of"
 	other string // the other member of a "one of" mark, by its JSON name
@@ -87,10 +95,10 @@ func inputMembers(t reflect.Type) []inputMember {
 
 // unsetFault is the refusal of the first member of a value of v's type that data, a text that
 // decodeJSON took into v in the form form, does not set, of each member that its type marks
-// present: one that data leaves out or gives as null, which the decode reads as its zero value. The
-// zero value of such a member is a real value of the form, as false is for removed, so only the
-// text tells a member that its writer left out from one that it set. It names the place of the
-// member as decodeJSON names a place, and nil when data sets each.
+// present: one that data leaves out, which the decode reads as its zero value (decodeJSON refuses a
+// null). The zero value of such a member is a real value of the form, as false is for removed, so
+// only the text tells a member that its writer left out from one that it set. It names the place of
+// the member as decodeJSON names a place, and nil when data sets each.
 func unsetFault(data []byte, v any, form string) error {
 	var text any
 	if err := json.Unmarshal(data, &text); err != nil {
