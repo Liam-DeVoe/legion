@@ -199,11 +199,15 @@ export function DecisionsFilterBody({
     [drawn]
   );
 
-  // The decision the reader last pressed Keep on, or sent a Change on, on its row here. It
-  // holds only while the reader stays on that row: a move to another row and the focus leaving
-  // the list each let it go, so it never moves the focus on later. The press is no review of
-  // its own: the decision leaving the review list moves the focus on only where it then stands
-  // kept by the reader or with their change, so a write the server refused moves nothing.
+  // The decision the reader last pressed Keep on, or sent a Change on, on its row here. A press
+  // of Keep or a send of Change arms it, and only three things let it go: a move to another
+  // row, the focus leaving the list, and the decision leaving the review list. The press is no
+  // review of its own: the decision leaving the review list moves the focus on only where it
+  // then stands kept by the reader or with their change, so a write the server refused moves
+  // nothing, and it does not let the press go either. So where the reader stays on the row
+  // after a refused Keep, their own Keep or Change of that decision made elsewhere, in another
+  // tab say, then moves the focus on, as it should: the decision left the review list by their
+  // own review.
   const ownReview = useRef<string | undefined>(undefined);
   const takeFocus = useCallback(
     (entry: DecisionsEntry | NamedEntry) => {
@@ -385,16 +389,19 @@ export function DecisionsFilterBody({
   // it was their review is read from the decision the server wrote back - kept by them, or
   // with their change - after their press on its row, so a Keep the server refused and a
   // Change sent empty, which write nothing, are none. An entry that moves by no act of the
-  // reader here - a read that says another person kept a decision or answered a question, that
-  // a decision was replaced or ties to a statement, or a Change sent from another page - keeps
-  // the focus where it now stands: the reader asked to go nowhere, and the focus stays on the
-  // entry they were on (R6), the foot unfolded for it where it is one of the foot's own. An
-  // entry the reader is on that is drawn nowhere now - another person deleted it, or the words
-  // filter took it out of the view - takes its row and the focus away: the focus goes to the
-  // entry that stood after it in its part, else the one before it, else the view's first row,
-  // else, where the list draws no row, the tree, which hands it to the foot's control or keeps
-  // it, so it is never left on the page (decision 110). A reader who has moved somewhere else
-  // on the page keeps their place.
+  // reader here - a read that says another person kept a decision or answered a question, or
+  // that a decision was replaced or ties to a statement - keeps the focus where it now stands:
+  // the reader asked to go nowhere, and the focus stays on the entry they were on (R6), the
+  // foot unfolded for it where it is one of the foot's own. A Keep or a Change the reader made
+  // elsewhere keeps the focus too, unless their own press on this row is still armed
+  // (`ownReview`): then the decision left by their own review, and the focus moves on as
+  // above. An entry the reader is on that is drawn nowhere now - another person deleted it, or
+  // the words filter took it out of the view - takes its row and the focus away: the focus goes
+  // to the entry that stood after it in its part, else the one before it, else to the tree,
+  // which hands it to the list's tab stop - the view's first row, since the entry the stop
+  // rested on is drawn nowhere - else to the foot's control, else keeps it, so it is never left
+  // on the page (decision 110). A reader who has moved somewhere else on the page keeps their
+  // place.
   const stood = useRef(partOf);
   useLayoutEffect(() => {
     const before = stood.current;
@@ -420,16 +427,14 @@ export function DecisionsFilterBody({
     }
     const next =
       neighbourOf(focused, was, before, partOf) ?? (now === undefined ? undefined : focused);
-    const row =
-      next === undefined
-        ? body.current?.querySelector<HTMLElement>("[data-node-row]")
-        : rowOf(body.current, next);
-    if (row !== null && row !== undefined) {
+    const row = next === undefined ? null : rowOf(body.current, next);
+    if (row !== null) {
       row.focus();
       return;
     }
-    // No row is left to take it: the focus is off every row, so what a row's focus opened goes,
-    // as when the foot's control takes it, and the tree holds it or hands it to that control.
+    // No row named here takes it: the focus is off every row, so what a row's focus opened goes,
+    // as when the foot's control takes it, and the tree passes it on (`passFocus`) to the tab
+    // stop, which falls back to the view's first row, else to the foot's control, else keeps it.
     footFocused();
     tree.current?.focus();
   }, [focused, footFocused, goTo, partOf, parts, reader]);

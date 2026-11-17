@@ -10,11 +10,9 @@ import {
   pageMutedText,
   pageOwnWordsRule,
   pageQuietText,
-  pageStateText,
   pageWordsText,
 } from "../../../theme/classes";
 import { useAgentText } from "../../refs/AgentName";
-import { agentRoleWord } from "../agent-role";
 import { DecisionActions, rowActionSelector } from "../DecisionActions";
 import { NodeGlyph } from "../NodeGlyph";
 import {
@@ -25,8 +23,8 @@ import {
   NODE_ROW_LAYOUT,
   NodeOptions,
   RowActs,
+  RowMargin,
   type Tone,
-  UNTYPED,
   useClamp,
   useRowOnScreen,
 } from "../NodeRow";
@@ -45,7 +43,7 @@ import {
 } from "../page-words";
 import { RowText } from "../RowText";
 import type { DecisionChange, DecisionsEntry, NamedEntry } from "./decisions-parts";
-import { type EntryStanding, entryStanding } from "./entry-standing";
+import { entryStanding } from "./entry-standing";
 
 /** Who the page names: by a name and never an id, with the kind that picks their shape and
  *  whether they are the reader, whose name is drawn in the ink (R9, R34). */
@@ -83,8 +81,9 @@ interface RowPerson {
  * The node an address names where it is neither a question nor a decision, a comment say, is
  * drawn as the outline draws a node for its context (`NodeRow.tsx`): marked as one, in its grey,
  * with no reader's ink on its author. It draws its kind where its kind is a typed one, who wrote
- * it and when, its words whole, its parent and its link, and no state, no Keep and no Change,
- * since it is no entry of the list.
+ * it and when - a child issue its key alone, a link to its own page, as the outline's row does -
+ * its words whole, its parent and its link, and no state, no Keep and no Change, since it is no
+ * entry of the list.
  *
  * The focus opens the row's body, for a decision as for an ask: who made the node where the
  * margin does not say it whole, and the control that keeps the body open.
@@ -304,12 +303,13 @@ export function DecisionsRow({
           {/* Keep and Change on one line with the entry's link (the prototype's `.dbtns`); the
               form Change opens, and what a refused write says, take a line of their own. A
               press of either, as a press anywhere on a row, gives the row the focus once the
-              press is over (`DecisionsFilterBody.tsx`'s `focusRow`), so nothing moves under
-              the pointer before the click lands. A Keep, by a press or by `Shift+K`, which
-              presses it, and a send of the Change form are a press of the reader's on this
-              row, which the row says to the list. Whether it wrote anything is the server's to
-              say, on the decision itself: a refused write and a Change sent empty write
-              nothing (`DecisionActions.tsx`), so the list reads the decision, not this row. */}
+              press is over (`usePressFocus`, which the row's focus reaches through `press.focus`
+              in `DecisionsFilterBody.tsx`), so nothing moves under the pointer before the click
+              lands. A Keep, by a press or by `Shift+K`, which presses it, and a send of the
+              Change form are a press of the reader's on this row, which the row says to the
+              list. Whether it wrote anything is the server's to say, on the decision itself: a
+              refused write and a Change sent empty write nothing (`DecisionActions.tsx`), so the
+              list reads the decision, not this row. */}
           <div
             className="mt-1 mb-0.5 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 [&>[role=alert]]:order-last [&>[role=alert]]:basis-full [&>form]:order-last [&>form]:basis-full"
             data-entry-actions=""
@@ -369,7 +369,29 @@ export function DecisionsRow({
             </p>
           )}
         </div>
-        <RowMargin author={author} entry={entry} review={review} standing={standing} tone={tone} />
+        {/* The outline's own margin (`NodeRow.tsx`), given how the entry stands as its node's
+            state: the token `entryStanding` reads for the row's mark and the panel's facts too.
+            So a decision shows its standing with the reader, not the tree's state, "Kept by"
+            with the keeper this list holds, and the unsure word, which no other entry says. A
+            decision waits on the reader where it is an entry of the review list, which draws
+            its state in the decisions' violet (R35: "one rule decides the list and a second
+            rule decides the mark on a row"); an ask waits as the conversation says. The node an
+            address names stands in no state here and is drawn for its context: in its grey,
+            with no reader's ink on its author, and a child issue by its key, as the outline's
+            row draws one. */}
+        <RowMargin
+          author={author}
+          context={tone === "context"}
+          node={{
+            ...node,
+            keptBy: entry.kind === "decision" ? entry.keptBy : undefined,
+            state: standing?.token,
+            unsure: entry.kind === "decision" ? node.unsure : undefined,
+            waiting: entry.kind === "decision" ? review : node.waiting,
+          }}
+          tabStops={false}
+          tone={tone}
+        />
         {threadRead === undefined ? null : <ThreadReadMark mark={threadRead} />}
       </div>
     </div>
@@ -391,127 +413,6 @@ function toneOf(entry: DecisionsEntry | NamedEntry): Tone {
     case "named":
       return "context";
   }
-}
-
-/**
- * The row's kind as one tag, who made it by a name and a shape, and when, on one line; and
- * under them how it stands, by a word and a shape (R6, R9, R34, the prototype's `.mg`), laid
- * out as the outline's row lays them out (`NODE_ROW_LAYOUT`). How the entry stands is
- * `entryStanding`'s, which the row's own mark and the panel's facts read too: an ask reads the
- * word the conversation draws for its state, and a decision the page's word for how it stands
- * (`NODE_STATE_WORDS.decision`), "Kept by" with the name of the person who kept it. The state
- * is drawn wherever the decision is, and in the decisions' violet where it asks something of
- * the reader or says what a person did with it: on a decision of the review list, on one a
- * person kept and on one they asked to change (R35: "one rule decides the list and a second
- * rule decides the mark on a row"). The node an address names draws its kind where it is a
- * typed one, its author and its time, and no state; its author is never in the reader's ink,
- * as no author of a row drawn for its context is in the outline.
- */
-function RowMargin({
-  author,
-  entry,
-  review,
-  standing,
-  tone,
-}: {
-  author: RowPerson;
-  entry: DecisionsEntry | NamedEntry;
-  review: boolean;
-  standing: EntryStanding | undefined;
-  tone: Tone;
-}): ReactNode {
-  const node = entry.node;
-  const time = node.at === undefined ? "" : shortDay(node.at);
-  const unsure = entry.kind === "decision" && node.unsure === true;
-  // The state's shape, from the table of the entry's own kind.
-  const stateGlyphs: Readonly<Record<string, string>> =
-    entry.kind === "ask" ? GLYPH_TOKENS.states.ask : GLYPH_TOKENS.states.decision;
-  const stateGlyph = standing === undefined ? undefined : stateGlyphs[standing.token];
-  // An ask is in the waiting colour while it waits on the reader; a decision in the decisions'
-  // violet where it asks something of the reader or says what a person did with it.
-  const stateTone: keyof typeof pageStateText =
-    entry.kind === "ask"
-      ? node.waiting
-        ? "waiting"
-        : "quiet"
-      : review || standing?.token === "kept" || standing?.token === "change_requested"
-        ? "decision"
-        : "quiet";
-  const authored = author.kind !== "unknown";
-  const context = tone === "context";
-  return (
-    <div className={`${NODE_ROW_LAYOUT.margin} ${pageQuietText}`} data-node-margin="">
-      <div className={NODE_ROW_LAYOUT.marginLine} data-node-margin-line="">
-        {UNTYPED[node.type] === true ? null : (
-          <span
-            className={`inline-flex items-center gap-1 font-semibold whitespace-nowrap ${pageKindTag[tone]}`}
-            data-node-tag=""
-          >
-            <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.types[node.type]} />
-            <span {...pageChrome}>{NODE_TYPE_NAMES[node.type]}</span>
-          </span>
-        )}
-        {/* A node the model holds no author of draws none on its row (ruling 5). */}
-        {!authored && time === "" ? null : (
-          <span className="min-w-0 [overflow-wrap:anywhere]" data-node-byline="">
-            {authored ? (
-              <span
-                className="inline-flex items-center gap-1"
-                data-author-kind={author.kind}
-                data-node-author=""
-              >
-                <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.authors[author.kind]} />
-                <span
-                  className={author.reader && !context ? `font-semibold ${pageInkText}` : ""}
-                  {...authorText}
-                >
-                  {/* An agent by its role's word, as every row of the page names one
-                      (ruling 6). */}
-                  {author.kind === "agent" ? agentRoleWord(author.name) : author.name}
-                </span>
-              </span>
-            ) : null}
-            {time === "" ? null : (
-              <>
-                {authored ? <span {...pageChrome}> · </span> : null}
-                <span className="whitespace-nowrap" data-node-time="" {...authorText}>
-                  {time}
-                </span>
-              </>
-            )}
-          </span>
-        )}
-      </div>
-      {standing === undefined && !unsure ? null : (
-        <div className={NODE_ROW_LAYOUT.marginState}>
-          {standing === undefined ? null : (
-            <span className={`inline-flex items-center gap-1 ${pageStateText[stateTone]}`}>
-              {stateGlyph === undefined ? null : (
-                <NodeGlyph className="size-3 shrink-0" token={stateGlyph} />
-              )}
-              <span data-node-state={standing.token} {...pageChrome}>
-                {standing.word}
-                {/* The keeper is an author's text of its own inside the state's words. */}
-                {standing.keeper === undefined ? null : (
-                  <>
-                    {" "}
-                    <span data-kept-by="" {...authorText}>
-                      {standing.keeper}
-                    </span>
-                  </>
-                )}
-              </span>
-            </span>
-          )}
-          {unsure ? (
-            <span data-node-unsure="" {...pageChrome}>
-              {CONTROL_LABELS.unsure}
-            </span>
-          ) : null}
-        </div>
-      )}
-    </div>
-  );
 }
 
 /**
