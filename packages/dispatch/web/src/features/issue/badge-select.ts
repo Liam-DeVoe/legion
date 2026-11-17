@@ -25,12 +25,12 @@ export const badgeSelectBadge =
  *  `max-w-full` and breaks anywhere, and nothing around it keeps its width, so a 44-character
  *  repository name with no space stays inside Details' row rather than running 101 px past it
  *  (dispatch://INFRA-3935 R4 and R6, decision 104 of
- *  dispatch://INFRA-1196/artifact/part-decisions-md). These are `badgeSelectWrapper`,
- *  `badgeSelectRailWrapper` and `badgeSelectBadge` in that shape: no `shrink-0`, and
- *  `min-w-0 max-w-full`. The select over the badge stays usable however many lines the badge
- *  takes: the wrapper is `relative` and as tall as the badge it holds, and `badgeSelectOverlay`
- *  is `absolute inset-0 size-full` over the wrapper, so it covers every line of a badge that
- *  wraps. */
+ *  dispatch://INFRA-1196/artifact/part-decisions-md). These are `badgeSelectWrapper` and
+ *  `badgeSelectRailWrapper` in that shape, with `min-w-0 max-w-full` in place of `shrink-0`, and
+ *  `badgeSelectBadge` with `max-w-full [overflow-wrap:anywhere]`. The select over the badge
+ *  stays usable however many lines the badge takes: the wrapper is `relative` and as tall as the
+ *  badge it holds, and `badgeSelectOverlay` is `absolute inset-0 size-full` over the wrapper, so
+ *  it covers every line of a badge that wraps. */
 const badgeSelectPageFrame =
   "relative inline-flex min-h-11 min-w-0 max-w-full items-center rounded-sm";
 export const badgeSelectPageWrapper = `${badgeSelectPageFrame} md:min-h-8 has-focus-visible:ring-2 ${hasFocusVisibleRing}`;

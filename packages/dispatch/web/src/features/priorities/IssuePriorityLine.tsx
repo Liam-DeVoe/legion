@@ -149,6 +149,31 @@ export function IssuePriorityLine({
     setAdding(false);
     focusAddControl.current = true;
   };
+  // Inside `NoTooltips` a press of a priority's Remove is remembered with the issue's own entries
+  // drawn after it and then before it, the nearest first, and each Remove is kept by its entry's
+  // id. Once the write is no longer out, a focus that fell to the document (`focusOnDocument`)
+  // goes to the pressed Remove while its entry is drawn, else to the Remove of the nearest of
+  // those entries still drawn, else to the add control; the press is forgotten once its entry is
+  // gone or the write failed. A focus anywhere else is left where it is (decision 162 of
+  // dispatch://INFRA-1196/artifact/part-decisions-md).
+  const removePressed = useRef<{ id: string; nearest: readonly string[] } | null>(null);
+  const removeButtons = useRef(new Map<string, HTMLButtonElement>());
+  useEffect(() => {
+    const pressed = removePressed.current;
+    if (pressed === null || write.isPending) return;
+    const drawn = (issue.advances ?? []).some(
+      (entry) => entry.id === pressed.id && !entry.inherited
+    );
+    if (focusOnDocument()) {
+      const buttons = removeButtons.current;
+      const target = drawn
+        ? buttons.get(pressed.id)
+        : (pressed.nearest.map((id) => buttons.get(id)).find((button) => button !== undefined) ??
+          addControl.current);
+      target?.focus();
+    }
+    if (!drawn || write.isError) removePressed.current = null;
+  }, [issue.advances, write.isError, write.isPending]);
   // Inside `NoTooltips` each colour is one of the new issue page's (dispatch://INFRA-3935 R6,
   // decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md): the line is the ink in a row
   // of Details (the prototype's `.frow .fv`) and the muted grey elsewhere (its `#hdr-props`); a
@@ -169,10 +194,12 @@ export function IssuePriorityLine({
   const choices = rows.filter((row) => !advances.some((entry) => entry.id === row.id));
   const atCap = own.length >= MAX_ISSUE_ADVANCES;
   // Inside `NoTooltips` nothing of the line keeps its width, in a row of Details (R4) and in the
-  // header alike: a priority's title and a refusal's reason are values, which keep `max-w-full`
-  // and break rather than push the line past its row (dispatch://INFRA-3935 R4 and R6, decision
-  // 104 of dispatch://INFRA-1196/artifact/part-decisions-md). Outside, each part stays whole, as
-  // on `main`.
+  // header alike: a priority's title and a refusal's reason are values, which break anywhere and
+  // stay within their line - the title with `min-w-0`, a flex item that shrinks beside the mark
+  // after it, the reason with `max-w-full` - rather than push the line past its row
+  // (dispatch://INFRA-3935 R4 and R6, decision 104 of
+  // dispatch://INFRA-1196/artifact/part-decisions-md). Outside, each part stays whole, as on
+  // `main`.
   const wraps = page !== null;
 
   const add = (event: FormEvent<HTMLFormElement>) => {
@@ -202,7 +229,7 @@ export function IssuePriorityLine({
             {/* Inside `NoTooltips` the priority's title wraps inside its line rather than
                 widening it (dispatch://INFRA-1196 R17); its words are the person's who wrote it. */}
             <Link
-              className={`dispatch-inline-link ${wraps ? "min-w-0 break-words" : "shrink-0 whitespace-nowrap"} underline ${page === null ? `${linkText} ${linkHoverText}` : pageInkText}`}
+              className={`dispatch-inline-link ${wraps ? "min-w-0 [overflow-wrap:anywhere]" : "shrink-0 whitespace-nowrap"} underline ${page === null ? `${linkText} ${linkHoverText}` : pageInkText}`}
               title={tooltips ? label : undefined}
               to={priorityPath(entry.id)}
               {...page?.authorText}
@@ -218,7 +245,20 @@ export function IssuePriorityLine({
                 aria-label={`Remove ${label} from ${issue.key}`}
                 className={`shrink-0 ${page === null ? dismissButtonText : `${pageMutedText} hover:text-page-ink`}`}
                 disabled={busy}
-                onClick={() => writeOwn(own.filter((id) => id !== entry.id))}
+                onClick={() => {
+                  if (page !== null) {
+                    const at = own.indexOf(entry.id);
+                    removePressed.current = {
+                      id: entry.id,
+                      nearest: [...own.slice(at + 1), ...own.slice(0, at).reverse()],
+                    };
+                  }
+                  writeOwn(own.filter((id) => id !== entry.id));
+                }}
+                ref={(button) => {
+                  if (button === null) removeButtons.current.delete(entry.id);
+                  else removeButtons.current.set(entry.id, button);
+                }}
                 type="button"
                 {...page?.pageChrome}
               >
@@ -306,7 +346,11 @@ export function IssuePriorityLine({
           // words its name begins with, because that panel raises no tooltip that could say it
           // instead (dispatch://INFRA-1196 R19).
           aria-label={addPriorityControlName(issue.key)}
-          className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${page === null ? `${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}` : `${pagePaneBg} ${pageMutedText} hover:text-page-ink`}`}
+          // Inside `NoTooltips` it is 28 px tall from `md`, as the controls beside it in Details
+          // are (`badgeSelectPageRailWrapper`'s `md:min-h-7`, the labels' and the components'
+          // triggers' `sm:min-h-7`); below 1280 px `styles.css` gives each of them a 44 px floor
+          // all the same (dispatch://INFRA-3935 R4). Outside it the class is `main`'s (R1).
+          className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${page === null ? `${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}` : `${pagePaneBg} ${pageMutedText} hover:text-page-ink md:min-h-7 md:py-1`}`}
           disabled={busy}
           onClick={() => setAdding(true)}
           ref={addControl}

@@ -136,12 +136,13 @@ export const NODE_STATE_WORDS = freeze({
   check: {
     failed: "Failed",
     "no-result": "No result",
-    /** The newest result that stands was recorded against work the check no longer compares
-     *  its results with, or against an older wording of the check, so it no longer speaks for
-     *  the work as it stands, whatever it found. A result says the same of itself in the same
-     *  words (`RESULT_STANDS_WORDS`), and nothing else on the page draws them: a decision's
-     *  chip for a block it changed after naming says so in words of its own
-     *  (`CONTROL_LABELS.target_stale`). */
+    /** The newest result that stands does not stand at the commit the server names for the
+     *  check: it was recorded against another commit, or against an older wording of the
+     *  check, so it no longer speaks for the work as it stands, whatever it found. The check's
+     *  row and its result's fact read that one standing, the server's for the check, so the
+     *  result says the same of itself in the same words (`RESULT_STANDS_WORDS`); nothing else
+     *  on the page draws them: a decision's chip for a block it changed after naming says so
+     *  in words of its own (`CONTROL_LABELS.target_stale`). */
     older: "Out of date",
     passed: "Passed",
     /** Every result recorded against the check has been withdrawn (`CheckResultRetracted`),
@@ -267,7 +268,8 @@ export const PRESET_NAMES = freeze({
  * steps", R26's "ordered steps"). The count itself is a number and no word.
  */
 export const FILTER_SIGNAL_WORDS = freeze({
-  /** After the number of checks whose newest result failed. */
+  /** After the number of checks whose state is failed at the commit the server names for each
+   *  (`checkStanding`), the state their rows draw. */
   failing: "failing",
   /** After the number of plan tasks. */
   steps: "steps",
@@ -346,7 +348,8 @@ export const DECISIONS_WORDS = freeze({
   declined: "declined to answer",
   /** The link from an entry to the node that holds it, in the conversation. */
   in_conversation: "in the conversation",
-  /** Before the statements a decision's `shaped` ties name (the picture's "informs R4 R21"). */
+  /** Before the spec's statements that an entry's links tie it to (the picture's "informs R4
+   *  R21"). */
   informs: "informs",
   /** The headings of the headed parts, in the order the filter draws them (R2): the reader's
    *  own decisions are "his own decisions", and what another person answered, declined, kept or
@@ -669,10 +672,9 @@ export const CHECK_WHEN_WORDS = freeze({
  *  added there is a compile error here rather than a result that silently draws no word.
  *
  *  A result whose check's words moved since it was recorded is older work too, whatever its
- *  commit (`check-facts.ts`). That word is the one its check's `older` state reads, which is the
- *  state of a check whose newest result that stands is such a result and whose pass stands
- *  nowhere (`tree-drafts.ts`'s `checkState`): one fact, one word, on the result and on its
- *  check. */
+ *  commit (`check-facts.ts`). That word is the one its check's `older` state reads: a check's
+ *  row and its result's fact read one standing, the server's for that check, so one fact has
+ *  one word, on the result and on its check. */
 export const RESULT_STANDS_WORDS = freeze({
   at_basis: "Up to date",
   other_commit: NODE_STATE_WORDS.check.older,
@@ -815,6 +817,14 @@ export const CONTROL_LABELS = freeze({
   /** The direct children's count in the header's properties line, before the issue's own
    *  numbers: "Children 2 of 7 done" (R13). */
   children: "Children",
+  /** The word between the words a shared control draws and the issue's key, in the name the
+   *  control answers to inside `NoTooltips`: "Set components of CORE-1", "Saving components of
+   *  CORE-1" (`componentsControlName`) and "Saving labels of CORE-1" (`labelsControlName`). */
+  control_name_of: "of",
+  /** The word between the labels control's `add_label` and the issue's key, in the name it
+   *  answers to inside `NoTooltips` while the issue has no label: "Add a label to CORE-1"
+   *  (`labelsControlName`). */
+  control_name_to: "to",
   /** The two words that make a progress count read as a sentence in the header's properties
    *  line, around the issue's own numbers: "Children 2 of 7 done", "All issues under it 5 of 30
    *  done" (R13, the 1440 px picture). */
