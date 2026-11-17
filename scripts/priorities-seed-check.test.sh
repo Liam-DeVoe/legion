@@ -4,9 +4,11 @@
 # address, holding the priorities board, the table's versions and the issues as files the cases
 # rewrite between runs. It proves what the check answers for a board that holds the table, for a
 # table row no priority holds, for a board whose priorities do not run in the table's order, for a
-# priority whose record names an issue that does not advance it and one no issue carries, and that
-# the bearer reaches Dispatch as a header without ever standing in a command's arguments, which a
-# stand-in curl on PATH proves by recording the arguments of every call the check makes.
+# priority whose record names an issue that does not advance it and one no issue carries, for rows
+# the seed kept by their id - beside a row found by its marker, and as every row of a table, which
+# the check reads at its newest version - and that the bearer reaches Dispatch as a header without
+# ever standing in a command's arguments, which a stand-in curl on PATH proves by recording the
+# arguments of every call the check makes.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -156,6 +158,12 @@ priority() {
     "$id" "$row" "$row" "$row" "$document" "$advances"
 }
 
+# by_hand <id>: a priority a person wrote, which carries no record of any table, so the seed keeps
+# it for the row that gives its id.
+by_hand() {
+  printf '{"id":"%s","title":"%s","description":"Written by hand on the priorities page."}' "$1" "$1"
+}
+
 # board <priority json>…: the board GET /api/v1/priorities answers, in the order given.
 board() {
   local first=1 row
@@ -303,12 +311,64 @@ run --artifact "$document"
 expect_status 1
 expect_output "priority p3 (row 3 of ${document}) records that INFRA-22 advances it, and no issue carries that key"
 
-case_name='a board holding no row of this document is not a board to read back'
+case_name='a board holding no row of this document reads the newest table and finds no row by its id'
 issue INFRA-22 p3
 board '{"id":"p7","title":"written by hand","description":"no record of any table."}'
 run --artifact "$document"
 expect_status 1
-expect_output 'no priority of the board records a row of '"$document"
+expect_output 'no priority of the board records a row of '"$document"', so the table is read at its newest version and each row is looked for by its id'
+expect_output 'row 1 of '"$document"' (Ship the board) stands on no priority of the board'
+expect_output 'row 3 of '"$document"' (Keep the lights on) stands on no priority of the board'
+
+case_name='a row found by its id beside a row found by its marker passes, whatever its rank'
+# Ranked first by its owner, above the row the seed wrote: the table order binds marker rows alone.
+board "$(by_hand keep-the-lights-on)" "$(priority p1 1 'INFRA-21')"
+issue INFRA-21 p1
+issue INFRA-22 keep-the-lights-on
+run --artifact "$document"
+expect_status 0
+expect_output 'read at version 7: 1 rows stand on the board in the table'"'"'s order, 1 rows stand on it by their id'
+expect_output '2 relations read back'
+
+case_name='a row found by its id whose key does not name its priority fails, naming both'
+issue INFRA-22 p9
+run --artifact "$document"
+expect_status 1
+expect_output "priority keep-the-lights-on (row 3 of ${document}, kept by its id): the row names INFRA-22, and INFRA-22's own advances does not name it"
+
+case_name='a row whose id the priority of another row holds stands on no priority'
+issue INFRA-22 keep-the-lights-on
+board "$(priority keep-the-lights-on 1 'INFRA-21')"
+issue INFRA-21 keep-the-lights-on
+run --artifact "$document"
+expect_status 1
+expect_output 'row 3 of '"$document"' (Keep the lights on) stands on no priority of the board'
+
+case_name='a table every row of which is found by its id is read at its newest version'
+# The newest text holds a row version 7 does not, whose keys are an issue that is done and a key
+# no issue carries: the seed relates neither, so neither is read as a fault.
+cat >"${state}/text.md" <<'EOF'
+| \# | Priority | Owner | Where |
+| --- | --- | --- | --- |
+| 1 | Ship the board | ana | INFRA-21 in flight |
+| 2 | Cut the backlog in half | bo | DONE in October |
+| 3 | Keep the lights on | cy | INFRA-22, waiting |
+| 4 | Hold the line | dee | INFRA-23 shipped it, INFRA-404 is a typo |
+EOF
+board "$(by_hand ship-the-board)" "$(by_hand hold-the-line)" "$(by_hand keep-the-lights-on)"
+issue INFRA-21 ship-the-board
+issue INFRA-22 keep-the-lights-on
+printf '{"key":"INFRA-23","status":"done","advances":[],"advances_revision":0}' >"${state}/issues/INFRA-23.json"
+run --artifact "$document"
+expect_status 0
+expect_output 'no priority of the board records a row of '"$document"', so the table is read at its newest version'
+expect_output 'read at its newest version: 0 rows stand on the board in the table'"'"'s order, 3 rows stand on it by their id, 1 rows passed over (DONE), 2 relations read back'
+refute_output 'INFRA-23'
+refute_output 'INFRA-404'
+# The cases below read the table, the issues and their relations as the cases above set them.
+cp "${state}/versions/7.md" "${state}/text.md"
+issue INFRA-21 p1
+issue INFRA-22 p3
 
 case_name='a priority of another table is passed over'
 board "$(priority p1 1 'INFRA-21')" "$(priority p3 3 'INFRA-22')" \

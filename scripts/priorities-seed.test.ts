@@ -1,17 +1,33 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { PRIORITY_ID_MAX } from "../packages/contracts/src/dispatch-api-limits";
 import { bearerCredential } from "../packages/envoy-client/src/bearer";
 import { holdDeadlines } from "./dispatch/__tests__/held-deadlines";
-import { priorityDescription, rowMarker, seedPriorities } from "./priorities-seed";
+import { priorityDescription, priorityId, rowMarker, seedPriorities } from "./priorities-seed";
 
-/** One priority as the fake Dispatch below holds it. */
+/** One priority as the fake Dispatch below holds it. A gone one is a priority somebody deleted:
+ *  the listing leaves it out, and its id is still held. */
 interface HeldPriority {
   id: string;
   title: string;
   description: string;
   owner: string;
   rank: string;
-  state: string;
+  state: "live" | "gone";
 }
+
+/** One case of the shared list of titles and the id or the refusal each gives. */
+type IdCase =
+  | { readonly title: string; readonly id: string }
+  | { readonly title: string; readonly refusal: "no-slug" | "none" | "any" };
+
+/** The cases of the rule by which a priority's id is made from its title, which the server's
+ *  tests read as well (its `description` names them), read by path rather than imported. The
+ *  file is this repository's own, and the first test below fails on a case of another shape. */
+const idFixture: { readonly cases: readonly IdCase[] } = JSON.parse(
+  readFileSync(`${import.meta.dir}/../packages/contracts/fixtures/priority-ids.json`, "utf8")
+);
+const ID_CASES = idFixture.cases;
 
 /** One issue as the fake Dispatch below holds it: its status and its own `advances` relations,
  *  with the revision of the newest write to them. */
@@ -86,8 +102,10 @@ let document = { markdown: TABLE, version: 1 };
  *  is such a bearer. */
 let requireActor = false;
 
-/** The id the server writes for a title, as `priorityIDFromTitle` does: the title as a slug. */
-function slug(title: string): string {
+/** The id the server of 2026-11-15 made from a title when a create named none: the title as a
+ *  slug, with no cut, which it then refused past `PRIORITY_ID_MAX` characters. That refusal
+ *  stopped the seed on its first long title while the seed named no id. */
+function uncutSlug(title: string): string {
   return title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
@@ -105,8 +123,13 @@ function issueBody(key: string, issue: HeldIssue): object {
 
 /**
  * A Dispatch holding one document, the issues above and the priorities a run writes. It answers
- * the three routes the seed calls and refuses what the real server refuses: a priority id no row
- * carries, a second create of one id, and a whole-set `advances` write whose revision is behind.
+ * the routes the seed calls and refuses what the server of 2026-11-15 refused: a priority id no
+ * row carries, a whole-set `advances` write whose revision is behind, and a create of an id it
+ * holds, a gone one included (409 PRIORITY_EXISTS). A create takes the id its body names, which
+ * it refuses past `PRIORITY_ID_MAX` characters, and where the body names none, the title's slug
+ * with no cut, which it refuses past the same bound. It refuses the ids `none` and `any`, and a
+ * title with no slug where it has to make the id. The listing answers live priorities only, and
+ * a priority's history answers 200 for any id it holds and 404 for any other.
  */
 const server = Bun.serve({
   port: 0,
@@ -158,20 +181,49 @@ const server = Bun.serve({
         return Response.json(issueBody(key, issue));
       }
     }
+    const history = /^\/api\/v1\/priorities\/([^/]+)\/history$/.exec(pathname)?.[1];
+    if (history !== undefined && request.method === "GET") {
+      const id = decodeURIComponent(history);
+      if (priorities.some((priority) => priority.id === id)) return Response.json([]);
+      return Response.json(
+        { code: "PRIORITY_NOT_FOUND", error: `no priority of the id "${id}"` },
+        { status: 404 }
+      );
+    }
     if (pathname === "/api/v1/priorities") {
       if (request.method === "GET") {
         return Response.json({ priorities: priorities.filter((one) => one.state === "live") });
       }
       if (request.method === "POST") {
-        const write = body as { title: string; description: string; owner: string };
-        const id = slug(write.title);
+        const write = body as { id?: string; title: string; description: string; owner: string };
+        const refuse = (error: string): Response =>
+          Response.json({ code: "PRIORITY_INPUT", error }, { status: 400 });
+        let id = write.id ?? "";
+        if (id !== "" && id.length > PRIORITY_ID_MAX) {
+          return refuse(
+            `an id is at most ${PRIORITY_ID_MAX} characters, and this one is ${id.length}`
+          );
+        }
+        if (id === "") {
+          if (!/[A-Za-z0-9]/.test(write.title)) {
+            return refuse("this title holds no letter or digit an id can be written from");
+          }
+          id = uncutSlug(write.title);
+          if (id.length > PRIORITY_ID_MAX) {
+            return refuse(
+              "the id this title derives cannot be used, because an id is at most " +
+                `${PRIORITY_ID_MAX} characters, and this one is ${id.length}: name the id in id`
+            );
+          }
+        }
+        if (id === "none" || id === "any") return refuse(`"${id}" is no priority id`);
         if (priorities.some((priority) => priority.id === id)) {
           return Response.json(
             { code: "PRIORITY_EXISTS", error: `a priority with the id ${id} is already written` },
             { status: 409 }
           );
         }
-        const priority = {
+        const priority: HeldPriority = {
           id,
           title: write.title,
           description: write.description,
@@ -224,6 +276,73 @@ function advanced(key: string): string[] {
 /** Every write the fake Dispatch was asked for. */
 function writes(): Recorded[] {
   return requests.filter((recorded) => recorded.method !== "GET");
+}
+
+/** A table of the four columns the seed reads, one row for each `[#, Priority, Owner, Where]`. */
+function table(...rows: readonly (readonly [string, string, string, string])[]): string {
+  return [
+    "| \\# | Priority | Owner | Where |",
+    "| --- | --- | --- | --- |",
+    ...rows.map((cells) => `| ${cells.join(" | ")} |`),
+    "",
+  ].join("\n");
+}
+
+/** A priority on the board before the run: by default one a person wrote by hand, which carries
+ *  no record of any table. */
+function hold(
+  id: string,
+  state: HeldPriority["state"],
+  description = "Written by hand on the priorities page."
+): HeldPriority {
+  const priority: HeldPriority = {
+    id,
+    title: id,
+    description,
+    owner: "CHIEF",
+    rank: String(priorities.length + 1).padStart(4, "0"),
+    state,
+  };
+  priorities.push(priority);
+  return { ...priority };
+}
+
+/** The seed run as the command it is, against the fake Dispatch, with the shared bearer every
+ *  pod carries and the session it names on each write. */
+async function runCommand(
+  session: string
+): Promise<{ readonly code: number; readonly stdout: string; readonly stderr: string }> {
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    DISPATCH_URL: config.url,
+    DISPATCH_TOKEN: "token",
+    DISPATCH_SESSION_ID: session,
+  };
+  delete env.DISPATCH_TOKEN_FILE;
+  delete env.ENVOY_CONFIG_FILE;
+  const child = Bun.spawn(["bun", `${import.meta.dir}/priorities-seed.ts`, DOCUMENT], {
+    env,
+    stderr: "pipe",
+    stdout: "pipe",
+  });
+  const [code, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  return { code, stdout, stderr };
+}
+
+/** A case of the shared list that gives an id rather than a refusal. */
+function givesId(one: IdCase): one is Extract<IdCase, { readonly id: string }> {
+  return "id" in one;
+}
+
+/** The case of the shared list with the longest title that gives an id. */
+function longestCase(): Extract<IdCase, { readonly id: string }> {
+  return ID_CASES.filter(givesId).reduce((longest, one) =>
+    one.title.length > longest.title.length ? one : longest
+  );
 }
 
 test("writes one priority for each row but the DONE one, in the table's order", async () => {
@@ -323,7 +442,7 @@ test("a second run writes no second priority and no second relation", async () =
 
   expect(writes()).toEqual([]);
   expect(priorities).toEqual(written);
-  expect(second.rows.every((row) => !row.written)).toBe(true);
+  expect(second.rows.every((row) => row.kept === "marker")).toBe(true);
   expect(second.rows.flatMap((row) => row.relations)).toEqual([]);
   // The rows the second run read are the same rows, with the relations they already carry.
   expect(second.rows.map((row) => row.related)).toEqual([
@@ -348,30 +467,259 @@ test("a table whose rows moved keeps the priorities it wrote and their order", a
   expect(writes()).toEqual([]);
   expect(priorities.map((priority) => priority.id)).toEqual(order);
   expect(moved.rows.map((row) => row.row)).toEqual(["8", "1", "3", "5", "4", "6", "7"]);
-  expect(moved.rows.every((row) => !row.written)).toBe(true);
+  expect(moved.rows.every((row) => row.kept === "marker")).toBe(true);
 });
 
-// The create sends no id, so Dispatch derives one from the title: two titles deriving one id
-// would be refused 409 PRIORITY_EXISTS on the second create, with the rows above it already
-// written. The run is refused before the first write instead, naming both rows.
-test("two rows whose titles Dispatch writes under one id are refused before any write", async () => {
+// A row's priority is found by the row number its record names before anything else, so a row
+// given a new title under its `#` cell keeps its priority. Without that, its new title's id is one
+// no priority holds, and a second priority would be written for the row.
+test("a second run keeps the priority of a row given a new title under its # cell", async () => {
+  await seedPriorities(config, DOCUMENT);
+  const written = priorities.map((priority) => ({ ...priority }));
+  requests.length = 0;
   document = {
-    markdown: [
-      "| \\# | Priority | Owner | Where |",
-      "| --- | --- | --- | --- |",
-      "| 1 | Ship the gateway | CHIEF | TEST-1 is implementing |",
-      "| 2 | Ship the Gateway! | OSSV controller | nothing to point at yet |",
-      "",
-    ].join("\n"),
+    markdown: TABLE.replace("| 3 | Ship the gateway |", "| 3 | Ship the gateway to every region |"),
+    version: 2,
+  };
+
+  const second = await seedPriorities(config, DOCUMENT);
+
+  expect(writes()).toEqual([]);
+  expect(priorities).toEqual(written);
+  const retitled = second.rows.find((row) => row.row === "3");
+  expect(retitled?.title).toBe("Ship the gateway to every region");
+  expect(retitled?.priority).toBe("ship-the-gateway");
+  expect(retitled?.kept).toBe("marker");
+});
+
+test("priority id: every case of the shared list gives its id or its refusal", () => {
+  expect(ID_CASES.length).toBeGreaterThan(0);
+  // The seed refuses a row whose title gives no id or a keyword id (placeRows).
+  const gives = (title: string): IdCase => {
+    const id = priorityId(title);
+    if (id === "") return { title, refusal: "no-slug" };
+    if (id === "none" || id === "any") return { title, refusal: id };
+    return { title, id };
+  };
+  // Every case the seed gives otherwise, each beside its title.
+  const wrong = ID_CASES.flatMap((one) => {
+    const seed = gives(one.title);
+    return Bun.deepEquals(seed, one) ? [] : [{ case: one, seed }];
+  });
+  expect(wrong).toEqual([]);
+});
+
+// The defect of 2026-11-15: the seed named no id, the server made the slug of the title with no
+// cut and refused it past 200 characters, so the seed stopped on its first row. A seed that names
+// no id, or names the slug with no cut, fails here.
+test("priority id: a title whose slug is longer than 200 writes under its cut id", async () => {
+  const longest = longestCase();
+  expect(uncutSlug(longest.title).length).toBeGreaterThan(PRIORITY_ID_MAX);
+  document = {
+    markdown: table(["1", longest.title, "CHIEF", "TEST-1 is implementing"]),
+    version: 4,
+  };
+
+  const report = await seedPriorities(config, DOCUMENT);
+
+  expect(priorities.map((priority) => [priority.id, priority.title])).toEqual([
+    [longest.id, longest.title],
+  ]);
+  const creates = writes().filter((write) => write.path === "/api/v1/priorities");
+  expect(creates.map((write) => write.body)).toMatchObject([{ id: longest.id }]);
+  expect(report.rows.map((row) => row.priority)).toEqual([longest.id]);
+  expect(advanced("TEST-1")).toEqual([longest.id]);
+});
+
+// Two rows that give one id would have the second create refused 409 PRIORITY_EXISTS, with the
+// rows above it already written. The run is refused before the first write instead, naming both
+// rows, and a DONE row counts, as a row a later run writes once its Where cell moves.
+test("priority id: two rows that one id after the cut names are refused before any write", async () => {
+  document = {
+    markdown: table(
+      ["1", "Ship the gateway", "CHIEF", "TEST-1 is implementing"],
+      ["2", "Ship the Gateway!", "OSSV controller", "nothing to point at yet"]
+    ),
     version: 3,
   };
 
   await expect(seedPriorities(config, DOCUMENT)).rejects.toThrow(
-    "rows 1 and 2 name priorities Dispatch writes under the one id ship-the-gateway: " +
+    "rows 1 and 2 give the one id ship-the-gateway after the cut: " +
       '"Ship the gateway" and "Ship the Gateway!" differ only where an id does not'
   );
   expect(writes()).toEqual([]);
   expect(priorities).toEqual([]);
+
+  // Two long titles that part only past where the id is cut.
+  const longest = longestCase();
+  const parted = `${longest.title.slice(0, 300)} and then something else`;
+  expect(uncutSlug(parted)).not.toBe(uncutSlug(longest.title));
+  document = {
+    markdown: table(
+      ["1", "Hold the line", "CHIEF", "TEST-1 is implementing"],
+      ["2", longest.title, "CHIEF", "TEST-4"],
+      ["3", parted, "OSSV controller", "DONE last week"]
+    ),
+    version: 5,
+  };
+
+  await expect(seedPriorities(config, DOCUMENT)).rejects.toThrow(
+    `rows 2 and 3 give the one id ${longest.id} after the cut`
+  );
+  expect(writes()).toEqual([]);
+  expect(priorities).toEqual([]);
+});
+
+test("a row that gives no id, a title over 1,000, none, any or another row's id is refused before any write", async () => {
+  const tooLong = `Long title ${"x".repeat(990)}`;
+  expect(tooLong.length).toBe(1001);
+  // A live priority the seed wrote from row 7 of this table, which a row of another title holds
+  // now: the row that gives its id would be refused 409 PRIORITY_EXISTS.
+  const recorded = priorityDescription(
+    { number: "7", title: "Ship the gateway", owner: "CHIEF", where: "" },
+    DOCUMENT,
+    1,
+    [],
+    []
+  );
+  const refusals: readonly (readonly [string, string])[] = [
+    ["... ?! -- ...", 'row 2: the title "... ?! -- ..." holds no ASCII letter or digit'],
+    [tooLong, "row 2: the title is 1001 characters"],
+    ["None", 'row 2: the title "None" gives the id none'],
+    ["Any", 'row 2: the title "Any" gives the id any'],
+    [
+      "Ship the gateway",
+      "rows 2 and 7: the id ship-the-gateway that row 2 gives is held by a live priority that " +
+        "carries the record of row 7 of this table",
+    ],
+  ];
+  for (const [title, refusal] of refusals) {
+    priorities.length = 0;
+    requests.length = 0;
+    const before = hold("ship-the-gateway", "live", recorded);
+    document = {
+      markdown: table(
+        ["1", "Hold the line", "CHIEF", "TEST-1 is implementing"],
+        ["2", title, "OSSV controller", "TEST-4"]
+      ),
+      version: 6,
+    };
+
+    await expect(seedPriorities(config, DOCUMENT), title).rejects.toThrow(refusal);
+    expect(writes(), title).toEqual([]);
+    expect(priorities, title).toEqual([before]);
+  }
+
+  // Every row it refuses is named, not only the first.
+  priorities.length = 0;
+  requests.length = 0;
+  hold("ship-the-gateway", "live", recorded);
+  hold("keep-the-lights-on", "gone");
+  document = {
+    markdown: table(
+      ["1", "Hold the line", "CHIEF", "TEST-1 is implementing"],
+      ["2", "... ?! -- ...", "CHIEF", "TEST-4"],
+      ["3", tooLong, "CHIEF", "TEST-4"],
+      ["4", "None", "CHIEF", "TEST-4"],
+      ["5", "Any", "CHIEF", "TEST-4"],
+      ["6", "Ship the gateway", "CHIEF", "TEST-4"],
+      ["8", "Keep the lights on", "CHIEF", "TEST-4"],
+      ["9", "Cut the backlog", "CHIEF", "TEST-4"],
+      ["10", "Cut the backlog!", "CHIEF", "TEST-4"]
+    ),
+    version: 7,
+  };
+
+  const refusal = await seedPriorities(config, DOCUMENT).then(
+    () => "",
+    (error: Error) => error.message
+  );
+
+  for (const named of [
+    "row 2: the title",
+    "row 3: the title is 1001 characters",
+    "row 4: the title",
+    "row 5: the title",
+    "rows 6 and 7:",
+    "row 8: the id keep-the-lights-on is a gone priority's",
+    "rows 9 and 10 give the one id cut-the-backlog after the cut",
+  ]) {
+    expect(refusal).toContain(named);
+  }
+  expect(refusal).not.toContain("row 1:");
+  expect(writes()).toEqual([]);
+});
+
+test("DONE rows are passed over whatever their title gives, and the other rows are written", async () => {
+  document = {
+    markdown: table(
+      ["1", "Hold the line", "CHIEF", "TEST-1 is implementing"],
+      ["2", "... ?! -- ...", "CHIEF", "DONE: nothing to name"],
+      ["3", `Long title ${"x".repeat(990)}`, "CHIEF", "DONE in October"],
+      ["4", "Any", "CHIEF", "DONE before the list"],
+      ["5", "Keep the lights on", "OSSV controller", "TEST-4"]
+    ),
+    version: 8,
+  };
+
+  const report = await seedPriorities(config, DOCUMENT);
+
+  expect(priorities.map((priority) => priority.id)).toEqual([
+    "hold-the-line",
+    "keep-the-lights-on",
+  ]);
+  expect(report.passed).toEqual(["2", "3", "4"]);
+});
+
+test("a row whose id a live priority without this table's record holds is kept by its id", async () => {
+  const byHand = hold("ship-the-gateway", "live");
+  // The priority already advances one of the row's two keys.
+  issues.set("TEST-4", {
+    status: "backlog",
+    advances: [{ id: "ship-the-gateway", inherited: false }],
+    revision: 1,
+  });
+  document = {
+    markdown: table(
+      ["1", "Ship the gateway", "OSSV controller", "TEST-1 and TEST-4"],
+      ["2", "Hold the line", "CHIEF", "TEST-3 sits in icebox"]
+    ),
+    version: 9,
+  };
+
+  const run = await runCommand("019a1c01-0d7b-7a2a-8e93-4a5b6c7d8e02");
+
+  expect(run.code, run.stderr).toBe(0);
+  expect(run.stdout).toContain(
+    "row 1: kept ship-the-gateway (by its id); related TEST-1 of TEST-1, TEST-4; not related none"
+  );
+  expect(run.stdout).toContain("row 2: wrote hold-the-line;");
+  // No copy, and nothing written to the kept priority's title, description or owner.
+  expect(priorities[0]).toEqual(byHand);
+  const creates = writes().filter((write) => write.path.startsWith("/api/v1/priorities"));
+  expect(creates.map((write) => write.body)).toMatchObject([{ id: "hold-the-line" }]);
+  expect(advanced("TEST-1")).toEqual(["ship-the-gateway"]);
+  expect(advanced("TEST-4")).toEqual(["ship-the-gateway"]);
+  expect(advanced("TEST-3")).toEqual(["hold-the-line"]);
+});
+
+// The listing leaves a deleted priority out, and Dispatch refuses a create of its id. Without the
+// read of each new id's history, the first row would be written and the second refused 409.
+test("a row whose id a gone priority holds is refused before any write", async () => {
+  const gone = hold("ship-the-gateway", "gone");
+  document = {
+    markdown: table(
+      ["1", "Hold the line", "CHIEF", "TEST-1 is implementing"],
+      ["2", "Ship the gateway", "OSSV controller", "TEST-4"]
+    ),
+    version: 10,
+  };
+
+  await expect(seedPriorities(config, DOCUMENT)).rejects.toThrow(
+    "row 2: the id ship-the-gateway is a gone priority's"
+  );
+  expect(writes()).toEqual([]);
+  expect(priorities).toEqual([gone]);
 });
 
 test("run as a command with the shared bearer, the seed names its session on every write", async () => {
@@ -380,20 +728,7 @@ test("run as a command with the shared bearer, the seed names its session on eve
   // not name one, and the seed must name the session it runs in (DISPATCH_SESSION_ID).
   requireActor = true;
   const session = "019a1c01-0d7b-7a2a-8e93-4a5b6c7d8e01";
-  const env: Record<string, string | undefined> = {
-    ...process.env,
-    DISPATCH_URL: config.url,
-    DISPATCH_TOKEN: "token",
-    DISPATCH_SESSION_ID: session,
-  };
-  delete env.DISPATCH_TOKEN_FILE;
-  delete env.ENVOY_CONFIG_FILE;
-  const child = Bun.spawn(["bun", `${import.meta.dir}/priorities-seed.ts`, DOCUMENT], {
-    env,
-    stderr: "pipe",
-    stdout: "pipe",
-  });
-  const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  const { code, stderr } = await runCommand(session);
   expect(stderr).not.toContain("ACTOR_KIND");
   expect(code).toBe(0);
   expect(priorities).toHaveLength(7);

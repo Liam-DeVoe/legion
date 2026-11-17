@@ -10,6 +10,12 @@
  * its Dispatch status is `done`: `backlog` and `icebox` are related, because priority work that
  * stands in either is what the second fault of that spec reads.
  *
+ * Every create names the priority's id (`priorityId`), made from the title by the rule
+ * `POST /api/v1/priorities` makes an id by when a body names none (`priorityIDFromTitle`): the
+ * title written as a slug, cut to at most `PRIORITY_ID_MAX` characters at the end of a word.
+ * `packages/contracts/fixtures/priority-ids.json` holds the cases of that rule, and both the
+ * server's tests and this seed's are held to them.
+ *
  * Each priority's description ends in the record below, which is what the check of R10 reads and
  * what makes a second run write no second priority and no second relation:
  *
@@ -19,14 +25,41 @@
  *     Advances: INFRA-2947, INFRA-2969.
  *     Not advanced: BET-1030 (done), FOO-12 (no issue carries this key).
  *
- * The row number is the idempotency key: a run against a table whose rows moved finds each row's
- * priority by that number and writes nothing, so the priorities it already wrote keep their
- * order.
+ * The row number is the idempotency key: a run against a table whose rows moved, or whose row was
+ * given a new title under the same `#` cell, finds each row's priority by that number and writes
+ * nothing, so the priorities it already wrote keep their order.
+ *
+ * A row whose number no record of this table names, and whose id a live priority already has
+ * that carries no record of this table, is kept by its id: one a person wrote by hand, say. The
+ * run writes no second priority, and writes nothing to that priority's title, description or
+ * owner, because the person who keeps them is their one writer. It states each relation of the
+ * row's keys that the priority does not hold yet, as it does for a row its record keeps, and
+ * prints `row N: kept <id> (by its id)`, where a row its record keeps prints `row N: kept <id>`.
+ *
+ * Dispatch refuses some rows, and a run that met one part way would leave the rows above it
+ * written. So before its first write, the run reads the table and the board and refuses the
+ * table, naming every row it refuses, where:
+ *
+ * - a row that is not DONE has a title with no ASCII letter or digit, which gives no id;
+ * - a row that is not DONE has a title over `ISSUE_TITLE_MAX` UTF-16 units, which Dispatch
+ *   refuses as it refuses such an issue title;
+ * - a row that is not DONE gives the id `none` or `any`, which the issue listing reads as a
+ *   keyword in `?advances=`, so Dispatch refuses either as an id;
+ * - two rows, DONE rows included, give one id after the cut;
+ * - a row the run would write a priority for has an id that a gone (deleted) priority holds.
+ *   `GET /api/v1/priorities` lists live priorities only, and Dispatch refuses a create of a gone
+ *   priority's id (409 PRIORITY_EXISTS), so the run reads
+ *   `GET /api/v1/priorities/{id}/history` for each such id, which answers 200 for any id a
+ *   priority ever had and 404 for an id that is free;
+ * - a row the run would write a priority for has an id that a live priority holds, and that
+ *   priority carries another row's record of this table, as it does when that other row was
+ *   given a new title after the seed wrote it. The refusal names both rows.
  *
  * Run: bun scripts/priorities-seed.ts dispatch://KEY/artifact/some-table-md
  */
 import { parseArgs } from "node:util";
 import type { ArtifactText, ArtifactVersionText } from "../packages/contracts/src/dispatch-api";
+import { ISSUE_TITLE_MAX, PRIORITY_ID_MAX } from "../packages/contracts/src/dispatch-api-limits";
 import {
   type ActiveDispatchConfig,
   activeDispatchSettings,
@@ -52,6 +85,10 @@ const DONE_PATTERN = /^DONE\b/;
  *  written from. The version is not part of the key: the same row read at a later version is the
  *  same row. */
 const MARKER_PATTERN = /^Table row (\S+) of (dispatch:\/\/\S+?), read at version (?:\d+|none)\.$/m;
+
+/** The two ids the issue listing reads as keywords in `?advances=` (`noAdvancesFilter` and
+ *  `anyAdvancesFilter` in `issue_queries.go`), so Dispatch refuses either as a priority's id. */
+const KEYWORD_IDS: readonly string[] = ["none", "any"];
 
 /** What this run presents, and who it writes as. */
 type DispatchConfig = Pick<ActiveDispatchConfig, "url" | "credential"> & {
@@ -91,8 +128,10 @@ export interface SeededRow {
   readonly title: string;
   /** The priority's id, the one this run wrote or the one the row already had. */
   readonly priority: string;
-  /** False where a run before this one wrote the priority, so this run wrote none. */
-  readonly written: boolean;
+  /** How the run found a priority it did not write: `marker` where a run before this one wrote
+   *  it and its record names this row's number, `id` where a priority this seed did not write
+   *  already has the row's id. Null where this run wrote the priority. */
+  readonly kept: "marker" | "id" | null;
   readonly related: readonly string[];
   readonly excluded: readonly ExcludedKey[];
   /** The keys this run wrote a relation for: fewer than `related` where one already stood. */
@@ -205,22 +244,43 @@ function columnPlaces(header: readonly string[]): Record<string, number> | null 
   return places;
 }
 
-/** The id Dispatch derives from a priority's title where the create names none, as
- *  `priorityIDFromTitle` over `artifactSlug` does: lowercased, every run of anything but an
- *  ASCII letter or digit one hyphen, and no hyphen at either end. The empty string is a title
- *  no id can be derived from, which the server refuses on its own (400 PRIORITY_INPUT). */
+/**
+ * The id the seed names for a row's priority: the id `POST /api/v1/priorities` makes from the
+ * same title when a body names none (`priorityIDFromTitle` in `priorities.go`), in its two steps.
+ *
+ * First the slug, as `artifactSlug` writes one: the title lower-cased by Go's simple case
+ * mapping, each run of characters other than `a`-`z` and `0`-`9` one hyphen, and no hyphen at
+ * either end. A title holding no ASCII letter or digit has no slug, and the empty string is
+ * answered for it. The guard reads the raw title, so a title whose only letter is U+212A, which
+ * lower-cases to `k`, has no slug, as in Go. Go maps U+0130 to `i`, where JavaScript's
+ * `toLowerCase` maps it to `i` and U+0307, which the slug would write as `i-`; so U+0130 is
+ * mapped to `i` first, and every other code point is lower-cased on its own. A literal `i`
+ * followed by U+0307 stays two code points, and gives `i-` here as it does in Go.
+ *
+ * Then the cut: a slug of at most `PRIORITY_ID_MAX` characters is the id whole, a longer one is
+ * cut to its longest start of at most that many characters that ends at the end of a word,
+ * which is where the next character of the slug is a hyphen, and when the first word is longer
+ * than the bound, the id is its first `PRIORITY_ID_MAX` characters.
+ * `packages/contracts/fixtures/priority-ids.json` holds the cases.
+ */
 export function priorityId(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+  if (!/[A-Za-z0-9]/.test(title)) return "";
+  let lowered = "";
+  for (const point of title) lowered += point === "\u0130" ? "i" : point.toLowerCase();
+  const slug = lowered.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  if (slug.length <= PRIORITY_ID_MAX) return slug;
+  // slug[PRIORITY_ID_MAX] is the character after the longest start that fits, so the last
+  // hyphen at it or before it ends the last word within the bound. The slug never begins with
+  // one, so a hyphen found at 0 is none.
+  const end = slug.lastIndexOf("-", PRIORITY_ID_MAX);
+  return end > 0 ? slug.slice(0, end) : slug.slice(0, PRIORITY_ID_MAX);
 }
 
 /**
  * The rows of the first table in `markdown` carrying all four columns, in the table's order.
  * Refuses a document that holds no such table, a row with an empty `#` cell and two rows with
- * the same one, because the row number is what a second run reads to write nothing twice, and
- * two rows whose `Priority` cells Dispatch would write under one id.
+ * the same one, because the row number is what a second run reads to write nothing twice, and a
+ * row with an empty `Priority` cell. The refusals that read a row's id are `placeRows`'s.
  */
 export function parseTable(markdown: string): TableRow[] {
   const lines = markdown.split("\n");
@@ -234,8 +294,6 @@ export function parseTable(markdown: string): TableRow[] {
     if (places === null) continue;
     const rows: TableRow[] = [];
     const numbers = new Set<string>();
-    /** Each id a row's title derives, and the row that derived it first. */
-    const ids = new Map<string, TableRow>();
     for (let row = at + 2; row < lines.length; row += 1) {
       const cells = tableCells(lines[row] ?? "");
       if (cells === null) break;
@@ -254,21 +312,7 @@ export function parseTable(markdown: string): TableRow[] {
       // A priority with no title is one Dispatch refuses, so the row is refused here, where
       // nothing has been written yet, rather than part way through a run.
       if (title === "") throw new Error(`row ${number} has an empty Priority cell`);
-      // The create sends no id, so the server derives one from the title and refuses a second
-      // create of that id with 409 PRIORITY_EXISTS - after the rows above it were written. Two
-      // titles that derive one id are refused here instead, where nothing has been written.
-      const id = priorityId(title);
-      const first = ids.get(id);
-      if (id !== "" && first !== undefined) {
-        throw new Error(
-          `rows ${first.number} and ${number} name priorities Dispatch writes under the one id ` +
-            `${id}: ${JSON.stringify(first.title)} and ${JSON.stringify(title)} differ only ` +
-            "where an id does not, so one of the two has to be renamed"
-        );
-      }
-      const parsed = { number, title, owner: cell("owner"), where: cell("where") };
-      if (id !== "") ids.set(id, parsed);
-      rows.push(parsed);
+      rows.push({ number, title, owner: cell("owner"), where: cell("where") });
     }
     return rows;
   }
@@ -443,10 +487,136 @@ async function readTable(
   return { markdown: text.markdown, version: text.version };
 }
 
+/** Whether a priority of the id `id` was ever written, a gone one included: its history answers
+ *  200 for any id a priority row carries, a deleted priority's too, and 404 for an id none
+ *  carries (`priorityHistory` in `priorities.go`). */
+async function priorityEverWritten(config: DispatchConfig, id: string): Promise<boolean> {
+  const path = `/api/v1/priorities/${encodeURIComponent(id)}/history`;
+  const response = await request(config, "GET", path);
+  const text = await response.text();
+  if (response.status === 404) return false;
+  if (!response.ok) throw new Error(`GET ${path}: ${response.status} ${text}`);
+  return true;
+}
+
+/** A row the run writes, as the board stands before its first write: the priority it keeps,
+ *  or, where `kept` is null, the id it writes a priority under. */
+interface PlacedRow {
+  readonly row: TableRow;
+  readonly priority: string;
+  readonly kept: SeededRow["kept"];
+}
+
+/**
+ * Where each row that is not DONE stands before the run writes anything: kept by the record of
+ * its row number, kept by its id, or written under its id. Refuses the table, naming every row
+ * Dispatch would refuse part way through a run, as the header says, so a refused table leaves
+ * nothing written.
+ */
+async function placeRows(
+  config: DispatchConfig,
+  document: string,
+  rows: readonly TableRow[],
+  board: readonly SeedPriority[]
+): Promise<PlacedRow[]> {
+  /** Each row number a record of this table names, with the priority that carries it. */
+  const byRow = new Map<string, string>();
+  /** Each live priority's id, with the row number its record of this table names, if any. */
+  const recordOf = new Map<string, string | undefined>();
+  for (const priority of board) {
+    const marker = rowMarker(priority.description);
+    const row = marker?.document === document ? marker.row : undefined;
+    if (row !== undefined) byRow.set(row, priority.id);
+    recordOf.set(priority.id, row);
+  }
+  const refused: string[] = [];
+  /** Each id a row gives, and the first row to give it. */
+  const firstOf = new Map<string, TableRow>();
+  const placed: PlacedRow[] = [];
+  for (const row of rows) {
+    const before = refused.length;
+    const id = priorityId(row.title);
+    const first = id === "" ? undefined : firstOf.get(id);
+    // Every row, a DONE one included, as the row a later run writes once its Where cell moves.
+    if (first !== undefined) {
+      refused.push(
+        `rows ${first.number} and ${row.number} give the one id ${id} after the cut: ` +
+          `${JSON.stringify(first.title)} and ${JSON.stringify(row.title)} differ only where ` +
+          "an id does not, or past where it is cut, so one of the two has to be renamed"
+      );
+    } else if (id !== "") {
+      firstOf.set(id, row);
+    }
+    if (DONE_PATTERN.test(row.where)) continue;
+    if (id === "") {
+      refused.push(
+        `row ${row.number}: the title ${JSON.stringify(row.title)} holds no ASCII letter or ` +
+          "digit, so it gives no id"
+      );
+    }
+    if (row.title.length > ISSUE_TITLE_MAX) {
+      refused.push(
+        `row ${row.number}: the title is ${row.title.length} characters, and Dispatch refuses a ` +
+          `priority title of more than ${ISSUE_TITLE_MAX}, as it refuses such an issue title`
+      );
+    }
+    if (KEYWORD_IDS.includes(id)) {
+      refused.push(
+        `row ${row.number}: the title ${JSON.stringify(row.title)} gives the id ${id}, which ` +
+          `Dispatch refuses, because the issue listing reads advances=${id} as a keyword`
+      );
+    }
+    if (refused.length > before) continue;
+    // The row number first: a row given a new title under its `#` cell keeps its priority.
+    const marked = byRow.get(row.number);
+    if (marked !== undefined) {
+      placed.push({ row, priority: marked, kept: "marker" });
+      continue;
+    }
+    if (!recordOf.has(id)) {
+      placed.push({ row, priority: id, kept: null });
+      continue;
+    }
+    const other = recordOf.get(id);
+    if (other === undefined || other === row.number) {
+      placed.push({ row, priority: id, kept: "id" });
+      continue;
+    }
+    refused.push(
+      `rows ${row.number} and ${other}: the id ${id} that row ${row.number} gives is held by a ` +
+        `live priority that carries the record of row ${other} of this table, as it does when ` +
+        `row ${other} was given a new title after the seed wrote it, so Dispatch would refuse ` +
+        `the create of row ${row.number} (409 PRIORITY_EXISTS) and row ${row.number} has to be ` +
+        "renamed"
+    );
+  }
+  // The board lists live priorities only, and Dispatch keeps a deleted priority's id, so each id
+  // the run would write a priority under is read in its history: 200 is a gone priority's.
+  const created = placed.filter((one) => one.kept === null);
+  const written = await Promise.all(
+    created.map((one) => priorityEverWritten(config, one.priority))
+  );
+  for (const [at, one] of created.entries()) {
+    if (!written[at]) continue;
+    refused.push(
+      `row ${one.row.number}: the id ${one.priority} is a gone priority's, which Dispatch keeps ` +
+        "and refuses a create of (409 PRIORITY_EXISTS), so the row has to be renamed"
+    );
+  }
+  if (refused.length > 0) {
+    throw new Error(
+      `the seed wrote nothing, because Dispatch would refuse these rows of ${document} part ` +
+        `way through a run:\n${refused.join("\n")}`
+    );
+  }
+  return placed;
+}
+
 /**
  * Writes the priorities of `reference`'s table, and the relations from the work each row names.
  * A row whose priority a run before this one wrote keeps that priority, its order and its text,
- * and this run states only the relations that are missing from it.
+ * as a row whose id a priority this seed did not write already has keeps that one, and this run
+ * states only the relations that are missing from it.
  */
 export async function seedPriorities(
   config: DispatchConfig,
@@ -459,24 +629,13 @@ export async function seedPriorities(
     send<SeedPriorities>(config, "GET", "/api/v1/priorities"),
   ]);
   const rows = parseTable(table.markdown);
-  const held = new Map<string, string>();
-  for (const priority of board.priorities) {
-    const marker = rowMarker(priority.description);
-    if (marker !== undefined && marker.document === document.document) {
-      held.set(marker.row, priority.id);
-    }
-  }
+  const placed = await placeRows(config, document.document, rows, board.priorities);
   const issues = new Issues(config);
-  // Every key the rows this run writes name, read at once; a DONE row is passed over below, so
-  // no key only it names is read at all.
-  await issues.readAll(rows.filter((row) => !DONE_PATTERN.test(row.where)).flatMap(rowKeys));
-  const passed: string[] = [];
+  // Every key the rows this run writes name, read at once; a DONE row is passed over, so no key
+  // only it names is read at all.
+  await issues.readAll(placed.flatMap(({ row }) => rowKeys(row)));
   const seeded: SeededRow[] = [];
-  for (const row of rows) {
-    if (DONE_PATTERN.test(row.where)) {
-      passed.push(row.number);
-      continue;
-    }
+  for (const { row, priority: id, kept } of placed) {
     const related: string[] = [];
     const excluded: ExcludedKey[] = [];
     for (const key of rowKeys(row)) {
@@ -485,34 +644,36 @@ export async function seedPriorities(
       else if (issue.status === "done") excluded.push({ key, reason: issue.status });
       else related.push(key);
     }
-    const written = held.get(row.number);
     const priority =
-      written ??
-      (
-        await send<SeedPriority>(config, "POST", "/api/v1/priorities", {
-          title: row.title,
-          description: priorityDescription(
-            row,
-            document.document,
-            table.version,
-            related,
-            excluded
-          ),
-          owner: row.owner,
-        })
-      ).id;
+      kept !== null
+        ? id
+        : (
+            await send<SeedPriority>(config, "POST", "/api/v1/priorities", {
+              id,
+              title: row.title,
+              description: priorityDescription(
+                row,
+                document.document,
+                table.version,
+                related,
+                excluded
+              ),
+              owner: row.owner,
+            })
+          ).id;
     const relations: string[] = [];
     for (const key of related) if (await issues.relate(key, priority)) relations.push(key);
     seeded.push({
       row: row.number,
       title: row.title,
       priority,
-      written: written === undefined,
+      kept,
       related,
       excluded,
       relations,
     });
   }
+  const passed = rows.filter((row) => DONE_PATTERN.test(row.where)).map((row) => row.number);
   return { document: document.document, version: table.version, passed, rows: seeded };
 }
 
@@ -531,18 +692,19 @@ function parseArguments(argv: readonly string[]): string {
 function printReport(report: SeedReport): void {
   console.log(`${report.document}, read at version ${report.version ?? "none"}`);
   for (const row of report.rows) {
-    const wrote = row.written ? "wrote" : "kept";
+    const found = row.kept === null ? "wrote" : "kept";
     const held = row.excluded.map((key) => `${key.key} (${key.reason})`);
     console.log(
-      `row ${row.row}: ${wrote} ${row.priority}; ` +
+      `row ${row.row}: ${found} ${row.priority}${row.kept === "id" ? " (by its id)" : ""}; ` +
         `related ${row.relations.length === 0 ? "none" : row.relations.join(", ")} of ` +
         `${row.related.length === 0 ? "none" : row.related.join(", ")}; ` +
         `not related ${held.length === 0 ? "none" : held.join(", ")}`
     );
   }
-  const wrote = report.rows.filter((row) => row.written).length;
+  const wrote = report.rows.filter((row) => row.kept === null).length;
+  const byId = report.rows.filter((row) => row.kept === "id").length;
   console.log(
-    `${report.rows.length} rows, ${wrote} priorities written, ` +
+    `${report.rows.length} rows, ${wrote} priorities written, ${byId} kept by their id, ` +
       `${report.rows.reduce((count, row) => count + row.relations.length, 0)} relations written, ` +
       `${report.passed.length} rows passed over (DONE): ${report.passed.join(", ") || "none"}`
   );
