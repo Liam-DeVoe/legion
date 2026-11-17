@@ -2,6 +2,8 @@ package plan
 
 import (
 	"fmt"
+	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -25,30 +27,90 @@ var todaysOrder = func() string {
 	return strings.Join(names, ", ")
 }()
 
-// Validate is what Legion cannot carry out in any release (R14): a plan with no task, and each
-// step that names a role neither d nor the plan's own role blocks define, refused once for each
-// role at the first step that names it (B-11). It refuses no plan for a step the plan lacks. The
-// other refusals of R14 need an attribute or a block that Supported refuses in this release, so
-// the release that lifts that refusal adds them here.
+// recordWord is the form of a role's name and of a role's type in Dispatch's step record, which
+// takes no other, and recordForm is the end of each refusal of a word outside it.
+var recordWord = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+
+const recordForm = "is not of the form [a-z][a-z0-9-]* with at most 32 characters: Dispatch's step record takes no other."
+
+// Validate is what Legion cannot carry out in any release (R14), each cause refused once: a plan
+// with no task; each role the plan defines whose name or type Dispatch's step record cannot hold,
+// or whose name the deployment or Legion holds already (LegionNames); each role whose model the
+// deployment does not list, at the first step of each task that names it, or for the whole plan
+// where no step names it; and each step that names a role neither d nor the plan defines, at the
+// first step of each task that names it (B-11). A type no list holds, and a role with no type or
+// no model, are taken. It refuses no plan for a step the plan lacks, and it holds a role's prompt
+// to no bound of its own.
 func Validate(p Plan, d Deployment) []Refusal {
 	if len(p.Tasks) == 0 {
 		return []Refusal{{Reason: noTask}}
 	}
-	defined := make(map[string]bool, len(p.Roles))
-	for _, role := range p.Roles {
-		defined[role.Name] = true
-	}
-	var refusals []Refusal
+	roles := RolesOf(p, d)
+	refusals := append(roleReasons(p, d), modelReasons(p, d, roles)...)
 	for _, task := range p.Tasks {
 		refused := map[string]bool{}
 		for i, step := range task.Steps {
-			if _, ok := d.Roles[step.Role]; ok || defined[step.Role] || refused[step.Role] {
+			if _, ok := roles[step.Role]; ok || refused[step.Role] {
 				continue
 			}
 			refused[step.Role] = true
 			refusals = append(refusals, Refusal{Task: task.ID, Reason: fmt.Sprintf(
 				"step %d of task %s names the role %s, which neither the deployment nor the plan defines.", i+1, task.ID, step.Role)})
 		}
+	}
+	return refusals
+}
+
+// roleReasons is Validate's causes in the roles p defines, in the document's order and, for each
+// role, in this order: a name outside recordWord, a name of a role of d or of LegionNames, and a
+// type that is set and outside recordWord.
+func roleReasons(p Plan, d Deployment) []Refusal {
+	var refusals []Refusal
+	for _, role := range p.Roles {
+		if !recordWord.MatchString(role.Name) {
+			refusals = append(refusals, Refusal{Reason: fmt.Sprintf("the plan defines the role %s, whose name %s", role.Name, recordForm)})
+		}
+		if _, ok := d.Roles[role.Name]; ok || slices.Contains(legionNames, role.Name) {
+			refusals = append(refusals, Refusal{Reason: fmt.Sprintf(
+				"the plan defines the role %s, which the deployment or Legion defines already; a role of a plan takes a name of its own.", role.Name)})
+		}
+		if role.Type != "" && !recordWord.MatchString(string(role.Type)) {
+			refusals = append(refusals, Refusal{Reason: fmt.Sprintf("the plan defines the role %s with the type %s, which %s", role.Name, role.Type, recordForm)})
+		}
+	}
+	return refusals
+}
+
+// modelReasons is Validate's causes in the models of roles, each role a step names as RolesOf
+// answers it: each role whose model is set and is none of d's models, at the first step of each
+// task that names it, in task and step order; then each role p defines that no step names, whose
+// model is set and is none of d's models, in the document's order.
+func modelReasons(p Plan, d Deployment, roles map[string]RoleDef) []Refusal {
+	listed := "it lists none."
+	if len(d.Models) > 0 {
+		listed = "it lists " + strings.Join(d.Models, ", ") + "."
+	}
+	var refusals []Refusal
+	named := map[string]bool{}
+	for _, task := range p.Tasks {
+		refused := map[string]bool{}
+		for i, step := range task.Steps {
+			named[step.Role] = true
+			role, ok := roles[step.Role]
+			if !ok || role.Model == "" || slices.Contains(d.Models, role.Model) || refused[step.Role] {
+				continue
+			}
+			refused[step.Role] = true
+			refusals = append(refusals, Refusal{Task: task.ID, Reason: fmt.Sprintf(
+				"step %d of task %s names the role %s, whose model %s the deployment does not list; %s", i+1, task.ID, step.Role, role.Model, listed)})
+		}
+	}
+	for _, role := range p.Roles {
+		if named[role.Name] || role.Model == "" || slices.Contains(d.Models, role.Model) {
+			continue
+		}
+		refusals = append(refusals, Refusal{Reason: fmt.Sprintf(
+			"the plan defines the role %s with the model %s, which the deployment does not list; %s", role.Name, role.Model, listed)})
 	}
 	return refusals
 }

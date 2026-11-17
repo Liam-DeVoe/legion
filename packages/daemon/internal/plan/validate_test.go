@@ -2,6 +2,7 @@ package plan
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -162,5 +163,77 @@ func TestAKeyOtherThanOwnerIsTaken(t *testing.T) {
 	}
 	if got := Supported(oneTask("t", "implementer:a acceptance:a")); len(got) != 1 || got[0].Reason != "step 2 of task t names the key a."+yet {
 		t.Fatalf("Supported = %v, want the key a on acceptance refused", got)
+	}
+}
+
+// Validate refuses each role of a plan that Legion cannot run, each with its own reason: a name
+// Dispatch's step record cannot hold, a name the deployment or Legion holds already, a type the
+// step record cannot hold, and a model the deployment does not list, at the first step of each task
+// that names the role, or for the whole plan where no step names it. A name nothing holds (agent,
+// owner), a type no list holds, a role with no type or no model, and a prompt of 900,000 bytes are
+// taken: the launch's own bound decides a prompt.
+func TestValidateRefusesARoleThePlanCannotRun(t *testing.T) {
+	listing := Deployment{Roles: BuiltinRoles(), Models: []string{"m-one", "m-two"}}
+	withRoles := func(steps string, roles ...PlanRole) Plan {
+		p := oneTask("a", steps)
+		p.Roles = roles
+		return p
+	}
+	const longName = "a-role-name-of-thirty-three-chars"
+	const longType = "a-type-name-of-thirty-three-chars"
+	const form = " is not of the form [a-z][a-z0-9-]* with at most 32 characters: Dispatch's step record takes no other."
+	collides := func(name string) []Refusal {
+		return []Refusal{{Task: "", Reason: "the plan defines the role " + name + ", which the deployment or Legion defines already; a role of a plan takes a name of its own."}}
+	}
+	for _, tc := range []struct {
+		name string
+		plan Plan
+		d    Deployment
+		want []Refusal
+	}{
+		{name: "a name of 33 characters", plan: withRoles("implementer "+longName, PlanRole{Name: longName, Type: TypeTesting}),
+			want: []Refusal{{Task: "", Reason: "the plan defines the role " + longName + ", whose name" + form}}},
+		{name: "the name tester", plan: withRoles("implementer tester", PlanRole{Name: "tester", Type: TypeTesting}), want: collides("tester")},
+		{name: "the name merger", plan: withRoles("implementer merger", PlanRole{Name: "merger", Type: TypeTesting}), want: collides("merger")},
+		{name: "the name controller", plan: withRoles("implementer controller", PlanRole{Name: "controller", Type: TypeTesting}), want: collides("controller")},
+		{name: "the name agent", plan: withRoles("implementer agent", PlanRole{Name: "agent", Type: TypeTesting})},
+		{name: "the name owner", plan: withRoles("implementer owner", PlanRole{Name: "owner", Type: TypeTesting})},
+		{name: "the role owner done by the owner", plan: withRoles("implementer owner:owner", PlanRole{Name: "owner", Type: TypeTesting})},
+		{name: "a type with an upper-case letter", plan: withRoles("implementer prober", PlanRole{Name: "prober", Type: "Fuzzing"}),
+			want: []Refusal{{Task: "", Reason: "the plan defines the role prober with the type Fuzzing, which" + form}}},
+		{name: "a type of 33 characters", plan: withRoles("implementer prober", PlanRole{Name: "prober", Type: longType}),
+			want: []Refusal{{Task: "", Reason: "the plan defines the role prober with the type " + longType + ", which" + form}}},
+		{name: "a type no list holds", plan: withRoles("implementer prober", PlanRole{Name: "prober", Type: "fuzzing"})},
+		{name: "no type", plan: withRoles("implementer prober", PlanRole{Name: "prober"})},
+		{name: "a model the deployment does not list", plan: withRoles("implementer prober", PlanRole{Name: "prober", Type: TypeTesting, Model: "m-three"}),
+			want: []Refusal{{Task: "a", Reason: "step 2 of task a names the role prober, whose model m-three the deployment does not list; it lists m-one, m-two."}}},
+		{name: "a model of a deployment that lists none", plan: withRoles("implementer prober", PlanRole{Name: "prober", Type: TypeTesting, Model: "m-three"}),
+			d:    Deployment{Roles: BuiltinRoles()},
+			want: []Refusal{{Task: "a", Reason: "step 2 of task a names the role prober, whose model m-three the deployment does not list; it lists none."}}},
+		{name: "a listed model", plan: withRoles("implementer prober", PlanRole{Name: "prober", Type: TypeTesting, Model: "m-two"})},
+		{name: "no model", plan: withRoles("implementer prober", PlanRole{Name: "prober", Type: TypeTesting})},
+		{name: "a model the deployment does not list, of a role no step names", plan: withRoles("implementer", PlanRole{Name: "spare", Type: TypeTesting, Model: "m-three"}),
+			want: []Refusal{{Task: "", Reason: "the plan defines the role spare with the model m-three, which the deployment does not list; it lists m-one, m-two."}}},
+		{name: "a prompt of 900,000 bytes", plan: withRoles("implementer prober", PlanRole{Name: "prober", Type: TypeTesting, Prompt: strings.Repeat("p", 900_000)})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := tc.d
+			if d.Roles == nil {
+				d = listing
+			}
+			if got := Validate(tc.plan, d); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("Validate =\n%+v\nwant\n%+v", got, tc.want)
+			}
+		})
+	}
+
+	want := []string{"architect", "planner", "implementer", "tester", "reviewer", "merger", "controller", "acceptance"}
+	names := LegionNames()
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("LegionNames = %v, want %v", names, want)
+	}
+	names[0] = "agent"
+	if LegionNames()[0] != "architect" {
+		t.Fatal("a caller that changed one answer of LegionNames changed the next")
 	}
 }

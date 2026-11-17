@@ -12,6 +12,7 @@ package plan
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -181,6 +182,18 @@ var builtinRoles = []RoleDef{
 	{Name: "reviewer", Type: TypeReview, Phase: phase.Reviewing},
 	{Name: "acceptance", Type: TypeReview, Phase: phase.Accepting},
 }
+
+// LegionNames is the one list of the names that no role of a plan takes, since Legion holds each
+// already: the architect and the merger are roles of a claim (claim.Roles), the controller is the
+// controller's role, and the five others are Legion's roles of a step (BuiltinRoles). `owner` is
+// in no list: it is the key of a task's owner, and a step's role and its key are two words, so a
+// role named owner collides with nothing. The answer is a fresh slice, so a caller that changes it
+// leaves the next caller's answer whole.
+func LegionNames() []string {
+	return slices.Clone(legionNames)
+}
+
+var legionNames = []string{"architect", "planner", "implementer", "tester", "reviewer", "merger", "controller", "acceptance"}
 
 // nameWord is the grammar of a role and of a key (C3).
 var nameWord = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
