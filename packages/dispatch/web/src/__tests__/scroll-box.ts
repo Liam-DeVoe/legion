@@ -44,7 +44,7 @@ export function installResizeObserver(): ResizeControl {
   const original = globalThis.ResizeObserver;
   const live = new Set<ObserverStub>();
 
-  class ObserverStub {
+  class ObserverStub implements ResizeObserver {
     readonly targets: Element[] = [];
     readonly callback: ResizeObserverCallback;
 
@@ -64,14 +64,14 @@ export function installResizeObserver(): ResizeControl {
     unobserve(): void {}
   }
 
-  globalThis.ResizeObserver = ObserverStub as unknown as typeof ResizeObserver;
+  globalThis.ResizeObserver = ObserverStub;
   return {
     live: () => live.size,
     observed: () => [...live].flatMap((observer) => observer.targets),
     resize: () => {
       act(() => {
         for (const observer of [...live]) {
-          observer.callback([], observer as unknown as ResizeObserver);
+          observer.callback([], observer);
         }
       });
     },
