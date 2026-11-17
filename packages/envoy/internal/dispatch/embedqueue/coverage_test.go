@@ -243,9 +243,9 @@ func cover(t *testing.T, deps Deps) {
 	}
 }
 
-// everyProject is the server's own viewer, which sees every project: the reader these tests read
-// the report as, since none of them is about who may see what.
-var everyProject = model.Actor{Viewer: model.ServerViewer}
+// everyProject is the server's own reader (model.ServerReader), which sees every project: the
+// reader these tests read the report as, since none of them is about who may see what.
+var everyProject = model.ServerReader
 
 func coverage(t *testing.T, database *store.Store, identity string) (items, current, lacking, failed int64, oldest *int64) {
 	t.Helper()

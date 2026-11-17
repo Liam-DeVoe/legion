@@ -64,7 +64,7 @@ func TestTheVisibilityArgumentCarriesTheViewer(t *testing.T) {
 		},
 		{
 			name:   "the server's own viewer",
-			reader: model.Actor{Viewer: model.ServerViewer},
+			reader: model.ServerReader,
 			want:   `{"author":null,"sees":[],"open":true,"all":true,"private":false}`,
 		},
 	} {
@@ -128,7 +128,7 @@ func (caller seededCaller) reader(t *testing.T, q access.Querier) model.Actor {
 	case caller.closed:
 		return caller.actor.Reader()
 	case caller.server:
-		return model.Actor{Viewer: model.ServerViewer}
+		return model.ServerReader
 	}
 	viewer, err := access.Resolve(context.Background(), q, caller.actor)
 	if err != nil {
@@ -185,9 +185,34 @@ func writeSeedNodes(t *testing.T, tx pgx.Tx, nodes []graphstore.Node, tuples []g
 }
 
 // serverReader is the reader of every test of this package that reads the graph for no particular
-// viewer: one that proves no author and sees every project and every party (model.ServerViewer),
-// which is what a read with no actor was before a reader carried a viewer.
-var serverReader = model.Actor{Viewer: model.ServerViewer}
+// viewer: the server's own (model.ServerReader), which proves no author and sees every project and
+// every party, which is what a read with no actor was before a reader carried a viewer.
+var serverReader = model.ServerReader
+
+// planReader is a reader a plan or a timing binds, by the name a failure gives it.
+type planReader struct {
+	name   string
+	reader model.Actor
+}
+
+// planReaders are the readers a plan binds: the server's own, and two that are not, both of a
+// deployment that holds a private project and both seeing project. The server's viewer passes
+// every rule at its `all` flag, so a custom plan bound to it alone folds every project and party
+// arm away and never shows the read a member's statement runs: alice is an open member, whose
+// session and party arms read session_projects, and carol's token lists project, so her arms read
+// the sessions and people of the projects she sees.
+func planReaders(project string) []planReader {
+	alice, carol := "alice@example.com", "carol@example.com"
+	return []planReader{
+		{"the server", serverReader},
+		{"alice, an open member", model.Actor{Kind: "user", ID: alice, Viewer: &model.Viewer{
+			Person: alice, Open: true, Sees: []string{project}, AnyPrivate: true,
+		}}},
+		{"carol's token listing " + project, model.Actor{Kind: "session", Owner: &carol, Viewer: &model.Viewer{
+			Person: carol, Listed: true, Sees: []string{project}, AnyPrivate: true, Lists: []string{project},
+		}}},
+	}
+}
 
 // scopedNode is one node the project clause test reads, and the callers that see it.
 type scopedNode struct {
@@ -347,9 +372,14 @@ func seedScopedNodes(t *testing.T, tx pgx.Tx) scopedSeed {
 			ToKind: graphstore.KindSession, ToID: session, At: time.Now(), Who: model.Actor{Kind: "session", ID: session}, Asserted: true}
 	}
 	writeSeedNodes(t, tx, nodes, []graphstore.Tuple{held("r_priv", "ses_priv"), held("r_pub", "ses_pub")})
+	// The pairs of a filled deployment: session_projects_filled holds its row, so an open viewer's
+	// session arm reads the pairs (access.TestAnOpenViewerReadsNoOtherSessionWhileTheFillIsUnfinished).
 	if _, err := tx.Exec(context.Background(), `insert into session_projects (session_id, project_key) values ('ses_priv', $1), ('ses_pub', $2)`,
 		seededPrivate, seededPublic); err != nil {
 		t.Fatalf("record the projects each session acted in: %v", err)
+	}
+	if _, err := tx.Exec(context.Background(), `insert into session_projects_filled default values`); err != nil {
+		t.Fatalf("record that the sessions' projects are filled: %v", err)
 	}
 	return seeded
 }

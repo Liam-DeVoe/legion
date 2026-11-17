@@ -454,8 +454,7 @@ func BlockEmbeddingStates(ctx context.Context, q Queryer, who model.Actor, kind,
 	if itemKind, itemID, item := strings.Cut(ownerKey, "/"); item {
 		owner = args.visible(&who, itemKind, args.param(itemID))
 	} else {
-		owner = args.visible(&who, "artifact", `(select owner_document.ref_key from artifacts owner_document
-			where owner_document.id = `+args.param(ownerKey)+`::uuid)`)
+		owner = args.visible(&who, "artifact", artifactRefKeyOf(args.param(ownerKey)+`::uuid`))
 	}
 	rows, err := q.Query(ctx, `
 		select covered.block_id, bool_and(e.embedded_hash is not distinct from e.content_hash)
@@ -1046,8 +1045,8 @@ func BlockLinks(ctx context.Context, q Queryer, who model.Actor, fromArtifact, t
 		join document_blocks f on f.artifact_id = r.artifact_id and f.block_id = r.block_id
 		join document_blocks t on t.node_id = r.to_id and t.artifact_id = $2::uuid
 		where r.artifact_id = $1::uuid and r.to_kind = 'block' and (r.to_types is null or block_ref_listed(r.to_types, r.to_id))
-		  and `+VisibleKind("artifact", `(select from_document.ref_key from artifacts from_document where from_document.id = $1::uuid)`, "$3")+`
-		  and `+VisibleKind("artifact", `(select to_document.ref_key from artifacts to_document where to_document.id = $2::uuid)`, "$3")+`
+		  and `+VisibleKind("artifact", artifactRefKeyOf(`$1::uuid`), "$3")+`
+		  and `+VisibleKind("artifact", artifactRefKeyOf(`$2::uuid`), "$3")+`
 		order by r.created_at desc, r.from_node, r.to_id`, fromArtifact, toArtifact, VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("list the block links from %s to %s: %w", fromArtifact, toArtifact, err)

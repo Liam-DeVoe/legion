@@ -11,7 +11,7 @@ import "fmt"
 //
 // repoExpr is spliced more than once, so it must be a column or a bound parameter.
 func RepositoryClause(repoExpr, viewerParam string) string {
-	return fragment("RepositoryClause", fmt.Sprintf(`(%[2]s or case
+	return clause("RepositoryClause", fmt.Sprintf(`(%[2]s or case
 		when exists (
 			select 1 from repo_projects mapping
 			where lower(mapping.repo) = lower(%[1]s) or lower(mapping.renamed_to) = lower(%[1]s)
@@ -22,5 +22,5 @@ func RepositoryClause(repoExpr, viewerParam string) string {
 				and %[4]s
 			offset 0)
 		else %[3]s end)`,
-		repoExpr, viewerFlag(viewerParam, "all"), viewerFlag(viewerParam, "open"), ProjectClause("mapping.project", viewerParam)))
+		repoExpr, ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"), ProjectClause("mapping.project", viewerParam)))
 }

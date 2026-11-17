@@ -4,8 +4,8 @@ import "net/http"
 
 // PrivateProjectsHeader is the header every Dispatch HTTP response carries (KF7): 1 when the
 // deployment names a private project (DISPATCH_PRIVATE_PROJECTS) or the database holds one, and 0
-// otherwise. Plan F's check of the shared stores reads it. cmd/dispatch's response middleware sets
-// it on the writer before any handler runs.
+// otherwise. The deployment's check of the stores its projects share reads it. cmd/dispatch's
+// response middleware sets it on the writer before any handler runs.
 const PrivateProjectsHeader = "Dispatch-Private-Projects"
 
 // UpgradeHeader is the header a websocket upgrade through w passes its upgrader: the

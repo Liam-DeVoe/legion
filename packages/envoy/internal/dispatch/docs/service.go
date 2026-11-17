@@ -3374,11 +3374,7 @@ type Queryer interface {
 // shared pool closes the same cycle the transaction rule closes.
 func (s *Service) issueOpen(ctx context.Context, q Queryer, artifactID string) (bool, error) {
 	var open bool
-	if err := q.QueryRow(ctx, `
-		select coalesce(i.closed_at is null, true)
-		from artifacts a left join issues i on i.key = a.issue_key
-		where a.id = $1 and a.kind = 'doc'
-	`, artifactID).Scan(&open); err != nil {
+	if err := q.QueryRow(ctx, issueOpenStatement, artifactID).Scan(&open); err != nil {
 		return false, fmt.Errorf("check document issue: %w", err)
 	}
 	return open, nil

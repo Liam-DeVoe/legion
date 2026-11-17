@@ -16,9 +16,9 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// serverReader is the server's own viewer, which reads every document: the reader of a test that
-// reads a document's text for no person (TextWithToken).
-var serverReader = model.Actor{Viewer: model.ServerViewer}
+// serverReader is the server's own reader (model.ServerReader), which reads every document: the
+// reader of a test that reads a document's text for no person (TextWithToken).
+var serverReader = model.ServerReader
 
 // storedTextReadRenders is how often a text read of a document a room holds renders it: not at
 // all. The version written from that very state stored its markdown and its document token beside

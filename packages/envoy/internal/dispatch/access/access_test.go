@@ -294,7 +294,10 @@ func nullable(value string) any {
 func TestTheClausesOverTheSeededCallers(t *testing.T) {
 	ctx := context.Background()
 	database := seedAccess(t)
+	// The pairs of a filled deployment: session_projects_filled holds its row, so the open arm reads
+	// the pairs (TestAnOpenViewerReadsNoOtherSessionWhileTheFillIsUnfinished holds the unfilled one).
 	if _, err := database.Pool.Exec(ctx, `
+		insert into session_projects_filled default values;
 		insert into session_projects (session_id, project_key) values ('ses_priv', 'PRIV'), ('ses_pub', 'PUB'), ('ses_both', 'PUB'), ('ses_both', 'PRIV');
 		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event) values
 			('role', 'priv-architect', 'held_by', 'session', 'ses_priv', now(), '{}', 0),

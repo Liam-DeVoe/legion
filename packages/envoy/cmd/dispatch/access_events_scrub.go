@@ -51,7 +51,8 @@ type accessEventsScrub struct {
 // named - its principal, and the owner and visibility the change left - goes first into the
 // server's own record of the event (project_access_changes), where a live resume reads it, unless a
 // row holds it already. It reads by id, the primary key, because no index of events leads with
-// type. Once a batch comes back short, every event is read, and it writes the one
+// type; the batch reads each event's type with its id, so only an access event is read again for
+// its payload. Once a batch comes back short, every event is read, and it writes the one
 // access_events_scrubbed row, unless a run before it did.
 func scrubAccessEvents(ctx context.Context, pool *store.Pool, batch int) (accessEventsScrub, error) {
 	var report accessEventsScrub
@@ -61,11 +62,11 @@ func scrubAccessEvents(ctx context.Context, pool *store.Pool, batch int) (access
 		var read, rewritten int64
 		if err := pool.QueryRow(ctx, `
 			with batch as (
-				select id from events where id > $1 order by id limit $2
+				select id, type from events where id > $1 order by id limit $2
 			), stored as (
 				select e.id, e.payload
-				from events e join batch b on b.id = e.id
-				where e.type = 'project.access_changed'
+				from batch b join events e on e.id = b.id
+				where b.type = 'project.access_changed'
 					and e.payload <> jsonb_build_object('project', e.payload->'project', 'change', e.payload->'change')
 			), recorded as (
 				insert into project_access_changes (event_id, principal, owner, visibility)

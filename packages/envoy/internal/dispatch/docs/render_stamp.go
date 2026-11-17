@@ -91,7 +91,8 @@ func (l *Ledger) RenderStampOf(artifactID, markdown string) RenderStamp {
 // (documentStampSQL), and whether the reader whose viewer $2 binds may read the document
 // (access.ItemOwnerClause, the rule of a document's own row). Every other value is null for a
 // document with no version, as the markdown and the stamp are for a version written before the
-// stamp existed or by a write holding no tree, and for a document the reader may not read.
+// stamp existed or by a write holding no tree. The rule is read once: a reader who may not read
+// the document is answered pgx.ErrNoRows before any version value is read (storedText).
 var storedVersionSQL = `
 		select v.markdown, v.document_token, v.head_version, v.doc_update_row, v.renderer_version,
 			s.version, s.row_xmin, ` + readableDocument + `
@@ -99,7 +100,7 @@ var storedVersionSQL = `
 		) s
 		left join lateral (
 			select markdown, document_token, head_version, doc_update_row, renderer_version
-			from artifact_versions where artifact_id = $1 and ` + readableDocument + `
+			from artifact_versions where artifact_id = $1
 			order by number desc limit 1
 		) v on true`
 

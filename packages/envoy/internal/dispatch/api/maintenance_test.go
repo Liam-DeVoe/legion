@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -10,6 +11,59 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
+
+// TestTheStoreReportNamesEveryBackfillNotRun: the store a private project's reads would answer
+// wrongly is one whose project-owned rows lack their nodes, or one that either backfill the switch
+// to private waits for has not finished: backfill-session-projects (session_projects_filled) and
+// scrub-access-events (access_events_scrubbed). The boot's and the hourly report name each, with
+// the command that repairs it, as the switch's 409 PRIVATE_PROJECTS_INCOMPLETE does, and a
+// complete store is no report at all.
+func TestTheStoreReportNamesEveryBackfillNotRun(t *testing.T) {
+	for _, row := range []struct {
+		name, seed string
+		want       []string
+	}{
+		{"a complete store", `
+			insert into session_projects_filled default values;
+			insert into access_events_scrubbed default values;`, nil},
+		{"session_projects_filled empty", `
+			insert into access_events_scrubbed default values;`,
+			[]string{"session_projects_filled holds no row", "envoy-dispatch backfill-session-projects"}},
+		{"access_events_scrubbed empty", `
+			insert into session_projects_filled default values;`,
+			[]string{"access_events_scrubbed holds no row", "envoy-dispatch scrub-access-events"}},
+		{"an issue with no node", `
+			insert into session_projects_filled default values;
+			insert into access_events_scrubbed default values;
+			insert into projects (key, name, default_assignee) values ('PRIV', 'Private', 'alice');
+			insert into issues (key, project_key, number, title, created_by, rank)
+			values ('PRIV-1', 'PRIV', 1, 'One', '{"kind":"user","id":"alice"}', 'U');`,
+			[]string{"issue PRIV-1: missing", "envoy-dispatch backfill-graph-store"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			ctx := context.Background()
+			database := storetest.Open(t)
+			if _, err := database.Pool.Exec(ctx, row.seed); err != nil {
+				t.Fatalf("seed %s: %v", row.name, err)
+			}
+			err := storeIncomplete(store.WithTransactionTracking(ctx), database.Pool)
+			if row.want == nil {
+				if err != nil {
+					t.Fatalf("%s: the report = %v, want none", row.name, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("%s: no report, want one naming %q", row.name, row.want)
+			}
+			for _, want := range row.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("%s: the report %q does not name %q", row.name, err, want)
+				}
+			}
+		})
+	}
+}
 
 // maintenanceTestInterval is the pace both runners keep here, far shorter than the server's
 // minute so a handful of periods passes inside one test.

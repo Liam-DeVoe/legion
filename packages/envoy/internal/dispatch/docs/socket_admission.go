@@ -251,7 +251,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		line = append(line, access.PrivateProjectsHeader+": "+value+"\r\n"...)
 	}
 	if line != nil {
-		w = &processHeaderWriter{ResponseWriter: w, line: line}
+		w = &upgradeHeadersWriter{ResponseWriter: w, line: line}
 	}
 	room := socketRoom(r)
 	actor, err := s.requestActor(r)
@@ -424,19 +424,19 @@ func (w *revocableSocketWriter) Unwrap() http.ResponseWriter { return w.Response
 // opens sockets through a load balancer can record which process each one reached (plan D10).
 const ProcessHeader = "X-Dispatch-Process"
 
-// processHeaderWriter puts its line - ProcessHeader's, and the Dispatch-Private-Projects value the
+// upgradeHeadersWriter puts its line - ProcessHeader's, and the Dispatch-Private-Projects value the
 // process's middleware set (access.PrivateProjectsHeader) - on a websocket upgrade made through it.
 // The upgrader (gorilla/websocket, which ygo's ServeHTTP and refuseOutsideSchema both use) takes
 // the connection and writes its 101 answer on it in one write, reading no header of the writer's,
 // and ygo passes it none of its own; so the connection this Hijack hands out adds the line to that
 // first write, right after its status line. Every other answer carries the headers the ordinary
 // way (ServeHTTP and the middleware set them).
-type processHeaderWriter struct {
+type upgradeHeadersWriter struct {
 	http.ResponseWriter
 	line []byte
 }
 
-func (w *processHeaderWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+func (w *upgradeHeadersWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	hijacker, ok := w.ResponseWriter.(http.Hijacker)
 	if !ok {
 		return nil, nil, http.ErrNotSupported
@@ -445,21 +445,21 @@ func (w *processHeaderWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return &processHeaderConn{Conn: conn, line: w.line}, buffered, nil
+	return &upgradeHeadersConn{Conn: conn, line: w.line}, buffered, nil
 }
 
 // Unwrap gives http.ResponseController the writer underneath.
-func (w *processHeaderWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+func (w *upgradeHeadersWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// processHeaderConn is a hijacked connection whose first write, the upgrade's answer, gains line
+// upgradeHeadersConn is a hijacked connection whose first write, the upgrade's answer, gains line
 // after its status line. line is cleared by that write, which the upgrade makes before it hands
 // the connection to any other goroutine, so every later write passes straight through.
-type processHeaderConn struct {
+type upgradeHeadersConn struct {
 	net.Conn
 	line []byte
 }
 
-func (c *processHeaderConn) Write(p []byte) (int, error) {
+func (c *upgradeHeadersConn) Write(p []byte) (int, error) {
 	line := c.line
 	if line == nil {
 		return c.Conn.Write(p)

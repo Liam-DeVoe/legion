@@ -12,9 +12,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// a1AccessPayload is a project.access_changed payload as A1 stored it: the project's whole access,
-// its emails included, the change and the principal it named.
-func a1AccessPayload(project, change, principal string) map[string]any {
+// wholeAccessPayload is a project.access_changed payload in the shape the release of migration
+// 20261116015736_project_access stored: the project's whole access, its emails included, the
+// change and the principal it named.
+func wholeAccessPayload(project, change, principal string) map[string]any {
 	return map[string]any{
 		"project": project, "owner": "olga@example.com", "visibility": "public",
 		"people": []string{"carol@example.com"}, "groups": []string{}, "slack_channels": []string{}, "not_signed_in": []string{},
@@ -36,15 +37,16 @@ func storedPayload(t *testing.T, database *store.Store, id int64) string {
 	return compact.String()
 }
 
-// TestTheAccessEventsScrubRewritesA1Payloads: envoy-dispatch scrub-access-events rewrites every
-// project.access_changed event stored in A1's shape, with the whole ProjectAccess and carol's
-// email, to {project, change}, reading events in id order a batch at a time, and then writes the
+// TestTheAccessEventsScrubRewritesWholeAccessPayloads: envoy-dispatch scrub-access-events rewrites
+// every project.access_changed event stored in the shape the release of migration
+// 20261116015736_project_access stored, with the whole ProjectAccess and carol's email, to
+// {project, change}, reading events in id order a batch at a time, and then writes the
 // access_events_scrubbed marker. What the payload named moves into the server's own record of the
 // event (project_access_changes), which a live resume reads and no route serves. An event of
 // another type is left as it was. Afterwards no stored access event holds carol's email, which is
 // what GET /api/v1/events/log serves, and a second run rewrites nothing. A run in batches of one
 // crosses every batch boundary.
-func TestTheAccessEventsScrubRewritesA1Payloads(t *testing.T) {
+func TestTheAccessEventsScrubRewritesWholeAccessPayloads(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	env := envGetter(map[string]string{"DATABASE_URL": database.Pool.Config().ConnString()})
@@ -56,7 +58,7 @@ func TestTheAccessEventsScrubRewritesA1Payloads(t *testing.T) {
 	}
 	olga := model.Actor{Kind: "user", ID: "olga@example.com"}
 	appendEach(t, database,
-		model.Event{ProjectKey: new("PUB"), Type: "project.access_changed", Actor: olga, Payload: a1AccessPayload("PUB", "person_added", "carol@example.com")},
+		model.Event{ProjectKey: new("PUB"), Type: "project.access_changed", Actor: olga, Payload: wholeAccessPayload("PUB", "person_added", "carol@example.com")},
 		model.Event{ProjectKey: new("PUB"), Type: "project.updated", Actor: olga, Payload: map[string]any{"note": "carol@example.com"}},
 	)
 	var access, other int64
@@ -110,8 +112,8 @@ func TestTheAccessEventsScrubRewritesA1Payloads(t *testing.T) {
 	}
 
 	appendEach(t, database,
-		model.Event{ProjectKey: new("PUB"), Type: "project.access_changed", Actor: olga, Payload: a1AccessPayload("PUB", "person_removed", "carol@example.com")},
-		model.Event{ProjectKey: new("PUB"), Type: "project.access_changed", Actor: olga, Payload: a1AccessPayload("PUB", "owner", "")},
+		model.Event{ProjectKey: new("PUB"), Type: "project.access_changed", Actor: olga, Payload: wholeAccessPayload("PUB", "person_removed", "carol@example.com")},
+		model.Event{ProjectKey: new("PUB"), Type: "project.access_changed", Actor: olga, Payload: wholeAccessPayload("PUB", "owner", "")},
 	)
 	report, err := scrubAccessEvents(store.WithTransactionTracking(ctx), database.Pool, 1)
 	if err != nil || report.rewritten != 2 || report.events != 4 {

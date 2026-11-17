@@ -432,11 +432,11 @@ func main() {
 		slog.Error("dispatch: read the private projects", "error", err)
 		os.Exit(1)
 	}
-	// What the provisioned list and the store say of private projects, reported and never
-	// refused: Dispatch runs as one process, so an exit here would stop every project, and the
-	// owner's repair through the API with it. Each condition fails closed for its own projects
-	// (reportPrivateProjects).
-	reportPrivateProjects(ctx, database, privateState)
+	// What the provisioned list says of private projects, reported and never refused: Dispatch
+	// runs as one process, so an exit here would stop every project, and the owner's repair
+	// through the API with it. Each condition fails closed for its own projects
+	// (reportPrivateProjects). The store's check is the maintenance loop's, as it starts.
+	reportPrivateProjects(privateState)
 
 	webDistDir, err := defaultWebDistDir(boot.WebDist)
 	if err != nil {
@@ -1068,7 +1068,8 @@ func main() {
 	// The Idempotency-Keys past their 24 hours and the deliveries a process that died
 	// left owed, once a minute across the processes under the suggestion-outcomes lease. It is a
 	// timer and not a woken loop because no commit announces either, and it starts here because
-	// it resumes those deliveries through the API server built just above.
+	// it resumes those deliveries through the API server built just above. With a list of private
+	// projects, it checks the store once as it starts, beside the serving process, then hourly.
 	maintenanceInterval := api.MaintenanceSweepInterval
 	if boot.MaintenanceSweepInterval > 0 {
 		maintenanceInterval = boot.MaintenanceSweepInterval

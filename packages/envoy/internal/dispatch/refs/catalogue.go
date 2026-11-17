@@ -1,6 +1,8 @@
 package refs
 
 import (
+	"slices"
+
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 )
 
@@ -13,8 +15,8 @@ import (
 // Each entry compiles to one arm, ORed ahead of its kind's own project and party rule
 // (nodeVisibility.scope), and it replaces only that rule: the author rule every kind shares still
 // ANDs with it. The entries reach a read only once the registry holds their kind (nodeRegistry),
-// which the node-types work's T7 adds; until then a kind the registry does not hold answers no
-// node at all.
+// which the change that registers the node-types spec's kinds adds; until then a kind the registry
+// does not hold answers no node at all.
 
 // catalogueEntry is one kind of catalogue node. Via is nil when every node of Kind with no project
 // and no parties is catalogue; otherwise only a node that is the far end of a current Via.Relation
@@ -44,10 +46,8 @@ var catalogue = []catalogueEntry{
 
 // catalogueEntryOf is the catalogue entry of kind, if the list holds one.
 func catalogueEntryOf(kind string) (catalogueEntry, bool) {
-	for _, entry := range catalogue {
-		if entry.Kind == kind {
-			return entry, true
-		}
+	if i := slices.IndexFunc(catalogue, func(entry catalogueEntry) bool { return entry.Kind == kind }); i >= 0 {
+		return catalogue[i], true
 	}
 	return catalogueEntry{}, false
 }

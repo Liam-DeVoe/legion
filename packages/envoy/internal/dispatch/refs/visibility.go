@@ -66,9 +66,10 @@ type nodeKind struct {
 	// visibility is the kind's rule: which of its nodes a read answers (VisibleKind).
 	visibility nodeVisibility
 	// stated is true of an entry one of the two constructors made, which is every entry whose
-	// predicate someone stated: the zero value of nodeVisibility is a predicate in its own
-	// right, the rule most kinds take, so the entry carries whether it was chosen rather than
-	// defaulted. init refuses the registry over an entry whose stated is false.
+	// predicate someone stated. The zero value of nodeVisibility compiles as a predicate too: its
+	// zero scope answers every node to the server's own viewer alone (nodeScope), a rule nobody
+	// chose, so the entry carries whether it was chosen rather than defaulted. init refuses the
+	// registry over an entry whose stated is false.
 	stated bool
 }
 
@@ -175,9 +176,16 @@ type nodeVisibility struct {
 	scope nodeScope
 }
 
-// artifactStoreAddress is the ref_key of the artifact whose uuid expr names.
+// artifactStoreAddress is the ref_key of the artifact whose uuid expr names, as text: an edge's
+// from side, which holds an artifact's uuid in a text column beside other kinds' ids.
 func artifactStoreAddress(expr string) string {
 	return `(select store_artifact.ref_key from artifacts store_artifact where store_artifact.id::text = ` + expr + `)`
+}
+
+// artifactRefKeyOf is the ref_key of the artifact whose id uuidExpr, a uuid, names: one probe of
+// the artifacts primary key, which artifactStoreAddress's text comparison cannot make.
+func artifactRefKeyOf(uuidExpr string) string {
+	return `(select ref_key_of.ref_key from artifacts ref_key_of where ref_key_of.id = ` + uuidExpr + `)`
 }
 
 // VisibilityMarker opens every predicate the registry renders and names the kinds that
@@ -431,7 +439,7 @@ type nodeScope struct {
 func (scope nodeScope) overRow(row, param string) string {
 	switch {
 	case scope.name == "":
-		return viewerFlag(param, "all")
+		return access.ViewerFlag(param, "all")
 	case scope.row == nil:
 		return "true"
 	}
@@ -442,7 +450,7 @@ func (scope nodeScope) overRow(row, param string) string {
 func (scope nodeScope) withoutRow(param string) string {
 	switch {
 	case scope.name == "":
-		return viewerFlag(param, "all")
+		return access.ViewerFlag(param, "all")
 	case scope.row == nil:
 		return "true"
 	}
@@ -510,7 +518,7 @@ func pageRule(address, param string) string {
 	return `(case split_part(` + address + `, '/', 1)` +
 		` when '` + graphstore.KindSession + `' then ` + access.SessionClause(`substr(`+address+`, `+strconv.Itoa(len(session)+1)+`)`, param) +
 		` when '` + graphstore.KindRole + `' then ` + access.RoleClause(`substr(`+address+`, `+strconv.Itoa(len(role)+1)+`)`, param) +
-		` else ` + viewerFlag(param, "all") + ` end)`
+		` else ` + access.ViewerFlag(param, "all") + ` end)`
 }
 
 // unscoped is the rule of a node of a project kind that names neither a project nor parties, or
@@ -519,10 +527,5 @@ func pageRule(address, param string) string {
 // could be private. So such a node fails closed the moment any project is private, and the
 // completeness census (graphcensus) is what keeps such nodes from existing.
 func unscoped(param string) string {
-	return `(` + viewerFlag(param, "all") + ` or (` + viewerFlag(param, "open") + ` and not ` + viewerFlag(param, "private") + `))`
-}
-
-// viewerFlag is one boolean member of the visibility argument at param, false where it is absent.
-func viewerFlag(param, flag string) string {
-	return `coalesce((` + param + `::jsonb->>'` + flag + `')::boolean, false)`
+	return `(` + access.ViewerFlag(param, "all") + ` or (` + access.ViewerFlag(param, "open") + ` and not ` + access.ViewerFlag(param, "private") + `))`
 }
