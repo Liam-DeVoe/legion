@@ -119,7 +119,8 @@ func (p *forcedProxy) serve() {
 }
 
 // join relays one client connection. The server's bytes are copied as they come; the client's are
-// read one protocol operation at a time, so the armed publish is found whole.
+// read one protocol operation at a time (readNATSClientOp), so the armed publish is found whole,
+// and this proxy's fault, its mode, is applied to that one publish.
 func (p *forcedProxy) join(client net.Conn) {
 	upstream, err := net.Dial("tcp", p.target)
 	if err != nil {
@@ -138,36 +139,24 @@ func (p *forcedProxy) join(client net.Conn) {
 	}()
 	reader := bufio.NewReaderSize(client, 64<<10)
 	for {
-		line, err := reader.ReadBytes('\n')
+		op, err := readNATSClientOp(reader)
 		if err != nil {
 			return
 		}
-		fields := strings.Fields(string(line))
-		var payload []byte
-		if len(fields) >= 3 && (strings.EqualFold(fields[0], "PUB") || strings.EqualFold(fields[0], "HPUB")) {
-			size, err := strconv.Atoi(fields[len(fields)-1])
-			if err != nil {
+		if op.publishes() && p.take(op.subject()) {
+			switch p.mode {
+			case "drop":
 				return
-			}
-			payload = make([]byte, size+2)
-			if _, err := io.ReadFull(reader, payload); err != nil {
+			case "stall":
+				// Nothing more reaches the server on this connection: the client's pings go
+				// unanswered until it declares the connection stale and closes it.
+				_, _ = io.Copy(io.Discard, reader)
 				return
-			}
-			if p.take(fields[1]) {
-				switch p.mode {
-				case "drop":
-					return
-				case "stall":
-					// Nothing more reaches the server on this connection: the client's pings go
-					// unanswered until it declares the connection stale and closes it.
-					_, _ = io.Copy(io.Discard, reader)
-					return
-				case "late":
-					time.Sleep(lateHold)
-				}
+			case "late":
+				time.Sleep(lateHold)
 			}
 		}
-		if _, err := upstream.Write(append(line, payload...)); err != nil {
+		if _, err := upstream.Write(op.bytes()); err != nil {
 			return
 		}
 	}

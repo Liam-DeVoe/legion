@@ -1,0 +1,10 @@
+kind: Fixed
+custom:
+  Issue: pr4342
+body: |-
+  At shutdown the listener's role lane keeps the messages it holds only after its own connection
+  has drained, so the handler's keeps of the messages its subscription still holds go first: a
+  listener holding its 4,096-message bound kept those first and lost the buffered ones. A forward
+  or keep the stream refuses for the message itself (too large, or a sealed stream) is answered
+  409, recorded `stream_refused`, instead of being retried to the 504 that has a sender send it
+  again for as long as the stream's answer stands.

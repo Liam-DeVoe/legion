@@ -668,7 +668,7 @@ func deliverRoleMessage(cfg listenerDeliveryHandlerConfig, item contracts.Envelo
 	sessionID, holder, resolution, cause := resolveCoreRoleHolder(cfg, item, role)
 	switch resolution {
 	case roleMessageHeld:
-		cfg.roleForwards.hold(item, sessionID, held, held.holdsSlot(), cause)
+		cfg.roleForwards.hold(item, sessionID, held, cause)
 		return
 	case roleMessageEnded:
 		cfg.roleForwards.releaseHeld(held)

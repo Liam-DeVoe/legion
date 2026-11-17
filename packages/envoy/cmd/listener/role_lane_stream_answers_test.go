@@ -287,6 +287,7 @@ func TestARoleMessageHeldAtShutdownThatCannotBeKeptIsLoggedAtError(t *testing.T)
 	})
 	bustest.FillStream(t, harness.client, 1000)
 	cfg.roleForwards.stopHolding()
+	cfg.roleForwards.keepHeldNow()
 	cfg.roleForwards.settled(t)
 
 	unkept := linesIn(harness.logs.String(), roleHeldUnkeptLine, map[string]any{"event_id": item.EventID})
@@ -330,6 +331,47 @@ func TestAKeepASealedStreamRefusesEndsTheMessage(t *testing.T) {
 		`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","message":"a sealed stream keeps nothing"}`)
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("publish to an unheld role on a sealed stream: status %d, body %s; want the 404 that keeps nothing", recorder.Code, recorder.Body.String())
+	}
+}
+
+// A forward the stream refuses for the message itself is answered at once, and as a refusal: the
+// publish route makes one forward and answers 409 under streamRefusedPrefix, recorded
+// stream_refused, with no Retry-After. Retried to the send's window it would answer the 504 that
+// a sender re-sends on, so a sealed stream would have every sender re-sending for as long as the
+// stream stands.
+func TestAForwardASealedStreamRefusesIsAnsweredAtOnce(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
+	const (
+		role   = "forward-on-a-sealed-stream"
+		holder = "ses_sealed_forward"
+	)
+	claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
+	deps := harness.publishDeps(t)
+	var forwards atomic.Int32
+	delivery := *deps.delivery
+	delivery.forwardRole = inlineForward(func(string, contracts.Envelope, string, time.Duration) error {
+		forwards.Add(1)
+		return fmt.Errorf("%w: %w", bus.ErrForwardNotStored,
+			&natsgo.APIError{Code: 400, ErrorCode: 10109, Description: "invalid operation on sealed stream"})
+	})
+	deps.delivery = &delivery
+
+	started := time.Now()
+	recorder, _ := publishThrough(deps,
+		`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","message":"a sealed stream stores nothing"}`)
+
+	if recorder.Code != http.StatusConflict || recorder.Header().Get("Retry-After") != "" {
+		t.Fatalf("publish whose forward a sealed stream refused: status %d, Retry-After %q, body %s; want 409 with no Retry-After",
+			recorder.Code, recorder.Header().Get("Retry-After"), recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), streamRefusedPrefix) {
+		t.Fatalf("the 409's body %q does not name the stream's refusal (%s)", recorder.Body.String(), streamRefusedPrefix)
+	}
+	if got := forwards.Load(); got != 1 {
+		t.Fatalf("the route made %d forwards, want 1: a refusal is not retried", got)
+	}
+	if elapsed := time.Since(started); elapsed > publishDeliveryWindow/2 {
+		t.Fatalf("the route answered after %s, which is most of its %s window: it retried the refusal", elapsed, publishDeliveryWindow)
 	}
 }
 

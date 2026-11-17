@@ -454,7 +454,9 @@ flush failed, or whose acknowledgement did not come for a subject the stream cap
 responders answer, or a stream answer that can change with the stream's state, such as a full
 stream - ends nothing: the lane holds the message, counted in `envoy_role_forwards_outstanding`,
 and runs its delivery again, under the same `Nats-Msg-Id`, for 71 hours at most, after which it
-keeps it on the kept lane; at shutdown it keeps every message it holds. The lane's outcome is one
+keeps it on the kept lane. At shutdown the lane stops its forwarder, drains its connection, and
+only then keeps every message it holds, so the handler's keeps of the messages its subscription
+still holds go over the main connection first. The lane's outcome is one
 of two exception reasons only under a rule: `no_holder` when no session claims the role and a
 rule refused its keep, and `delivery_failed` when the holder is not live and a rule refused its
 keep (an `unresponsive` holder among them, whose claim the lane leaves alone), when a claim read

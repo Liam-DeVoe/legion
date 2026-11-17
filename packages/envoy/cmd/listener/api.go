@@ -386,6 +386,17 @@ const publishDeniedPrefix = "envoy: the message bus denied the publish under thi
 // room.
 const streamFullPrefix = "envoy: the message bus refused the message because its stream is full"
 
+// streamRefusedPrefix opens the body of every answer this listener gives a send or publish the
+// stream refuses for the message itself (bus.StreamRefusesMessage: a message or headers past the
+// stream's maxima, a message too large for the store, a sealed stream). It is neither the
+// bus-unavailable 503, since the bus answered, nor the full stream's, since no room makes the
+// stream take this message: it is refused however often and whenever it is sent, so the answer is
+// a 409 with no Retry-After, which no client of ours retries
+// (packages/envoy-client/src/transport.ts retries 500 and above) and which the Legion stall teller
+// takes as final. 413 stays this listener's own payload bound (bus.ErrTooLarge), checked before
+// anything is sent, and a sealed or re-configured stream is not the caller's bytes being wrong.
+const streamRefusedPrefix = "envoy: the message bus stream refused the message, and refuses it however often it is sent"
+
 // grantGuardPrefix opens the error of the answer POST /v1/roles/set gives a soft claim the grant
 // guard refused (roleGrantGuarded): a role held under the claimant's own session id whose renewal
 // is older than the live window, while the role claim copy's last whole read is past its repair
@@ -423,6 +434,10 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // packages/envoy-client/src/transport.ts retries every status at or past 500 and no status below
 // it. No Retry-After rides it for the same reason.
 //
+// A message the stream refuses for the message itself (bus.StreamRefusesMessage) is answered ahead
+// of both, with the 409 under streamRefusedPrefix: the bus answered, and no retry and no waiting
+// changes its answer, so it carries no Retry-After.
+//
 // A message the stream refused because it is full (bus.ErrStreamFull) is answered ahead of the
 // bus-unavailable 503 too, with a 503 and Retry-After of its own under streamFullPrefix: the bus
 // answered, so the body must not say it did not, but the same message is taken once the stream
@@ -431,6 +446,10 @@ func writeBusUnavailable(w http.ResponseWriter, err error) int {
 	if errors.Is(err, bus.ErrPublishDenied) {
 		writeJSONError(w, http.StatusForbidden, fmt.Sprintf("%s: %s", publishDeniedPrefix, err))
 		return http.StatusForbidden
+	}
+	if bus.StreamRefusesMessage(err) {
+		writeJSONError(w, http.StatusConflict, fmt.Sprintf("%s: %s", streamRefusedPrefix, err))
+		return http.StatusConflict
 	}
 	if errors.Is(err, bus.ErrStreamFull) {
 		w.Header().Set("Retry-After", "1")

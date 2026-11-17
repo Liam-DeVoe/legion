@@ -28,17 +28,20 @@ func laneOnHarness(t *testing.T, harness listenerDeliveryHarness, handler natsgo
 }
 
 // The listener's stop keeps every role message its lane took or still holds while every forward
-// slot is held. NATS refuses every forward, so three slots fill with three held messages and the
-// handler waits for a slot with a fourth, while the lane's subscription holds six more. The drain
-// stops the forwarder before it drains the lane: the handler's wait ends, each message, held or
-// not, is kept on the role's kept lane under held_at_shutdown, and the drain takes the six the
-// subscription holds, none lost.
+// slot is held. NATS refuses every forward, so the slots fill with held messages and the handler
+// waits for a slot with the next, while the lane's subscription holds the rest. The drain stops the
+// forwarder before it drains the lane, and releases the held messages to keep only once the lane's
+// client has drained: the handler's wait ends, it keeps each message it takes, the drain takes
+// every message the subscription held, and every message, held or not, is kept on the role's kept
+// lane under held_at_shutdown. No held message's keep goes out before the handler's last take, so
+// the keeps of a listener holding its bound cannot spend the window the handler's keeps need
+// (TestAHeldRoleMessageIsKeptOnlyOnceTheLaneHasDrained holds that order on its own).
 func TestRoleLaneDrainKeepsEveryMessageWhileEverySlotIsHeld(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role     = "drain-every-slot-held"
-		limit    = 3
-		messages = 10
+		limit    = 8
+		messages = 40
 	)
 	if err := harness.sessions.Put("ses_drain_every_slot", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
 		t.Fatalf("register holder: %v", err)
@@ -76,6 +79,18 @@ func TestRoleLaneDrainKeepsEveryMessageWhileEverySlotIsHeld(t *testing.T) {
 	logs := harness.logs.String()
 	if strings.Contains(logs, roleLaneUndrainedLine) || strings.Contains(logs, roleHeldUnkeptLine) {
 		t.Fatalf("the drain lost role messages:\n%s", logs)
+	}
+	// Every message the handler took is kept, and the held messages' keeps come after the last of
+	// those takes: the handler's own keeps go first.
+	lastTake := ""
+	for _, record := range linesIn(logs, "listener received", nil) {
+		lastTake = fmt.Sprint(record["time"])
+	}
+	for i, item := range published[:limit] {
+		kept := linesIn(logs, "listener kept role message for the role's next holder", map[string]any{"event_id": item.EventID})
+		if len(kept) != 1 || fmt.Sprint(kept[0]["time"]) < lastTake {
+			t.Fatalf("held message %d %s was kept at %v, before the handler's last take at %s:\n%s", i, item.EventID, kept, lastTake, logs)
+		}
 	}
 	for i, item := range published {
 		kept := linesIn(logs, "listener kept role message for the role's next holder", map[string]any{"role": role, "event_id": item.EventID})
@@ -119,5 +134,62 @@ func TestRoleLaneDrainLogsTheMessagesItLeavesUntaken(t *testing.T) {
 	undrained := linesIn(harness.logs.String(), roleLaneUndrainedLine, nil)
 	if len(undrained) != 1 || undrained[0]["pending"] != float64(messages) {
 		t.Fatalf("the drain's ERROR lines are %v, want one naming %d pending:\n%s", undrained, messages, harness.logs.String())
+	}
+}
+
+// A message the lane holds when the listener stops makes no keep at the stop: it parks, and keeps
+// only once the lane's own client has drained (keepHeldNow). That is what leaves the lane's
+// handler the window to keep the messages its subscription still holds, which go over the same
+// main connection: a listener holding its bound has up to 4,096 held messages against them.
+func TestAHeldRoleMessageIsKeptOnlyOnceTheLaneHasDrained(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
+	const role = "parked-until-drained"
+	if err := harness.sessions.Put("ses_parked", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
+		t.Fatalf("register holder: %v", err)
+	}
+	if _, err := harness.registry.SetRole("ses_parked", "test-machine", role, false); err != nil {
+		t.Fatalf("claim role: %v", err)
+	}
+	cfg := harness.config
+	cfg.forwardRole = inlineForward(func(string, contracts.Envelope, string, time.Duration) error {
+		return errors.New("nats: connection closed")
+	})
+	forwarder := newRoleForwarderLimited(cfg, 1)
+	cfg.roleForwards = forwarder
+	handler := coreNATSDeliveryHandler(cfg)
+	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "parked-until-drained")
+	item.Payload = `{"type":"worker-queued"}`
+
+	handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
+	waitFor(t, 20*time.Second, "the message to be held", func() bool {
+		return countLogged(harness.logs.String(), roleHeldLine, item.EventID) >= 1
+	})
+	forwarder.stopHolding()
+
+	// The stop alone keeps nothing: the message parks with its slot, and the kept lane stays empty
+	// while the lane's handler would be keeping what its subscription holds.
+	waitFor(t, 20*time.Second, "the held message to stop being tried again", func() bool {
+		return countLogged(harness.logs.String(), roleHeldLine, item.EventID) >= 1
+	})
+	for i := range 20 {
+		if kept := countLogged(harness.logs.String(), "listener kept role message for the role's next holder", item.EventID); kept != 0 {
+			t.Fatalf("the held message was kept %d times %d ms after the stop, before the lane drained:\n%s", kept, i*10, harness.logs.String())
+		}
+		if outstanding := forwarder.outstanding(); outstanding != 1 {
+			t.Fatalf("%d role messages outstanding after the stop, want the 1 parked", outstanding)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	assertNothingKept(t, harness.client, role)
+
+	forwarder.keepHeldNow()
+	forwarder.settled(t)
+
+	kept := linesIn(harness.logs.String(), "listener kept role message for the role's next holder", map[string]any{"event_id": item.EventID})
+	if len(kept) != 1 || kept[0]["reason"] != string(roleKeptAtShutdown) {
+		t.Fatalf("the kept lines for %s are %v, want one naming %s:\n%s", item.EventID, kept, roleKeptAtShutdown, harness.logs.String())
+	}
+	if stored := storedOnSubjects(t, harness.client, bus.KeptRoleSubject(">"), role); stored != 1 {
+		t.Fatalf("the role's kept lane holds %d copies, want 1", stored)
 	}
 }

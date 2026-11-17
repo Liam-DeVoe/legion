@@ -1230,8 +1230,10 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 		if holder := holderOf(t, claimant, "unread"); holder != "ses_holder" {
 			t.Fatalf("the claim after the delivery is held by %q, want ses_holder", holder)
 		}
-		// The listener stops: the held message is kept instead of tried again, and frees its slot.
+		// The listener stops and its lane drains: the held message is kept instead of tried
+		// again, and frees its slot.
 		cfg.roleForwards.stopHolding()
+		cfg.roleForwards.keepHeldNow()
 		cfg.roleForwards.settled(t)
 	})
 	t.Run("reaper", func(t *testing.T) {

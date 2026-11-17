@@ -3227,6 +3227,7 @@ func TestListenerDeliveryHandler_RoleMessageHeldAtShutdownIsKept(t *testing.T) {
 		t.Fatal("the forward was never made")
 	}
 	cfg.roleForwards.stopHolding()
+	cfg.roleForwards.keepHeldNow()
 	cfg.roleForwards.settled(t)
 
 	logs := harness.logs.String()

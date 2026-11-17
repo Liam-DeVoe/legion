@@ -55,6 +55,12 @@ const (
 	// (bus.ErrStreamFull). It is not outcomeBusUnavailable: the bus answered, that the stream is
 	// full, so an operator reading the record looks at the stream's size, not for an outage.
 	outcomeStreamFull requestOutcome = "stream_full"
+	// outcomeStreamRefused is a send or publish the stream refuses for the message itself
+	// (bus.StreamRefusesMessage: a message or headers past the stream's maxima, a message too
+	// large for the store, a sealed stream), answered the 409 of streamRefusedPrefix. An operator
+	// reading the record looks at the stream's configuration or at the sender's message size, and
+	// knows no retry of it can land.
+	outcomeStreamRefused requestOutcome = "stream_refused"
 )
 
 // requestRecord is this listener's record of one inbound send or publish, and the only way either
@@ -126,6 +132,8 @@ func (rec *requestRecord) refuseBusUnavailable(w http.ResponseWriter, err error)
 	status := writeBusUnavailable(w, err)
 	outcome := outcomeBusUnavailable
 	switch {
+	case bus.StreamRefusesMessage(err):
+		outcome = outcomeStreamRefused
 	case errors.Is(err, bus.ErrStreamFull):
 		outcome = outcomeStreamFull
 	case status == http.StatusRequestEntityTooLarge:

@@ -130,11 +130,15 @@ func (cfg listenerDeliveryHandlerConfig) forwardAndWait(subject string, item con
 }
 
 // forwardRefused reports whether a forward failed in a way another attempt repeats: NATS refuses
-// the envelope or subject however often it is sent (bus.ErrRefused), or the listener's grant does
-// not allow the subject (bus.ErrPublishDenied). A role send answers it at once, as
-// requestRecord.refuseBusUnavailable maps it (413 or 400 for a refusal, 403 for a denial).
+// the envelope or subject however often it is sent (bus.ErrRefused), the listener's grant does not
+// allow the subject (bus.ErrPublishDenied), or the stream refuses the message itself
+// (bus.StreamRefusesMessage), the same rules that end a role-lane forward (roleForwardEnded). A
+// role send answers it at once, as requestRecord.refuseBusUnavailable maps it (413 or 400 for a
+// refusal, 403 for a denial, 409 for the stream's refusal); retrying it to the send's own window
+// and answering 504 would have a sender that re-sends on a 5xx re-send it for as long as the
+// stream's answer stands.
 func forwardRefused(err error) bool {
-	return errors.Is(err, bus.ErrRefused) || errors.Is(err, bus.ErrPublishDenied)
+	return errors.Is(err, bus.ErrRefused) || errors.Is(err, bus.ErrPublishDenied) || bus.StreamRefusesMessage(err)
 }
 
 // confirm records that the stream stored the message under dedupeKey for sessionID through the
