@@ -796,8 +796,10 @@ func TestAPlanWriteIsTheDaemonsAlone(t *testing.T) {
 }
 
 // Each plan outside its form is refused 400 PLAN_INPUT naming the field, and a tasks that is no
-// list at all the package's own 400 INVALID_JSON; none writes a plan. An id another issue's plan
-// holds is 409 PLAN_OTHER_ISSUE.
+// list at all the package's own 400 INVALID_JSON; none writes a plan. A lone half of a document
+// reaches the store, which names it or the half left out: a default plan naming either half, and
+// an owner's plan naming its document and no version. An id another issue's plan holds is 409
+// PLAN_OTHER_ISSUE.
 func TestAPlanWriteRefusesItsBadValues(t *testing.T) {
 	handler := newTestHandler(t)
 	issues := createListedIssues(t, handler, "LEG", 2)
@@ -819,6 +821,9 @@ func TestAPlanWriteRefusesItsBadValues(t *testing.T) {
 		{"a step that is no step", withStepFields(plan, map[string]any{"tasks": []map[string]any{{"id": "default", "steps": []string{"Planner"}}}}), "steps"},
 		{"a generation of 0", withStepFields(plan, map[string]any{"generation": 0}), "generation"},
 		{"an owner's plan with no document", withStepFields(plan, map[string]any{"source": "owner", "version": 2}), "artifact_id"},
+		{"an owner's plan with a document and no version", withStepFields(plan, map[string]any{"source": "owner", "artifact_id": uuid.NewString()}), "version is required"},
+		{"a default plan naming a version alone", withStepFields(plan, map[string]any{"version": 2}), "version names"},
+		{"a default plan naming a document alone", withStepFields(plan, map[string]any{"artifact_id": uuid.NewString()}), "artifact_id names"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			response := putPlanRecord(t, handler, issues[0], uuid.NewString(), row.body)
