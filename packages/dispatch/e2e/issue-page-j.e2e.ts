@@ -25,6 +25,7 @@ import {
   listComments,
   listIssueAsks,
 } from "./api";
+import { nextFrames } from "./frames";
 import {
   seedNoChildren,
   seedNoSummary,
@@ -415,9 +416,8 @@ test("a Contents entry is cut again in the typeface once its file arrives @phone
 // conversation list @phone`: each question and each of the reader's own threads is an entry, a
 // press or Enter goes to its node in the outline, the entry the reader is in is marked, and Focus
 // branch draws that branch alone, then the whole outline again. Below 1024 px the list is in the
-// Outline sheet, which a choice closes. A choice there by pointer or by Enter leaves the focused
-// row below the sticky view row, not behind it (decision 113), a reading owed until part D's
-// `scroll-padding-top` and part G's `useRowOnScreen` correction are under J. No view is turned on
+// Outline sheet, which a choice closes, by pointer and by Enter from the foot of the page; where
+// that choice leaves the focused row is the next row's (decision 113). No view is turned on
 // between the two readings of Focus branch: the outline drawn again after a view is part I's
 // (reading (k) of the part's plan).
 // SLOW(>=2s): the whole seeded issue, two loads of the page, and six moves of the focus and the
@@ -489,14 +489,6 @@ test("a Contents entry goes to its node, and Focus branch draws that branch alon
     await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
-    const viewRow = issuePage(page).locator("[data-filter-row]");
-    // The focused row's top less the sticky view row's bottom, which is -1 or more where the
-    // row stands below the view row.
-    const belowViewRow = async (): Promise<number> => {
-      const row = await nodeRow(page, question).first().boundingBox();
-      const bar = await viewRow.boundingBox();
-      return (row?.y ?? Number.NaN) - ((bar?.y ?? Number.NaN) + (bar?.height ?? 0));
-    };
     await outlineControl(page).click();
     const chosen = outlineSheet(page).locator(`[data-contents-entry="${question}"]`);
     await expect(chosen, "the Outline sheet does not list the open question").toHaveCount(1);
@@ -507,9 +499,46 @@ test("a Contents entry goes to its node, and Focus branch draws that branch alon
         message: "a choice in the Outline sheet went to no node",
       })
       .toBe(question);
-    // Where the focused row stands is part D's `scroll-padding-top` - the larger of the band's
-    // and the view row's heights - and part G's `useRowOnScreen` correction; until both are
-    // under J the reading is owed.
+
+    // The same choice by Enter, from the foot of the page, where the pointer's choice did not
+    // leave the reader.
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await outlineControl(page).click();
+    await expect(
+      chosen,
+      "the Outline sheet opened again does not list the open question"
+    ).toHaveCount(1);
+    await chosen.focus();
+    await expect(chosen).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(
+      outlineSheet(page),
+      "a choice in the Outline sheet by Enter left it open"
+    ).toHaveCount(0);
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: "a choice in the Outline sheet by Enter went to no node",
+      })
+      .toBe(question);
+  });
+});
+
+// A reading c-rows owes, in a row of its own outside c-rows' eight (decision 127): row (4)'s
+// choice in the Outline sheet, by pointer and by Enter from the foot of the page, leaves the
+// focused row below the sticky view row, not behind it (decision 113). Where the row stands is
+// part D's `scroll-padding-top` - the larger of the band's and the view row's heights - and part
+// G's `useRowOnScreen` correction, so until both are under J the row is skipped.
+// SLOW(>=2s): the whole seeded issue, a load of the page at 390 px, and two choices in the
+// Outline sheet, each waited on until the focus lands and the page redraws.
+test("a choice in the Outline sheet leaves the focused row below the sticky view row @phone @phone-only", async ({
+  browser,
+}) => {
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    const question = blockNodeId(specSlug, seeded.openQuestion.blockId);
+    await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
     const root = await page.evaluate(() => {
       const style = getComputedStyle(document.documentElement);
       return {
@@ -517,21 +546,39 @@ test("a Contents entry goes to its node, and Focus branch draws that branch alon
         viewRow: style.getPropertyValue("--issue-view-row-height").trim(),
       };
     });
-    const owed = root.viewRow === "" || root.padding === "auto";
-    if (owed) {
-      test.info().annotations.push({
-        description:
-          "the Outline sheet's focused row needs part D's scroll-padding-top and part G's useRowOnScreen correction (decision 113)",
-        type: "owed",
-      });
-    } else {
-      await expect
-        .poll(belowViewRow, {
-          message:
-            "a choice in the Outline sheet by pointer puts the focused row under the sticky view row",
-        })
-        .toBeGreaterThanOrEqual(-1);
-    }
+    test.skip(
+      root.viewRow === "" || root.padding === "auto",
+      "owed: the Outline sheet's focused row below the sticky view row needs part D's scroll-padding-top and part G's useRowOnScreen correction (decision 113, skipped by decision 127)"
+    );
+    // The focused row's top less the sticky view row's bottom, once the move has been drawn:
+    // -1 or more where the row stands below the view row.
+    const belowViewRow = async (): Promise<number> => {
+      await nextFrames(page);
+      return await page.evaluate((id) => {
+        const issue = document.querySelector("[data-issue-page]");
+        const row = issue?.querySelector(`[data-node-row][data-node-id="${CSS.escape(id)}"]`);
+        const bar = issue?.querySelector("[data-filter-row]");
+        if (row == null || bar == null) return Number.NaN;
+        return row.getBoundingClientRect().top - bar.getBoundingClientRect().bottom;
+      }, question);
+    };
+
+    await outlineControl(page).click();
+    const chosen = outlineSheet(page).locator(`[data-contents-entry="${question}"]`);
+    await expect(chosen, "the Outline sheet does not list the open question").toHaveCount(1);
+    await chosen.click();
+    await expect(outlineSheet(page), "a choice in the Outline sheet left it open").toHaveCount(0);
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: "a choice in the Outline sheet went to no node",
+      })
+      .toBe(question);
+    await expect
+      .poll(belowViewRow, {
+        message:
+          "a choice in the Outline sheet by pointer puts the focused row under the sticky view row",
+      })
+      .toBeGreaterThanOrEqual(-1);
 
     // The same choice by Enter, from the foot of the page, so the choice itself must bring the
     // row back on screen rather than find it where the pointer's choice left it.
@@ -553,14 +600,12 @@ test("a Contents entry goes to its node, and Focus branch draws that branch alon
         message: "a choice in the Outline sheet by Enter went to no node",
       })
       .toBe(question);
-    if (!owed) {
-      await expect
-        .poll(belowViewRow, {
-          message:
-            "a choice in the Outline sheet by Enter puts the focused row under the sticky view row",
-        })
-        .toBeGreaterThanOrEqual(-1);
-    }
+    await expect
+      .poll(belowViewRow, {
+        message:
+          "a choice in the Outline sheet by Enter puts the focused row under the sticky view row",
+      })
+      .toBeGreaterThanOrEqual(-1);
   });
 });
 
@@ -909,11 +954,13 @@ const LONG_BLOCK_ID = "r-long";
 // focus; a statement's chips stand after its last word, and a link in its words is the words'
 // colour, read on the long statement, whose words open on a child's reference: an issue's
 // reference is a link in a row's words, where a block's or a document's is a chip in place
-// (`RowText.tsx`). The sticky heads' top is part P's `--issue-identity-height`, owed until P
-// publishes it (reading (l)). At 390 px, as `page-v3-spec-390.png` draws it, a run is one
-// column, each cell above its first statement, and the page fits its viewport.
+// (`RowText.tsx`). Where the sticky heads stand after a scroll, against part P's
+// `--issue-identity-height`, is the next row's (reading (l)). At 390 px, as
+// `page-v3-spec-390.png` draws it, a run is one column, each cell above its first statement, and
+// the page fits its viewport.
 // SLOW(>=2s): the whole seeded issue and a statement of 200 words written into its spec, two loads
-// of the page, the view's chord and a scroll, each waited on until the page redraws.
+// of the page, the view's chord and the moves up its statements, each waited on until the page
+// redraws.
 test("the Spec view stands as the approved picture draws it @phone", async ({ browser }) => {
   test.setTimeout(150_000);
   const phone = test.info().project.name === "iphone";
@@ -1137,25 +1184,6 @@ test("the Spec view stands as the approved picture draws it @phone", async ({ br
       })
       .toBe(true);
 
-    // After a scroll the heads stay at the top, under the header's band, whose height part P
-    // publishes on the document's root; until it does, the reading is owed.
-    await page.evaluate(() => window.scrollBy(0, 800));
-    const band = await page.evaluate(() =>
-      getComputedStyle(document.documentElement).getPropertyValue("--issue-identity-height").trim()
-    );
-    if (band === "") {
-      test.info().annotations.push({
-        description: "the sticky heads need part P's --issue-identity-height",
-        type: "owed",
-      });
-    } else {
-      await expect
-        .poll(async () => Math.abs((await topOf(heads)) - Number.parseFloat(band)), {
-          message: `after a scroll of 800 px the heads' top is not --issue-identity-height (${band})`,
-        })
-        .toBeLessThanOrEqual(1);
-    }
-
     // R11 of dispatch://INFRA-1196: the focused row is never under a sticky header, and the
     // view's column heads stay at the top as one (R4). Each move up the statements scrolls the
     // one it reaches into view, which must leave it below the heads, not behind them. Found by
@@ -1180,6 +1208,48 @@ test("the Spec view stands as the approved picture draws it @phone", async ({ br
         `the focused statement ${id} stands under the view's sticky heads at ${at}`
       ).toBeGreaterThanOrEqual((below?.y ?? 0) + (below?.height ?? 0) - 1);
     }
+  });
+});
+
+// A reading c-rows owes, in a row of its own outside c-rows' eight (decision 127): row (7)'s
+// column heads stay at the top after a scroll, under the header's band, whose height part P
+// publishes on the document's root as `--issue-identity-height` (reading (l) of the part's plan,
+// decision 80). Until P does, the row is skipped.
+// SLOW(>=2s): the whole seeded issue, a load of the Spec view and a scroll, waited on until the
+// page redraws.
+test("the Spec view's column heads stay under the header's band after a scroll", async ({
+  browser,
+}) => {
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const body = issuePage(page).locator("[data-spec-body]");
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    await openPreset(page, seeded.key, "spec");
+    await expect
+      .poll(() => body.locator("[data-spec-legend] [data-spec-legend-mark]").count(), {
+        message: "the Spec view draws no legend at 1440 px",
+      })
+      .toBe(4);
+    await expectIssuePageDrawn(page);
+    const band = await page.evaluate(() =>
+      getComputedStyle(document.documentElement).getPropertyValue("--issue-identity-height").trim()
+    );
+    test.skip(
+      band === "",
+      "owed: the Spec view's sticky heads against --issue-identity-height need part P (reading (l) of J's plan, decision 80, skipped by decision 127)"
+    );
+    // The page is scrolled once its statements are drawn, so it is tall enough to scroll.
+    await expect
+      .poll(() => body.locator("[data-spec-statement]").count(), {
+        message: "the Spec view draws no statement at 1440 px",
+      })
+      .toBeGreaterThan(0);
+    await page.evaluate(() => window.scrollBy(0, 800));
+    await nextFrames(page);
+    const top = (await body.locator("[data-spec-head]").boundingBox())?.y ?? Number.NaN;
+    expect(
+      Math.abs(top - Number.parseFloat(band)),
+      `after a scroll of 800 px the heads' top is not --issue-identity-height (${band})`
+    ).toBeLessThanOrEqual(1);
   });
 });
 

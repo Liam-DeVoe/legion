@@ -172,7 +172,9 @@ export function SpecFilterBody({
   const decisions = decisionsRead.data;
   // The two reads the statements come from, the coverage and the spec's blocks, under the keys
   // the tree reads them with (no request of their own): until both hold an answer the body
-  // cannot say the issue holds no statement.
+  // cannot say the issue holds no statement. The body's own reads of the spec's blocks here and
+  // of the Verification document's below give way to part F's `blocksHeld` once F is under this
+  // part's base (decision 98).
   const spec = primarySpec(issue);
   const coverageRead = useQuery(issueCoverageQuery(issue.key));
   const specBlocksRead = useQuery({
@@ -290,7 +292,9 @@ export function SpecFilterBody({
   // else, so it followed no link (review 5928280634 on pull request 4234). So the focus a press
   // gives a statement or a cell - any focus inside it, a link's included - is taken once the
   // press is over, after its mouseup and the click that follows it, in a task of its own, and
-  // only while that statement or cell still holds the focus; a key's move takes it at once.
+  // only while that statement or cell still holds the focus; a key's move takes it at once. This
+  // is a copy of the outline's deferral, which this part imports in place of it, with
+  // `PRESS_ENDS`, once part I exports one (decision 94).
   const press = useRef<{
     ending?: number;
     focus?: { readonly item: HTMLElement; readonly take: () => void };
@@ -600,7 +604,8 @@ function failedWithNothing(read: { readonly data: unknown; readonly isError: boo
 }
 
 /** How far below the view's column heads a statement or cell is put where it has to be scrolled
- *  to: the clearance `bringOnScreen` leaves below the band (`identity-block.ts`). */
+ *  to: the clearance `bringOnScreen` leaves below the band (`identity-block.ts`'s private
+ *  `CLEARANCE`), which this part imports once that module exports it (decision 94). */
 const HEADS_CLEARANCE = 8;
 
 /**

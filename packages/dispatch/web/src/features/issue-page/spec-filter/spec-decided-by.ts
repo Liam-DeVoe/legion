@@ -291,7 +291,7 @@ const IMAGE = /!\[[^\]]*\]\([^)]*\)/gu;
 
 /** A stored block that holds no words once its images are left out: nothing but white space
  *  and the marks of a horizontal rule. `issue-tree.ts`'s `NO_WORDS`, which that module keeps to
- *  itself (`decisionLineWords`). */
+ *  itself (`decisionLineWords`), and which goes with it once part F exports its reading. */
 const NO_WORDS = /^[\s*_-]*$/u;
 
 /** A link, `[words](target)`, which reads as its words; its target is no word of the text. */
@@ -570,7 +570,8 @@ function namedFirstLine(words: string, nameOf: (reference: string) => string | u
  * stored text that holds any, to its blank line, with a leading heading marker left out and a
  * heading ending at its own line. F's `lineWords` reads a node, and keeps its reading of a bare
  * reading (`firstBlockWords`) to itself, so this is the same reading of a decision's own two
- * fields.
+ * fields: a copy, which this part deletes for F's export of that reading over a text and its
+ * tree once F is under this part's base (decision 94), as it does its copy of `plainWords`.
  */
 function decisionLineWords({ text, text_tree }: Decision): string {
   if (text_tree !== undefined) {
