@@ -312,6 +312,21 @@ func excerptOf(node resolvedNode) *model.GraphExcerpt {
 // for every execution, and the read pays for planning the whole view again every time:
 // measured on this pod over the chain of 200 blocks, 6.9 ms a step of which 6.5 ms was that
 // planning, against 0.4 ms a step once the statement is one plan the connection keeps.
+//
+// An inbound read compares the far end with its id as a value Postgres reads once, before the
+// read, `(select $1::text)`, and not with $1 itself, so the plan it makes for the id in hand is the
+// plan it makes for any id. With $1, the custom plan of a node with a handful of edges into it is
+// costed far below the generic plan, whose estimate of the edges into a node is the store's
+// average (the 5,000 into one node of the read-cost corpus among them), while the custom plan of
+// that 5,000-edge node costs far above it. Postgres keeps the generic plan or a custom plan for
+// each execution by comparing the two costs over the executions each pooled connection has made of
+// the statement, so which plan a read got depended on which nodes that connection happened to read
+// first: a connection that had read the 5,000-edge node kept the generic plan, 1.5 ms; one that
+// had read only small nodes planned the whole view again for every execution, 20 ms (on this pod,
+// for a node with 7 edges into it). With the id read as a value, the custom plan is the generic
+// plan, every connection keeps the generic plan from its sixth execution on, and that plan walks
+// graph_tuples_inbound and the arms' own indexes keyed on the far end, as the custom plan did
+// (dispatch://INFRA-1950's c-read-cost).
 func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) ([]edgeRow, error) {
 	if !slices.Contains(nodeKinds, query.Kind) {
 		// A kind no loader resolves is the address of no node this build knows, and the
@@ -351,7 +366,7 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 			own += ` and not ` + repliesToABlockOf(repliesFrom(item), item, "g", blocks)
 		}
 		arms = `select g.kind, g.from_kind, g.from_id, g.created_at, g.source_seq, null::text
-			from graph_edges g where g.to_kind = ` + kind + ` and g.to_id = ` + id + ` and ` + own
+			from graph_edges g where g.to_kind = ` + kind + ` and g.to_id = (select ` + id + `::text) and ` + own
 		switch {
 		case document:
 			arms += `
@@ -808,7 +823,8 @@ func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 }
 
 // blockNodesAddressed is how loadBlockNodes names the blocks it reads, and the arguments that
-// go with it: the node ids bound as $1 and the acting credential as $2.
+// go with it: the node ids bound as $1, the acting credential as $2, and for two or more ids the
+// documents they name as $3.
 //
 // One block is bound as itself. That is what every read of one node asks for - the node a
 // `dispatch://...#b-...` address names, and the far end of a chain step's one edge - and a
@@ -821,12 +837,37 @@ func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 // planned with its values. An array tells a generic plan nothing about its length, so that
 // plan reads it as an unknown-length scalar-array operation rather than a constant it can
 // hash: measured on this pod over a document of 8,001 blocks, 460 ms against 90 ms with the
-// values in hand.
+// values in hand. They are also held to the documents they name (blockDocuments), which every
+// one of them is a block of: IndexBlocks writes a row's node_id as the ref_key of the row's own
+// document, '#' and its block id (blockNodeAddress), nothing rewrites it, and no ref_key changes
+// once written. That narrows nothing, and it is there for the plan: it lets Postgres read a
+// document's own rows by the primary key, which it does where the ids are thousands of blocks of
+// a few documents, and keep the node_id index where they are few. Held to node_id alone, the
+// 5,001 blocks of a list of links were read by scanning the whole table rather than its index,
+// once the block predicate no longer sat on that scan to deter it (visibleStoredKind): 98 ms
+// against 75 ms over the read-cost corpus (dispatch://INFRA-1950's c-read-cost).
 func blockNodesAddressed(ids []string, who model.Actor) (string, []any) {
 	if len(ids) == 1 {
 		return `d.node_id = $1`, []any{ids[0], VisibilityArg(who)}
 	}
-	return `d.node_id = any($1)`, []any{pgx.QueryExecModeDescribeExec, ids, VisibilityArg(who)}
+	return `d.node_id = any($1) and d.artifact_id in (select named.id from artifacts named where named.ref_key = any($3))`,
+		[]any{pgx.QueryExecModeDescribeExec, ids, VisibilityArg(who), blockDocuments(ids)}
+}
+
+// blockDocuments is the ref_key of the document each block node id of ids names, each once: the
+// part of the id before its first '#', since a ref_key holds none.
+func blockDocuments(ids []string) []string {
+	held := make(map[string]struct{}, 2)
+	documents := make([]string, 0, 2)
+	for _, id := range ids {
+		document, _, _ := strings.Cut(id, "#")
+		if _, named := held[document]; named {
+			continue
+		}
+		held[document] = struct{}{}
+		documents = append(documents, document)
+	}
+	return documents
 }
 
 // BlockRef is the reference to block blockID of the document whose reference is document:

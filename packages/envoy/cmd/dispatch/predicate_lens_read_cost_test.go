@@ -97,11 +97,12 @@ const (
 var predicateCostInboundIndexes = []string{"graph_tuples_inbound", "graph_tuples_as_of_in"}
 
 // predicateCostInboundLookup is the lookup the tuples-into-a-node read makes of one block, $1 its
-// node id: the edges of graph_edges into it, newest first, as refs' readEdgeRows selects them,
-// less the predicate of each far end, which reads graph_nodes and no index of graph_tuples.
+// node id, read as a value before the read as readEdgeRows reads it: the edges of graph_edges into
+// it, newest first, as refs' readEdgeRows selects them, less the predicate of each far end, which
+// reads graph_nodes and no index of graph_tuples.
 const predicateCostInboundLookup = `
 	select g.kind, g.from_kind, g.from_id, g.created_at, g.source_seq
-	from graph_edges g where g.to_kind = 'block' and g.to_id = $1
+	from graph_edges g where g.to_kind = 'block' and g.to_id = (select $1::text)
 	order by g.created_at desc, g.kind, g.from_kind, g.from_id`
 
 // predicateCostControlOf reads LEGION_READ_COST_CONTROL: empty where it is unset, which is the
