@@ -205,7 +205,7 @@ function argumentProblems(tool: string, args: ToolArguments): string[] {
       const historyKind = historyRef === undefined ? undefined : parseDispatchRef(historyRef)?.kind;
       if (historyRef !== undefined && historyKind !== "comment" && historyKind !== "message") {
         problems.push(
-          "--history lists the bodies an edit or a delete of one comment or issue message replaced, so --ref must name one: dispatch://KEY/comment/<id> or dispatch://KEY/message/<id>"
+          "--history lists the bodies an edit of one comment or issue message replaced, so --ref must name one: dispatch://KEY/comment/<id> or dispatch://KEY/message/<id>"
         );
       }
       const events = optionalNumber(args, "events");

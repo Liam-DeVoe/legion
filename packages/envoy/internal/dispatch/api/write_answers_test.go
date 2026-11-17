@@ -1,8 +1,9 @@
 package api
 
-// The answer of each write to a comment or to an issue message lists the mentions and the
-// delivery attempts a read of that post lists right after it, and a write whose answer cannot be
-// read answers an error and leaves the post as it was.
+// The answer of a comment's edit, delete, resolve, reopen, accept and reject lists the mentions
+// and the delivery attempts a read of the comment lists right after it, and an issue message's
+// edit and delete list its attempts; such a write whose answer cannot be read answers an error
+// and leaves the post as it was.
 
 import (
 	"bytes"
@@ -239,11 +240,12 @@ func (f writeAnswersFixture) rowColumns(t *testing.T, rows, columns, id string) 
 // A write whose answer cannot be read answers an error and leaves the post as it was: the edit
 // and the delete of a comment and of an issue message, and a comment's resolve, reopen, accept
 // and reject. A write that read the attempts its answer lists after its commit answered 500 for
-// a write that had landed, and a retried delete then met 409 POST_DELETED. Each row reads the
-// columns its write moves from the post's row before and after the write, and wants them equal.
-func TestACorrectionWhoseAnswerCannotBeReadDoesNotLand(t *testing.T) {
+// a write that had landed, and a retried delete then met 409 POST_DELETED. Each row reads, before
+// and after the write, columns its write moves in the post's row (a delete's body and deleted_at,
+// not its deleted_by), and wants them equal.
+func TestAWriteWhoseAnswerCannotBeReadDoesNotLand(t *testing.T) {
 	f := newWriteAnswersFixture(t)
-	issue := createInteractionIssue(t, f.handler, "TEST", "A correction whose answer cannot be read", "before")
+	issue := createInteractionIssue(t, f.handler, "TEST", "A write whose answer cannot be read", "before")
 	type post struct {
 		route, rows, attempts, owner string
 	}
@@ -289,7 +291,7 @@ func TestACorrectionWhoseAnswerCannotBeReadDoesNotLand(t *testing.T) {
 		create         func(t *testing.T) string
 		method, action string
 		body           any
-		// columns is what the write moves in the post's row.
+		// columns are among those the write moves in the post's row.
 		columns string
 	}{
 		{name: "comment delete", post: comments, create: remark, method: http.MethodDelete, columns: correction},

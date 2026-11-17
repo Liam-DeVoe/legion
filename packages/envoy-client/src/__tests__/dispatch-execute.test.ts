@@ -16236,7 +16236,7 @@ test("a post nobody edited lists no earlier body, and --history is refused off o
   );
   // An issue is not one post.
   await expect(refused({ ref: "dispatch://DSP-42", history: true })).rejects.toThrow(
-    "--history lists the bodies an edit or a delete of one comment or issue message replaced"
+    "--history lists the bodies an edit of one comment or issue message replaced"
   );
   expect(requests).toBe(0);
 });
