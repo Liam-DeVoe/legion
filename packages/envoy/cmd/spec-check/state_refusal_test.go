@@ -62,12 +62,12 @@ func TestScenarioRefusals(t *testing.T) {
 		{"a loop of parent and support relations in the approved spec", "carry", func(t *testing.T, dir string) {
 			looping := specgraph.Statement{ID: "messages-reach-sessions", Kind: specgraph.KindBehavior,
 				Serves: []string{"a-stored-message-survives-a-restart"}, Text: "Envoy delivers each message to the session that it is for."}
-			block, err := looping.Print()
+			document, err := looping.Print()
 			if err != nil {
 				t.Fatal(err)
 			}
 			editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
-				approvedNode(t, nodes, "messages-reach-sessions").Versions[0].Document = block
+				approvedNode(t, nodes, "messages-reach-sessions").Versions[0].Document = document
 				return nodes
 			})
 		}, "approved.json", loopDetail},

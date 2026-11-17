@@ -126,15 +126,21 @@ func copyNode(n *yaml.Node) *yaml.Node {
 	return &c
 }
 
-// changedAt is a copy of doc with the value at place null, or, with leftOut, the member at place
-// taken out of its mapping.
-func changedAt(doc *yaml.Node, place yamlPlace, leftOut bool) *yaml.Node {
-	c := copyNode(doc)
+// holderAt is the node of c, a copy of a document, that holds the value at place, and the index of
+// that value in its Content.
+func holderAt(c *yaml.Node, place yamlPlace) (*yaml.Node, int) {
 	parent := c
 	for _, i := range place.path[:len(place.path)-1] {
 		parent = parent.Content[i]
 	}
-	last := place.path[len(place.path)-1]
+	return parent, place.path[len(place.path)-1]
+}
+
+// changedAt is a copy of doc with the value at place null, or, with leftOut, the member at place
+// taken out of its mapping.
+func changedAt(doc *yaml.Node, place yamlPlace, leftOut bool) *yaml.Node {
+	c := copyNode(doc)
+	parent, last := holderAt(c, place)
 	if leftOut {
 		parent.Content = slices.Delete(parent.Content, last-1, last+1)
 	} else {
@@ -197,17 +203,12 @@ func TestTheReaderRefusesANullAtEachPlaceOfADocument(t *testing.T) {
 // a list and {} for a mapping.
 func emptyAt(doc *yaml.Node, place yamlPlace) *yaml.Node {
 	c := copyNode(doc)
-	parent := c
-	for _, i := range place.path[:len(place.path)-1] {
-		parent = parent.Content[i]
-	}
-	last := place.path[len(place.path)-1]
-	empty := map[yaml.Kind]*yaml.Node{
+	parent, last := holderAt(c, place)
+	parent.Content[last] = map[yaml.Kind]*yaml.Node{
 		yaml.ScalarNode:   {Kind: yaml.ScalarNode, Tag: "!!str", Value: ""},
 		yaml.SequenceNode: {Kind: yaml.SequenceNode, Tag: "!!seq", Style: yaml.FlowStyle},
 		yaml.MappingNode:  {Kind: yaml.MappingNode, Tag: "!!map", Style: yaml.FlowStyle},
 	}[parent.Content[last].Kind]
-	parent.Content[last] = empty
 	return c
 }
 
@@ -434,16 +435,15 @@ func documentInputs(t *testing.T, docs []*yaml.Node, leftOut bool) []documentInp
 	var inputs []documentInput
 	for i, doc := range docs {
 		for _, place := range yamlPlaces(doc) {
-			edit := func(change func(*yaml.Node, yamlPlace) *yaml.Node) []byte {
-				changed := slices.Clone(docs)
-				changed[i] = change(doc, place)
-				return writeDocuments(t, changed)
+			with := func(changed *yaml.Node) []byte {
+				all := slices.Clone(docs)
+				all[i] = changed
+				return writeDocuments(t, all)
 			}
 			where := fmt.Sprintf("document %d %s", i+1, place.pointer)
-			inputs = append(inputs, documentInput{where + " as null", edit(func(d *yaml.Node, p yamlPlace) *yaml.Node { return changedAt(d, p, false) })},
-				documentInput{where + " empty", edit(emptyAt)})
+			inputs = append(inputs, documentInput{where + " as null", with(changedAt(doc, place, false))}, documentInput{where + " empty", with(emptyAt(doc, place))})
 			if leftOut && place.member {
-				inputs = append(inputs, documentInput{where + " left out", edit(func(d *yaml.Node, p yamlPlace) *yaml.Node { return changedAt(d, p, true) })})
+				inputs = append(inputs, documentInput{where + " left out", with(changedAt(doc, place, true))})
 			}
 		}
 	}

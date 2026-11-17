@@ -215,11 +215,11 @@ func TestCheckState(t *testing.T) {
 			c.Results = append(c.Results, checkRun("c2", OutcomePass, checkStateRun.Add(time.Hour)), missed)
 		}, want: CheckState{State: "unknown", Reason: "failing_example_missed"}},
 		{name: "v-state 17: no setting makes the failing example optional", change: func(c *checkCase) {
-			block, err := checkStateCheck.Print()
+			printed, err := checkStateCheck.Print()
 			if err != nil {
 				c.t.Fatal(err)
 			}
-			optional := block + "failing_example_optional: true\n"
+			optional := printed + "failing_example_optional: true\n"
 			if _, problems := Parse(map[string][]byte{"spec.yaml": []byte(optional)}); len(problems) != 1 || problems[0].Rule != "schema" {
 				c.t.Errorf("Parse of a check that makes its failing example optional: %+v, want one schema problem", problems)
 			}
@@ -737,15 +737,15 @@ func (s *checkCase) specFiles() map[string][]byte {
 	s.t.Helper()
 	files := map[string][]byte{}
 	for name, nodes := range s.files {
-		var blocks []string
+		var printed []string
 		for _, n := range nodes {
-			block, err := n.Print()
+			text, err := n.Print()
 			if err != nil {
 				s.t.Fatal(err)
 			}
-			blocks = append(blocks, block)
+			printed = append(printed, text)
 		}
-		files[name] = []byte(strings.Join(blocks, ""))
+		files[name] = []byte(strings.Join(printed, ""))
 	}
 	return files
 }
@@ -754,14 +754,14 @@ func (s *checkCase) specFiles() map[string][]byte {
 func (s *checkCase) approve(at time.Time, nodes ...specNode) {
 	s.t.Helper()
 	for _, n := range nodes {
-		block, err := n.Print()
+		printed, err := n.Print()
 		if err != nil {
 			s.t.Fatal(err)
 		}
 		id := specNodeID(n)
 		node := s.Approved.Nodes[id]
 		node.ID = id
-		node.Versions = append(node.Versions, ApprovedVersion{Version: len(node.Versions) + 1, At: at, Document: block})
+		node.Versions = append(node.Versions, ApprovedVersion{Version: len(node.Versions) + 1, At: at, Document: printed})
 		s.Approved.Nodes[id] = node
 	}
 }

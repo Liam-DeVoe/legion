@@ -123,18 +123,18 @@ func TestAPrintedTextPassesAndOneWordMoreFails(t *testing.T) {
 				t.Fatalf("Current: %+v", problems)
 			}
 			dir := t.TempDir()
-			write := func(id, block string) {
+			write := func(id, text string) {
 				t.Helper()
-				if err := os.WriteFile(filepath.Join(dir, id+".yaml"), []byte(block), 0o600); err != nil {
+				if err := os.WriteFile(filepath.Join(dir, id+".yaml"), []byte(text), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
 			for _, node := range nodesOf(current) {
-				block, err := node.node.Print()
+				printed, err := node.node.Print()
 				if err != nil {
 					t.Fatal(err)
 				}
-				write(node.id, block)
+				write(node.id, printed)
 			}
 			got := Compare(parseDir(t, dir), approved)
 			if len(got.Problems) != 0 {
@@ -148,11 +148,11 @@ func TestAPrintedTextPassesAndOneWordMoreFails(t *testing.T) {
 
 			planted := current.Statements[0]
 			planted.Text = strings.Replace(planted.Text, " ", " planted ", 1)
-			block, err := planted.Print()
+			printed, err := planted.Print()
 			if err != nil {
 				t.Fatal(err)
 			}
-			write(planted.ID, block)
+			write(planted.ID, printed)
 			want := []Problem{{Pos: Position{planted.ID + ".yaml", 1}, Node: planted.ID, Rule: "unapproved-text", Detail: wantUnapprovedText}}
 			if got := Compare(parseDir(t, dir), approved); !reflect.DeepEqual(got.Problems, want) {
 				t.Errorf("Problems with one planted word:\n got %+v\nwant %+v", got.Problems, want)
@@ -265,13 +265,13 @@ func TestTheApprovedFixtureRefusesADocumentThatDoesNotRead(t *testing.T) {
 // gives a current text by accident.
 func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 	t.Parallel()
-	block := func(id, text string) string {
+	doc := func(id, text string) string {
 		return `"---\ntype: requirement\nid: ` + id + `\nkind: behavior\ntext:\n  - ` + text + `\n"`
 	}
-	version := func(n, at, block string) string {
-		return `{"version":` + n + `,"at":"` + at + `","document":` + block + `}`
+	version := func(n, at, doc string) string {
+		return `{"version":` + n + `,"at":"` + at + `","document":` + doc + `}`
 	}
-	good := version("1", "2026-11-10T00:00:00Z", block("a-page-shows-it", "The page shows it."))
+	good := version("1", "2026-11-10T00:00:00Z", doc("a-page-shows-it", "The page shows it."))
 	for _, row := range []struct{ name, json, want string }{
 		{"an unknown field", `{"nodes":[{"id":"a-page-shows-it","removd":true,"versions":[` + good + `]}]}`, `member "/nodes/0/removd" is not in the format`},
 		{"a field written in other letters", `{"nodes":[{"id":"a-page-shows-it","Removed":true,"versions":[` + good + `]}]}`, `member "/nodes/0/Removed" is not in the format`},
@@ -283,17 +283,17 @@ func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 		{"a node with no id", `{"nodes":[{"id":"","versions":[` + good + `]}]}`, "a node has no id"},
 		{"one id on two nodes", `{"nodes":[{"id":"a-page-shows-it","versions":[` + good + `]},{"id":"a-page-shows-it","versions":[` + good + `]}]}`, `node "a-page-shows-it" is in the approved spec two times`},
 		{"a node with no version", `{"nodes":[{"id":"a-page-shows-it","removed":true,"versions":[]}]}`, `approved node "a-page-shows-it": it has no version`},
-		{"version 0", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("0", "2026-11-10T00:00:00Z", block("a-page-shows-it", "The page shows it.")) + `]}]}`,
+		{"version 0", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("0", "2026-11-10T00:00:00Z", doc("a-page-shows-it", "The page shows it.")) + `]}]}`,
 			`approved node "a-page-shows-it" version 0: the versions are 1 and more, oldest first`},
-		{"versions out of order", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("2", "2026-11-10T00:00:00Z", block("a-page-shows-it", "The page shows it.")) + `,` + good + `]}]}`,
+		{"versions out of order", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("2", "2026-11-10T00:00:00Z", doc("a-page-shows-it", "The page shows it.")) + `,` + good + `]}]}`,
 			`approved node "a-page-shows-it" version 1: the versions are 1 and more, oldest first`},
-		{"a version older than the one before it", `{"nodes":[{"id":"a-page-shows-it","versions":[` + good + `,` + version("2", "2026-11-09T00:00:00Z", block("a-page-shows-it", "The page shows all.")) + `]}]}`,
+		{"a version older than the one before it", `{"nodes":[{"id":"a-page-shows-it","versions":[` + good + `,` + version("2", "2026-11-09T00:00:00Z", doc("a-page-shows-it", "The page shows all.")) + `]}]}`,
 			`approved node "a-page-shows-it" version 2: it is older than version 1`},
-		{"a version with no time", `{"nodes":[{"id":"a-page-shows-it","versions":[{"version":1,"document":` + block("a-page-shows-it", "The page shows it.") + `}]}]}`,
+		{"a version with no time", `{"nodes":[{"id":"a-page-shows-it","versions":[{"version":1,"document":` + doc("a-page-shows-it", "The page shows it.") + `}]}]}`,
 			`approved node "a-page-shows-it" version 1: it has no time`},
-		{"a document of another node", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", block("a-page-shows-all", "The page shows all.")) + `]}]}`,
+		{"a document of another node", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", doc("a-page-shows-all", "The page shows all.")) + `]}]}`,
 			`approved node "a-page-shows-it" version 1: bad-approved-document: the document is of node "a-page-shows-all", not "a-page-shows-it"`},
-		{"a document of two nodes", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", block("a-page-shows-it", `The page shows it.\n---\ntype: term\nid: page\nname: page\ndefinition:\n  - A page is a view.`)) + `]}]}`,
+		{"a document of two nodes", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", doc("a-page-shows-it", `The page shows it.\n---\ntype: term\nid: page\nname: page\ndefinition:\n  - A page is a view.`)) + `]}]}`,
 			`approved node "a-page-shows-it" version 1: bad-approved-document: the document holds 2 nodes, not one`},
 		{"a document that Print does not write", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", `"---\ntype: requirement\nid: a-page-shows-it\nkind:  behavior\ntext:\n  - The page shows it.\n"`) + `]}]}`,
 			`approved node "a-page-shows-it" version 1: not-printed: line 4 is "kind:  behavior\n", and print writes "kind: behavior\n" there (other spaces)`},

@@ -192,7 +192,7 @@ func TestAWaitReadsTheOwnChecksThatReadTheSubject(t *testing.T) {
 		FailingExample: "A copy of the records with one message that a late session did not get."}
 	addProduction := func(t *testing.T, dir string) {
 		addApproved(t, dir, production.ID, production)
-		block, err := production.Print()
+		document, err := production.Print()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -201,7 +201,7 @@ func TestAWaitReadsTheOwnChecksThatReadTheSubject(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		writeFile(t, spec, append(content, block...))
+		writeFile(t, spec, append(content, document...))
 	}
 	holds := "wait of u-b on a-message-survives-a-restart: holds (not met)"
 	for _, row := range []struct {
@@ -304,7 +304,7 @@ func TestAGraphCheckIsJudgedAtTheTransactionOfItsSubject(t *testing.T) {
 			}
 			writeJSONFile(t, filepath.Join(dir, "subjects.json"), []any{subject})
 			addApproved(t, dir, graph.ID, graph)
-			block, err := graph.Print()
+			document, err := graph.Print()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -313,7 +313,7 @@ func TestAGraphCheckIsJudgedAtTheTransactionOfItsSubject(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			writeFile(t, spec, append(content, block...))
+			writeFile(t, spec, append(content, document...))
 			var results []any
 			readJSONFile(t, filepath.Join(dir, "results.json"), &results)
 			fault := map[string]any{"check": graph.ID, "check_version": 1, "kind": "failing_example", "outcome": "fail", "leg": "", "at": "2026-11-13T11:00:00Z", "seq": 20}
@@ -454,12 +454,12 @@ var scenarioApproval = time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
 // of dir.
 func addApproved(t *testing.T, dir, id string, node interface{ Print() (string, error) }) {
 	t.Helper()
-	block, err := node.Print()
+	document, err := node.Print()
 	if err != nil {
 		t.Fatal(err)
 	}
 	editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
-		return append(nodes, specgraph.ApprovedNode{ID: id, Versions: []specgraph.ApprovedVersion{{Version: 1, At: scenarioApproval, Document: block}}})
+		return append(nodes, specgraph.ApprovedNode{ID: id, Versions: []specgraph.ApprovedVersion{{Version: 1, At: scenarioApproval, Document: document}}})
 	})
 }
 
