@@ -187,33 +187,37 @@ export function SpecFilterBody({
   // to draw them: each decision the view holds, and each question a person answered that carries
   // `shaped` ties, which the asks read says is answered (`decisionNodes`). The view read and the
   // asks read are watched by observers that are never enabled, under the keys the page reads
-  // them by (`ViewReadProvider`, `useIssueTree.ts`). A view read again after a change of the
-  // issue drops its answer before the next one lands (`subscribeTreeFreshness`), so the column
-  // draws the answer it last held until the next one lands, and after a read again that fails,
-  // which leaves the body an answer to draw. Until the view and the asks read have both answered
-  // the column says nothing of a statement no decision shaped, since it does not know yet: a
-  // person's decision is a question they answered, which only the asks read says.
+  // them by (`ViewReadProvider`, `useIssueTree.ts`). A change of the issue marks the view stale
+  // and reads it again with its answer kept (`subscribeTreeFreshness`); a new load, a Keep and a
+  // Change drop it (`dropViews`), and the column then draws the answer it last held (`last`)
+  // until the next one lands. A read again that fails keeps its answer, which leaves the body an
+  // answer to draw too. Until the view and
+  // the asks read have both answered the column says nothing of a statement no decision shaped,
+  // since it does not know yet: a person's decision is a question they answered, which only the
+  // asks read says. Where the asks read failed with no answer held, the column says the open
+  // questions could not be read, on a line of its own after the view read's, with a Retry that
+  // reads the asks alone again.
   const specRead = useQuery({ ...viewQuery(issue.key, "spec"), enabled: false });
-  const asks = useQuery({
+  const asksRead = useQuery({
     enabled: false,
     queryFn: () => api.listIssueAsks(issue.key, "all"),
     queryKey: ["asks", issue.key],
-  }).data;
+  });
+  const asks = asksRead.data;
   const answered = root.views?.spec;
   const [last, setLast] = useState(answered);
-  useEffect(() => {
-    if (answered !== undefined) setLast(answered);
-  }, [answered]);
+  if (answered !== undefined && answered !== last) setLast(answered);
   const held = answered ?? last;
   const decisions = useMemo(
     () => (held === undefined ? [] : decisionNodes(held, { asks, issue })),
     [asks, held, issue]
   );
   const decisionsFailed = failedWithNothing({ data: held, isError: specRead.isError });
+  const asksFailed = failedWithNothing(asksRead);
   // The two reads the statements come from, the coverage and the spec's blocks, under the keys
   // the tree reads them with (no request of their own): until both hold an answer the body
   // cannot say the issue holds no statement. Both documents' blocks, the spec's here and the
-  // Verification document's below, are the tree read's (`useTreeRead`, dispatch://INFRA-4062 R5).
+  // Verification document's below, are the tree read's (`useTreeRead`).
   const spec = primarySpec(issue);
   const coverageRead = useQuery(issueCoverageQuery(issue.key));
   const { blocksOf } = useTreeRead(issue);
@@ -599,6 +603,17 @@ export function SpecFilterBody({
         <QueryError
           message={ANSWER_LINES.decisions_unreadable}
           onRetry={() => void specRead.refetch()}
+        />
+      ) : null}
+      {/* The asks read failed with no answer held: a person's decisions are answered questions,
+          which only it says, so the column says the open questions could not be read, on a line
+          of its own after the view read's. It is a copy of the shape of the page's shared
+          failed-read line (`slots/failed-read-line.tsx`'s `FailedReadLine`), which it takes
+          once this branch holds it. */}
+      {asksFailed ? (
+        <QueryError
+          message={ANSWER_LINES.asks_unreadable}
+          onRetry={() => void asksRead.refetch()}
         />
       ) : null}
       {resultsFailed ? (
@@ -1399,8 +1414,7 @@ function DecisionCell({
       } ${rule} ${pageMutedText}`}
       data-decision-id={decision?.id}
       // The node the cell is drawn as, which Details draws while the cell has the focus: for a
-      // person's decision, drawn by their answer, the section of `decisions.md` that names it, or
-      // the question itself where its `shaped` ties shaped the run.
+      // person's decision, drawn by their answer, the question itself.
       data-node-id={decision?.node ?? decision?.id}
       data-said={decision?.said}
       data-spec-cell=""

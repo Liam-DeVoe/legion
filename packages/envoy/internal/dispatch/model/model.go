@@ -1543,10 +1543,10 @@ type IssueCoverage struct {
 // parsing the sentence back. Text and TextTree are the requirement's words as a CheckBlock's
 // are: the words with no link or reference, and the block's whole content as a tree. State is
 // the node state the store holds for the requirement's block (graphstore.NodeStates), live where
-// it holds no row: a requirement at proposed is a question still open, which raises no gap
-// (dispatch://INFRA-1950/spec#b-r-proposed). A server of the release before answers no State
-// during a roll, so the OpenAPI document marks it optional (`required:"false"`) and a reader
-// takes a requirement that carries none as live.
+// it holds no row: a requirement at proposed is a question still open, which raises no gap, as
+// the reasoning nodes' rule for a proposed node says. A server of the release before answers
+// no State during a roll, so the OpenAPI document marks it optional (`required:"false"`) and a
+// reader takes a requirement that carries none as live.
 type RequirementCoverage struct {
 	BlockID   string      `json:"block_id"`
 	Ref       string      `json:"ref"`

@@ -475,7 +475,6 @@ test("Enter sends the change the reader typed, instead of putting a caret in the
   setViewport(1440);
   const user = userEvent.setup();
   const sent = spyOn(api, "createComment").mockResolvedValue({ id: "comment-1" } as never);
-  const read = readDecisionsText();
   const root = node({
     children: [
       node({
@@ -509,7 +508,6 @@ test("Enter sends the change the reader typed, instead of putting a caret in the
     expect(view.edited.filter((artifactId) => artifactId !== undefined)).toEqual([]);
   } finally {
     sent.mockRestore();
-    read.mockRestore();
   }
 });
 
@@ -521,16 +519,6 @@ function decisionTree(): TreeNode {
     ],
     id: KEY,
     type: "issue",
-  });
-}
-
-/** Answers the decisions document's text, which a Change reads as it is sent to count its
- *  quote's places over (`DecisionActions.tsx`). */
-function readDecisionsText() {
-  return spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: decision.text,
-    token: "sha256:decisions-text",
-    version: null,
   });
 }
 
@@ -582,7 +570,6 @@ test("Send change keeps the focus on its decision's row while the comment is out
   const user = userEvent.setup();
   const answer = Promise.withResolvers<never>();
   const sent = spyOn(api, "createComment").mockReturnValue(answer.promise);
-  const read = readDecisionsText();
   const view = renderTree(decisionTree(), {
     artifacts: [decisionsDocument],
     tree: treeAnswer([decision]),
@@ -609,7 +596,6 @@ test("Send change keeps the focus on its decision's row while the comment is out
     expect(view.getByRole("button", { name: "Change" })).toBeTruthy();
   } finally {
     sent.mockRestore();
-    read.mockRestore();
   }
 });
 

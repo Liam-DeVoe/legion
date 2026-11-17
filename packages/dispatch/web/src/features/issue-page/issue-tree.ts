@@ -37,10 +37,10 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  *
  * ## The tree read
  *
- * The outline draws the issue's tree read (`GET /api/v1/issues/{key}/tree`, dispatch://INFRA-1253
- * R8, dispatch://INFRA-4062 R1): each node under the `parent` the read answers, in the read's
- * order, its words from its `text_tree` (`tree-read/tree-nodes.ts`'s `treeDraftsFrom`). The page
- * places and orders no node itself and gives none a second parent, but for F's transcluded
+ * The outline draws the issue's tree read (`GET /api/v1/issues/{key}/tree`): each node under
+ * the `parent` the read answers, in the read's order, its words from its `text_tree`
+ * (`tree-read/tree-nodes.ts`'s `treeDraftsFrom`). The page places and orders no node itself and
+ * gives none a second parent, but for the one transcluded
  * placement: the read gives every node one parent, and a check and a plan task stand again under
  * each other requirement their `serves` tuples name (R4). A node whose parent is a kind the page
  * does not draw stands under its nearest drawn ancestor, and under the issue where it has none,
@@ -50,15 +50,15 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * The tree is the issue's conversation (R1, R3): a document, an artifact and a handoff are nodes
  * of the issue and no node of this tree, and a typed block of a document stands where the read
  * places it, its `document` member naming the document it is written in. The issue's children
- * are rows of it, each a node, where the read places them (R12, the architect's ruling 5).
+ * are rows of it, each a node, where the read places them (R12).
  *
  * ## The reads
  *
- * The tree read (`IssueTreeReads.tree`), whose answer the page keeps whole (dispatch://INFRA-4062
- * R7), and the reads that tell what the answer does not, each matched to its node by its address:
- * the issue read, the coverage read, the results read, the asks, and the one batched reference
- * read, which names what a chip points at outside the answer. Every decision is a node of the
- * answer, with its review state on it. No document's blocks are read.
+ * The tree read (`IssueTreeReads.tree`), whose answer the page keeps whole, and the reads that
+ * tell what the answer does not, each matched to its node by its address: the issue read, the
+ * coverage read, the results read, the asks, and the one batched reference read, which names
+ * what a chip points at outside the answer. Every decision is a node of the answer, with its
+ * review state on it. No document's blocks are read.
  */
 
 /** One tie of a node that places nothing, drawn beside the node as its target's name. */
@@ -274,7 +274,7 @@ export interface TreeNode {
   readonly unsure?: true;
   /** The view reads the page holds (`?view=`), on the issue's own node alone: what each filter
    *  draws once its view has answered (`presets.ts`, `decisions-entries.ts`). Absent on every
-   *  other node, and on the issue's until a view is held (dispatch://INFRA-4062 R4). */
+   *  other node, and on the issue's until a view is held. */
   readonly views?: TreeViews;
   /** Whether this node waits on the reader: a decision waiting for their review, which is where
    *  Keep and Change are drawn and what the Decisions preset opens on (R7), or an open question
@@ -311,8 +311,8 @@ export interface IssueTreeReads {
   readonly targets?: readonly ReferenceTarget[];
   /** The tree read's answer, every page merged (`tree-read/tree-read.ts`), kept whole: every node
    *  and tuple, those of a kind the page draws no row for among them, which later parts read
-   *  from here (dispatch://INFRA-4062 R7). Undefined until the last page answers, and while it
-   *  is, the tree is the issue alone. */
+   *  from here. Undefined until the last page answers, and while it is, the tree is the issue
+   *  alone. */
   readonly tree?: TreeAnswer;
   /** The reader's login, which an open question waits on where its turn is theirs
    *  (`TreeNode.waiting`); undefined until the login resolves, and while it is, nothing waits. */

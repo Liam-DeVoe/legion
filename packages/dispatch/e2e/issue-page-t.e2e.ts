@@ -32,7 +32,6 @@ import {
   decisionNodesGate,
   decisionsAreNodes,
   decisionsReadOf,
-  decisionsViewGate,
   decisionTimes,
   drawnNodes,
   drawnRowReadings,
@@ -64,17 +63,17 @@ import {
   viewCount,
   viewNodeIds,
 } from "./issue-page-t";
+import { decisionsViewServedGate } from "./issue-page-u";
 import { expect, type Page, test } from "./test";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 
 /**
- * Part T's rows of the new issue page (dispatch://INFRA-4062, part T of dispatch://INFRA-1196):
- * the outline drawn from the issue's tree read (`GET /api/v1/issues/{key}/tree`) and each filter
- * from that read's view (`?view=`), read on the real stack. Each row turns the new page on for
- * alice with D's `phase` (1440 by 900), seeds one of part I's issues (`e2e/issue-layout-seed.ts`),
- * opens it with D's `gotoIssue`, and reads it through G's `unfoldEveryBranch`, I's `pickPreset`,
- * `watchApiRequests` and `expectLoadSettled` (`e2e/traffic.ts`) and T's own helpers
- * (`e2e/issue-page-t.ts`).
+ * The rows of the new issue page that draw it from the tree read: the outline drawn from the
+ * issue's tree read (`GET /api/v1/issues/{key}/tree`) and each filter from that read's view
+ * (`?view=`), read on the real stack. Each row turns the new page on for alice with `phase`
+ * (1440 by 900), seeds one of the issues of `e2e/issue-layout-seed.ts`, opens it with
+ * `gotoIssue`, and reads it through `unfoldEveryBranch`, `pickPreset`, `watchApiRequests` and
+ * `expectLoadSettled` (`e2e/traffic.ts`) and the helpers of `e2e/issue-page-t.ts`.
  *
  * The rows are the four of the Verification document's browser checks, by their titles:
  *
@@ -86,36 +85,40 @@ import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic
  *    (`e2e/fixtures/issue-page-t-rows.json`), by key, as the page opens and with every branch
  *    open, and each time is its source's in this run.
  * 2. `c-tree-requests`: "the first load reads the tree once and a filter its view once", and Plan,
- *    pressed 31 s after the load, past the app's 30 s `staleTime`, sends no read but its view's
- *    (INFRA-1196 decision 180).
+ *    pressed 31 s after the load, past the app's 30 s `staleTime`, sends no read but its view's:
+ *    the page's reads are refreshed by events, never by age.
  * 3. `c-views`: "each filter draws its view read's rows", on `seedWholeIssue` and
  *    `seedSpineCases`.
- * 4. `c-fresh`: "a write is drawn without a reload": a status picked in P's header sends one or
- *    two tree reads (decision 174: its own refresh, and its event's), and a reply sent from G's
+ * 4. `c-fresh`: "a write is drawn without a reload": a status picked in the page's header sends
+ *    one or two tree reads (its own refresh, and its event's), and a reply sent from the row's
  *    Reply on the open question becomes a row under it and sends one or two.
  *
  * Each row checks its gates first, each with one `owedUnless` call, and skips where a gate is not
- * on T's base, with an `owed` annotation naming the gate and the decisions that make it owed; it
- * never passes then (INFRA-1196 decision 170, reading decisions 61, 127 and 135). Rows 1 to 4 wait
- * on G1, INFRA-1253's t16a, which `treeReadGate` reads as the tree read's 404; row 1 on G3 too,
- * the answer's `converted: true`; row 4's reply waits on part L's line at the foot of the outline,
- * which part L draws and which is not under T's base (`footLineGate`). These rows carry no
- * `@owed`: each runs for real once its gates are on T's base. Each clause a later gate holds is a
+ * on this branch's base, with an `owed` annotation naming the gate; it never passes then, since a
+ * row cannot pass on code the base does not hold yet. Rows 1 to 4 wait on the model's tree read,
+ * which `treeReadGate` reads as the route's 404; row 1 on issues born converted too
+ * (`convertedGate`), the answer's `converted: true`; row 4's reply waits on the line at the foot
+ * of the outline, which is not on this branch's base (`footLineGate`). These rows carry no
+ * `@owed`: each runs for real once its gates are on the base. Each clause a later gate holds is a
  * row of its own, titled its row's title and the clause and tagged `@owed`, which checks that gate
  * the same way and asserts the clause once it is met: row 1's decision clauses, for each seed that
- * holds a decision (G5); row 2's Decisions (G2); row 3's Decisions (G2) and its decision lines
- * (part U); row 4's Keep (G2 and part U).
+ * holds a decision (`decisionNodesGate`); row 2's Decisions, row 3's Decisions and row 4's Keep
+ * on the server's answer to the tree read's `view=decisions`, read before Decisions is pressed
+ * (`decisionsViewServedGate`), so a press that sends no view read fails the row; and row 3's
+ * decision lines and row 4's Keep on the page drawing the decisions from the tree read's nodes.
  */
 
 /** The seeds whose rows the fixture records a decision row of: row 1's decision clauses read
- *  them (G5). */
+ *  them (`decisionNodesGate`). */
 const DECISION_SEEDS = new Set(
   SEEDS.flatMap(([name]) =>
     fixtureSeed(name).rows.some((row) => row.kind.type === "decision") ? [name] : []
   )
 );
 
-/** The filters that read a view of the tree today: Decisions reads one from G2 on. */
+/** The filters whose view read rows 2 and 3 read on any server that serves the tree read.
+ *  Decisions reads its view too, on its first press, in rows of its own that gate on the server
+ *  serving that view (`decisionsViewServedGate`). */
 const VIEW_FILTERS = ["spec", "verification", "plan"] as const satisfies readonly TreeView[];
 
 /** How long one seed's row 1 may take: every row of the outline read with its body, inside CI's
@@ -225,8 +228,9 @@ function heldNodes(
 
 /** The rows that take their place from the fixture rather than from the tree read: a row the
  *  answer holds no node for, which is a decision of today's decisions read (a section of
- *  `decisions.md`, until part U), and a row drawn under such a decision, a Change, which the read
- *  places under its decision only once the decision is a node (G5). */
+ *  `decisions.md`, until the page draws decisions from the tree read's nodes), and a row drawn
+ *  under such a decision, a Change, which the read places under its decision only once the
+ *  decision is a node (`decisionNodesGate`). */
 function placedByFixture(
   readings: readonly RowReading[],
   held: ReadonlyMap<string, HeldNode>
@@ -248,7 +252,8 @@ function placedByFixture(
 /** Where the tree read places `node`'s rows, by the id of the row each stands under (null for
  *  the top, under the issue): its `parent`, walked up the answer to the nearest node `drawn` as a
  *  row; for a check or a plan task of this issue also each statement its `serves` tuples name,
- *  where F stands it again (root R4), and there alone where the walk reaches the issue. */
+ *  where the outline stands it again (root R4), and there alone where the walk reaches the
+ *  issue. */
 function homesOf(
   node: IssueTreeNode,
   outline: OutlineRead,
@@ -363,9 +368,9 @@ function rowName(row: KeyedRow): string {
  * How `readings` differ from the fixture's rows `recorded`, each row matched by its key (and, for
  * a node drawn under two parents, by its parent's key first): every reading but its place, and
  * the place too for a row the fixture places (`placedByFixture`); then each time against its
- * source in this run. Once the seeds' decisions are nodes (`nodes`, G5), the two differences the
- * check names are allowed: the section that restates a person's answer is no row, and the
- * answered question's row carries its `shaped` ties as chips beside the fixture's.
+ * source in this run. Once the seeds' decisions are nodes (`nodes`, `decisionNodesGate`), the two
+ * differences the check names are allowed: the section that restates a person's answer is no
+ * row, and the answered question's row carries its `shaped` ties as chips beside the fixture's.
  */
 function differences(
   where: string,
@@ -457,10 +462,10 @@ function answeredReviewState(node: IssueTreeNode, changed: boolean): string | nu
   return node.kept == null ? null : "kept";
 }
 
-/** Row 1's decision clauses, once the seeds' decisions are nodes (G5): each decision row's review
- *  state is the answer's, each Change stands under its decision's row, the section that restates
- *  a person's answer is no row, and the answered question's row carries a chip for each node its
- *  `shaped` ties name. */
+/** Row 1's decision clauses, once the seeds' decisions are nodes (`decisionNodesGate`): each
+ *  decision row's review state is the answer's, each Change stands under its decision's row, the
+ *  section that restates a person's answer is no row, and the answered question's row carries a
+ *  chip for each node its `shaped` ties name. */
 function expectDecisionsFromNodes(outline: OutlineRead, recorded: SeedFixture): void {
   const { answer, rows } = outline;
   const idOf = treeIdOf(answer, outline.reads);
@@ -550,7 +555,7 @@ for (const [name, seed] of SEEDS) {
   });
 
   if (DECISION_SEEDS.has(name)) {
-    // c-same-rows' decision clauses on one seed, owed on G5.
+    // c-same-rows' decision clauses on one seed, owed on `decisionNodesGate`.
     // SLOW(>=2s): a whole seeded issue, read as it opens and again with every branch opened,
     // each reading taken twice until it holds still.
     test(`${title}, its decisions as nodes of the tree read @owed`, async ({ browser }) => {
@@ -607,9 +612,9 @@ async function pastStaleTime(page: Page, traffic: ApiRequests): Promise<void> {
   await expectLoadSettled(traffic);
 }
 
-// c-tree-requests, with INFRA-1196 decision 180's clause: a slot the stage mounts again past the
-// app's 30 s `staleTime` sends no read of its own, shown on Plan, whose slot reads only through
-// `useIssueTree`.
+// c-tree-requests, with the clause that the page's reads are refreshed by events, never by age:
+// a slot the stage mounts again past the app's 30 s `staleTime` sends no read of its own, shown
+// on Plan, whose slot reads only through `useIssueTree`.
 // SLOW(>=2s): the whole seeded issue, its load waited out to a 1.5 s quiet window, Details
 // opened, and three filters each pressed on, off and on again with each press waited out.
 test("the first load reads the tree once and a filter its view once", async ({ browser }) => {
@@ -687,6 +692,7 @@ test("the first load reads the tree once and a filter its view once, and Decisio
   test.setTimeout(ROW_MS);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     owedUnless(await treeReadGate(page, seeded.key));
+    owedUnless(await decisionsViewServedGate(page, seeded.key));
     const traffic = watchApiRequests(page);
     const load = await firstLoad(page, traffic, seeded.key);
     for (const press of [1, 2]) {
@@ -694,7 +700,6 @@ test("the first load reads the tree once and a filter its view once, and Decisio
       await pressFilter(page, traffic, "decisions");
       const pressed = traffic.requests.slice(from);
       if (press === 1) {
-        owedUnless(decisionsViewGate([...load, ...pressed], seeded.key));
         expect(
           treeReads(load, seeded.key, "decisions"),
           "the load sends no Decisions view read"
@@ -848,9 +853,10 @@ test("each filter draws its view read's rows", async ({ browser }) => {
   }
 });
 
-// c-views' decision lines, owed on part U (dispatch://INFRA-4097) once INFRA-1150's T8 is on T's
-// base (decision 109): each decision whose `shaped` tie names a statement under Spec is a line on
-// that statement's row, never a row of its own.
+// c-views' decision lines, owed until the page draws the decisions from the tree read's nodes,
+// once decisions are nodes of the tree read on this branch's base (`partUGate`): each decision
+// whose `shaped` tie names a statement under Spec is a line on that statement's row, never a row
+// of its own.
 // SLOW(>=2s): two seeded issues, each load waited out, and Spec pressed and read until it holds
 // still.
 test("each filter draws its view read's rows, and each decision that shaped a statement is a line on its row @owed", async ({
@@ -906,9 +912,10 @@ test("each filter draws its view read's rows, and each decision that shaped a st
   }
 });
 
-// c-views for Decisions, owed while the decisions view goes unserved: once a press reads the
-// decisions as the tree read's `view=decisions`, the Decisions filter draws that view read's rows,
-// as Spec, Verification and Plan draw theirs (INFRA-1196's decision on row 3's gap).
+// c-views for Decisions, owed until the server serves the tree read's Decisions view
+// (`decisionsViewServedGate`, read before Decisions is pressed): the Decisions filter draws its
+// view read's rows, as Spec, Verification and Plan draw theirs, which is how the root issue
+// settled row 3's gap for Decisions, and a press that sends no view read fails the row.
 // SLOW(>=2s): two seeded issues, each load waited out, and Decisions pressed, read until it holds
 // still, and released.
 test("each filter draws its view read's rows, and the Decisions filter draws its view read's rows @owed", async ({
@@ -918,15 +925,14 @@ test("each filter draws its view read's rows, and the Decisions filter draws its
   for (const [name, seed] of VIEW_SEEDS) {
     await phase(browser, seed, async (page, seeded) => {
       owedUnless(await treeReadGate(page, seeded.key));
+      owedUnless(await decisionsViewServedGate(page, seeded.key));
       const decisions = viewAnswerOf(page, "decisions");
       const traffic = watchApiRequests(page);
       await firstLoad(page, traffic, seeded.key);
       const reads = await idReadsOf(seeded.key);
       const view = PRESET_NAMES.decisions;
       const where = `${name} under ${view}`;
-      const from = traffic.requests.length;
       const drawn = await pressFilter(page, traffic, "decisions");
-      owedUnless(decisionsViewGate(traffic.requests.slice(from), seeded.key));
       const answer = await heldAnswer(decisions, `the ${view} view read`);
       const expected = viewNodeIds(answer, "decisions", reads);
       expect(
@@ -971,7 +977,8 @@ function expectOneOrTwoReads(reads: number, message: string): void {
   expect(reads, message).toBeLessThanOrEqual(2);
 }
 
-// c-fresh, with INFRA-1196 decision 174's status clause, which needs no part L.
+// c-fresh, with its status clause: a status write sends one or two tree reads, its own refresh
+// and its event's, and needs no line at the foot of the outline.
 // SLOW(>=2s): the whole seeded issue, its load waited out, a status written and waited out, and a
 // reply sent and waited for until its row is drawn.
 test("a write is drawn without a reload", async ({ browser }) => {
@@ -1038,8 +1045,10 @@ test("a write is drawn without a reload", async ({ browser }) => {
   });
 });
 
-// c-fresh's Keep clause, owed on G2 for the Decisions view read and on part U
-// (dispatch://INFRA-4097), which records it once INFRA-1150's T8 is on T's base (decision 109).
+// c-fresh's Keep clause, owed until the server serves the Decisions view
+// (`decisionsViewServedGate`), and on the page drawing the decisions from
+// the tree read's nodes (`partUGate`), which records it once decisions are nodes on this
+// branch's base.
 // SLOW(>=2s): a seeded issue, its load waited out, a Keep in the outline waited for, Decisions
 // pressed and a second Keep there waited for.
 test("a write is drawn without a reload, and Keep is drawn kept in the outline and in the Decisions view @owed", async ({
@@ -1048,6 +1057,7 @@ test("a write is drawn without a reload, and Keep is drawn kept in the outline a
   test.setTimeout(ROW_MS);
   await phase(browser, seedReviewList, async (page, seeded) => {
     owedUnless(await treeReadGate(page, seeded.key));
+    owedUnless(await decisionsViewServedGate(page, seeded.key));
     const tree = treeAnswerOf(page);
     const decisions = decisionsReadOf(page, seeded.key);
     const traffic = watchApiRequests(page);
@@ -1074,9 +1084,7 @@ test("a write is drawn without a reload, and Keep is drawn kept in the outline a
       .poll(() => stateWordOf(page, first), { message: 'Keep makes its row read "Kept by" alice' })
       .toMatch(KEPT_BY_ALICE);
 
-    const pressed = traffic.requests.length;
     await pressFilter(page, traffic, "decisions");
-    owedUnless(decisionsViewGate(traffic.requests.slice(pressed), seeded.key));
     const target = nodeRow(page, second).first();
     await target.focus();
     const kept = traffic.requests.length;

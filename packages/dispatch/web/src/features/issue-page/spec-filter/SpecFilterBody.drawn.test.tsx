@@ -589,6 +589,49 @@ test("while the asks read is out, no statement a person's decision shaped reads 
   }
 });
 
+// R2 and decision 98: a person's decision is a question they answered, which only the asks read
+// says, so where that read failed with nothing held the column cannot draw a person's decision
+// beside the statements it shaped. It says the open questions could not be read, on a line of its
+// own beside the Spec view read's, and draws no person's decision missing in silence, nor a line
+// that no decision shaped a statement.
+test("where the asks read failed, the column says the open questions could not be read", async () => {
+  const words = "Put the decisions beside the statements. Please.";
+  const { client, read, view } = drawBody(
+    issueTree([statement("r1"), statement("r2"), answeredAsk("ask-1", { text: words })]),
+    [
+      ...["r1", "r2"].map((block, position) =>
+        answerNode(block, "requirement", {
+          document: { artifact_id: "artifact-spec", position, slug: SPEC_SLUG },
+          mark: "query",
+        })
+      ),
+      answerNode("ask-1", "ask", { mark: "context" }),
+    ],
+    { asksRead: "out", tuples: [{ from: "ask-1", kind: "shaped", to: "r1" }] }
+  );
+  try {
+    // The asks read failed, as the page's own observer of it left it (`useIssueTree.ts`).
+    await act(async () => {
+      await client.prefetchQuery({
+        queryFn: () => Promise.reject(new Error("offline")),
+        queryKey: ["asks", KEY],
+      });
+    });
+    await waitFor(
+      () =>
+        expect(
+          view.container.textContent,
+          "the column does not say its open questions could not be read where the asks read failed"
+        ).toContain(ANSWER_LINES.asks_unreadable),
+      { timeout: 3000 }
+    );
+    expect(textsOf(view, "[data-spec-nothing]")).toEqual([]);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
 // R35: a statement with no decision beside it is drawn as such, which is what makes a missing
 // tie visible.
 test("a statement no decision shaped says so where its decision would stand", () => {
@@ -634,6 +677,79 @@ test("the column says no decision shaped a statement only once the decisions are
   } finally {
     failed.view.unmount();
     failed.read.mockRestore();
+  }
+});
+
+// The Spec view read and the asks read can each be out, answered or failed when the body is
+// drawn, with the statements' reads answered, and the column draws only what the reads that
+// answered say: the line that its decisions could not be read where the Spec view read failed
+// with nothing held; the line that its open questions could not be read where the asks read
+// failed; and a statement's words that no decision shaped it, and a person's decision beside the
+// statement it shaped, only where both have answered.
+test("every state of the Spec view read and the asks read draws what the column knows", async () => {
+  const words = "Put the decisions beside the statements. Please.";
+  const states: readonly ReadState[] = ["out", "answered", "failed"];
+  for (const specView of states) {
+    for (const asks of states) {
+      const combination = `the Spec view read ${specView} and the asks read ${asks}`;
+      const { client, read, view } = drawBody(
+        issueTree([statement("r1"), statement("r2"), answeredAsk("ask-1", { text: words })]),
+        [
+          ...["r1", "r2"].map((block, position) =>
+            answerNode(block, "requirement", {
+              document: { artifact_id: "artifact-spec", position, slug: SPEC_SLUG },
+              mark: "query",
+            })
+          ),
+          answerNode("ask-1", "ask", { mark: "context" }),
+        ],
+        {
+          asks: [askRead("ask-1", words)],
+          asksRead: asks === "answered" ? "answered" : "out",
+          specView,
+          tuples: [{ from: "ask-1", kind: "shaped", to: "r1" }],
+        }
+      );
+      try {
+        if (asks === "failed") {
+          // The asks read failed, as the page's own observer of it left it (`useIssueTree.ts`).
+          await act(async () => {
+            await client.prefetchQuery({
+              queryFn: () => Promise.reject(new Error("offline")),
+              queryKey: ["asks", KEY],
+            });
+          });
+        }
+        const both = specView === "answered" && asks === "answered";
+        await waitFor(
+          () => {
+            const text = view.container.textContent ?? "";
+            expect(
+              text.includes(ANSWER_LINES.decisions_unreadable),
+              `${combination}: whether the column says its decisions could not be read`
+            ).toBe(specView === "failed");
+            expect(
+              text.includes(ANSWER_LINES.asks_unreadable),
+              `${combination}: whether the column says its open questions could not be read`
+            ).toBe(asks === "failed");
+            expect(
+              view.container.querySelector("[data-spec-nothing]") !== null,
+              `${combination}: whether a statement says no decision shaped it`
+            ).toBe(both);
+            expect(
+              [...view.container.querySelectorAll("[data-spec-cell]")]
+                .filter((cell) => cell.getAttribute("data-decision-id") === "ask-1")
+                .map((cell) => cell.getAttribute("data-spec-statements")),
+              `${combination}: the statements the person's decision stands beside`
+            ).toEqual(both ? ["spec#b-r1"] : []);
+          },
+          { timeout: 3000 }
+        );
+      } finally {
+        view.unmount();
+        read.mockRestore();
+      }
+    }
   }
 });
 
@@ -1493,8 +1609,8 @@ test("a read that fails again over the answer the page holds keeps every mark an
 // shaped its statement still says so when the Spec view read fails again: only a read that failed
 // with nothing held says it failed (review 5928280634 on pull request 4234, the reviewer's
 // finding b, which named the empty line too). The Spec view is read again as the page reads it
-// after a change of the issue, which drops its answer first (`subscribeTreeFreshness`), so the
-// cell stands on the answer the body last held.
+// after a change of the issue, with its answer kept while the read is out
+// (`subscribeTreeFreshness`), so the cell stands on the answer the body last held.
 test("a read that fails again over the statements and decisions the page holds keeps the empty line and the cells, and says nothing failed", async () => {
   const empty = drawBody(issueTree([]));
   try {

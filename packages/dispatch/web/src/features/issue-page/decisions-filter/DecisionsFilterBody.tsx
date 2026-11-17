@@ -12,6 +12,7 @@ import {
 import { useNavigate } from "react-router-dom";
 
 import type { Artifact, IssueDetails } from "../../../api/types";
+import { QueryError } from "../../../components/QueryError";
 import {
   focusVisibleRing,
   pageInkText,
@@ -29,7 +30,13 @@ import { useTakeOutlineRequest } from "../outline-request";
 import { threadMarks } from "../outline-thread-read";
 import { useOutlineWriter } from "../outline-writer";
 import { authorText, pageChrome } from "../page-structure";
-import { CONTROL_LABELS, DECISIONS_WORDS, isReader, PRESET_NAMES } from "../page-words";
+import {
+  ANSWER_LINES,
+  CONTROL_LABELS,
+  DECISIONS_WORDS,
+  isReader,
+  PRESET_NAMES,
+} from "../page-words";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
 import { useTreeKeymap } from "../useTreeKeymap";
@@ -86,6 +93,9 @@ const NOTHING = (): void => {};
  *
  * The reads are the seam's: the ones the page's tree is built from, under the keys it reads them
  * by (`useIssueTree.ts`), so the body costs no request of its own (R20).
+ * The seam says how they stand too: until they answer the body says nothing of the issue's
+ * decisions, and where they failed with nothing held it says the decisions could not be read,
+ * with a Retry, above the parts.
  */
 export function DecisionsFilterBody({
   artifacts,
@@ -561,6 +571,21 @@ export function DecisionsFilterBody({
       }}
       ref={body}
     >
+      {/* The decisions could not be read: the view holds no answer of the reads they come from,
+          and one of them failed (`useDecisionsEntries`' `failed`). It says so as the Spec view
+          says it of the same reads, with a Retry, and never that the issue has none. */}
+      {parts.failed ? (
+        <QueryError message={ANSWER_LINES.decisions_unreadable} onRetry={parts.retry} />
+      ) : null}
+      {/* The asks read failed with no answer held (`useDecisionsEntries`' `asksFailed`): the
+          open questions and a person's decisions come from it, so the view says the open
+          questions could not be read, on a line of its own after the one above, with a Retry
+          that reads the asks alone again. Both lines are a copy of the shape of the page's
+          shared failed-read line (`slots/failed-read-line.tsx`'s `FailedReadLine`), which they
+          take once this branch holds it. */}
+      {parts.asksFailed ? (
+        <QueryError message={ANSWER_LINES.asks_unreadable} onRetry={parts.asksRetry} />
+      ) : null}
       {/* The foot's rows stand after its control, outside this element, and are this tree's
           all the same (`aria-owns`), so the page holds one tree. The element itself takes the
           focus only to pass it on (`passFocus`), and only from a script: a press on it outside
@@ -676,8 +701,11 @@ export function DecisionsFilterBody({
         </div>
       )}
       {/* The issue holds no question and no decision the view draws. The node an address
-          names is no entry of the list, so its row and this line are drawn together. */}
-      {parts.open_questions.length === 0 &&
+          names is no entry of the list, so its row and this line are drawn together. It is
+          drawn only once the view knows what the issue holds (`known`): never before its reads
+          answer, and never where they failed, which leaves it nothing known. */}
+      {parts.known &&
+      parts.open_questions.length === 0 &&
       parts.review.length === 0 &&
       parts.yours.length === 0 &&
       parts.agents.length === 0 ? (

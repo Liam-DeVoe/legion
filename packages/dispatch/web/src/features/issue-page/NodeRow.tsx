@@ -153,9 +153,10 @@ export function NodeRow({
   /** Whether the view draws this row only as the ancestor of a match: the row is faint and
    *  marked, and the arrow keys reach it as they reach any other row (R2). */
   context: boolean;
-  /** The document this row's node is a block of, which its body writes against: a decision's
-   *  Keep and Change are writes on the decisions document (R7). Undefined for a node that is
-   *  no block of a document of this issue. */
+  /** The document this row's node is a block of, which names the issue whose tree read holds
+   *  the node: a decision's Keep and Change write on the decision node's own document
+   *  (`decision-nodes.ts`' `DecisionNode.document`), never this one. Undefined for a node that
+   *  is no block of a document of this issue. */
   document?: Artifact;
   /** The document this row's own text lives in, while the reader is editing it here: its
    *  editor is drawn in place of the row's words and the caret is in this node's block. */

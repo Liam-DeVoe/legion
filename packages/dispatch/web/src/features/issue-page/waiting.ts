@@ -1,6 +1,6 @@
 import type { IssueDetails } from "../../api/types";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
-import type { DecisionNode } from "./decision-nodes/decision-nodes";
+import { decisionsOfAnswer } from "./decision-nodes/decision-nodes";
 import { decisionNodeChanges, inReviewList } from "./decision-review";
 import { isOvertaken } from "./tree-fold";
 import { statesOfRead } from "./tree-read/tree-nodes";
@@ -20,10 +20,13 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * assignee moves its questions to that person's count. Nothing waits on a reader whose login has
  * not resolved.
  *
- * A decision is a decision node of the tree read (`decisionNodes`), and one the reader asked to
- * change waits on its agent and is not counted, by the outline's one rule
- * (`decisionNodeChanges`): its Change is a comment the tree read (`tree`) hangs under its node,
- * so the count matches no quote and reads no block of a document.
+ * A decision is a decision node of the tree read (`tree`), read once per answer
+ * (`decision-nodes.ts`' `decisionsOfAnswer`) with no asks: they only make an answered question a
+ * person's decision, which never waits for review, and an agent's decision reads none, so the
+ * count is the same without them. One the reader asked to change waits on its agent and is not
+ * counted, by the outline's one rule (`decisionNodeChanges`): its Change is a comment the tree
+ * read hangs under its node, whether or not the comments read holds that comment yet, so the
+ * count matches no quote and reads no block of a document.
  *
  * Nothing at or under an overtaken node of the tree read waits on anybody: a later node took its
  * place, and the tree draws none of them in the waiting tone. A node is under another where the
@@ -44,21 +47,19 @@ export interface WaitingOnReader {
 }
 
 export function waitingOnReader(
-  issue: Pick<IssueDetails, "artifacts" | "open_asks" | "primary_artifact_id">,
+  issue: Pick<IssueDetails, "artifacts" | "key" | "open_asks" | "primary_artifact_id">,
   viewer: string | undefined,
-  decisions: readonly DecisionNode[],
   isStatement: (reference: string) => boolean,
   tree: TreeAnswer | undefined
 ): WaitingOnReader {
-  // Each open ask, decision and node of the tree at or under an overtaken node taken out, and the
-  // count made of what is left: that tree holds no overtaken node, so the count is made once more
-  // and no further.
+  // Each open ask and node of the tree at or under an overtaken node taken out, the decisions
+  // among those nodes with them, and the count made of what is left: that tree holds no
+  // overtaken node, so the count is made once more and no further.
   const closed = closedKeys(tree);
   if (tree !== undefined && closed.size > 0) {
     return waitingOnReader(
       { ...issue, open_asks: (issue.open_asks ?? []).filter((ask) => !askIn(closed, ask)) },
       viewer,
-      decisions.filter((decision) => !closed.has(nodeKey(decision.node))),
       isStatement,
       { ...tree, nodes: tree.nodes.filter((node) => !closed.has(nodeKey(node))) }
     );
@@ -78,7 +79,10 @@ export function waitingOnReader(
         issue.primary_artifact_id
     );
   const asks = open.length - approvals.length;
+  // The decision nodes a Change waits on, by the node's id: from the tree read alone, as the
+  // outline finds them, so the two agree while the comments read is out or older.
   const changes = tree === undefined ? undefined : decisionNodeChanges(tree);
+  const decisions = tree === undefined ? [] : [...decisionsOfAnswer(tree, issue.key).values()];
   const reviewing =
     viewer === undefined
       ? 0

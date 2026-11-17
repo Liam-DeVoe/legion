@@ -59,10 +59,10 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read/tree-rea
  * The tree model, read as the page reads it: one call with the page's reads in and the issue's
  * root node out (dispatch://INFRA-1196 R4, `dispatch://INFRA-1196/artifact/plan-md#b-t13`).
  *
- * The outline is drawn from the tree read (dispatch://INFRA-4062 R1), so each case writes its
- * issue as the reads F was given - the documents' blocks, the asks, the comments, the messages,
- * the children - and `answered` writes the answer the tree read gives for that issue, which is
- * what the model is handed.
+ * The outline is drawn from the tree read, so each case writes its issue as the reads the
+ * outline was drawn from before it - the documents' blocks, the asks, the comments, the
+ * messages, the children - and `answered` writes the answer the tree read gives for that issue,
+ * which is what the model is handed.
  */
 
 const KEY = "CORE-1";
@@ -443,7 +443,7 @@ function thread(id: string, createdAt: string): MessageRead {
   return { message, replies: [] };
 }
 
-/** A case's issue as F's reads hold it, with what the tree read answers beside them. */
+/** A case's issue as the earlier reads hold it, with what the tree read answers beside them. */
 interface Fixture extends IssueTreeReads {
   /** The issue's comments, each of which the tree read answers as a node. */
   readonly comments?: readonly (Comment & Pick<CommentWithTrees, "body_tree">)[];
@@ -484,9 +484,9 @@ function answerNode(
   };
 }
 
-/** A node of the answer being written, with its place among its siblings: the place F drew it
- *  in, for a node the read ranks, and none for an ask, a comment or a message, which the read
- *  orders after its ranked siblings by when it was made and then by id. */
+/** A node of the answer being written, with its place among its siblings: the place the outline
+ *  drew it in, for a node the read ranks, and none for an ask, a comment or a message, which the
+ *  read orders after its ranked siblings by when it was made and then by id. */
 interface Written {
   readonly node: TreeAnswerNode;
   readonly place?: number;
@@ -507,9 +507,9 @@ function siblingOrder(one: Written, other: Written): number {
 }
 
 /**
- * The case's reads with the answer the tree read gives for its issue (dispatch://INFRA-1253 R1,
- * R8): each typed block of its documents once, with its `document` and the attributes its block
- * carries, under the parent the read answers it - a check or a plan task under the first
+ * The case's reads with the answer the tree read gives for its issue: each typed block of its
+ * documents once, with its `document` and the attributes its block carries, under the parent the
+ * read answers it - a check or a plan task under the first
  * requirement its `serves` names, every other block under the issue unless the case gives it
  * another (`Fixture.parents`) - and a requirement the coverage read holds and a check the results
  * read holds with their words, each result under its check, the children, the asks, a reply
@@ -519,9 +519,9 @@ function siblingOrder(one: Written, other: Written): number {
  * decision block of a document's blocks is none. Each block pointer is a tuple, to the node it
  * names where the answer holds it, and to its address where not or where it pins a version of
  * that node, which is no node of the answer. Ranks are the read's, which a case does not state,
- * so ranked siblings stand in the order F drew them - each document's blocks in turn, the spec's
- * first, then the statements the coverage read holds, then the children - and the rest after
- * them by time, then id, as the read orders them.
+ * so ranked siblings stand in the order the outline drew them - each document's blocks in turn,
+ * the spec's first, then the statements the coverage read holds, then the children - and the
+ * rest after them by time, then id, as the read orders them.
  */
 function answered(fixture: Fixture): IssueTreeReads {
   const {
@@ -548,7 +548,7 @@ function answered(fixture: Fixture): IssueTreeReads {
   const askSlug = (ask: TreeAsk): string | undefined =>
     ask.block_artifact?.slug ?? slugOf(ask.artifact_id ?? "");
   const written: Written[] = [];
-  /** The read id of each node a pointer can name, by F's id for it. */
+  /** The read id of each node a pointer can name, by the outline's id for it. */
   const byId = new Map<string, string>();
   const pointers: { from: string; name: string; refs: readonly string[] }[] = [];
   const types: readonly string[] = NODE_TYPES;
@@ -2455,8 +2455,8 @@ test("every Change newer than a decision's words is drawn under it", () => {
 });
 
 // R3: a decision node's Change is the comment the read hangs under it - a comment anchored inside
-// a decision's words hangs under that decision's node (dispatch://INFRA-1253 R8) - here the
-// second decision's, though the first decision holds the same words too. So the Change lands on
+// a decision's words hangs under that decision's node - here the second decision's, though the
+// first decision holds the same words too. So the Change lands on
 // the decision the person changed, which reads Change requested and leaves the review list,
 // and not on the first that holds its words, which still waits on them.
 test("a Change anchored in one decision is drawn under it, though another decision holds its words", () => {

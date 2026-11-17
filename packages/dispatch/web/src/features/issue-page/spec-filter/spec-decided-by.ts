@@ -90,8 +90,7 @@ export interface SpecDecision {
   readonly id: string;
   /** The decision node the tie came from, where the tree holds it: the node the cell is drawn
    *  as, which Details draws while the cell holds the focus. A person's decision is drawn by
-   *  their answer (`id`), and this is the section of `decisions.md` that names it, or the
-   *  question itself where its `shaped` ties are the tie (`decisionNodes`). */
+   *  their answer (`id`), and this is the question itself (`decisionNodes`). */
   readonly node?: string;
   /** The question the words answer, its first line as R1 cuts a row's with each reference
    *  named after the cut; absent where the words answer no question. */

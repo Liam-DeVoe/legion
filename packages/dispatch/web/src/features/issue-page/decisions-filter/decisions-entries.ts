@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 
 import { api } from "../../../api/client";
 import type { IssueDetails } from "../../../api/types";
@@ -9,7 +9,7 @@ import { type ChangeComment, decisionNodeChanges } from "../decision-review";
 import type { TreeNode } from "../issue-tree";
 import { treeContext } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
-import { issueTreeQuery, type TreeAnswer } from "../tree-read/tree-read";
+import { issueTreeQuery, type TreeAnswer, viewQuery } from "../tree-read/tree-read";
 import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./decisions-parts";
 
 /**
@@ -18,30 +18,64 @@ import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./deci
  * parts, so no other file of the view names a read. The part that draws the model's own entries
  * (`entries`) replaces this module and leaves the view as it is.
  *
- * The decisions are the decision nodes of the decisions view (`?view=decisions`), the issue's
- * decisions wherever they are written, which the page holds on the issue's node
- * (`TreeNode.views`), each read as every reader of a
- * decision reads it (`decisionNodes`). A decision's Change is the comment the tree read hangs
- * under its node (`decision-review.ts`' `decisionNodeChanges`), so no quote is matched for it. A
- * view that holds no decision gives none, and no error. Until the view has answered - it is read
- * the first time the filter is on in a load (`ViewReadProvider`), and again after a Keep
- * (`DecisionActions.tsx`) and after every change of the issue (`subscribeTreeFreshness`), each of
- * which drops the answer it held - and wherever that read fails, the decisions are the decision
- * nodes of the tree read the page holds, which answers the same decision nodes with the same
- * members: so every decision stands in its part with its state, never in the folded foot for
- * want of a row, and the focus stays with it.
+ * The decisions are the decision nodes of the decisions view (`?view=decisions`), which holds
+ * the issue's decisions wherever they are written. The page holds that view on the issue's node
+ * (`TreeNode.views`), and each decision is read as every reader of a decision reads it
+ * (`decisionNodes`). A decision's Change is the comment the tree read hangs under its node
+ * (`decision-review.ts`' `decisionNodeChanges`), so no quote is matched for it. A view that
+ * holds no decision gives none, and no error.
  *
- * The reads are the ones the page's tree is built from, under the keys `useIssueTree.ts` reads
- * them by: the tree read and the issue's asks, each watched and never sent, so the view adds no
- * request of its own.
+ * The page reads the view the first time the filter is on in a load (`ViewReadProvider`). A Keep
+ * or a Change drops every view the page holds (`DecisionActions.tsx`), and every change of the
+ * issue marks it stale and reads it again while the answer stays drawn
+ * (`subscribeTreeFreshness`). Until the view answers, and where its read fails, the decisions
+ * are the decision nodes of the tree read the page holds, which has the same nodes with the same
+ * members. So every decision stands in its part with its state, never in the folded foot for want
+ * of a row, and the focus stays with it.
+ *
+ * The view's rows are the tree read's: the parts walk the page's tree (`decisionsParts`), which
+ * holds the issue alone until the tree read answers (`issue-tree.ts`'s `buildIssueTree`), so
+ * before then no decision has a row to stand on, whatever the decisions view holds. So until the
+ * tree read has answered, and the asks read too, the view does not know what the issue holds, and
+ * does not say it holds no decisions (`known`). Where the tree read failed with no answer held, or
+ * is still out and the decisions view failed with no answer held, it says the decisions could not
+ * be read, with a Retry that reads again each of the two that failed (`failed`, `retry`). The asks
+ * read is the third read the decisions come from: a person's decision is a question they
+ * answered, and the open questions are the issue's open asks, which only the asks read says.
+ * Where it failed with no answer held, the view says the open questions could not be read, on a
+ * line of its own after that one, with a Retry that reads the asks alone again (`asksFailed`,
+ * `asksRetry`). A read asked again keeps its answer while it is out and when it fails, and the
+ * view draws from that answer, so only a read that failed with no answer held counts as failed.
+ *
+ * The reads are the page's own, under the keys it reads them by (`useIssueTree.ts`,
+ * `ViewReadProvider`): the tree read, the decisions view and the issue's asks, each watched and
+ * never sent, so the view adds no request of its own.
  *
  * The view draws four parts (dispatch://INFRA-1196 R2). A decision another person made is no
  * part of its own: it stands under the reader's decisions, with that person's name on its row,
  * so G's `others` is put in `yours`, newest first, and `others` is left empty.
  */
 
-/** The Decisions view's parts, from the issue, the reader's login, the whole tree and the tree
- *  as the Decisions view leaves it (`presetView`). */
+/** The Decisions view's parts, and how the reads they come from stand. */
+export interface DecisionsEntries extends DecisionsParts {
+  /** Whether the view knows what the issue holds: the tree read, which its rows come from, and
+   *  the asks have both answered. Until then it cannot say there are none. */
+  readonly known: boolean;
+  /** Whether the view has no rows to draw because the tree read, which they come from, failed
+   *  with no answer held, or is still out and the decisions view read failed with no answer
+   *  held. */
+  readonly failed: boolean;
+  /** Reads again each of those two reads that failed with no answer held. */
+  readonly retry: () => void;
+  /** Whether the asks read failed with no answer held, which leaves the view no open question
+   *  and no person's decision to draw. */
+  readonly asksFailed: boolean;
+  /** Reads the asks again. */
+  readonly asksRetry: () => void;
+}
+
+/** The Decisions view's parts and how its reads stand, from the issue, the reader's login, the
+ *  whole tree and the tree as the Decisions view leaves it (`presetView`). */
 export function useDecisionsEntries({
   issue,
   reader,
@@ -56,18 +90,23 @@ export function useDecisionsEntries({
   root: TreeNode;
   /** The tree as the Decisions view leaves it. */
   view: TreeNode;
-}): DecisionsParts {
+}): DecisionsEntries {
   // The tree read, which holds each Change under its decision, and the decisions until the view
   // answers, watched by an observer that is never enabled: the page's own read fetches it
   // (`useIssueTree.ts`), and the view sends none.
-  const tree = useQuery({ ...issueTreeQuery(issue.key), enabled: false }).data;
+  const treeRead = useQuery({ ...issueTreeQuery(issue.key), enabled: false });
+  const tree = treeRead.data;
+  // The decisions view read, watched the same way for how it stands: the page reads it
+  // (`ViewReadProvider`) and holds its answer on the issue's node (`TreeNode.views`).
+  const viewRead = useQuery({ ...viewQuery(issue.key, "decisions"), enabled: false });
   // The issue's asks, which say which answered question is a person's decision
   // (`decisionNodes`), watched the same way: the page's tree reads them under this key.
-  const asks = useQuery({
+  const asksRead = useQuery({
     enabled: false,
     queryFn: () => api.listIssueAsks(issue.key, "all"),
     queryKey: ["asks", issue.key],
-  }).data;
+  });
+  const asks = asksRead.data;
   // The decisions view the page holds, and the tree read wherever the view holds no answer.
   const held = root.views?.decisions ?? tree;
   const decisions = useMemo(
@@ -78,8 +117,8 @@ export function useDecisionsEntries({
   // How this issue addresses a node, which is the one rule the tree was built with, so a
   // `shaped` tie resolves to the node it names (`tree-drafts.ts`).
   const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
-  return useMemo(() => {
-    const parts = decisionsParts({
+  const parts = useMemo(() => {
+    const model = decisionsParts({
       asks,
       changes,
       decisions,
@@ -90,14 +129,37 @@ export function useDecisionsEntries({
       view,
     });
     return {
-      ...parts,
+      ...model,
       others: [],
       yours:
-        parts.others.length === 0
-          ? parts.yours
-          : newestFirst([...parts.yours, ...parts.others], root),
+        model.others.length === 0
+          ? model.yours
+          : newestFirst([...model.yours, ...model.others], root),
     };
   }, [asks, changes, decisions, issue.key, nodeIdOf, reader, root, view]);
+  // The rows are the tree read's (see above): the view knows what the issue holds once that read
+  // has answered, and a failed decisions view read counts only while neither read holds an answer.
+  const known = tree !== undefined && asks !== undefined;
+  // Failed with no answer held (see above), as the Spec view judges the same reads
+  // (`SpecFilterBody.tsx`'s `failedWithNothing`).
+  const treeFailed = treeRead.isError && tree === undefined;
+  const viewFailed = viewRead.isError && viewRead.data === undefined;
+  const failed = treeFailed || (held === undefined && viewFailed);
+  const { refetch: readTree } = treeRead;
+  const { refetch: readView } = viewRead;
+  const retry = useCallback(() => {
+    if (treeFailed) void readTree();
+    if (viewFailed) void readView();
+  }, [readTree, readView, treeFailed, viewFailed]);
+  const asksFailed = asksRead.isError && asks === undefined;
+  const { refetch: readAsks } = asksRead;
+  const asksRetry = useCallback(() => {
+    void readAsks();
+  }, [readAsks]);
+  return useMemo(
+    () => ({ ...parts, asksFailed, asksRetry, failed, known, retry }),
+    [asksFailed, asksRetry, failed, known, parts, retry]
+  );
 }
 
 /**

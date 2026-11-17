@@ -18,6 +18,7 @@ import { NoTooltips } from "../NoTooltips";
 import { OutlineRequestProvider } from "../outline-request";
 import { KEY_REPORTS } from "../page-structure";
 import {
+  ANSWER_LINES,
   CONTROL_LABELS,
   DECISIONS_WORDS,
   EMPTY_STATE_LINES,
@@ -32,6 +33,7 @@ import {
   issueTreeKey,
   issueTreeQuery,
   subscribeTreeFreshness,
+  type TreeAnswer,
   type TreeAnswerNode,
   viewKey,
   viewQuery,
@@ -542,6 +544,556 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
   expect(none.getByText(EMPTY_LINE)).toBeTruthy();
   // The outline's tree is still on the page, as it is under every filter.
   expect(none.getByRole("tree", { name: CONTROL_LABELS.tree })).toBeTruthy();
+});
+
+/**
+ * The body as the page draws it before the reads its decisions come from hold an answer: the
+ * tree read and the decisions view each answered by `read` (one that never answers, or one that
+ * fails), the asks and the comments read, and the page's tree as `useIssueTree.ts` builds it
+ * with no tree read answered, which holds no node of the read.
+ */
+function renderUnread(read: () => Promise<never>): RenderResult {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  treeReads ??= spyOn(api, "getIssueTree");
+  treeReads.mockImplementation(read);
+  client.setQueryData(["asks", KEY], []);
+  client.setQueryData(["comments", KEY], []);
+  const issue = issueDetails();
+  const root = issueTree([]);
+  const view = presetView(root, "decisions", "", new Set()).root;
+  return render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <IssueScope />
+            <NoTooltips>
+              <HeldReads root={root}>
+                {(held) => (
+                  <DecisionsFilterBody
+                    artifacts={artifactsBySlug(issue)}
+                    emptyLine={EMPTY_LINE}
+                    holdsEscape={false}
+                    isClosed={false}
+                    issue={issue}
+                    reader={READER}
+                    root={held}
+                    view={view}
+                  />
+                )}
+              </HeldReads>
+            </NoTooltips>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+/** How one of the reads the view's decisions come from stands when the body is drawn. */
+type ReadState = "answered" | "failed" | "pending";
+
+/** The states each of those reads can stand in, in the order a table walks them. */
+const READ_STATES: readonly ReadState[] = ["pending", "answered", "failed"];
+
+/** What a read that stands as `state` gives back: `answer`, a failure at once, or nothing ever. */
+function answerAs<T>(state: ReadState, answer: T): Promise<T> {
+  if (state === "answered") return Promise.resolve(answer);
+  if (state === "failed") {
+    return Promise.reject(new ApiError(503, { code: "UNAVAILABLE", error: "down" }));
+  }
+  return new Promise<never>(() => {});
+}
+
+/**
+ * The body as the page draws it with each read its decisions come from standing as `reads`
+ * says. The tree read and the decisions view read each answer `made`, and the asks read answers
+ * no ask. A read that failed failed before the body was drawn, as the page's own observer of it
+ * left it, and fails at once each time it is read again; a read that is out never answers. The
+ * page's tree is as `useIssueTree.ts` builds it: the issue alone until the tree read answers, and
+ * `children` under it once it has.
+ */
+async function renderReads(
+  reads: { readonly asks: ReadState; readonly tree: ReadState; readonly view: ReadState },
+  made: readonly TreeAnswerNode[],
+  children: readonly TreeNode[]
+): Promise<RenderResult> {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  treeReads ??= spyOn(api, "getIssueTree");
+  treeReads.mockImplementation((_key, query) =>
+    answerAs(query?.view === "decisions" ? reads.view : reads.tree, treeAnswer(made))
+  );
+  const hold = async (queryKey: readonly unknown[], state: ReadState, answer: unknown) => {
+    if (state === "answered") client.setQueryData(queryKey, answer);
+    if (state === "failed") {
+      await client.prefetchQuery({ queryFn: () => answerAs(state, answer), queryKey });
+    }
+  };
+  await hold(issueTreeKey(KEY), reads.tree, treeAnswer(made));
+  await hold(viewKey(KEY, "decisions"), reads.view, treeAnswer(made));
+  await hold(["asks", KEY], reads.asks, []);
+  client.setQueryData(["comments", KEY], []);
+  const issue = issueDetails();
+  const root = issueTree(reads.tree === "answered" ? children : []);
+  const view = presetView(root, "decisions", "", new Set()).root;
+  return render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <IssueScope />
+            <NoTooltips>
+              <HeldReads root={root}>
+                {(held) => (
+                  <DecisionsFilterBody
+                    artifacts={artifactsBySlug(issue)}
+                    emptyLine={EMPTY_LINE}
+                    holdsEscape={false}
+                    isClosed={false}
+                    issue={issue}
+                    reader={READER}
+                    root={held}
+                    view={view}
+                  />
+                )}
+              </HeldReads>
+            </NoTooltips>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+// R2 and decision 98, the reviewer's R1 finding on decisions-entries.ts (review 5934996192): the
+// view's decisions are the decisions view read's, else the tree read's, so while neither has
+// answered the view does not know what the issue holds. It draws no line that says the issue
+// has no decisions: a cold load of the Decisions view's address would say so of every issue.
+test("the view says nothing of an issue's decisions while neither of their reads has answered", async () => {
+  const view = renderUnread(() => new Promise<never>(() => {}));
+  try {
+    await waitFor(() => expect(treeReads, "the tree was never read").toHaveBeenCalled());
+    expect(
+      view.queryByText(EMPTY_LINE),
+      "the view says the issue has no decisions before any read of them answered"
+    ).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// R2 and decision 98: where the tree read and the decisions view read both failed, the view
+// holds no answer of either, and says the decisions could not be read, with a way to read them
+// again, as the Spec view's column says it of the same reads; it never says the issue has none.
+// Seen on the real stack at 4ce5ad5f, whose server answers the tree read 404: the Decisions view
+// of an issue with decisions read "This issue has no decisions yet."
+test("the view says its decisions could not be read where both of their reads failed", async () => {
+  const view = renderUnread(() =>
+    Promise.reject(new ApiError(503, { code: "UNAVAILABLE", error: "down" }))
+  );
+  try {
+    await waitFor(
+      () =>
+        expect(
+          view.queryByText(ANSWER_LINES.decisions_unreadable),
+          "the view does not say its decisions could not be read"
+        ).not.toBeNull(),
+      { timeout: 3000 }
+    );
+    expect(
+      view.queryByText(EMPTY_LINE),
+      "the view says the issue has no decisions where their reads failed"
+    ).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// The view's rows are the tree read's: the page's tree holds the issue alone until that read
+// answers (`useIssueTree.ts`), so a decisions view read that answered first gives the view a
+// decision with no row to draw it on. Until the tree read answers the view does not know what the
+// issue holds, and says neither that it holds no decisions nor that they could not be read.
+test("the view says nothing of an issue's decisions while the tree read is out, though its view read answered", async () => {
+  const view = await renderReads(
+    { asks: "answered", tree: "pending", view: "answered" },
+    [decision("first", { links: [shaped(specRef("s1"))] })],
+    [statement("s1"), decisionNode("first")]
+  );
+  try {
+    await waitFor(() => expect(treeReads, "the tree was never read").toHaveBeenCalled());
+    expect(
+      view.queryByText(EMPTY_LINE),
+      "the view says the issue has no decisions while the tree read its rows come from is out"
+    ).toBeNull();
+    expect(
+      view.queryByText(ANSWER_LINES.decisions_unreadable),
+      "the view says its decisions could not be read while the tree read is out"
+    ).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// Where the tree read failed with nothing held, the view has no row to draw a decision on, though
+// the decisions view read answered: it says its decisions could not be read, with a Retry that
+// reads the tree again, and never that the issue has none.
+test("the view says its decisions could not be read where the tree read failed, though its view read answered", async () => {
+  const user = userEvent.setup();
+  const view = await renderReads(
+    { asks: "answered", tree: "failed", view: "answered" },
+    [decision("first", { links: [shaped(specRef("s1"))] })],
+    [statement("s1"), decisionNode("first")]
+  );
+  try {
+    await waitFor(
+      () =>
+        expect(
+          view.queryByText(ANSWER_LINES.decisions_unreadable),
+          "the view does not say its decisions could not be read where the tree read failed"
+        ).not.toBeNull(),
+      { timeout: 3000 }
+    );
+    expect(
+      view.queryByText(EMPTY_LINE),
+      "the view says the issue has no decisions where the tree read failed"
+    ).toBeNull();
+    const before = treeReads?.mock.calls.length ?? 0;
+    await user.click(view.getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(
+        treeReads?.mock.calls.slice(before).map(([, query]) => query?.view),
+        "Retry did not read the tree again, or read the decisions view too"
+      ).toEqual([undefined])
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// Where the tree read and the decisions view read both failed, the line that says so carries a
+// Retry that reads both again. Once they answer, the line goes and the view draws the decision
+// they hold in its part, and no line says the issue has no decisions.
+test("Retry on the decisions' failed line reads them again and draws what they hold", async () => {
+  const user = userEvent.setup();
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  // The server fails every read of the tree until Retry is pressed, and then holds one decision
+  // a statement rests on, which waits for the reader's review.
+  let down = true;
+  const made = [decision("first", { links: [shaped(specRef("s1"))] })];
+  treeReads ??= spyOn(api, "getIssueTree");
+  treeReads.mockImplementation(async () => {
+    if (down) throw new ApiError(503, { code: "UNAVAILABLE", error: "down" });
+    return treeAnswer(made);
+  });
+  client.setQueryData(["asks", KEY], []);
+  client.setQueryData(["comments", KEY], []);
+  const issue = issueDetails();
+  // The page's tree as `useIssueTree.ts` builds it from `children`: no node of the read before
+  // the tree read answers, and the read's nodes once it has.
+  const body = (children: TreeNode[]) => {
+    const root = issueTree(children);
+    const view = presetView(root, "decisions", "", new Set()).root;
+    return (
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <KeymapProvider>
+            <MarginProvider>
+              <IssueScope />
+              <NoTooltips>
+                <HeldReads root={root}>
+                  {(held) => (
+                    <DecisionsFilterBody
+                      artifacts={artifactsBySlug(issue)}
+                      emptyLine={EMPTY_LINE}
+                      holdsEscape={false}
+                      isClosed={false}
+                      issue={issue}
+                      reader={READER}
+                      root={held}
+                      view={view}
+                    />
+                  )}
+                </HeldReads>
+              </NoTooltips>
+            </MarginProvider>
+          </KeymapProvider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+  };
+  const drawn = render(body([]));
+  try {
+    await waitFor(
+      () =>
+        expect(
+          drawn.queryByText(ANSWER_LINES.decisions_unreadable),
+          "the view does not say its decisions could not be read"
+        ).not.toBeNull(),
+      { timeout: 3000 }
+    );
+    down = false;
+    await user.click(drawn.getByRole("button", { name: "Retry" }));
+    await waitFor(() => {
+      expect(
+        client.getQueryData<TreeAnswer>(issueTreeKey(KEY)),
+        "Retry did not read the tree again"
+      ).toEqual(treeAnswer(made));
+      expect(
+        client.getQueryData<TreeAnswer>(viewKey(KEY, "decisions")),
+        "Retry did not read the decisions view again"
+      ).toEqual(treeAnswer(made));
+    });
+    drawn.rerender(body([statement("s1"), decisionNode("first")]));
+    await waitFor(() =>
+      expect(rowsOfPart(drawn, "review"), "the view does not draw the decision it read").toEqual([
+        D("first"),
+      ])
+    );
+    expect(
+      drawn.queryByText(ANSWER_LINES.decisions_unreadable),
+      "the view still says its decisions could not be read once they were"
+    ).toBeNull();
+    expect(
+      drawn.queryByText(EMPTY_LINE),
+      "the view says the issue has no decisions where it drew one"
+    ).toBeNull();
+  } finally {
+    drawn.unmount();
+  }
+});
+
+// R2 and decision 98: the view's first part is the open questions, which come from the issue's
+// asks read, as a person's decisions do. Where that read failed with nothing held, the view can
+// draw the decisions the tree holds but not one question, so it says its open questions could not
+// be read, with a Retry that reads the asks again, and never draws the decisions alone as though
+// no question waited. Its seam names the asks read as one of its three reads
+// (`decisions-entries.ts`), and `known` already waits for it.
+test("the view says its open questions could not be read where the asks read failed, and Retry reads the asks again", async () => {
+  const user = userEvent.setup();
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const made = [decision("first", { links: [shaped(specRef("s1"))] })];
+  treeReads ??= spyOn(api, "getIssueTree");
+  treeReads.mockImplementation(async () => treeAnswer(made));
+  client.setQueryData(issueTreeKey(KEY), treeAnswer(made));
+  client.setQueryData(viewKey(KEY, "decisions"), treeAnswer(made));
+  client.setQueryData(["comments", KEY], []);
+  // The asks read failed, as the page's own observer of it left it (`useIssueTree.ts`).
+  await client.prefetchQuery({
+    queryFn: () => Promise.reject(new ApiError(503, { code: "UNAVAILABLE", error: "down" })),
+    queryKey: ["asks", KEY],
+  });
+  const asksRead = spyOn(api, "listIssueAsks").mockResolvedValue([]);
+  const issue = issueDetails();
+  const root = issueTree([statement("s1"), decisionNode("first")]);
+  const view = presetView(root, "decisions", "", new Set()).root;
+  const drawn = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <IssueScope />
+            <NoTooltips>
+              <HeldReads root={root}>
+                {(held) => (
+                  <DecisionsFilterBody
+                    artifacts={artifactsBySlug(issue)}
+                    emptyLine={EMPTY_LINE}
+                    holdsEscape={false}
+                    isClosed={false}
+                    issue={issue}
+                    reader={READER}
+                    root={held}
+                    view={view}
+                  />
+                )}
+              </HeldReads>
+            </NoTooltips>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await waitFor(
+      () =>
+        expect(
+          drawn.queryByText(ANSWER_LINES.asks_unreadable),
+          "the view does not say its open questions could not be read where the asks read failed"
+        ).not.toBeNull(),
+      { timeout: 3000 }
+    );
+    await user.click(drawn.getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(asksRead, "Retry did not read the asks again").toHaveBeenCalledTimes(1)
+    );
+  } finally {
+    drawn.unmount();
+    asksRead.mockRestore();
+  }
+});
+
+// Where the decisions' reads and the asks read have all failed with nothing held, the view draws
+// two lines that name two different reads, and each line's Retry reads its own reads alone
+// again: the decisions' the tree read and the decisions view, the asks' the asks read.
+test("where the decisions' reads and the asks read both failed, each line names its own read and its Retry reads only that", async () => {
+  const user = userEvent.setup();
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  treeReads ??= spyOn(api, "getIssueTree");
+  treeReads.mockImplementation(async () => {
+    throw new ApiError(503, { code: "UNAVAILABLE", error: "down" });
+  });
+  client.setQueryData(["comments", KEY], []);
+  // The asks read failed, as the page's own observer of it left it (`useIssueTree.ts`).
+  await client.prefetchQuery({
+    queryFn: () => Promise.reject(new ApiError(503, { code: "UNAVAILABLE", error: "down" })),
+    queryKey: ["asks", KEY],
+  });
+  const asksRead = spyOn(api, "listIssueAsks").mockRejectedValue(
+    new ApiError(503, { code: "UNAVAILABLE", error: "down" })
+  );
+  const issue = issueDetails();
+  const root = issueTree([]);
+  const view = presetView(root, "decisions", "", new Set()).root;
+  const drawn = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <IssueScope />
+            <NoTooltips>
+              <HeldReads root={root}>
+                {(held) => (
+                  <DecisionsFilterBody
+                    artifacts={artifactsBySlug(issue)}
+                    emptyLine={EMPTY_LINE}
+                    holdsEscape={false}
+                    isClosed={false}
+                    issue={issue}
+                    reader={READER}
+                    root={held}
+                    view={view}
+                  />
+                )}
+              </HeldReads>
+            </NoTooltips>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const retryOf = (words: string): HTMLButtonElement => {
+    const button = drawn
+      .getByText(words)
+      .closest('[role="alert"]')
+      ?.querySelector<HTMLButtonElement>("button");
+    if (button == null) throw new Error(`the line "${words}" draws no Retry`);
+    return button;
+  };
+  try {
+    await waitFor(
+      () => {
+        expect(
+          drawn.queryByText(ANSWER_LINES.decisions_unreadable),
+          "the view does not say its decisions could not be read"
+        ).not.toBeNull();
+        expect(
+          drawn.queryByText(ANSWER_LINES.asks_unreadable),
+          "the view does not say its open questions could not be read"
+        ).not.toBeNull();
+      },
+      { timeout: 3000 }
+    );
+    expect(drawn.queryByText(EMPTY_LINE), "the view says the issue has no decisions").toBeNull();
+
+    const treeBefore = treeReads.mock.calls.length;
+    await user.click(retryOf(ANSWER_LINES.asks_unreadable));
+    await waitFor(() =>
+      expect(
+        asksRead,
+        "the open questions' Retry did not read the asks again"
+      ).toHaveBeenCalledTimes(1)
+    );
+    expect(
+      treeReads.mock.calls.length,
+      "the open questions' Retry read the tree or the decisions view again"
+    ).toBe(treeBefore);
+
+    await user.click(retryOf(ANSWER_LINES.decisions_unreadable));
+    await waitFor(() =>
+      expect(
+        treeReads?.mock.calls.length,
+        "the decisions' Retry did not read the tree or the decisions view again"
+      ).toBeGreaterThan(treeBefore)
+    );
+    expect(asksRead, "the decisions' Retry read the asks again").toHaveBeenCalledTimes(1);
+  } finally {
+    drawn.unmount();
+    asksRead.mockRestore();
+  }
+});
+
+// Each read the view's decisions come from can be out, answered or failed when the body is drawn,
+// and the view draws only what the reads that answered say: a decision's row once the tree read
+// its rows come from has answered; the line that its decisions could not be read where the tree
+// read failed, or is out while the decisions view read failed; the line that its open questions
+// could not be read where the asks read failed; and the line that the issue has no decisions only
+// where it holds none and the tree read and the asks read have both answered.
+test("every state of the tree read, the decisions view read and the asks read draws what the view knows", async () => {
+  const issues = [
+    {
+      children: [statement("s1"), decisionNode("first")],
+      holds: true,
+      made: [decision("first", { links: [shaped(specRef("s1"))] })],
+    },
+    { children: [statement("s1")], holds: false, made: [] },
+  ];
+  const combinations = READ_STATES.flatMap((tree) =>
+    READ_STATES.flatMap((view) => READ_STATES.map((asks) => ({ asks, tree, view })))
+  );
+  for (const { children, holds, made } of issues) {
+    for (const reads of combinations) {
+      const combination = `an issue that holds ${holds ? "one waiting decision" : "no decision"}, with the tree read ${reads.tree}, the decisions view read ${reads.view} and the asks read ${reads.asks}`;
+      const drawn = await renderReads(reads, made, children);
+      try {
+        await waitFor(
+          () => {
+            expect(
+              drawn.container.querySelector(`[data-node-row][data-node-id="${D("first")}"]`) !==
+                null,
+              `${combination}: whether the decision's row is drawn`
+            ).toBe(holds && reads.tree === "answered");
+            expect(
+              drawn.queryByText(ANSWER_LINES.decisions_unreadable) !== null,
+              `${combination}: whether the view says its decisions could not be read`
+            ).toBe(
+              reads.tree === "failed" || (reads.tree === "pending" && reads.view === "failed")
+            );
+            expect(
+              drawn.queryByText(ANSWER_LINES.asks_unreadable) !== null,
+              `${combination}: whether the view says its open questions could not be read`
+            ).toBe(reads.asks === "failed");
+            expect(
+              drawn.queryByText(EMPTY_LINE) !== null,
+              `${combination}: whether the view says the issue has no decisions`
+            ).toBe(!holds && reads.tree === "answered" && reads.asks === "answered");
+          },
+          { timeout: 3000 }
+        );
+      } finally {
+        drawn.unmount();
+      }
+    }
+  }
 });
 
 // R2: wherever a decision is drawn, one waiting for a person's review reads "Waiting for
@@ -1355,11 +1907,11 @@ test("each press of the count of what waits goes to the next thing that waits", 
   await waitFor(() => expect(focusedRow(early)).toBe(D("first")));
 });
 
-// A Change sent on a decision is a comment anchored to its words. Once the tree
-// read hangs it under the decision - the send reads the issue's comments again, and the page
-// reads its tree again after them (`subscribeTreeFreshness`) - the decision says a change was
-// asked for, leaves the review list for the reader's own decisions, draws no Keep or Change, and
-// draws what the reader asked under its words with a link to it in the conversation.
+// A Change sent on a decision is a comment anchored to its words. Once the tree read hangs it
+// under the decision - the send reads the tree again itself (`refreshQueries` of the tree's key,
+// then `dropViews`) and then invalidates the comments read - the decision says a change was asked
+// for, leaves the review list for the reader's own decisions, draws no Keep or Change, and draws
+// what the reader asked under its words with a link to it in the conversation.
 test("a decision the reader sent a Change on says so, leaves the review list and draws the change", async () => {
   const user = userEvent.setup();
   const whole = wholeIssue();
@@ -1381,12 +1933,13 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     await user.type(view.getByLabelText(CONTROL_LABELS.your_change), "Name the read, please.");
     await user.click(view.getByRole("button", { name: CONTROL_LABELS.send_change }));
     await waitFor(() => expect(create).toHaveBeenCalled());
-    // The comment is anchored to the decision's own words in the spec, the document the decision
-    // is a block of, by the quote alone.
-    expect(create.mock.calls[0]?.slice(0, 2)).toEqual([
+    // The comment is anchored to the decision's own block and words in the spec, the document
+    // the decision is a block of.
+    // Compared as `unknown`: the API's `AnchorInput` does not declare the `block_id` it carries.
+    expect<unknown>(create.mock.calls[0]?.slice(0, 2)).toEqual([
       KEY,
       {
-        anchor: { artifact: SPEC_DOCUMENT.id, quote: "The decision second." },
+        anchor: { artifact: SPEC_DOCUMENT.id, block_id: "second", quote: "The decision second." },
         body: "Name the read, please.",
       },
     ]);

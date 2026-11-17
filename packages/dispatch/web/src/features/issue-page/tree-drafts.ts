@@ -44,9 +44,8 @@ import {
 } from "./page-words";
 
 /**
- * F's rules for the drafts `buildIssueTree` places (dispatch://INFRA-1196 R4,
- * `dispatch://INFRA-1196/artifact/plan-md#b-t13`), which the tree read keeps
- * (dispatch://INFRA-4062 R1): how this issue addresses a node and names what a reference points
+ * The outline's rules for the drafts `buildIssueTree` places (root R4), which the tree read
+ * keeps: how this issue addresses a node and names what a reference points
  * at (`treeContext`), a node's words read to plain words, and how a check stands
  * (`checkStanding`).
  *
@@ -76,8 +75,7 @@ export interface Draft {
   answer?: NodeAnswer;
   chips: NodeChip[];
   /** What the coverage read counts for a requirement it holds (`tree-read/tree-nodes.ts`);
-   *  absent on every other draft, a `requirement` no coverage row holds among them, which is how
-   *  the review list tells a statement from a block (`addDecisions`). */
+   *  absent on every other draft, a `requirement` no coverage row holds among them. */
   counts?: NodeCounts;
   /** What the node's body draws under its text (`check-facts.ts`). */
   facts: NodeFact[];

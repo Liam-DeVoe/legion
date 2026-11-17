@@ -299,10 +299,9 @@ function statementsOf(read: IssueCoverage | undefined): (reference: string) => b
 }
 const isStatement = statementsOf(coverage);
 
-/** The decisions the count of `about` is handed over `tree`: its decision nodes, as the header
- *  reads them (`IssuePropertiesRow.tsx`). */
-function decisionsOf(tree: TreeAnswer, about: IssueDetails = issue) {
-  return decisionNodes(tree, { issue: about });
+/** The decisions of `tree`: its decision nodes (`decisionNodes`). */
+function decisionsOf(tree: TreeAnswer) {
+  return decisionNodes(tree, { issue });
 }
 
 /** How many decisions wait on alice over `tree`, in the count, and the id of each node of the
@@ -313,7 +312,7 @@ function waits(
   about: IssueDetails = quiet
 ): readonly [number, readonly string[]] {
   return [
-    waitingOnReader(about, "alice", decisionsOf(tree, about), statementsOf(read), tree).decisions,
+    waitingOnReader(about, "alice", statementsOf(read), tree).decisions,
     waitingIn(
       buildIssueTree({
         ...(read === undefined ? {} : { coverage: read }),
@@ -355,15 +354,14 @@ test("what waits on the reader is their open questions, the review list and thei
     decisionNode("changed", ["r1"]),
     commentNode(change, "changed"),
   ]);
-  const decisions = decisionsOf(tree);
-  const counted = waitingOnReader(issue, "alice", decisions, isStatement, tree);
+  const counted = waitingOnReader(issue, "alice", isStatement, tree);
   expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 1, total: 3 });
   expect(waitingIn(buildIssueTree({ coverage, issue, tree, viewer: "alice" }))).toEqual([
     "mine",
     "spec#b-listed",
   ]);
 
-  const unknown = waitingOnReader(issue, undefined, decisions, isStatement, tree);
+  const unknown = waitingOnReader(issue, undefined, isStatement, tree);
   expect(unknown.total).toBe(0);
   expect(waitingIn(buildIssueTree({ coverage, issue, tree }))).toEqual([]);
 });
@@ -389,14 +387,14 @@ test("waitingOnReader counts a waiting decision node", () => {
     decisionNode("untied", []),
   ]);
 
-  expect(waitingOnReader(quiet, "alice", decisionsOf(tree, quiet), isStatement, tree)).toEqual({
+  expect(waitingOnReader(quiet, "alice", isStatement, tree)).toEqual({
     approvals: [],
     asks: 0,
     decisions: 1,
     total: 1,
   });
   expect(waits(tree, coverage)).toEqual([1, ["spec#b-waits"]]);
-  expect(waitingOnReader(quiet, "alice", [], isStatement, undefined).decisions).toBe(0);
+  expect(waitingOnReader(quiet, "alice", isStatement, undefined).decisions).toBe(0);
 });
 
 // A Change is the comment the tree read hangs under its decision, which is where the
@@ -515,7 +513,7 @@ test("a decision node no document holds waits on nobody", () => {
  *  that waits on her: the two read the same open asks and the same decision nodes. */
 function countedAndDrawn(tree: TreeAnswer, about: IssueDetails) {
   return {
-    counted: waitingOnReader(about, "alice", decisionsOf(tree, about), isStatement, tree),
+    counted: waitingOnReader(about, "alice", isStatement, tree),
     drawn: waitingIn(buildIssueTree({ coverage, issue: about, tree, viewer: "alice" })),
   };
 }

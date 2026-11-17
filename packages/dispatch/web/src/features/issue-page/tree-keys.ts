@@ -57,10 +57,9 @@ export { withoutVersion };
 
 /**
  * The decision behind the node `id`: the first decision of the tree, in reading order, that
- * names that node among its chips. A decision names every spec block it links
- * (`tree-drafts.ts`'s `addDecisions`), and that link is the only edge the model holds between a
- * decision and what it shaped until pull request 2797 lands its `shaped` edge; the day it does,
- * this reads that edge instead and the key does not change.
+ * names that node among its chips. A decision names every block its `shaped` tuples point at
+ * (`tree-read/tree-nodes.ts`), and that chip is the edge the model holds between a decision and
+ * what it shaped.
  *
  * A check no decision names reaches back through the chain it sits in (R10): the decision
  * behind a requirement it is drawn under, which is the decision that informed what the check
