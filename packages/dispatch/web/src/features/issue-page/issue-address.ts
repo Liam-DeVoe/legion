@@ -6,11 +6,9 @@ import { agentsOnlyIds } from "./agents-only";
 import type { TreeNode } from "./issue-tree";
 import type { Preset } from "./page-words";
 import { blockNodeId } from "./tree-drafts";
-import { isOvertaken } from "./tree-fold";
 
 /**
- * What one address of the issue page says (dispatch://INFRA-1196 R19,
- * `dispatch://INFRA-1196/artifact/plan-md#b-t9`).
+ * What one address of the issue page says.
  *
  * Every address the old page's nine tabs answered still resolves, and this module is the one
  * place that says what each one opens: which preset, which document is opened in place of the
@@ -42,8 +40,8 @@ export type AddressTarget =
    *  address that opens no document (`issueAddress`). */
   | { readonly kind: "node"; readonly id: string }
   /** The issue's children, by the issue's own key: the children's own address (`/children`,
-   *  `t h`) names the first row of their group in the outline (the architect's ruling 5 on R12),
-   *  which the page unfolds the path to and puts the focus on. */
+   *  `t h`) names the first row of their group in the outline, which the page unfolds the path
+   *  to and puts the focus on. */
   | { readonly kind: "children"; readonly id: string };
 
 /** What one address of the issue page opens. */
@@ -281,6 +279,22 @@ export function pathToTarget(
   if (byId !== undefined) return byId;
   const address = `/${target.id}`;
   return pathToNode(root, (node) => node.reference?.endsWith(address) === true);
+}
+
+/** Whether the node is proposed: put forward and not yet settled by a person. The page draws it
+ *  with its mark and no gap, and it opens no path of the fold as an open statement or check
+ *  would. It and `isOvertaken` are every place's one reading of a node's life, kept here, by the
+ *  line an address opens (`overtakenLineOf`), since this module imports no value of
+ *  `issue-tree.ts`, which reads a node's life too, and `tree-fold.ts` imports one. */
+export function isProposed(node: TreeNode): boolean {
+  return node.life === "proposed";
+}
+
+/** Whether the node is overtaken: a later node took its place. It is no row until the reader
+ *  opens its parent's line, and it and every node under it are `closed`. A parent line or a chip
+ *  carries its node's life, so it is read the same way. */
+export function isOvertaken(node: Pick<TreeNode, "life">): boolean {
+  return node.life === "overtaken";
 }
 
 /**

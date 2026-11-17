@@ -57,8 +57,8 @@ describe("the dispatch command surface", () => {
     }
   });
 
-  test("names map both ways for all 45 tools, and no two flags of one command collide", () => {
-    expect(dispatchToolSpecs).toHaveLength(45);
+  test("names map both ways for all 46 tools, and no two flags of one command collide", () => {
+    expect(dispatchToolSpecs).toHaveLength(46);
     for (const spec of dispatchToolSpecs) {
       expect(toolForCommand(commandName(spec.name))).toBe(spec.name);
       const flags = commandFlags(spec.name);
@@ -282,6 +282,7 @@ describe("the dispatch command surface", () => {
         "message",
         "plan-approve",
         "pointer",
+        "premortem-convert",
         "proposed",
         "read",
         "request-approval",

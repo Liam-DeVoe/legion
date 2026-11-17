@@ -5,7 +5,9 @@ import { type ReactNode, useMemo } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
-import type { Artifact, Decision, IssueDetails } from "../../api/types";
+import { api } from "../../api/client";
+import { issueCoverageQuery, issueResultsQuery } from "../../api/queries";
+import type { Artifact, Decision, IssueDetails, ReferenceTarget } from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildDispatchReference } from "../refs/routes";
@@ -14,15 +16,17 @@ import { useKeymapScope } from "../shell/keymap";
 import { IssueThreeThings } from "./IssueThreeThings";
 import { IssueTree } from "./IssueTree";
 import { buildIssueTree, type TreeNode } from "./issue-tree";
-import { useReferenceNames } from "./one-line";
+import { useIssueNames } from "./one-line";
 import { EMPTY_STATE_LINES, type NodeType } from "./page-words";
+import { ContentsSlot } from "./slots/contents";
+import { ProvidersSlot } from "./slots/providers";
 import { specSummary } from "./spec-summary";
-import { blockNodeId, blockWords, treeContext } from "./tree-drafts";
-import type { TreeAnswerNode } from "./tree-read/tree-read";
+import { blockNodeId, blockWords } from "./tree-drafts";
+import { issueTreeQuery, type TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
  * The head of the page draws the issue in plain language: at most three bullets, each one spoken
- * sentence of the spec's summary (dispatch://INFRA-1196 R5), out of the server's reading of the
+ * sentence of the spec's summary (R5), out of the server's reading of the
  * summary node's text (its `tree`), which the tree the page already holds carries - the head
  * reads no document of its own (R20).
  *
@@ -38,7 +42,8 @@ beforeAll(async () => {
 
 const KEY = "CORE-1";
 
-/** A node of the tree with nothing on it but its kind, and `fields`. */
+/** A node of the tree with nothing on it but its kind, and `fields`. A requirement here is one
+ *  of the issue's own spec, which the page's model marks a statement (`isStatement`). */
 function treeNode(id: string, type: NodeType, fields: Partial<TreeNode> = {}): TreeNode {
   return {
     alsoUnder: [],
@@ -54,6 +59,7 @@ function treeNode(id: string, type: NodeType, fields: Partial<TreeNode> = {}): T
     transcluded: false,
     type,
     waiting: false,
+    ...(type === "requirement" ? { statement: true as const } : {}),
     ...fields,
   };
 }
@@ -69,21 +75,32 @@ function summaryNode(text: string): TreeNode {
 }
 
 /** The head as a slot draws it: what the summary cites named once over `root`, the whole tree
- *  the summary is a node of (`slots/contents.tsx`). */
+ *  the summary is a node of (`slots/contents.tsx`), for an issue that has a spec unless `hasSpec`
+ *  says not. */
 function Head({
+  hasSpec = true,
   look,
   reading,
   root,
   summary,
 }: {
+  hasSpec?: boolean;
   look: "contents" | "spec";
   reading: boolean;
   root: TreeNode;
   summary: TreeNode | undefined;
 }): ReactNode {
-  const nodeIdOf = useMemo(() => treeContext({ issue: issueDetails() }).nodeIdOf, []);
-  const nameOf = useReferenceNames(root, nodeIdOf);
-  return <IssueThreeThings look={look} nameOf={nameOf} reading={reading} summary={summary} />;
+  const issue = useMemo(() => issueDetails(), []);
+  const { nameOf } = useIssueNames(issue, root);
+  return (
+    <IssueThreeThings
+      hasSpec={hasSpec}
+      look={look}
+      nameOf={nameOf}
+      reading={reading}
+      summary={summary}
+    />
+  );
 }
 
 /** The sentences the head draws, in order, and the label before each. `reading` is whether the
@@ -108,9 +125,9 @@ function bullets(
   };
 }
 
-// The architect's ruling 5: each sentence stands after its label, in the order the summary
-// holds them, in the Contents slot (the pane and the Outline sheet) and the Spec view's first
-// group alike; and the two rows the spec named under them are drawn nowhere.
+// Each sentence stands after its label, in the order the summary holds them, in the Contents
+// slot (the pane and the Outline sheet) and the Spec view's first group alike; and the two rows
+// the spec named under them are drawn nowhere.
 test("each sentence stands after its label, and the two rows are not drawn", () => {
   for (const look of ["contents", "spec"] as const) {
     const { labels, lines, unmount } = bullets(
@@ -254,6 +271,29 @@ test("a spec with no summary draws the page's own line and no bullet", () => {
   }
 });
 
+// R5 and R8: an issue with no spec has no summary to say is missing, so the head says nothing of
+// one, where a spec with no summary says it has none.
+test("an issue with no spec says nothing of a summary", () => {
+  const view = render(
+    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+      <Head
+        hasSpec={false}
+        look="contents"
+        reading={false}
+        root={treeNode(KEY, "issue")}
+        summary={undefined}
+      />
+    </MemoryRouter>
+  );
+  try {
+    expect(screen.getByTestId("issue-three-things").textContent).not.toContain(
+      EMPTY_STATE_LINES.spec_summary
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 // The page's first load draws the tree before the spec's blocks and their words arrive, so the
 // summary node is missing, or there with no reading yet. That is no spec without a summary, and
 // the head says nothing about one until the reads that carry it have answered.
@@ -337,9 +377,9 @@ test("a bulleted summary draws its last item though it has no end mark", () => {
   }
 });
 
-// Review finding 4590606164 and decision 51: a leading label opens its sentence and ends none,
-// and a mark before a word in lower case ends an abbreviation, not a sentence, so each label
-// names the sentence its author wrote.
+// Review finding 4590606164: a leading label opens its sentence and ends none, and a mark before
+// a word in lower case ends an abbreviation, not a sentence, so each label names the sentence its
+// author wrote.
 test("a sentence is ended neither at a leading label nor before a word in lower case", () => {
   const { lines, unmount } = bullets(
     summaryNode(
@@ -357,8 +397,8 @@ test("a sentence is ended neither at a leading label nor before a word in lower 
   }
 });
 
-// R1 and decision 51: a leading label and the words after it with no end hold no sentence end,
-// so the summary's first line is its one sentence, with the label in it and not the label alone.
+// R1: a leading label and the words after it with no end hold no sentence end, so the summary's
+// first line is its one sentence, with the label in it and not the label alone.
 test("a summary of a leading label and words with no end draws its first line", () => {
   const { lines, unmount } = bullets(summaryNode("R1. The page draws one body"));
   try {
@@ -400,9 +440,9 @@ test("a summary sentence that cites a block draws the block's name, not its addr
 });
 
 // R1: each sentence whole as its author wrote it, after its own label. A cited statement is
-// named by its own first words (`useReferenceNames`), which on an INFRA spec open with a label
-// ("R1."), so a sentence end read after the naming splits the author's first sentence at the
-// name and moves "Why it matters:" onto its second half.
+// named by its own first words (`useReferenceNames`), which in a spec that numbers its
+// statements open with a label ("R1."), so a sentence end read after the naming splits the
+// author's first sentence at the name and moves "Why it matters:" onto its second half.
 test("a summary sentence that cites a labelled statement stays one sentence under its own label", () => {
   const cited = `dispatch://${KEY}/spec#b-r1`;
   const summary = summaryNode(
@@ -430,9 +470,9 @@ test("a summary sentence that cites a labelled statement stays one sentence unde
   }
 });
 
-// R1 and decision 51: whether a summary holds a sentence end is read before the names go in, so
-// a summary whose author wrote none is one sentence, its first line, though the statement it
-// cites is named by words that open with a label ("R1.").
+// R1: whether a summary holds a sentence end is read before the names go in, so a summary whose
+// author wrote none is one sentence, its first line, though the statement it cites is named by
+// words that open with a label ("R1.").
 test("a summary with no sentence end that cites a labelled statement draws it as one sentence", () => {
   const cited = `dispatch://${KEY}/spec#b-r1`;
   const summary = summaryNode(`The page draws ${cited} first on every phone`);
@@ -542,11 +582,9 @@ const decision: Decision = {
   waiting_review: false,
 };
 
-/** The issue the drawn-gap case reads: a spec with a summary and one requirement no check
- *  serves, and a decisions document with one decision, as the page's reads answer them. */
-function fullyReadIssue(): TreeNode {
-  // A typed block of the spec as the tree read answers it, under the issue, at `position`.
-  const block = (id: string, type: string, position: number, text: string): TreeAnswerNode => ({
+/** A typed block of the spec as the tree read answers it, under the issue, at `position`. */
+function block(id: string, type: string, position: number, text: string): TreeAnswerNode {
+  return {
     attributes: {},
     author: null,
     document: { artifact_id: specDocument.id, position, slug: "spec" },
@@ -559,7 +597,29 @@ function fullyReadIssue(): TreeNode {
     text,
     text_tree: displayTree(text),
     visibility: "project",
-  });
+  };
+}
+
+/** The spec's summary as the batched reference read names it: the block's stored excerpt, and
+ *  the server's reading of its words. */
+function summaryTarget(): ReferenceTarget {
+  return {
+    gone: false,
+    kind: "block",
+    name: ":::callout{#summary}\nWhat this is. Why it matters. What is different when done.\n:::",
+    ref: buildDispatchReference({
+      block: { id: "summary" },
+      key: KEY,
+      kind: "artifact",
+      slug: "spec",
+    }),
+    text_tree: displayTree("What this is. Why it matters. What is different when done."),
+  };
+}
+
+/** The issue the drawn-gap case reads: a spec with a summary and one requirement no check
+ *  serves, and a decisions document with one decision, as the page's reads answer them. */
+function fullyReadIssue(): TreeNode {
   return buildIssueTree({
     coverage: {
       gaps: ["r1 has no check"],
@@ -606,22 +666,87 @@ function fullyReadIssue(): TreeNode {
       view_of: null,
     },
     issue: issueDetails(),
-    targets: [
-      {
-        gone: false,
-        kind: "block",
-        name: ":::callout{#summary}\nWhat this is. Why it matters. What is different when done.\n:::",
-        ref: buildDispatchReference({
-          block: { id: "summary" },
-          key: KEY,
-          kind: "artifact",
-          slug: "spec",
-        }),
-        text_tree: displayTree("What this is. Why it matters. What is different when done."),
-      },
-    ],
+    targets: [summaryTarget()],
   });
 }
+
+// R1 and R8: the Contents pane's three sentences are the spec's summary, so they wait on the
+// spec's blocks alone. A plan whose blocks read was refused holds nothing they are drawn from,
+// and changes nothing in them.
+test("the Contents pane draws the three sentences though the plan's blocks could not be read", async () => {
+  const plan: Artifact = {
+    ...decisionsDocument,
+    id: "artifact-plan",
+    name: "plan.md",
+    slug: "plan",
+  };
+  const issue: IssueDetails = {
+    ...issueDetails(),
+    artifacts: [specDocument, decisionsDocument, plan],
+    plan_artifact_id: plan.id,
+  };
+  const route = { key: KEY, kind: "issue" } as const;
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, { requirements: [] } as never);
+  client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
+  client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
+  client.setQueryData(["asks", KEY], []);
+  client.setQueryData(["comments", KEY], []);
+  client.setQueryData(["issue-messages", KEY], []);
+  // The tree read holds the spec's summary, and the plan's blocks are no read of their own: a
+  // blocks read of any document is refused.
+  client.setQueryData(issueTreeQuery(KEY).queryKey, {
+    converted: false,
+    cursor: null,
+    nodes: [
+      block("summary", "callout", 0, "What this is. Why it matters. What is different when done."),
+    ],
+    tree: null,
+    tuples: [],
+    view_of: null,
+  });
+  const blocks = spyOn(api, "getArtifactBlocks").mockRejectedValue(new Error("refused"));
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({
+    targets: [summaryTarget()],
+  } as never);
+  try {
+    const view = render(
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <KeymapProvider>
+            <MarginProvider>
+              <ProvidersSlot issue={issue} route={route}>
+                <ContentsSlot issue={issue} route={route} />
+              </ProvidersSlot>
+            </MarginProvider>
+          </KeymapProvider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    try {
+      await waitFor(() =>
+        expect(client.getQueryState(issueTreeQuery(KEY).queryKey)?.status).toBe("success")
+      );
+      await waitFor(() =>
+        expect(
+          [
+            ...view.container.querySelectorAll(
+              '[data-testid="issue-three-things"] li [data-author-text]'
+            ),
+          ].map((sentence) => sentence.textContent)
+        ).toEqual(["What this is.", "Why it matters.", "What is different when done."])
+      );
+    } finally {
+      view.unmount();
+    }
+  } finally {
+    blocks.mockRestore();
+    names.mockRestore();
+  }
+});
 
 /** happy-dom answers every media query against its own 1024 px window. The case below reads
  *  the outline at 1440 px: a `max-width` in px, a `min-width` in rem, and `not all and` either. */

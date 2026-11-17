@@ -5,7 +5,7 @@ import type { NodeLife } from "./issue-tree";
 import type { NodeType } from "./page-words";
 
 /**
- * What the reader's focus is on, which the panel draws the facts of (dispatch://INFRA-1196 R12).
+ * What the reader's focus is on, which the panel draws the facts of.
  *
  * The tree moves the focus: `IssueTree` calls `useSetFocusedNode` on every move to a row, and
  * hands back `undefined` when the focus leaves the tree for anywhere but Details, which leaves

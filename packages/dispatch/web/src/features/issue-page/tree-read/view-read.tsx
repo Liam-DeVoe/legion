@@ -1,8 +1,10 @@
 import { useQueries, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { IssueDetails } from "../../../api/types";
 import { QueryError } from "../../../components/QueryError";
+import { focusOnDocument } from "../../shell/roving";
+import { bringOnScreen } from "../identity-block";
 import { ANSWER_LINES, type Preset } from "../page-words";
 import { dropViews, subscribeTreeFreshness, TREE_VIEWS, useTreeRead, viewQuery } from "./tree-read";
 
@@ -52,17 +54,64 @@ export function ViewReadProvider({
 }
 
 /**
- * The outline's line for a tree read refused before it first answered, its retries spent: until
- * the read holds an answer the tree is the issue alone and the outline draws no row, so the line
+ * The outline's line for a tree read refused with no answer held, its retries spent: until the
+ * read holds an answer the tree is the issue alone and the outline draws no row, so the line
  * says the read failed, with a Retry that reads the tree again, as each view's line says of a
- * read of its own. Nothing while the read is out, and nothing once it holds an answer, which a
- * failed refetch keeps.
+ * read of its own. Nothing while the first read is out, and nothing once the read holds an
+ * answer, which a failed refetch keeps.
+ *
+ * Once drawn, the line stays until a read answers (`useTreeRead`'s `failed`), whatever read is
+ * out in between - the reader's Retry, an event's, the live feed's coming back, a focus's while
+ * the feed is down - so the Retry stays on the page, and so does the keyboard's focus on it,
+ * which would otherwise fall to the page's body. The Retry stays enabled, since a control
+ * disabled while it holds the focus drops it, and a press while a read is out does nothing:
+ * TanStack gives up a read in flight for a new one only where the query holds an answer, so the
+ * press joins the read out and sends none. Refused again, the line stays as it was, the focus
+ * with it. Answered, the line goes in the render that draws the outline's rows from the answer,
+ * and a focus that was in it goes to the row that holds the tree's tab stop, never to the
+ * page's body.
  */
 export function TreeReadFailed({ issue }: { issue: IssueDetails }): ReactNode {
   const { failed, refetch } = useTreeRead(issue);
+  // The box the line stood in, which holds the outline's tree (`slots/body.tsx`), once the line
+  // left the page with the focus in it, until a row of the tree takes that focus.
+  const fellIn = useRef<HTMLElement | null>(null);
+  // One function for every render, so React runs its cleanup only when the line leaves the
+  // page; it runs before the line is taken off the page, while the focus is still in it.
+  const keepsFocus = useCallback((line: HTMLDivElement | null) => {
+    if (line === null) return undefined;
+    const box = line.parentElement;
+    return () => {
+      if (line.contains(document.activeElement)) fellIn.current = box;
+    };
+  }, []);
+  // After every render, since the outline draws its rows in a render of the body, which draws
+  // this line too. A focus that fell from the line goes to the tree's tab-stop row, at once and
+  // without scrolling, and the row is brought on screen in the next frame (`bringOnScreen`)
+  // where it still holds the focus. A focus something else took in the meantime stays there.
+  useLayoutEffect(() => {
+    const box = fellIn.current;
+    if (box === null) return;
+    if (!focusOnDocument()) {
+      fellIn.current = null;
+      return;
+    }
+    const row = box.querySelector<HTMLElement>(TAB_STOP_ROW);
+    if (row === null) return;
+    fellIn.current = null;
+    row.focus({ preventScroll: true });
+    requestAnimationFrame(() => {
+      if (document.activeElement === row) bringOnScreen(row);
+    });
+  });
   return failed ? (
-    <div data-tree-unreadable="">
+    <div data-tree-unreadable="" ref={keepsFocus}>
       <QueryError message={ANSWER_LINES.outline_unreadable} onRetry={() => void refetch()} />
     </div>
   ) : null;
 }
+
+/** The row of the outline's tree that holds its one tab stop: the stage's own selector
+ *  (`slots/stage.tsx`'s `TAB_STOP_ROW`), which this file cannot import, since the stage imports
+ *  this file. */
+const TAB_STOP_ROW = '[role="tree"] [role="treeitem"][tabindex="0"]';

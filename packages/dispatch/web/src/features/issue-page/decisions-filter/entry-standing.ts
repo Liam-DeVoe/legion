@@ -3,19 +3,15 @@ import { type NodeState, nodeStateWord } from "../page-words";
 import type { DecisionsEntry, NamedEntry } from "./decisions-parts";
 
 /**
- * How one entry of the Decisions filter stands (dispatch://INFRA-1196 R2, R6): the one reading
- * its row's `data-node-state`, its margin's state word and the panel's facts of the focused node
- * all take, so none of them works it out again.
+ * How one entry of the Decisions filter stands, read once for its two readers so neither works
+ * it out again: the row reads `token` for its `data-node-state` and its margin's state, and the
+ * panel reads `words` for the facts of the focused node.
  */
 export interface EntryStanding {
-  /** The name of the person who kept the decision, which follows "Kept by"; absent on every
-   *  entry that does not stand kept. */
-  readonly keeper?: string;
   /** The state's token: an ask's own `state`, and a decision's standing with the reader. */
   readonly token: NodeState;
-  /** The page's word for the token (`nodeStateWord`). */
-  readonly word: string;
-  /** The word, then a space and the keeper where there is one: the state as one line. */
+  /** The page's word for the token (`nodeStateWord`), then a space and the name of the person
+   *  who kept the decision where it stands kept: the state as one line. */
   readonly words: string;
 }
 
@@ -41,7 +37,5 @@ export function entryStanding(
     token === "kept" && entry.kind === "decision" && entry.keptBy !== undefined
       ? nameOf(entry.keptBy)
       : undefined;
-  return keeper === undefined
-    ? { token, word, words: word }
-    : { keeper, token, word, words: `${word} ${keeper}` };
+  return { token, words: keeper === undefined ? word : `${word} ${keeper}` };
 }

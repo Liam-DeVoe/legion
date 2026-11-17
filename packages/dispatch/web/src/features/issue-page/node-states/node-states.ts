@@ -1,6 +1,5 @@
-import { overtakenLineOf } from "../issue-address";
+import { isOvertaken, isProposed, overtakenLineOf } from "../issue-address";
 import type { NodeChip, NodeLife, TreeNode } from "../issue-tree";
-import { isOvertaken, isProposed } from "../tree-fold";
 import { withoutVersion } from "../tree-keys";
 import { nodeStatesOf } from "../tree-read/tree-nodes";
 import type { TreeAnswer } from "../tree-read/tree-read";
@@ -19,9 +18,10 @@ import type { TreeAnswer } from "../tree-read/tree-read";
  * `issue-tree.ts` passes the tree it assembles through this module, so this module imports no
  * value of that one, which Biome's `noImportCycles` would refuse: its caller hands it `heldBy`,
  * the folded count that counts a parent's overtaken children as one row, and a node's life is
- * read through `tree-fold.ts`'s predicates, since that module imports no value at all. The
- * read's own values are read in `tree-read/tree-nodes.ts` (`nodeStatesOf`), which imports no
- * value of this module or of `issue-tree.ts`.
+ * read through `issue-address.ts`'s predicates, since that module imports no value of
+ * `issue-tree.ts` or of any module that does. The read's own values are read in
+ * `tree-read/tree-nodes.ts` (`nodeStatesOf`), which imports no value of this module or of
+ * `issue-tree.ts`.
  */
 
 /** What the tree read says of one node beside its kind: its life, where it has one, and whether

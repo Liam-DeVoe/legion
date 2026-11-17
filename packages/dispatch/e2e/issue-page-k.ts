@@ -5,12 +5,10 @@ import { specBlockRef } from "./issue-layout-seed-text";
 import { issuePage } from "./issue-page";
 
 /**
- * What part K's rows read of the Plan view (dispatch://INFRA-3938, part K of
- * dispatch://INFRA-1196), and the one plan they seed themselves: the chart, the one control
- * that switches it to the ordered steps (`web/src/features/issue-page/plan-filter/
- * PlanFilterBody.tsx`), and the box both stand in. This is part K's file, and no other part
- * changes it (decision 2 of the parts). The steps are the outline's own rows, which part G's
- * `e2e/issue-page-g.ts` reads.
+ * What the Plan view's rows read of the view, and the one plan they seed themselves: the chart,
+ * the one control that switches it to the ordered steps (`web/src/features/issue-page/
+ * plan-filter/PlanFilterBody.tsx`), and the box both stand in. The steps are the outline's own
+ * rows, which `e2e/issue-page-g.ts` reads.
  *
  * - **The box** `[data-plan-body]`, which holds the control and the chart or the steps.
  * - **The control** `[data-plan-switch]`, a `group` named "Plan": the two buttons
@@ -23,16 +21,16 @@ import { issuePage } from "./issue-page";
  *   task's first line `[data-node-words]` and its facts `[data-plan-facts]`: the mark that it
  *   holds no size `[data-plan-no-size]` and each task it needs `[data-plan-need]`, by that
  *   task's node id), the track that holds its bar `[data-plan-bar]`, and the statements it
- *   serves `[data-plan-serves]`, one chip each: the chip's bordered box is a child of
- *   `[data-plan-serves]`, and its `[data-plan-serve]` is the link inside that box, or the box
- *   itself where the chip links nowhere. At 760 px and below the row is one card, and its first
- *   and third children and its facts lay nothing out of their own (`display: contents`), so a
- *   reader measures what they hold. A cycle's row is `[data-plan-cycle-row]`, a `treeitem`
- *   whose `data-node-id` is the task it stands for and whose attribute holds every task of it,
- *   around its one line `[data-plan-cycle]`. The curves between two bars are
- *   `svg[data-plan-links] path[data-plan-link="<needed id> <id>"]`.
- * - **The seed** `seedPlanMarks`: a plan whose first task's words are bold and numbered, as the
- *   real plan's are (the tester's finding F18), written through `e2e/api.ts` alone.
+ *   serves `[data-plan-serves]`, one chip each: `[data-plan-serve]` is the chip's bordered box,
+ *   and a chip that links to its statement holds its link inside that box
+ *   (`[data-plan-serve] a`), stretched over the whole box. At 760 px and below the row is one
+ *   card, and its first and third children and its facts lay nothing out of their own
+ *   (`display: contents`), so a reader measures what they hold. A cycle's row is
+ *   `[data-plan-cycle-row]`, a `treeitem` whose `data-node-id` is the task it stands for and
+ *   whose attribute holds every task of it, around its one line `[data-plan-cycle]`. The curves
+ *   between two bars are `svg[data-plan-links] path[data-plan-link="<needed id> <id>"]`.
+ * - **The seed** `seedPlanMarks`: a plan whose first task's words are bold and numbered, as a
+ *   written plan's often are, written through `e2e/api.ts` alone.
  */
 
 /** One row of the Plan view's chart: a step with where its bar starts, what it says of its
@@ -74,17 +72,17 @@ export function planChartRows(page: Page): Promise<ChartRow[]> {
   });
 }
 
-/** One of the Plan view's two controls, the chart or the ordered steps (R6). */
+/** One of the Plan view's two controls, the chart or the ordered steps. */
 export function planView(page: Page, view: "chart" | "steps"): Locator {
   return issuePage(page).locator(`[data-plan-view="${view}"]`);
 }
 
-/** The view's box, which holds the control and the chart or the steps (R1). */
+/** The view's box, which holds the control and the chart or the steps. */
 export function planBody(page: Page): Locator {
   return issuePage(page).locator("[data-plan-body]");
 }
 
-/** The chart, the drawing the view opens on (R4). */
+/** The chart, the drawing the view opens on. */
 export function planChart(page: Page): Locator {
   return issuePage(page).locator("[data-plan-chart]");
 }
@@ -99,7 +97,7 @@ export interface Box {
   readonly width: number;
 }
 
-/** Where one step's row stands and how it is drawn: what R4 and R5 read of a step, at any width. */
+/** Where one step's row stands and how it is drawn, at any width. */
 export interface StepLayout {
   readonly id: string;
   /** Its bar: where it stands, and its border and its fill. */
@@ -108,7 +106,7 @@ export interface StepLayout {
     readonly borderColor: string;
     readonly borderStyle: string;
   };
-  /** The bordered box of each statement chip it serves (`[data-plan-serves]`'s children). */
+  /** The bordered box of each statement chip it serves (`[data-plan-serve]`). */
   readonly chips: readonly Box[];
   /** The row's own box, and how it is drawn: its left edge, its mark and its fill. */
   readonly row: Box & {
@@ -120,7 +118,7 @@ export interface StepLayout {
   /** The widths of the row's first column and its third, where the row is the chart's three
    *  columns; at 760 px and below the boxes of those columns lay nothing out and are 0. */
   readonly columns: { readonly first: number; readonly third: number };
-  /** The tops of the parts of R5's line: "No size", each task it needs, each statement. */
+  /** The tops of the parts of the card's line: "No size", each task it needs, each statement. */
   readonly line: {
     readonly needs: readonly number[];
     readonly noSize: number | null;
@@ -152,6 +150,8 @@ export function stepLayouts(page: Page): Promise<StepLayout[]> {
       const third = row.querySelector(":scope > [data-plan-serves]");
       const noSize = row.querySelector("[data-plan-no-size]");
       const nothing = { bottom: 0, height: 0, left: 0, right: 0, top: 0, width: 0 };
+      // One query for the statement chips, so the line's tops are those of the chips' boxes.
+      const chips = [...row.querySelectorAll("[data-plan-serve]")].map(box);
       return {
         bar: {
           ...(bar === null ? nothing : box(bar)),
@@ -159,7 +159,7 @@ export function stepLayouts(page: Page): Promise<StepLayout[]> {
           borderColor: barStyle?.borderTopColor ?? "",
           borderStyle: barStyle?.borderTopStyle ?? "",
         },
-        chips: third === null ? [] : [...third.children].map(box),
+        chips,
         columns: {
           first: first === null ? 0 : first.getBoundingClientRect().width,
           third: third === null ? 0 : third.getBoundingClientRect().width,
@@ -170,9 +170,7 @@ export function stepLayouts(page: Page): Promise<StepLayout[]> {
             (need) => need.getBoundingClientRect().top
           ),
           noSize: noSize === null ? null : noSize.getBoundingClientRect().top,
-          serves: [...row.querySelectorAll("[data-plan-serve]")].map(
-            (serve) => serve.getBoundingClientRect().top
-          ),
+          serves: chips.map((chip) => chip.top),
         },
         row: {
           ...box(row),
@@ -187,10 +185,10 @@ export function stepLayouts(page: Page): Promise<StepLayout[]> {
   });
 }
 
-/** What R4 reads of the chart's head row: where "Serves" starts against the first statements'
- *  column, and the boxes of its middle cell and of each line of the axis. Null where no chart is
- *  drawn. At 760 px and below the chart draws its head row hidden (`display: none`), so the row
- *  is there and every box and edge read of it is 0. */
+/** What the rows read of the chart's head row: where "Serves" starts against the first
+ *  statements' column, and the boxes of its middle cell and of each line of the axis. Null where
+ *  no chart is drawn. At 760 px and below the chart draws its head row hidden (`display: none`),
+ *  so the row is there and every box and edge read of it is 0. */
 export interface HeadLayout {
   readonly axis: readonly Box[];
   readonly middle: Box;
@@ -226,8 +224,8 @@ export function headLayout(page: Page): Promise<HeadLayout | null> {
 }
 
 /** The text of each element the box marks as the page's own words (`[data-page-chrome]`), less
- *  what an author wrote inside it (`[data-author-text]`): R9's words, which a reader checks
- *  against the page's one list. */
+ *  what an author wrote inside it (`[data-author-text]`), which a reader checks against the
+ *  page's one list. */
 export function chromeTexts(page: Page): Promise<string[]> {
   return planBody(page).evaluate((body) =>
     [...body.querySelectorAll("[data-page-chrome]")].map((element) => {
@@ -241,9 +239,9 @@ export function chromeTexts(page: Page): Promise<string[]> {
 /** The project `seedPlanMarks` makes. */
 const MARKS_PROJECT = "MARKS";
 
-/** The words `seedPlanMarks` gives its two tasks and its two statements: each starts as the
- *  real plan's and spec's do, bold and numbered, the task's number escaped as markdown writes a
- *  number that starts a line (`1\.`). */
+/** The words `seedPlanMarks` gives its two tasks and its two statements: each starts bold and
+ *  numbered, as a written plan's and spec's often do, the task's number escaped as markdown
+ *  writes a number that starts a line (`1\.`). */
 const PLAN_MARKS_WORDS = {
   first: "**1\\. Stand the harness up.** The rows run on the real stack.",
   firstStatement: "**R1.** The page draws a need by its words.",
@@ -257,11 +255,10 @@ export interface PlanMarksSeed {
   readonly specArtifactId: string;
 }
 
-/** A plan of two tasks whose words carry the marks the real plan's carry: `t1` starts
- *  `**1\. Stand the harness up.**`, `t2` needs `t1` and serves both statements of the spec,
- *  `r1` and `r2`, whose words start `**R1.**` and `**R2.**` (the tester's finding F18). Every
- *  write goes through `e2e/api.ts`, and `t2` names `t1` in the same write that makes it, which
- *  the server reads from that write's own blocks. */
+/** A plan of two tasks whose words carry bold, numbered labels (`PLAN_MARKS_WORDS`): the second
+ *  task needs the first and serves both statements of the spec, whose words start with labels
+ *  of their own. Every write goes through `e2e/api.ts`, and the second task names the first in
+ *  the same write that makes it, which the server reads from that write's own blocks. */
 export async function seedPlanMarks(): Promise<PlanMarksSeed> {
   await createProject({ key: MARKS_PROJECT, name: "Plan marks" });
   const issue = await createIssue({

@@ -250,3 +250,68 @@ func TestTheBlockCensusReadsNoFindingAndNoTupleTheBlockIndexDoesNotProject(t *te
 			blocks.Rows, blocks.Nodes, rows)
 	}
 }
+
+// A row that names a node the store holds gone is reported under a cause of its own. R19 has the
+// census assert separately that no gone node holds a projection row, and report each difference
+// by its cause. The outer block's node is moved to gone through the store's writer while its
+// document_blocks row stays, as a version that dropped the block would leave it had the row
+// outlived it. The census must read that one row under the gone cause and nothing else. A census
+// with no gone clause still reports the row, since its node is no live one, but as a row and a
+// node that disagree, which names the wrong defect.
+func TestTheStoreCensusReportsARowWhoseNodeIsGone(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	seeded := seedAgreeingStore(t, database)
+
+	// The node is written again with its state alone moved, so every other column stands as the
+	// seed left it and the writer states the one state tuple the move is.
+	node, held, err := graphstore.ReadNode(ctx, database.Pool, refs.BlockNodeKind, seeded.outer)
+	if err != nil || !held || node.State != graphstore.StateLive {
+		t.Fatalf("read the outer block's node: held %t, state %q, %v; want it live", held, node.State, err)
+	}
+	node.State, node.MadeAt, node.MadeBy = graphstore.StateGone, time.Now().UTC(), censusWriter
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the node's write: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, nil); err != nil {
+		t.Fatalf("write the outer block's node gone: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the node's write: %v", err)
+	}
+	var state string
+	if err := database.Pool.QueryRow(ctx, `
+		select n.state from document_blocks d
+		join graph_nodes n on n.kind = d.node_kind and n.id = d.node_address
+		where d.artifact_id = $1::uuid and d.block_id = 'outer'
+	`, seeded.document.artifactID).Scan(&state); err != nil || state != graphstore.StateGone {
+		t.Fatalf("the outer block's row names a node whose state is %q (%v), want a row still naming its gone node", state, err)
+	}
+
+	report := storeCensusOf(t, database)
+	const wantCause = "the row names a node the store holds gone"
+	wantAt := "block " + seeded.outer
+	for _, kind := range report.Kinds {
+		t.Logf("kind=%s rows=%d nodes=%d row differences=%d node differences=%d %+v %+v",
+			kind.Kind, kind.Rows, kind.Nodes, kind.RowDifferences, kind.NodeDifferences, kind.ReportedRows, kind.ReportedNodes)
+		if kind.Kind == "block" {
+			continue
+		}
+		if kind.RowDifferences != 0 || kind.NodeDifferences != 0 {
+			t.Errorf("the census reads %d row and %d node difference(s) of kind %s (%+v %+v), want none there",
+				kind.RowDifferences, kind.NodeDifferences, kind.Kind, kind.ReportedRows, kind.ReportedNodes)
+		}
+	}
+	block := censusKind(t, report, "block")
+	if block.RowDifferences != 1 || len(block.ReportedRows) != 1 || block.ReportedRows[0].At != wantAt ||
+		block.ReportedRows[0].Cause != wantCause || block.NodeDifferences != 0 {
+		t.Fatalf("the census reads %d row difference(s) %+v and %d node difference(s) of kind block, want the one row at %s under %q: the census does not report a row whose node is gone by its own cause",
+			block.RowDifferences, block.ReportedRows, block.NodeDifferences, wantAt, wantCause)
+	}
+	t.Logf("the census reads kind block at %s: %s", block.ReportedRows[0].At, block.ReportedRows[0].Cause)
+	if !report.Refused() {
+		t.Errorf("the census does not refuse a store whose block row names a gone node")
+	}
+}

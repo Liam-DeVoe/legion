@@ -14,9 +14,11 @@ import (
 	"fmt"
 	"os"
 	"os/user"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api"
@@ -62,6 +64,31 @@ var projectedTables = []struct{ Table, Issue, Through, Key string }{
 	{Table: "ask_followers", Issue: "issue_key", Through: "asks owner on owner.id = held.ask_id", Key: "ask_id, session_id"},
 }
 
+// runTables are the rows a run of the command bar is projected onto
+// (dispatch://INFRA-1950/spec#b-r-interaction), which carry no node_kind and node_address, so
+// projectedTables never reaches them: going_requests projects the interaction node and its
+// made_by, and each going_events row one frame value of it. Column names the run in each, and Key
+// is the order the erase takes a run's rows of it in (lockProjectionRows) and how the listing
+// names each. They are in the order a run's rows are locked by every writer that takes both - the
+// run's row, then its frames, as a frame's own row's foreign key and the release before's delete
+// of a run take them - and deleted in the other.
+var runTables = []struct{ Table, Column, Key string }{
+	{Table: "going_requests", Column: "id", Key: "id"},
+	{Table: "going_events", Column: "request_id", Key: "request_id, sequence"},
+}
+
+// run is the run an erase of an interaction node removes the rows of, as going_requests keys it,
+// and false for a node of any other kind or an id that is no uuid, which no row can name.
+func (e *Erasure) run() (string, bool) {
+	if e.Kind != graphstore.KindInteraction {
+		return "", false
+	}
+	if _, err := uuid.Parse(e.ID); err != nil {
+		return "", false
+	}
+	return e.ID, true
+}
+
 // connect opens the erase's one connection, named in pg_stat_activity (eraseApplicationName). The
 // erase uses no pool and migrates nothing: the schema it works on is the deployment's own.
 func connect(ctx context.Context, databaseURL string) (*pgx.Conn, error) {
@@ -96,12 +123,13 @@ func ParseNode(value string) (kind, id string, err error) {
 // projection rows and the rows that cannot exist without one, its own embedding rows and window
 // state, the events about it, for a block its own document - the versions at which its own block
 // held the text and the approvals over them, the document's editing state, its search rows and
-// its windows - and the excerpts cut from its text, and for a comment the editing state of every
-// document whose margin record holds its body. The run deletes those, or rewrites them with the
-// marker where it may take no row away. Every other row that holds the same bytes derives from
-// another node and is that node's text - a sibling block of the same document among them: the
-// run lists it with its address and changes nothing in it, and an operator erases that node by a
-// run of its own.
+// its windows - and the excerpts cut from its text, for a comment the editing state of every
+// document whose margin record holds its body, and for a run of the command bar its
+// going_requests row and its going_events rows (runTables), so a run erased is a run no backfill
+// writes back. The run deletes those, or rewrites them with the marker where it may take no row
+// away. Every other row that holds the same bytes derives from another node and is that node's
+// text - a sibling block of the same document among them: the run lists it with its address and
+// changes nothing in it, and an operator erases that node by a run of its own.
 //
 // confirm is the digest of a listing. With none the run reads everything it would delete,
 // rewrite, redact or leave in a read-only transaction, which takes no write lock and waits on no
@@ -209,16 +237,16 @@ func Erase(ctx context.Context, databaseURL, kind, id, confirm string, treeStore
 // order the foreign keys allow. Before anything goes it reads the keys of the display trees of
 // the texts it removes or rewrites (treeSums) and deletes the node's embedding rows
 // (forgetEmbeddings). Then go the whole text of the node's block, the rows that cannot exist
-// without a projection row, the projection rows, and the approvals and the versions they stood
-// on, each such version's node stated gone (endErasedVersions). Then it rewrites what it may not
-// remove - the blocks holding the node's block and the
-// mentions whose excerpt was cut from it, the events about it, the search vectors that stood on
-// a version that went, the embedding rows of what it leaves (restateEmbeddings), and the live
-// state of every document whose history it replaces - counts the term statistics of every
-// project whose items moved again, and deletes the display trees of the texts that went. Last go
-// the tuples the listing named and the node (graphstore.EraseNode), which refuses the run where
-// a tuple landed since, and the record of what the run did goes in. Every row it writes is one
-// the read under its locks listed (erasedRead).
+// without a projection row, the projection rows, a run's frames and its row, and the approvals and
+// the versions they stood on, each such version's node stated gone (endErasedVersions). Then it
+// rewrites what it may not remove - the blocks holding the node's block and the mentions whose
+// excerpt was cut from it, the events about it, the search vectors that stood on a version that
+// went, the embedding rows of what it leaves (restateEmbeddings), and the live state of every
+// document whose history it replaces - counts the term statistics of every project whose items
+// moved again, and deletes the display trees of the texts that went. Last go the tuples the
+// listing named and the node (graphstore.EraseNode), which refuses the run where a tuple landed
+// since, and the record of what the run did goes in. Every row it writes is one the read under
+// its locks listed (erasedRead).
 func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 	sums, err := e.treeSums(ctx, tx, read)
 	if err != nil {
@@ -253,6 +281,15 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 			return fmt.Errorf("delete the %s rows of %s:%s: %w", held.Table, e.Kind, e.ID, err)
 		}
 		e.removed(held.Table, tag.RowsAffected())
+	}
+	if run, ok := e.run(); ok {
+		for _, held := range slices.Backward(runTables) {
+			tag, err := tx.Exec(ctx, `delete from `+held.Table+` where `+held.Column+` = $1::uuid`, run)
+			if err != nil {
+				return fmt.Errorf("delete the %s rows of %s:%s: %w", held.Table, e.Kind, e.ID, err)
+			}
+			e.removed(held.Table, tag.RowsAffected())
+		}
 	}
 	if len(read.artifacts) > 0 {
 		tag, err := tx.Exec(ctx, `delete from artifact_reviews where exists (

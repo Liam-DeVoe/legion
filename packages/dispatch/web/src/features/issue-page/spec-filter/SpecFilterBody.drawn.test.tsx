@@ -6,14 +6,30 @@ import { type ReactNode, useMemo } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
+import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { api } from "../../../api/client";
 import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
-import type { Actor, CheckBlock, IssueCheckResults } from "../../../api/types";
+import type {
+  Actor,
+  AskWithTrees,
+  CheckBlock,
+  IssueCheckResults,
+  IssueDetails,
+} from "../../../api/types";
 import { pageFocusedRow } from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
+import { measureNearWords } from "../clamp-fixtures";
+import {
+  artifact,
+  issueTree,
+  KEY,
+  node,
+  READER,
+  SPEC_SLUG,
+} from "../decisions-filter/decisions-fixtures";
 import { FocusedNodeProvider, useFocusedNode } from "../focused-node";
 import type { OutlineRequest } from "../IssueTree";
 import { buildIssueTree, type TreeAsk, type TreeNode } from "../issue-tree";
@@ -45,17 +61,11 @@ import { SpecFilterBody } from "./SpecFilterBody";
 import {
   answeredAsk,
   answerNode,
-  artifact,
   askRead,
   coverageRead,
   decision,
   decisionNode,
   issueDetails,
-  issueTree,
-  KEY,
-  node,
-  READER,
-  SPEC_SLUG,
   shaped,
   specViewAnswer,
   statement,
@@ -63,8 +73,8 @@ import {
 } from "./spec-fixtures";
 
 /**
- * What the Spec filter's body draws, read as a reader reads it (dispatch://INFRA-1196 R5, R17,
- * R22, R35, the approved picture `page-v3-spec-1440.png`).
+ * What the Spec filter's body draws, read as a reader reads it (R5, R17, R22, R35, the approved
+ * picture `page-v3-spec-1440.png`).
  *
  * Which decision shaped which statement is read in `spec-decided-by.test.ts`; these rows are
  * about what the page says and what a reader can reach: the legend's words, the two columns'
@@ -117,6 +127,17 @@ function HeldView({
   return children(rooted);
 }
 
+/** The reads the page's tree fills (`useIssueTree.ts`), each by an observer that fetches as the
+ *  tree's own do, under the same keys and with the same requests: the body only watches them,
+ *  so this stands in for the tree above it, which no view takes off the page. */
+function TreeReads({ issue }: { issue: IssueDetails }): ReactNode {
+  useQuery(issueCoverageQuery(issue.key));
+  useQuery(issueResultsQuery(issue.key));
+  useQuery({ queryFn: () => api.listIssueAsks(issue.key, "all"), queryKey: ["asks", issue.key] });
+  useQuery(issueTreeQuery(issue.key));
+  return null;
+}
+
 /** How one of the page's reads stands when the body is drawn. */
 type ReadState = "answered" | "failed" | "out";
 
@@ -127,6 +148,7 @@ type TreeRead = "blocks" | "specView";
 
 /** The spies on the page's reads that the body reads, so a case can answer one again. */
 interface Reads {
+  readonly asks: Mock<typeof api.listIssueAsks>;
   readonly coverage: Mock<typeof api.getIssueCoverage>;
   readonly results: Mock<typeof api.getIssueResults>;
   /** The one `getIssueTree`, which answers each read by the view it asks for. */
@@ -165,17 +187,20 @@ beforeAll(async () => {
   await warmMarkdownRenderer();
 });
 
-/** The body over `tree`, with `made` as the nodes of the Spec view read's answer, `tuples` as
- *  that answer's tuples and `asks` as the issue's asks read, held unless `asksRead` says it is
- *  still out, and `checks` as its results read.
- *  `specView`, `results`, `coverage` and `blocks` (the tree read) each say how that read stands -
- *  answered, failed, or still out - and each is answered unless a case says so; the Spec view
- *  read is held as the page holds it (`HeldView`). `verification`, where a case names it, gives
- *  the issue a Verification document and the tree read stands so; `names` is what the page's
- *  batched reference read named. The page's provider of the Contents list's requests stands
- *  above the body, so `request` is taken as the page takes it; `redraw(false)` takes the body
- *  off the page and `redraw(true)` draws a new one under the same provider, as the view turned
- *  off and on again does. */
+/** The body over `tree`, as the Spec view's slot draws it, under the reads the page's tree fills
+ *  (`TreeReads`), with `made` as the nodes of the Spec view read's answer, `tuples` as that
+ *  answer's tuples, `asks` as the issue's asks read and `checks` as its results read.
+ *  `asksRead`, `specView`, `results`, `coverage` and `blocks` (the tree read) each say how that
+ *  read stands - answered, failed, or still out - and each is answered unless a case says so;
+ *  the Spec view read is held as the page holds it (`HeldView`). `verification` and `plan`,
+ *  where a case names them, give the issue that document, and the tree read stands as
+ *  `verification` says where a case names it; the decisions document's blocks, as the plan's,
+ *  are the tree read's and no read of their own, so `decisionBlocks` and `plan` refuse nothing;
+ *  `names` is what the page's batched reference read named; `staleTime` is how long an answer
+ *  stays fresh, which the shell sets to 30 s. The page's provider of the Contents list's requests
+ *  stands above the body, so `request` is taken as the page takes it; `redraw(false)` takes the
+ *  body off the page and `redraw(true)` draws a new one under the same provider and reads, as
+ *  the view turned off and on again does. */
 function drawBody(
   tree: TreeNode,
   made: readonly TreeAnswerNode[] = [],
@@ -188,27 +213,32 @@ function drawBody(
     coverage = "answered",
     named = [],
     names,
+    plan,
     reader = READER,
     request,
     results = "answered",
     reveal,
     specView = "answered",
+    staleTime = Number.POSITIVE_INFINITY,
     tuples = [],
     verification,
   }: {
     asks?: readonly TreeAsk[];
-    asksRead?: "answered" | "out";
+    asksRead?: ReadState;
     blocks?: ReadState;
     checks?: readonly CheckBlock[];
     context?: Set<string>;
     coverage?: ReadState;
+    decisionBlocks?: ReadState;
     named?: readonly string[];
     names?: ReadonlyMap<string, string>;
+    plan?: ReadState;
     reader?: string;
     request?: OutlineRequest;
     results?: ReadState;
     reveal?: string;
     specView?: ReadState;
+    staleTime?: number;
     tuples?: readonly TreeTuple[];
     verification?: ReadState;
   } = {}
@@ -218,18 +248,22 @@ function drawBody(
   redraw: (drawn: boolean) => void;
   view: RenderResult;
 } {
-  const issue =
-    verification === undefined
-      ? issueDetails()
-      : {
-          ...issueDetails(),
-          artifacts: [...issueDetails().artifacts, artifact("artifact-ver", "verification-md")],
-          verification_artifact_id: "artifact-ver",
-        };
+  const base = issueDetails();
+  const issue = {
+    ...base,
+    ...(verification === undefined ? {} : { verification_artifact_id: "artifact-ver" }),
+    ...(plan === undefined ? {} : { plan_artifact_id: "artifact-plan" }),
+    artifacts: [
+      ...base.artifacts,
+      ...(verification === undefined ? [] : [artifact("artifact-ver", "verification-md")]),
+      ...(plan === undefined ? [] : [artifact("artifact-plan", "plan-md")]),
+    ],
+  };
   const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+    defaultOptions: { queries: { retry: false, staleTime } },
   });
   const spies = {
+    asks: spyOn(api, "listIssueAsks"),
     coverage: spyOn(api, "getIssueCoverage"),
     results: spyOn(api, "getIssueResults"),
     tree: spyOn(api, "getIssueTree"),
@@ -269,8 +303,12 @@ function drawBody(
   if (treeStanding.specView === "answered") {
     client.setQueryData(viewKey(KEY, "spec"), treeAnswers.specView);
   }
-  // The issue's asks, which say which question a person answered (`decisionNodes`).
-  if (asksRead === "answered") client.setQueryData(["asks", KEY], [...asks]);
+  // The issue's asks, which say which question a person answered (`decisionNodes`). The fixtures
+  // carry the members of an ask the page reads (`TreeAsk`), not every member the route answers.
+  settle(asksRead, spies.asks, () => {
+    client.setQueryData(["asks", KEY], [...asks]);
+    spies.asks.mockResolvedValue([...asks] as AskWithTrees[]);
+  });
   settle(results, spies.results, () => {
     client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf(checks));
     spies.results.mockResolvedValue(resultsOf(checks));
@@ -299,6 +337,7 @@ function drawBody(
                   <FocusedNodeProvider>
                     <IssueScope />
                     <FocusedProbe />
+                    <TreeReads issue={issue} />
                     {drawn ? (
                       <HeldView root={tree}>
                         {(root) => (
@@ -308,7 +347,6 @@ function drawBody(
                             holdsEscape={false}
                             issue={issue}
                             reader={reader}
-                            reading={false}
                             {...(request === undefined ? {} : { request })}
                             {...(reveal === undefined ? {} : { reveal })}
                             root={root}
@@ -596,7 +634,7 @@ test("while the asks read is out, no statement a person's decision shaped reads 
 // that no decision shaped a statement.
 test("where the asks read failed, the column says the open questions could not be read", async () => {
   const words = "Put the decisions beside the statements. Please.";
-  const { client, read, view } = drawBody(
+  const { read, view } = drawBody(
     issueTree([statement("r1"), statement("r2"), answeredAsk("ask-1", { text: words })]),
     [
       ...["r1", "r2"].map((block, position) =>
@@ -607,22 +645,15 @@ test("where the asks read failed, the column says the open questions could not b
       ),
       answerNode("ask-1", "ask", { mark: "context" }),
     ],
-    { asksRead: "out", tuples: [{ from: "ask-1", kind: "shaped", to: "r1" }] }
+    { asksRead: "failed", tuples: [{ from: "ask-1", kind: "shaped", to: "r1" }] }
   );
   try {
-    // The asks read failed, as the page's own observer of it left it (`useIssueTree.ts`).
-    await act(async () => {
-      await client.prefetchQuery({
-        queryFn: () => Promise.reject(new Error("offline")),
-        queryKey: ["asks", KEY],
-      });
-    });
     await waitFor(
       () =>
         expect(
           view.container.textContent,
           "the column does not say its open questions could not be read where the asks read failed"
-        ).toContain(ANSWER_LINES.asks_unreadable),
+        ).toContain(ANSWER_LINES.answers_unreadable),
       { timeout: 3000 }
     );
     expect(textsOf(view, "[data-spec-nothing]")).toEqual([]);
@@ -692,7 +723,7 @@ test("every state of the Spec view read and the asks read draws what the column 
   for (const specView of states) {
     for (const asks of states) {
       const combination = `the Spec view read ${specView} and the asks read ${asks}`;
-      const { client, read, view } = drawBody(
+      const { read, view } = drawBody(
         issueTree([statement("r1"), statement("r2"), answeredAsk("ask-1", { text: words })]),
         [
           ...["r1", "r2"].map((block, position) =>
@@ -705,21 +736,12 @@ test("every state of the Spec view read and the asks read draws what the column 
         ],
         {
           asks: [askRead("ask-1", words)],
-          asksRead: asks === "answered" ? "answered" : "out",
+          asksRead: asks,
           specView,
           tuples: [{ from: "ask-1", kind: "shaped", to: "r1" }],
         }
       );
       try {
-        if (asks === "failed") {
-          // The asks read failed, as the page's own observer of it left it (`useIssueTree.ts`).
-          await act(async () => {
-            await client.prefetchQuery({
-              queryFn: () => Promise.reject(new Error("offline")),
-              queryKey: ["asks", KEY],
-            });
-          });
-        }
         const both = specView === "answered" && asks === "answered";
         await waitFor(
           () => {
@@ -729,7 +751,7 @@ test("every state of the Spec view read and the asks read draws what the column 
               `${combination}: whether the column says its decisions could not be read`
             ).toBe(specView === "failed");
             expect(
-              text.includes(ANSWER_LINES.asks_unreadable),
+              text.includes(ANSWER_LINES.answers_unreadable),
               `${combination}: whether the column says its open questions could not be read`
             ).toBe(asks === "failed");
             expect(
@@ -754,9 +776,9 @@ test("every state of the Spec view read and the asks read draws what the column 
 });
 
 // R5: an agent's decision draws its own words whole in its cell, as a row draws a node's words
-// (`RowText`, in a block: departure 2 of dispatch://INFRA-3939's plan), while the line under the
-// statement quotes their first line, and the one word the model holds for how sure it was; R2:
-// wherever a decision is drawn, one waiting for review says so.
+// (`RowText`, in a block, since a text drawn with its own links stands in no link), while the
+// line under the statement quotes their first line, and the one word the model holds for how
+// sure it was; R2: wherever a decision is drawn, one waiting for review says so.
 test("an agent's decision draws its own words, how sure it was and how it stands", () => {
   const text = "One batched read names every address. The page asks the server once.";
   const made = decisionNode("d1", { state: "waiting_review", text, unsure: true, waiting: true });
@@ -792,15 +814,14 @@ test("an agent's decision draws its own words, how sure it was and how it stands
   }
 });
 
-// Reading (c) of dispatch://INFRA-3939's plan, R5: the decisions read holds no author for a
-// decision, so a cell, a group's heading and a because line draw none - no name, no shape, and no
-// dot where it would stand - and only the focused cell says "Author unknown". An agent is named
-// by its role's word (ruling 6).
+// R5: the decisions read holds no author for a decision, so a cell, a group's heading and a
+// because line draw none - no name, no shape, and no dot where it would stand - and only the
+// focused cell says "Author unknown". An agent is named by its role's word, as a row names one.
 test("a decision with no author draws none, and says Author unknown with the focus", () => {
   const planner: Actor = {
     id: "session-planner",
     kind: "session",
-    origin: { session_title: "Legion planner · INFRA-1" },
+    origin: { session_title: "Legion planner · ACME-1" },
   };
   const day = shortDay("2026-11-13T07:00:00Z");
   const { read, view } = drawBody(
@@ -879,7 +900,7 @@ test("a decision with no author draws none, and says Author unknown with the foc
   }
 });
 
-// R5, the tester's F20 and reading (b) of dispatch://INFRA-3939's plan: an agent's words that cite
+// R5 and the tester's F20: an agent's words that cite
 // a statement and quote a typed block draw the statement by its name, never its address, and
 // none of the block's source lines: whole in the cell through `RowText`, and as one line of plain
 // words on the because line.
@@ -1038,7 +1059,7 @@ test("an address naming a statement puts the focus on it", async () => {
   }
 });
 
-// Departure 1 of dispatch://INFRA-3939's plan: the page acts on each of the Contents list's asks
+// The page acts on each of the Contents list's asks
 // once, whichever outline or body took it (`outline-request.tsx`), so a body drawn again - the
 // view turned off and on again - does not move the reader back to an ask it already went to.
 test("a body drawn again does not act on a request the page already took", async () => {
@@ -1240,7 +1261,7 @@ test("the body draws one tree, named as the outline is, of the statements and th
 
 // R10, R17: a gap the mark does not already say is drawn with the statement's words, in the
 // few words the page knows it by: while the words are whole it stands in the trail after their
-// last word, a direct child of the words' box (departure 3 of dispatch://INFRA-3939's plan), and
+// last word, a direct child of the words' box, and
 // nowhere else in the row. The one for a statement no check serves is the mark at the right of
 // the row, and is not said twice: that statement draws no trail at all.
 test("a gap the mark does not say is drawn after the statement's words, and no check is not said twice", () => {
@@ -1708,6 +1729,7 @@ test("a press on a link inside a cut statement leaves every statement as drawn u
   const long = `**R2.** Read [the guide](https://example.com/guide) first. ${words}`;
   // 64 words over 400 lines of 24 px: six lines are drawn and the rest held back.
   const restore = layOut(9600);
+  const near = installIntersectionObserver();
   const { read, view } = drawBody(
     issueTree([statement("r1"), statement("r2", { text: long, tree: displayTree(long) })])
   );
@@ -1721,6 +1743,8 @@ test("a press on a link inside a cut statement leaves every statement as drawn u
       if (found === null) throw new Error("the cut statement draws no link in its words");
       return found;
     });
+    // The page cuts only the words of rows near the viewport.
+    await measureNearWords(near);
     await waitFor(() => expect(pressed.querySelector("[data-node-more]")).not.toBeNull());
     // What is read is who holds the focus, not where the link leads.
     link.addEventListener("click", (event) => event.preventDefault());
@@ -1749,6 +1773,7 @@ test("a press on a link inside a cut statement leaves every statement as drawn u
     view.unmount();
     read.mockRestore();
     restore();
+    near.restore();
   }
 });
 
@@ -1802,7 +1827,7 @@ test("a press on a decision's cell or away from it changes what the body draws o
   }
 });
 
-// R11 of dispatch://INFRA-1196: the focused row is never under a sticky header. The view's column
+// R11: the focused row is never under a sticky header. The view's column
 // heads stay at the top under the band, and the page's rule for placing a focused row clears the
 // band alone (`bringOnScreen`), so a statement the keys moved to stood with its first line under
 // the heads (the tester's reading of row (7) of `issue-page-j.e2e.ts` on a running build at
@@ -1847,5 +1872,448 @@ test("a statement or a cell a key moves the focus to is scrolled down from under
     read.mockRestore();
     scrolls.mockRestore();
     boxes.mockRestore();
+  }
+});
+
+/** How many times each of the reads the body draws from has been asked for: the tree read
+ *  (`blocks`) and the Spec view read (`specView`) by the view each asks `getIssueTree` for. */
+function askedOf(read: Reads): Record<string, number> {
+  const views = read.tree.mock.calls.map(([, query]) => query?.view);
+  return {
+    asks: read.asks.mock.calls.length,
+    blocks: views.filter((view) => view === undefined).length,
+    coverage: read.coverage.mock.calls.length,
+    results: read.results.mock.calls.length,
+    specView: views.filter((view) => view === "spec").length,
+  };
+}
+
+// R35's sentence waits on the asks read as well: a person's answer, which their decision is
+// drawn by, and the answered question a statement hangs under, which heads its run, both come
+// with it. While that read is out or refused the column says nothing of a statement no decision
+// it holds shaped.
+test("the column says no decision shaped a statement only once the asks are read", async () => {
+  for (const asksRead of ["out", "failed"] as const) {
+    const { read, view } = drawBody(issueTree([statement("r1")]), [], { asksRead });
+    try {
+      if (asksRead === "failed")
+        await waitFor(() => alertSaying(view, ANSWER_LINES.answers_unreadable));
+      expect(
+        textsOf(view, "[data-spec-nothing]"),
+        `the column says no decision shaped r1 while the asks read is ${asksRead}`
+      ).toEqual([]);
+      expect(view.container.querySelectorAll("[data-spec-statement]")).toHaveLength(1);
+    } finally {
+      view.unmount();
+      read.mockRestore();
+    }
+  }
+});
+
+// R5, R17 and R35: the view waits on the reads of what it draws and on no other. A refused read
+// of a document it draws nothing from - the plan, the decisions document's blocks - changes
+// nothing in it: every statement is drawn and marked, and no line says a read failed. Waiting on
+// every document's blocks, the view left every statement unmarked, with no empty line, no
+// sentences and nothing saying why, as two review findings and the tester saw.
+test("a refused read of a document the view draws nothing from leaves every statement drawn and marked", async () => {
+  const passed = check({ block_id: "c1", results: [result({ id: "p1" })] });
+  const tree = issueTree([statement("r1", { children: [checkNode(passed)] })]);
+  for (const [refused, document] of [
+    [{ plan: "failed" }, "artifact-plan"],
+    [{ decisionBlocks: "failed" }, issueDetails().decisions_artifact_id],
+  ] as const) {
+    const { client, read, view } = drawBody(tree, [], { checks: [passed], ...refused });
+    try {
+      // That document's blocks are the tree read's, which holds its answer.
+      await waitFor(() =>
+        expect(client.getQueryState(issueTreeQuery(KEY).queryKey)?.status).toBe("success")
+      );
+      expect(rowOf(view, "spec#b-r1").getAttribute("data-spec-mark"), document).toBe("met");
+      expect(view.container.querySelector('[role="alert"]'), document).toBeNull();
+    } finally {
+      view.unmount();
+      read.mockRestore();
+    }
+  }
+});
+
+// R5 and R35: a refused Spec view read, which the column's decisions come from, says so in its
+// own line over the tree, and its Retry asks that read alone again, after which each run's cell
+// draws the decision that shaped it.
+test("a refused Spec view read says so in its own line, and its Retry asks that read alone again", async () => {
+  const user = userEvent.setup();
+  const made = [decision("d1", { kind: "agent", links: [shaped(statementRef("r1"))] })];
+  const { read, view } = drawBody(issueTree([statement("r1"), decisionNode("d1")]), made, {
+    specView: "failed",
+  });
+  try {
+    const alert = await waitFor(() => alertSaying(view, ANSWER_LINES.decisions_unreadable));
+    expect(view.container.querySelectorAll('[role="alert"]')).toHaveLength(1);
+    expect(view.container.querySelector("[data-spec-cell][data-decision-id]")).toBeNull();
+    read.treeStands("specView", "answered");
+    const before = askedOf(read);
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(
+        view.container.querySelector("[data-spec-cell]")?.getAttribute("data-decision-id")
+      ).toBe("decisions-md#b-d1")
+    );
+    expect(askedOf(read)).toEqual({ ...before, specView: before.specView + 1 });
+    expect(view.container.querySelector('[role="alert"]')).toBeNull();
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R5 and R9: a person's decision is drawn by the answer they gave, whose question the asks read
+// brings. While that read is out the decision is drawn as nothing - never as an agent's record
+// of it - and a refused one says so in its own line.
+test("a person's decision is drawn as nothing while the asks read is out, and a refused asks read says so", async () => {
+  const made = [
+    decision("d1", { asks: ["ask-1"], kind: "person", links: [shaped(statementRef("r1"))] }),
+  ];
+  // The tree holds no question the asks read has not brought.
+  const tree = issueTree([statement("r1"), decisionNode("d1")]);
+  const out = drawBody(tree, made, { asksRead: "out" });
+  try {
+    expect(out.view.container.textContent).not.toContain(SPEC_WORDS.said_agent);
+    expect(textsOf(out.view, "[data-spec-said]")).toEqual([]);
+    expect(textsOf(out.view, "[data-spec-nothing]")).toEqual([]);
+    expect(out.view.container.querySelector("[data-spec-because]")).toBeNull();
+    expect(out.view.container.querySelector('[role="alert"]')).toBeNull();
+  } finally {
+    out.view.unmount();
+    out.read.mockRestore();
+  }
+  const refused = drawBody(tree, made, { asksRead: "failed" });
+  try {
+    await waitFor(() => alertSaying(refused.view, ANSWER_LINES.answers_unreadable));
+    expect(refused.view.container.textContent).not.toContain(SPEC_WORDS.said_agent);
+  } finally {
+    refused.view.unmount();
+    refused.read.mockRestore();
+  }
+});
+
+// R5 and R35: while the asks read is out or refused, the run a person's decision shaped stands
+// with an empty cell, and `w` on its statements says nothing rather than that no decision is
+// recorded behind them, which the view cannot know until that read answers.
+test("w on a statement whose person's decision waits on the asks read reports no missing decision", async () => {
+  const user = userEvent.setup();
+  const made = [
+    decision("d1", {
+      asks: ["ask-1"],
+      kind: "person",
+      links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+    }),
+    decision("d2", { kind: "agent", links: [shaped(statementRef("r2"))] }),
+  ];
+  const tree = issueTree([
+    statement("r1"),
+    statement("r2"),
+    decisionNode("d1"),
+    decisionNode("d2"),
+  ]);
+  for (const asksRead of ["out", "failed"] as const) {
+    const { read, view } = drawBody(tree, made, { asksRead });
+    try {
+      if (asksRead === "failed")
+        await waitFor(() => alertSaying(view, ANSWER_LINES.answers_unreadable));
+      for (const id of ["r1", "r2"]) {
+        const row = rowOf(view, `spec#b-${id}`);
+        act(() => row.focus());
+        await user.keyboard("w");
+        expect(
+          row.querySelector("[data-row-report]")?.textContent ?? "",
+          `w on statement ${id} says no decision is recorded while the asks read is ${asksRead}`
+        ).not.toBe(KEY_REPORTS.no_decision);
+      }
+    } finally {
+      view.unmount();
+      read.mockRestore();
+    }
+  }
+});
+
+// R5 and R35: `w` on a statement whose cell draws no decision says that none is recorded only
+// once the Spec view read the decisions come from is in. While that read is out or refused every
+// cell is empty, and `w` says nothing, since a decision may yet stand there.
+test("w on a statement says nothing of a missing decision while the Spec view read is out", async () => {
+  const user = userEvent.setup();
+  for (const specView of ["out", "failed"] as const) {
+    const { read, view } = drawBody(issueTree([statement("r1")]), [], { specView });
+    try {
+      if (specView === "failed")
+        await waitFor(() => alertSaying(view, ANSWER_LINES.decisions_unreadable));
+      const row = rowOf(view, "spec#b-r1");
+      act(() => row.focus());
+      await user.keyboard("w");
+      expect(
+        row.querySelector("[data-row-report]")?.textContent ?? "",
+        `w on r1 says no decision is recorded while the Spec view read is ${specView}`
+      ).not.toBe(KEY_REPORTS.no_decision);
+    } finally {
+      view.unmount();
+      read.mockRestore();
+    }
+  }
+});
+
+// R11: `q` with no open question to go to says so only once every read the body draws from is
+// in. While the asks read or the Spec view read is out a question may yet arrive, and `q` says
+// nothing.
+test("q says nothing of a next question while the asks or the Spec view read is out", async () => {
+  const user = userEvent.setup();
+  for (const out of [{ asksRead: "out" }, { specView: "out" }] as const) {
+    const { read, view } = drawBody(issueTree([statement("r1"), statement("r2")]), [], out);
+    try {
+      const row = rowOf(view, "spec#b-r1");
+      act(() => row.focus());
+      await user.keyboard("q");
+      expect(
+        row.querySelector("[data-row-report]")?.textContent ?? "",
+        `q on r1 says there is no next question while ${Object.keys(out)[0]} is out`
+      ).not.toBe(KEY_REPORTS.no_next_question);
+    } finally {
+      view.unmount();
+      read.mockRestore();
+    }
+  }
+});
+
+// R5 and R35: a refused read of the spec's blocks says the statements could not be read, in the
+// line the view already says it in, and the issue's sentences say nothing, rather than that the
+// spec has no summary, which the view cannot know.
+test("a refused read of the spec's blocks says the statements could not be read, and the sentences say nothing", async () => {
+  const { read, view } = drawBody(issueTree([]), [], { blocks: "failed" });
+  try {
+    await waitFor(() => alertSaying(view, ANSWER_LINES.statements_unreadable));
+    expect(view.container.textContent).not.toContain(EMPTY_STATE_LINES.spec_summary);
+    expect(view.container.querySelector("[data-spec-empty]")).toBeNull();
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R7 and R9: a refused read leaves the view nothing to act on but its Retry, which Tab from the
+// tree never reaches. So the first line's Retry takes the focus where the view's key or its
+// address left it on nothing, and a reader whose focus is anywhere else keeps it; once a Retry
+// the reader pressed brings the read in, the view's first row takes the focus.
+test("a refused read's Retry takes the focus left on nothing, and the first row takes it once a pressed Retry brings the read in", async () => {
+  const user = userEvent.setup();
+  const tree = issueTree([statement("r1"), statement("r2")]);
+  const elsewhere = document.createElement("button");
+  document.body.append(elsewhere);
+  elsewhere.focus();
+  const kept = drawBody(tree, [], { coverage: "failed" });
+  try {
+    await waitFor(() => alertSaying(kept.view, ANSWER_LINES.statements_unreadable));
+    expect(document.activeElement, "a Retry took the focus from elsewhere").toBe(elsewhere);
+  } finally {
+    kept.view.unmount();
+    kept.read.mockRestore();
+    elsewhere.remove();
+  }
+  const { read, view } = drawBody(tree, [], { coverage: "failed" });
+  try {
+    const alert = await waitFor(() => alertSaying(view, ANSWER_LINES.statements_unreadable));
+    const retry = within(alert).getByRole("button", { name: "Retry" });
+    await waitFor(() => expect(document.activeElement).toBe(retry));
+    read.coverage.mockResolvedValue(coverageRead([]));
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(document.activeElement).toBe(rowOf(view, "spec#b-r1")));
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R20: the view sends no request of its own. Each read it draws from is the page's tree's, which
+// stays on the page, so the view drawn again - turned off and on - after the shell's 30 s have
+// aged every answer asks for none of them again.
+test("the body drawn again after its reads' answers have aged past 30 s sends no request", async () => {
+  const passed = check({ block_id: "c1", results: [result({ id: "p1" })] });
+  const tree = issueTree([statement("r1", { children: [checkNode(passed)] })]);
+  const { read, redraw, view } = drawBody(tree, [], { checks: [passed], staleTime: 30_000 });
+  const start = Date.now();
+  const clock = spyOn(Date, "now");
+  try {
+    const before = askedOf(read);
+    redraw(false);
+    clock.mockReturnValue(start + 31_000);
+    redraw(true);
+    // A task's turn, in which a read asked for on the new body's mount would be sent.
+    await act(async () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 0);
+      await promise;
+    });
+    expect(askedOf(read)).toEqual(before);
+    expect(rowOf(view, "spec#b-r1").getAttribute("data-spec-mark")).toBe("met");
+  } finally {
+    clock.mockRestore();
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R5 and R22: a person who answered by options alone is quoted by the options they chose, and an
+// option's label is a plain line like any other the view draws: a statement it cites is drawn by
+// its name - in the cell's quote, in its line of what was chosen and in the statement's own line
+// naming the decision - and never as an address.
+test("an option label that cites a statement is drawn by the statement's name, never its address", () => {
+  const label = `Keep ${statementRef("r2")} as written`;
+  const named = "Keep R2. Every address as written";
+  // The page names the statement by the words of the first chip naming it (`useReferenceNames`).
+  const made = decisionNode("d1", {
+    chips: [{ answered: true, gone: false, name: "R2. Every address", ref: statementRef("r2") }],
+  });
+  const { read, view } = drawBody(
+    issueTree([
+      answeredAsk("ask-1", { selected: [label], text: "" }),
+      statement("r1"),
+      statement("r2"),
+      made,
+    ]),
+    [decision("d1", { asks: ["ask-1"], kind: "person", links: [shaped(statementRef("r1"))] })]
+  );
+  try {
+    expect(textsOf(view, "[data-spec-quote]")).toEqual([`“${named}”`]);
+    expect(view.container.querySelector("[data-spec-source]")?.textContent).toContain(
+      `${SPEC_WORDS.chose} ${named}`
+    );
+    expect(textsOf(view, "[data-spec-because]")[0]).toContain(named);
+    expect(view.container.textContent).not.toContain("dispatch://");
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R2 and R5: a requirement of a document other than the spec - a plan's - is a block and nothing
+// more. Named by the address, the view draws it as a row of its own kind, and never as a
+// statement in a run, with a mark and a decision beside it (`isStatement`).
+test("a requirement of another document the address names is drawn as no statement", () => {
+  const plan = node({
+    id: "plan-md#b-r9",
+    text: "A requirement of the plan.",
+    type: "requirement",
+  });
+  const { read, view } = drawBody(issueTree([statement("r1"), plan]), [], { named: [plan.id] });
+  try {
+    expect(
+      [...view.container.querySelectorAll<HTMLElement>("[data-spec-statement]")].map(
+        (row) => row.dataset.nodeId
+      )
+    ).toEqual(["spec#b-r1"]);
+    expect(rowOf(view, plan.id).hasAttribute("data-spec-other")).toBe(true);
+    expect(view.container.querySelectorAll("[data-spec-cell]")).toHaveLength(1);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R5: every other decision that shaped a statement is named on its line by its own words, cut as
+// a chip cuts a name, so a long first line never runs the statement's line on.
+test("a second decision is named on a statement's line by its words cut to a chip's length", () => {
+  const long = "Name each tie by the words of the decision that made it, never by its address.";
+  const { read, view } = drawBody(
+    issueTree([statement("r1"), decisionNode("d1"), decisionNode("d2", { text: long })]),
+    [
+      decision("d1", { kind: "agent", links: [shaped(statementRef("r1"))] }),
+      decision("d2", { kind: "agent", links: [shaped(statementRef("r1"))] }),
+    ]
+  );
+  try {
+    expect(textsOf(view, "[data-spec-informed]")).toEqual(["Name each tie by the words of…"]);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R5 and R22: a decision with no words - an answer with no words and no option, an agent's
+// decision with no text - is named by its kind's word wherever the view quotes it, in its cell
+// and in the link on its statement's line, so no quote and no link is drawn empty.
+test("a decision with no words is named by its kind's word, never by an empty quote", () => {
+  const { read, view } = drawBody(
+    issueTree([
+      answeredAsk("ask-1", { text: "" }),
+      statement("r1"),
+      statement("r2"),
+      decisionNode("d1"),
+      decisionNode("d2", { text: "" }),
+    ]),
+    [
+      decision("d1", { asks: ["ask-1"], kind: "person", links: [shaped(statementRef("r1"))] }),
+      decision("d2", { kind: "agent", links: [shaped(statementRef("r2"))], text: "" }),
+    ]
+  );
+  try {
+    expect(view.container.textContent).not.toContain("“”");
+    expect(textsOf(view, "[data-spec-quote]")[0]).toBe(NODE_TYPE_NAMES.ask);
+    expect(textsOf(view, "[data-spec-because-link]")).toEqual([
+      NODE_TYPE_NAMES.ask,
+      NODE_TYPE_NAMES.decision,
+    ]);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R7 and R9: a pressed Retry that brings the reads in hands the focus to the view's first row,
+// and where the view draws no row - an issue with no statement - to its tree, as a focus on the
+// tree rests there; it never leaves the focus on nothing.
+test("a Retry that brings in a view with no row leaves the focus on the tree", async () => {
+  const user = userEvent.setup();
+  const { read, view } = drawBody(issueTree([]), [], { coverage: "failed" });
+  try {
+    const alert = await waitFor(() => alertSaying(view, ANSWER_LINES.statements_unreadable));
+    const retry = within(alert).getByRole("button", { name: "Retry" });
+    await waitFor(() => expect(document.activeElement).toBe(retry));
+    read.coverage.mockResolvedValue(coverageRead([]));
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(view.container.querySelector("[data-spec-empty]")?.textContent).toBe(
+        EMPTY_STATE_LINES.spec
+      )
+    );
+    await waitFor(() =>
+      expect(document.activeElement).toBe(view.container.querySelector("[data-spec-tree]"))
+    );
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R20: the view sends no request of its own, and a read refused before it answered is asked
+// again by its Retry and by nothing else: the view turned off and on again over a refused read
+// asks for it no more times.
+test("the body drawn again over a refused read asks for it no more times", async () => {
+  const { client, read, redraw, view } = drawBody(issueTree([statement("r1")]), [], {
+    coverage: "failed",
+  });
+  try {
+    await waitFor(() =>
+      expect(client.getQueryState(issueCoverageQuery(KEY).queryKey)?.status).toBe("error")
+    );
+    const before = read.coverage.mock.calls.length;
+    redraw(false);
+    redraw(true);
+    // A task's turn, in which a read asked for on the new body's mount would be sent.
+    await act(async () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 0);
+      await promise;
+    });
+    expect(read.coverage.mock.calls.length).toBe(before);
+  } finally {
+    view.unmount();
+    read.mockRestore();
   }
 });

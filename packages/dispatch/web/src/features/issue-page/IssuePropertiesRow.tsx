@@ -29,6 +29,7 @@ import { PriorityEditor } from "../issue/PriorityControl";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
+import { wordsOf } from "../refs/tree-fragment";
 import { presetPath } from "./issue-address";
 import { statusGlyph, statusTone } from "./issue-status";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
@@ -39,14 +40,13 @@ import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { type WaitingPress, waitingOnReader } from "./waiting";
 
 /**
- * The header's one properties line (dispatch://INFRA-1196 R13, the prototype's `#hdr-props`):
- * the status, the priority, the assignee, the children's progress as a bar with its two counts,
- * the count of what waits on the reader - or, while nothing does, whose turn the issue is - the
- * approval control, the one marker where the issue's message route reaches nobody, and then the
- * labels, as many as fit on the line, which ends with a count of those left over that opens
- * Details at its Labels row (the ruling of
- * dispatch://INFRA-1196/comment/63b73642-8fc5-4cc4-8f5d-a3d8989d3bf4). Nothing else: every other
- * property, and every control of one, is in Details (`IssueMargin.tsx`).
+ * The header's one properties line (the prototype's `#hdr-props`): the status, the priority,
+ * the assignee, the children's progress as a bar with its two counts, the count of what waits
+ * on the reader - or, while nothing does, whose turn the issue is - the approval control, the
+ * one marker where the issue's message route reaches nobody, and then the labels, as many as fit
+ * on the line, which ends with a count of those left over that opens Details at its Labels row.
+ * Nothing else: every other property, and every control of one, is in Details
+ * (`IssueMargin.tsx`).
  *
  * The line wraps rather than scrolling: nothing here is reached by dragging a row sideways.
  */
@@ -69,12 +69,14 @@ export function IssuePropertiesRow({
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
-  // A status picked while another write of the issue is in flight - the title saved by the blur
-  // that the press on this control caused - is held by the header's writes (`pickStatus`: a
-  // keyed write in the issue's line, sent after the write in flight), so the press lands on the
-  // control as it does with nothing edited, and the header and Details read one status, the one
-  // held (decision 47 of dispatch://INFRA-1196/artifact/part-decisions-md). Only a status's own
-  // write, held or being saved, holds the control.
+  // A status picked while a write of the issue is in flight - the title saved by the blur that
+  // the press on this control caused, or an earlier pick of the status still being saved - is
+  // held by the header's writes (`pickStatus`: a keyed write in the issue's line, sent after the
+  // write in flight), so the press lands on the control as it does with nothing edited, and the
+  // header and Details read one status, the newest one held. No write disables the select, not
+  // even its own: only a closed issue does. The browser moves the focus off a control that turns
+  // disabled, so disabling the select while its pick saves would leave a keyboard pick's focus on
+  // the page's body.
   const status = writes.pendingStatus ?? issue.status;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // What the count counts, read from what the outline already reads under the same keys - the
@@ -83,7 +85,7 @@ export function IssuePropertiesRow({
   const viewer = useQuery(whoAmIQuery()).data?.login;
   const coverage = useQuery(issueCoverageQuery(issue.key));
   const tree = useTreeRead(issue).answer;
-  const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
+  const nodeIdOf = useMemo(() => treeContext({ issue }, wordsOf).nodeIdOf, [issue]);
   const statements = useMemo(
     () => new Set((coverage.data?.requirements ?? []).map((one) => nodeIdOf(one.ref))),
     [coverage.data, nodeIdOf]
@@ -116,12 +118,11 @@ export function IssuePropertiesRow({
   // and the focus on the next item there that waits, in the filter's order - the first press on
   // the first, each press after on the one after it (the Decisions filter's body takes the press
   // from the history entry); an approval request alone puts the focus on the first chip or entry
-  // on this line of a document whose request waits (R13, dispatch://INFRA-3678). Where the header
-  // draws no chip or entry of the waiting document - another document of a child, or a document
-  // no step of a gated root names - the request is counted and the press does nothing in the
-  // header, rather than put the focus on another document's chip (decision 58). A press made on
-  // the filter already replaces its entry, so Back leaves the filter rather than walking back
-  // through the presses.
+  // on this line of a document whose request waits. Where the header draws no chip or entry of
+  // the waiting document - another document of a child, or a document no step of a gated root
+  // names - the request is counted and the press does nothing in the header, rather than put the
+  // focus on another document's chip. A press made on the filter already replaces its entry, so
+  // Back leaves the filter rather than walking back through the presses.
   const goToWaiting = () => {
     if (waiting.asks + waiting.decisions > 0) {
       const press: WaitingPress = { waitingPress: performance.now() };
@@ -143,8 +144,7 @@ export function IssuePropertiesRow({
     >
       {/* The prototype's `.pill`: the status's glyph and word inside a rule of its colour. The
           rule is drawn inside the pill's box, so the select can fill that box: 24 px tall at
-          every width, the least a target may be (WCAG 2.5.8, finding F13 of
-          dispatch://INFRA-1196/artifact/tester-findings-md). */}
+          every width, the least a target may be (WCAG 2.5.8). */}
       <label
         className={`inline-flex min-h-6 shrink-0 items-stretch gap-1 rounded-full px-2 text-xs leading-[18px] font-semibold shadow-[inset_0_0_0_1px_currentColor] ${statusTone(status)}`}
       >
@@ -156,7 +156,7 @@ export function IssuePropertiesRow({
         <select
           aria-label={PROPERTY_LABELS.status}
           className={`min-w-0 cursor-pointer appearance-none font-inherit outline-none [field-sizing:content] disabled:cursor-not-allowed disabled:opacity-50 ${bgTransparent} ${focusVisibleRing}`}
-          disabled={isClosed || writes.statusSaving}
+          disabled={isClosed}
           onChange={(event) => writes.pickStatus(event.target.value)}
           value={status}
         >
@@ -168,8 +168,8 @@ export function IssuePropertiesRow({
         </select>
       </label>
       {/* The priority and the assignee stay enabled while another write is in flight and queue a
-          pick behind it, as their own controls say: a press straight out of the title's editor
-          lands on them. */}
+          pick behind it, as the status does and as their own controls say: a press straight out
+          of the title's editor lands on them. */}
       <PriorityEditor
         disabled={isClosed}
         issueKey={issue.key}
@@ -214,19 +214,16 @@ export function IssuePropertiesRow({
           </span>
         </span>
       ) : null}
-      {/* The approval control (R31): a root issue of a gated project reads its gate step by
+      {/* The approval control: a root issue of a gated project reads its gate step by
           step, and the one chip stays beside those steps whenever no step reviews the primary
           document, so an open request on that document can always be answered here. Every
           other issue keeps the one chip, which says "Not requested" while nobody has asked.
           Each document whose own request waits on the reader carries its own Approve and
-          Request changes here, the chip and each entry alike, and no other does (decision 58,
-          dispatch://INFRA-3935 R10); they are Details' otherwise, with the steps' reasons.
-          The chip, and each step's name, chip and two actions (`layout="contents"`), are items
-          of this line, the two actions kept together as one: the approval control stands beside
-          the count, and where the line has no room left the two actions take the line under
-          it together (ruling 3's point 2 of
-          dispatch://INFRA-1196/artifact/build-rulings-md, decision 86 of
-          dispatch://INFRA-1196/artifact/part-decisions-md). */}
+          Request changes here, the chip and each entry alike, and no other does; they are
+          Details' otherwise, with the steps' reasons. The chip, and each step's name, chip and
+          two actions (`layout="contents"`), are items of this line, the two actions kept
+          together as one: the approval control stands beside the count, and where the line has
+          no room left the two actions take the line under it together. */}
       {documentArtifact === undefined || stepHoldsPrimaryDocument ? null : approval === undefined ||
         approval.state === "draft" ? (
         <span className={approvalPillClassName("draft", "compact")} {...pageChrome}>
@@ -254,7 +251,7 @@ export function IssuePropertiesRow({
         />
       )}
       {/* One marker, where the route reaches nobody; whether it reaches anyone otherwise, and
-          the route itself, are Details' (R13). It speaks for the saved route only. */}
+          the route itself, are Details'. It speaks for the saved route only. */}
       {writes.drafts.route === (issue.route ?? "") ? (
         <UnreachableRouteMarker issue={issue} showRoute />
       ) : null}
@@ -269,7 +266,7 @@ export function IssuePropertiesRow({
 const MOST_SEGMENTS = 12;
 
 /**
- * The children's progress (R13, the prototype's `.kids-prog`): the direct children done of
+ * The children's progress (the prototype's `.kids-prog`): the direct children done of
  * total, the bar, and the whole subtree done of total, each count with its label, because the
  * two numbers differ and a reader cannot tell which is which from the numbers alone. An issue
  * with no children draws none of it.
@@ -278,9 +275,8 @@ const MOST_SEGMENTS = 12;
  * width, and carries its whole sentence as its name, "3 of 24 children done", for a reader who
  * hears it; the bar is 48 px wide at 760 px and below and 64 px above, whatever the number of
  * children: up to `MOST_SEGMENTS` children share it as one segment each, and past that it is one
- * bar filled to the share done. That keeps the line of a root as wide as INFRA-1196 - 24
- * children, a gated step waiting on the reader, 20 labels - inside R3's limits (decision 86 of
- * dispatch://INFRA-1196/artifact/part-decisions-md).
+ * bar filled to the share done. That keeps the line of a large root - 24 children, a gated step
+ * waiting on the reader, 20 labels - inside the header's height limits.
  */
 function ChildrenProgress({ childIssues }: { childIssues: readonly IssueChild[] }): ReactNode {
   if (childIssues.length === 0) return null;
@@ -317,9 +313,8 @@ function ChildrenProgress({ childIssues }: { childIssues: readonly IssueChild[] 
   ].join(" ");
   return (
     // Two items from 761 px up; at 760 px and below one item, the direct count, the bar, then
-    // the whole tree's count, so the line wraps around it rather than between the two
-    // (dispatch://INFRA-1196/artifact/build-rulings-md, ruling 3), and the item wraps inside
-    // itself only where a line is narrower than it, as at 320 px.
+    // the whole tree's count, so the line wraps around it rather than between the two, and the
+    // item wraps inside itself only where a line is narrower than it, as at 320 px.
     <span className="inline-flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5 min-[761px]:contents">
       {/* `role="img"`: a span's own name is not read, and an image's is, in place of what it
           draws, so the count is heard once, whole. */}
@@ -377,10 +372,9 @@ function ChildrenProgress({ childIssues }: { childIssues: readonly IssueChild[] 
 /**
  * The labels, in Dispatch's order, as many as fit on what is left of the line once every other
  * property is drawn, and then the count of those left over, which opens Details at its Labels
- * row, where every label is listed with its control (R13, the ruling of
- * dispatch://INFRA-1196/comment/63b73642-8fc5-4cc4-8f5d-a3d8989d3bf4). An issue whose labels
- * fit draws them all and no count. Where what is left of a line holds no label and the count has
- * gone on to the next line anyway, the labels go on with it.
+ * row, where every label is listed with its control. An issue whose labels fit draws them all
+ * and no count. Where what is left of a line holds no label and the count has gone on to the
+ * next line anyway, the labels go on with it.
  *
  * What fits is read off the page, never guessed at a width the typeface decides: every chip is
  * laid out, first with no count drawn, and where they all fit on the box's first line the line
@@ -413,7 +407,7 @@ function HeaderLabels({
     element.style.minWidth = "";
     const counter = count.current;
     // First with no count, and from its own width again after: labels that all fit on the line
-    // alone draw no count (R2), where a reading with the count beside them would leave one out
+    // alone draw no count, where a reading with the count beside them would leave one out
     // for the count's room.
     if (counter !== null) {
       counter.style.minWidth = "";
@@ -429,7 +423,7 @@ function HeaderLabels({
     // Where what is left of a line holds not even the first chip and the count has gone on to
     // the next line anyway, the box takes that chip's width, or the line's where the chip is
     // wider, and so goes on with the count: that costs the header no line and draws the labels
-    // the next line has room for (R13: a property with a value is drawn). Every reading is
+    // the next line has room for (a property with a value is drawn). Every reading is
     // taken before the commit is drawn.
     const first = element.querySelector<HTMLElement>("[data-header-label]");
     const countTop = counter?.getBoundingClientRect().top;
@@ -496,9 +490,8 @@ function HeaderLabels({
         ))}
       </div>
       {left === 0 ? null : (
-        // 24 px tall at every width (WCAG 2.5.8, finding F13 of
-        // dispatch://INFRA-1196/artifact/tester-findings-md). Tabular digits, so a count is as
-        // wide as any other of as many digits.
+        // 24 px tall at every width (WCAG 2.5.8). Tabular digits, so a count is as wide as any
+        // other of as many digits.
         <button
           className={`inline-flex min-h-6 shrink-0 items-center text-xs leading-5 font-semibold tabular-nums underline underline-offset-[3px] ${pageInkText} ${focusVisibleRing}`}
           data-testid="issue-labels-left"

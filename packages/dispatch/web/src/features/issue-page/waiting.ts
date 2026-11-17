@@ -2,15 +2,15 @@ import type { IssueDetails } from "../../api/types";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { decisionsOfAnswer } from "./decision-nodes/decision-nodes";
 import { decisionNodeChanges, inReviewList } from "./decision-review";
-import { isOvertaken } from "./tree-fold";
+import { isOvertaken } from "./issue-address";
 import { statesOfRead } from "./tree-read/tree-nodes";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
- * What waits on the reader, as the header's count counts it (dispatch://INFRA-1196 R13): each
- * open ask of the issue whose turn is the reader's, each decision in the Decisions filter's review
- * list (R35, `decision-review.ts`), and each open approval request whose turn is the reader's -
- * three things and no other.
+ * What waits on the reader, as the header's count counts it: each open ask of the issue whose
+ * turn is the reader's, each decision in the Decisions filter's review list (R35,
+ * `decision-review.ts`), and each open approval request whose turn is the reader's - three
+ * things and no other.
  *
  * An ask's turn is the reader's by the one rule every count of the reader's work reads
  * (`waitingOnYou`, `features/inbox/BlockedOnYou.tsx`): it waits on a person (`waitingOnHuman`),

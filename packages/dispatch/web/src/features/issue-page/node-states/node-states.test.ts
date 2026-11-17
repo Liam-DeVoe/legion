@@ -26,6 +26,7 @@ import { contentsEntries } from "../contents-entries";
 import { DecisionsFilterBody } from "../decisions-filter/DecisionsFilterBody";
 import {
   answeredAsk,
+  artifact,
   decision,
   decisionNode,
   treeAnswer as decisionsAnswer,
@@ -33,6 +34,7 @@ import {
   openAsk,
   READER,
   shaped,
+  issueTree as specIssueTree,
   specRef,
   statement as specStatement,
 } from "../decisions-filter/decisions-fixtures";
@@ -79,7 +81,6 @@ import {
   issueDetails,
   decision as specDecision,
   decisionNode as specDecisionNode,
-  issueTree as specIssueTree,
   shaped as specShaped,
   statementRef as specStatementRef,
   specViewAnswer,
@@ -966,8 +967,9 @@ function checkThat(blockId: string, passed: boolean): CheckBlock {
 
 /** The Verification view over `root`, with `checks` as the issue's results read, drawn as its
  *  slot draws it (`VerificationFilterBody.drawn.test.tsx`'s `bodyOf`): under the words `query`,
- *  where a case types any, with the view under no query as `whole`, on the page's `address`,
- *  which carries the words as the page's own does (`?q=`). */
+ *  where a case types any, with the view under no query as `whole`, which is that view itself
+ *  where no query is typed, on the page's `address`, which carries the words as the page's own
+ *  does (`?q=`). */
 function drawVerification(
   root: TreeNode,
   checks: readonly CheckBlock[],
@@ -991,12 +993,10 @@ function drawVerification(
           createElement(VerificationFilterBody, {
             checks,
             context: preset.context,
-            emptyLine: query === "" ? EMPTY_STATE_LINES.verification : EMPTY_STATE_LINES.no_match,
             reads: { state: "answered" },
             view: preset.root,
-            ...(query === ""
-              ? {}
-              : { whole: presetView(root, "verification", "", new Set()).root }),
+            whole:
+              query === "" ? preset.root : presetView(root, "verification", "", new Set()).root,
           })
         )
       )
@@ -1316,8 +1316,8 @@ test("the Verification view draws a result of an overtaken check the words match
 // drawn with that check under the issue's line, as the check is with no words, and the words draw
 // that line open: the view lifts the result to its top, with the check as its parent line, and the
 // body draws the check that holds it in its place. Where the result the words kept is not the
-// check's latest, the check draws its earlier results open, so the result is on screen. With the
-// check live the result is drawn among the other rows, and no line is drawn.
+// check's latest, the check draws it under its latest, so the result is on screen. With the check
+// live the result is drawn with it too, as a row of the table's own, and no line is drawn.
 test("the Verification view draws a result of an overtaken check that serves no statement under the issue's line", () => {
   const passed = checkThat("c-one", true);
   // The check, with one failed result for each of `observed`, each recorded after the one before.
@@ -1373,9 +1373,9 @@ test("the Verification view draws a result of an overtaken check that serves no 
 
   const live = drawVerification(issueWith(seen), [passed, seen], "zebrafinch");
   try {
-    expect(live.container.querySelector("[data-verification-other]")?.textContent).toContain(
-      "zebrafinch seen"
-    );
+    expect(live.container.querySelector("[data-verification-other]")).toBeNull();
+    const check = rowOf(live.container, seenId);
+    expect(check?.textContent).toContain("zebrafinch seen");
     expect(live.container.querySelector("[data-overtaken-line]")).toBeNull();
   } finally {
     live.unmount();
@@ -1500,6 +1500,102 @@ test("the Verification view's state chip draws no statement its count leaves out
   }
 });
 
+/** The check `blockId`, passed, with one result for each of `observed`, each recorded after the
+ *  one before, so the last is its latest. */
+function passedWith(blockId: string, observed: readonly string[]): CheckBlock {
+  return {
+    ...checkThat(blockId, true),
+    results: observed.map((words, place) =>
+      result({
+        check_block_id: blockId,
+        created_at: `2026-11-14T01:0${place}:00Z`,
+        id: `result-${blockId}-${place}`,
+        observed: words,
+      })
+    ),
+  };
+}
+
+/** The words of each result the row of the check `id` draws, in the order drawn. */
+function resultsDrawn(container: HTMLElement, id: string): (string | null)[] {
+  const row = rowOf(container, id);
+  return [...(row?.querySelectorAll("[data-verification-result] [data-node-words]") ?? [])].map(
+    (words) => words.textContent
+  );
+}
+
+// With no words typed, a check draws its latest result alone while its line of earlier results
+// is shut, where the view's lines fold an overtaken check and where a chip narrows it alike: the
+// body reads its rows from the view as the lines and the chip leave it, and that reading keeps
+// no result of a check, as the view with no words keeps none.
+test("the Verification view with no words draws no earlier result where its lines or a chip narrow it", async () => {
+  const user = userEvent.setup();
+  const twice = passedWith("c-one", ["older pass", "newer pass"]);
+  const replaced = checkThat("c-two", false);
+  const root = stamped(
+    node(KEY, "issue", [
+      statementNode("r1", "The page draws the checks.", [checkNode(twice), checkNode(replaced)]),
+    ]),
+    { [checkNode(replaced).id]: { life: "overtaken" } }
+  );
+  const view = drawVerification(root, [twice, replaced]);
+  try {
+    expect(resultsDrawn(view.container, checkNode(twice).id)).toEqual(["newer pass"]);
+    const met = view.container.querySelector<HTMLElement>('[data-verification-chip="met"]');
+    await user.click(met as HTMLElement);
+    expect(resultsDrawn(view.container, checkNode(twice).id)).toEqual(["newer pass"]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A chip pressed where its count leaves out every statement of the issue - here its one
+// statement, proposed - draws none of them, and the table says that no statement stands in that
+// state, as it says where the issue holds none in it, and not that nothing holds the words.
+test("the Verification view's chip says no statement stands in its state where it leaves out every one", async () => {
+  const user = userEvent.setup();
+  const passed = checkThat("c-one", true);
+  const proposed = statementNode("r1", "This one is proposed.", [checkNode(passed)]);
+  const view = drawVerification(
+    stamped(node(KEY, "issue", [proposed]), { [proposed.id]: { life: "proposed" } }),
+    [passed]
+  );
+  try {
+    const met = view.container.querySelector<HTMLElement>('[data-verification-chip="met"]');
+    await user.click(met as HTMLElement);
+    expect(view.container.querySelectorAll("[data-verification-card]")).toHaveLength(0);
+    expect(view.container.querySelector("[data-verification-none]")?.textContent).toBe(
+      EMPTY_STATE_LINES.verification_none
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// Words that keep one earlier result of an overtaken check that serves no statement draw that
+// check under the issue's line with its latest result and the one the words kept, and leave its
+// other earlier results folded behind their line, as every check the words keep a result of does.
+test("the Verification view draws only the results the words keep of an overtaken check that serves no statement", () => {
+  const passed = checkThat("c-one", true);
+  const seen = passedWith("c-two", ["zebrafinch seen", "nothing seen", "nothing seen again"]);
+  const seenId = checkNode(seen).id;
+  const root = stamped(
+    node(KEY, "issue", [
+      statementNode("r1", "The page draws the checks.", [checkNode(passed)]),
+      checkNode(seen),
+    ]),
+    { [seenId]: { life: "overtaken" } }
+  );
+  const view = drawVerification(root, [passed, seen], "zebrafinch");
+  try {
+    const check = rowOf(view.container, seenId);
+    expect(check !== null && theLine(view.container).contains(check)).toBe(true);
+    expect(resultsDrawn(view.container, seenId)).toEqual(["nothing seen again", "zebrafinch seen"]);
+  } finally {
+    view.unmount();
+  }
+});
+
 /** The Spec view of `root` as its slot draws it (`slots/view-spec.tsx`): under the words the
  *  page's address carries (`?q=`), so a case that moves the address draws the view again. */
 function SpecAtAddress({
@@ -1524,7 +1620,6 @@ function SpecAtAddress({
     holdsEscape: false,
     issue,
     reader: "alice",
-    reading: false,
     ...(request === undefined ? {} : { request }),
     ...(reveal === undefined ? {} : { reveal }),
     root,
@@ -1539,17 +1634,18 @@ function NavigateProbe({ take }: { take: (navigate: (to: string) => void) => voi
   return null;
 }
 
-/** The Spec view over `root`, its reads answered with no decision, no result and no block, drawn
- *  under the providers the page draws it under (`SpecFilterBody.drawn.test.tsx`'s `drawBody`),
- *  on an address that carries the words `query`. `go` moves the address, and `unmount` puts the
- *  reads back as well. */
+/** The Spec view over `root`, its reads answered with no decision, no question, no result and no
+ *  block, drawn under the providers the page draws it under (`SpecFilterBody.drawn.test.tsx`'s
+ *  `drawBody`), on an address that carries the words `query`; with `asksOut`, the asks read not
+ *  answered yet. `go` moves the address, and `unmount` puts the reads back as well. */
 function drawSpec(
   root: TreeNode,
   {
+    asksOut = false,
     query = "",
     request,
     reveal,
-  }: { query?: string; request?: OutlineRequest; reveal?: string } = {}
+  }: { asksOut?: boolean; query?: string; request?: OutlineRequest; reveal?: string } = {}
 ): { container: HTMLElement; go: (to: string) => void; unmount: () => void } {
   const issue = issueDetails();
   const results: IssueCheckResults = { checks: [], issue: KEY, verification_artifact_id: "" };
@@ -1563,6 +1659,10 @@ function drawSpec(
   // once read: the body takes its decisions from the view read and reads nothing on its own.
   client.setQueryData(issueTreeKey(KEY), readAnswer([]));
   client.setQueryData(viewKey(KEY, "spec"), readAnswer([]));
+  // The asks read, held answered with no question unless the case keeps it out: the body says
+  // where `q` and `w` go nowhere only once every read it draws from holds an answer
+  // (`readsHeld`).
+  if (!asksOut) client.setQueryData(["asks", KEY], []);
   const spies = [
     spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
     spyOn(api, "getIssueCoverage").mockResolvedValue(coverageRead([])),
@@ -1760,10 +1860,16 @@ test("a press on the Spec view's overtaken line lets go of the statement the rea
 
 // A key pressed on the Spec view's line that answers in words - `q` where no question
 // is open, since the line stands for no node - is drawn at the line, and the next move lets it
-// go.
+// go. The Spec view read is held on the issue's node, as the page holds it, with the two
+// statements, the second overtaken: `q` says it goes nowhere only once every read the view draws
+// from holds an answer.
 test("a key's report on the Spec view's overtaken line is drawn at the line", async () => {
   const user = userEvent.setup();
-  const view = drawSpec(statementAndLine());
+  const spec = readAnswer([
+    readBlock("r1", "requirement", "spec", 0, { mark: "query" }),
+    readBlock("r2", "requirement", "spec", 1, { mark: "query", state: "overtaken" }),
+  ]);
+  const view = drawSpec({ ...statementAndLine(), views: { spec } });
   try {
     const first = rowOf(view.container, "spec#b-r1");
     const line = theLine(view.container);
@@ -2013,6 +2119,41 @@ test("the Spec view draws no overtaken decision beside the statement it shaped",
     expect(cellBeside(live.container, "spec#b-r1")).toHaveAttribute("data-decision-id", D1);
   } finally {
     live.unmount();
+  }
+});
+
+// Under Spec, while the asks read is out, a person's decision that heads a statement's run waits
+// on it, and keeps its place where the statement's group also holds an overtaken decision: the
+// cell beside the statement draws no decision, and no other decision that informed the statement
+// moves up in its place. The overtaken decision draws no cell either.
+test("a Spec run headed by a person's decision that waits on the asks read keeps its head beside an overtaken decision", () => {
+  const root: TreeNode = {
+    ...stamped(
+      specIssueTree([
+        statement("r1"),
+        statement("r2"),
+        specDecisionNode("d1"),
+        specDecisionNode("d2"),
+        specDecisionNode("d3"),
+      ]),
+      { "decisions-md#b-d3": { life: "overtaken" } }
+    ),
+    views: {
+      spec: specViewAnswer([
+        answerNode("spec#b-r1", "requirement", { mark: "query" }),
+        answerNode("spec#b-r2", "requirement", { mark: "query" }),
+        specDecision("d1", { kind: "person", links: [specShaped(specStatementRef("r1"))] }),
+        specDecision("d2", { links: [specShaped(specStatementRef("r1"))] }),
+        specDecision("d3", { links: [specShaped(specStatementRef("r2"))] }),
+      ]),
+    },
+  };
+  const view = drawSpec(root, { asksOut: true });
+  try {
+    expect(cellBeside(view.container, "spec#b-r1")).not.toHaveAttribute("data-decision-id");
+    expect(cellBeside(view.container, "spec#b-r2")).not.toHaveAttribute("data-decision-id");
+  } finally {
+    view.unmount();
   }
 });
 
@@ -2419,8 +2560,13 @@ function readAnswer(nodes: readonly TreeAnswerNode[]): TreeAnswer {
   };
 }
 
-/** The issue the tree read is of, as `issueQuery` loads it. */
-const ISSUE = issueDetails();
+/** The issue the tree read is of, as `issueQuery` loads it, with the Verification document the
+ *  `check` blocks here are blocks of, so each is a check (`isCheck`). */
+const ISSUE = {
+  ...issueDetails(),
+  artifacts: [...issueDetails().artifacts, artifact("artifact-verification-md", "verification-md")],
+  verification_artifact_id: "artifact-verification-md",
+};
 
 /** The outline `buildIssueTree` builds from the tree read's answer of `nodes`, under the issue's
  *  own node, and from no other read. */
@@ -3188,6 +3334,7 @@ function planBody(
               onEditing: () => {},
               plan,
               planBlocks: undefined,
+              reads: { state: "answered" },
               reveal,
               root,
               rootRow: false,

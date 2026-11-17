@@ -5,8 +5,15 @@ import type {
   IssueCoverage,
   IssueDetails,
 } from "../../../api/types";
+import {
+  artifact,
+  KEY,
+  node,
+  READER,
+  READER_ACTOR,
+  SPEC_SLUG,
+} from "../decisions-filter/decisions-fixtures";
 import type { TreeAsk, TreeNode } from "../issue-tree";
-import type { NodeType } from "../page-words";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
 
 /**
@@ -14,8 +21,16 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-re
  * Spec view read, whose decision nodes are the decisions the column draws (`decisionNodes`),
  * built by hand, so the model and the body are read without a server
  * (`spec-decided-by.test.ts`, `SpecFilterBody.drawn.test.tsx`). A case that needs the tree as
- * part F's model places its nodes builds it with `buildIssueTree` from the reads below
+ * the page's model places its nodes builds it with `buildIssueTree` from the reads below
  * (`askRead`, `coverageRead`) instead.
+ *
+ * The issue's key, the reader, a document, a node and the issue's tree are the Decisions
+ * filter's own fixtures (`decisions-filter/decisions-fixtures.ts`), the same in value and in
+ * what they build. What is here differs from that module's fixture of the same name, and is the
+ * Spec view's own: the issue's decisions document is `artifact-dec`, which each decision node
+ * here names as its document, and its `artifacts` is typed as present, so a case can add a
+ * document; a statement is marked a statement, carries its counts and opens with its number; a
+ * `shaped` tie names a requirement; a decision is given its kind and waits for no review.
  *
  * The addresses are the ones this issue would answer with: a statement is a block of the spec,
  * a decision a block of `decisions.md`, and an ask its own id, so a tie resolves through the
@@ -23,32 +38,10 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-re
  * a rule written here.
  */
 
-export const KEY = "CORE-1";
-export const SPEC_SLUG = "spec";
+/** The slug of the issue's decisions document, whose blocks the decisions here are. The
+ *  Decisions filter's own fixtures name no such document: their decisions are blocks of the
+ *  spec. */
 export const DECISIONS_SLUG = "decisions-md";
-
-/** Who is reading, whose own words read as theirs (R34). */
-export const READER = "alice";
-
-export const READER_ACTOR: Actor = { id: READER, kind: "user" };
-
-/** One document of the issue. */
-export function artifact(id: string, slug: string, primary = false): Artifact {
-  return {
-    created_at: "2026-11-05T00:00:00Z",
-    created_by: READER_ACTOR,
-    id,
-    issue_key: KEY,
-    kind: "doc",
-    name: slug,
-    primary,
-    project: "CORE",
-    ref_key: `artifact:${id}`,
-    session_id: null,
-    slug,
-    versions: [],
-  };
-}
 
 /** The issue, with its spec and its decisions document, which is all the addressing rule reads
  *  of it. Its `artifacts` is typed as present, so a case can add a document to the list. */
@@ -100,25 +93,7 @@ export function issueDetails(): IssueDetails & { artifacts: Artifact[] } {
   };
 }
 
-/** One node of the tree, with the fields a case needs on it. */
-export function node(partial: Partial<TreeNode> & { id: string; type: NodeType }): TreeNode {
-  return {
-    alsoUnder: [],
-    children: [],
-    chips: [],
-    facts: [],
-    gaps: [],
-    held: 0,
-    question: false,
-    replaced: false,
-    text: partial.id,
-    transcluded: false,
-    waiting: false,
-    ...partial,
-  };
-}
-
-/** One `shaped` tie, from a decision to the node its link names (dispatch://INFRA-1150 R1). */
+/** One `shaped` tie, from a decision to the node its link names. */
 export function shaped(ref: string): DecisionLink {
   return {
     created_at: "2026-11-14T10:00:00Z",
@@ -206,18 +181,15 @@ export function specViewAnswer(
 /** The address of one statement, which is one block of the issue's spec. */
 export const statementRef = (block: string) => `dispatch://${KEY}/spec#b-${block}`;
 
-/** The issue with `children` under it. */
-export function issueTree(children: readonly TreeNode[]): TreeNode {
-  return node({ children: [...children], id: KEY, type: "issue" });
-}
-
 /** One statement of the spec, by its block id, with its number in its own words as the spec
- *  writes one. */
+ *  writes one: a requirement of the issue's own spec, which the page's model marks a statement
+ *  (`isStatement`). */
 export function statement(block: string, partial: Partial<TreeNode> = {}): TreeNode {
   return node({
     counts: { checks: 1, planTasks: 1 },
     id: `spec#b-${block}`,
     reference: statementRef(block),
+    statement: true,
     text: `**${block.toUpperCase()}.** The page draws ${block}.`,
     type: "requirement",
     ...partial,
@@ -263,7 +235,7 @@ export function decisionNode(block: string, partial: Partial<TreeNode> = {}): Tr
 }
 
 /** A question asked of the issue, as the asks read answers it, which the reader answered with
- *  `text`: what part F's model builds the answered question's node from. */
+ *  `text`: what the page's model builds the answered question's node from. */
 export function askRead(id: string, text: string): TreeAsk {
   return {
     anchor: null,
@@ -288,7 +260,7 @@ export function askRead(id: string, text: string): TreeAsk {
 }
 
 /** The coverage read over the statements `blocks`, in that order, each served by a check: what
- *  part F's model builds each statement's node from. */
+ *  the page's model builds each statement's node from. */
 export function coverageRead(blocks: readonly string[]): IssueCoverage {
   return {
     gaps: [],
