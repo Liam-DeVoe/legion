@@ -402,12 +402,15 @@ export interface AgentText {
    *  their login, with an act made through a session named by what it is; and the page's words
    *  for no actor. Everywhere else: an actor as `label` names it, and no actor as "". */
   author(actor: Actor | undefined): string;
-  /** The full label: name plus ` (for <owner>)` / ` (as ns/name)`. */
+  /** The full label: name plus ` (for <owner>)` / ` (as ns/name)`. Inside `NoTooltips` a session
+   *  nothing names is named by the page's word for an agent, as `AgentName` names it there, and
+   *  never by its short id. */
   label(actor: Actor): string;
   /** An `AgentPart` as text: a text part as is, an agent part by the rule `AgentParts` draws it
    *  by. */
   part(part: AgentPart): string;
-  /** A bare session id's name: its registry title, else `storedTitle`, else its short id. */
+  /** A bare session id's name: its registry title, else `storedTitle`, else its short id; inside
+   *  `NoTooltips`, else the page's word for an agent nothing names. */
   sessionText(sessionId: string, storedTitle: string | undefined): string;
   /** The Conversation avatar's initials (`agentInitials`). */
   initials(actor: Actor): string;
@@ -496,12 +499,25 @@ export function useAgentText(): AgentText {
   const page = usePageWords();
   return useMemo(() => {
     const label = (ref: AgentRef) => {
-      const { attribution, name } = resolveAgent(ref, registry);
+      const resolved = resolveAgent(ref, registry);
+      // Inside `NoTooltips` a session is named as every form of `AgentName` names it there
+      // (`sessionAuthor`), so a dialog's sentence or a screen reader's text never names it by its
+      // short id (decision 107 of dispatch://INFRA-1196/artifact/part-decisions-md); a person,
+      // and everything outside it, keep `resolveAgent`'s name (dispatch://INFRA-3935 R1).
+      const name =
+        page === null || resolved.sessionId === undefined
+          ? resolved.name
+          : sessionAuthor(
+              resolved.sessionId,
+              "actor" in ref ? ref.actor.origin?.session_title : ref.storedTitle,
+              registry,
+              page
+            ).name;
       // The same name `AgentName` draws, the agent an act was made through included, so a title
       // or an aria-label never says a person wrote what their agent wrote for them.
       const acted =
         "actor" in ref && ref.actor.kind === "user" ? actorActText(name, ref.actor.act) : name;
-      return `${acted}${attribution}`;
+      return `${acted}${resolved.attribution}`;
     };
     return {
       author: (actor: Actor | undefined) =>
@@ -513,8 +529,9 @@ export function useAgentText(): AgentText {
       initials: (actor: Actor) => agentInitials(resolveAgent({ actor }, registry).name),
       label: (actor: Actor) => label({ actor }),
       part: (part: AgentPart) => (typeof part === "string" ? part : label(part)),
+      // A bare session id carries no attribution, so its label is its name alone.
       sessionText: (sessionId: string, storedTitle: string | undefined) =>
-        resolveAgent({ sessionId, storedTitle }, registry).name,
+        label({ sessionId, storedTitle }),
     };
   }, [page, registry]);
 }

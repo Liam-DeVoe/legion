@@ -30,7 +30,7 @@ import { ConnectionDot } from "../doc/ConnectionDot";
 import { AskCard } from "../inbox/AskCard";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { AssigneeControl } from "../issue/AssigneeControl";
-import { badgeSelectWrapper } from "../issue/badge-select";
+import { badgeSelectPageRailWrapper, badgeSelectWrapper } from "../issue/badge-select";
 import { ClaimChip } from "../issue/ClaimChip";
 import { GitHubLink } from "../issue/GitHubLink";
 import type { StepEntry } from "../issue/gated-steps";
@@ -995,6 +995,318 @@ test("inRow draws no label and the words of Details", async () => {
   }
 });
 
+/** Fixed instants for the claims whose markup a case records: the holder's last heartbeat, a
+ *  moment it comes free that is still ahead, and one already past. */
+const CLAIM_HEARD_AT = "2026-09-24T05:50:00Z";
+const CLAIM_FREE_FROM = "2099-09-24T06:00:00Z";
+const CLAIM_FREED_AT = "2026-09-24T06:20:00Z";
+
+/** Each state a claim is drawn in: held, lapsed, unresponsive with its heartbeat and the moment it
+ *  comes free - still ahead (`waiting`) or past (`free`) - and, with the agent list unreadable,
+ *  unchecked. */
+const CLAIM_STATES = ["held", "lapsed", "waiting", "free", "unchecked"] as const;
+type ClaimState = (typeof CLAIM_STATES)[number];
+
+function claimIn(state: ClaimState, inRow: boolean): ReactNode {
+  if (state === "lapsed") return <ClaimChip claim={sessionClaim(GONE_SESSION)} inRow={inRow} />;
+  if (state === "waiting" || state === "free") {
+    return (
+      <ClaimChip
+        claim={sessionClaim(STALLED_SESSION)}
+        inRow={inRow}
+        liveness={{
+          holder_state: "unresponsive",
+          last_seen: CLAIM_HEARD_AT,
+          takeable_at: state === "waiting" ? CLAIM_FREE_FROM : CLAIM_FREED_AT,
+        }}
+      />
+    );
+  }
+  return <ClaimChip claim={sessionClaim(LIVE_SESSION)} inRow={inRow} />;
+}
+
+/** What `read` finds in the claim `state` draws on `surface`, once the agent list has answered,
+ *  or, for `unchecked`, failed. */
+async function readClaim<T>(
+  state: ClaimState,
+  surface: Surface,
+  inRow: boolean,
+  read: (chip: HTMLElement) => T
+): Promise<T> {
+  if (state === "unchecked") {
+    stubs.listAgents.mockRejectedValueOnce(new Error("Envoy listener unreachable"));
+  }
+  const view = draw(claimIn(state, inRow), surface);
+  try {
+    await waitFor(() => expect(stubs.listAgents).toHaveBeenCalled());
+    await settleReads();
+    return read(within(view.container).getByTestId("issue-claim"));
+  } finally {
+    undraw(view);
+  }
+}
+
+/** A claim's markup as its own elements draw it: each element's tag and class and each text
+ *  node, in order. The holder's `AgentName` and each `<time>` stand by their tag and class: what
+ *  they hold is theirs, and a time's words are the clock's. */
+function claimShape(chip: Element): string[] {
+  const shape: string[] = [];
+  const walk = (node: Node) => {
+    if (node.nodeType === node.TEXT_NODE) {
+      shape.push(JSON.stringify(node.textContent));
+      return;
+    }
+    if (!(node instanceof Element)) return;
+    shape.push(`<${node.tagName.toLowerCase()} class="${node.getAttribute("class") ?? ""}">`);
+    if (node.hasAttribute("data-agent-name") || node.tagName === "TIME") return;
+    for (const child of node.childNodes) walk(child);
+  };
+  walk(chip);
+  return shape;
+}
+
+/** The claim's markup in each state as this part drew it before a claim in a row of Details
+ *  became a sentence (`claimShape`): `main`'s pill outside `NoTooltips`, with `inRow` or without,
+ *  and the header's pill inside it. */
+const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, readonly string[]>>>> =
+  {
+    inside: {
+      free: [
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] border-page-hair bg-page-pane text-page-muted min-w-0 max-w-full gap-1">',
+        '<span class="shrink-0">',
+        '"Claimed by"',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
+        '"·"',
+        '<time class="min-w-0 [overflow-wrap:anywhere] max-w-full [overflow-wrap:anywhere]">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
+        '"·"',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
+        '"unresponsive"',
+        '<span class="">',
+        '" since "',
+        '<time class="max-w-full [overflow-wrap:anywhere]">',
+        '<span class="">',
+        '", free for another agent to take now"',
+      ],
+      held: [
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-page-mark text-page-ink min-w-0 max-w-full gap-1">',
+        '<span class="shrink-0">',
+        '"Claimed by"',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
+        '"·"',
+        '<time class="min-w-0 [overflow-wrap:anywhere] max-w-full [overflow-wrap:anywhere]">',
+      ],
+      lapsed: [
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] border-page-hair bg-page-pane text-page-muted min-w-0 max-w-full gap-1">',
+        '<span class="shrink-0">',
+        '"Claimed by"',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
+        '"·"',
+        '<time class="min-w-0 [overflow-wrap:anywhere] max-w-full [overflow-wrap:anywhere]">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
+        '"·"',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
+        '"not running"',
+      ],
+      unchecked: [
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-page-mark text-page-ink min-w-0 max-w-full gap-1">',
+        '<span class="shrink-0">',
+        '"Claimed by"',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
+        '"·"',
+        '<time class="min-w-0 [overflow-wrap:anywhere] max-w-full [overflow-wrap:anywhere]">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
+        '"·"',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
+        '"running state unknown"',
+      ],
+      waiting: [
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-page-mark text-page-ink min-w-0 max-w-full gap-1">',
+        '<span class="shrink-0">',
+        '"Claimed by"',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
+        '"·"',
+        '<time class="min-w-0 [overflow-wrap:anywhere] max-w-full [overflow-wrap:anywhere]">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
+        '"·"',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
+        '"unresponsive"',
+        '<span class="">',
+        '" since "',
+        '<time class="max-w-full [overflow-wrap:anywhere]">',
+        '<span class="">',
+        '", free for another agent from "',
+        '<time class="min-w-0 [overflow-wrap:anywhere]">',
+      ],
+    },
+    outside: {
+      free: [
+        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1">',
+        '<span class="shrink-0">',
+        '"Claimed by"',
+        '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
+        '<span class="shrink-0">',
+        '"·"',
+        '<time class="shrink-0">',
+        '<span class="shrink-0">',
+        '"·"',
+        '<span class="shrink-0">',
+        '"unresponsive"',
+        '<span class="">',
+        '" since "',
+        '<time class="">',
+        '<span class="">',
+        '", takeable now"',
+      ],
+      held: [
+        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="shrink-0">',
+        '"Claimed by"',
+        '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
+        '<span class="shrink-0">',
+        '"·"',
+        '<time class="shrink-0">',
+      ],
+      lapsed: [
+        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1">',
+        '<span class="shrink-0">',
+        '"Claimed by"',
+        '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
+        '<span class="shrink-0">',
+        '"·"',
+        '<time class="shrink-0">',
+        '<span class="shrink-0">',
+        '"·"',
+        '<span class="shrink-0">',
+        '"not running"',
+      ],
+      unchecked: [
+        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="shrink-0">',
+        '"Claimed by"',
+        '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
+        '<span class="shrink-0">',
+        '"·"',
+        '<time class="shrink-0">',
+      ],
+      waiting: [
+        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="shrink-0">',
+        '"Claimed by"',
+        '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
+        '<span class="shrink-0">',
+        '"·"',
+        '<time class="shrink-0">',
+        '<span class="shrink-0">',
+        '"·"',
+        '<span class="shrink-0">',
+        '"unresponsive"',
+        '<span class="">',
+        '" since "',
+        '<time class="">',
+        '<span class="">',
+        '", takeable "',
+        '<time class="">',
+      ],
+    },
+  };
+
+/** The display tokens that make an element a flex or grid box, whose items each keep a line of
+ *  their own when they do not fit. */
+const BOX_DISPLAYS = ["flex", "inline-flex", "grid", "inline-grid"];
+
+// dispatch://INFRA-3935 R4: inside `NoTooltips` a claim in a row of Details is plain words that
+// wrap between words as a sentence does (the prototype's `.frow .fv`): no flex box moves a piece
+// that does not fit whole to a line of its own, and a space stands between each two pieces. R1:
+// outside `NoTooltips`, with `inRow` or without, and inside it as the header's pill, the claim's
+// markup is the one recorded in `RECORDED_CLAIMS`.
+test("inRow draws the claim as a sentence that wraps between words", async () => {
+  for (const state of CLAIM_STATES) {
+    const read = await readClaim(state, "inside", true, (chip) => {
+      const timeAt = (selector: string) => chip.querySelector(selector)?.textContent ?? "";
+      const claimed = timeAt(":scope > time");
+      const unresponsive = `${CONTROL_LABELS.unresponsive} ${CONTROL_LABELS.unresponsive_since} ${timeAt(
+        "[data-testid='issue-claim-unresponsive-since'] > time"
+      )},`;
+      const pieces: Record<ClaimState, string[]> = {
+        free: ["Reviewer", "·", claimed, "·", unresponsive, CONTROL_LABELS.takeable_now],
+        held: ["Implementer", "·", claimed],
+        lapsed: [CONTROL_LABELS.unnamed_author, "·", claimed, "·", CONTROL_LABELS.not_running],
+        unchecked: [CONTROL_LABELS.unnamed_author, "·", claimed, "·", CONTROL_LABELS.unchecked],
+        waiting: [
+          "Reviewer",
+          "·",
+          claimed,
+          "·",
+          unresponsive,
+          CONTROL_LABELS.takeable,
+          new Date(CLAIM_FREE_FROM).toLocaleString(undefined, {
+            dateStyle: "short",
+            timeStyle: "short",
+          }),
+        ],
+      };
+      return {
+        claimed,
+        className: classOf(chip),
+        sentence: pieces[state].join(" "),
+        text: chip.textContent,
+      };
+    });
+    expect(read.claimed).not.toBe("");
+    expect(read.className.filter((token) => BOX_DISPLAYS.includes(token))).toEqual([]);
+    expect(read.className).toEqual(
+      expect.arrayContaining(["max-w-full", "[overflow-wrap:anywhere]"])
+    );
+    expect(read.text).toBe(read.sentence);
+  }
+
+  const drawn: Record<string, readonly string[]> = {};
+  const want: Record<string, readonly string[]> = {};
+  for (const state of CLAIM_STATES) {
+    drawn[`outside ${state}`] = await readClaim(state, "outside", false, claimShape);
+    drawn[`outside inRow ${state}`] = await readClaim(state, "outside", true, claimShape);
+    drawn[`inside ${state}`] = await readClaim(state, "inside", false, claimShape);
+    want[`outside ${state}`] = RECORDED_CLAIMS.outside[state];
+    want[`outside inRow ${state}`] = RECORDED_CLAIMS.outside[state];
+    want[`inside ${state}`] = RECORDED_CLAIMS.inside[state];
+  }
+  expect(drawn).toEqual(want);
+});
+
+// dispatch://INFRA-3935 R4: inside `NoTooltips` the priority's add control in a row of Details is,
+// from `md`, as tall as the controls beside it there (the repository's select, drawn in
+// `badgeSelectPageRailWrapper`), and keeps the 44 px below `md`. R1: outside, its class is
+// `main`'s.
+test("the priority's add control has the height of its siblings in Details", async () => {
+  const siblings = tokens(badgeSelectPageRailWrapper).filter((token) =>
+    token.startsWith("md:min-h-")
+  );
+  expect(siblings).toEqual(["md:min-h-7"]);
+  for (const surface of ["inside", "outside"] as const) {
+    const view = draw(addablePriorityLine(surface), surface);
+    try {
+      await settleReads();
+      const add = addControlOf(view, surface);
+      if (surface === "inside") {
+        expect(classOf(add).filter((token) => token.startsWith("md:min-h-"))).toEqual(siblings);
+        expect(classOf(add)).toEqual(expect.arrayContaining(["min-h-11", "py-2", "md:py-1"]));
+      } else {
+        expect(add.getAttribute("class")).toBe(
+          "inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100"
+        );
+      }
+    } finally {
+      undraw(view);
+    }
+  }
+});
+
 // dispatch://INFRA-3935 R4: `chipClassName` is the chip's whole shape - only what holds a chip on
 // its line is kept - and the labels wrap. It acts on every surface; without it the labels keep
 // `main`'s strings. Inside `NoTooltips` what holds the chip on its line also breaks a long label
@@ -1241,10 +1553,27 @@ function AuthorProbe({
   );
 }
 
+/** The sentences `useAgentText` builds for the session nothing names, as `view` draws them, each
+ *  up to its first comma: the Unsubscribe dialog's question, opened by its control, and each route
+ *  marker's words for a screen reader (`sr-only`). */
+async function namelessSentences(view: RenderResult): Promise<(string | undefined)[]> {
+  const subscribed = within(caseOf(view, "subscribed, nameless"));
+  await userEvent.setup().click(subscribed.getByRole("button", { name: "Unsubscribe" }));
+  const dialog = await subscribed.findByRole("dialog", { name: "Unsubscribe" });
+  return [
+    dialog.querySelector("p"),
+    ...caseOf(view, "routes, nameless").querySelectorAll(".sr-only"),
+  ].map((element) => element?.textContent?.split(",")[0]);
+}
+
 // dispatch://INFRA-3935 R5: inside `NoTooltips`, an author is named by a title - the agent list's,
 // else the one its write was stamped with - else the page's word for an agent, and never by the
 // short id that tells no two sessions apart; a person's act made through an agent names the
-// agent by what it is. Outside, `author` names an actor as `label` does.
+// agent by what it is. `label`, and each sentence built of a session's name there (the
+// Unsubscribe dialog's question, a route marker's words for a screen reader), name a session as
+// every form of `AgentName` does (decision 107 of
+// dispatch://INFRA-1196/artifact/part-decisions-md). Outside, `author` names an actor as `label`
+// does, and those sentences keep `main`'s short id.
 test("author names a session by its title and never by its short id", async () => {
   // The page's words for an agent nothing names, for no actor, and for an act made through an
   // agent, as the Verification document reads them.
@@ -1290,6 +1619,41 @@ test("author names a session by its title and never by its short id", async () =
       <div data-case="nameless, not an author">
         <AgentName actor={{ id: NAMELESS_SESSION, kind: "session" }} />
       </div>
+      <div data-case="subscribed, nameless">
+        <SubscribedAgents
+          onUnsubscribe={() => undefined}
+          ownerLabel="CORE-1"
+          subscribers={[
+            {
+              last_seen: Date.now(),
+              live: true,
+              removable: true,
+              session_id: NAMELESS_SESSION,
+              title: "",
+              topics: ["notifications.dispatch.issue.CORE-1.>"],
+              via: "notifications.dispatch.issue.CORE-1.>",
+            },
+          ]}
+        />
+      </div>
+      <div data-case="routes, nameless">
+        <UnresponsiveRouteMarker
+          issue={{
+            route: "role:reviewer",
+            route_holder: NAMELESS_SESSION,
+            route_status: "holder_unresponsive",
+            route_status_reason: null,
+          }}
+        />
+        <UnreachableRouteMarker
+          issue={{
+            route: `session:${NAMELESS_SESSION}`,
+            route_holder: null,
+            route_status: "no_holder",
+            route_status_reason: null,
+          }}
+        />
+      </div>
       <AuthorProbe actors={actors} />
     </>
   );
@@ -1319,6 +1683,19 @@ test("author names a session by its title and never by its short id", async () =
     expect(authored("nameless")).toBe(CONTROL_LABELS.unnamed_author);
     expect(authored("through an agent")).toBe(`alice, acting through ${AUTHOR_KIND_WORDS.agent}`);
     expect(authored("no actor")).toBe(CONTROL_LABELS.unknown_author);
+    // `label` and every sentence built of a session's name say it as `AgentName` draws it, so
+    // the Unsubscribe dialog and a route marker's words for a screen reader name no short id.
+    expect(caseOf(inside, "author: nameless").querySelector("[data-label]")?.textContent).toBe(
+      CONTROL_LABELS.unnamed_author
+    );
+    expect(await namelessSentences(inside)).toEqual([
+      `Unsubscribe ${CONTROL_LABELS.unnamed_author} from CORE-1? They will be told.`,
+      `. ${CONTROL_LABELS.unnamed_author} has missed its heartbeats without ending`,
+      `. ${CONTROL_LABELS.unnamed_author} is not running right now`,
+    ]);
+    for (const name of ["subscribed, nameless", "routes, nameless"]) {
+      expect(caseOf(inside, name).textContent).not.toContain("session:");
+    }
   } finally {
     undraw(inside);
   }
@@ -1339,6 +1716,15 @@ test("author names a session by its title and never by its short id", async () =
         expect(author).not.toBe("");
       }
     }
+    // Outside, `main`'s short id names the session nothing names, in `label` and every sentence.
+    expect(caseOf(outside, "author: nameless").querySelector("[data-label]")?.textContent).toBe(
+      "session:01234567…"
+    );
+    expect(await namelessSentences(outside)).toEqual([
+      "Unsubscribe session:01234567… from CORE-1? They will be told.",
+      ". session:01234567… has missed its heartbeats without ending",
+      ". session:01234567… is not running right now",
+    ]);
   } finally {
     undraw(outside);
   }
