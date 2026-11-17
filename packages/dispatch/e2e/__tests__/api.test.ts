@@ -77,57 +77,80 @@ function refusal(route: string, status: number, where: string, carries: string):
 // fetch would send a 307's or 308's body on to the origin a redirect names, a key in a handoff
 // included, and take that origin's answer as Dispatch's (Bun and Node drop the bearer and the
 // cookie alone). So no call follows a redirect: the 3xx is the answer, and the call fails naming
-// it. One case for each code, so a client that follows again fails at each. The limit is a hang
-// guard over the two `bun` processes of a case.
+// it. One case for each code, so a client that follows again fails at each.
 for (const code of REDIRECT_CODES) {
-  test(redirectCase(code), async () => {
-    const servers = dispatchRedirects();
-    servers.code = code;
-    try {
-      for (const { carries, route, call } of CALLS) {
-        const outcome = await run(servers, call);
-        expect(servers.received, `the other origin after a ${code} of ${route}`).toEqual([]);
-        expect(outcome).toEqual({
-          exit: 1,
-          died: refusal(route, code, `redirecting to ${servers.elsewhere}`, carries),
-        });
+  test(
+    redirectCase(code),
+    async () => {
+      const servers = dispatchRedirects();
+      servers.code = code;
+      try {
+        for (const { carries, route, call } of CALLS) {
+          const outcome = await run(servers, call);
+          expect(servers.received, `the other origin after a ${code} of ${route}`).toEqual([]);
+          expect(outcome).toEqual({
+            exit: 1,
+            died: refusal(route, code, `redirecting to ${servers.elsewhere}`, carries),
+          });
+        }
+      } finally {
+        servers.stop();
       }
-    } finally {
-      servers.stop();
+    },
+    {
+      // A hang guard over the two `bun` client processes this case starts and waits on itself,
+      // which no bound of bounded-subprocess.ts covers.
+      timeout: 30_000,
     }
-  }, 30_000);
+  );
 }
 
 // A call that read a redirect's body before its status would wait on a body that never ends, and
-// refuse nothing; the test's limit is that wait's bound.
-test("a redirect whose body never ends is refused naming its status, before any of its body is read", async () => {
-  const servers = dispatchRedirects();
-  servers.endlessBody = true;
-  try {
-    const [{ carries, route, call }] = CALLS;
-    expect(await run(servers, call)).toEqual({
-      exit: 1,
-      died: refusal(route, 307, `redirecting to ${servers.elsewhere}`, carries),
-    });
-  } finally {
-    servers.stop();
+// refuse nothing.
+test(
+  "a redirect whose body never ends is refused naming its status, before any of its body is read",
+  async () => {
+    const servers = dispatchRedirects();
+    servers.endlessBody = true;
+    try {
+      const [{ carries, route, call }] = CALLS;
+      expect(await run(servers, call)).toEqual({
+        exit: 1,
+        died: refusal(route, 307, `redirecting to ${servers.elsewhere}`, carries),
+      });
+    } finally {
+      servers.stop();
+    }
+  },
+  {
+    // The bound of the wait on a body that never ends: a client that read the body before the
+    // status would hang until this stops it, and one that refuses ends at once.
+    timeout: 10_000,
   }
-}, 10_000);
+);
 
 // A redirect within Dispatch's own address, or one that names nowhere, is not named as the
 // address the client already has, and a host longer than any host name is never printed. The
 // client's paths are its own whatever the URL's, so each says to name Dispatch's own address.
-test("a redirect to another path of the same address, to no target, or to an overlong host is refused saying so", async () => {
-  const servers = dispatchRedirects();
-  try {
-    const [{ carries, route, call }] = CALLS;
-    const said: string[] = [];
-    for (const { location } of UNNAMED_TARGETS) {
-      servers.location = location;
-      said.push((await run(servers, call)).died);
+test(
+  "a redirect to another path of the same address, to no target, or to an overlong host is refused saying so",
+  async () => {
+    const servers = dispatchRedirects();
+    try {
+      const [{ carries, route, call }] = CALLS;
+      const said: string[] = [];
+      for (const { location } of UNNAMED_TARGETS) {
+        servers.location = location;
+        said.push((await run(servers, call)).died);
+      }
+      expect(said).toEqual(UNNAMED_TARGETS.map(({ where }) => refusal(route, 307, where, carries)));
+    } finally {
+      servers.stop();
     }
-    expect(said).toEqual(UNNAMED_TARGETS.map(({ where }) => refusal(route, 307, where, carries)));
-  } finally {
-    servers.stop();
+  },
+  {
+    // A hang guard over the `bun` client processes this row starts one after another, one for
+    // each unnamed target, which no bound of bounded-subprocess.ts covers.
+    timeout: 30_000,
   }
-}, 30_000);
+);
