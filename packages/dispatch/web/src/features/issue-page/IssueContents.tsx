@@ -22,7 +22,7 @@ import {
 } from "../../theme/classes";
 import { isViewer } from "../refs/actor";
 import { useFocusedNode } from "./focused-node";
-import { drawnLine, firstLineOf, lineWords, type TreeNode } from "./issue-tree";
+import { drawnLine, firstLineOf, lineWordsRaw, type TreeNode } from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
 import { oneLineCut, referenceStandIns, useOneLineBox } from "./one-line";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
@@ -142,14 +142,15 @@ const MARK_TEXT_REM = 0.75;
 /**
  * The Contents list (dispatch://INFRA-1196 R14, the prototype's `#left`): its heading with the
  * Focus branch toggle, and one row per entry, each its node's first line by R1's rule, cut from
- * its first block's words (`lineWords`) at a word to the row's width, with each reference in it
- * named in plain words once the line is cut (`referenceStandIns`); a node with no words is
- * named by its kind's word. `slots/contents.tsx` draws it under the issue's three sentences, in
- * part D's pane from 1024 px up and in its Outline sheet below that (`contents-frame.tsx`). It
- * is one tab stop, as the outline is: the arrow keys move inside it, the right and left arrows
- * unfold and fold an entry, and Enter or a press goes to that node in the outline. The entry the
- * reader is in - the one holding the node the focus is on, or last was on - is marked by a rule
- * and a ground of its own.
+ * its first block's words with each bare address as written (`lineWordsRaw`) at a word to the
+ * row's width, with each reference in it named once the line is cut (`referenceStandIns`): by
+ * the page's name for it, and by its short form only where the page knows none (decision 140);
+ * a node with no words is named by its kind's word. `slots/contents.tsx` draws it under the
+ * issue's three sentences, in part D's pane from 1024 px up and in its Outline sheet below that
+ * (`contents-frame.tsx`). It is one tab stop, as the outline is: the arrow keys move inside it,
+ * the right and left arrows unfold and fold an entry, and Enter or a press goes to that node in
+ * the outline. The entry the reader is in - the one holding the node the focus is on, or last
+ * was on - is marked by a rule and a ground of its own.
  */
 export function ContentsList({
   focusBranch,
@@ -231,7 +232,7 @@ export function ContentsList({
         // The line is cut with each reference it cites unnamed and measured with each named, so
         // no cut falls inside a name (`referenceStandIns`).
         const references = referenceStandIns(nameOf);
-        const held = references.standIn(lineWords(node));
+        const held = references.standIn(lineWordsRaw(node));
         const unnamed = held.trim() === "";
         const words = unnamed ? NODE_TYPE_NAMES[node.type] : held;
         const indent = ROW.inset + depth * ROW.indent;

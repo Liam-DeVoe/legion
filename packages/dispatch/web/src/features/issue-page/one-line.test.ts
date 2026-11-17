@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 
+import { shortForm } from "../refs/routes";
 import { drawnLine, firstLineOf } from "./issue-tree";
 import { oneLineCut, referenceStandIns } from "./one-line";
-import { NODE_TYPE_NAMES } from "./page-words";
 
 /** A face that draws every character 7 px wide, so each budget below is a sum a reader can
  *  check by hand. */
@@ -24,6 +24,7 @@ test("a one-line row cuts its first line at a word to the pixels it has, never i
   expect(alone("Short enough.", 200)).toEqual({
     cut: false,
     line: "Short enough.",
+    sentence: true,
     under: false,
     wraps: false,
   });
@@ -33,6 +34,7 @@ test("a one-line row cuts its first line at a word to the pixels it has, never i
   expect(alone("One sentence. And another.", 200)).toEqual({
     cut: true,
     line: "One sentence.",
+    sentence: true,
     under: false,
     wraps: false,
   });
@@ -47,7 +49,13 @@ test("a one-line row cuts its first line at a word to the pixels it has, never i
   // its are 25.
   const long = "The page draws the whole issue in one reading, with nothing lost.";
   const cut = alone(long, 169);
-  expect(cut).toEqual({ cut: true, line: "The page draws the", under: false, wraps: false });
+  expect(cut).toEqual({
+    cut: true,
+    line: "The page draws the",
+    sentence: false,
+    under: false,
+    wraps: false,
+  });
   expect(long.charAt(cut.line.length)).toBe(" ");
 
   // The ellipsis is counted: a run that fits only without it is one word too long.
@@ -55,7 +63,13 @@ test("a one-line row cuts its first line at a word to the pixels it has, never i
   expect(alone(long, 9 * 7 + 1).line).toBe("The page");
 
   // An empty text draws an empty line.
-  expect(alone("", 100)).toEqual({ cut: false, line: "", under: false, wraps: false });
+  expect(alone("", 100)).toEqual({
+    cut: false,
+    line: "",
+    sentence: false,
+    under: false,
+    wraps: false,
+  });
 });
 
 /**
@@ -72,6 +86,7 @@ test("a one-line row's first line goes under its other words where they leave it
   expect(oneLineCut({ after: 60, before: 200, room: 300, text: long, widthOf })).toEqual({
     cut: true,
     line: "Does",
+    sentence: false,
     under: false,
     wraps: false,
   });
@@ -81,6 +96,7 @@ test("a one-line row's first line goes under its other words where they leave it
   expect(oneLineCut({ after: 60, before: 230, room: 300, text: long, widthOf })).toEqual({
     cut: true,
     line: "Does the fold open to the",
+    sentence: false,
     under: true,
     wraps: false,
   });
@@ -88,6 +104,7 @@ test("a one-line row's first line goes under its other words where they leave it
   expect(oneLineCut({ after: 0, before: 400, room: 400, text: long, widthOf })).toEqual({
     cut: false,
     line: long,
+    sentence: true,
     under: true,
     wraps: false,
   });
@@ -103,12 +120,14 @@ test("a first word no line of the row holds is drawn whole, wrapping inside itse
   expect(oneLineCut({ after: 0, before: 100, room: 200, text: path, widthOf })).toEqual({
     cut: true,
     line: `${"a".repeat(60)}/b.ts`,
+    sentence: false,
     under: true,
     wraps: true,
   });
   expect(alone("a".repeat(40), 100)).toEqual({
     cut: false,
     line: "a".repeat(40),
+    sentence: false,
     under: true,
     wraps: true,
   });
@@ -117,8 +136,9 @@ test("a first word no line of the row holds is drawn whole, wrapping inside itse
 /**
  * Reading (b) of dispatch://INFRA-3939's plan, the tester's F20: a plain line the page draws is
  * no link, so it names each reference in plain words - a block by the page's name for it, an
- * issue by its key, a whole document by the page's word for one - and drops a typed block's
- * source line, which is markup and no word of the text. No address, block id or fence is left.
+ * issue by its key, and anything the page has no name for by its short form (decision 140 of
+ * dispatch://INFRA-1196) - and drops a typed block's source line, which is markup and no word
+ * of the text. No address, block id or fence is left.
  */
 test("a plain line names each reference and drops a typed block's source line", () => {
   const block = "dispatch://KEY-1/spec#b-r1";
@@ -130,7 +150,8 @@ test("a plain line names each reference and drops a typed block's source line", 
     reference === block ? "the whole issue" : undefined
   );
   const line = references.named(references.standIn(text));
-  expect(line).toBe(`The page cites the whole issue, KEY-1 and ${NODE_TYPE_NAMES.document}.`);
+  const notes = shortForm({ key: "KEY-1", kind: "artifact", slug: "notes" });
+  expect(line).toBe(`The page cites the whole issue, KEY-1 and ${notes}.`);
   for (const mark of [":::", "#b-", "dispatch://"]) {
     expect(line).not.toContain(mark);
   }
@@ -169,4 +190,37 @@ test("a line is cut with each reference still unnamed, and each is named after t
   const first = references.standIn(`See ${block}.`);
   const second = references.standIn("Ask dispatch://KEY-3 first.");
   expect(references.named(`${first} ${second}`)).toBe("See R2. Every address. Ask KEY-3 first.");
+});
+
+// R1 and R5: a plain line draws its author's words as they wrote them, with each reference named.
+// A reference stands in by a private-use character while the line is cut, and a text may hold
+// that character of its own: an icon a reader pasted from a terminal or an icon font is one
+// (U+E000 to U+F8FF). Found by the tester on a running build at 0058727e, where a comment that
+// read "<U+E000> dispatch://INFRA-3570 then" drew its Contents entry as "INFRA-3570 INFRA-3570…":
+// the author's own character was drawn as the reference's name.
+test("a private-use character the author wrote is drawn as written, never as a reference's name", () => {
+  const references = referenceStandIns(() => undefined);
+  const text = "\ue000 marks dispatch://KEY-2 here, and \ue001 is the next icon.";
+  expect(references.named(references.standIn(text))).toBe(
+    "\ue000 marks KEY-2 here, and \ue001 is the next icon."
+  );
+});
+
+// R1 and R3 (ruling 1): a line cut inside its sentence draws one ellipsis. A name the page gives
+// a statement is cut by `chipWords` and so can end with its own ellipsis, and a cut that falls
+// at the space right after the name drew a second one. Found by the tester on a running build at
+// 0058727e, where a comment that read "Does it hold, as dispatch://INFRA-1196/spec#b-r-home
+// says? I think so." drew its entry in the Outline sheet as "Does it hold, as R5. A spec node
+// shows the……".
+test("a line cut right after a name that ends with an ellipsis draws one ellipsis", () => {
+  const block = "dispatch://KEY-1/spec#b-r2";
+  const references = referenceStandIns((reference) =>
+    reference === block ? "R2. Every address…" : undefined
+  );
+  // 78 characters, then the name's 18: the space after it is the last one inside the limit.
+  const before = `${"word ".repeat(15)}as `;
+  const text = `${before}${block} says the rest of it, and more words follow on.`;
+  const line = references.named(drawnLine(firstLineOf(references.standIn(text))));
+  expect(line.startsWith(`${before}R2. Every address`), `the line is ${line}`).toBe(true);
+  expect(line, "the line draws two ellipses").not.toContain("……");
 });
