@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -121,4 +122,61 @@ func TestAFrontRelaysToWhereverItsServerListensAndClosesWhileItListensNowhere(t 
 
 	point("")
 	readsEOF(t, dial(), "a connection once the front names no server again")
+}
+
+// A connection whose target the front read just before its caller stopped the target and then the
+// server is relayed nowhere: another program that binds the port the server released in the
+// meantime gets no byte of the client's. The target below makes that whole stop, and the other
+// program's bind of the released port, between its read and the front's dial.
+func TestAFrontRelaysNothingToThePortItsServerReleasedAfterItReadTheTarget(t *testing.T) {
+	server := startGreeter(t, "server")
+	released := server.listener.Addr().String()
+	var mu sync.Mutex
+	stopped := false
+	var rival net.Listener
+	var rivalErr error
+	front := StartFront(t, func() (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if stopped {
+			return "", errors.New("the server is not listening")
+		}
+		stopped = true
+		_ = server.listener.Close()
+		rival, rivalErr = net.Listen("tcp", released)
+		return released, nil
+	})
+	conn, err := net.DialTimeout("tcp", front.Addr(), time.Second)
+	if err != nil {
+		t.Fatalf("dial the front at %s: %v", front.Addr(), err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if _, err := conn.Write([]byte("for the server")); err != nil {
+		t.Fatalf("write to the front: %v", err)
+	}
+	// The relay closes the client's connection with the client's bytes unread, so the kernel ends
+	// it with a reset rather than an EOF; either is a connection closed with nothing relayed.
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := conn.Read(make([]byte, 1)); n != 0 || !(errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET)) {
+		t.Fatalf("a connection whose target was read before the server released its port: read %d bytes, %v; want the connection closed", n, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if rivalErr != nil {
+		t.Fatalf("the other program could not bind the released port %s: %v", released, rivalErr)
+	}
+	t.Cleanup(func() { _ = rival.Close() })
+	// The front's dial reached the other program's port, so its connection waits in the backlog;
+	// it must end with no byte of the client's in it.
+	if err := rival.(*net.TCPListener).SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	side, err := rival.Accept()
+	if err != nil {
+		t.Fatalf("the other program accepted no connection of the front's dial: %v", err)
+	}
+	t.Cleanup(func() { _ = side.Close() })
+	readsEOF(t, side, "the other program's side of the front's dial")
 }
