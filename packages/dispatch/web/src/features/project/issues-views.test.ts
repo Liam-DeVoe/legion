@@ -174,7 +174,7 @@ test("Open and Done are the two built-in views, each with its statuses, sort and
   // `view=done` with the done status sorted by the newest close.
   expect(entries(expandView(at("")))).toEqual([
     ["view", "open"],
-    ...openIssueStatuses.map((status) => ["status", status]),
+    ...openIssueStatuses.map((status): [string, string] => ["status", status]),
     ["sort", "queue"],
   ]);
   expect(entries(expandView(at("view=done")))).toEqual([

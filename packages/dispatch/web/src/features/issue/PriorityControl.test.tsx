@@ -7,7 +7,13 @@ import type { ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { projectDonePageQuery, projectOpenCountQuery } from "../../api/queries";
-import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
+import type {
+  InboxRow,
+  Issue,
+  IssueDetails,
+  IssueSummary,
+  IssueSummaryPage,
+} from "../../api/types";
 import { issuePriority } from "./issue-priority";
 import { PriorityControl } from "./PriorityControl";
 
@@ -278,21 +284,21 @@ test("a pick shows in a page of Done as in a listing, leaves Open's count alone,
       { ...summary, priority: 2 },
       otherSummary,
     ]);
-    expect(queryClient.getQueryData(pageKey)).toEqual({
+    expect(queryClient.getQueryData<IssueSummaryPage>(pageKey)).toEqual({
       ...page,
       issues: [otherSummary, { ...summary, priority: 2 }],
     });
-    expect(queryClient.getQueryData(otherPageKey)).toBe(otherPage);
-    expect(queryClient.getQueryData(countKey)).toBe(47);
+    expect(queryClient.getQueryData<IssueSummaryPage>(otherPageKey)).toBe(otherPage);
+    expect(queryClient.getQueryData<number>(countKey)).toBe(47);
 
     act(() => {
       save.reject(new Error("offline"));
     });
     await screen.findByRole("alert");
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)).toEqual([summary, otherSummary]);
-    expect(queryClient.getQueryData(pageKey)).toEqual(page);
-    expect(queryClient.getQueryData(otherPageKey)).toEqual(otherPage);
-    expect(queryClient.getQueryData(countKey)).toBe(47);
+    expect(queryClient.getQueryData<IssueSummaryPage>(pageKey)).toEqual(page);
+    expect(queryClient.getQueryData<IssueSummaryPage>(otherPageKey)).toEqual(otherPage);
+    expect(queryClient.getQueryData<number>(countKey)).toBe(47);
   } finally {
     unmount();
     patchIssue.mockRestore();
