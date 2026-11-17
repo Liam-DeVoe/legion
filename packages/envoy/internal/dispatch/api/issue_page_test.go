@@ -209,6 +209,63 @@ func TestListIssuePagesCoverAFilteredListingOnce(t *testing.T) {
 	}
 }
 
+// A route_status listing takes a sort too, though Go cuts its page from the unpaged text after
+// the roster filter rather than SQL cutting it. Every issue that filter keeps is open, so none
+// has a closed_at: the sort ties them all, and the listing's own order decides, status first,
+// unpaged and on each page, with total counting what the filter kept. A sort it cannot serve is
+// refused there as on any listing, paged or not, though the filter runs after the read.
+func TestARouteStatusListingTakesTheSort(t *testing.T) {
+	roster := &fakeRoster{}
+	handler, _ := routeStatusServer(t, roster)
+	keys := createListedIssues(t, handler, "TEST", 4)
+	for key, patch := range map[string]map[string]any{
+		keys[0]: {"route": "role:reviewer", "status": "todo"},
+		keys[2]: {"route": "role:reviewer"},
+		keys[3]: {"route": "role:reviewer"},
+	} {
+		if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, patch, "alice"); response.Code != http.StatusOK {
+			t.Fatalf("patch %s %v: status=%d body=%s", key, patch, response.Code, response.Body.String())
+		}
+	}
+	roster.set("reviewer-session", "reviewer")
+	// The two triage issues in rank order, then the one moved to todo.
+	want := []string{keys[2], keys[3], keys[0]}
+	if got := listedKeys(t, handler, "project=TEST&route_status=live"); !slices.Equal(got, want) {
+		t.Fatalf("?project=TEST&route_status=live lists %v, want %v", got, want)
+	}
+	for _, sort := range []string{"closed_at", "-closed_at"} {
+		filter := "project=TEST&route_status=live&sort=" + sort
+		if got := listedKeys(t, handler, filter); !slices.Equal(got, want) {
+			t.Errorf("?%s lists %v, want %v", filter, got, want)
+		}
+		for _, offset := range []int{0, 2} {
+			query := filter + "&limit=2&offset=" + strconv.Itoa(offset)
+			page, ok := readPage(t, handler, query)
+			if !ok {
+				continue
+			}
+			wantPage := want[offset:min(offset+2, len(want))]
+			if got := summaryKeys(page.Issues); !slices.Equal(got, wantPage) || page.Total != len(want) {
+				t.Errorf("?%s: page %v total %d, want %v total %d", query, got, page.Total, wantPage, len(want))
+			}
+		}
+	}
+	for _, query := range []string{"project=TEST&route_status=live&sort=title", "project=TEST&route_status=live&sort=title&limit=2"} {
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?"+query, nil, "alice")
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("?%s: status=%d body=%.120s, want 400 INVALID_QUERY naming sort", query, response.Code, response.Body.String())
+			continue
+		}
+		body := decodeBody[struct {
+			Code  string `json:"code"`
+			Error string `json:"error"`
+		}](t, response)
+		if body.Code != "INVALID_QUERY" || !strings.HasPrefix(body.Error, "sort ") {
+			t.Errorf("?%s: refusal %+v, want INVALID_QUERY naming sort", query, body)
+		}
+	}
+}
+
 // Tied issues come in key order when the listing also holds issues that do not tie with them.
 // Postgres's sort does not keep the order its input arrives in, so without the key it hands back
 // a tie among other rows in an order of its own making, and a write anywhere in the listing can
@@ -315,7 +372,9 @@ func TestListIssuesFiltersStillApplyBesidePaging(t *testing.T) {
 }
 
 // A page the listing cannot serve is refused naming the parameter, and cursor, which the listing
-// does not page with, is refused rather than answered with the first page.
+// does not page with, is refused rather than answered with the first page. A sort the listing
+// cannot serve, blank, repeated or naming another order, is refused the same way, paged or not,
+// rather than answered in the listing's own order.
 func TestListIssuesRefusesAPageItCannotServe(t *testing.T) {
 	handler := newTestHandler(t)
 	createListedIssues(t, handler, "TEST", 2)
@@ -333,6 +392,11 @@ func TestListIssuesRefusesAPageItCannotServe(t *testing.T) {
 		{"limit=1&offset=1&offset=2", "offset"},
 		{"cursor=abc", "cursor"},
 		{"limit=5&cursor=abc", "cursor"},
+		{"sort=title", "sort"},
+		{"sort=", "sort"},
+		{"sort=closed_at&sort=-closed_at", "sort"},
+		{"sort=-closed_at&sort=-closed_at", "sort"},
+		{"limit=2&offset=1&sort=title", "sort"},
 	} {
 		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?project=TEST&"+test.query, nil, "alice")
 		if response.Code != http.StatusBadRequest {

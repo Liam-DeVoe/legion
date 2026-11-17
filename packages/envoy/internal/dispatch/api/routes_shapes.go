@@ -310,6 +310,10 @@ type issueListQuery struct {
 	Limit int `query:"limit"`
 	// Offset is where the page starts, 0 or more; alone it pages at the default limit.
 	Offset int `query:"offset"`
+	// Sort orders the listing by closed_at, oldest close first, or by -closed_at, newest first,
+	// the issues with no closed_at last in both, then in the listing's own order (status, rank,
+	// creation time, key), which is the whole order without it.
+	Sort string `query:"sort" enum:"closed_at,-closed_at"`
 }
 
 // prioritiesQuery is GET /api/v1/priorities's query. The list of priorities is the whole

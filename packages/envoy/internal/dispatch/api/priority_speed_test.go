@@ -155,7 +155,7 @@ func measureSpeedCorpus(t *testing.T) speedReadings {
 	t.Helper()
 	corpus := seedSpeedCorpus(t)
 	withRelation := listIssuesPageQuery
-	withoutRelation := issueSummaryQuery(false, true, false)
+	withoutRelation := issueSummaryQuery(false, true, false, issueListOrder)
 	arguments := speedPageArguments(speedCorpusPage, 0)
 
 	// What each measured read answers, read once before any of them is timed: a reading of a
