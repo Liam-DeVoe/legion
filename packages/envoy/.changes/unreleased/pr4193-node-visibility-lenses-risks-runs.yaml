@@ -27,11 +27,12 @@ body: |-
   A run of the command bar is now an interaction node, kept with its frames past its deadline and
   read only by the credential that asked it, where the release before deleted a run after one hour.
   A write sent with the `Dispatch-Going-Run` header adds one `changed_by_run` tuple from each node
-  that it created or changed to that run, an issue PATCH included. A removed document's node is
-  marked gone and keeps no `changed_by_run` tuple, so a document made again under the same title
-  is not listed under the old run. The sweep ends the overdue runs whose deadline passed in the
-  last day, and one pass at each boot ends every older overdue run. `envoy-dispatch erase` removes
-  a run with its frames.
+  that it created or changed to that run: an issue PATCH, an ask's answer, resolution or decline, a
+  follow or an unfollow of an ask, and an edit of an ask's or a comment's words included. A removed
+  document's node is marked gone and keeps no `changed_by_run` tuple, so a document made again
+  under the same title is not listed under the old run. The sweep ends the overdue runs whose
+  deadline passed in the last day, and one pass at each boot ends every older overdue run.
+  `envoy-dispatch erase` removes a run with its frames.
 
   `envoy-dispatch premortem-convert` and
   `POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert` turn a pre-mortem document into a

@@ -99,6 +99,11 @@ func Recorded(state string, answer *model.AskAnswer, resolution *model.AskResolu
 // that backfill, which reads the row this writes. A marked row's node is the one its foreign key
 // names, so it always exists.
 //
+// Every fact it states goes out of the ask's node and changes it (graphstore.Tuple's Changes), so
+// a settle made for a run of the command bar - an answer, a resolution, a decline, an issue's
+// close or reopen - names the ask as changed by that run (graphstore.WithRun); the person node of
+// whoever answered is never marked.
+//
 // It locks the ask's row first, which every caller holds already but the approval carry, and
 // answers the ask's id and its answer state - State, Answer and Resolution - as the row now holds
 // them; the rest of the row is the caller's.
@@ -114,6 +119,9 @@ func Settle(ctx context.Context, tx pgx.Tx, askID string, change Change) (model.
 		nodes, tuples, err := answerFacts(askID, change, held)
 		if err != nil {
 			return model.Ask{}, err
+		}
+		for index := range tuples {
+			tuples[index].Changes = true
 		}
 		if change.Held != nil {
 			written, err := graphstore.WriteUncaused(ctx, tx, nodes, tuples)

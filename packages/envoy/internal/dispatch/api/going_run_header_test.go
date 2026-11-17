@@ -21,12 +21,16 @@ import (
 )
 
 // requestForRun is dispatchRequest with the run named in contracts.GoingRunHeader, as a write
-// made for that run sends it (GoingCaller.Do).
+// made for that run sends it (GoingCaller.Do). A nil body sends none, as dispatchRequest sends
+// none for a DELETE or a follow.
 func requestForRun(t *testing.T, handler http.Handler, method, target string, body any, login, run string) *httptest.ResponseRecorder {
 	t.Helper()
-	data, err := json.Marshal(body)
-	if err != nil {
-		t.Fatalf("encode request body: %v", err)
+	var data []byte
+	if body != nil {
+		var err error
+		if data, err = json.Marshal(body); err != nil {
+			t.Fatalf("encode request body: %v", err)
+		}
 	}
 	request := httptest.NewRequest(method, target, bytes.NewReader(data))
 	request.Header.Set("Content-Type", "application/json")
@@ -87,15 +91,21 @@ type runReads struct {
 // (dispatch://INFRA-1950/spec#b-r-interaction). Two people read the issue's references both
 // ways, its backlink count and the backlink count of alice's person node. Alice's run is recorded
 // with two frames; under the run's header and with her credential a comment is written on the
-// issue and the issue's labels are changed through its PATCH; and the run is ended. Alice then
-// reads, of the comment and of the issue each, one changed_by_run to the interaction of her run,
-// which answers its kind, her words cut at the 240 runes an edge's excerpt keeps and its own
-// address. At that address, read both ways, the interaction answers her words whole as its text,
-// its one authored_by to her person node and its frames in sequence, the two it appended and then
-// the terminal one. At the far end of that authored_by, read into her person node (the read behind
-// ?to=), the run answers her words cut at 240 runes and no frame. The issue's count moves alike for
-// both, since each tuple points away from the node the run changed, her person node's count is one
-// more for her, its authored_by, and bob reads nothing of the run anywhere.
+// issue, the issue's labels are changed through its PATCH, an open ask of the issue is answered,
+// a second is followed, and the words of a third and of a second comment are edited; and the run
+// is ended. Alice then reads, of the comment, of the issue, of each of the three asks and of the
+// second comment, one changed_by_run to the interaction of her run, which answers its kind, her
+// words cut at the 240 runes an edge's excerpt keeps and its own address. At that address, read
+// both ways, the interaction answers her words whole as its text, its one authored_by to her
+// person node and its frames in sequence, the two it appended and then the terminal one. At the
+// far end of that authored_by, read into her person node (the read behind ?to=), the run answers
+// her words cut at 240 runes and no frame. The issue's count moves alike for both, since each
+// tuple points away from the node the run changed, her person node's count is one more for her,
+// its authored_by, and bob reads nothing of the run anywhere. Last, under the same run, she
+// removes an untouched document an earlier run of hers made, which holds that earlier run's
+// changed_by_run, and a document is made again under its title with no run header, which takes
+// the removed document's node: neither document's references hold a changed_by_run, to either
+// run.
 func TestTheReferencesReadAnswersARunToThePersonWhoseRunItWas(t *testing.T) {
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
 	server := directServer(deps)
@@ -148,6 +158,20 @@ func TestTheReferencesReadAnswersARunToThePersonWhoseRunItWas(t *testing.T) {
 		t.Logf("%s reads the issue's backlink count %d and alice's person node's %d", login, kept.issueCount, kept.personCount)
 		return kept
 	}
+	// What the run changes besides, each written for no run, so each changed_by_run it then holds
+	// is the run's change of it: three open asks a session opened on the issue and a second
+	// comment of alice's. All of it is written before the first read, so what each person's
+	// counts move by is what the run did.
+	answered := createIssueAsk(t, handler, issue, "Does the rollback step stay in the plan?")
+	followed := createIssueAsk(t, handler, issue, "Does the census run after each move?")
+	reworded := createIssueAsk(t, handler, issue, "Does the backfill run once the roll is done?")
+	remark := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/comments",
+		map[string]any{"body": "A second remark, written for no run."}, alice)
+	if remark.Code != http.StatusCreated {
+		t.Fatalf("write the second comment with no run header: status=%d body=%s", remark.Code, remark.Body.String())
+	}
+	second := decodeBody[writtenRecord](t, remark).ID
+
 	before := map[string]runReads{alice: read(alice), bob: read(bob)}
 
 	run, err := server.recordGoingRequest(ctx, model.Actor{Kind: "user", ID: alice}, "", words)
@@ -177,6 +201,27 @@ func TestTheReferencesReadAnswersARunToThePersonWhoseRunItWas(t *testing.T) {
 	if got := decodeBody[model.Issue](t, patched).Labels; !slices.Equal(got, labels) {
 		t.Fatalf("the PATCH under the run left the issue's labels %v, want %v", got, labels)
 	}
+	// Under the same run she answers the first ask, puts a session on the second's followers,
+	// and edits the words of the third and of her second comment.
+	for _, write := range []struct {
+		what, method, target string
+		body                 any
+		status               int
+	}{
+		{"answer the ask " + answered, http.MethodPost, "/api/v1/asks/" + answered + "/answer",
+			map[string]any{"selected": []string{"Yes"}, "expected_edited_at": nil}, http.StatusOK},
+		{"follow the ask " + followed, http.MethodPut, "/api/v1/asks/" + followed + "/followers/run-follower", nil, http.StatusNoContent},
+		{"edit the words of the ask " + reworded, http.MethodPatch, "/api/v1/asks/" + reworded,
+			map[string]any{"question": "Does the backfill run once, after the roll is done?"}, http.StatusOK},
+		{"edit the words of the comment " + second, http.MethodPatch, "/api/v1/comments/" + second,
+			map[string]any{"body": "A second remark, its words edited for the run."}, http.StatusOK},
+	} {
+		response := requestForRun(t, handler, write.method, write.target, write.body, alice, run.ID)
+		t.Logf("alice's %s under run %s: status=%d body=%s", write.what, run.ID, response.Code, response.Body.String())
+		if response.Code != write.status {
+			t.Fatalf("%s under run %s's header: status=%d body=%s, want %d", write.what, run.ID, response.Code, response.Body.String(), write.status)
+		}
+	}
 	terminal := going.End(6, 0)
 	if _, err := endGoingRun(ctx, database.Pool, run.ID, terminal); err != nil {
 		t.Fatalf("end the run: %v", err)
@@ -184,20 +229,30 @@ func TestTheReferencesReadAnswersARunToThePersonWhoseRunItWas(t *testing.T) {
 	frames = append(frames, terminal)
 	commentRef := "dispatch://" + issue + "/comment/" + comment
 	interactionRef := "dispatch://interaction/" + run.ID
+	// Each node the run changed: the comment it wrote, the issue whose labels it changed, the ask
+	// it answered, the ask it followed, the ask and the comment whose words it edited.
+	changedNodes := []struct{ what, kind, id, ref string }{
+		{"comment", graphstore.KindComment, comment, commentRef},
+		{"issue", graphstore.KindIssue, issue, issueRef},
+		{"answered ask", graphstore.KindAsk, answered, issueRef + "/ask/" + answered},
+		{"followed ask", graphstore.KindAsk, followed, issueRef + "/ask/" + followed},
+		{"edited ask", graphstore.KindAsk, reworded, issueRef + "/ask/" + reworded},
+		{"edited comment", graphstore.KindComment, second, issueRef + "/comment/" + second},
+	}
 
-	// Each node the run changed - the comment it wrote, the issue whose labels it changed - is
-	// read both ways by both people. Alice reads its one changed_by_run out of it to her run's
-	// interaction, with the head of her words as the excerpt, and nothing of the run into it; bob
-	// reads no changed_by_run and no interaction either way.
+	// Each node the run changed is read both ways by both people. Alice reads its one
+	// changed_by_run out of it to her run's interaction, with the head of her words as the
+	// excerpt, and nothing of the run into it; bob reads no changed_by_run and no interaction
+	// either way.
 	after := map[string]runReads{}
 	for _, login := range []string{alice, bob} {
 		after[login] = read(login)
-		for _, changed := range []struct{ what, id, ref string }{{"comment", comment, commentRef}, {"issue", issue, issueRef}} {
+		for _, changed := range changedNodes {
 			for _, direction := range []string{"to", "from"} {
 				response := referencesAt(t, handler, direction, changed.ref, login)
 				t.Logf("%s's ?%s=%s: status=%d body=%s", login, direction, changed.ref, response.Code, response.Body.String())
 				if response.Code != http.StatusOK {
-					t.Fatalf("%s's ?%s= of the %s answers %d %s", login, direction, changed.what, response.Code, response.Body.String())
+					t.Fatalf("%s's ?%s= of the %s %s answers %d %s", login, direction, changed.what, changed.id, response.Code, response.Body.String())
 				}
 				reads := after[login]
 				reads.bodies = append(reads.bodies, response.Body.String())
@@ -208,21 +263,24 @@ func TestTheReferencesReadAnswersARunToThePersonWhoseRunItWas(t *testing.T) {
 				})
 				switch {
 				case login == bob && len(byRun) != 0:
-					t.Errorf("bob's ?%s= of the %s answers %+v, want no changed_by_run and no interaction", direction, changed.what, byRun)
+					t.Errorf("bob's ?%s= of the %s %s answers %+v, want no changed_by_run and no interaction, of run %s or any other",
+						direction, changed.what, changed.id, byRun, run.ID)
 				case login == alice && direction == "to" && len(byRun) != 0:
-					t.Errorf("alice's ?to= of the %s answers %+v: the changed_by_run points away from it", changed.what, byRun)
+					t.Errorf("alice's ?to= of the %s %s answers %+v: the changed_by_run to run %s points away from it",
+						changed.what, changed.id, byRun, run.ID)
 				case login == alice && direction == "from":
 					if len(byRun) != 1 || byRun[0].Kind != graphstore.TupleChangedByRun || byRun[0].Direction != "out" {
-						t.Fatalf("alice's references of %s %s hold %+v, want its one changed_by_run to the interaction of run %s",
+						t.Fatalf("alice's references of the %s %s hold %+v, want its one changed_by_run to the interaction of run %s",
 							changed.what, changed.id, byRun, run.ID)
 					}
 					node := byRun[0].Node
 					if node.Kind != graphstore.KindInteraction || node.ID != run.ID || node.Ref != interactionRef {
-						t.Errorf("the changed_by_run of the %s ends at %+v, want the interaction at %s", changed.what, node, interactionRef)
+						t.Errorf("the changed_by_run of the %s %s ends at %+v, want the interaction of run %s at %s",
+							changed.what, changed.id, node, run.ID, interactionRef)
 					}
 					if byRun[0].Excerpt == nil || byRun[0].Excerpt.Text != excerpt {
-						t.Errorf("the interaction at the %s's changed_by_run answers the excerpt %+v, want the run's words cut at 240 runes, %q, character for character",
-							changed.what, byRun[0].Excerpt, excerpt)
+						t.Errorf("the interaction of run %s at the changed_by_run of the %s %s answers the excerpt %+v, want the run's words cut at 240 runes, %q, character for character",
+							run.ID, changed.what, changed.id, byRun[0].Excerpt, excerpt)
 					}
 				}
 			}
@@ -230,14 +288,14 @@ func TestTheReferencesReadAnswersARunToThePersonWhoseRunItWas(t *testing.T) {
 	}
 
 	// Each node the run changed holds one changed_by_run tuple, to the interaction of the run.
-	for _, changed := range []struct{ kind, id string }{{graphstore.KindComment, comment}, {graphstore.KindIssue, issue}} {
+	for _, changed := range changedNodes {
 		held, err := graphstore.CurrentOut(ctx, database.Pool, changed.kind, changed.id, []string{graphstore.TupleChangedByRun})
 		if err != nil {
-			t.Fatalf("read the %s's changed_by_run: %v", changed.kind, err)
+			t.Fatalf("read the changed_by_run of the %s %s: %v", changed.what, changed.id, err)
 		}
-		t.Logf("the %s's changed_by_run in the store: %+v", changed.kind, held)
+		t.Logf("the changed_by_run of the %s %s in the store: %+v", changed.what, changed.id, held)
 		if len(held) != 1 || held[0].ToKind != graphstore.KindInteraction || held[0].ToID != run.ID {
-			t.Fatalf("%s %s holds the changed_by_run %+v, want one to the interaction of run %s", changed.kind, changed.id, held, run.ID)
+			t.Fatalf("the %s %s holds the changed_by_run %+v, want one to the interaction of run %s", changed.what, changed.id, held, run.ID)
 		}
 	}
 
@@ -316,8 +374,8 @@ func TestTheReferencesReadAnswersARunToThePersonWhoseRunItWas(t *testing.T) {
 	}
 	if after[alice].personCount != before[alice].personCount+1 || after[bob].personCount != before[bob].personCount ||
 		after[alice].personCount != after[bob].personCount+1 {
-		t.Errorf("alice's person node counts %d then %d for her and %d then %d for bob, want one more for her alone",
-			before[alice].personCount, after[alice].personCount, before[bob].personCount, after[bob].personCount)
+		t.Errorf("alice's person node counts %d then %d for her and %d then %d for bob, want one more for her alone, the authored_by of run %s",
+			before[alice].personCount, after[alice].personCount, before[bob].personCount, after[bob].personCount, run.ID)
 	}
 	for _, direction := range []struct {
 		name          string
@@ -331,6 +389,54 @@ func TestTheReferencesReadAnswersARunToThePersonWhoseRunItWas(t *testing.T) {
 		if strings.Contains(body, excerpt) || strings.Contains(body, run.ID) {
 			t.Errorf("bob read the run in %s", body)
 		}
+	}
+
+	// She then removes, under the same run, an untouched document an earlier run of hers made:
+	// that run, recorded after every read above, makes a document on the issue under its own
+	// header, whose node then holds that run's changed_by_run. The removal is a write made for
+	// her run, which the run's window, moved an hour ahead, still admits after its terminal frame
+	// (withinGoingRun reads now() < ends_at, whatever frames the run holds). A document made again
+	// under the same title with no run header takes the removed one's node, and neither
+	// document's references hold a changed_by_run, to either run: the removal retracted the
+	// earlier run's and appended none of its own, and the remake holds none.
+	earlier, err := server.recordGoingRequest(ctx, model.Actor{Kind: "user", ID: alice}, "", "Make a notes document on the issue.")
+	if err != nil {
+		t.Fatalf("record alice's earlier run: %v", err)
+	}
+	const notes = "run-notes.md"
+	made := requestForRun(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", map[string]any{"name": notes}, alice, earlier.ID)
+	if made.Code != http.StatusCreated {
+		t.Fatalf("make the document under the earlier run %s's header: status=%d body=%s", earlier.ID, made.Code, made.Body.String())
+	}
+	removed := decodeBody[uploadedArtifact](t, made).Artifact
+	documents := runDocumentRig{handler: handler, database: database, issue: issue, run: earlier.ID}
+	if got, want := documents.outOfDocument(t, "before the removal", removed.ID), []string{graphstore.KindInteraction + "/" + earlier.ID}; !slices.Equal(got, want) {
+		t.Fatalf("before the removal alice's references of the document %s (node artifact/%s) hold the changed_by_run %v, want %v, to the earlier run %s",
+			removed.ID, removed.RefKey, got, want, earlier.ID)
+	}
+	if state, held := documents.storedNode(t, "before the removal", removed.RefKey); state != graphstore.StateLive || len(held) != 1 ||
+		held[0].ToKind != graphstore.KindInteraction || held[0].ToID != earlier.ID {
+		t.Fatalf("before the removal the node artifact/%s is %s and states the changed_by_run %+v, want it live and stating one, to the earlier run %s",
+			removed.RefKey, state, held, earlier.ID)
+	}
+	removal := requestForRun(t, handler, http.MethodDelete, "/api/v1/artifacts/"+removed.ID, nil, alice, run.ID)
+	if removal.Code != http.StatusNoContent {
+		t.Fatalf("remove the document %s under run %s's header: status=%d body=%s, want 204", removed.ID, run.ID, removal.Code, removal.Body.String())
+	}
+	again := emptyDocument(t, handler, issue, notes)
+	if again.RefKey != removed.RefKey || again.ID == removed.ID {
+		t.Fatalf("the document made again is %s at %s, want a new document at the removed one's %s, so it is the same node",
+			again.ID, again.RefKey, removed.RefKey)
+	}
+	for _, document := range []struct{ what, id string }{{"removed document", removed.ID}, {"document made again under its title", again.ID}} {
+		if held := documents.outOfDocument(t, "after the removal and the remake", document.id); len(held) != 0 {
+			t.Errorf("alice's references of the %s %s (node artifact/%s) hold the changed_by_run %v, want none, to run %s or to the earlier run %s",
+				document.what, document.id, removed.RefKey, held, run.ID, earlier.ID)
+		}
+	}
+	if state, held := documents.storedNode(t, "after the removal and the remake", again.RefKey); state != graphstore.StateLive || len(held) != 0 {
+		t.Errorf("the node artifact/%s of the document made again is %s and states the changed_by_run %+v, want it live and stating none, to run %s or to the earlier run %s",
+			again.RefKey, state, held, run.ID, earlier.ID)
 	}
 }
 

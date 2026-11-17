@@ -120,6 +120,14 @@ var storeWriteCallSites = []string{
 	// states with its changed_by_run under that event through Caused. api's
 	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds it to those steps.
 	"api/issue_patch.go#patchIssue",
+	// An edit of an ask's or a comment's words made for a run (api/asks.go, api/comment_actions.go),
+	// which names the ask or the comment changed: the owner row of the ask or the comment, its row
+	// `for no key update` or `for update` and then its update, then, on a context that carries a
+	// run alone, its node through WriteUncaused, its own event, and what the node states with its
+	// changed_by_run under that event through Caused. api's
+	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds each to those steps.
+	"api/asks.go#editAsk",
+	"api/comment_actions.go#editComment",
 	// A run of the command bar (api/going.go), which takes no owner row: its record writes the
 	// interaction node, its author's node and their tuples in one Write before the going_requests
 	// row, and each frame, in a transaction of its own, takes the run's interaction node row
