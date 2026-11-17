@@ -135,6 +135,29 @@ func TestTheWorkStartsWithTheDefaultPlan(t *testing.T) {
 	}
 }
 
+// A child's plan is named by the child's own key and run, never its tree's: two children of one
+// root, at the same run, each write at the start of their work a plan whose id is a version 5 uuid
+// of the child's key and that run, so neither carries the other's id or the root's. Dispatch
+// refuses a plan id that belongs to another issue, so a plan named by the tree would be lost.
+func TestAChildsPlanIsNamedByItsOwnKey(t *testing.T) {
+	pool := migratedPool(t)
+	stepRoot(t, pool, phase.Implementing)
+	engine := stepEngine(nil)
+	namespace := uuid.NewSHA1(uuid.NameSpaceOID, []byte("legion-plan-record"))
+	for _, child := range []struct{ key, name string }{{"LEGION-210", "LEGION-210/3"}, {"LEGION-209", "LEGION-209/3"}} {
+		stepChild(t, pool, child.key, phase.Admitted, nil)
+		move(t, pool, engine, child.key, TriggerGateOpened, "", record.PhaseRow{Issue: child.key, Role: claim.RoleArchitect})
+		want := record.PlanRecord{ID: uuid.NewSHA1(namespace, []byte(child.name)).String(), Generation: 3, Source: "default",
+			Tasks: []record.PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
+		if plans := planWrites(t, pool, child.key); len(plans) != 1 || !reflect.DeepEqual(plans[0], want) {
+			t.Errorf("the start of %s's work wrote the plans %+v, want the one %+v, named by %s", child.key, plans, want, child.name)
+		}
+	}
+	if plans := planWrites(t, pool, "LEGION-208"); len(plans) != 0 {
+		t.Errorf("the children's starts wrote the plans %+v under their root, want none", plans)
+	}
+}
+
 // The agent that does the retro rates the plan on the completion that ends the retro, and the
 // rating is written onto the record of that retro's run: a step record row of its own, whose id is
 // the id of the retro's end, carrying the rating, its reason and every identity field of the run,
