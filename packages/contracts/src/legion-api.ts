@@ -1604,17 +1604,26 @@ export const LegionControllerGrantRequest = z.strictObject({
   secret: nonEmptyString,
 });
 
-/** The most characters the reason of a plan's rating holds, counted as Unicode code points as the
- * daemon counts them (api's planReasonMax): Dispatch's record of the retro takes one to 2,000. */
-const PLAN_REASON_MAX = 2000;
+/** The scale of a plan's rating, `planRating`: the whole numbers from 1 (the plan cost the work)
+ * to 5 (the plan fit the work), as the daemon holds it (api's planRatingLeast and planRatingMost).
+ * The plugin's `plan_rating` reads these, and the contract test holds them to the daemon's own,
+ * which its golden test writes to `fixtures/daemon-api/plan-rating.json`. */
+export const LEGION_PLAN_RATING_LEAST = 1;
+export const LEGION_PLAN_RATING_MOST = 5;
 
-/** `planReason`: why the retro rated the plan as it did, one to `PLAN_REASON_MAX` characters that
- * are not all blank. A string's `length` counts UTF-16 units, so the bound counts code points. */
+/** The most characters the reason of a plan's rating holds, counted as Unicode code points as the
+ * daemon counts them (api's planReasonMax, held to it the same way): Dispatch's record of the
+ * retro takes one to 2,000. */
+export const LEGION_PLAN_REASON_MAX = 2000;
+
+/** `planReason`: why the retro rated the plan as it did, one to `LEGION_PLAN_REASON_MAX`
+ * characters that are not all blank. A string's `length` counts UTF-16 units, so the bound counts
+ * code points. */
 const legionPlanReason = z
   .string()
   .refine((reason) => reason.trim() !== "", { message: "planReason says why" })
-  .refine((reason) => [...reason].length <= PLAN_REASON_MAX, {
-    message: `planReason holds at most ${PLAN_REASON_MAX} characters`,
+  .refine((reason) => [...reason].length <= LEGION_PLAN_REASON_MAX, {
+    message: `planReason holds at most ${LEGION_PLAN_REASON_MAX} characters`,
   });
 
 /** `api.HandoffCompleteRequest`, the observation one worker reports to the workflow: a phase
@@ -1657,7 +1666,12 @@ export const LegionHandoffCompleteRequest = z
     handoffId: nonEmptyString.optional(),
     handoffVersion: z.number().int().positive().optional(),
     wakeAt: LegionInstant.optional(),
-    planRating: z.number().int().min(1).max(5).optional(),
+    planRating: z
+      .number()
+      .int()
+      .min(LEGION_PLAN_RATING_LEAST)
+      .max(LEGION_PLAN_RATING_MOST)
+      .optional(),
     planReason: legionPlanReason.optional(),
   })
   .refine((request) => (request.planRating === undefined) === (request.planReason === undefined), {

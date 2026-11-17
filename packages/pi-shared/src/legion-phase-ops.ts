@@ -1,6 +1,8 @@
 import { type LegionRole, zodSchemaApi } from "@legion/contracts";
 import {
   LEGION_PHASE_BACKWARD_TARGETS,
+  LEGION_PLAN_RATING_LEAST,
+  LEGION_PLAN_RATING_MOST,
   LegionHandoffCompleteRequest,
   LegionInstant,
   type LegionIssue,
@@ -92,17 +94,19 @@ const nextLook = rfc3339String(
   "handoff_complete's wake_at is an RFC 3339 time, as 2026-11-02T09:00:00Z is"
 );
 
-/** The refusal of a `plan_rating` that is not one of the scale's five whole numbers. */
-const PLAN_RATING_REFUSAL = "handoff_complete's plan_rating is a whole number from 1 to 5";
+/** The refusal of a `plan_rating` that is not one of the scale's whole numbers. */
+const PLAN_RATING_REFUSAL = `handoff_complete's plan_rating is a whole number from ${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}`;
 
 /** `handoff_complete`'s `plan_rating`: the rating of the plan the issue ran, which the agent that
  * does the retro gives in the completion that ends the retro, from 1 (the plan cost the work) to 5
- * (the plan fit the work) (`LegionHandoffCompleteRequest`'s `planRating`, which goes on the wire). */
+ * (the plan fit the work) (`LegionHandoffCompleteRequest`'s `planRating`, which goes on the wire).
+ * The scale is the contract's own (`LEGION_PLAN_RATING_LEAST`, `LEGION_PLAN_RATING_MOST`), which
+ * the contract test holds to the daemon's. */
 const planRating = z
   .number({ error: PLAN_RATING_REFUSAL })
   .int({ error: PLAN_RATING_REFUSAL })
-  .min(1, { error: PLAN_RATING_REFUSAL })
-  .max(5, { error: PLAN_RATING_REFUSAL });
+  .min(LEGION_PLAN_RATING_LEAST, { error: PLAN_RATING_REFUSAL })
+  .max(LEGION_PLAN_RATING_MOST, { error: PLAN_RATING_REFUSAL });
 
 /** `handoff_complete`'s `plan_reason`: why the plan earned its rating (`planReason` on the wire). A
  * blank one is refused as missing (requiredString); its bound is the contract's own, at most 2,000
@@ -183,8 +187,7 @@ export const PhaseOpArguments = z.discriminatedUnion(
           "handoff_complete names plan_rating without plan_reason: send the rating of the plan with one sentence of why, the two together",
       })
       .refine((args) => args.plan_reason === undefined || args.plan_rating !== undefined, {
-        error:
-          "handoff_complete names plan_reason without plan_rating: send the reason with the rating of the plan, a whole number from 1 to 5, the two together",
+        error: `handoff_complete names plan_reason without plan_rating: send the reason with the rating of the plan, a whole number from ${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}, the two together`,
       }),
     operation("request_backward_move", {
       // The issue the move names: the tree architect's move names the issue it returns from
@@ -335,9 +338,9 @@ export function legionToolDescription(host: {
     "(CHECK_WAKE_UNEXPECTED), and a pending on any other look is refused without one (CHECK_WAKE_REQUIRED). A report on an issue whose check is " +
     "closed or never opened is refused (CHECK_NOT_OPEN), and so is one from a role the check does not record (CHECK_ROLE_MISMATCH). " +
     "The agent that does the retro rates the plan the issue ran, its steps and the role that worked each (not the planner's `plan.md`), in the " +
-    "completion that ends the retro: `plan_rating`, a whole number from 1 (the plan cost the work) to 5 (the plan fit the work), and " +
+    `completion that ends the retro: \`plan_rating\`, a whole number from ${LEGION_PLAN_RATING_LEAST} (the plan cost the work) to ${LEGION_PLAN_RATING_MOST} (the plan fit the work), and ` +
     "`plan_reason`, one sentence of why, the two together. Any other completion that carries them is refused (PLAN_RATING_UNEXPECTED), and so is " +
-    "a rating outside 1 to 5 or a reason that is blank or longer than 2,000 characters (PLAN_RATING_INPUT), and the completion that ends the " +
+    `a rating outside ${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST} or a reason that is blank or longer than 2,000 characters (PLAN_RATING_INPUT), and the completion that ends the ` +
     "retro without them (PLAN_RATING_REQUIRED). " +
     "The daemon refuses " +
     "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +

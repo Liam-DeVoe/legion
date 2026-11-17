@@ -7,6 +7,9 @@ import {
   LEGION_FAILURE_CAUSES,
   LEGION_PHASE_BACKWARD_TARGETS,
   LEGION_PHASES,
+  LEGION_PLAN_RATING_LEAST,
+  LEGION_PLAN_RATING_MOST,
+  LEGION_PLAN_REASON_MAX,
   LEGION_WORKFLOW_PHASES,
   LegionActivityRequest,
   LegionCapabilityReport,
@@ -126,6 +129,21 @@ const schemas: Record<string, z.ZodType> = {
   "stale-entry.json": z.strictObject({
     code: z.literal("HANDOFF_STALE_ENTRY"),
     instruction: z.string().min(1),
+  }),
+  // `api.HandoffCompleteRequest` as the completion that ends the retro sends it, rated: the one
+  // request of the route a plugin at contract 155 must send, written by `internal/api`'s
+  // TestHandoffCompleteRequestRatedGolden from Go's own struct. The request schema is strict, so
+  // a name of the rating Go writes and the contract does not read fails the gate above, and the
+  // case "the rated completion the daemon reads parses under the contract's names" below.
+  "handoff-complete-request-rated.json": LegionHandoffCompleteRequest,
+  // Nor this one: the bounds `planRatingRefusal` holds a rating of the plan to (`planRatingLeast`,
+  // `planRatingMost` and `planReasonMax` in `internal/api/handoff.go`), written by
+  // TestPlanRatingGolden so that the case "the rating's bounds are the daemon's" below holds the
+  // contract's own bounds, which the plugin's tool reads, to them.
+  "plan-rating.json": z.strictObject({
+    least: z.number().int(),
+    most: z.number().int(),
+    reasonMost: z.number().int().positive(),
   }),
 };
 
@@ -923,6 +941,31 @@ test("the retro's completion rates the plan from 1 to 5 with a reason", () => {
   expect(
     LegionHandoffCompleteRequest.safeParse({ ...completion, planReason: "r" }).success
   ).toBeFalse();
+});
+
+// Go writes the rated completion from its own struct, so this is the one place its JSON names of
+// the rating meet the contract's: every other test of either side writes its own side's names.
+// The request schema is strict, so a name one side renames alone fails the parse, and the parse
+// keeps the rating and its reason under the contract's names, values no default and no other
+// field of the request holds.
+test("the rated completion the daemon reads parses under the contract's names", () => {
+  const request = LegionHandoffCompleteRequest.parse(
+    fixture("handoff-complete-request-rated.json")
+  );
+  expect(request.planRating).toBe(3);
+  expect(request.planReason).toBe("The tester found the bug the plan had left out.");
+});
+
+// The scale and the reason's bound are stated on each side of the wire: the daemon refuses by its
+// own (`PLAN_RATING_INPUT`), and the contract and the plugin's tool by the contract's exports. A
+// bound moved on one side alone would have one side refuse what the other takes, so the
+// contract's bounds are held to the daemon's, which its golden test writes.
+test("the rating's bounds are the daemon's", () => {
+  expect(fixture("plan-rating.json")).toEqual({
+    least: LEGION_PLAN_RATING_LEAST,
+    most: LEGION_PLAN_RATING_MOST,
+    reasonMost: LEGION_PLAN_REASON_MAX,
+  });
 });
 
 // The state shows the record a worker's completion of its current file-backed phase named, its id
