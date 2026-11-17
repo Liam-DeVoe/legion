@@ -34,6 +34,10 @@ func TestComposePrompt(t *testing.T) {
 		[2]string{"memory.md", "Memory.\n"}, [2]string{"long.md", "Long plans.\n"})
 	guidance := writePromptFiles(t, dir, [2]string{"plan-guidance.md", "Guidance.\n"})[0]
 	addressing := "Your topic is `notifications.role.legion-omp-LEGION-42-tester` \"$HOME\" \\"
+	// Only an owner's launch names the plan guidance (daemon's workerSpawnSpec), so its row composes
+	// an architect's parts and addressing.
+	architect := []string{roles[0], writePromptFiles(t, dir, [2]string{"architect.md", "Architect.\n\n"})[0]}
+	architectAddressing := "Your topic is `notifications.role.legion-omp-LEGION-42-architect`"
 	for _, tc := range []struct {
 		name  string
 		parts PromptParts
@@ -47,8 +51,8 @@ func TestComposePrompt(t *testing.T) {
 			parts: PromptParts{RolePromptPaths: roles, Addressing: addressing, DeploymentInstructionsPath: extra[0], VariantInstructionsPaths: extra[1:]},
 			want:  "Common.\nTester.\n\n" + addressing + "\n\nDeployment.\n\nMemory.\n\nLong plans."},
 		{name: "an owner's plan guidance between the addressing and the deployment's instructions",
-			parts: PromptParts{RolePromptPaths: roles, Addressing: addressing, PlanGuidancePath: guidance, DeploymentInstructionsPath: extra[0], VariantInstructionsPaths: extra[1:]},
-			want:  "Common.\nTester.\n\n" + addressing + "\n\nGuidance.\n\nDeployment.\n\nMemory.\n\nLong plans."},
+			parts: PromptParts{RolePromptPaths: architect, Addressing: architectAddressing, PlanGuidancePath: guidance, DeploymentInstructionsPath: extra[0], VariantInstructionsPaths: extra[1:]},
+			want:  "Common.\nArchitect.\n\n" + architectAddressing + "\n\nGuidance.\n\nDeployment.\n\nMemory.\n\nLong plans."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := ComposePrompt(tc.parts)
