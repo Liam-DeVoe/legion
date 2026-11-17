@@ -45,10 +45,11 @@ const released: DispatchEvent = {
   type: "issue.released",
 };
 
-/** The Steps tab of CORE-1, shown or not, reading through `read`; `fetchedAt` holds the fake
- *  clock's time at each read. The client is the page's own, with its retry policy: a failed read
- *  is asked again twice, 500 ms apart, where nothing stops it (`main.tsx`). */
-function renderLiveTab(read: () => IssueSteps, shown = true) {
+/** The Steps tab of CORE-1, shown or not, reading through `read`, which may hold its answer;
+ *  `fetchedAt` holds the fake clock's time at each read. The client is the page's own, with its
+ *  retry policy: a failed read is asked again twice, 500 ms apart, where nothing stops it
+ *  (`main.tsx`). */
+function renderLiveTab(read: () => IssueSteps | Promise<IssueSteps>, shown = true) {
   const fetchedAt: number[] = [];
   const listSteps = spyOn(api, "listSteps").mockImplementation(async () => {
     fetchedAt.push(Date.now());
@@ -208,6 +209,53 @@ test("an event 100 ms after a read of the catch-up reads when that read's second
         2_000, 5_000, 15_000, 45_000, 120_000, 300_000,
       ]);
     } finally {
+      tab.restore();
+    }
+  });
+});
+
+// A read still out when the next read of the list comes due is neither cancelled nor doubled:
+// its answer lands and is drawn, and the read that came due follows it, so what the records hold
+// after that deadline is read too.
+test("a read still out at the next deadline lands and is drawn, and the deadline's read follows it", async () => {
+  await onFakeClock(async () => {
+    const held = Promise.withResolvers<IssueSteps>();
+    let read: () => IssueSteps | Promise<IssueSteps> = () => NO_STEPS;
+    const tab = renderLiveTab(() => read());
+    try {
+      await tick(301_000, 1_000);
+      const before = tab.fetchedAt.length;
+      const firstAt = Date.now();
+      read = () => held.promise;
+      tab.deliver();
+      await tick(3_000, 100);
+      expect(tab.fetchedAt.slice(before).map((at) => at - firstAt)).toEqual([0]);
+      expect(screen.getByRole("region", { name: "Steps empty state" })).toBeDefined();
+
+      read = () => ({
+        issue: "CORE-1",
+        tasks: [{ steps: [stepRecord({ id: "implement-1" })], task: "default" }],
+      });
+      const landedAt = Date.now();
+      held.resolve({
+        issue: "CORE-1",
+        tasks: [
+          {
+            steps: [stepRecord({ ended_at: null, id: "implement-1", result: "" })],
+            task: "default",
+          },
+        ],
+      });
+      await tick(0);
+      expect(screen.getByRole("cell", { name: "running" })).toBeDefined();
+
+      await tick(100, 100);
+      const reads = tab.fetchedAt.slice(before);
+      expect(reads).toHaveLength(2);
+      expect(reads[1]).toBeGreaterThanOrEqual(landedAt);
+      expect(screen.getByRole("cell", { name: "passed" })).toBeDefined();
+    } finally {
+      held.resolve(NO_STEPS);
       tab.restore();
     }
   });
