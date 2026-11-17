@@ -290,6 +290,36 @@ func (a Approval) LatestReviewer() Actor {
 	return a.By
 }
 
+// PlanDocument is one version of a document as the daemon reads a plan from it (PlanDocument on
+// HTTPClient): the document, the issue carrying it (empty for a project document), the version
+// read, and that version's typed blocks in document order. The blocks are the version's own, read
+// from its stored text by Dispatch, never the live document's, so the same version reads the same
+// blocks whenever it is read.
+type PlanDocument struct {
+	ArtifactID string
+	IssueKey   string
+	Version    int
+	Blocks     []DocumentBlock
+}
+
+// DocumentBlock is one typed block of a document version: its id, which its opening line writes
+// and so stays the same in every version that keeps the block; its type (plan_task, requirement,
+// check, ...); its attributes by name, each value as the opening line writes it (a block[]
+// attribute's references space-separated); and Text, its body: the markdown between its opening
+// line and its closing fence.
+type DocumentBlock struct {
+	ID         string
+	Type       string
+	Attributes map[string]string
+	Text       string
+}
+
+// ErrNoBlocks is PlanDocument's answer to a version read that carries no blocks: a Dispatch of a
+// release before the version read with blocks ignores ?blocks=true and answers the version's text
+// alone. No plan can be read from that Dispatch until it is upgraded; an empty plan is never
+// assumed.
+var ErrNoBlocks = errors.New("Dispatch answered the document version without its blocks: it predates the version read with ?blocks=true")
+
 // Handoff is one phase handoff record Dispatch keeps on an issue, as a phase completion names it:
 // the issue carrying it, its phase word (plan, implement, test or review; phase.Handoff), its
 // version among that phase's records, and the actor that wrote it. The record's text is not read
