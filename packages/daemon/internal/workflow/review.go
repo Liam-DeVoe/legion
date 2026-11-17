@@ -440,6 +440,33 @@ func (e *Engine) claimSession(ctx context.Context, tx pgx.Tx, row record.PhaseRo
 	return e.store.ClaimSession(ctx, tx, row.Claim)
 }
 
+// byReviewersClaim says whether review is one the session of issue's reviewer claim submitted as
+// the review App: its Legion footer (intake.PullRequestReview.LegionSession) names the session the
+// claims record holds for the claim the daemon starts issue's reviewer under (reviewerToken,
+// record.Store.ClaimSession), the session of that claim's current launch. It finds the claim by
+// that token, not by the claim the reviewer's row names (claimSession), because the row names no
+// claim until the reviewer's first completion - the completion handler is the one writer of
+// record.PhaseRow.Claim - while the reviewer submits the review of its first round before it
+// completes; read from the row, any review-App session's review of round 1 would pass for the
+// reviewer's. With no session recorded it is false, where byReviewer lets the login decide:
+// nothing then says the review is the reviewer's own, and the cost is only a next round that
+// reads the whole change. It answers what moves the commit the reviewer read
+// (record.PhaseRow.ReviewedHead), not who decides a round (DecidesRound).
+func (e *Engine) byReviewersClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, review intake.PullRequestReview) (bool, error) {
+	if !e.byReviewApp(review.Author) {
+		return false, nil
+	}
+	token, err := reviewerToken(issue)
+	if err != nil {
+		return false, err
+	}
+	session, err := e.store.ClaimSession(ctx, tx, token)
+	if err != nil {
+		return false, err
+	}
+	return session != "" && review.LegionSession() == session, nil
+}
+
 // reviewersAnswer says whether fact is the reviewer's answer to a round it completed undecided: a
 // review from the reviewer's own review-App session (byReviewer), with a body - GitHub records a
 // reply on a review thread as a review with no body - more than answerSkew after the completion
@@ -560,10 +587,18 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	reviewer.Decision = &record.ReviewDecision{State: state, Body: fact.Body, Head: e.reviewHead(fact)}
 	// The commit the reviewer's own review read outlives the round, where the decision does not
 	// (record.PhaseRow.ReviewedHead): the task of the reviewer's next round names it
-	// (reviewedPart). A person's review decides the round as before and leaves that commit where
-	// it stands, since the reviewer never read the commit the person did.
-	if head := reviewer.Decision.Head; head != "" && e.byReviewer(fact, reviewerSession) {
-		reviewer.ReviewedHead = head
+	// (reviewedPart). Only a review the session of the reviewer's claim submitted moves it
+	// (byReviewersClaim). A person's review decides the round as before and leaves that commit
+	// where it stands, since the reviewer never read the commit the person did, and so does a
+	// review another review-App session submitted, whether or not it decided the round.
+	if head := reviewer.Decision.Head; head != "" {
+		own, err := e.byReviewersClaim(ctx, tx, *issue, fact)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		if own {
+			reviewer.ReviewedHead = head
+		}
 	}
 	if err := e.store.PutPhase(ctx, tx, reviewer); err != nil {
 		return intake.Result{}, err

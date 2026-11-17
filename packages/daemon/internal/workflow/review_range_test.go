@@ -274,6 +274,45 @@ func TestAReviewAppReviewFromAnotherSessionDoesNotMoveTheReviewersCommit(t *test
 	}
 }
 
+// In the reviewer's first round its row names no claim (seedRoundOneRows): the reviewer submits its
+// review before it completes, and only a completion writes the row's claim. The commit still moves
+// only for a review the session of the reviewer's own claim submitted, the session the daemon
+// records on the claim it starts the reviewer under. A deciding review that another review-App
+// session submitted at the head - the controller's, here - records none, so the next round reads
+// the whole change rather than only what came after a commit no review of the reviewer read. The
+// reviewer's own review of round 1 records its head. The control is that other session's review
+// once the reviewer's first completion has put its claim on the row.
+func TestAReviewFromAnotherReviewAppSessionMovesNoCommitInTheReviewersFirstRound(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		session string
+		// completed puts the reviewer's claim on its row, as its first completion does.
+		completed bool
+		want      string
+	}{
+		{name: "round 1: another review-App session's review", session: "ses-controller"},
+		{name: "round 1: the reviewer's own review", session: "ses-reviewer", want: headOne},
+		{name: "control: another review-App session's review after the reviewer's first completion", session: "ses-controller", completed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedReviewOf(t, pool, headOne, "green")
+			if tc.completed {
+				afterTheReviewersFirstCompletion(t, pool)
+			}
+			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+			apply("requests-changes", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 7, State: "changes_requested", CommitID: headOne,
+				Author: testReviewApp, AuthorCanWrite: true, Body: "rename it\n\n<!-- legion: {\"session\":\"" + tc.session + "\",\"phase\":\"review\",\"head\":\"" + headOne + "\"} -->",
+				SubmittedAt: reviewTestedAt})
+			row := reviewerRow(t, pool)
+			if row.ReviewedHead != tc.want {
+				t.Fatalf("the reviewer's row reads the reviewed commit %q, want %q: the review came from session %s, and the reviewer's claim records ses-reviewer (row claim %q)",
+					row.ReviewedHead, tc.want, tc.session, row.Claim)
+			}
+		})
+	}
+}
+
 // reviewedPartOf is the part of a later round's task that names head as the commit the
 // reviewer's own last deciding review read.
 func reviewedPartOf(head string) string {

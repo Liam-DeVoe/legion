@@ -2,8 +2,10 @@
 -- read, kept on the reviewer's phases row across its rounds.
 --
 -- phases.reviewed_head is record.PhaseRow.ReviewedHead. A review that approves or requests changes,
--- submitted from the review App session of the reviewer's claim, writes the head its Legion footer
--- names (workflow's review). No entry into a phase clears it, unlike the round's decision beside it
+-- submitted as the review App from the session the claims record holds for the reviewer's claim,
+-- writes the head its Legion footer names (workflow's review, byReviewersClaim); a review of any
+-- other session writes nothing, in the first round too, before a completion puts the claim on the
+-- row. No entry into a phase clears it, unlike the round's decision beside it
 -- (workflow's clearHandoff), so the task of the reviewer's next round names it as
 -- `Last reviewed commit: <sha>.` and the reviewer reads the difference from that commit to the
 -- head. A new generation clears it with the decision (record.Store.ClearGeneration and
