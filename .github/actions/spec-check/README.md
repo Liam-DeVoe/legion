@@ -39,7 +39,7 @@ The command takes every rule from the package `packages/envoy/internal/dispatch/
     A key in another order, a comment, an anchor or an alias, a tag, a flow list, a block scalar, another indentation, other quotes, a space at the end of a line, a carriage return and a byte order mark each give this rule, so one node has one form in git.
     The line shows the text of that line in the file and the text that print writes there, each in Go's quotes, so an invisible change shows, and it names what differs, for example `not-printed: line 4 is "kind: behavior \n", and print writes "kind: behavior\n" there (a space at the end of the line); spec-check print writes each node in that form`.
     The command counts lines as the YAML library does, so a carriage return, U+0085, U+2028 and U+2029 each end a line too.
-    Where a YAML reader can read a value of the file as another value than the file writes, such as a plain date, a plain `yes`, a tag, an anchor or an alias, or the merge key `<<`, the line also names that value, and `spec-check compare` makes no comparison of the files.
+    Where a YAML reader can read a value of the file as another value than the file writes, such as a plain date, a plain `yes`, a tag, an anchor or an alias, or the merge key `<<`, the line also names that value, and the `compare` subcommand makes no comparison of the files.
 
   - `bad-time-limit`: a time limit that is not a positive Go duration.
 
@@ -47,8 +47,11 @@ The command takes every rule from the package `packages/envoy/internal/dispatch/
   The printer double-quotes each text that a YAML 1.1 or YAML 1.2 library reads, as a plain value, as another type than a string, such as `=`, `<<`, `yes`, `0x_` or `2026-11-16 10:00:00 Z`, so each standard library reads the same strings.
   On a system that gives no `flock`, `spec-check print` refuses to write, because it locks the directory with `flock` for each run.
   `spec-check print` changes all of its files or none, also when it is killed: it builds a new directory beside the spec directory, named `.<name>.spec-check-print-<number>`, and puts it in the place of the spec directory with one call.
-  A file system that cannot exchange two directories, such as overlayfs for a directory that comes from a container image's layers, or a spec directory that is itself a mount point, refuses that call, and `spec-check print` then writes nothing and names the reason.
-  A run that is killed can leave that directory, which `git status` shows; the next run of `spec-check print` on the spec directory removes it, or moves the entries that are no spec files back into the spec directory, and says so.
+  The new directory holds a second name of each spec file that the run does not change, or a copy of it with its mode where the system refuses that name, for example for another user's file.
+  A file system that cannot exchange two directories refuses that call, and `spec-check print` then writes nothing and names the reason.
+  For a spec directory that comes from the layers of a container image (overlayfs, `invalid cross-device link`), the line says to put a copy of the directory in its place in the container, `cp -a <dir> <dir>.copy && rm -rf <dir> && mv <dir>.copy <dir>`, or to mount the checkout into the container.
+  For a spec directory that is itself a mount point (`device or resource busy`), the line says to mount a directory above it instead, such as the checkout.
+  A run that is killed can leave the directory that it built beside the spec directory, or the old spec directory, which `git status` shows; the next run of `spec-check print` on the spec directory removes it, or moves the entries that are no spec files back into the spec directory, and says so.
   A process whose working directory was the spec directory before a run keeps the old directory, which the run removes, so it changes to the spec directory again to see the new files.
   A run of `spec-check print` changes only the nodes that it names, so it refuses a file where another node is not in its printed form, and the line names each node of that file to print it whole.
 

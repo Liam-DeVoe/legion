@@ -24,8 +24,9 @@ func writable(dir string) error {
 	return nil
 }
 
-// sameOwner gives the directory path the owner and the group of old, when they are others.
-func sameOwner(path string, old fs.FileInfo) error {
+// sameOwner gives the directory path the owner and the group of old, when they are others, through
+// fsys.
+func sameOwner(fsys fileSystem, path string, old fs.FileInfo) error {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return err
@@ -34,5 +35,5 @@ func sameOwner(path string, old fs.FileInfo) error {
 	if have.Uid == want.Uid && have.Gid == want.Gid {
 		return nil
 	}
-	return os.Lchown(path, int(want.Uid), int(want.Gid))
+	return fsys.lchown(path, int(want.Uid), int(want.Gid))
 }

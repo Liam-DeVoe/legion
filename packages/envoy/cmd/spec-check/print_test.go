@@ -540,13 +540,13 @@ func TestPrintRunsOneAtATimeOnADirectory(t *testing.T) {
 
 	t.Run("a run that waits too long refuses by name", func(t *testing.T) {
 		dir := t.TempDir()
-		lock, err := lockSpecDir(dir, 0)
+		lock, err := lockSpecDir(osFileSystem{}, dir, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
 		a := readApprovedFile(t, approved)
 		var stderr strings.Builder
-		if code := printApproved(io.Discard, &stderr, approved, a, ids[:1], dir, printBounds{limit: notes.MaxFileSize, wait: 100 * time.Millisecond}); code != 2 ||
+		if code := printApproved(io.Discard, &stderr, osFileSystem{}, approved, a, ids[:1], dir, printBounds{limit: notes.MaxFileSize, wait: 100 * time.Millisecond}); code != 2 ||
 			stderr.String() != "spec-check: "+dir+": another run of print holds the lock of the directory, and this run waited 100ms for it; run print again when that run ends\n" {
 			t.Errorf("print while another run holds the lock: exit %d, stderr %q", code, stderr.String())
 		}
@@ -555,7 +555,7 @@ func TestPrintRunsOneAtATimeOnADirectory(t *testing.T) {
 		}
 		lock.release(true)
 		stderr.Reset()
-		if code := printApproved(io.Discard, &stderr, approved, a, ids[:1], dir, printBounds{limit: notes.MaxFileSize, wait: 100 * time.Millisecond}); code != 0 {
+		if code := printApproved(io.Discard, &stderr, osFileSystem{}, approved, a, ids[:1], dir, printBounds{limit: notes.MaxFileSize, wait: 100 * time.Millisecond}); code != 0 {
 			t.Errorf("print after the lock is released: exit %d, stderr %q", code, stderr.String())
 		}
 	})
@@ -680,7 +680,7 @@ func printSeed(t *testing.T, seed uint64, limit int64) map[string]bool {
 			}
 		}
 		var stderr strings.Builder
-		code := printApproved(io.Discard, &stderr, "approved.json", a, ids, dir, bounds)
+		code := printApproved(io.Discard, &stderr, osFileSystem{}, "approved.json", a, ids, dir, bounds)
 		for _, lost := range []string{"print would lose or change node", "print would not leave node", "which neither the files nor the run held"} {
 			if strings.Contains(stderr.String(), lost) {
 				t.Fatalf("seed %d: the plan of a run loses or changes a node, so the reader cut a file in another way than yaml.v3 reads it: %s", seed, stderr.String())
@@ -705,7 +705,7 @@ func printSeed(t *testing.T, seed uint64, limit int64) map[string]bool {
 		holdsTheInvariant(t, seed, dir, limit, files, run)
 		written := readDir(t, dir)
 		stderr.Reset()
-		if code := printApproved(io.Discard, &stderr, "approved.json", a, ids, dir, bounds); code != 0 || !maps.EqualFunc(readDir(t, dir), written, bytes.Equal) {
+		if code := printApproved(io.Discard, &stderr, osFileSystem{}, "approved.json", a, ids, dir, bounds); code != 0 || !maps.EqualFunc(readDir(t, dir), written, bytes.Equal) {
 			t.Fatalf("seed %d: a second run with the same arguments exits %d or changes the files: %s", seed, code, stderr.String())
 		}
 	}

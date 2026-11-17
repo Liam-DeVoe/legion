@@ -16,14 +16,15 @@ var errLockHeld = errors.New("the lock is held")
 const lockPoll = 20 * time.Millisecond
 
 // specDirLock is the hold of one run of print on its directory: the open directory, whose flock is
-// the lock, its inode, each directory that the run made to write into, the deepest first, and each
-// other open directory whose flock the run holds: the new directory that writeDir builds, which
-// takes the place of the directory.
+// the lock, its inode, each directory that the run made to write into, the deepest first, each
+// other open directory whose flock the run holds (the new directory that writeDir builds, which
+// takes the place of the directory), and fsys, through which the run makes each change.
 type specDirLock struct {
 	dir  *os.File
 	ino  uint64
 	made []string
 	also []*os.File
+	fsys fileSystem
 }
 
 // lockSpecDir takes the lock of print on dir: an exclusive flock on the directory itself, which
@@ -34,20 +35,21 @@ type specDirLock struct {
 // directory in the place of dir (writeDir), and another can have removed dir and made it again,
 // so the lock counts only when the open directory is still the directory that dir names; a run
 // holds the flock of its new directory too from before the exchange, so a run that opens dir after
-// the exchange waits for it.
-func lockSpecDir(dir string, wait time.Duration) (*specDirLock, error) {
+// the exchange waits for it. Each directory that it makes or removes, and each flock, goes
+// through fsys.
+func lockSpecDir(fsys fileSystem, dir string, wait time.Duration) (*specDirLock, error) {
 	deadline := time.Now().Add(wait)
 	for {
-		made, err := makeDirs(dir)
+		made, err := makeDirs(fsys, dir)
 		if err != nil {
 			return nil, err
 		}
 		f, err := os.Open(dir)
 		if err != nil {
-			removeDirs(made)
+			removeDirs(fsys, made)
 			return nil, err
 		}
-		for err = tryLock(f); errors.Is(err, errLockHeld) && time.Now().Before(deadline); err = tryLock(f) {
+		for err = fsys.lock(f); errors.Is(err, errLockHeld) && time.Now().Before(deadline); err = fsys.lock(f) {
 			time.Sleep(lockPoll)
 		}
 		if err != nil {
@@ -55,7 +57,7 @@ func lockSpecDir(dir string, wait time.Duration) (*specDirLock, error) {
 			if errors.Is(err, errLockHeld) {
 				return nil, fmt.Errorf("another run of print holds the lock of the directory, and this run waited %s for it; run print again when that run ends", wait)
 			}
-			removeDirs(made)
+			removeDirs(fsys, made)
 			return nil, fmt.Errorf("cannot lock the directory: %w", err)
 		}
 		held, err := f.Stat()
@@ -64,7 +66,7 @@ func lockSpecDir(dir string, wait time.Duration) (*specDirLock, error) {
 			return nil, err
 		}
 		if now, err := os.Stat(dir); err == nil && os.SameFile(held, now) {
-			return &specDirLock{dir: f, ino: inode(held), made: made}, nil
+			return &specDirLock{dir: f, ino: inode(held), made: made, fsys: fsys}, nil
 		}
 		f.Close()
 		if time.Now().After(deadline) {
@@ -82,7 +84,7 @@ func (l *specDirLock) hold(f *os.File) {
 // directory that it made and that is still empty, so a run that print refuses leaves no directory.
 func (l *specDirLock) release(kept bool) {
 	if !kept {
-		removeDirs(l.made)
+		removeDirs(l.fsys, l.made)
 	}
 	for _, f := range l.also {
 		f.Close()
@@ -93,7 +95,7 @@ func (l *specDirLock) release(kept bool) {
 // makeDirs makes dir and each directory above it that does not exist, and answers the ones that it
 // made, the deepest first. A directory that another process makes at the same time is not one of
 // them.
-func makeDirs(dir string) ([]string, error) {
+func makeDirs(fsys fileSystem, dir string) ([]string, error) {
 	var missing []string
 	for d := dir; ; d = filepath.Dir(d) {
 		if _, err := os.Stat(d); err == nil {
@@ -108,11 +110,11 @@ func makeDirs(dir string) ([]string, error) {
 	}
 	var made []string
 	for i := len(missing) - 1; i >= 0; i-- {
-		switch err := os.Mkdir(missing[i], 0o755); {
+		switch err := fsys.mkdir(missing[i], 0o755); {
 		case err == nil:
 			made = append([]string{missing[i]}, made...)
 		case !errors.Is(err, fs.ErrExist):
-			removeDirs(made)
+			removeDirs(fsys, made)
 			return nil, err
 		}
 	}
@@ -120,9 +122,9 @@ func makeDirs(dir string) ([]string, error) {
 }
 
 // removeDirs removes each directory of dirs, the deepest first, while each is empty.
-func removeDirs(dirs []string) {
+func removeDirs(fsys fileSystem, dirs []string) {
 	for _, d := range dirs {
-		if os.Remove(d) != nil {
+		if fsys.remove(d) != nil {
 			return
 		}
 	}

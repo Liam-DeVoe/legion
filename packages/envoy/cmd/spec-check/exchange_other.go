@@ -9,8 +9,8 @@ import "errors"
 var errNoExchange = errors.New("print changes its directory in one step with renameat2 (Linux) or renamex_np (macOS), which this system does not give")
 
 // exchange refuses: this system gives no call that exchanges two directories.
-func exchange(_, _ string) error { return errNoExchange }
+func (osFileSystem) exchange(_, _ string) error { return errNoExchange }
 
 // moveNoReplace refuses: this system gives no call that renames a directory and refuses an entry
 // of the new name.
-func moveNoReplace(_, _ string) error { return errNoExchange }
+func (osFileSystem) moveNoReplace(_, _ string) error { return errNoExchange }

@@ -55,7 +55,7 @@ func runPrint(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return 2
 	}
-	return printApproved(stdout, stderr, path, a, named, *dirFlag, printBounds{limit: notes.MaxFileSize, wait: printLockWait})
+	return printApproved(stdout, stderr, osFileSystem{}, path, a, named, *dirFlag, printBounds{limit: notes.MaxFileSize, wait: printLockWait})
 }
 
 // printLockWait is how long print waits for another run of print that holds the lock of its
@@ -73,8 +73,9 @@ type printBounds struct {
 
 // printApproved is print once its arguments are read: it writes the current approved document of
 // each node named, from the approved spec a that it read from path, into the spec files of dirArg,
-// within the bounds b, and answers print's exit status.
-func printApproved(stdout, stderr io.Writer, path string, a specgraph.Approved, named []string, dirArg string, b printBounds) int {
+// within the bounds b, and answers print's exit status. Each change that it makes in the file
+// system goes through fsys.
+func printApproved(stdout, stderr io.Writer, fsys fileSystem, path string, a specgraph.Approved, named []string, dirArg string, b printBounds) int {
 	refused := false
 	for _, id := range named {
 		switch n, held := a.Nodes[id]; {
@@ -93,7 +94,7 @@ func printApproved(stdout, stderr io.Writer, path string, a specgraph.Approved, 
 	if !ok {
 		return 2
 	}
-	lock, err := lockSpecDir(dir, b.wait)
+	lock, err := lockSpecDir(fsys, dir, b.wait)
 	if err != nil {
 		say(stderr, "%s: %s", dir, err)
 		return 2
@@ -107,7 +108,7 @@ func printApproved(stdout, stderr io.Writer, path string, a specgraph.Approved, 
 		say(stderr, "%s: %s", dir, err)
 		return 2
 	}
-	for _, line := range cleanLeftovers(held, lock.ino) {
+	for _, line := range cleanLeftovers(fsys, held, lock.ino) {
 		say(stderr, "%s", line)
 	}
 	set, err := readSet(stderr, dir)
@@ -121,7 +122,7 @@ func printApproved(stdout, stderr io.Writer, path string, a specgraph.Approved, 
 		}
 		return 2
 	}
-	warnings, err := writeDir(osFileSystem, held, lock, set.Files, after)
+	warnings, err := writeDir(fsys, held, lock, set.Files, after)
 	if err != nil {
 		say(stderr, "%s: cannot be written: %s", dir, err)
 		return 2
