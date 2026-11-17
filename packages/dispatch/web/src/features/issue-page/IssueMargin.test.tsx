@@ -42,7 +42,7 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { blockedByControlName } from "./BlockedByControl";
-import { blurWhenDisabled } from "./blur-when-disabled";
+import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
 import type { IssueField } from "./IssueFieldForms";
@@ -736,10 +736,10 @@ test("Details' Blocks says nothing while its read is out, and None once it answe
 
 // A Retry that turned disabled while the read it sent again was out lost the focus of a reader
 // who pressed it by keyboard, since Chromium moves the focus of a control that turns disabled to
-// the page's body (`blurWhenDisabled` does that here). Retry stays enabled and reads busy, and a
-// press while its read is out joins that read and sends nothing (`retryRead`). The titles
-// answered once before they failed, because a refetch of a read that holds an answer otherwise
-// ends the request that is out and sends another.
+// the page's body (`emulateChromiumFocusFixup` does that here). Retry stays enabled and reads
+// busy, and a press while its read is out joins that read and sends nothing (`retryRead`). The
+// titles answered once before they failed, because a refetch of a read that holds an answer
+// otherwise ends the request that is out and sends another.
 test("Retry keeps the focus while the read it sent again is out, and a second press sends none", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
@@ -753,7 +753,7 @@ test("Retry keeps the focus while the read it sent again is out, and a second pr
   const retried = Promise.withResolvers<ReferenceTargets>();
   const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
   const { queryClient, unmount } = renderDetails(undefined, drawer);
-  const stopBlurring = blurWhenDisabled();
+  const stopBlurring = emulateChromiumFocusFixup();
   const retryOfTitles = () =>
     within(detailsRow(PROPERTY_LABELS.blocked_by)).queryByRole("button", {
       name: CONTROL_LABELS.retry,
@@ -815,7 +815,7 @@ test("a read that fails again in the same words is said again, while Retry keeps
   const retried = Promise.withResolvers<ReferenceTargets>();
   const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
   const { queryClient, unmount } = renderDetails(undefined, drawer);
-  const stopBlurring = blurWhenDisabled();
+  const stopBlurring = emulateChromiumFocusFixup();
   const blockedBy = () => within(detailsRow(PROPERTY_LABELS.blocked_by));
 
   try {
@@ -878,7 +878,7 @@ test("a read that failed on its first load keeps its Retry, with the focus, whil
   );
   const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
   const { unmount } = renderDetails(undefined, drawer);
-  const stopBlurring = blurWhenDisabled();
+  const stopBlurring = emulateChromiumFocusFixup();
   const blockedBy = () => within(detailsRow(PROPERTY_LABELS.blocked_by));
   const blocksRow = () => within(detailsRow(PROPERTY_LABELS.blocks));
 
@@ -1021,7 +1021,7 @@ test("Blocks says a read that fails again in the same words again, while its Ret
   const retried = Promise.withResolvers<GraphReferences>();
   const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
   const { unmount } = renderDetails(undefined, drawer);
-  const stopBlurring = blurWhenDisabled();
+  const stopBlurring = emulateChromiumFocusFixup();
   const blocksRow = () => within(detailsRow(PROPERTY_LABELS.blocks));
 
   try {
@@ -3054,7 +3054,7 @@ test("the refused route's Retry keeps the focus while the save is out and refuse
     Promise.reject(new ApiError(400, { code: "ROUTE_INVALID", error: "invalid route" }))
   );
   const { unmount } = renderDetails();
-  const stopBlurring = blurWhenDisabled();
+  const stopBlurring = emulateChromiumFocusFixup();
   const retryOfRoute = () =>
     within(rowAt("route")).queryByRole("button", { name: CONTROL_LABELS.retry });
 
@@ -3086,10 +3086,10 @@ test("the refused route's Retry keeps the focus while the save is out and refuse
     await waitFor(() =>
       expect(
         retry,
-        "Retry does not read busy while the route it sent again is out"
-      ).toHaveAttribute("aria-busy", "true")
+        "Retry does not refuse a press while the route it sent again is out"
+      ).toHaveAttribute("aria-disabled", "true")
     );
-    expect(document.activeElement, "Retry lost the focus once it read busy").toBe(retry);
+    expect(document.activeElement, "Retry lost the focus once it refused a press").toBe(retry);
     await user.keyboard("{Enter}");
     expect(patchIssue, "a press of Retry while its save is out sent another").toHaveBeenCalledTimes(
       2
@@ -3116,8 +3116,8 @@ test("the refused route's Retry keeps the focus while the save is out and refuse
     ).toBe(retry);
     expect(
       retry,
-      "Retry still reads busy after Dispatch refused the route again"
-    ).not.toHaveAttribute("aria-busy");
+      "Retry still refuses a press after Dispatch refused the route again"
+    ).not.toHaveAttribute("aria-disabled", "true");
 
     await user.keyboard("{Enter}");
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(3));

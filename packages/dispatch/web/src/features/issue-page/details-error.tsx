@@ -26,12 +26,14 @@ export interface DetailsErrorLineProps {
   readonly message: string;
   /** Omitted for a failure a retry cannot get past; no Retry is offered then. */
   readonly onRetry?: () => void;
+  /** Whether the write Retry sent again is still out: Retry takes no press (`aria-disabled`,
+   *  with the `refused:` look of `styles.css`), and the caller drops a press made meanwhile, as
+   *  for any control whose own write is out. */
+  readonly refused?: boolean;
   /** Takes the Retry, so the row can hand its focus on when the line goes (`useFocusHandOff`). */
   readonly retryRef?: Ref<HTMLButtonElement>;
-  /** Whether the request Retry sent again is still out: Retry reads busy (`aria-busy`, and a
-   *  quieter look) and stays enabled, and the caller drops a press made meanwhile. Busy and not
-   *  `aria-disabled` is by design: Retry stays pressable, while a control whose own write is out,
-   *  as Release is, is `aria-disabled` behind a guard. */
+  /** Whether the read Retry sent again is still out: Retry reads busy (`aria-busy`, and a
+   *  quieter look) and still takes a press, which the caller joins to the read that is out. */
   readonly retrying?: boolean;
 }
 
@@ -41,15 +43,17 @@ export interface DetailsErrorLineProps {
  * An agent list that is refilling is said as the line every view says it in
  * (`AgentListRefilling`'s test id), as status rather than alert.
  *
- * Retry is never disabled, since Chromium moves the focus of a control that turns disabled to
- * the page's body, which would lose a reader who pressed it by keyboard: while the request it
- * sent is still out it reads busy (`retrying`), and a press then is the caller's to drop.
+ * Retry is never `disabled`, since Chromium moves the focus of a control that turns disabled to
+ * the page's body, which would lose a reader who pressed it by keyboard. While the request it
+ * sent again is still out, Retry reads busy if that request is a read (`retrying`) and takes no
+ * press if it is a write (`refused`), and keeps the focus either way.
  */
 export function DetailsErrorLine({
   error,
   failure,
   message,
   onRetry,
+  refused = false,
   retryRef,
   retrying = false,
 }: DetailsErrorLineProps): ReactNode {
@@ -67,7 +71,8 @@ export function DetailsErrorLine({
       {onRetry === undefined ? null : (
         <button
           aria-busy={retrying || undefined}
-          className={`${pageHeaderControl} aria-busy:opacity-50`}
+          aria-disabled={refused || undefined}
+          className={`${pageHeaderControl} aria-busy:opacity-50 refused:cursor-not-allowed refused:opacity-50`}
           onClick={onRetry}
           ref={retryRef}
           type="button"

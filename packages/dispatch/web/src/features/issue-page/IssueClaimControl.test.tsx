@@ -13,7 +13,7 @@ import type { Agent, ClaimHolderLiveness, Issue, IssueClaim, IssueDetails } from
 import { dangerText, pageFailedText, pageHeaderControl } from "../../theme/classes";
 import { stateForIssue } from "../issue/pins";
 import { MarginProvider } from "../margin/margin-context";
-import { blurWhenDisabled } from "./blur-when-disabled";
+import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { IssueClaimControl } from "./IssueClaimControl";
 import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
@@ -262,8 +262,9 @@ test("a failed release is said in the page's colours, with Retry", async () => {
 
 // Release turned disabled while its release was out, which lost the focus of a reader who
 // pressed it by keyboard, since Chromium moves the focus of a control that turns disabled to the
-// page's body (`blurWhenDisabled` does that here). Release stays enabled and is marked busy, as
-// the page's controls are while they save, and a press while the release is out sends nothing.
+// page's body (`emulateChromiumFocusFixup` does that here). Release stays enabled and is marked
+// busy, as the page's controls are while they save, and a press while the release is out sends
+// nothing.
 test("Release keeps the focus while its release is out, reads busy, and a second press sends none", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
@@ -272,7 +273,7 @@ test("Release keeps the focus while its release is out, reads busy, and a second
   const released = Promise.withResolvers<Issue>();
   const release = spyOn(api, "releaseIssueClaim").mockImplementation(() => released.promise);
   const view = claimRow({ ...base, claim });
-  const stopBlurring = blurWhenDisabled();
+  const stopBlurring = emulateChromiumFocusFixup();
   try {
     const button = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
     act(() => button.focus());
@@ -319,7 +320,7 @@ test("the failed release's Retry keeps the focus while the release is out and fa
   ]);
   const release = spyOn(api, "releaseIssueClaim").mockRejectedValueOnce(new Error("network error"));
   const view = claimRow({ ...base, claim });
-  const stopBlurring = blurWhenDisabled();
+  const stopBlurring = emulateChromiumFocusFixup();
   const retryOfRelease = () => screen.queryByRole("button", { name: CONTROL_LABELS.retry });
   const releaseControl = () => screen.getByRole("button", { name: "Release the claim on CORE-1" });
   try {
@@ -346,8 +347,8 @@ test("the failed release's Retry keeps the focus while the release is out and fa
     ).toBe(retry);
     expect(
       retry,
-      "Retry does not read busy while the release it sent again is out"
-    ).toHaveAttribute("aria-busy", "true");
+      "Retry does not refuse a press while the release it sent again is out"
+    ).toHaveAttribute("aria-disabled", "true");
     await view.user.keyboard("{Enter}");
     expect(release, "a press of Retry while its release is out sent another").toHaveBeenCalledTimes(
       2
@@ -365,8 +366,9 @@ test("the failed release's Retry keeps the focus while the release is out and fa
     expect(document.activeElement, "Retry lost the focus when the release failed again").toBe(
       retry
     );
-    expect(retry, "Retry still reads busy after the release failed again").not.toHaveAttribute(
-      "aria-busy"
+    expect(retry, "Retry still refuses a press after the release failed again").not.toHaveAttribute(
+      "aria-disabled",
+      "true"
     );
 
     const landed = Promise.withResolvers<Issue>();
@@ -399,7 +401,7 @@ test("a release that lands with no answer hands Retry's focus to Release, and Re
   ]);
   const release = spyOn(api, "releaseIssueClaim").mockRejectedValueOnce(new Error("network error"));
   const view = claimRow({ ...base, claim });
-  const stopBlurring = blurWhenDisabled();
+  const stopBlurring = emulateChromiumFocusFixup();
   try {
     const control = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
     await view.user.click(control);

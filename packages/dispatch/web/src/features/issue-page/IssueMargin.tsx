@@ -531,9 +531,10 @@ export function IssueMarginPanel({
               the write store leaves its refusal to this row, and the header, which says the
               page's other refusals, never sees it. The line stays while the save its Retry sent
               again is out (`useSaidFailure`), and says Dispatch's new reason if that is refused
-              too; its Retry reads busy while that save is out and is never disabled, since the
-              drafts send nothing while a save is out (`useSubmitGuard`). Once the route lands the
-              line goes, and the row's control takes the focus Retry held (`useFocusHandOff`). */}
+              too; its Retry takes no press while that save is out (`refused`), since the drafts
+              send nothing while a save is out (`useSubmitGuard`), and is never disabled. Once the
+              route lands the line goes, and the row's control takes the focus Retry held
+              (`useFocusHandOff`). */}
           {fieldFailure !== null &&
           fieldFailure.variables?.route !== undefined &&
           writes.drafts.route !== (issue.route ?? "") ? (
@@ -542,8 +543,8 @@ export function IssueMarginPanel({
               failure={fieldFailure.count}
               message={apiErrorMessage(fieldFailure.error, "Could not update this issue.")}
               onRetry={isClosed ? undefined : writes.drafts.retry}
+              refused={writes.updateIssue.isPending}
               retryRef={routeRetryLeft}
-              retrying={writes.updateIssue.isPending}
             />
           ) : null}
         </Row>
