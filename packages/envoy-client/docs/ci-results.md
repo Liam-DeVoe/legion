@@ -23,7 +23,8 @@ failed at its end, and a test log of any size still writes its result. A NUL, wh
 cannot store, goes as U+FFFD, and so does each byte of a file that is not UTF-8. It prints the
 stored result as JSON and exits 0. A write that landed with its answer lost prints
 `{"landed_without_answer":"<code>"}` and exits 0: the result is stored, and that includes a 201
-whose body was cut or stalled (`ANSWER_LOST`). A write that reached
+whose body gives no stored result, cut, stalled, no JSON, empty or JSON of another shape
+(`ANSWER_LOST`). A write that reached
 Dispatch with no answer that says whether it stored the result (`writeOutcomeUnknown`) prints
 `{"write_outcome_unknown":"<code>"}`, the code of its last failure such as `ECONNRESET`, and exits
 1: the result may be stored, and a second run is safe, because Dispatch keeps each result. A call

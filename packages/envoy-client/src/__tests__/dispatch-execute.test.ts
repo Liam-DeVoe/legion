@@ -46,6 +46,7 @@ import {
 import { followedAsk } from "../dispatch-subscribe";
 import { renderSessionAnswersList } from "../session-answers";
 import { ToolInputError } from "../tool-input-errors";
+import { routeAnswer } from "./dispatch-route-answers";
 import { fakeSearchResponse } from "./fake-search-response";
 
 const makeDirectory = temporaryDirectories("dispatch-execute");
@@ -619,7 +620,14 @@ describe("executeDispatchTool", () => {
     const fetchImpl = async (_url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const body = JSON.parse(String(init?.body));
       requests.push(body);
-      return response({ id: "ask-1", issue_key: "DSP-41", question: body.question });
+      return response(
+        routeAnswer("POST /api/v1/issues/{key}/asks", {
+          id: "ask-1",
+          issue_key: "DSP-41",
+          question: body.question,
+          urgency: "med",
+        })
+      );
     };
 
     await executeAsk({ issue: "DSP-41", question, ref }, fetchImpl as typeof fetch);
@@ -1047,17 +1055,36 @@ describe("executeDispatchTool", () => {
         }
         if (/^\/api\/v1\/projects\/[^/]+\/artifacts$/.test(target.pathname)) return response([]);
         if (target.pathname === "/api/v1/issues/DSP-41/artifacts" && init?.method === "POST") {
-          return response({ artifact: { slug: "shot-png" }, version: { number: 1 } });
+          return response(
+            routeAnswer("POST /api/v1/issues/{key}/artifacts", {
+              artifact: {
+                id: "artifact-shot",
+                issue_key: "DSP-41",
+                slug: "shot-png",
+                name: "shot.png",
+              },
+              version: { number: 1 },
+            })
+          );
         }
         if (target.pathname.endsWith("/asks")) {
           const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
           request = { body, path: target.pathname };
-          return response({
-            artifact_id: target.pathname.startsWith("/api/v1/artifacts/") ? "artifact-1" : null,
-            id: "ask-1",
-            issue_key: target.pathname.startsWith("/api/v1/issues/") ? "DSP-41" : null,
-            question: body.question,
-          });
+          const owner = target.pathname.startsWith("/api/v1/artifacts/") ? "artifacts" : "issues";
+          return response(
+            routeAnswer(
+              owner === "artifacts"
+                ? "POST /api/v1/artifacts/{id}/asks"
+                : "POST /api/v1/issues/{key}/asks",
+              {
+                artifact_id: owner === "artifacts" ? "artifact-1" : null,
+                id: "ask-1",
+                issue_key: owner === "issues" ? "DSP-41" : null,
+                question: body.question,
+                urgency: body.urgency ?? "med",
+              }
+            )
+          );
         }
         throw new Error(`unexpected request for ${field}: ${target.pathname}`);
       };
@@ -8648,11 +8675,20 @@ describe("executeDispatchTool", () => {
         if (target.pathname === "/api/v1/artifacts/artifact-42/approval-requests") {
           posts.push(target.pathname);
           return response(
-            {
-              ask: { id: "ask-9", kind: "approval", question: "Approve spec.md (version 4)? X." },
-              artifact_id: "artifact-42",
-              version: 4,
-            },
+            routeAnswer(
+              "POST /api/v1/artifacts/{id}/approval-requests",
+              {
+                ask: {
+                  id: "ask-9",
+                  issue_key: "DSP-42",
+                  kind: "approval",
+                  question: "Approve spec.md (version 4)? X.",
+                },
+                artifact_id: "artifact-42",
+                version: 4,
+              },
+              201
+            ),
             201
           );
         }
@@ -10703,12 +10739,15 @@ describe("executeDispatchTool", () => {
         return response({ outgoing: [], referenced_by: [] });
       if (request.pathname.endsWith("/asks")) {
         return init?.method === "POST"
-          ? response({
-              id: "ask-42",
-              issue_key: null,
-              artifact_id: artifact.id,
-              question: runbookQuestion,
-            })
+          ? response(
+              routeAnswer("POST /api/v1/artifacts/{id}/asks", {
+                id: "ask-42",
+                issue_key: null,
+                artifact_id: artifact.id,
+                question: runbookQuestion,
+                urgency: "med",
+              })
+            )
           : response([]);
       }
       if (request.pathname.endsWith("/comments")) {
@@ -10784,7 +10823,15 @@ describe("executeDispatchTool", () => {
         return response({ markdown: "# Runbook", version: 1 });
       if (request.pathname.endsWith("/asks")) {
         return init?.method === "POST"
-          ? response({ id: "ask-42", issue_key: null, artifact_id: artifact.id })
+          ? response(
+              routeAnswer("POST /api/v1/artifacts/{id}/asks", {
+                id: "ask-42",
+                issue_key: null,
+                artifact_id: artifact.id,
+                question: runbookQuestion,
+                urgency: "med",
+              })
+            )
           : response([]);
       }
       if (request.pathname.endsWith("/comments")) {
@@ -10926,10 +10973,17 @@ describe("executeDispatchTool", () => {
       const request = { url: String(url), init: init ?? {} };
       requests.push(request);
       if (new URL(request.url).pathname === "/api/v1/issues/DSP-42/artifacts") {
-        return response({
-          artifact: { id: "artifact-42", issue_key: "DSP-42", name: "artifact.txt" },
-          version: { number: 1 },
-        });
+        return response(
+          routeAnswer("POST /api/v1/issues/{key}/artifacts", {
+            artifact: {
+              id: "artifact-42",
+              issue_key: "DSP-42",
+              name: "artifact.txt",
+              slug: "artifact-txt",
+            },
+            version: { number: 1 },
+          })
+        );
       }
       throw new Error(`unexpected request: ${new URL(request.url).pathname}`);
     };
@@ -10963,10 +11017,12 @@ describe("executeDispatchTool", () => {
       if (preflight !== undefined) return preflight;
       const request = { url: String(url), init: init ?? {} };
       requests.push(request);
-      return response({
-        artifact: { id: "artifact-42", issue_key: "DSP-42", name: "spec.md" },
-        version: { number: 1 },
-      });
+      return response(
+        routeAnswer("POST /api/v1/issues/{key}/artifacts", {
+          artifact: { id: "artifact-42", issue_key: "DSP-42", name: "spec.md", slug: "spec-md" },
+          version: { number: 1 },
+        })
+      );
     };
 
     const result = await executeDispatchTool({

@@ -669,9 +669,11 @@ made whose answer is gone is a `DispatchWriteLandedError` (`code`, a `DispatchLa
 `status`): `409 KEY_COMMITTED`, a write that landed before its answer was lost, which Dispatch will
 not run again, a replayed 2xx (`Idempotency-Replayed: ?1`) reading `ANSWER_NOT_KEPT`, a first
 answer larger than Dispatch keeps (`answerNotKept`, shared with the page), or a write's 2xx whose
-body could not be read after its status line (cut, stalled past the deadline, or not the JSON it
-says it is), the client's own `ANSWER_LOST` (`DISPATCH_ANSWER_LOST`), since Dispatch answers a
-write's 2xx only after the write committed. It is no refusal and no
+body gives no row, the client's own `ANSWER_LOST` (`DISPATCH_ANSWER_LOST`), since Dispatch answers a
+write's 2xx only after the write committed. Every `POST` and `PATCH` of the client reads its 2xx into
+the row its callers read (`dispatch-write-rows.ts`: those members, in the forms the route answers
+them), so a body cut or stalled past the deadline, one that is no JSON whatever its type says, an
+empty one and JSON that is not that row are each this landing. It is no refusal and no
 `DispatchServiceError`, and it is never asked again. Its message is the one line the session
 reads: the method and URL were made, why the answer is gone, and to read what it made back with
 `dispatch read` or the matching list. The `dispatch` command exits 0 on one and records

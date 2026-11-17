@@ -15,6 +15,7 @@ import {
   DispatchNoRouteError,
   type SearchOptions,
 } from "../dispatch-http";
+import { routeAnswer } from "./dispatch-route-answers";
 import { fakeSearchResponse } from "./fake-search-response";
 
 interface RecordedRequest {
@@ -388,9 +389,35 @@ describe("DispatchClient", () => {
   });
 
   test("maps project document and reference routes to authenticated API requests", async () => {
-    const { fetchImpl, requests } = fakeFetch(
-      Array.from({ length: 14 }, () => jsonResponse({ ok: true }))
-    );
+    const read = () => jsonResponse({ ok: true });
+    const { fetchImpl, requests } = fakeFetch([
+      read(),
+      jsonResponse(
+        routeAnswer("POST /api/v1/projects/{key}/artifacts", {
+          artifact: { project: "CORE", name: "runbook.md", slug: "runbook-md" },
+        })
+      ),
+      read(),
+      read(),
+      jsonResponse(
+        routeAnswer("POST /api/v1/artifacts/{id}/asks", {
+          artifact_id: "artifact-1",
+          question: "The runbook is ready for readers. How should we publish it?",
+          urgency: "med",
+        })
+      ),
+      read(),
+      jsonResponse(
+        routeAnswer("POST /api/v1/artifacts/{id}/comments", {
+          artifact_id: "artifact-1",
+          body: "Looks good.",
+        })
+      ),
+      jsonResponse(
+        routeAnswer("POST /api/v1/artifacts/{id}/comments", { artifact_id: "artifact-1" })
+      ),
+      ...Array.from({ length: 6 }, read),
+    ]);
     const client = new DispatchClient(
       "http://dispatch.test",
       bearerCredential("secret"),
@@ -453,8 +480,39 @@ describe("DispatchClient", () => {
     });
   });
   test("maps dispatch operations to authenticated JSON and multipart API requests", async () => {
+    const read = () => jsonResponse({ ok: true });
     const { fetchImpl, requests } = fakeFetch([
-      ...Array.from({ length: 15 }, () => jsonResponse({ ok: true })),
+      jsonResponse(routeAnswer("POST /api/v1/issues", { key: "DSP-1", title: "Issue" }, 200)),
+      read(),
+      read(),
+      jsonResponse(
+        routeAnswer("POST /api/v1/issues/{key}/asks", {
+          issue_key: "DSP-1",
+          question: "Choose",
+          urgency: "med",
+        })
+      ),
+      jsonResponse(
+        routeAnswer("POST /api/v1/issues/{key}/comments", { issue_key: "DSP-1", body: "Review" })
+      ),
+      jsonResponse(
+        routeAnswer("POST /api/v1/issues/{key}/comments", { issue_key: "DSP-1", body: "Use this" })
+      ),
+      jsonResponse(
+        routeAnswer("POST /api/v1/issues/{key}/messages", { issue_key: "DSP-1", body: "Update" })
+      ),
+      jsonResponse(
+        routeAnswer("POST /api/v1/issues/{key}/artifacts", {
+          artifact: { issue_key: "DSP-1", name: "spec.md", slug: "spec-md" },
+        })
+      ),
+      read(),
+      read(),
+      read(),
+      jsonResponse(routeAnswer("POST /api/v1/artifacts/{id}/edits", { applied: 0 })),
+      jsonResponse(routeAnswer("POST /api/v1/artifacts/{id}/versions", {})),
+      read(),
+      read(),
       jsonResponse({ last_seq: 4 }),
       jsonResponse([]),
     ]);
@@ -1686,7 +1744,7 @@ describe("a request a Dispatch process answers with no route", () => {
   test("sends a POST again with the same body", async () => {
     const { fetchImpl, requests } = fakeFetch([
       noRoute("POST", "/api/v1/projects"),
-      jsonResponse({ key: "CORE", name: "Core" }, 201),
+      jsonResponse(routeAnswer("POST /api/v1/projects", { key: "CORE", name: "Core" }), 201),
     ]);
     const client = new DispatchClient(
       "http://dispatch.test",
