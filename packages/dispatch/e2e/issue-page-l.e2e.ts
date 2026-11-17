@@ -5,6 +5,7 @@ import {
   CONTROL_LABELS,
   PRESET_NAMES,
 } from "../web/src/features/issue-page/page-words";
+import { DWELL_MS } from "../web/src/features/shell/useDwell";
 import { createAsk, getArtifactBlocks, getIssueEvents, getMyState, listComments } from "./api";
 import { seedReplyNesting } from "./issue-layout-seed";
 import { gotoIssue, phase } from "./issue-page";
@@ -997,7 +998,7 @@ async function seedReadMarks() {
 // read through its newest event, once; nothing else does - not an outline whose end is off
 // screen or under the box, and not a view, whose end is not the conversation's. An outline
 // shorter than the screen has its end on screen at load, and is marked with no scroll.
-// SLOW(>=2s): three two-second waits for a write that must not come, and two marks polled.
+// SLOW(>=2s): five waits of two dwells each for a write that must not come, and two marks polled.
 test("the end of the outline on screen for a second marks the issue read", async ({ browser }) => {
   test.setTimeout(120_000);
   await phase(browser, seedReadMarks, async (page, seeded) => {
@@ -1024,7 +1025,10 @@ test("the end of the outline on screen for a second marks the issue read", async
       await onScreen(outlineEnd(page)),
       "the outline's end is on screen at load, so its absence proves nothing"
     ).toBe(false);
-    await page.waitForTimeout(2_000);
+    // The read mark must not be written while the outline's end is off screen, and a write that
+    // never comes leaves nothing to poll for, so this span is the check: two dwells long, so a
+    // dwell begun even as it starts ends at its middle, and its write leaves before its end.
+    await page.waitForTimeout(2 * DWELL_MS);
     expect(fortyWrites, "the end of the outline off screen wrote the read mark").toEqual([]);
     expect(await mark(key), "the end of the outline off screen marked the issue read").toBeLessThan(
       head
@@ -1037,7 +1041,10 @@ test("the end of the outline on screen for a second marks the issue read", async
       under !== null && under.lastBottom > under.boxTop && under.lastBottom < under.viewport,
       `the outline's last row does not end under the box: ${JSON.stringify(under)}`
     ).toBe(true);
-    await page.waitForTimeout(2_000);
+    // Nor while the end is under the box, which hides it from the reader though the window holds
+    // it: the span is the check again, two dwells long, so a dwell begun by the scroll above ends
+    // by its middle, and its write leaves before its end.
+    await page.waitForTimeout(2 * DWELL_MS);
     expect(fortyWrites, "the end of the outline under the box wrote the read mark").toEqual([]);
     expect(
       await mark(key),
@@ -1051,8 +1058,10 @@ test("the end of the outline on screen for a second marks the issue read", async
         timeout: 3_000,
       })
       .toBe(head);
-    // Read once more after the write has settled, so a second write is counted too.
-    await page.waitForTimeout(1_000);
+    // The mark goes out once and never again, and a write that never comes leaves nothing to poll
+    // for, so this span is the check: a repeat would leave as the first write's answer is drawn,
+    // and a second dwell begun then would write one dwell later, so two dwells see either.
+    await page.waitForTimeout(2 * DWELL_MS);
     expect(
       fortyWrites.map((write) => write.input),
       "the end of the outline on screen did not write the mark once"
@@ -1076,8 +1085,9 @@ test("the end of the outline on screen for a second marks the issue read", async
       await page.evaluate(() => window.scrollY),
       "the page scrolled to mark an outline shorter than the screen read"
     ).toBe(0);
-    // Read once more after the write has settled, so a second write is counted too.
-    await page.waitForTimeout(1_000);
+    // Once and never again here too: a repeat would leave as the first write's answer is drawn,
+    // and a second dwell begun then would write one dwell later, so two dwells see either.
+    await page.waitForTimeout(2 * DWELL_MS);
     expect(shortWrites, "the short outline's end did not write the mark once").toHaveLength(1);
 
     // A view's end is not the conversation's: the Spec view, whole on screen, marks nothing.
@@ -1097,7 +1107,10 @@ test("the end of the outline on screen for a second marks the issue read", async
       ),
       "the Spec view is not whole on screen"
     ).toBe(true);
-    await page.waitForTimeout(2_000);
+    // The Spec view must not write the read mark, and a write that never comes leaves nothing to
+    // poll for, so this span is the check: two dwells long, so a mark drawn at the view's end, on
+    // screen since the scroll above, would dwell by its middle and be sent before its end.
+    await page.waitForTimeout(2 * DWELL_MS);
     expect(specWrites, "the Spec view wrote the read mark").toEqual([]);
     expect(await mark(spec), "the Spec view marked the issue read").toBe(before);
   });
