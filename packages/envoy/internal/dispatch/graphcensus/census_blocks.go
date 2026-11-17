@@ -238,20 +238,37 @@ func blockPlacedLinks(kinds string) string {
 	 ) placed)`
 }
 
-// blockFirstAuthors is the FROM and WHERE text over each document_blocks row d whose node records
-// its authors (refs.RecordsAuthorsSQL: an authored node, or a block of an issue's tree artifact but
-// a decision and a reading), or states an authored_by while it is no decision and no reading - a
-// block retyped away from an authored type, which keeps the authors its first version gave it, who
-// still wrote it - of a document that owes no block index (roomOwed), with each author of the
-// version v that first held its block, as graphstore.AuthorOf names an actor (author.kind,
-// author.id; an actor naming nobody is left out). The version is the lowest one
-// document_block_texts records a text of the block in, read against the block's own document
-// (refs.BlockDocumentSQL), the one refs.IndexBlocks takes the block's authors from: the block
-// index states one authored_by per author of it through graphstore.AuthorFacts, which makes the
-// author's person or session node, for every such block of every document it indexes, a block
-// an earlier build wrote included, so once a document owes nothing each of its blocks names those
-// authors (blockAuthorProjection) and each author is a node the store holds (storedAuthors). A
-// document still owed is on neither side, since the pass that drains it writes them.
+// blockAuthorsHeld is true of each document_blocks row d, with its artifacts row a, whose block's
+// authors the block_author kind holds, the one test both its sides read a block by: a row naming
+// its node whose type records its authors (refs.RecordsAuthorsSQL: an authored node, or a block of
+// an issue's tree artifact but a decision and a reading), of a document that owes no block index
+// (roomOwed), which is no block of an issue room that has stood in more than one fragment
+// (refs.MovedRoomBlockSQL).
+//
+// The test reads the block's type alone, never its node's supertag, so a decision and a reading
+// are left out of both sides alike: a reading in an ask no one has answered is a node of supertag
+// block whose type is reading, and a reading retyped away keeps the authored_by the typed-node
+// pass gave it, which names the one actor who introduced it (refs.TypedSources.Authors), a record
+// no row holds. A block retyped away from a type that records its authors keeps the authors its
+// first version gave it too, and is out of both sides from then on. A block of a room that moved
+// between fragments has text rows recording versions of more than one document, none of which says
+// which, so no row tells the version that first held it.
+func blockAuthorsHeld(d, a string) string {
+	return `(` + d + `.node_kind = '` + refs.BlockNodeKind + `' and ` + refs.RecordsAuthorsSQL(d, a) + `
+		and not ` + refs.MovedRoomBlockSQL(d+".artifact_id", d+".block_id") + ` and not ` + roomOwed(d+".artifact_id") + `)`
+}
+
+// blockFirstAuthors is the FROM and WHERE text over each document_blocks row d whose block's
+// authors the census holds (blockAuthorsHeld), with each author of the version v that first held
+// its block, as graphstore.AuthorOf names an actor (author.kind, author.id; an actor naming nobody
+// is left out). The version is the lowest one document_block_texts records a text of the block in,
+// read against the block's own document (refs.BlockDocumentSQL), the one refs.IndexBlocks takes
+// the block's authors from: the block index states one authored_by per author of it through
+// graphstore.AuthorFacts, which makes the author's person or session node, for every such block of
+// every document it indexes, a block an earlier build wrote included, so once a document owes
+// nothing each of its blocks names those authors (blockAuthorProjection) and each author is a node
+// the store holds (storedAuthors). A document still owed is on neither side, since the pass that
+// drains it writes them.
 var blockFirstAuthors = `
 	from document_blocks d
 	join artifacts a on a.id = d.artifact_id
@@ -263,51 +280,44 @@ var blockFirstAuthors = `
 	join artifact_versions v on v.artifact_id = ` + refs.BlockDocumentSQL("d") + ` and v.number = first.version
 	cross join lateral jsonb_array_elements(case when jsonb_typeof(v.authors) = 'array' then v.authors else '[]'::jsonb end) written (actor)
 	cross join lateral (select ` + authorNodeKind("written.actor") + `, ` + authorNodeID("written.actor") + `) author (kind, id)
-	where d.node_kind = '` + refs.BlockNodeKind + `' and author.kind is not null
-	  and (` + refs.RecordsAuthorsSQL("d", "a") + `
-	       or (d.type not in ('` + refs.DecisionSupertag + `', '` + refs.ReadingSupertag + `') and exists (
-	           select 1 from (
-	             ` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.asserted`,
-	`t.from_kind = d.node_kind and t.from_id = d.node_address and t.kind = '`+graphstore.TupleAuthoredBy+`'
-	               and t.to_kind <> '`+graphstore.KindValue+`'`) + `
-	           ) held where held.asserted)))
-	  and not ` + roomOwed("d.artifact_id")
+	where author.kind is not null and ` + blockAuthorsHeld("d", "a")
 
 // blockVersionAuthors are those authors as (kind, id, at) (storedAuthors), at the version's time.
 var blockVersionAuthors = `select author.kind, author.id, v.created_at` + blockFirstAuthors
 
 // blockAuthorProjection is the census's kind of each block's authors (T7 of
-// dispatch://INFRA-1253's plan), held triple by triple: each row is an authored_by of the block's
-// node to one author of the version that first held the block (blockFirstAuthors), against every
-// authored_by a present block node states now - a reading's aside, whose author the typed-node
-// pass states (a decision states none), and a lens's finding's, which no document holds. So an
-// authored node of a document that owes nothing and states no authored_by is a row no tuple
-// states, an author it names that its version does not is a tuple no row projects, and a node of
-// a document still owed is on neither side.
+// dispatch://INFRA-1253's plan), held triple by triple over the blocks blockAuthorsHeld reads: each
+// row is an authored_by of such a block's node to one author of the version that first held the
+// block (blockFirstAuthors), against every authored_by such a block's node states now while it is
+// present. So an authored node of a document that owes nothing and states no authored_by is a row
+// no tuple states, an author it names that its version does not is a tuple no row projects, and a
+// block either side leaves out - a decision, a reading, a block of a document still owed, a block
+// of a room that moved between fragments - the other leaves out too.
 var blockAuthorProjection = projection{
 	name:     "block_author",
 	nodeKind: refs.BlockNodeKind,
 	table:    "document_blocks, artifact_versions.authors",
-	note: "who wrote each block whose node records its authors, held triple by triple: each row is an authored_by" +
-		" of the node of a document_blocks row of an authored node, or of a block of an issue's tree artifact but a" +
-		" decision and a reading, to each author of the version that first held the block, against every authored_by" +
-		" a present block node but a reading and a lens's finding states now; a block of a document that owes its" +
-		" block index is on neither side",
+	note: "who wrote each block whose node records its authors, held triple by triple over one set of document_blocks" +
+		" rows on both sides: each row is an authored_by of the node of a row of an authored node, or of a block of an" +
+		" issue's tree artifact but a decision and a reading, by the row's type, to each author of the version that" +
+		" first held the block, against every authored_by the present node of such a row states now; a block of a" +
+		" document that owes its block index, and a block of an issue room that has stood in more than one fragment," +
+		" whose text rows name no document, are on neither side",
 	rows: `
 		select distinct 'block_author ' || d.node_id || ' ' || author.kind || ':' || author.id, d.node_kind, d.node_address,
 		       '` + graphstore.TupleAuthoredBy + `', author.kind, author.id` + blockFirstAuthors + `
 		  and octet_length(d.node_id) <= ` + addressBound + ` and octet_length(author.id) <= ` + addressBound,
 	tuples: `
 		select n.kind, n.id, held.kind, held.to_kind, held.to_id
-		from graph_nodes n
+		from document_blocks d
+		join artifacts a on a.id = d.artifact_id
+		join graph_nodes n on n.kind = d.node_kind and n.id = d.node_address
 		cross join lateral (
 			` + graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, `t.kind, t.to_kind, t.to_id, t.asserted`,
 		`t.from_kind = n.kind and t.from_id = n.id and t.kind = '`+graphstore.TupleAuthoredBy+`'
 			  and t.to_kind <> '`+graphstore.KindValue+`'`) + `
 		) held
-		where n.kind = '` + refs.BlockNodeKind + `' and n.state <> '` + graphstore.StateGone + `' and not ` + lensBlock("n") + `
-		  and n.supertag not in ('` + refs.ReadingSupertag + `', '` + refs.DecisionSupertag + `') and held.asserted`,
-	owed:        blockDocumentOwed("node"),
+		where ` + blockAuthorsHeld("d", "a") + ` and n.state <> '` + graphstore.StateGone + `' and held.asserted`,
 	emptyAgrees: true,
 }
 

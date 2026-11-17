@@ -726,10 +726,10 @@ func recordedPeople(authors string) string {
 // authored_by until the backfill marks its row, so it names no author here.
 //
 // The authors of artifact_versions name people and sessions too (dispatch://INFRA-1253's T7):
-// every author of the version that first held each block whose node records its authors, an
-// authored node or a block of an issue room, of a document that owes no block index
-// (blockVersionAuthors), since the block index states an authored_by to each of them through
-// graphstore.AuthorFacts, which writes the author's node.
+// every author of the version that first held each block whose authors the block_author kind
+// holds - an authored node or a block of an issue room, of a document that owes no block index
+// (blockVersionAuthors, blockAuthorsHeld) - since the block index states an authored_by to each of
+// them through graphstore.AuthorFacts, which writes the author's node.
 //
 // A node is history and never goes: a decision or a reading deleted or retyped since takes its
 // row and its current tie away and leaves its author's node standing, so every person and session

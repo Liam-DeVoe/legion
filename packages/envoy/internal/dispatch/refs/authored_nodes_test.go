@@ -308,80 +308,292 @@ func requireChainReachesIssue(t *testing.T, tx pgx.Tx, address, issue string) {
 	t.Fatalf("the chain up from %s does not reach issue:%s within ten steps", address, issue)
 }
 
-// Two requirements of two documents of one issue, each serving the other: the spec's r1 serves the
-// plan's r2 and r2 serves r1, indexed in either order. The first placed has no target standing
-// yet and hangs under the issue, and the second hangs under it. A pass the store holds stale,
-// which places every authored node again, then reads the first's serves, and a version giving the
-// first a parent attribute naming the second places it again by that: each would hang it under a
-// block of another document standing under it, which the pass reads off the store's chain of that
-// block and passes over. So each node's chain reaches the issue, and no walk meets a cycle.
+// servingRequirement is one requirement of a version a cycle test writes: its id, the block its
+// serves names, and the block its parent attribute names ("" for none), each written
+// "<document>#<block>".
+type servingRequirement struct{ id, serves, parent string }
+
+// servingDocuments is issue WIND-1 with two documents, the spec and the plan, by name: each one's
+// artifact id and ref_key.
+type servingDocuments map[string]struct{ artifact, refKey string }
+
+// openServingDocuments writes the spec and the plan of WIND-1 in the fixture's transaction.
+func openServingDocuments(t *testing.T, tx pgx.Tx) servingDocuments {
+	t.Helper()
+	spec, specRef := createReferenceArtifact(t, tx, "WIND-1", "WIND", "spec-md")
+	var plan, planRef string
+	if err := tx.QueryRow(context.Background(), `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+		values ('WIND-1', 'WIND', 'plan-md', 'plan.md', 'doc', false, '{"kind":"user","id":"alice"}')
+		returning id::text, ref_key
+	`).Scan(&plan, &planRef); err != nil {
+		t.Fatalf("create the plan: %v", err)
+	}
+	return servingDocuments{"spec": {spec, specRef}, "plan": {plan, planRef}}
+}
+
+// address is the node address of the block "<document>#<block>" names.
+func (d servingDocuments) address(block string) string {
+	name, id, _ := strings.Cut(block, "#")
+	return d[name].refKey + "#" + id
+}
+
+// ref is the reference a pointer writes to the block "<document>#<block>" names.
+func (d servingDocuments) ref(block string) text.Ref {
+	name, id, _ := strings.Cut(block, "#")
+	return text.Ref{Kind: BlockNodeKind, IssueKey: "WIND-1", ID: strings.TrimPrefix(d[name].refKey, "WIND-1/"), Block: id}
+}
+
+// index writes version number of document name holding requirements, by alice, and runs its block
+// index pass in the fixture's transaction, with its cause appended at the sentinel.
+func (d servingDocuments) index(t *testing.T, tx pgx.Tx, name string, number int, requirements ...servingRequirement) {
+	t.Helper()
+	ctx := context.Background()
+	parts := make([]part, len(requirements))
+	var pointers []Pointer
+	for position, requirement := range requirements {
+		parts[position] = part{requirement.id, "requirement", "It serves another one."}
+		pointers = append(pointers, Pointer{Block: requirement.id, BlockType: "requirement", Kind: "serves",
+			Target: d.ref(requirement.serves), Targets: []string{"criterion", "requirement"}})
+		if requirement.parent != "" {
+			pointers = append(pointers, Pointer{Block: requirement.id, BlockType: "requirement", Kind: pmdoc.ParentAttribute, Target: d.ref(requirement.parent)})
+		}
+	}
+	markdown, blocks := documentOf(parts)
+	artifact := d[name].artifact
+	at := writeAuthoredVersion(t, tx, artifact, number, markdown, model.Actor{Kind: "user", ID: "alice"})
+	_, won, write, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, number, at), markdown, blocks, nil, pointers, TypedFacts{})
+	if err != nil || !won {
+		t.Fatalf("index version %d of the %s: won %t, %v", number, name, won, err)
+	}
+	if err := graphstore.Caused(ctx, tx, write, graphstore.NoEvent); err != nil {
+		t.Fatalf("append what version %d of the %s stated: %v", number, name, err)
+	}
+}
+
+// requireUnder fails unless the block "<document>#<block>" names stands under the block parent
+// names, by exactly one current part_of.
+func (d servingDocuments) requireUnder(t *testing.T, tx pgx.Tx, block, parent string) {
+	t.Helper()
+	held, err := graphstore.CurrentOut(context.Background(), tx, BlockNodeKind, d.address(block), []string{graphstore.TuplePartOf})
+	if err != nil || len(held) != 1 || held[0].ToKind != BlockNodeKind || held[0].ToID != d.address(parent) {
+		t.Fatalf("%s stands under %+v (%v), want %s", block, held, err, parent)
+	}
+}
+
+// Requirements of two documents of one issue that serve each other leave no part_of cycle,
+// whichever way the passes reach them. Two of them: the spec's r1 serves the plan's r2 and r2
+// serves r1, indexed in either order. The first placed has no target standing yet and hangs under
+// the issue, and the second hangs under it. A version giving the first a parent attribute naming
+// the second places it again by that, which would hang it under a block of another document
+// standing under it, read off the store's chain of that block, so the pass passes over it. Three of
+// them: the spec's a serves the plan's t, the spec's x serves a, and t serves x, so the first
+// passes hang a under the issue, x under a and t under x. A version of the spec then gives a a
+// parent attribute naming t and x one naming a, so the pass places both again: a under t would
+// close a cycle through x, which this pass places under a only after it places a, and which the
+// walk from a reaches through t's chain as the store holds it. So each node's chain reaches the
+// issue, and no walk meets a cycle.
 func TestTwoDocumentsThatServeEachOtherLeaveNoCycle(t *testing.T) {
 	for _, first := range []string{"spec", "plan"} {
 		t.Run(first+" first", func(t *testing.T) {
-			ctx := context.Background()
 			tx := windowFixture(t)
-			type served struct{ artifact, refKey, block string }
-			documents := map[string]*served{"spec": {block: "r1"}, "plan": {block: "r2"}}
-			documents["spec"].artifact, documents["spec"].refKey = createReferenceArtifact(t, tx, "WIND-1", "WIND", "spec-md")
-			if err := tx.QueryRow(ctx, `
-				insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-				values ('WIND-1', 'WIND', 'plan-md', 'plan.md', 'doc', false, '{"kind":"user","id":"alice"}')
-				returning id::text, ref_key
-			`).Scan(&documents["plan"].artifact, &documents["plan"].refKey); err != nil {
-				t.Fatalf("create the plan: %v", err)
-			}
-			other := map[string]string{"spec": "plan", "plan": "spec"}
-			second := other[first]
-			ref := func(name string) text.Ref {
-				document := documents[name]
-				return text.Ref{Kind: BlockNodeKind, IssueKey: "WIND-1", ID: strings.TrimPrefix(document.refKey, "WIND-1/"), Block: document.block}
-			}
-			// Each version is written once; a later pass over the same version indexes it again.
-			type written struct {
-				name   string
-				number int
-			}
-			versions := map[written]time.Time{}
-			index := func(name string, number int, parent bool) {
-				t.Helper()
-				document := documents[name]
-				markdown, blocks := documentOf([]part{{document.block, "requirement", "It serves the other one."}})
-				at, held := versions[written{name, number}]
-				if !held {
-					at = writeAuthoredVersion(t, tx, document.artifact, number, markdown, model.Actor{Kind: "user", ID: "alice"})
-					versions[written{name, number}] = at
-				}
-				pointers := []Pointer{{Block: document.block, BlockType: "requirement", Kind: "serves", Target: ref(other[name]), Targets: []string{"criterion", "requirement"}}}
-				if parent {
-					pointers = append(pointers, Pointer{Block: document.block, BlockType: "requirement", Kind: pmdoc.ParentAttribute, Target: ref(other[name])})
-				}
-				_, won, write, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, number, at), markdown, blocks, nil, pointers, TypedFacts{})
-				if err != nil || !won {
-					t.Fatalf("index version %d of the %s: won %t, %v", number, name, won, err)
-				}
-				if err := graphstore.Caused(ctx, tx, write, graphstore.NoEvent); err != nil {
-					t.Fatalf("append what version %d of the %s stated: %v", number, name, err)
-				}
-			}
-			address := func(name string) string { return documents[name].refKey + "#" + documents[name].block }
-			index(first, 1, false)
-			index(second, 1, false)
-			if held, err := graphstore.CurrentOut(ctx, tx, BlockNodeKind, address(second), []string{graphstore.TuplePartOf}); err != nil ||
-				len(held) != 1 || held[0].ToID != address(first) {
-				t.Fatalf("the %s's requirement stands under %+v (%v), want the %s's, which it serves and which stood first", second, held, err, first)
-			}
-			// The store's statement of the first document goes stale, as another release's index
-			// leaves it, and the drain marks it owed: the pass places its authored node again.
-			if _, err := tx.Exec(ctx, `
-				update document_block_versions set store_version = 0, store_owed_at = now() where artifact_id = $1::uuid
-			`, documents[first].artifact); err != nil {
-				t.Fatalf("leave the %s's statement stale: %v", first, err)
-			}
-			index(first, 1, false)
-			index(first, 2, true)
+			documents := openServingDocuments(t, tx)
+			second := map[string]string{"spec": "plan", "plan": "spec"}[first]
+			id := map[string]string{"spec": "r1", "plan": "r2"}
+			block := func(name string) string { return name + "#" + id[name] }
+			documents.index(t, tx, first, 1, servingRequirement{id: id[first], serves: block(second)})
+			documents.index(t, tx, second, 1, servingRequirement{id: id[second], serves: block(first)})
+			documents.requireUnder(t, tx, block(second), block(first))
+			// The first's parent attribute names the second, which stands under it: a change of
+			// the parent attribute, so the pass places the first again.
+			documents.index(t, tx, first, 2, servingRequirement{id: id[first], serves: block(second), parent: block(second)})
 			for _, name := range []string{first, second} {
-				requireChainReachesIssue(t, tx, address(name), "WIND-1")
+				requireChainReachesIssue(t, tx, documents.address(block(name)), "WIND-1")
 			}
 		})
 	}
+	t.Run("three nodes across two documents", func(t *testing.T) {
+		tx := windowFixture(t)
+		documents := openServingDocuments(t, tx)
+		documents.index(t, tx, "spec", 1, servingRequirement{id: "a", serves: "plan#t"}, servingRequirement{id: "x", serves: "spec#a"})
+		documents.index(t, tx, "plan", 1, servingRequirement{id: "t", serves: "spec#x"})
+		documents.requireUnder(t, tx, "spec#x", "spec#a")
+		documents.requireUnder(t, tx, "plan#t", "spec#x")
+		documents.index(t, tx, "spec", 2,
+			servingRequirement{id: "a", serves: "plan#t", parent: "plan#t"}, servingRequirement{id: "x", serves: "spec#a", parent: "spec#a"})
+		for _, block := range []string{"spec#a", "spec#x", "plan#t"} {
+			requireChainReachesIssue(t, tx, documents.address(block), "WIND-1")
+		}
+	})
+}
+
+// A retarget of an authored node's serves over a store another release indexed the document into
+// since this one last stated it (standsAtVersion's stale) moves no part_of, as a retarget over a
+// store that is not stale moves none (D4 of dispatch://INFRA-1253's plan): check c of the plan
+// serves the spec's r1 and stands under it; version 2 retargets it to r2 and c stays under r1; the
+// plan's statement then goes stale, as the release before leaves it, and the drain marks it owed,
+// and the pass over version 2 again states no part_of of c and leaves it under r1.
+func TestARetargetOverAStaleStoreMovesNoAuthoredNode(t *testing.T) {
+	ctx := context.Background()
+	tx := windowFixture(t)
+	documents := openServingDocuments(t, tx)
+	spec, specBlocks := documentOf([]part{{"r1", "requirement", "The first one."}, {"r2", "requirement", "The second one."}})
+	specAt := writeAuthoredVersion(t, tx, documents["spec"].artifact, 1, spec, model.Actor{Kind: "user", ID: "alice"})
+	indexAndCause(t, tx, documents["spec"].artifact, OneVersion(documents["spec"].artifact, 1, specAt), spec, specBlocks)
+	plan := documents["plan"].artifact
+	markdown, blocks := documentOf([]part{{"c", "check", "It checks one of them."}})
+	serves := func(target string) []Pointer {
+		return []Pointer{{Block: "c", BlockType: "check", Kind: "serves", Target: documents.ref(target), Targets: []string{"requirement"}}}
+	}
+	index := func(what string, number int, at time.Time, target string) {
+		t.Helper()
+		_, won, write, err := IndexBlocks(ctx, tx, plan, OneVersion(plan, number, at), markdown, blocks, nil, serves(target), TypedFacts{})
+		if err != nil || !won {
+			t.Fatalf("%s: won %t, %v", what, won, err)
+		}
+		if err := graphstore.Caused(ctx, tx, write, graphstore.NoEvent); err != nil {
+			t.Fatalf("append what %s stated: %v", what, err)
+		}
+	}
+	index("the plan's version 1", 1, writeAuthoredVersion(t, tx, plan, 1, markdown, model.Actor{Kind: "user", ID: "bob"}), "spec#r1")
+	documents.requireUnder(t, tx, "plan#c", "spec#r1")
+	secondAt := writeAuthoredVersion(t, tx, plan, 2, markdown, model.Actor{Kind: "user", ID: "bob"})
+	index("the plan's version 2, retargeting c to r2", 2, secondAt, "spec#r2")
+	documents.requireUnder(t, tx, "plan#c", "spec#r1")
+
+	if _, err := tx.Exec(ctx, `
+		update document_block_versions set store_version = 0, store_owed_at = now() where artifact_id = $1::uuid
+	`, plan); err != nil {
+		t.Fatalf("leave the plan's statement stale: %v", err)
+	}
+	var mark int64
+	if err := tx.QueryRow(ctx, `select coalesce(max(seq), 0) from graph_tuples`).Scan(&mark); err != nil {
+		t.Fatalf("read the end of the tuple log: %v", err)
+	}
+	index("the pass over version 2 with the plan's statement stale", 2, secondAt, "spec#r2")
+	var placed int
+	if err := tx.QueryRow(ctx, `
+		select count(*) from graph_tuples where from_kind = $1 and from_id = $2 and kind = $3 and seq > $4
+	`, BlockNodeKind, documents.address("plan#c"), graphstore.TuplePartOf, mark).Scan(&placed); err != nil {
+		t.Fatalf("read the part_of tuples the stale pass stated of c: %v", err)
+	}
+	if placed != 0 {
+		t.Errorf("the pass over a stale store stated %d part_of tuple(s) of c, want none: a serves retarget moves no node", placed)
+	}
+	documents.requireUnder(t, tx, "plan#c", "spec#r1")
+}
+
+// A requirement's From: line is the last line opening with "From:" outside a code span (R3 and R22
+// of dispatch://INFRA-1253/spec, fromLine): words quoting the label in code name no source, a
+// fenced code block is code too, and a label inside a word is no label.
+func TestTheFromLineIsTheLastOneOutsideACodeSpan(t *testing.T) {
+	for _, test := range []struct{ name, body, line string }{
+		{"a From: line", ":::requirement{#r1}\nIt is sized.\nFrom: dispatch://WIND-1/comment/c1\n:::", "From: dispatch://WIND-1/comment/c1"},
+		{"a From: quoted in code before the From: line", "It reads its `From:` line, as dispatch://WIND-1/comment/c2 said.\nFrom: dispatch://WIND-1/comment/c1",
+			"From: dispatch://WIND-1/comment/c1"},
+		{"the last of two From: lines", "From: dispatch://WIND-1/comment/c2\nFrom: dispatch://WIND-1/comment/c1", "From: dispatch://WIND-1/comment/c1"},
+		{"a From: quoted in code alone", "It reads its `From: dispatch://WIND-1/comment/c2` line.", ""},
+		{"a From: in a fenced code block", "```\nFrom: dispatch://WIND-1/comment/c2\n```\nIt is sized.", ""},
+		{"a code span of two backticks around one", "It reads ``a ` From: c2`` here.\nFrom: c1", "From: c1"},
+		{"a backtick no run closes", "It costs `5.\nFrom: c1", "From: c1"},
+		{"an escaped backtick opens no span", "It reads \\`From: c1", "From: c1"},
+		{"a label inside a word", "WhereFrom: c2", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			start, end, written := fromLine(test.body)
+			got := ""
+			if written {
+				got = test.body[start:end]
+			}
+			if got != test.line {
+				t.Errorf("the From: line of %q is %q (written %t), want %q", test.body, got, written, test.line)
+			}
+		})
+	}
+}
+
+// A read of a block node (Node) answers it made by the authors its node records, the who of each
+// authored_by it states now in their sequence order, and by the authors of the version that first
+// held it only where it states none (T7 of dispatch://INFRA-1253's plan). A requirement first seen
+// at version 3 of a document whose versions 1 and 2 no block-aware build indexed has no first
+// version Dispatch knows, while its pass recorded version 3's author, bob.
+func TestABlockIsMadeByTheAuthorsItsNodeRecords(t *testing.T) {
+	ctx := context.Background()
+	tx := windowFixture(t)
+	bob := model.Actor{Kind: "user", ID: "bob"}
+	document, documentRef := createReferenceArtifact(t, tx, "WIND-1", "WIND", "spec-md")
+	earlier, _ := documentOf([]part{{"p1", "paragraph", "Earlier words."}})
+	writeAuthoredVersion(t, tx, document, 1, earlier, model.Actor{Kind: "user", ID: "alice"})
+	writeAuthoredVersion(t, tx, document, 2, earlier, model.Actor{Kind: "user", ID: "alice"})
+	markdown, blocks := documentOf([]part{{"p1", "paragraph", "Earlier words."}, {"r1", "requirement", "It is first seen here."}})
+	at := writeAuthoredVersion(t, tx, document, 3, markdown, bob)
+	indexAndCause(t, tx, document, OneVersion(document, 3, at), markdown, blocks)
+	if held := authoredBy(t, tx, documentRef+"#r1"); len(held) != 1 || !reflect.DeepEqual(held[0].Who, bob) {
+		t.Fatalf("r1 records the authored_by %+v, want bob's, version 3's author", held)
+	}
+	node, found, err := Node(ctx, tx, model.Actor{}, BlockNodeKind, documentRef+"#r1", false)
+	if err != nil || !found {
+		t.Fatalf("read r1: found %t, %v", found, err)
+	}
+	if !reflect.DeepEqual(node.MadeBy, []model.Actor{bob}) {
+		t.Errorf("a read of r1 answers it made by %+v, want %+v, the author its node records", node.MadeBy, []model.Actor{bob})
+	}
+}
+
+// A block of an issue room moved from one fragment into another keeps the authors of the version
+// that first held it, and no read takes them from the document it stands in now (T7 and T12a of
+// dispatch://INFRA-1253's plan). x is written in the spec's fragment at the spec's version 4,
+// which alice wrote, then moved into the Verification document's fragment at that document's
+// version 2, which carol wrote: the room's text rows of x record versions 4 and 2 under the tree,
+// and the lower is the Verification document's. x records alice, and a read of x answers alice. A
+// node of x with no author recorded, as a build before this one left a room node, takes none at
+// the next pass, rather than carol, and a read of it answers no maker.
+func TestARoomBlockMovedIntoAnotherFragmentKeepsItsFirstAuthors(t *testing.T) {
+	ctx := context.Background()
+	tx := windowFixture(t)
+	alice, carol, erin := model.Actor{Kind: "user", ID: "alice"}, model.Actor{Kind: "user", ID: "carol"}, model.Actor{Kind: "user", ID: "erin"}
+	spec, _, verification, tree, treeRef := roomFixture(t, tx)
+	treeAt := writeAuthoredVersion(t, tx, tree, 1, "", erin)
+	specAt := writeAuthoredVersion(t, tx, spec, 4, "Moved words.", alice)
+	verificationAt := writeAuthoredVersion(t, tx, verification, 1, "Check.", erin)
+	first, firstBlocks := documentOf([]part{{"y", "paragraph", "Check."}, {"x", "paragraph", "Moved words."}})
+	firstBlocks[0].Document, firstBlocks[1].Document = verification, spec
+	indexAndCause(t, tx, tree, Versions{
+		tree: {Number: 1, At: treeAt}, spec: {Number: 4, At: specAt}, verification: {Number: 1, At: verificationAt},
+	}, first, firstBlocks)
+	specNext := writeAuthoredVersion(t, tx, spec, 5, "", carol)
+	verificationNext := writeAuthoredVersion(t, tx, verification, 2, "Check.\n\nMoved words.", carol)
+	moved, movedBlocks := documentOf([]part{{"y", "paragraph", "Check."}, {"x", "paragraph", "Moved words."}})
+	movedBlocks[0].Document, movedBlocks[1].Document = verification, verification
+	indexAndCause(t, tx, tree, Versions{
+		tree: {Number: 1, At: treeAt}, spec: {Number: 5, At: specNext}, verification: {Number: 2, At: verificationNext},
+	}, moved, movedBlocks)
+
+	x := treeRef + "#x"
+	madeBy := func(what string, want []model.Actor) {
+		t.Helper()
+		node, found, err := Node(ctx, tx, model.Actor{}, BlockNodeKind, x, false)
+		if err != nil || !found {
+			t.Fatalf("read x %s: found %t, %v", what, found, err)
+		}
+		if !reflect.DeepEqual(node.MadeBy, want) {
+			t.Errorf("a read of x %s answers it made by %+v, want %+v", what, node.MadeBy, want)
+		}
+	}
+	if held := authoredBy(t, tx, x); len(held) != 1 || !reflect.DeepEqual(held[0].Who, alice) {
+		t.Fatalf("the moved x records the authored_by %+v, want alice's, the spec's version 4's author", held)
+	}
+	madeBy("once moved", []model.Actor{alice})
+
+	unrecordAuthors(t, tx, x)
+	verificationLast := writeAuthoredVersion(t, tx, verification, 3, "Check, rewritten.\n\nMoved words.", erin)
+	last, lastBlocks := documentOf([]part{{"y", "paragraph", "Check, rewritten."}, {"x", "paragraph", "Moved words."}})
+	lastBlocks[0].Document, lastBlocks[1].Document = verification, verification
+	indexAndCause(t, tx, tree, Versions{
+		tree: {Number: 1, At: treeAt}, spec: {Number: 5, At: specNext}, verification: {Number: 3, At: verificationLast},
+	}, last, lastBlocks)
+	if held := authoredBy(t, tx, x); len(held) != 0 {
+		t.Errorf("the moved x with no author recorded takes the authored_by %+v at the next pass, want none: no row says which document's version first held it", held)
+	}
+	madeBy("with no author recorded", []model.Actor{})
 }

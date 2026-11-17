@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
@@ -262,9 +261,10 @@ func conversationAttributes(schema pmdoc.BlockSchema) (declaring, from []string)
 // no attribute but parent that declares the conversation's kinds, and none called from. A planted
 // second attribute declaring them, and a planted from, in a copy of that schema, are found by the
 // same search that finds none in the real one. The walk-up half (T7 of dispatch://INFRA-1253's
-// plan): from a block whose parent is a comment's block, the walk up its part_of tuples reaches
-// the comment and the words in it; with the block's stored parent value cleared in the store and
-// its part_of left, the walk reaches the same comment, so it reads the tuple and no attribute.
+// plan): from a block whose parent is a comment's block, the walk up the chain the block index
+// climbs (refs.PartOfChains) reaches the comment and the words in it; with the block's stored
+// parent value cleared in the store and its part_of left, the same walk reaches the same comment,
+// so that production read climbs the tuple and no attribute.
 func TestNoAttributeTiesABlockToItsConversation(t *testing.T) {
 	handler, database := blockIndexHandler(t)
 	schema, err := schemanodes.Read(context.Background(), database.Pool)
@@ -336,18 +336,24 @@ func TestNoAttributeTiesABlockToItsConversation(t *testing.T) {
 	walk("with the parent attribute cleared from the store")
 }
 
-// walkUp is the node the block node address hangs under, found by the one part_of tuple it states
-// now and read as the read registry loads that node: a walk up the tree that reads no attribute of
-// any node.
+// walkUp is the node the block node address hangs under, the first far end of the chain the block
+// index climbs from it to keep a part_of cycle out (refs.PartOfChains), a production read that
+// picks the relation it follows itself, and read as the read registry loads that node: a walk up
+// the tree that reads no attribute of any node.
 func walkUp(t *testing.T, database *store.Store, address string) model.GraphNode {
 	t.Helper()
-	held := currentTies(t, database, address, graphstore.TuplePartOf)
-	if len(held) != 1 {
-		t.Fatalf("%s stands under %+v, want exactly one part_of", address, held)
+	ctx := context.Background()
+	chains, err := refs.PartOfChains(ctx, database.Pool, []string{address})
+	if err != nil {
+		t.Fatalf("read the chain up from %s: %v", address, err)
 	}
-	node, found, err := refs.Node(context.Background(), database.Pool, model.Actor{Kind: "user", ID: "alice"}, held[0].ToKind, held[0].ToID, false)
+	chain := chains[address]
+	if len(chain) == 0 {
+		t.Fatalf("the chain up from %s climbs to no node", address)
+	}
+	node, found, err := refs.Node(ctx, database.Pool, model.Actor{Kind: "user", ID: "alice"}, chain[0].Kind, chain[0].ID, false)
 	if err != nil || !found {
-		t.Fatalf("read %s/%s, which %s hangs under: found %t, %v", held[0].ToKind, held[0].ToID, address, found, err)
+		t.Fatalf("read %s/%s, which %s hangs under: found %t, %v", chain[0].Kind, chain[0].ID, address, found, err)
 	}
 	return node
 }

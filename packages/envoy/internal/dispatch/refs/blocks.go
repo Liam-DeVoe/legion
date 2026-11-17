@@ -575,7 +575,7 @@ func IndexBlocks(
 		return nil, false, graphstore.Uncaused{}, err
 	}
 	write.Tuples = append(write.Tuples, moves...)
-	sources := authoredSourcesOf(markdown, nodes, located, pointers, stale)
+	sources := authoredSourcesOf(markdown, nodes, located, pointers)
 	placement, parents, err := reconcileBlockParents(ctx, tx, artifactID, document, nodes, fits, typed.askParents, nil, sources)
 	if err != nil {
 		return nil, false, graphstore.Uncaused{}, err
@@ -1909,7 +1909,12 @@ func BlockTargets(ctx context.Context, q Queryer, artifactID string, written []m
 // F is a version of the block's own document (BlockDocumentSQL): for a block of an issue room,
 // whose rows are keyed by the room's tree artifact and record that document's own version
 // numbers, the document its fragment is, whose versions and indexed versions F is read against
-// (T12a of dispatch://INFRA-1253's plan); for any other block, artifact itself.
+// (T12a of dispatch://INFRA-1253's plan); for any other block, artifact itself. A block of an
+// issue room that has stood in more than one fragment (MovedRoomBlockSQL) has rows recording
+// versions of more than one document, and no row says which, so the lowest of them need not be a
+// version of the document that first held it, nor F a version of the document it stands in now:
+// Dispatch knows no first version of it, and every column is null, as for a block with no
+// recorded text.
 func blockFirstVersion(alias, artifact, block string) string {
 	return `left join lateral (
 		select t.version,
@@ -1921,6 +1926,7 @@ func blockFirstVersion(alias, artifact, block string) string {
 		cross join lateral (select ` + BlockDocumentSQL("t") + ` as id) owner
 		left join artifact_versions v on v.artifact_id = owner.id and v.number = t.version
 		where t.artifact_id = ` + artifact + ` and t.block_id = ` + block + ` and t.text is not null
+		  and not ` + MovedRoomBlockSQL(artifact, block) + `
 		order by t.version limit 1
 	) ` + alias + ` on true`
 }

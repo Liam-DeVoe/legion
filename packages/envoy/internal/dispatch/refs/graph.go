@@ -727,17 +727,20 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 // loadBlockNodes resolves block nodes, addressed '<document ref_key>#<block id>', from the
 // current blocks of their documents' latest indexed versions. A block no current version holds
 // has no row and resolves to nothing, so every edge at it is omitted until a version holds its
-// id again. A block is made by the authors of the version that first held it, when Dispatch knows
-// that version (blockFirstVersion); its last change is its changed version, by that version's
-// authors. It belongs to its document at its changed version. A block of an issue room, whose row
-// is keyed by the issue's tree artifact, belongs to its own document (BlockDocumentSQL): that
-// document is its parent, names its reference and holds its changed version, while its node's
-// address stays the tree's.
+// id again. A block is made by the authors its node records, the who of each authored_by it states
+// now in their sequence order (T7 of dispatch://INFRA-1253's plan), and where it states none by the
+// authors of the version that first held it, when Dispatch knows that version
+// (blockFirstVersion); it is made at that version's time. Its last change is its changed version,
+// by that version's authors. It belongs to its document at its changed version. A block of an
+// issue room, whose row is keyed by the issue's tree artifact, belongs to its own document
+// (BlockDocumentSQL): that document is its parent, names its reference and holds its changed
+// version, while its node's address stays the tree's.
 func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	held, args := blockNodesAddressed(ids, who)
 	rows, err := q.Query(ctx, `
 		select d.node_id, d.block_id, d.excerpt, d.changed_version, d.changed_at, changed.authors,
-		       `+documentColumns("a")+`, `+blockFirstColumns("first")+`, `+storedNode("block", "d.node_id")+`
+		       `+documentColumns("a")+`, `+blockFirstColumns("first")+`, `+recordedAuthorsSQL("d.node_id")+`,
+		       `+storedNode("block", "d.node_id")+`
 		from document_blocks d
 		cross join lateral (select `+BlockDocumentSQL("d")+` as id) owner
 		join artifacts a on a.id = owner.id
@@ -752,12 +755,12 @@ func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 		var nodeID, blockID, excerpt string
 		var changedVersion int
 		var changedAt time.Time
-		var changedBy []byte
+		var changedBy, recorded []byte
 		var document documentParent
 		var first blockFirst
 		var stored []string
 		targets := append([]any{&nodeID, &blockID, &excerpt, &changedVersion, &changedAt, &changedBy}, document.targets()...)
-		if err := rows.Scan(append(append(targets, first.targets()...), &stored)...); err != nil {
+		if err := rows.Scan(append(append(targets, first.targets()...), &recorded, &stored)...); err != nil {
 			return fmt.Errorf("scan block node: %w", err)
 		}
 		changers, err := storedActors(changedBy)
@@ -782,12 +785,29 @@ func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 		if node.MadeBy, node.MadeAt, err = first.maker(); err != nil {
 			return fmt.Errorf("decode the maker of block %s: %w", nodeID, err)
 		}
+		if recorded != nil {
+			if node.MadeBy, err = storedActors(recorded); err != nil {
+				return fmt.Errorf("decode the authors block %s records: %w", nodeID, err)
+			}
+		}
 		if err := setStored(&node, stored); err != nil {
 			return err
 		}
 		nodes[[2]string{"block", nodeID}] = resolvedNode{GraphNode: node, text: excerpt}
 	}
 	return rows.Err()
+}
+
+// recordedAuthorsSQL is the who of each authored_by the block node whose address the SQL text
+// address names states now (graphstore.CurrentTupleRead, through graph_tuples_current), in their
+// sequence order, as one jsonb array, and null where it states none: the authors the node records
+// (T7 of dispatch://INFRA-1253's plan), each the author's whole stored actor.
+func recordedAuthorsSQL(address string) string {
+	return `(select jsonb_agg(held.who order by held.seq) from (
+			` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.who, t.seq, t.asserted`,
+		`t.from_kind = '`+BlockNodeKind+`' and t.from_id = `+address+` and t.kind = '`+graphstore.TupleAuthoredBy+`'
+			  and t.to_kind <> '`+graphstore.KindValue+`'`) + `
+		) held where held.asserted)`
 }
 
 // blockNodesAddressed is how loadBlockNodes names the blocks it reads, and the arguments that
