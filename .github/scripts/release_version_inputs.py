@@ -50,6 +50,16 @@ accounts for are one plan, kept here.
                                git), container:, env:, defaults:, a reusable workflow's uses: -
                                so the class is closed with a list of what may be set, as
                                WORKFLOW_ENV_KEYS closes the variables'.
+  DECISION_READERS             every if:, job or step, in the two release workflows that reads a
+                               checked version step's decision: its job's version or skip output
+                               through needs.<job>.outputs, the step's own outputs within its job,
+                               or the output of an earlier step that is itself such a reader (the
+                               publish chains read steps.<id>.outcome one after another). Each is
+                               the module's text, by the step's id:, else its name:, else its
+                               position in the job; a reader no entry names is refused, so a new
+                               publish step that reads the decision is an entry here too. An `if:`
+                               that skips a reader throws the decision away as surely as an
+                               output `skip: "true"` does.
 
 Pure: each caller reads the target lists its own way and hands them in, and keeps its own
 annotations and its own handling of a failure.
@@ -89,6 +99,65 @@ RUNNER = "ubuntu-24.04"
 DECISION = {
     "version": "${{ steps.version.outputs.version }}",
     "skip": "${{ steps.version.outputs.skip }}",
+}
+
+
+class Reader(NamedTuple):
+    """An if: that reads a decision, and what holds it: a step by its id:, else its name:, else its
+    1-based position among its job's steps; position 0 is the job's own if:, which no job of the
+    two workflows reads the decision in today."""
+
+    if_: str
+    id: str | None = None
+    name: str | None = None
+    position: int | None = None
+
+
+BUILT = "steps.version.outputs.skip != 'true'"
+CONFIRMED = "steps.confirm.outputs.release == 'true'"
+DECISION_READERS = {
+    (RELEASE, "legion_build"): (
+        Reader(BUILT, id="setup-go"),
+        Reader(BUILT, position=5),
+        Reader(BUILT, name="Build legion"),
+        Reader(BUILT, name="Smoke test"),
+        Reader(BUILT, position=8),
+        Reader(BUILT, position=9),
+        Reader(BUILT, id="notes"),
+        Reader(f"{BUILT} && steps.notes.outputs.notes == 'true'", position=11),
+    ),
+    (RELEASE, "publish"): (
+        Reader("${{ !cancelled() && steps.pair.outputs.ok == 'true' && needs.legion_build.result == 'success' && "
+               "needs.legion_build.outputs.skip != 'true' }}", id="legion_pair"),
+        Reader("${{ !cancelled() && steps.legion_pair.outcome == 'success' }}", id="legion_download"),
+        Reader("${{ !cancelled() && steps.legion_download.outcome == 'success' }}", id="legion_assets"),
+        Reader("${{ !cancelled() && steps.legion_assets.outcome == 'success' }}", id="legion_tag"),
+        Reader("${{ !cancelled() && steps.legion_tag.outcome == 'success' }}", id="legion_attest"),
+        Reader("${{ !cancelled() && steps.legion_attest.outcome == 'success' }}", id="legion_release"),
+        Reader("${{ !cancelled() && steps.legion_release.outcome == 'success' && "
+               "needs.legion_build.outputs.notes == 'true' }}", id="legion_notes"),
+        Reader("${{ !cancelled() && steps.legion_notes.outcome == 'success' }}",
+               name="legion: Write the changelog into the release body"),
+    ),
+    (LISTENER, "release_build"): (
+        Reader(BUILT, position=3),
+        Reader(BUILT, id="notes"),
+        Reader(f"{BUILT} && steps.notes.outputs.notes == 'true'", position=5),
+        Reader(BUILT, position=6),
+        Reader(BUILT, name="Build agent-secrets binaries"),
+        Reader(BUILT, name="Check the stamped tag"),
+        Reader(BUILT, position=9),
+    ),
+    (LISTENER, "release_publish"): (
+        Reader(CONFIRMED, position=6),
+        Reader(CONFIRMED, position=7),
+        Reader(CONFIRMED, id="assets"),
+        Reader(CONFIRMED, name="Tag release"),
+        Reader(CONFIRMED, position=10),
+        Reader(CONFIRMED, id="release"),
+        Reader("steps.release.outcome == 'success' && needs.release_build.outputs.notes == 'true'", id="notes"),
+        Reader("steps.notes.outcome == 'success'", name="Write the changelog into the release body"),
+    ),
 }
 
 

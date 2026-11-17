@@ -29,12 +29,15 @@ source "$script_dir/go-offline-test-lib.sh"
 hand_args='    -- packages/daemon/ .github/go-release-targets.json'
 handoff='.github/scripts/release-push.sh version legion-v $LEGION_VERSION_ARGS $LEGION_GO_INPUTS'
 
-# step <kind> <name>: a step of release_version_inputs.py as YAML lines of a fixture job's steps:
-# `version <job>:<step id>`, one of VERSION_STEPS with its env: and its run: as a `|` block, or
-# `before <name>`, one of STEPS_BEFORE_VERSION_STEPS. Every fixture's jobs are built from these, so
-# each starts pinned as the check requires and each case below changes one piece of it.
+# step <kind> <name> [<steps before>]: a step of release_version_inputs.py as YAML lines of a
+# fixture job's steps: `version <job>:<step id>`, one of VERSION_STEPS with its if:, env: and its
+# run: as a `|` block; `before <name>`, one of STEPS_BEFORE_VERSION_STEPS; `outputs <job>`, the
+# job's DECISION outputs; or `readers release|listener:<job> <steps before>`, the job's
+# DECISION_READERS after that many steps, each at its position when the module names it by one,
+# with `run: "true"` fillers between. Every fixture's jobs are built from these, so each starts
+# pinned as the check requires and each case below changes one piece of it.
 step() {
-  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" python3 - "$1" "$2" <<'PY'
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" python3 - "$@" <<'PY'
 import json
 import sys
 
@@ -47,6 +50,24 @@ if kind == "version":
 elif kind == "outputs":
     spec = next(s for s in plan.VERSION_STEPS if s.job == name)
     print("\n".join(["    outputs:", *(f"      {k}: {json.dumps(v)}" for k, v in spec.outputs.items())]))
+    sys.exit(0)
+elif kind == "readers":
+    workflow, job = name.split(":")
+    readers = plan.DECISION_READERS[({"release": plan.RELEASE, "listener": plan.LISTENER}[workflow], job)]
+    placed = {r.position: r for r in readers if r.id is None and r.name is None}
+    named = [r for r in readers if r.id is not None or r.name is not None]
+    out, at = [], int(sys.argv[3]) + 1
+    while placed or named:
+        reader = placed.pop(at, None) or (named.pop(0) if named else None)
+        head = (f"- id: {reader.id}" if reader.id else f"- name: {json.dumps(reader.name)}" if reader.name else "- run: \"true\"") \
+            if reader else '- run: "true"'
+        out.append(f"      {head}")
+        if reader:
+            out.append(f"        if: {json.dumps(reader.if_)}")
+            if reader.id or reader.name:
+                out.append('        run: "true"')
+        at += 1
+    print("\n".join(out))
     sys.exit(0)
 else:
     spec = next(s for s in plan.STEPS_BEFORE_VERSION_STEPS if s.name == name)
@@ -74,6 +95,10 @@ checkout_sha_step=$(step before "checkout of the event's commit")
 determine_step=$(step before "Determine latest")
 login_step=$(step before "log in to GHCR")
 advance_step=$(step before "Advance latest image")
+legion_readers=$(step readers release:legion_build 2)
+publish_readers=$(step readers release:publish 0)
+envoy_build_readers=$(step readers listener:release_build 2)
+envoy_publish_readers=$(step readers listener:release_publish 5)
 login_uses=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" python3 -c 'import release_version_inputs as p; print(p.LOGIN)')
 confirm_version='          VERSION: "${{ needs.release_build.outputs.version }}"'
 # The listener's, as release-envoy-listener.yaml writes them: the envoy module but its excluded
@@ -135,6 +160,7 @@ $envoy_build_outputs
     steps:
 $checkout_step
 $envoy_build_step
+$envoy_build_readers
   release_publish:
     runs-on: ubuntu-24.04
     steps:
@@ -143,6 +169,7 @@ $determine_step
 $login_step
 $advance_step
 $envoy_confirm_step
+$envoy_publish_readers
 YAML
   cat > "$root/.github/workflows/release.yaml" <<EOF
 name: Release Packages
@@ -162,6 +189,12 @@ $legion_outputs
     steps:
 $checkout_step
 $legion_step
+$legion_readers
+  publish:
+    runs-on: ubuntu-24.04
+    needs: [legion_build]
+    steps:
+$publish_readers
 EOF
   echo "$root"
 }
@@ -535,6 +568,51 @@ replace "$root/.github/workflows/release.yaml" $'      - id: version\n' $'      
 run_check "$root"
 check "exits 1 on timeout-minutes" "$(is "$status" 1)"
 check "names it" "$(contains "$out" "legion_build's step \`version\` sets timeout-minutes: (\`1\`), which a checked version step does not")"
+
+# The steps after the decision are the same class: a publish step's if: that reads the decision,
+# or an earlier reader's outcome, can be edited to skip the release the version step chose. Each
+# reader's if: is DECISION_READERS' entry, by id:, name: or position, and a new reader is refused.
+readers_rule="$plan_file's DECISION_READERS names"
+echo "case: the legion publish step's if: changed to skip (release.yaml's legion_pair)"
+root=$(written reader-skip)
+replace "$root/.github/workflows/release.yaml" "needs.legion_build.outputs.skip != 'true' }}\"" "false }}\""
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the step and the module's if:" \
+  "$(contains "$out" "the step with id legion_pair of publish has the if: \`\${{ !cancelled() && steps.pair.outputs.ok == 'true' && needs.legion_build.result == 'success' && false }}\`, where $readers_rule")"
+
+echo "case: a step of a publish chain, an unnamed build step and a confirm reader each skipped"
+root=$(written reader-chain)
+replace "$root/.github/workflows/release.yaml" "steps.legion_pair.outcome == 'success' }}\"" "false }}\""
+run_check "$root"
+check "exits 1 on a chained reader" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "the step with id legion_download of publish has the if: \`\${{ !cancelled() && false }}\`")"
+root=$(written reader-positional)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'      - run: "true"\n        if: "steps.confirm.outputs.release == \'true\'"\n' \
+  $'      - run: "true"\n        if: "false"\n'
+run_check "$root"
+check "exits 1 on a reader the module names by position" "$(is "$status" 1)"
+check "names its position" "$(contains "$out" "step 6 of release_publish has the if: \`false\`, where $readers_rule")"
+root=$(written reader-gone)
+replace "$root/.github/workflows/release.yaml" $'      - name: "Smoke test"\n        if: "steps.version.outputs.skip != \'true\'"\n        run: "true"\n' ''
+run_check "$root"
+check "exits 1 on a reader taken out" "$(is "$status" 1)"
+check "says it is not there" "$(contains "$out" "in .github/workflows/release.yaml's job legion_build, the step \`Smoke test\`, which $readers_rule with the if: .*, is not there")"
+
+echo "case: a new step that reads release"
+root=$(written reader-new)
+printf '      - name: Announce the release\n        if: steps.confirm.outputs.release == %s\n        run: echo released\n' "'true'" \
+  >> "$root/.github/workflows/release-envoy-listener.yaml"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the new reader" \
+  "$(contains "$out" "the step \`Announce the release\` of release_publish has the if: \`steps.confirm.outputs.release == 'true'\`, which reads a checked version step's decision, and $plan_file's DECISION_READERS names no such reader")"
+root=$(written reader-new-job)
+printf '  announce:\n    runs-on: ubuntu-24.04\n    needs: [legion_build]\n    if: needs.legion_build.outputs.skip != %s\n    steps:\n      - run: echo\n' "'true'" \
+  >> "$root/.github/workflows/release.yaml"
+run_check "$root"
+check "exits 1 on a new job that reads the decision" "$(is "$status" 1)"
+check "names the job's if:" "$(contains "$out" "the job's own if: of announce has the if: \`needs.legion_build.outputs.skip != 'true'\`, which reads")"
 
 # The round-4 review's reproduction: the runner starts a service and waits for its health check
 # before the job's first step, so one with a writable host mount can replace host tools - a git
