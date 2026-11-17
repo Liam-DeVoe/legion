@@ -10,19 +10,22 @@ import type {
   IssueDetails,
   RequirementCoverage,
 } from "../../../api/types";
-import { compareTimestamps } from "../../../lib/timestamps";
 import { compiledBlockSchema } from "../../doc/schema";
-import { buildDispatchReference, parseDispatchReference } from "../../refs/routes";
+import {
+  buildDispatchReference,
+  parseDispatchReference,
+  parseNodeReference,
+} from "../../refs/routes";
 import { textSourceOf } from "../../refs/text-references";
 import { checkFacts, resultFacts } from "../check-facts";
-import { inReviewList } from "../decision-review";
+import { decisionNodeChanges, decisionNodes, inReviewList } from "../decision-review";
 import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree";
 import { lensChips, lensDrafts } from "../lenses/lens-drafts";
 import {
   blockAttributeLabel,
+  coverageGapKind,
   type DecisionState,
-  NODE_TYPE_NAMES,
-  NODE_TYPES,
+  type GapKind,
   type NodeType,
 } from "../page-words";
 import {
@@ -35,7 +38,6 @@ import {
   type Draft,
   namedCommit,
   plainWords,
-  requirementGaps,
   type TreeContext,
 } from "../tree-drafts";
 import type { TreeAnswer, TreeAnswerNode, TreeFilter, TreeTuple } from "./tree-read";
@@ -105,7 +107,8 @@ export interface KeptReads {
 /** What a step and a mark read: the words and the names `buildIssueTree` hands in, the page's
  *  other reads by node (`kept`), and the answer, looked up by the read's own ids. */
 export interface TreeDraftContext extends TreeWords {
-  /** The Change each decision node waits on (`decisionNodeChanges`), by the node's read id. */
+  /** The Change each decision node waits on (`decision-review.ts`' `decisionNodeChanges`), by
+   *  the node's read id. */
   readonly changes: ReadonlyMap<string, TreeAnswerNode>;
   /** Whether a draft stands for the node `readId` names: a step drafted it, or drafted a node
    *  the tree draws by the same id before it. While the steps run, the nodes offered so far are
@@ -195,7 +198,7 @@ export function treeDraftsFrom(
     ...context,
     changes: decisionNodeChanges(answer),
     drafted: (readId) => drafts.has(idOf(readId)),
-    kept: keptReads(reads, context),
+    kept: keptReads(reads, context, answer, idOf),
     lineOf: (readId) => {
       const draft = offered ? drafts.get(idOf(readId)) : undefined;
       return draft === undefined ? undefined : context.lineWords(draft);
@@ -281,41 +284,6 @@ export function treeIdOf(answer: TreeAnswer, reads: TreeIdReads): (readId: strin
 }
 
 /**
- * The Change each decision node waits on, by the node's read id: the newest of the comments a
- * person wrote that the read hangs under the decision - a comment anchored inside the decision's
- * words hangs under its node (dispatch://INFRA-1253 R8) - and that were made after the decision's
- * words last changed and after it was last kept. A decision that was replaced takes no change,
- * since nothing waits on it any longer. An agent's comment is no Change, and neither is a comment
- * older than the decision's words: it asked for a change the words have since had.
- *
- * It is `decisionChanges`' rule (`decision-review.ts`) over the read, which places the comment
- * itself, so the outline (`draftDecision`) and the header's count of what waits on the reader
- * read one answer.
- */
-export function decisionNodeChanges(answer: TreeAnswer): ReadonlyMap<string, TreeAnswerNode> {
-  const decisions = new Map<string, TreeAnswerNode>();
-  for (const node of answer.nodes) {
-    if (node.supertag === "decision" && node.replaced !== true) decisions.set(node.id, node);
-  }
-  const changes = new Map<string, TreeAnswerNode>();
-  for (const node of answer.nodes) {
-    const decision = node.parent === null ? undefined : decisions.get(node.parent);
-    if (decision === undefined || node.supertag !== "comment" || node.author?.kind !== "user") {
-      continue;
-    }
-    const since = [decision.changed_at, decision.kept?.kept_at].filter(
-      (moment): moment is string => typeof moment === "string"
-    );
-    if (!since.every((moment) => compareTimestamps(node.made_at, moment) > 0)) continue;
-    const held = changes.get(decision.id);
-    if (held === undefined || compareTimestamps(node.made_at, held.made_at) > 0) {
-      changes.set(decision.id, node);
-    }
-  }
-  return changes;
-}
-
-/**
  * The answer's nodes in the order they are offered to the steps: the read's own walk, a parent
  * before its children, with the nodes that hang from nothing in this issue's tree after the rest,
  * in the read's order among themselves - a node whose parent is in an issue above, which the
@@ -371,7 +339,10 @@ function draftRequirement(
   const coverage = context.kept.requirements.get(draft.id);
   if (coverage !== undefined) {
     draft.counts = { checks: coverage.checks, planTasks: coverage.plan_tasks };
-    draft.gaps = requirementGaps(coverage.gaps ?? [], undefined, false);
+    draft.gaps = (coverage.gaps ?? []).flatMap((line): GapKind[] => {
+      const kind = coverageGapKind(line);
+      return kind === undefined ? [] : [kind];
+    });
   }
   return draft;
 }
@@ -379,10 +350,11 @@ function draftRequirement(
 /**
  * A check or a plan task of this issue: under the parent the read answers, and again under each
  * other requirement of this issue its `serves` tuples name, transcluded there as F places it
- * (root R4); its `needs` tuples are chips, labelled as F labels them. It carries F's two gaps of
- * the chain: a `serves` naming a node that is no requirement, and a plan task naming nothing it
- * serves and nothing it attempts. A check stands as the results read answers it, at the commit
- * the page names, and draws that read's facts; a check that read does not hold has no result.
+ * (root R4); its `needs` tuples are chips, one per task needed (`needsChips`). It carries F's two
+ * gaps of the chain: a `serves` naming a node that is no requirement, and a plan task naming
+ * nothing it serves and nothing it attempts. A check stands as the results read answers it, at
+ * the commit the page names, and draws that read's facts; a check that read does not hold has no
+ * result.
  */
 function draftServing(
   node: TreeAnswerNode,
@@ -414,10 +386,7 @@ function draftServing(
   ) {
     draft.gaps.push("nobody_asked");
   }
-  draft.chips = tupleChips(node, "needs", context).map((chip) => ({
-    ...chip,
-    label: blockAttributeLabel("needs"),
-  }));
+  draft.chips = needsChips(node, context);
   if (node.supertag === "check") {
     const check = context.kept.checks.get(draft.id);
     draft.state =
@@ -578,16 +547,19 @@ function draftChild(
 }
 
 /** A draft of `node` as every kind starts one: its tree id, its words and their reading, its
- *  address (`referenceOf`), and the document a typed block is written in, which its body's links
- *  resolve against. The order and the read id are `treeDraftsFrom`'s. */
+ *  address (`referenceOf`), and, where the read sent a reading, the document a typed block is
+ *  written in, which the links of the body drawn from that reading resolve against. The order
+ *  and the read id are `treeDraftsFrom`'s. */
 function draftOf(node: TreeAnswerNode, type: NodeType, context: TreeDraftContext): Draft {
   const draft = blank(context.treeIdOf(node.id), type, 0);
   draft.text = node.text;
-  if (node.text_tree !== undefined) draft.tree = node.text_tree;
   const reference = referenceOf(node, context);
   if (reference !== undefined) draft.reference = reference;
-  if (node.document !== undefined) {
-    draft.source = textSourceOf("artifact", node.document.artifact_id);
+  if (node.text_tree !== undefined) {
+    draft.tree = node.text_tree;
+    if (node.document !== undefined) {
+      draft.source = textSourceOf("artifact", node.document.artifact_id);
+    }
   }
   return draft;
 }
@@ -661,6 +633,49 @@ function tupleChips(node: TreeAnswerNode, kind: string, context: TreeDraftContex
 }
 
 /**
+ * The chips of what a check or a plan task `needs`, one per task needed (dispatch://INFRA-1196
+ * decision 143), in the order its tuples first name each, labelled as F labels them. The server
+ * accepts one task needed by a pinned and an unpinned pointer at once (`#b-a1@v1 #b-a1`), and
+ * both need the one task, so the chips are told apart by what they name with any version pin
+ * dropped (`pinDropped`). A task named both ways is drawn by its unpinned chip, which names the
+ * task's current words; one only pinned ties name, by the first one's.
+ */
+function needsChips(node: TreeAnswerNode, context: TreeDraftContext): NodeChip[] {
+  const needed = new Map<string, { readonly chip: NodeChip; readonly pinned: boolean }>();
+  for (const tuple of context.tuplesFrom(node.id)) {
+    const chip = tuple.kind === "needs" ? chipTo(tuple.to, context) : undefined;
+    if (chip === undefined) continue;
+    const { pinned, target } = pinDropped(chip.ref);
+    const held = needed.get(target);
+    if (held === undefined || (held.pinned && !pinned)) needed.set(target, { chip, pinned });
+  }
+  return [...needed.values()].map(({ chip }) => ({
+    ...chip,
+    label: blockAttributeLabel("needs"),
+  }));
+}
+
+/**
+ * What `reference` names with any version pin dropped, a block's (`#b-a1@v1`) and a document's
+ * (`artifact/plan-md@v1`), as the reference its route writes with none (`target`), and whether
+ * it pinned one (`pinned`). A reference that does not parse is its own target, pinning nothing.
+ */
+function pinDropped(reference: string): { readonly pinned: boolean; readonly target: string } {
+  const route = parseNodeReference(reference);
+  if (route === undefined) return { pinned: false, target: reference };
+  const block = "block" in route ? route.block : undefined;
+  const version = "version" in route ? route.version : undefined;
+  return {
+    pinned: block?.pin !== undefined || version !== undefined,
+    target: buildDispatchReference({
+      ...route,
+      ...(block === undefined ? {} : { block: { id: block.id } }),
+      ...(version === undefined ? {} : { version: undefined }),
+    }),
+  };
+}
+
+/**
  * The chip naming the node `readId` names: addressed by that node's address (`referenceOf`, and an
  * issue's own), and named by the node the answer holds, by F's rule for the kind of target it is
  * (`chipName`). Where the answer holds no words for it, or does not hold it and the tuple names it
@@ -683,19 +698,17 @@ function chipTo(readId: string, context: TreeDraftContext): NodeChip | undefined
 }
 
 /** The name a chip draws for a node the answer holds, by F's rule for each kind of target
- *  (`treeContext`): a question's, a comment's and a message's stored words read to plain words
- *  (`plainWords`), an issue's title as it stands, and a block's first line from its reading
- *  (`chipLine`), else the page's word for its kind for a block of this issue and nothing for
- *  another issue's, whose kind no read of this page names. */
+ *  (`treeContext`), from the node's own words: a question's, a comment's and a message's stored
+ *  words read to plain words (`plainWords`), an issue's title as it stands, and a block's first
+ *  line from its reading (`chipLine`). `""` where the node holds no such words - a block the read
+ *  sent no reading for, one whose reading holds no words - which the batched reference read then
+ *  names (`chipTo`), by the page's word for its kind for a block of this issue. */
 function chipName(target: TreeAnswerNode, context: TreeDraftContext): string {
   if (target.supertag === "ask" || target.supertag === "comment" || target.supertag === "message") {
     return plainWords(target.text);
   }
   if (target.supertag === "issue") return target.text;
-  const line = target.text_tree === undefined ? "" : context.chipLine(target.text_tree);
-  if (line !== "" || isForeign(target, context.key)) return line;
-  const types: readonly string[] = NODE_TYPES;
-  return types.includes(target.supertag) ? NODE_TYPE_NAMES[target.supertag as NodeType] : "";
+  return target.text_tree === undefined ? "" : context.chipLine(target.text_tree);
 }
 
 /** Whether `node` names anything by `kind`: a tuple of that kind, or its attribute of that name,
@@ -726,9 +739,17 @@ function nodesById(answer: TreeAnswer): Map<string, TreeAnswerNode> {
   return new Map(answer.nodes.map((node) => [node.id, node]));
 }
 
-/** The page's other reads, each row by the tree id of the node it tells about (`KeptReads`). */
-function keptReads(reads: IssueTreeReads, context: TreeContext): KeptReads {
+/** The page's other reads, each row by the tree id of the node it tells about (`KeptReads`). A
+ *  decision's row is the one whose node the read answers (`decisionNodes`). */
+function keptReads(
+  reads: IssueTreeReads,
+  context: TreeContext,
+  answer: TreeAnswer,
+  idOf: (readId: string) => string
+): KeptReads {
   const checks = reads.results?.checks ?? [];
+  const decisions = reads.decisions?.decisions ?? [];
+  const nodes = decisionNodes(decisions, answer);
   return {
     asks: indexBy([...asksOf(reads).values()], (ask) => askNodeId(ask, context.slugOf)),
     checks: indexBy(checks, (check) => {
@@ -737,9 +758,10 @@ function keptReads(reads: IssueTreeReads, context: TreeContext): KeptReads {
     }),
     children: indexBy(reads.issue.children ?? [], (child) => child.key),
     commit: namedCommit(checks),
-    decisions: indexBy(reads.decisions?.decisions ?? [], (decision) =>
-      context.nodeIdOf(decision.ref)
-    ),
+    decisions: indexBy(decisions, (decision) => {
+      const node = nodes.get(decision.ref);
+      return node === undefined ? undefined : idOf(node.id);
+    }),
     requirements: indexBy(reads.coverage?.requirements ?? [], (requirement) =>
       blockNodeId(context.specSlug, requirement.block_id)
     ),
@@ -781,6 +803,37 @@ function askNodeId(ask: TreeAsk, slugOf: (artifactId: string) => string | undefi
   const slug = ask.block_artifact?.slug ?? slugOf(ask.artifact_id ?? "");
   const block = ask.block_id ?? undefined;
   return slug !== undefined && block !== undefined ? blockNodeId(slug, block) : ask.id;
+}
+
+/**
+ * The node each ask of the issue is drawn by, by the ask's own id, for each ask a draft stands
+ * for: an ask the page keeps (`asksOf`) by the node id F drew it by (`askNodeId`), and an ask
+ * node of the answer by its tree id. It is how a decision of today's decisions read names the
+ * question it answers (`Decision.asks`, `tree-drafts.ts`'s `addDecisions`).
+ */
+export function askNodeIds(
+  drafts: ReadonlyMap<string, Draft>,
+  answer: TreeAnswer,
+  reads: TreeIdReads
+): ReadonlyMap<string, string> {
+  const idOf = treeIdOf(answer, reads);
+  const slugs = new Map(
+    (reads.issue.artifacts ?? []).map((artifact) => [artifact.id, artifact.slug])
+  );
+  const places = new Map<string, string>();
+  for (const node of answer.nodes) {
+    // An ask node that is no typed block is the ask itself, by its own id.
+    if (node.supertag === "ask" && node.document === undefined) {
+      places.set(node.id, idOf(node.id));
+    }
+  }
+  for (const ask of asksOf(reads).values()) {
+    places.set(
+      ask.id,
+      askNodeId(ask, (artifactId) => slugs.get(artifactId))
+    );
+  }
+  return new Map([...places].filter(([, id]) => drafts.has(id)));
 }
 
 /** A block as the blocks read answers one, with the words the tree read answers beside it, so a

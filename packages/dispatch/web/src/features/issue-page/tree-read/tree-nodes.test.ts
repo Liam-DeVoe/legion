@@ -1,5 +1,7 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import { QueryClient } from "@tanstack/react-query";
 
+import { api } from "../../../api/client";
 import type {
   Artifact,
   Ask,
@@ -11,9 +13,10 @@ import type {
   IssueDetails,
   RequirementCoverage,
 } from "../../../api/types";
-import { decisionChanges } from "../decision-review";
+import { decisionChanges, decisionNodeChanges } from "../decision-review";
 import {
   assemble,
+  buildIssueTree,
   drawnLine,
   firstLineOf,
   type IssueTreeReads,
@@ -24,14 +27,13 @@ import {
 import { blockNodeId, treeContext } from "../tree-drafts";
 import {
   blocksOfRole,
-  decisionNodeChanges,
   type TreeDraftMark,
   type TreeWords,
   treeDraftMarks,
   treeDraftsFrom,
   treeIdOf,
 } from "./tree-nodes";
-import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
+import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode, type TreeTuple } from "./tree-read";
 
 /**
  * The tree read's answer as F's drafts (`dispatch://INFRA-4062/artifact/plan-md#b-t4`). Each case
@@ -223,8 +225,8 @@ function placementsOf(root: TreeNode, id: string): { parent: string; node: TreeN
 }
 
 /** Every node of the tree, the root first, each before its children. */
-function idsOf(root: TreeNode): string[] {
-  return [root.id, ...root.children.flatMap(idsOf)];
+function nodesOf(root: TreeNode): TreeNode[] {
+  return [root, ...root.children.flatMap(nodesOf)];
 }
 
 function requirement(id: string): RequirementCoverage {
@@ -471,7 +473,7 @@ test("a tuple between two nodes becomes F's chip and placement", () => {
 // draft and no row, and the answer the page keeps (`reads.tree`) still holds each of them whole,
 // its state and its visibility with it, for the parts that draw them.
 test("a node of a kind the page does not draw reaches reads.tree and draws no row", () => {
-  const reads = {
+  const reads: IssueTreeReads & { readonly tree: TreeAnswer } = {
     issue: issueDetails(),
     tree: answer(
       [
@@ -493,12 +495,12 @@ test("a node of a kind the page does not draw reaches reads.tree and draws no ro
     ),
   };
   const held = structuredClone(reads.tree);
-  const context = naming(reads);
-  const drafts = treeDraftsFrom(reads.tree, reads, context);
-  const root = assemble(reads.issue, [...drafts.values()], context.chipOf);
+  const root = buildIssueTree(reads);
 
-  expect([...drafts.values()].map((draft) => draft.readId)).toEqual(["r1"]);
-  expect(idsOf(root)).toEqual([KEY, blockNodeId("spec", "r1")]);
+  expect(nodesOf(root).map((one) => [one.id, one.readId])).toEqual([
+    [KEY, undefined],
+    [blockNodeId("spec", "r1"), "r1"],
+  ]);
   expect(reads.tree).toEqual(held);
   expect(
     reads.tree.nodes.map((one) => [one.id, one.supertag, one.state, one.visibility])
@@ -626,11 +628,13 @@ test("a Change is the comment the read hangs under its decision", () => {
 });
 
 // R2's second difference (decision 128): an ask block carrying `shaped` ties draws them as chips
-// on its row, each naming a node the ask shaped by that node's line, beside how the asks read
-// says it stands.
+// on its row in the outline `buildIssueTree` draws, each naming a node the ask shaped by that
+// node's line, beside how the asks read says it stands.
 test("an ask's shaped ties are chips on its row, each naming a node the ask shaped", () => {
-  const { root } = drawn(
-    answer(
+  const root = buildIssueTree({
+    asks: [question("ask-1", { artifact_id: SPEC.id, block_id: "q1", state: "answered" })],
+    issue: issueDetails(),
+    tree: answer(
       [
         block("q1", "ask", KEY, SPEC, 0),
         block("r1", "requirement", KEY, SPEC, 1),
@@ -638,11 +642,7 @@ test("an ask's shaped ties are chips on its row, each naming a node the ask shap
       ],
       [tuple("shaped", "q1", "r1"), tuple("shaped", "q1", "r2")]
     ),
-    {
-      asks: [question("ask-1", { artifact_id: SPEC.id, block_id: "q1", state: "answered" })],
-      issue: issueDetails(),
-    }
-  );
+  });
 
   expect(nodeOf(root, blockNodeId("spec", "q1"))).toMatchObject({
     chips: [
@@ -666,8 +666,10 @@ test("an ask's shaped ties are chips on its row, each naming a node the ask shap
 
 // R3, decision 65: a decision of today's decisions read - a section of `decisions.md`, which no
 // node of the answer holds - finds its Change by its words, with no block of the decisions
-// document read: the change is the first decision whose words hold the anchor's quote, and a
-// comment quoting words no decision holds is no change.
+// document read: the change is the first decision whose words hold the anchor's quote. The read
+// hangs the comment under the issue, since no node holds the decision, and the outline draws it
+// under the decision it changes, which reads Change requested; a comment quoting words no
+// decision holds is no change and stays where the read hangs it.
 test("a decisions.md section finds its Change by its words", () => {
   const section = (id: string, heading: string, words: string): Decision => ({
     asks: [],
@@ -715,14 +717,32 @@ test("a decisions.md section finds its Change by its words", () => {
   });
   const keep = section("d1", "Keep it", "Keep the model pure.");
   const draw = section("d2", "Draw it", "Draw it once.");
+  const comments = [
+    anchored("c-change", "Draw it once."),
+    anchored("c-stray", "Words no decision holds."),
+  ];
+  const decisions = {
+    decisions: [keep, draw],
+    document: `dispatch://${KEY}/artifact/decisions-md`,
+  };
 
-  const changes = decisionChanges(
-    { decisions: [keep, draw], document: `dispatch://${KEY}/artifact/decisions-md` },
-    [anchored("c-change", "Draw it once."), anchored("c-stray", "Words no decision holds.")],
-    issueDetails().artifacts,
-    undefined
-  );
+  const changes = decisionChanges(decisions, comments, issueDetails().artifacts, undefined);
   expect([...changes].map(([ref, comment]) => [ref, comment.id])).toEqual([[draw.ref, "c-change"]]);
+  const root = buildIssueTree({
+    comments,
+    decisions: { ...decisions, open_questions: [] },
+    issue: issueDetails(),
+    tree: answer(
+      comments.map((one) =>
+        node(one.id, "comment", KEY, { author: one.author, made_at: one.created_at })
+      )
+    ),
+  });
+  expect(
+    ["c-change", "c-stray"].map((id) => placementsOf(root, id).map((one) => one.parent))
+  ).toEqual([[blockNodeId("decisions-md", "d2")], [KEY]]);
+  expect(nodeOf(root, blockNodeId("decisions-md", "d2"))?.state).toBe("change_requested");
+  expect(nodeOf(root, blockNodeId("decisions-md", "d1"))?.state).toBe("waiting_review");
 });
 
 // R5: a role's blocks come from the tree read in the shape the blocks read answered them: the
@@ -829,5 +849,60 @@ test("a draft carries its read id, and the context answers its tree id and its l
     ]);
   } finally {
     marks.splice(marks.indexOf(probe), 1);
+  }
+});
+
+// R1: the tree read asks for its first page, then for the page its cursor names, in turn, and
+// answers once the last page has answered, the pages merged, so the tree is built once and never
+// from part of the walk: while the second page is out the read holds no answer. The tree then
+// holds each node of both pages once, a node of the second page under its parent on the first,
+// and a tuple whose near end is on the second page places it.
+test("the cursor's pages are read in turn and the tree is built once", async () => {
+  const first: TreeAnswer = {
+    ...answer([block("r1", "requirement", KEY, SPEC, 0), node("c1", "comment", "r1")]),
+    cursor: "page-2",
+  };
+  const second: TreeAnswer = {
+    converted: true,
+    cursor: null,
+    nodes: [
+      block("t1", "plan_task", "r1", PLAN, 0),
+      node("c2", "comment", "r1", { made_at: "2026-11-06T00:00:00Z" }),
+    ],
+    tree: "artifact-tree",
+    tuples: [tuple("serves", "t1", "r1")],
+    view_of: null,
+  };
+  // The second page answers when the case releases it, and says when it was asked for.
+  const later = Promise.withResolvers<TreeAnswer>();
+  const asked = Promise.withResolvers<void>();
+  const read = spyOn(api, "getIssueTree").mockImplementation(async (_key, page) => {
+    if (page?.cursor === undefined) return first;
+    asked.resolve();
+    return later.promise;
+  });
+  try {
+    const client = new QueryClient();
+    const query = issueTreeQuery(KEY);
+    const reading = client.fetchQuery(query);
+    await asked.promise;
+    expect(read.mock.calls).toEqual([
+      [KEY, {}],
+      [KEY, { cursor: "page-2" }],
+    ]);
+    expect(client.getQueryData(query.queryKey)).toBeUndefined();
+
+    later.resolve(second);
+    const root = buildIssueTree({ issue: issueDetails(), tree: await reading });
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(nodesOf(root).map((one) => one.id)).toEqual([
+      KEY,
+      blockNodeId("spec", "r1"),
+      "c1",
+      blockNodeId("plan-md", "t1"),
+      "c2",
+    ]);
+  } finally {
+    read.mockRestore();
   }
 });

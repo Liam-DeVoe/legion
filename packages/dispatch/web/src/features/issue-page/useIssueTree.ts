@@ -23,6 +23,7 @@ import {
 } from "./issue-tree";
 import { usePublishReferenceNames } from "./reference-names";
 import { citedReferences } from "./row-references";
+import { useTreeRead } from "./tree-read/tree-read";
 
 /** The issue's tree, and how far the reads it is built from have got. */
 export interface IssueTreeView {
@@ -155,6 +156,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // one read of who is signed in, so it costs no request of its own.
   const who = useQuery(whoAmIQuery());
   const viewer = who.data?.login;
+  const answer = useTreeRead(issue).answer;
   const documentIds = treeDocumentIds(issue);
   // `combine` is what keeps one value for every document's blocks: TanStack holds its answer and
   // replaces it only when a document's own read changes, where a map over the results would be a
@@ -183,7 +185,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       comments: comments.data,
       coverage: coverage.data,
       decisions: decisions.data,
-      documents: documents.blocks,
+      tree: answer,
       issue,
       messages: messages.data,
       results: results.data,
@@ -194,7 +196,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       comments.data,
       coverage.data,
       decisions.data,
-      documents.blocks,
+      answer,
       issue,
       messages.data,
       results.data,
@@ -278,17 +280,15 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // names answer there is nothing to publish.
   const names = useMemo(
     () =>
-      named === undefined
-        ? NO_TARGET_NAMES
-        : targetNames({ documents: documents.blocks, issue, targets: named }),
-    [documents.blocks, issue, named]
+      named === undefined ? NO_TARGET_NAMES : targetNames({ issue, targets: named, tree: answer }),
+    [answer, issue, named]
   );
   const ambiguous = useMemo(
     () =>
       named === undefined
         ? NO_AMBIGUOUS_TARGETS
-        : ambiguousTargets({ documents: documents.blocks, issue, targets: named }),
-    [documents.blocks, issue, named]
+        : ambiguousTargets({ issue, targets: named, tree: answer }),
+    [answer, issue, named]
   );
   usePublishReferenceNames(names, ambiguous);
   const root = useMemo(

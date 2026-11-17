@@ -32,6 +32,7 @@ import {
 import { presetView } from "../presets";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "../reference-names";
 import { decisionBehind } from "../tree-keys";
+import type { TreeAnswerNode } from "../tree-read/tree-read";
 import { check, checkNode, result } from "../verification-filter/verification-fixtures";
 import { SpecFilterBody } from "./SpecFilterBody";
 import {
@@ -994,11 +995,45 @@ test("w on a statement goes to the cell beside it, whichever decision the tree's
     }),
     decision({ block_id: "d5", kind: "agent", links: [shaped(statementRef("r4"))] }),
   ];
+  // The tree read's answer: the spec's two statements, and the question the person's decision
+  // answers, each under the issue.
+  const answered = (
+    id: string,
+    supertag: string,
+    extra: Partial<TreeAnswerNode> = {}
+  ): TreeAnswerNode => ({
+    attributes: {},
+    author: null,
+    id,
+    made_at: "2026-11-05T00:00:00Z",
+    parent: KEY,
+    rank: null,
+    state: "live",
+    supertag,
+    text: "",
+    visibility: "project",
+    ...extra,
+  });
   const tree = buildIssueTree({
     asks: [askRead("ask-1", "Keep both statements.")],
     coverage: coverageRead(["r3", "r4"]),
     decisions: decisionsRead(made),
     issue: issueDetails(),
+    tree: {
+      converted: false,
+      cursor: null,
+      nodes: [
+        ...["r3", "r4"].map((id, position) =>
+          answered(id, "requirement", {
+            document: { artifact_id: "artifact-spec", position, slug: "spec" },
+          })
+        ),
+        answered("ask-1", "ask"),
+      ],
+      tree: null,
+      tuples: [],
+      view_of: null,
+    },
   });
   expect(decisionBehind(tree, "spec#b-r4")?.id).toBe("decisions-md#b-d5");
   const user = userEvent.setup();
