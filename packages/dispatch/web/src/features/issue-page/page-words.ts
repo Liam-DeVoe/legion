@@ -379,7 +379,7 @@ export const VERIFICATION_WORDS = freeze({
   earlier_many: "earlier results",
   earlier_one: "earlier result",
   /** After the count of the checks the coverage read counts for a statement beyond those the
-   *  view draws with it, which serve it from an issue under this one (part V's R9). */
+   *  view draws with it, which serve it from an issue under this one. */
   elsewhere_many: "more checks elsewhere",
   elsewhere_one: "more check elsewhere",
   /** The heading over each check's latest result. */

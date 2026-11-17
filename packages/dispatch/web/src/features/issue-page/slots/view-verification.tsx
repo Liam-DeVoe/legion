@@ -20,15 +20,15 @@ import {
 
 /** Filled by INFRA-1196 part V, "The Verification view". */
 export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
-  // The Verification view (part V's R1): the issue's one tree as the Verification view leaves
-  // it, each statement with the checks that serve it and each check beside its newest result.
+  // The Verification view: the issue's one tree as the Verification view leaves it, each statement
+  // with the checks that serve it and each check beside its newest result.
   const { hash, search } = useLocation();
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
   const { root } = useIssueTree(issue);
   const { checks, reads } = useVerificationReads(issue.key);
   // The address's own node is resolved against the whole tree and then kept by the view, so an
-  // address that names a node the view holds no row for still draws it (R1), as the outline
-  // resolves it (part I's `useAddressTarget`, decision 94).
+  // address that names a node the view holds no row for still draws it, as the outline resolves
+  // it (`useAddressTarget`).
   const { named } = useAddressTarget(root, address);
   const view = useMemo(
     () => presetView(root, "verification", address.filter, named),
@@ -42,7 +42,7 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
   );
   return (
     <NoTooltips>
-      {/* The stage's column, which the body draws its own measure in (part V's R6). */}
+      {/* The stage's column, which the body draws its own measure in. */}
       <div className="flex w-full min-w-0 flex-col">
         <VerificationFilterBody
           checks={checks}
@@ -64,20 +64,20 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
  * `reads` of `VerificationFilterBody`): the coverage read, the results read with the issue's
  * checks, and the blocks read of the Verification document, and how the three stand. They are
  * the slot's own observers, apart from `useIssueTree`'s of the same keys, so what they fetch is
- * read alone (the architect's decision 180 on dispatch://INFRA-1196).
+ * read by their own options alone.
  */
 export function useVerificationReads(issueKey: string): {
   checks: readonly CheckBlock[];
   reads: VerificationReads;
 } {
   // The coverage read, and the issue's checks with the results recorded against them, under the
-  // keys `useIssueTree.ts` already reads them with, so the view sends no request of its own
-  // (R1). The results read holds a result's commit, its verdict and its withdrawal, which the
-  // tree does not carry (`verification-filter/statement-state.ts`). Staleness is per observer
-  // (the architect's decision 180): with the app's 30 s (`main.tsx`), pressing the view more
-  // than 30 s after the page read them read both again. Each holds what it read until an event
-  // refreshes its key (`staleTime: Infinity`), and the window's focus asks again only a read in
-  // error (`refetchFailedOnFocus`), as the page's reference reads do.
+  // keys `useIssueTree.ts` already reads them with, so the view sends no request of its own. The
+  // results read holds a result's commit, its verdict and its withdrawal, which the tree does
+  // not carry (`verification-filter/statement-state.ts`). Staleness is per observer: with the
+  // app's 30 s (`main.tsx`), pressing the view more than 30 s after the page read them read both
+  // again. Each holds what it read until an event refreshes its key (`staleTime: Infinity`), and
+  // the window's focus asks again only a read in error (`refetchFailedOnFocus`), as the page's
+  // reference reads do.
   const coverage = useQuery({
     ...issueCoverageQuery(issueKey),
     staleTime: Number.POSITIVE_INFINITY,
@@ -92,18 +92,17 @@ export function useVerificationReads(issueKey: string): {
   // The blocks read of the Verification document too: a check learns the statements it serves
   // from its block's `serves` pointer, which only that read carries (`tree-drafts.ts`). Drawn
   // before it answers, every check would stand at the table's foot as one that serves no
-  // statement, every statement would read Unknown, and R9's line would call the issue's own
-  // checks "elsewhere" (part V's R1 and R9). The results read answers the checks of one
-  // document, the issue's Verification document (`api/results.go`'s `verificationDocument`),
-  // which each check names (`CheckBlock.artifact_id`) and whose blocks `useIssueTree` reads; no
-  // other document's blocks place a check. The slot watches that read under the same key with
-  // an observer that is never enabled, so it sends no request of its own (R1) and sees whatever
-  // `useIssueTree`'s observer fetches; its `refetch` still fetches, which is what Retry asks.
-  // Where the results read holds no check no blocks read is needed, and the observer of no
-  // document never fetches. It is this one read and not `useIssueTree`'s `blocksHeld`
-  // (decision 98), which counts all four of the tree's documents: a refused plan or decisions
-  // read must not hold this view empty, and the failed line needs this read's own error and
-  // Retry (the architect's decision 148).
+  // statement, every statement would read Unknown, and the line that counts a statement's checks
+  // elsewhere would call the issue's own checks "elsewhere". The results read answers the checks
+  // of one document, the issue's Verification document (`api/results.go`'s
+  // `verificationDocument`), which each check names (`CheckBlock.artifact_id`) and whose blocks
+  // `useIssueTree` reads; no other document's blocks place a check. The slot watches that read
+  // under the same key with an observer that is never enabled, so it sends no request of its own
+  // and sees whatever `useIssueTree`'s observer fetches; its `refetch` still fetches, which is
+  // what Retry asks. Where the results read holds no check no blocks read is needed, and the
+  // observer of no document never fetches. It is this one read and not `useIssueTree`'s
+  // `blocksHeld`, which counts all four of the tree's documents: a refused plan or decisions read
+  // must not hold this view empty, and the failed line needs this read's own error and Retry.
   // This observer reads the key `useIssueTree` fills and fetches nothing of its own.
   const documentId = checks[0]?.artifact_id;
   const blocks = useQuery({ ...artifactBlocksQuery(documentId ?? ""), enabled: false });
@@ -115,9 +114,8 @@ export function useVerificationReads(issueKey: string): {
   // and the reader's presses with it. A read has failed where it holds no data and its status
   // is error (`failedWithNothing`): it was refused before it first answered. The view draws its
   // rows only once all three have answered, so it never says that an issue has no checks before
-  // they are in (part V's departure 6); where a read failed it says which, each with a Retry
-  // that asks that read alone again, rather than draw an empty view (the architect's decisions
-  // 117 and 126 on dispatch://INFRA-1196).
+  // they are in; where a read failed it says which, each with a Retry that asks that read alone
+  // again, rather than draw an empty view that gives the reader nothing to act on.
   const answered =
     coverage.data !== undefined &&
     results.data !== undefined &&
@@ -145,17 +143,15 @@ export function useVerificationReads(issueKey: string): {
 
 /** Window focus asks a read again only while it is in error, so a read refused past its
  *  retries recovers on the open page while one that answered stays quiet, and it is asked even
- *  over the answer it holds, which no age makes stale (`staleTime: Infinity`). A copy of
- *  `refetchFailedOnFocus` in `features/refs/reference-target.ts`, which part F exports (its
- *  R12): the slot imports F's once F's export is under this branch (the architect's decision 94
- *  rule for copies). */
+ *  over the answer it holds, which no age makes stale (`staleTime: Infinity`). A copy of the
+ *  unexported `refetchFailedOnFocus` of `features/refs/reference-target.ts`: the slot imports
+ *  that one once a branch that exports it is under this one, and this copy goes. */
 const refetchFailedOnFocus = (query: { readonly state: { readonly status: QueryStatus } }) =>
   query.state.status === "error" ? "always" : false;
 
 /** Whether `read` failed with no answer held: a read asked again that fails keeps the answer it
  *  had, which the view still draws from, so only a read that left nothing to draw says it
- *  failed (the architect's decisions 98 and 117 on dispatch://INFRA-1196), as part J's Spec
- *  view reads its own. */
+ *  failed, as the Spec view reads its own. */
 function failedWithNothing(read: { readonly data: unknown; readonly isError: boolean }): boolean {
   return read.isError && read.data === undefined;
 }

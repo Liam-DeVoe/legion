@@ -18,10 +18,9 @@ import { longWords } from "./issue-page-g";
 import { openPreset } from "./issue-page-i";
 
 /**
- * How part V's rows read the Verification view of the new issue page (dispatch://INFRA-1196
- * part V, `e2e/issue-page-v.e2e.ts`): the readers that D's `e2e/issue-page.ts`, G's
- * `e2e/issue-page-g.ts` and I's `e2e/issue-page-i.ts` do not hold (decision 2 of the parts). No
- * later part changes this file.
+ * How the rows of `e2e/issue-page-v.e2e.ts` read the Verification view of the new issue page:
+ * the readers that `e2e/issue-page.ts`, `e2e/issue-page-g.ts` and `e2e/issue-page-i.ts` do not
+ * hold. They are a file of their own, so the rows of the page's other views never change it.
  *
  * What the view draws (`verification-filter/VerificationFilterBody.tsx`), its body
  * `[data-verification-body]`:
@@ -306,7 +305,7 @@ export async function overlappingTexts(page: Page): Promise<Overlap[]> {
   return read.found;
 }
 
-/** How the view's body and its table stand at one width (part V's R6), in CSS pixels. */
+/** How the view's body and its table stand at one width, in CSS pixels. */
 export interface VerificationFrame {
   /** `[data-verification-body]`: its width, its computed top and bottom margins, and the width
    *  of the element around it, which is the stage's column. */
@@ -395,7 +394,7 @@ export async function checkLegendCounts(page: Page): Promise<Record<string, numb
 }
 
 /** How many shapes the view's body draws, and the token of each one it draws with no box,
- *  which no reader sees (R2: with forced colours each state keeps its shape). Fails where the
+ *  which no reader sees: with forced colours each state must keep its shape. Fails where the
  *  view draws no card. */
 export async function glyphsWithNoBox(
   page: Page
@@ -431,7 +430,7 @@ export interface MarkPaint {
 
 /**
  * Whether each word and shape that tells a state apart in the view's cards is painted where a
- * reader sees it (part V's R2: with forced colours each state keeps its word and its shape).
+ * reader sees it: with forced colours each state must keep its word and its shape.
  * What a mark says and which shape it is are the page's markup, which forced colours never
  * change, so this reads what is painted: the page renders the mark (`checkVisibility`, its
  * `visibility` and `opacity` read too), it has a box of some size, and its colour is not the
@@ -505,10 +504,10 @@ export function linkLook(link: Locator): Promise<LinkLook> {
 }
 
 /**
- * A walk by Tab alone (part V's R8): each call presses Tab until the control it names holds the
- * keyboard focus and answers how many presses that took, and the walk presses at most `presses`
- * times over all its calls. So a row names the controls in the order Tab must reach them, and
- * fails with the message of the first one Tab does not reach in what is left of the presses.
+ * A walk by Tab alone: each call presses Tab until the control it names holds the keyboard focus
+ * and answers how many presses that took, and the walk presses at most `presses` times over all
+ * its calls. So a row names the controls in the order Tab must reach them, and fails with the
+ * message of the first one Tab does not reach in what is left of the presses.
  */
 export function tabWalk(
   page: Page,
@@ -636,11 +635,11 @@ export async function openSettledView(page: Page, seeded: WholeIssueSeed): Promi
 /** The block ids of statements A, B and C of row 3's spec, and of the issue's one check. */
 const LINKED_BLOCKS = { a: "r-a", b: "r-b", c: "r-c", check: "c-linked" } as const;
 
-/** Statement A: 200 words, which the view cuts at six lines (part V's R5). */
+/** Statement A: 200 words, which the view cuts at six lines. */
 const STATEMENT_A_WORDS = longWords("stated", 200);
 
 /** Statement B: more than 32 characters, so the line that names it by its first words cuts
- *  them at a word (part V's R7, G's `chipWords`). */
+ *  them at a word (`chipWords`). */
 export const STATEMENT_B_WORDS =
   "The check that serves the first statement serves this one as well.";
 
@@ -660,14 +659,14 @@ export interface LinkedChecksSeed {
     readonly c: string;
     readonly check: string;
   };
-  /** Statement B's `dispatch://` address, which the check's words cite. */
+  /** The `dispatch://` address of statement B, which the check's words cite. */
   readonly referenceToB: string;
 }
 
 /**
- * Row 3's issue (c-view of dispatch://INFRA-3936): a spec of statements A (200 words), B and C;
- * a Verification document with one check that serves A and B, whose words hold a markdown link
- * to the runbook and B's own `dispatch://` address, with one result an agent's session
+ * The issue row 3 of `e2e/issue-page-v.e2e.ts` reads: a spec of statements A (200 words), B and
+ * C; a Verification document with one check that serves A and B, whose words hold a markdown
+ * link to the runbook and the `dispatch://` address of B, with one result an agent's session
  * recorded; and a child whose Verification document holds one check that serves C. A `serves`
  * is written as `verificationDocument` writes one, `dispatch://<key>/spec#b-<id>`. The seed
  * waits until the coverage read counts one check for each statement, the child's included, so

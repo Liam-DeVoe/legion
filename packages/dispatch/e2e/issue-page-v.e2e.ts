@@ -76,13 +76,13 @@ import { expect, type Route, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 
 /**
- * Part V's rows of the new issue page (dispatch://INFRA-3936, part V of dispatch://INFRA-1196):
- * the Verification view, read on the real stack. Each row turns the new page on for its reader
- * with D's `phase`, seeds what it reads, and reads the view's cards through this part's
- * `e2e/issue-page-v.ts`, whose measures fail where the view draws no card.
+ * The rows of the new issue page's Verification view, read on the real stack. Each row turns the
+ * new page on for its reader with `phase` (`e2e/issue-page.ts`), seeds what it reads, and reads
+ * the view's cards through `e2e/issue-page-v.ts`, whose measures fail where the view draws no
+ * card.
  *
- * Rows 1 and 2 come from the checkpoint's `e2e/issue-layout.e2e.ts`, and rows 3 and 4 are new,
- * each under the title its check names (`verification.md` of dispatch://INFRA-3936, c-view).
+ * Rows 1 and 2 come from an earlier `e2e/issue-layout.e2e.ts`, and rows 3 and 4 are new, each
+ * under the title the Verification document names it by.
  */
 
 /** The issue's results read, which row 1 rewrites to draw the seventh state. */
@@ -109,15 +109,15 @@ function recordPass(seeded: WholeIssueSeed, observed: string, screenshots?: stri
   );
 }
 
-// c-view, row 1. The body the Verification view draws is `verification-filter/`: each statement
-// with the checks that serve it, each check beside its newest result, and its earlier results
-// folded to one line (ruling 6 of build-rulings-md, the tester's F15). Two of the seven states
+// Row 1. The body the Verification view draws is `verification-filter/`: each statement with
+// the checks that serve it, each check beside its newest result, and its earlier results folded
+// to one line, as the approved picture draws one result for each check. Two of the seven states
 // the seed cannot make, so this row makes them: `retracted` by withdrawing every result of one
 // check, and `unreadable` by taking `pass_stands` out of the results answer in a route handler
 // of its own, which is the one way a page meets a server that does not send it. The seeded
 // Verification document holds no picture, so the row records a result carrying the issue's own
-// uploaded shot. It reads too the view's measure at each break (part V's R6), the legend's
-// counts, the facts opening on the focus and not on hover (R5), and the forced-colours marks.
+// uploaded shot. It reads too the view's measure at each break, the legend's counts, the facts
+// opening on the focus and not on hover, and the forced-colours marks.
 // Each load's cards are counted before the page's tree is read, so at a base whose slot draws
 // nothing the row fails on its own message.
 // SLOW(>=2s): a whole seeded issue with one result recorded and another withdrawn, then seven
@@ -206,12 +206,12 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
         `two pieces of text are drawn over each other at ${width} px`
       ).toEqual([]);
 
-      // The view's measure (part V's R6). The document is no wider than the screen. From 761 px
-      // up the body is 1180 px wide, or its column less 48 px where that is less, with 22 px
-      // above it and 120 px under it, and the table's three columns stand at 38, 36 and 26 per
-      // cent of its width; at 760 px and below the body is its column less 20 px with 10 px above
-      // it, no heading is drawn, and each statement is a card with a 4 px left edge and 8 px
-      // corners, 8 px from the next.
+      // The view's measure. The document is no wider than the screen. From 761 px up the body is
+      // 1180 px wide, or its column less 48 px where that is less, with 22 px above it and 120 px
+      // under it, and the table's three columns stand at 38, 36 and 26 per cent of its width; at
+      // 760 px and below the body is its column less 20 px with 10 px above it, no heading is
+      // drawn, and each statement is a card with a 4 px left edge and 8 px corners, 8 px from the
+      // next.
       const frame = await verificationFrame(page);
       expect(frame.page.scroll, `the page scrolls sideways at ${width} px`).toBeLessThanOrEqual(
         frame.page.viewport
@@ -348,13 +348,13 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
       ).toBe(states.size);
 
       // The legend counts each drawn check once, in the state it is drawn in, the states no
-      // check is in included (part V's R2).
+      // check is in included.
       expect(
         await checkLegendCounts(page),
         `the legend does not count the drawn checks in their states at ${width} px`
       ).toEqual(legendOf(drawnChecks));
 
-      // Ruling 6: the body draws the newest result of each check, and its earlier results are
+      // The body draws the newest result of each check, and its earlier results are
       // one line with their count, which opens them in place. The check with two results draws
       // one, marked as the one its state stands on, says "1 earlier result", draws both once
       // that line is pressed, and one again at a second press.
@@ -397,7 +397,7 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
         .toBe(1);
 
       // A command renders as code with a copy control, and `when` reads as words: both in the
-      // check's own facts, which the reader's focus on its words opens, with no press (R5).
+      // check's own facts, which the reader's focus on its words opens, with no press.
       await focusThePage(page);
       await expect(
         rowBody(opened),
@@ -453,7 +453,7 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
         await overlappingTexts(page),
         `two pieces of text are drawn over each other with check 1's facts open at ${width} px`
       ).toEqual([]);
-      // No result draws a commit of its own in the facts it opens either (R3).
+      // No result draws a commit of its own in the facts it opens either.
       expect(
         (await page.locator("[data-verification-result]").allInnerTexts()).filter((drawn) =>
           drawn.includes(HEAD_SHA.slice(0, 10))
@@ -461,7 +461,7 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
         `a result draws a commit of its own with check 1's facts open at ${width} px`
       ).toEqual([]);
 
-      // Nothing opens on hover (R5): with the focus off the view, the pointer over check 2's
+      // Nothing opens on hover: with the focus off the view, the pointer over check 2's
       // words draws no facts under it. React draws what a pointer's handler sets in a later
       // task, so the row is read two frames after the hover, and then waited on.
       const failing = verificationCheck(page, blockNodeId(verificationSlug, seeded.checks.failed));
@@ -491,7 +491,7 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
         `a state's word or shape is not painted where a reader sees it once the colours are forced at ${width} px`
       ).toEqual([]);
       // Each shape keeps a box of its own, and the pressed chip keeps a mark of its own, its
-      // outline, where the system draws every chip's fill and border alike (departure 4).
+      // outline, where the system draws every chip's fill and border alike.
       const glyphs = await glyphsWithNoBox(page);
       expect(
         glyphs.drawn,
@@ -547,11 +547,11 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
   });
 });
 
-// c-view, row 2. The reviewer's finding on `verification.e2e.ts`: an issue that holds no
-// statement and no check says so in the Verification view's own column once the load has
-// settled, in the page's one line for it, and the line is read inside the tree the view draws
-// and not off the whole page, which says it nowhere else. The body is counted before the page's
-// tree is read, so at a base whose slot draws nothing the row fails on its own message.
+// Row 2. An issue that holds no statement and no check says so in the Verification view's own
+// column once the load has settled, in the page's one line for it, and the line is read inside
+// the tree the view draws and not off the whole page, which says it nowhere else. The body is
+// counted before the page's tree is read, so at a base whose slot draws nothing the row fails on
+// its own message.
 // SLOW(>=2s): a new issue's view loaded and waited out to a 1.5 s quiet window before it is read.
 test("the Verification filter says an issue holds no checks, in its own column", async ({
   browser,
@@ -582,15 +582,15 @@ test("the Verification filter says an issue holds no checks, in its own column",
   });
 });
 
-// c-view, row 3 (part V's R5, R7, R8 and R9). A check's words are drawn with their links through
-// G's `RowText`: a link in the words' colour, underlined in the bullets' grey, and a
-// `dispatch://` reference as the chip that names its target, never as its address. A result an
-// agent recorded names it by its role's word. A check that serves two statements is drawn under
-// each, names the other by its first words, and is counted once. A statement that only a child's
-// check serves is covered, carries no gap, and says so in one line. A statement of 200 words is
-// cut at six lines, and its "more" is a tab stop between the chips and the check's link. With A
-// opened, and again with the check's facts open, every element stays inside its card and no two
-// texts overlap, this issue's cards being the only ones that hold what V adds to a card.
+// Row 3. A check's words are drawn with their links through `RowText`: a link in the words'
+// colour, underlined in the bullets' grey, and a `dispatch://` reference as the chip that names
+// its target, never as its address. A result an agent recorded names it by its role's word. A
+// check that serves two statements is drawn under each, names the other by its first words, and
+// is counted once. A statement that only a child's check serves is covered, carries no gap, and
+// says so in one line. A statement of 200 words is cut at six lines, and its "more" is a tab stop
+// between the chips and the check's link. With A opened, and again with the check's facts open,
+// every element stays inside its card and no two texts overlap, this issue's cards being the only
+// ones that hold what the view adds to a card.
 // SLOW(>=2s): an issue, its child and their two documents seeded and waited for in the coverage
 // read, then the view loaded and read at two widths, with a walk by Tab at the first.
 test("the Verification view draws a check's links, its agent's role and a child's checks @phone", async ({
@@ -613,7 +613,7 @@ test("the Verification view draws a check's links, its agent's role and a child'
       ).toHaveCount(1);
       await expectIssuePageDrawn(page);
 
-      // The check is drawn on A's card and on B's, and on no other, and the legend counts it
+      // The check is drawn on the cards of A and B, and on no other, and the legend counts it
       // once, in its state.
       const cards = await verificationCards(page);
       expect(
@@ -628,7 +628,7 @@ test("the Verification view draws a check's links, its agent's role and a child'
       ).toEqual([1, 1]);
 
       // A is cut at six lines, and its "more" opens it whole: at 1440 px from the keyboard, Tab
-      // from the chip All reaching it and then the link in the check's words (R8); at 390 px by a
+      // from the chip All reaching it and then the link in the check's words; at 390 px by a
       // press.
       const words = rowWords(statementA);
       const more = rowMore(statementA);
@@ -637,8 +637,8 @@ test("the Verification view draws a check's links, its agent's role and a child'
         Number(/[\d,]+/u.exec(await more.innerText())?.[0]?.replace(/,/g, "")),
         `statement A's cut holds back 20 words or fewer at ${width} px`
       ).toBeGreaterThan(20);
-      // A's words are set on 24 px lines, so six of them are more than five lines' height and
-      // no more than six.
+      // The words of A are set on 24 px lines, so six of them are more than five lines' height
+      // and no more than six.
       const cutHeight = (await words.boundingBox())?.height ?? Number.NaN;
       expect(cutHeight, `statement A is not cut at six lines at ${width} px`).toBeGreaterThan(
         5 * 24
@@ -665,8 +665,8 @@ test("the Verification view draws a check's links, its agent's role and a child'
         await words.evaluate((element) => element.scrollHeight - element.clientHeight),
         `statement A hides a word once "more" opened it at ${width} px`
       ).toBeLessThanOrEqual(1);
-      // Opened, A's words, the check's link and chip, its "Also under" line and C's line of
-      // checks elsewhere stay inside their cards and draw no text over another (R5).
+      // Opened, the words of A, the check's link and chip, its "Also under" line and the line of
+      // checks elsewhere on C stay inside their cards and draw no text over another.
       expect(
         await boxesPastTheirCard(page),
         `an element reaches past its card with statement A opened at ${width} px`
@@ -682,7 +682,7 @@ test("the Verification view draws a check's links, its agent's role and a child'
         );
       }
 
-      // The link is an `a` with its address, in the words' colour, underlined in #A8A29E (R5).
+      // The link is an `a` with its address, in the words' colour, underlined in #A8A29E.
       await expect(
         link,
         `the check's words draw no link to the runbook at ${width} px`
@@ -716,13 +716,13 @@ test("the Verification view draws a check's links, its agent's role and a child'
         })
         .not.toContain("dispatch://");
 
-      // The result names the agent that recorded it by its role's word (R7).
+      // The result names the agent that recorded it by its role's word.
       await expect(
         statementA.locator("[data-verification-result] [data-node-author]"),
         `the result does not name its agent by its role at ${width} px`
       ).toHaveText("Recorder");
 
-      // "Also under" names B by its first words, cut at a word within 32 characters (R7).
+      // "Also under" names B by its first words, cut at a word within 32 characters.
       const alsoUnder = statementA.locator("[data-verification-check] [data-node-trail]");
       const chip = alsoUnder.locator("[data-node-chip]");
       await expect(
@@ -745,7 +745,7 @@ test("the Verification view draws a check's links, its agent's role and a child'
       ).toBe(true);
 
       // C is covered by the child's check alone: it carries no gap, says so in one line, and the
-      // summary counts it covered (R9).
+      // summary counts it covered.
       expect(
         cards.find((card) => card.id === c)?.gapKinds,
         `statement C carries a gap at ${width} px`
@@ -779,13 +779,13 @@ test("the Verification view draws a check's links, its agent's role and a child'
   });
 });
 
-// c-view, row 4 (part V's R8, the tester's F21, F22 and F23). From the issue's own address `t k`
-// turns the view on with the focus on the issue's row and the view's top on screen, and asks the
-// server for nothing the first load did not; Tab alone then reaches the chips, a check's words,
-// the copy control its facts draw and its line of earlier results, in reading order, and Enter
-// works each one; the tree answers the outline's keys, and a press on a result's cell or on a
-// statement's words opens a check's facts; axe finds no break of the tree's structure; `t k`
-// from a row turns the view off; and the view's own address leaves the focus on the issue's row.
+// Row 4. From the issue's own address `t k` turns the view on with the focus on the issue's row
+// and the view's top on screen, and asks the server for nothing the first load did not; Tab
+// alone then reaches the chips, a check's words, the copy control its facts draw and its line of
+// earlier results, in reading order, and Enter works each one; the tree answers the outline's
+// keys, and a press on a result's cell or on a statement's words opens a check's facts; axe finds
+// no break of the tree's structure; `t k` from a row turns the view off; and the view's own
+// address leaves the focus on the issue's row.
 // SLOW(>=2s): a whole seeded issue loaded and waited out to a quiet window twice, a walk of up to
 // 40 Tabs and some twenty keys and presses each waited on, an axe pass, and a third load.
 test("the Verification view is worked by the keyboard alone", async ({ browser }) => {
@@ -809,7 +809,7 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
 
     // From the issue's own address, with the focus on the page, `t k` turns the view on, leaves
     // the focus on the issue's row inside it with the view's top on screen under the header's
-    // band, and asks the server for nothing the first load did not (R1, R8).
+    // band, and asks the server for nothing the first load did not.
     const traffic = watchApiRequests(page);
     await gotoIssue(page, presetPath(seeded.key, "conversation"));
     await expectLoadSettled(traffic);
@@ -833,7 +833,7 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
       "t k left the focus on another element of the view than the issue's row"
     ).toBeFocused();
     // The header's band, where it stays at the top of the screen; 0 where the page draws none
-    // or it does not stay, as I's rows read it.
+    // or it does not stay (`identityBlockBottom`).
     const band = (await identityBlockBottom(page)) ?? 0;
     const top = await body.evaluate((element) => element.getBoundingClientRect().top);
     expect(
@@ -851,8 +851,7 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
       "t k sent a request under /api/ to a path the first load did not"
     ).toEqual([]);
 
-    // Tab alone, at most 40 presses, reaches each control in reading order, and Enter works it
-    // (R8).
+    // Tab alone, at most 40 presses, reaches each control in reading order, and Enter works it.
     const tabTo = tabWalk(page, 40);
     expect(
       await tabTo(verificationChip(page, "all"), "Tab does not reach the chip All"),
@@ -904,7 +903,7 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
       .toBe(2);
 
     // The tree's keys, counted from the row the focus is on or from the row that holds the
-    // control it is on (R8).
+    // control it is on.
     await page.keyboard.press("Home");
     await expect(verificationIssueRow(page), "Home does not focus the issue's row").toBeFocused();
     await page.keyboard.press("j");
@@ -941,8 +940,7 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
       "End does not reach the view's last row"
     ).toBeFocused();
 
-    // A check's facts open from a press on its latest result's cell and on its statement's words
-    // (the tester's F21).
+    // A check's facts open from a press on its latest result's cell and on its statement's words.
     const check2 = verificationCheck(page, checkOf(2));
     await expect(check2, "check 2's facts are drawn before a press").toHaveAttribute(
       "aria-expanded",
@@ -964,7 +962,7 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
       "a click on statement 3's words does not open check 3's facts"
     ).toHaveAttribute("aria-expanded", "true");
 
-    // The tree's structure, by the rules that read it (part V's departure 8).
+    // The tree's structure, by the rules that read it.
     const scan = await new AxeBuilder({ page })
       .include("[data-verification-body]")
       .withRules([
@@ -999,8 +997,7 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
     );
     await expect(body, "t k from a row of the view leaves the view drawn").toHaveCount(0);
 
-    // The view's own address, opened with nothing focused, leaves the focus on the issue's row
-    // (the tester's F23).
+    // The view's own address, opened with nothing focused, leaves the focus on the issue's row.
     await gotoIssue(page, presetPath(seeded.key, "verification"));
     await expect(
       verificationIssueRow(page),
@@ -1009,16 +1006,15 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
   });
 });
 
-// The root reviewer's High finding on pull request #4221 (review 5926082656, at
-// `slots/view-verification.tsx`). The slot counted its document's blocks read as answered by a
-// latch of its own, set from that read's `isSuccess` and empty each time the stage mounts the
-// slot again. So once a background refetch of that read failed, a reader who came back to the
-// view found it drawing nothing for as long as the refetch kept failing, though the blocks it had
-// read were still held. A read the view has had an answer from stays answered while it holds
-// that answer, across a failed refetch and across the view turned off and on (part V's R1 and
-// departure 6). The outline mounted within the page's 30 s stale time asks nothing again, so a
-// comment posted in the Verification document is what refreshes its reads, as it does for a
-// reader (`api/event-refresh.ts`).
+// The slot (`slots/view-verification.tsx`) once counted its document's blocks read as answered
+// by a latch of its own, set from that read's `isSuccess` and empty each time the stage mounts
+// the slot again. So once a background refetch of that read failed, a reader who came back to
+// the view found it drawing nothing for as long as the refetch kept failing, though the blocks
+// it had read were still held. A read the view has had an answer from stays answered while it
+// holds that answer, across a failed refetch and across the view turned off and on. The outline
+// mounted within the page's 30 s stale time asks nothing again, so a comment posted in the
+// Verification document is what refreshes its reads, as it does for a reader
+// (`api/event-refresh.ts`).
 // SLOW(>=2s): a whole seeded issue loaded and settled, then its blocks read refused three times
 // with the page's retry waits between them while the outline is drawn, and the view turned off and
 // on by its keys.
@@ -1089,19 +1085,16 @@ test("the Verification view keeps its rows when its document's blocks read fails
   });
 });
 
-// The reviewer's High finding on pull request #4221 (review 5923997554, at
-// `slots/view-verification.tsx:34`), pinned by INFRA-3936's tester. A check learns the statements
-// it serves from the blocks read of the Verification document, which `useIssueTree` reads, and
-// the view drew its rows once the coverage and results reads had answered, whether or not that
-// read had. So while it was out, and for good once it failed, the view drew every check of the
-// issue as one that serves no statement, and each statement as served by none of them (part V's
-// R1, R3 and R9). While that read is held the view draws nothing its reads do not say once they
-// have all answered, and once it answers each statement draws its check. A read refused from the
-// first load holds nothing to draw, and the view once drew an empty tree for it, which says
-// nothing a reader can act on; the architect's decisions 117 and 126 on dispatch://INFRA-1196
-// (V's own review 5929572432) replace that. So the view says, over its tree, that it could not
-// load the checks, in one line with a Retry, and draws no card, no row and nothing its reads do
-// not say; once the refusal is lifted, that Retry asks the read again and the view settles on
+// A check learns the statements it serves from the blocks read of the Verification document,
+// which `useIssueTree` reads, and the view once drew its rows as soon as the coverage and results
+// reads had answered, whether or not that read had. So while it was out, and for good once it
+// failed, the view drew every check of the issue as one that serves no statement, and each
+// statement as served by none of them. While that read is held the view draws nothing its reads
+// do not say once they have all answered, and once it answers each statement draws its check. A
+// read refused from the first load holds nothing to draw, and the view once drew an empty tree
+// for it, which says nothing a reader can act on. So the view says, over its tree, that it could
+// not load the checks, in one line with a Retry, and draws no card, no row and nothing its reads
+// do not say; once the refusal is lifted, that Retry asks the read again and the view settles on
 // each statement's check.
 // SLOW(>=2s): a whole seeded issue loaded three times, two of them read for 1.5 s each while the
 // blocks read is held or refused, then the refused read asked again by Retry.
@@ -1215,12 +1208,12 @@ test("the Verification view says nothing of a check's statements before the Veri
   });
 });
 
-// Found by INFRA-3936's tester on a running build of a8bad6de: on INFRA-1196's view, Tab from the
-// first check's line of earlier results took 18 presses through the second statement's links
-// before it reached that statement's "more · 1,152 words", and the cut hid every one of them, so
-// the focus was drawn nowhere on screen. A statement cut at six lines keeps the controls of its
-// hidden words out of the tab order, and Tab in reading order reaches its "more" next (part V's
-// R5 and R8); once "more" opens the words, a link in them takes the focus where it is drawn.
+// On a running build of the page, Tab from the first check's line of earlier results took 18
+// presses through the second statement's links before it reached that statement's
+// "more · 1,152 words", and the cut hid every one of them, so the focus was drawn nowhere on
+// screen. A statement cut at six lines keeps the controls of its hidden words out of the tab
+// order, and Tab in reading order reaches its "more" next; once "more" opens the words, a link in
+// them takes the focus where it is drawn.
 // SLOW(>=2s): an issue with one statement of 200 words seeded and its view loaded and walked by
 // Tab.
 test("the Verification view gives no tab stop to a link its cut statement hides", async ({
@@ -1290,14 +1283,12 @@ test("the Verification view gives no tab stop to a link its cut statement hides"
   });
 });
 
-// Review 5933840110's first finding on pull request #4221 (at `VerificationFilterBody.tsx:323`),
-// pinned by INFRA-3936's tester on a running build of 6bd12234: with the Verification document's
-// blocks read refused from the first load, Enter on the failed-read line's Retry left the focus on
-// the page's body, both while the read was asked again and after it answered, and `j` then moved
-// no row. A keyboard action never leaves the focus on the page's body (the architect's decision
-// 162 on dispatch://INFRA-1196): Retry pressed by the keyboard keeps the focus inside the view
-// while the read is asked again, when it is refused again, and once it answers, and the tree then
-// answers its keys (part V's R8, decisions 117 and 126).
+// With the Verification document's blocks read refused from the first load, Enter on the
+// failed-read line's Retry once left the focus on the page's body, both while the read was asked
+// again and after it answered, and `j` then moved no row. A keyboard action never leaves the
+// focus on the page's body: Retry pressed by the keyboard keeps the focus inside the view while
+// the read is asked again, when it is refused again, and once it answers, and the tree then
+// answers its keys.
 // SLOW(>=2s): a whole seeded issue loaded with its blocks read refused, asked again three times
 // with the page's retry waits, then let answer.
 test("the Verification view keeps the focus in the view when Retry is pressed by the keyboard", async ({
@@ -1320,12 +1311,11 @@ test("the Verification view keeps the focus in the view when Retry is pressed by
     });
     await expect(retry, "the refused blocks read draws no Retry").toHaveCount(1);
 
-    // The architect's decision 182 on dispatch://INFRA-1196, `t k` with a refused read: the focus
-    // goes to that read's Retry, on screen under the header's band, and not to the empty tree,
-    // which has nothing to act on and from which Tab never reaches Retry. The implementer added
-    // this reading to the tester's row because c-view (`verification.md` of dispatch://INFRA-3936,
-    // version 11) names it here. The view is on, so the first `t k` turns it off and the second
-    // turns it on with the blocks read still refused; the expect's 15 s covers the read's retries.
+    // `t k` with a refused read: the focus goes to that read's Retry, on screen under the header's
+    // band, and not to the empty tree, which has nothing to act on and from which Tab never
+    // reaches Retry. The Verification document names this row for that reading. The view is on,
+    // so the first `t k` turns it off and the second turns it on with the blocks read still
+    // refused; the expect's 15 s covers the read's retries.
     await focusThePage(page);
     await page.keyboard.press("t");
     await page.keyboard.press("k");
@@ -1402,7 +1392,7 @@ test("the Verification view keeps the focus in the view when Retry is pressed by
       await focusInside(body),
       "Enter on Retry leaves the focus outside the view once the read answered"
     ).toBe(true);
-    // Decision 182's second rule: once the read answers, the focus is on the view's first row.
+    // Once the read answers, the focus is on the view's first row.
     await expect(
       verificationIssueRow(page),
       "once the read answered, Enter on Retry leaves the focus elsewhere than the view's first row"

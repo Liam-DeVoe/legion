@@ -84,41 +84,40 @@ export type VerificationReads =
     };
 
 /**
- * The Verification filter's body (dispatch://INFRA-1196 R17, R2, R10, R22, the approved picture
- * `page-v3-verification-1440.png` and the prototype's `.ver`).
+ * The Verification filter's body, as the approved picture `page-v3-verification-1440.png` and the
+ * prototype's `.ver` draw it.
  *
  * It is the picture: a summary of how the issue stands, then each statement with the checks
  * that serve it beside it and each check's latest result beside that. From 761 px up the three
  * stand in three columns, as the prototype's table draws them; at 760 px and below each
  * statement is a card and its checks stand under its words, as the prototype's `.vcards` draw
- * them (part V's R6). 760 px is the prototype's own break, so every break here is written from
- * 761 px up: Tailwind's `max-[760px]:` leaves 760 px itself out.
+ * them. 760 px is the prototype's own break, so every break here is written from 761 px up:
+ * Tailwind's `max-[760px]:` leaves 760 px itself out.
  *
- * All of it is one tree, named as the outline is (part V's R8). Its first row is the issue's
- * own, which holds the summary and the chips, so the page's `t k`, which focuses the tree's tab
- * stop, leaves the view's top on screen and the next Tab on the chip All; a focused tree element
- * would leave the top of a view taller than the screen above it. Then come each statement, with
- * its checks in one group under it, each check that serves no statement, and each other row.
- * One row holds the tree's tab stop (WAI-ARIA's roving tabindex): the issue's, until the stop
- * moves, and again when the row that held it is no longer drawn. The tree answers the outline's
- * keys (`j`, `k`, the arrows, Home, End, Enter, `o`) by a handler of its own, and the page's `?`
- * lists none of them: a binding of the page's keymap is a row of that list (part V's departure
- * 3).
+ * All of it is one tree, named as the outline is. Its first row is the issue's own, which holds
+ * the summary and the chips, so the page's `t k`, which focuses the tree's tab stop, leaves the
+ * view's top on screen and the next Tab on the chip All; a focused tree element would leave the
+ * top of a view taller than the screen above it. Then come each statement, with its checks in
+ * one group under it, each check that serves no statement, and each other row. One row holds
+ * the tree's tab stop (WAI-ARIA's roving tabindex): the issue's, until the stop moves, and again
+ * when the row that held it is no longer drawn. The tree answers the outline's keys (`j`, `k`,
+ * the arrows, Home, End, Enter, `o`) by a handler of its own, and the page's `?` lists none of
+ * them: a binding of the page's keymap is a row of that list.
  *
  * What it says of a statement and of a check is `statement-state.ts`, which is pure. What it
  * says of the issue - the summary, the chips' counts, how each statement stands and so the
  * state a chip narrows by - is read from the view with no words query, and what it draws, the
  * cards, the checks and their results, from the view the query left: a query narrows the rows
- * and never changes how a statement reads or what the summary counts (part V's departure 10).
- * A query that matches nothing keeps the issue's row, and the table says so under its headings
- * (the architect's decision 81). Four rules of R17 are drawn here:
+ * and never changes how a statement reads or what the summary counts. A query that matches
+ * nothing keeps the issue's row, and the table says so under its headings. Four rules of the
+ * page are drawn here:
  *
  * - **One commit, drawn once.** The summary names the commit the issue's results are read
  *   against; no result draws a commit of its own, on its line or in its opened facts, and a
  *   result recorded against another commit says so in its check's word, "Out of date".
  * - **Seven states, each a word and a shape.** A check's state is the page's own
  *   (`NODE_STATE_WORDS.check`), drawn with the shape its token carries (`NodeGlyph`), so no
- *   state is told from another by colour alone (R6).
+ *   state is told from another by colour alone.
  * - **Covered, never proven.** The summary counts the statements that carry a check as
  *   covered; no count, legend or heading of this body reads proven or met for it, because a
  *   statement that has a check is not a statement that is true.
@@ -129,9 +128,10 @@ export type VerificationReads =
  *
  * A check's four attributes and what its result recorded are its node's facts
  * (`check-facts.ts`), drawn in the body that opens while the reader's focus is anywhere in the
- * check's row and while the reader has pressed it open (R6, part V's departure 5): a `run` as a
- * command with its own copy control, a screenshot as a picture, `when` as words. A statement no
- * check serves carries its gap in full, where the picture draws "No check proves this" (R10).
+ * check's row and while the reader has pressed it open, as the outline opens a focused node's
+ * body: a `run` as a command with its own copy control, a screenshot as a picture, `when` as
+ * words. A statement no check serves carries its gap in full, where the picture draws "No check
+ * proves this".
  */
 export function VerificationFilterBody({
   checks,
@@ -145,7 +145,7 @@ export function VerificationFilterBody({
    *  them (`GET /api/v1/issues/{key}/results`), which the page has already read for its tree. */
   checks: readonly CheckBlock[];
   /** The ids of the rows the filter draws as context, which under Verification is every
-   *  statement (R2, `presets.ts`). */
+   *  statement (`presets.ts`). */
   context: ReadonlySet<string>;
   /** What the body says where it has nothing to draw: in the tree alone where the issue holds
    *  no row, and in the table under its headings where the filter's query left nothing of it. */
@@ -154,22 +154,21 @@ export function VerificationFilterBody({
    *  the results read and the blocks read of the Verification document. Until all three hold an
    *  answer the body draws its tree with no row and no line in it, so it never says that an
    *  issue has no checks, or that a check serves no statement, before the reads that hold them
-   *  are in (part V's R1). A read that failed before it first answered holds nothing to draw,
-   *  so the body says so over the tree, in one line of the page's words for each such read with
-   *  a Retry that asks that read alone again, and keeps its tree with nothing in it, as it does
-   *  while a read is out (the architect's decisions 117 and 126 on dispatch://INFRA-1196). A
-   *  read that has answered once stays answered when a later refetch fails: the body draws what
-   *  it last answered. */
+   *  are in. A read that failed before it first answered holds nothing to draw, so the body says
+   *  so over the tree, in one line of the page's words for each such read with a Retry that asks
+   *  that read alone again, and keeps its tree with nothing in it, as it does while a read is
+   *  out. A read that has answered once stays answered when a later refetch fails: the body
+   *  draws what it last answered. */
   reads: VerificationReads;
   /** The tree as the Verification filter left it (`presetView`). */
   view: TreeNode;
   /** The Verification view with no words query: what the issue holds, whatever a query left of
-   *  it. The summary, the chips' counts, each statement's state and R9's count are read from it.
-   *  Where it is not given it is `view`, as it is where no query is typed. */
+   *  it. The summary, the chips' counts, each statement's state and its count of checks elsewhere
+   *  are read from it. Where it is not given it is `view`, as it is where no query is typed. */
   whole?: TreeNode;
 }): ReactNode {
   // The query's reading, which the body draws, and the issue's, which it says how the issue
-  // stands by (part V's departure 10). With no query typed the two are one reading.
+  // stands by. With no query typed the two are one reading.
   const read = useMemo(() => verificationReading({ checks, view }), [checks, view]);
   const issue = useMemo(
     () => (whole === view ? read : verificationReading({ checks, view: whole })),
@@ -185,10 +184,10 @@ export function VerificationFilterBody({
   const loose = only === undefined ? read.loose : [];
   const others = only === undefined ? read.others : [];
   // The issue's row is drawn where the issue holds a row of any kind, so an issue with no
-  // statement and no check draws no row at all, only the page's line for it (part V's R1). It is
-  // read from the issue's reading and not the query's: a query that matches nothing keeps the
-  // summary, the legend and the chips of the whole issue, and the table says under its headings
-  // that the query left nothing (part V's departure 10, the architect's decision 81).
+  // statement and no check draws no row at all, only the page's line for it. It is read from
+  // the issue's reading and not the query's: a query that matches nothing keeps the summary, the
+  // legend and the chips of the whole issue, and the table says under its headings that the
+  // query left nothing.
   const holds = issue.statements.length > 0 || issue.loose.length > 0 || issue.others.length > 0;
   const matched = read.statements.length > 0 || read.loose.length > 0 || read.others.length > 0;
   // The rows are drawn once all three reads hold an answer, and not while one is out or failed.
@@ -210,15 +209,15 @@ export function VerificationFilterBody({
   );
   // The row that holds the tree's one tab stop, by its id in `rows`: the issue's at first. A
   // row the reader's narrowing took out hands it back to the issue's row, in this render rather
-  // than in an effect after it, so the tree is never drawn without its stop (part V's R8).
+  // than in an effect after it, so the tree is never drawn without its stop.
   const [rovingId, setRovingId] = useState(view.id);
   if (rovingId !== view.id && !rows.includes(rovingId)) setRovingId(view.id);
   const tabIndexFor = (id: string): 0 | -1 => (id === rovingId ? 0 : -1);
   // Each drawn check's press, by its row's id in `rows`: true where the reader pressed its facts
   // open, false where they pressed them shut while the focus held them open, and no entry where
-  // the focus alone decides (part V's departure 5). It is held here rather than in each check so
-  // the tree's keys and a press on a statement's words press a check as its own words do. A row
-  // that is no longer drawn forgets its press, as an unmounted row forgets its state.
+  // the focus alone decides. It is held here rather than in each check so the tree's keys and a
+  // press on a statement's words press a check as its own words do. A row that is no longer
+  // drawn forgets its press, as an unmounted row forgets its state.
   const [presses, setPresses] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   if (presses.size > 0 && [...presses.keys()].some((id) => !rows.includes(id))) {
     setPresses(new Map([...presses].filter(([id]) => rows.includes(id))));
@@ -249,10 +248,10 @@ export function VerificationFilterBody({
         : [{ drawn: check.getAttribute("aria-expanded") === "true", id }];
     });
   };
-  /** Enter on a check's row or a statement's, and a pointer's press on a statement's words (the
-   *  tester's F21 and F22): each check's facts opened, or each shut where all of them are drawn.
-   *  On a check's row that is the press its words take, the opposite of what is drawn. The
-   *  answer is whether the row reached a check. */
+  /** Enter on a check's row or a statement's, and a pointer's press on a statement's words: each
+   *  check's facts opened, or each shut where all of them are drawn. On a check's row that is the
+   *  press its words take, the opposite of what is drawn. The answer is whether the row reached a
+   *  check. */
   const pressChecks = (row: HTMLElement): boolean => {
     const reached = checksOf(row);
     const open = !reached.every((check) => check.drawn);
@@ -269,9 +268,9 @@ export function VerificationFilterBody({
     }
     return reached.length > 0;
   };
-  // The tree's keys, which are the outline's (part V's R8 and departure 3). The page's keymap
-  // listens on `window` and leaves a key a handler held back, so this handler holds back each
-  // key it acts on, and only those: every other key reaches the keymap.
+  // The tree's keys, which are the outline's. The page's keymap listens on `window` and leaves a
+  // key a handler held back, so this handler holds back each key it acts on, and only those:
+  // every other key reaches the keymap.
   const keyDown = (event: KeyboardEvent<HTMLElement>) => {
     // A key with Ctrl, Alt or Meta is the browser's or another binding's; a key that goes on
     // with a chord the reader began is the keymap's, so `t k` from inside the view turns it
@@ -309,11 +308,10 @@ export function VerificationFilterBody({
     if (acted) event.preventDefault();
   };
   // The body and its tree, which the focus is kept in when the line a Retry stands on leaves the
-  // page (review 5933840110's first finding on pull request #4221, and the architect's decisions
-  // 162 and 182 on dispatch://INFRA-1196): a press by the keyboard never leaves the focus on the
-  // page's body. A read asked again that holds no answer is out again rather than failed
-  // (TanStack Query's `pending`), so its Retry takes its own line, and the focus on it, off the
-  // page. A Retry that went disabled while its read is out would drop the focus too.
+  // page: a press by the keyboard never leaves the focus on the page's body. A read asked again
+  // that holds no answer is out again rather than failed (TanStack Query's `pending`), so its
+  // Retry takes its own line, and the focus on it, off the page. A Retry that went disabled
+  // while its read is out would drop the focus too.
   const bodyRef = useRef<HTMLDivElement>(null);
   const treeRef = useRef<HTMLDivElement>(null);
   // The read whose Retry was pressed with the focus on its line, until that line is gone.
@@ -342,9 +340,9 @@ export function VerificationFilterBody({
     }
     // The tree itself holds the focus where it had no row to give it to: while a read is out,
     // after the step above, or after `t k`. A read refused again gives it to its Retry, as `t k`
-    // with a read refused does (decision 182), and rows that came give it to the tree's tab
-    // stop (decision 162). Where rows were drawn already it stays on the tree: a click on the
-    // table's headings, which stand in no row, focuses the tree, and moves no row's focus.
+    // with a read refused does, and rows that came give it to the tree's tab stop. Where rows
+    // were drawn already it stays on the tree: a click on the table's headings, which stand in no
+    // row, focuses the tree, and moves no row's focus.
     if (focused !== tree) return null;
     if (firstRetry !== null) return firstRetry;
     return rowsCame ? tree.querySelector<HTMLElement>(TAB_STOP_ROW) : null;
@@ -359,9 +357,9 @@ export function VerificationFilterBody({
   return (
     <div className={BODY} data-verification-body="" ref={bodyRef}>
       {/* Each read that failed before it first answered, one line in the page's words with a
-          Retry that asks that read alone again, in the order coverage, results, blocks
-          (the architect's decisions 117 and 126). The lines stand over the tree and never in
-          it: an alert inside a tree would break the tree's own structure of rows. */}
+          Retry that asks that read alone again, in the order coverage, results, blocks. The
+          lines stand over the tree and never in it: an alert inside a tree would break the
+          tree's own structure of rows. */}
       {unreadable === undefined
         ? null
         : VERIFICATION_READS.flatMap((read) =>
@@ -386,18 +384,18 @@ export function VerificationFilterBody({
                 ]
               : []
           )}
-      {/* The page holds one tree on every address (R2), and it holds everything the view
-          draws: the issue's row and the table, or in their place the one line that says the
-          issue holds nothing to draw. While a read is out or has failed it holds nothing, and
-          is still the tree `t k` and the stage focus (part V's R8). With a read refused it
-          gives its focus to that read's Retry (the architect's decision 182). */}
+      {/* The page holds one tree on every address, and it holds everything the view draws: the
+          issue's row and the table, or in their place the one line that says the issue holds
+          nothing to draw. While a read is out or has failed it holds nothing, and is still the
+          tree `t k` and the stage focus. With a read refused it gives its focus to that read's
+          Retry. */}
       <div
         aria-label={CONTROL_LABELS.tree}
         className="flex min-w-0 flex-col"
         onFocus={(event) => {
           // `t k` with a read refused: the page's chord focuses the tree, which holds no row to
           // take its tab stop and from which Tab never reaches the Retry over it, and no render
-          // follows that focus. The first refused read's Retry takes it instead (decision 182).
+          // follows that focus. The first refused read's Retry takes it instead.
           if (event.target !== event.currentTarget) return;
           const retry = bodyRef.current?.querySelector<HTMLElement>(UNREADABLE_RETRY);
           if (retry != null) focusOn(retry);
@@ -447,10 +445,9 @@ export function VerificationFilterBody({
               ))}
               {/* What the table says where it draws no row under its headings, rather than
                   headings over nothing: the body's line where the query matched nothing of the
-                  issue, whose row still says how the issue stands (the architect's decision 81),
-                  and the page's line for a state where the one the reader narrowed to holds no
-                  statement: a chip whose count is 0 is a press too, as is a chip whose
-                  statements the query left out (part V's departure 4). */}
+                  issue, whose row still says how the issue stands, and the page's line for a
+                  state where the one the reader narrowed to holds no statement: a chip whose
+                  count is 0 is a press too, as is a chip whose statements the query left out. */}
               {!matched || (only !== undefined && shown.length === 0) ? (
                 <p
                   className={`${CELL} text-sm leading-5 ${pageQuietText}`}
@@ -486,27 +483,27 @@ export function VerificationFilterBody({
 }
 
 /** A statement as the body draws it: the query's reading of it, with the state the issue's
- *  reading gives it, the count of R9's line, and after its own checks each check a result the
- *  query kept alone is drawn with (`keptChecks`). */
+ *  reading gives it, the count its line of checks elsewhere draws, and after its own checks each
+ *  check a result the query kept alone is drawn with (`keptChecks`). */
 interface DrawnStatement extends StatementReading {
   /** Each check among `checks` the query kept an earlier result of, by its node's id, with the
    *  ids of those results: the check draws them under its latest result, and no other earlier
-   *  one, with its line of earlier results shut (review 5933840110 on pull request #4221, ruling
-   *  6 of build-rulings-md, part V's departure 10). */
+   *  one, with its line of earlier results shut, so the view draws no result the reader neither
+   *  kept by the query nor opened. */
   readonly kept: ReadonlyMap<string, ReadonlySet<string>>;
   /** How many checks the coverage read counts for the statement beyond those the view with no
-   *  query draws under it, which serve it from an issue under this one (part V's R9). At 0 or
-   *  less the statement draws no line for them. */
+   *  query draws under it, which serve it from an issue under this one. At 0 or less the
+   *  statement draws no line for them. */
   readonly elsewhere: number;
 }
 
 /**
  * Each statement of the query's reading (`read`), as the issue's reading (`issue`, the view with
  * no query) says it stands, so a query that leaves out a statement's own check never changes its
- * state (part V's departure 10). Its R9 count is the checks the coverage read counts for it less
- * the distinct checks the issue's reading draws under it, so a query never calls this issue's
- * own checks "elsewhere" (departure 2). A statement the issue's reading does not hold is read
- * from the query's reading alone.
+ * state. Its count of checks elsewhere is the checks the coverage read counts for it less the
+ * distinct checks the issue's reading draws under it, so a query never calls this issue's own
+ * checks "elsewhere". A statement the issue's reading does not hold is read from the query's
+ * reading alone.
  */
 function drawnStatements(read: VerificationReading, issue: VerificationReading): DrawnStatement[] {
   const standing = new Map(issue.statements.map((statement) => [statement.node.id, statement]));
@@ -535,11 +532,10 @@ const NO_KEPT_RESULTS: ReadonlySet<string> = new Set();
  * under the statement, with the check as its parent line (`presets.ts`), and the query's reading
  * reads only a statement's checks (`statement-state.ts`), so that result would be drawn nowhere.
  * It is drawn with its check instead, read from the issue's reading, once and after the
- * statement's own checks, as a row like any other (part V's departure 10: the results the body
- * draws are the query's). Where a result the query kept is not the check's latest, the check
- * draws it under its latest and leaves its other earlier results folded behind their line
- * (`kept`): a query that keeps one of a check's 26 results draws that one, not the 25 others
- * (review 5933840110 on pull request #4221, ruling 6 of build-rulings-md).
+ * statement's own checks, as a row like any other: the results the body draws are the query's.
+ * Where a result the query kept is not the check's latest, the check draws it under its latest
+ * and leaves its other earlier results folded behind their line (`kept`): a query that keeps
+ * one of a check's 26 results draws that one, not the 25 others.
  */
 function keptChecks(
   statement: StatementReading,
@@ -566,8 +562,8 @@ function keptChecks(
 
 /** The ids of the rows the tree draws, in the order they stand on the page: the issue's row,
  *  each statement followed by its checks, each check that serves no statement, and each other
- *  row. The tree's tab stop is one of them (part V's R8), and each row's element carries its
- *  id as `data-verification-row`. */
+ *  row. The tree's tab stop is one of them, and each row's element carries its id as
+ *  `data-verification-row`. */
 function treeRows(
   issue: string,
   statements: readonly StatementReading[],
@@ -594,10 +590,10 @@ function checkRowId(statement: string, check: string): string {
 /** The three reads, in the order the body says which of them failed. */
 const VERIFICATION_READS: readonly VerificationRead[] = ["coverage", "results", "blocks"];
 
-/** What the body says of each read that failed before it first answered, in the page's words
- *  (the architect's decision 126): the statements for the coverage read, as the Spec view says
- *  it, the results for the results read, and the checks for the blocks read of the Verification
- *  document, without which no check can be placed under the statement it serves. */
+/** What the body says of each read that failed before it first answered, in the page's words:
+ *  the statements for the coverage read, as the Spec view says it, the results for the results
+ *  read, and the checks for the blocks read of the Verification document, without which no check
+ *  can be placed under the statement it serves. */
 const UNREADABLE_LINES: Readonly<Record<VerificationRead, string>> = {
   blocks: ANSWER_LINES.checks_unreadable,
   coverage: ANSWER_LINES.statements_unreadable,
@@ -627,16 +623,16 @@ const CHECK_STATES = Object.keys(NODE_STATE_WORDS.check) as CheckState[];
 /** A column heading, in the prototype's `.cap`. */
 const CAP = `text-xs leading-4 font-semibold tracking-[0.08em] uppercase ${pageQuietText}`;
 
-/** The body's measure (part V's R6, the prototype's `.ver`): at 760 px and below the width of
- *  the element around it less 20 px, 10 px under what stands above it; from 761 px up 1180 px
- *  wide, or that width less 48 px where that is less, 22 px under it. At every width it stands
- *  in the middle of that element with 120 px under it. */
+/** The body's measure (the prototype's `.ver`): at 760 px and below the width of the element
+ *  around it less 20 px, 10 px under what stands above it; from 761 px up 1180 px wide, or that
+ *  width less 48 px where that is less, 22 px under it. At every width it stands in the middle of
+ *  that element with 120 px under it. */
 const BODY =
   "mx-auto mt-2.5 mb-[120px] flex w-full min-w-0 max-w-[calc(100%-20px)] flex-col min-[761px]:mt-[22px] min-[761px]:w-[1180px] min-[761px]:max-w-[calc(100%-48px)]";
 
 /** The table (the prototype's `.vt`): from 761 px up one frame, 1 px round it with 10 px
  *  corners, its rows bands inside it; at 760 px and below no frame, and each row a card of its
- *  own 8 px from the next (`.vcards`, part V's R6). */
+ *  own 8 px from the next (`.vcards`). */
 const TABLE = `flex min-w-0 flex-col gap-2 ${pageLineBorder} min-[761px]:gap-0 min-[761px]:overflow-hidden min-[761px]:rounded-[10px] min-[761px]:border min-[761px]:bg-page-paper`;
 
 /** One row of the table: from 761 px up a band of the frame with a rule under it but the last;
@@ -661,15 +657,15 @@ const CELL = "min-w-0 px-3 py-[11px]";
 /** Where a result's facts are drawn: in its column, which from 761 px up is the table's
  *  narrowest, 26 per cent of it and some 130 px inside its cell at 761 px. There the facts'
  *  widest label ("negative control") took the room of a command's copy control and drew it past
- *  the card (R5), so a label takes at most half the column and breaks there, still beside its
- *  value (`NodeFacts.tsx`'s two columns). */
+ *  the card, so a label takes at most half the column and breaks there, still beside its value
+ *  (`NodeFacts.tsx`'s two columns). */
 const RESULT_FACTS = "mt-1 min-w-0 [&_dl]:grid-cols-[fit-content(50%)_minmax(0,1fr)]";
 
 /** What a pointer's press inside a check's words, its latest result's cell or a statement's
  *  words belongs to rather than to the row: a link or a button, whose press is its own (a link
  *  in the words, the link of a statement's parent line, a statement's "more" control, the copy
  *  control, the line of earlier results), and the drawn facts, where a reader reads and selects
- *  as in the facts beside the words (part V's departure 5). */
+ *  as in the facts beside the words. */
 const OWN_PRESS = "a, button, [data-node-body]";
 
 /** Whether a pointer's press belongs to a link, a button or the drawn facts inside the element
@@ -686,7 +682,7 @@ const TREE_ROW = "[data-node-row]";
 const CHECK_ROW = "[data-verification-check]";
 const STATEMENT_ROW = "[data-verification-card]";
 
-/** The keys the tree's handler acts on (part V's R8): `j`, `k`, the arrows, Home and End move,
+/** The keys the tree's handler acts on, the outline's: `j`, `k`, the arrows, Home and End move,
  *  Enter presses and `o` keeps. Every other key is the page keymap's. */
 const TREE_KEYS: ReadonlySet<string> = new Set([
   "j",
@@ -732,8 +728,8 @@ function moveTarget(
   }
 }
 
-/** The colour each state is drawn in, which repeats what its word and its shape already say
- *  (R6): met in the passed green, not met in the failed red, unknown quiet. */
+/** The colour each state is drawn in, which repeats what its word and its shape already say:
+ *  met in the passed green, not met in the failed red, unknown quiet. */
 const STATEMENT_TONES: Readonly<Record<StatementState, string>> = {
   met: pageStateText.passed,
   not_met: pageStateText.failed,
@@ -750,7 +746,7 @@ const STATEMENT_FILLS: Readonly<Record<StatementState, string>> = {
 
 /** The pressed chip's mark under forced colours, where the system draws every chip's fill and
  *  border alike: an outline in the system's text colour, so the chip that is on is still told
- *  from the rest by more than its `aria-pressed` (part V's departure 4). */
+ *  from the rest by more than its `aria-pressed`. */
 const FORCED_PRESSED =
   "forced-colors:aria-pressed:outline-2 forced-colors:aria-pressed:outline-offset-2 forced-colors:aria-pressed:outline-[CanvasText]";
 
@@ -764,10 +760,10 @@ function checkTone(state: CheckState): string {
 /**
  * How the issue stands, in one card over the table (the prototype's `.vsum`): how many
  * statements carry a check, the bar of how they stand, the count in each state, the one commit
- * the page names for the issue's results, drawn here and nowhere else (R17), and how many of
- * the issue's checks stand in each of the seven states a check can be in, each by its word and
- * its shape, so the shapes the table draws are named once over it (R6). It is the issue's
- * whatever a words query left of it (part V's departure 10).
+ * the page names for the issue's results, drawn here and nowhere else, and how many of the
+ * issue's checks stand in each of the seven states a check can be in, each by its word and its
+ * shape, so the shapes the table draws are named once over it. It is the issue's whatever a
+ * words query left of it.
  */
 function Summary({
   counts,
@@ -870,9 +866,9 @@ function Summary({
 
 /** The chips over the table (the prototype's `.vchips`): All, and one per state a statement can
  *  be in with how many of the issue's stand in it. Pressing one draws those statements alone,
- *  pressing it again or pressing All draws them all, as the filter row's own controls work
- *  (R2). Every chip is a press the keyboard reaches, one whose state holds no statement too,
- *  which draws the page's line for it (part V's departure 4). */
+ *  pressing it again or pressing All draws them all, as the filter row's own controls work.
+ *  Every chip is a press the keyboard reaches, one whose state holds no statement too, which
+ *  draws the page's line for it. */
 function Chips({
   counts,
   onlyState,
@@ -924,8 +920,8 @@ function Chips({
 }
 
 /** The three column headings, in the prototype's `.vt th`, drawn from 761 px up only: at 760 px
- *  and below the columns stack and each statement's card carries its own words (part V's R6).
- *  They name the columns and are no row of the tree. */
+ *  and below the columns stack and each statement's card carries its own words. They name the
+ *  columns and are no row of the tree. */
 function Headings(): ReactNode {
   return (
     <div
@@ -951,25 +947,23 @@ function Headings(): ReactNode {
 /**
  * One statement with the checks that serve it (the prototype's `.vt tr`, and its `.vcard` at
  * 760 px and below): how it stands at the commit the page names, its words, the node its words
- * came from as one line, and its gap where no check serves it (R1's ruling, R2, R10, R17). Its
- * words are cut as an agent's are on every row (ruling 6 of build-rulings-md: a twenty-line
- * statement opened this view on a wall of text).
+ * came from as one line, and its gap where no check serves it. Its words are cut as an agent's
+ * are on every row: a twenty-line statement opened this view on a wall of text.
  *
  * It is a row of the tree, and its checks are one group of rows under it, drawn open; a
- * statement no check of this issue serves holds no group and so says nothing of being open
- * (part V's R8). A pointer's press on its words cell does what Enter on its row does: it opens
- * the facts of each of its checks, or shuts them where all of them are drawn (the tester's
- * F21); a press on its "more" control, on a link in its words or on its parent line's link is
- * that control's own. The control and the links are tab stops, as every control of the view is
- * (R8). As a card its left edge is the statement's teal, or the failed red where it reads Not
- * met or no check serves it, so the card says so before its words are read (R6). How it stands
- * is the issue's reading of it, whatever a words query left of its checks (part V's departure
- * 10).
+ * statement no check of this issue serves holds no group and so says nothing of being open. A
+ * pointer's press on its words cell does what Enter on its row does: it opens the facts of each
+ * of its checks, or shuts them where all of them are drawn; a press on its "more" control, on a
+ * link in its words or on its parent line's link is that control's own. The control and the
+ * links are tab stops, as every control of the view is. As a card its left edge is the
+ * statement's teal, or the failed red where it reads Not met or no check serves it, so the card
+ * says so before its words are read. How it stands is the issue's reading of it, whatever a
+ * words query left of its checks.
  *
  * Where the coverage read counts more checks for it than the view with no query draws under it,
  * the rest serve it from issues under this one, and it says how many in one line after its
- * checks, inside its card (part V's R9). The line is no row of the tree, since the view draws
- * none of those checks, and it is drawn only once the reads have answered, as every row is.
+ * checks, inside its card. The line is no row of the tree, since the view draws none of those
+ * checks, and it is drawn only once the reads have answered, as every row is.
  */
 function Statement({
   context,
@@ -1013,7 +1007,7 @@ function Statement({
     >
       {/* biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: a
           pointer's way to what Enter on the statement's row does; the cell is no control of its
-          own (part V's R8). */}
+          own. */}
       <div
         className={`flex min-w-0 flex-col ${CELL}`}
         onClick={(event) => {
@@ -1091,33 +1085,32 @@ function Statement({
 
 /**
  * One check beside its latest result (the prototype's `.vc` and `.vres`): how it stands, by a
- * word and a shape, its own words, and the four attributes its body draws (R15, R17). Its
- * earlier results are one line with their count, which opens them in place (ruling 6 of
- * build-rulings-md: the approved picture draws one result for each check), and the result the
- * check's state stands on is marked wherever it is drawn. An earlier result a words query kept
- * is drawn under the latest with the line still shut, and no other earlier result is, so the
- * view draws no result the reader neither kept by the query nor opened (review 5933840110 on
- * pull request #4221, part V's departure 10); the line opens them all, each drawn once.
+ * word and a shape, its own words, and the four attributes its body draws. Its earlier results
+ * are one line with their count, which opens them in place, since the approved picture draws one
+ * result for each check, and the result the check's state stands on is marked wherever it is
+ * drawn. An earlier result a words query kept is drawn under the latest with the line still
+ * shut, and no other earlier result is, so the view draws no result the reader neither kept by
+ * the query nor opened; the line opens them all, each drawn once.
  *
  * The facts of the check and of its results are drawn while the reader's focus is anywhere in
  * the row - its words, a link in them, its facts, its results, the line of earlier results or
  * the row itself - and while the reader has pressed them open, which is the rule the outline
- * draws a focused node's body by (R6, part V's departure 5). A pointer's press on the words or
- * on the latest result's cell, or Enter or Space on the words, opens them where they are shut
- * and shuts them where they are open, the focus inside or not, so the row says what it does
- * (`aria-expanded`) and does it; a press on a link or a button of the row is that control's
- * own. The words are a tab stop with no role: their links are tab stops too, and no control
- * holds another (part V's R8). So a reader reaches every fact of a check and of its results by
- * the keyboard alone, and the table stays the table the picture draws.
+ * draws a focused node's body by. A pointer's press on the words or on the latest result's cell,
+ * or Enter or Space on the words, opens them where they are shut and shuts them where they are
+ * open, the focus inside or not, so the row says what it does (`aria-expanded`) and does it; a
+ * press on a link or a button of the row is that control's own. The words are a tab stop with
+ * no role: their links are tab stops too, and no control holds another. So a reader reaches
+ * every fact of a check and of its results by the keyboard alone, and the table stays the table
+ * the picture draws.
  *
  * It is a row of the tree, across its words and its latest result: a row of the group under
  * its statement, or, for a check that serves no statement, a row of the table of its own
  * (`loose`). From 761 px up such a row stands in the statement grid with its first cell empty,
  * so its words stand under "Checks" and its result under "Latest result", as a statement's
  * checks do; at 760 px and below it is a card of its own. The row says whether its facts are
- * drawn (part V's R8), which is what the tree's keys read: Enter on the row itself presses it
- * as its words do, Enter on its statement's row opens or shuts it with the statement's other
- * checks, and `o` keeps it open or lets it go (the body's `pressChecks` and `keepChecks`).
+ * drawn, which is what the tree's keys read: Enter on the row itself presses it as its words do,
+ * Enter on its statement's row opens or shuts it with the statement's other checks, and `o` keeps
+ * it open or lets it go (the body's `pressChecks` and `keepChecks`).
  */
 function Check({
   check,
@@ -1166,9 +1159,8 @@ function Check({
   };
   // The earlier results it draws, in their order: all of them where the reader opened their
   // line, else only those a words query kept (`kept`), with the line still shut, so a query that
-  // keeps one of 26 results draws that one and not the 25 others (review 5933840110 on pull
-  // request #4221, ruling 6 of build-rulings-md, part V's departure 10). Opened, the line draws
-  // each once, the kept ones among them, and shut again it leaves the kept ones drawn.
+  // keeps one of 26 results draws that one and not the 25 others. Opened, the line draws each
+  // once, the kept ones among them, and shut again it leaves the kept ones drawn.
   const earlierDrawn = earlierShown
     ? check.earlier
     : kept.size === 0
@@ -1181,7 +1173,7 @@ function Check({
       <div className={CELL}>
         {/* biome-ignore lint/a11y/noStaticElementInteractions: the words hold links that are tab
             stops of their own, so no role may make them a control that holds controls; the row's
-            `aria-expanded` says what a press does (part V's R8). */}
+            `aria-expanded` says what a press does. */}
         <div
           className={`flex min-w-0 items-baseline gap-2 text-sm leading-5 ${pageWordsText} ${focusVisibleRing}`}
           data-verification-check-words=""
@@ -1196,7 +1188,7 @@ function Check({
             onPress(row, !opened);
           }}
           onMouseDown={markPress}
-          // biome-ignore lint/a11y/noNoninteractiveTabindex: a check's words are a tab stop of the view (part V's R8).
+          // biome-ignore lint/a11y/noNoninteractiveTabindex: a check's words are a tab stop of the view.
           tabIndex={0}
         >
           <span
@@ -1226,7 +1218,7 @@ function Check({
       </div>
       {/* biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: a
           pointer's way to the press the check's words take by Enter or Space; the cell is no
-          control of its own (part V's departure 5). */}
+          control of its own. */}
       <div className={CELL} onClick={pointerPress} onMouseDown={markPress}>
         {check.state === undefined ? null : (
           <p
@@ -1252,7 +1244,7 @@ function Check({
           // The press leaves the focus where it is, as the "more" control's does (`CutWords`):
           // the focus a pointer's press puts in the row draws the latest result's facts above
           // this line, which moves it from under the pointer before the press ends, and the
-          // click then opens the facts and not the earlier results ruling 6 opens in place.
+          // click then opens the facts and not the earlier results this line opens in place.
           <button
             aria-expanded={earlierShown}
             className={`dispatch-inline-link mt-1 text-xs leading-5 font-medium underline decoration-page-hair underline-offset-[3px] ${pageQuietText}`}
@@ -1318,13 +1310,12 @@ function Check({
 }
 
 /** One result of a check: who recorded it and when, what it observed, whether the check's state
- *  stands on it, and what it holds that no line has room for, in the body the check's row opens
- *  (R6, R9, R15). What it observed is drawn as a node's own text is, through `RowText`, so no
- *  stored text of the view is drawn as raw characters (part V's departure 7). No commit is drawn
- *  for it, on its line or in its facts: the page names one commit for the issue's results, once,
- *  in the summary, and a result recorded against another says so in its check's word, "Out of
- *  date" (part V's R3, the root's R17). So the facts it opens leave out the `commit` fact
- *  `check-facts.ts`'s `resultFacts` gives every result. */
+ *  stands on it, and what it holds that no line has room for, in the body the check's row opens.
+ *  What it observed is drawn as a node's own text is, through `RowText`, so no stored text of the
+ *  view is drawn as raw characters. No commit is drawn for it, on its line or in its facts: the
+ *  page names one commit for the issue's results, once, in the summary, and a result recorded
+ *  against another says so in its check's word, "Out of date". So the facts it opens leave out
+ *  the `commit` fact `check-facts.ts`'s `resultFacts` gives every result. */
 function LatestResult({
   opened,
   result,
@@ -1378,11 +1369,10 @@ function LatestResult({
   );
 }
 
-/** Who made something, by a name and a shape, as every other row of the page draws an author
- *  (R9): a person by their login, an agent by its role's word as the outline's rows name one
+/** Who made something, by a name and a shape, as every other row of the page draws an author: a
+ *  person by their login, an agent by its role's word as the outline's rows name one
  *  (`agent-role.ts`), never an identifier, and the page's own words where the model holds none.
- *  An agent's whole title is drawn nowhere in the view, which opens no body that would give it
- *  (part V's R7). */
+ *  An agent's whole title is drawn nowhere in the view, which opens no body that would give it. */
 function Author({ actor }: { actor: Actor | undefined }): ReactNode {
   const agentText = useAgentText();
   const kind = authorKind(actor);
@@ -1402,14 +1392,13 @@ function Author({ actor }: { actor: Actor | undefined }): ReactNode {
 }
 
 /** The other statements a check is drawn under, each named by its first words as every chip of
- *  the page names its target (R4, `node-row-chip.ts`): a check serves several statements and
- *  this body draws it under each. A target is named from the statement the view already holds
- *  for it (`names`, by its address): the words of the first block of the server's reading of
- *  its text (`lineWords`), cut by `chipWords`, and never its stored excerpt (`chip.name`) nor
- *  any markdown pass over them (the architect's decisions 46, 66 and 83). So no mark the author
- *  typed is drawn, a statement whose words open on "1." keeps it, a bare `dispatch://` address
- *  reads as its target's short form (decision 95), and the line waits on no names read (part
- *  V's departure 7, R22). A target the view holds no statement for and one that reads as no
+ *  the page names its target (`node-row-chip.ts`): a check serves several statements and this
+ *  body draws it under each. A target is named from the statement the view already holds for it
+ *  (`names`, by its address): the words of the first block of the server's reading of its text
+ *  (`lineWords`), cut by `chipWords`, and never its stored excerpt (`chip.name`) nor any
+ *  markdown pass over them. So no mark the author typed is drawn, a statement whose words open on
+ *  "1." keeps it, a bare `dispatch://` address reads as its target's short form, and the line
+ *  waits on no names read. A target the view holds no statement for and one that reads as no
  *  words draw nothing, a comma stands only between targets that are drawn, and the line is
  *  drawn only where one is. */
 function AlsoUnder({
@@ -1441,8 +1430,8 @@ function AlsoUnder({
   );
 }
 
-/** Each gap the node carries, said in full where the picture draws "No check proves this"
- *  (R10): a statement no check serves, and a check whose `serves` names no statement. */
+/** Each gap the node carries, said in full where the picture draws "No check proves this": a
+ *  statement no check serves, and a check whose `serves` names no statement. */
 function Gaps({ node }: { node: TreeNode }): ReactNode {
   if (node.gaps.length === 0) return null;
   return (
@@ -1463,11 +1452,10 @@ function Gaps({ node }: { node: TreeNode }): ReactNode {
 }
 
 /** The one line a row draws for the node its words came from, where the filter draws that node
- *  as no row (R2, R1's first-line rule): its kind and its first line. The line is the link a
- *  reader follows to that node where the model gives it an address, as the outline's
- *  `ParentLink` draws it (R18), and text where it gives none or the address does not parse. The
- *  link is a tab stop, as every control of the view is: the tree's keys move between rows and
- *  reach no link inside one (part V's R8). */
+ *  as no row: its kind and its first line. The line is the link a reader follows to that node
+ *  where the model gives it an address, as the outline's `ParentLink` draws it, and text where
+ *  it gives none or the address does not parse. The link is a tab stop, as every control of the
+ *  view is: the tree's keys move between rows and reach no link inside one. */
 function ParentLine({ node }: { node: TreeNode }): ReactNode {
   const line = node.parentLine;
   if (line === undefined) return null;
@@ -1500,10 +1488,10 @@ function ParentLine({ node }: { node: TreeNode }): ReactNode {
 }
 
 /** A row the filter kept that is neither a statement nor a check: a node an address named,
- *  which outranks the filter (R20). It is drawn by its kind and its words, so nothing the
- *  filter drew is lost (R19). It is a row of the tree and of the table, as a check that serves
- *  no statement is. The links in its words are tab stops, as every control of the view is: the
- *  tree's keys move between rows and reach no link inside one (part V's R8). */
+ *  which outranks the filter. It is drawn by its kind and its words, so nothing the filter drew
+ *  is lost. It is a row of the tree and of the table, as a check that serves no statement is.
+ *  The links in its words are tab stops, as every control of the view is: the tree's keys move
+ *  between rows and reach no link inside one. */
 function OtherRow({ node, tabIndex }: { node: TreeNode; tabIndex: 0 | -1 }): ReactNode {
   return (
     <div

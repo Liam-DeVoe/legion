@@ -59,15 +59,14 @@ import {
 } from "./verification-fixtures";
 
 /**
- * What the Verification filter's body draws, read as a reader reads it
- * (dispatch://INFRA-1196 R17, R2, R10, R22, and the approved picture
- * `page-v3-verification-1440.png`).
+ * What the Verification filter's body draws, read as a reader reads it, against the approved
+ * picture `page-v3-verification-1440.png`.
  *
  * How the model reads the issue's results is `statement-state.test.ts`; these rows are about
  * what the page says: the covered count, the one commit, the word and the shape of each state,
  * the gap on a statement no check serves, and the facts a check's body opens. Where the three
  * columns stand side by side and where they stack is the browser's own layout, which no DOM of
- * a unit test lays out, so the widths are read by the browser suite (c-checks-readable).
+ * a unit test lays out, so the widths are read by the browser suite (`e2e/issue-page-v.e2e.ts`).
  */
 
 // A check's words are drawn from the results read's reading of them, which `displayTree` reads
@@ -144,7 +143,7 @@ function textsOf(view: RenderResult, selector: string): string[] {
 
 /** What the page says in its own words: the text of each `[data-page-chrome]` element with
  *  every `[data-author-text]` descendant taken out, which is how `page-words.ts` says a reader of
- *  the page's words reads them, and what c-plain-words reads word by word. */
+ *  the page's words reads them, word by word. */
 function chromeTexts(view: RenderResult): string[] {
   return [...view.container.querySelectorAll("[data-page-chrome]")]
     .map((element) => {
@@ -194,9 +193,9 @@ function linkedCheckNode(block: CheckBlock): TreeNode {
   return { ...checkNode(block), tree: displayTree(LINKED_WORDS) };
 }
 
-// R17: "How many statements carry a check is drawn as covered, and no count, legend or heading
-// reads proven or met for coverage", and "The page names one commit for the issue's results ...
-// drawn once where the results are read".
+// How many statements carry a check is drawn as covered, and no count, legend or heading reads
+// proven or met for coverage; and the page names one commit for the issue's results, drawn once
+// where the results are read.
 test("the summary counts the statements that carry a check as covered and names one commit", () => {
   const met = passing("c-one");
   const unrun = check({ block_id: "c-two", pass_stands: { answer: "no" }, results: [] });
@@ -229,11 +228,11 @@ test("the summary counts the statements that carry a check as covered and names 
   }
 });
 
-// Part V's R3 ("No result draws a commit on its own line") and the root's R17 ("The page names
-// one commit for the issue's results ... drawn once"), with a check's facts open: each result's
-// facts open with the check's, and they draw what the result recorded but its commit. No result
-// draws a commit anywhere but the summary's one line, neither the commit the page names nor
-// another a result ran at, whole or in the ten characters the summary draws.
+// No result draws a commit on its own line, and the page names one commit for the issue's
+// results, drawn once. With a check's facts open, each result's facts open with the check's, and
+// they draw what the result recorded but its commit. No result draws a commit anywhere but the
+// summary's one line, neither the commit the page names nor another a result ran at, whole or in
+// the ten characters the summary draws.
 test("with a check's facts open, no result draws its commit anywhere but the summary", async () => {
   const user = userEvent.setup();
   const busy = check({
@@ -284,7 +283,7 @@ test("with a check's facts open, no result draws its commit anywhere but the sum
   }
 });
 
-// R17: "Each of the seven states a check can be in is told apart by a word and a shape".
+// Each of the seven states a check can be in is told apart by a word and a shape.
 test("each of the seven states a check can be in is drawn by its own word and shape", () => {
   const withdrawn = {
     actor: { id: "tester", kind: "session" as const },
@@ -363,10 +362,10 @@ test("each of the seven states a check can be in is drawn by its own word and sh
   }
 });
 
-// R17: Met where every check of it passed at the commit the page names, Not met where one
-// failed there, Unknown otherwise - here a pass the server reads at another commit than the one
-// it compares the check with, so no pass of it stands (decision 152: a check stands as the
-// server reads it, `commit_stands` and `pass_stands`, as part F's own case reads it).
+// Met where every check of it passed at the commit the page names, Not met where one failed
+// there, Unknown otherwise - here a pass the server reads at another commit than the one it
+// compares the check with, so no pass of it stands: a check stands as the server reads it,
+// `commit_stands` and `pass_stands`, as the page's model reads it everywhere.
 test("a statement reads Met, Not met or Unknown by how its checks stand at that commit", () => {
   const met = passing("c-one");
   const failed = failing("c-two");
@@ -414,8 +413,8 @@ test("a statement reads Met, Not met or Unknown by how its checks stand at that 
   }
 });
 
-// R10: a statement no check serves carries its gap, where the picture draws "No check proves
-// this". The page says it in its own words and names the kind of gap it is.
+// A statement no check serves carries its gap, where the picture draws "No check proves this".
+// The page says it in its own words and names the kind of gap it is.
 test("a statement no check serves carries its gap in full", () => {
   const served = passing("c-one");
   const view = drawBody(
@@ -441,12 +440,11 @@ test("a statement no check serves carries its gap in full", () => {
   }
 });
 
-// Part V's R9 and departures 2 and 10: where the coverage read counts more checks for a
-// statement than the view with no query draws under it, the rest serve it from an issue under
-// this one. The statement is covered, carries no gap, and draws one line after its checks with
-// how many. A words query that leaves out the statement's own check neither calls that check
-// "elsewhere" nor changes how the statement stands, what the summary counts or what the chips
-// count and narrow by.
+// Where the coverage read counts more checks for a statement than the view with no query draws
+// under it, the rest serve it from an issue under this one. The statement is covered, carries no
+// gap, and draws one line after its checks with how many. A words query that leaves out the
+// statement's own check neither calls that check "elsewhere" nor changes how the statement
+// stands, what the summary counts or what the chips count and narrow by.
 test("a statement that a child's check covers draws one line of the checks drawn elsewhere", async () => {
   const user = userEvent.setup();
   const own = passing("c-one");
@@ -595,12 +593,12 @@ test("a statement that a child's check covers draws one line of the checks drawn
   }
 });
 
-// R17: "a command renders as code with a copy control ... and `when` reads as words", and R15:
-// a check draws all four of its attributes and a result what it recorded. The body opens where
-// the reader's focus reaches the check and closes when the focus leaves it; a press keeps it
-// open once the focus has gone, and a press on an open one closes it (R6). Part V's departure
-// 5: the check's row says whether it is open, and its words, a tab stop with no role, take the
-// press by a pointer, Enter or Space, as its latest result's cell takes a pointer's.
+// A command renders as code with a copy control and `when` reads as words, and a check draws all
+// four of its attributes and a result what it recorded. The body opens where the reader's focus
+// reaches the check and closes when the focus leaves it; a press keeps it open once the focus has
+// gone, and a press on an open one closes it. The check's row says whether it is open, and its
+// words, a tab stop with no role, take the press by a pointer, Enter or Space, as its latest
+// result's cell takes a pointer's.
 test("a check's facts open where the reader's focus is: when as words, the run as a command", async () => {
   const user = userEvent.setup();
   const shot = "dispatch://CORE-1/artifact/screenshot-png@v1";
@@ -678,8 +676,8 @@ test("a check's facts open where the reader's focus is: when as words, the run a
   }
 });
 
-// R2 and the architect's ruling on rows: a statement is drawn as context, as the filter's own
-// view marks it, with its words and the node its words came from as one line on its row.
+// A statement is drawn as context, as the filter's own view marks it, with its words and the
+// node its words came from as one line on its row.
 test("a statement is marked as context, with its words and the node they came from", () => {
   const served = passing("c-one");
   const statement = statementNode(
@@ -708,10 +706,10 @@ test("a statement is marked as context, with its words and the node they came fr
   }
 });
 
-// R18 and part V's R8: a statement's parent line is the link a reader follows to the node its
-// words came from where that node has an address, as the outline's parent line is
-// (`NodeRow.tsx`'s `ParentLink`), and the link is a tab stop, since the tree's keys move between
-// rows and reach no link inside one. A parent with no address is named by its words alone.
+// A statement's parent line is the link a reader follows to the node its words came from where
+// that node has an address, as the outline's parent line is (`NodeRow.tsx`'s `ParentLink`), and
+// the link is a tab stop, since the tree's keys move between rows and reach no link inside one. A
+// parent with no address is named by its words alone.
 test("a statement's parent line links the node it came from where that node has an address", () => {
   const served = passing("c-one");
   const other = passing("c-two");
@@ -767,9 +765,9 @@ test("a statement's parent line links the node it came from where that node has 
   }
 });
 
-// Ruling 6: the body draws the newest result of each check; its earlier results are one line
-// with their count, which opens them in place, and the result the check's state stands on is
-// marked wherever it is drawn.
+// The body draws the newest result of each check, as the approved picture does; its earlier
+// results are one line with their count, which opens them in place, and the result the check's
+// state stands on is marked wherever it is drawn.
 test("a check draws its newest result, folds the rest behind their count, and marks the one that stands", async () => {
   const user = userEvent.setup();
   const busy = check({
@@ -811,11 +809,10 @@ test("a check draws its newest result, folds the rest behind their count, and ma
   }
 });
 
-// Part V's R8, and the reviewer's finding on pull request #4221 at the row's key: the results
-// read answers again on every result recorded or withdrawn while the reader is in the view
-// (`api/event-refresh.ts`), so a check's newest result changes under the reader. Its row under a
-// statement is the same row after it: the focus on its words stays on the same element, the
-// facts that focus opened stay open, and so do the earlier results the reader opened.
+// The results read answers again on every result recorded or withdrawn while the reader is in
+// the view (`api/event-refresh.ts`), so a check's newest result changes under the reader. Its row
+// under a statement is the same row after it: the focus on its words stays on the same element,
+// the facts that focus opened stay open, and so do the earlier results the reader opened.
 test("a check under a statement keeps the reader's focus and its open earlier results when its newest result changes", async () => {
   const user = userEvent.setup();
   const earlier = result({ created_at: "2026-11-13T09:00:00Z", id: "earlier" });
@@ -870,8 +867,8 @@ test("a check under a statement keeps the reader's focus and its open earlier re
   }
 });
 
-// R17, R6: the seven states a check can be in are named once over the table, each by its word
-// and its shape with how many checks stand in it, so no shape of the table goes unnamed.
+// The seven states a check can be in are named once over the table, each by its word and its
+// shape with how many checks stand in it, so no shape of the table goes unnamed.
 test("the summary names all seven states a check can be in, with how many checks stand in each", () => {
   const met = passing("c-one");
   const failed = failing("c-two");
@@ -902,7 +899,7 @@ test("the summary names all seven states a check can be in, with how many checks
   }
 });
 
-// The chips of the picture, in the words R17 gives the three states: pressing one draws the
+// The chips of the picture, in the page's words for the three states: pressing one draws the
 // statements in that state alone, pressing it again draws them all.
 test("a chip draws the statements in one state alone, and pressing it again draws them all", async () => {
   const user = userEvent.setup();
@@ -939,9 +936,9 @@ test("a chip draws the statements in one state alone, and pressing it again draw
   }
 });
 
-// Part V's departure 4, the reviewer's finding at the checkpoint: no chip is held back from the
-// reader. The keyboard reaches a chip whose state holds no statement, as it reaches every chip,
-// and its press draws the page's line for that state rather than a table with nothing in it.
+// No chip is held back from the reader. The keyboard reaches a chip whose state holds no
+// statement, as it reaches every chip, and its press draws the page's line for that state rather
+// than a table with nothing in it.
 test("a chip whose state holds no statement draws the page's line for it", async () => {
   const user = userEvent.setup();
   const met = passing("c-one");
@@ -983,7 +980,7 @@ test("a chip whose state holds no statement draws the page's line for it", async
   }
 });
 
-// R22: every word the page draws of its own comes from a declared list, and no identifier,
+// Every word the page draws of its own comes from a declared list, and no identifier,
 // slug or schema token is drawn where a word belongs.
 test("every word the body draws of its own comes from the page's declared lists", () => {
   const seeded = passing("c-one");
@@ -1029,7 +1026,7 @@ test("every word the body draws of its own comes from the page's declared lists"
 });
 
 // A body with nothing to draw says so in the page's own line for it, and says nothing about
-// the page (R22).
+// the page.
 test("an issue with no checks and no statements draws the page's own empty line", () => {
   const view = drawBody([], []);
   try {
@@ -1039,12 +1036,11 @@ test("an issue with no checks and no statements draws the page's own empty line"
   }
 });
 
-// The architect's decision 81 and part V's departure 10: a query that matches nothing keeps the
-// issue's row, which says how the whole issue stands as it does with no query - the covered
-// count, the bar, the legend of the seven states and the chips - and the table says under its
-// headings, in the slot's line for no match, that the query left nothing, as it says a chip's
-// state holds no statement. An issue with nothing at all draws that one line alone, in the tree,
-// with no row (part V's R1).
+// A query that matches nothing keeps the issue's row, which says how the whole issue stands as it
+// does with no query - the covered count, the bar, the legend of the seven states and the chips -
+// and the table says under its headings, in the slot's line for no match, that the query left
+// nothing, as it says a chip's state holds no statement. An issue with nothing at all draws that
+// one line alone, in the tree, with no row.
 test("a query that matches nothing keeps the summary of the whole issue and says so under it", () => {
   const met = passing("c-one");
   const failed = failing("c-two");
@@ -1126,15 +1122,14 @@ test("a query that matches nothing keeps the summary of the whole issue and says
   }
 });
 
-// The reviewer's finding on pull request #4221 at the check column, and part V's departure 10: a
-// query whose words a result holds, and neither its check's nor its statement's, keeps the result
-// alone, which the filter lifts under the statement with the check as its parent line
+// A query whose words a result holds, and neither its check's nor its statement's, keeps the
+// result alone, which the filter lifts under the statement with the check as its parent line
 // (`presets.ts`). The body draws that result with its check, read from the issue's reading, under
 // the statement and as a row like any other, so what the query kept is on screen. Where it is an
 // earlier result of its check, the check draws it under its latest with its line of earlier
-// results shut, and no other earlier result (review 5933840110, ruling 6): from the row's first
-// drawing, and when the query comes to keep it while the row is already drawn. Pressing the line
-// draws every earlier result, each once, and pressing it again leaves the kept one drawn.
+// results shut, and no other earlier result: from the row's first drawing, and when the query
+// comes to keep it while the row is already drawn. Pressing the line draws every earlier result,
+// each once, and pressing it again leaves the kept one drawn.
 test("a query that keeps only a result draws it with its check under its statement", async () => {
   const user = userEvent.setup();
   const failure = "Timed out waiting for the zebra column.";
@@ -1245,9 +1240,8 @@ test("a query that keeps only a result draws it with its check under its stateme
   }
 });
 
-// R19, R20: a check whose `serves` names no statement is a row of the filter, and so is a node
-// an address named, which outranks the filter. The body draws both, so nothing the filter kept
-// is lost.
+// A check whose `serves` names no statement is a row of the filter, and so is a node an address
+// named, which outranks the filter. The body draws both, so nothing the filter kept is lost.
 test("a check that serves no statement, and a node an address named, are drawn", () => {
   const loose = passing("c-loose");
   const named = node({ id: "comment-1", text: "A comment an address named.", type: "comment" });
@@ -1278,11 +1272,10 @@ test("a check that serves no statement, and a node an address named, are drawn",
   }
 });
 
-// Part V's R8 and R1: the view keeps one tree, which holds everything it draws. Its first row
-// is the issue's own, holding the summary and the chips, and it is the tree's one tab stop, so
-// `t k` leaves the view's top on screen and the next Tab on the chip All. An issue with nothing
-// to draw draws no row, and while a read is out the tree holds nothing at all and the body
-// nothing but the tree.
+// The view keeps one tree, which holds everything it draws. Its first row is the issue's own,
+// holding the summary and the chips, and it is the tree's one tab stop, so `t k` leaves the
+// view's top on screen and the next Tab on the chip All. An issue with nothing to draw draws no
+// row, and while a read is out the tree holds nothing at all and the body nothing but the tree.
 test("the view's tree holds the issue's row first, and only it is a tab stop", () => {
   const met = passing("c-one");
   const loose = passing("c-loose");
@@ -1375,18 +1368,17 @@ test("the view's tree holds the issue's row first, and only it is a tab stop", (
   }
 });
 
-// The architect's decisions 117 and 126, and the reviewer's finding on pull request #4221 at the
-// slot's reads: a read refused before it first answers holds nothing to draw from, so the body
-// says so over its tree, one line for each such read in the page's words for it with a Retry
-// that asks that read alone again. It draws no row, since a statement no blocks read placed its
-// check under, or a check no results read says how it stands, would say what is not so, and it
-// keeps its tree with nothing in it, as while a read is out (part V's R8). No line stands inside
-// the tree, whose own structure an alert would break.
+// A read refused before it first answers holds nothing to draw from, so the body says so over
+// its tree, one line for each such read in the page's words for it with a Retry that asks that
+// read alone again. It draws no row, since a statement no blocks read placed its check under, or
+// a check no results read says how it stands, would say what is not so, and it keeps its tree
+// with nothing in it, as while a read is out. No line stands inside the tree, whose own structure
+// an alert would break.
 test("a read that fails before it first answers says so with a Retry, for each of the view's three reads", async () => {
   const user = userEvent.setup();
   const met = passing("c-one");
   const statements = [statementNode("r1", "The page draws it.", [checkNode(met)])];
-  // The words decision 126 names: the Spec view's two, and the checks for the blocks read.
+  // The page's words for each read: the Spec view's two, and the checks for the blocks read.
   const words: Readonly<Record<VerificationRead, string>> = {
     blocks: ANSWER_LINES.checks_unreadable,
     coverage: ANSWER_LINES.statements_unreadable,
@@ -1470,12 +1462,11 @@ test("a read that fails before it first answers says so with a Retry, for each o
   }
 });
 
-// Review 5933840110's first finding on pull request #4221, and the architect's decisions 162 and
-// 182 on dispatch://INFRA-1196: a press by the keyboard never leaves the focus on the page's
-// body. A read asked again with no answer held is out rather than refused, so Retry takes its
-// own line, and the focus on it, off the page. The focus goes to the next refused read's Retry,
-// to the view's tree while the read is out, back to the read's Retry when it is refused again,
-// and to the tree's tab stop, the issue's row, once it answers.
+// A press by the keyboard never leaves the focus on the page's body. A read asked again with no
+// answer held is out rather than refused, so Retry takes its own line, and the focus on it, off
+// the page. The focus goes to the next refused read's Retry, to the view's tree while the read is
+// out, back to the read's Retry when it is refused again, and to the tree's tab stop, the issue's
+// row, once it answers.
 test("Enter on a Retry keeps the focus in the view: on the next refused read's Retry, on the empty tree while the read is out, on its Retry when refused again, and on the issue's row once it answers", async () => {
   const user = userEvent.setup();
   const met = passing("c-one");
@@ -1533,11 +1524,11 @@ test("Enter on a Retry keeps the focus in the view: on the next refused read's R
   }
 });
 
-// The architect's decision 182: `t k` with a refused read puts the focus on that read's Retry,
-// not on the empty tree, which has nothing to act on and from which Tab never reaches the Retry.
-// The page's chord focuses the tree, which holds no row to take its tab stop, so the tree hands
-// its focus to the Retry. A tree with rows keeps a focus that a click on its headings gives it:
-// only rows that come where the tree drew none take it (decision 162).
+// `t k` with a refused read puts the focus on that read's Retry, not on the empty tree, which has
+// nothing to act on and from which Tab never reaches the Retry. The page's chord focuses the tree,
+// which holds no row to take its tab stop, so the tree hands its focus to the Retry. A tree with
+// rows keeps a focus that a click on its headings gives it: only rows that come where the tree
+// drew none take it.
 test("with a read refused, the view's tree gives its focus to that read's Retry", () => {
   const met = passing("c-one");
   const statements = [statementNode("r1", "The page draws it.", [checkNode(met)])];
@@ -1575,10 +1566,10 @@ test("with a read refused, the view's tree gives its focus to that read's Retry"
   }
 });
 
-// The architect's decision 180: staleness is per observer. The view's own observers of the
-// coverage and the results (`useVerificationReads`) hold what they read until an event refreshes
-// it, so the view pressed 31 s after the page read both, past the app's 30 s (`main.tsx`), sends
-// no request. `useIssueTree`'s observers of the same keys are part F's, and are not drawn here.
+// Staleness is per observer. The view's own observers of the coverage and the results
+// (`useVerificationReads`) hold what they read until an event refreshes it, so the view pressed
+// 31 s after the page read both, past the app's 30 s (`main.tsx`), sends no request. The
+// observers `useIssueTree` holds of the same keys are not drawn here.
 test("the view's own reads of the coverage and the results send no request when the view is pressed 31 s after they answered", async () => {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
@@ -1616,10 +1607,10 @@ test("the view's own reads of the coverage and the results send no request when 
   }
 });
 
-// Part V's R7 and R9: an agent that recorded a result is named by its role's word, as the
-// outline's rows name one (`agent-role.ts`), and its session's whole title is drawn nowhere in
-// the view, its opened facts included; a person is named by their login, and a result nobody
-// recorded by the page's own words for it.
+// An agent that recorded a result is named by its role's word, as the outline's rows name one
+// (`agent-role.ts`), and its session's whole title is drawn nowhere in the view, its opened facts
+// included; a person is named by their login, and a result nobody recorded by the page's own
+// words for it.
 test("an agent that recorded a result is named by its role's word", async () => {
   const user = userEvent.setup();
   const byAgent = check({
@@ -1629,7 +1620,7 @@ test("an agent that recorded a result is named by its role's word", async () => 
         actor: {
           id: "session-9",
           kind: "session",
-          origin: { session_title: "Legion tester · INFRA-1" },
+          origin: { session_title: "Legion tester · ACME-1" },
         },
         check_block_id: "c-agent",
         id: "by-agent",
@@ -1681,7 +1672,7 @@ test("an agent that recorded a result is named by its role's word", async () => 
     ).toEqual(["true", "true", "true"]);
     expect(view.container.querySelectorAll("[data-node-body]")).toHaveLength(6);
     const drawn = view.container.querySelector("[data-verification-body]")?.textContent ?? "";
-    expect(drawn).not.toContain("INFRA-1");
+    expect(drawn).not.toContain("ACME-1");
     expect(drawn).not.toContain("Legion");
     expect(textsOf(view, "[data-node-author]").filter((name) => name.includes("·"))).toEqual([]);
   } finally {
@@ -1689,10 +1680,10 @@ test("an agent that recorded a result is named by its role's word", async () => 
   }
 });
 
-// Part V's R5 and R8: a check's words are drawn whole through `RowText` from the results read's
-// reading of them (`text_tree`), so a link in them is a link and a reference is named, never
-// spelled as its address. The words are no button, so no control holds a link, and a press on
-// a link is the link's own: it neither opens nor shuts the check's facts.
+// A check's words are drawn whole through `RowText` from the results read's reading of them
+// (`text_tree`), so a link in them is a link and a reference is named, never spelled as its
+// address. The words are no button, so no control holds a link, and a press on a link is the
+// link's own: it neither opens nor shuts the check's facts.
 test("a check's words draw their links from the results read's tree", async () => {
   const user = userEvent.setup();
   const linked = check({ block_id: "c-one", text: LINKED_WORDS });
@@ -1723,8 +1714,7 @@ test("a check's words draw their links from the results read's tree", async () =
   }
 });
 
-// Part V's departure 7 and R22, the tester's F18, and the architect's decisions 46, 66 and 83: a
-// check that serves two statements is drawn under each and names the other by its first words,
+// A check that serves two statements is drawn under each and names the other by its first words,
 // read from that statement's own node, which the view already holds: the words of the server's
 // reading of its text (`nodeWords`), cut at a word within 32 characters, with no mark the author
 // typed and no markdown pass over them, so words that open on "1." keep it. The chip's stored
@@ -1800,7 +1790,7 @@ test("a check under two statements names the other by its words with no mark of 
     expect(named, `"Also under" names r2 by no words: "${named}"`).not.toBe("");
     expect(named, `"Also under" draws a backtick: "${named}"`).not.toContain("`");
     expect(named, `"Also under" draws an asterisk: "${named}"`).not.toContain("*");
-    // A bare address reads as its target's short form (decision 95), never as `dispatch://`.
+    // A bare address reads as its target's short form, never as `dispatch://`.
     expect(named, `"Also under" draws an address: "${named}"`).not.toContain("dispatch://");
     expect(
       named.length,
@@ -1832,7 +1822,7 @@ test("a check under two statements names the other by its words with no mark of 
     expect(trailOf(picture, pictured)).toEqual([
       { names: [plain.text], text: `${CONTROL_LABELS.also_under} ${plain.text}` },
     ]);
-    // Words that open on a number keep it (decision 66's "1. Stand").
+    // Words that open on a number keep it ("1. Stand").
     expect(trailOf(plain, counted)).toEqual([
       {
         names: ["1. Stand the page up first."],
@@ -1870,14 +1860,14 @@ function layOut(height: number): () => void {
   };
 }
 
-// Part V's R8: the keyboard reaches each control of the view by Tab: each chip, the "more"
-// control of a cut statement, each check's words, each link in a check's words, each link in the
-// words of a node an address named, the line of earlier results and, in the opened facts, the
-// copy control of a command. This reads that each of them holds tab index 0, so none is out of
-// the tab order; the order Tab takes them in is read in the browser, where row 4 of
-// `e2e/issue-page-v.e2e.ts` walks it. The view passes `tabStops` to G's `CutWords`, `NodeFacts`
-// and `RowText`, so none of them takes its controls out of the tab order. In document order the
-// issue's row comes before the chip All, so the Tab after `t k` reaches the first chip.
+// The keyboard reaches each control of the view by Tab: each chip, the "more" control of a cut
+// statement, each check's words, each link in a check's words, each link in the words of a node
+// an address named, the line of earlier results and, in the opened facts, the copy control of a
+// command. This reads that each of them holds tab index 0, so none is out of the tab order; the
+// order Tab takes them in is read in the browser, where row 4 of `e2e/issue-page-v.e2e.ts` walks
+// it. The view passes `tabStops` to `CutWords`, `NodeFacts` and `RowText`, so none of them takes
+// its controls out of the tab order. In document order the issue's row comes before the chip
+// All, so the Tab after `t k` reaches the first chip.
 test("each control of the view is a tab stop", async () => {
   const user = userEvent.setup();
   const linked = check({
@@ -1889,8 +1879,8 @@ test("each control of the view is a tab stop", async () => {
     text: LINKED_WORDS,
   });
   const plain = passing("c-two");
-  // A comment an address named, whose words hold a link: the view draws it as a row of its own
-  // (R20), and the tree's keys reach no link inside a row.
+  // A comment an address named, whose words hold a link: the view draws it as a row of its own,
+  // and the tree's keys reach no link inside a row.
   const noted = "See [the notes](https://example.com/notes) first.";
   const named = node({ id: "comment-1", text: noted, tree: displayTree(noted), type: "comment" });
   // Sixty words over 400 lines of 24 px: six lines are drawn and 59 words are held back, more
@@ -1989,13 +1979,12 @@ test("each control of the view is a tab stop", async () => {
   }
 });
 
-// Part V's R8 and departure 3, and the tester's F21 and F22: the view's tree answers the
-// outline's keys by a handler of its own. `j`, `k`, the arrows, Home and End move the focus from
-// the row it is on, or from the row that holds the control it is on, and the tab stop moves with
-// it; Enter on a row presses its checks' facts, `o` keeps them drawn, and a pointer opens them
-// from a check's latest result, from its words and from its statement's words. The tree holds
-// back each key it acts on and no other, and a key that goes on with a chord the reader began is
-// the page's keymap's, so `t k` from inside the view reaches it.
+// The view's tree answers the outline's keys by a handler of its own. `j`, `k`, the arrows, Home
+// and End move the focus from the row it is on, or from the row that holds the control it is on,
+// and the tab stop moves with it; Enter on a row presses its checks' facts, `o` keeps them drawn,
+// and a pointer opens them from a check's latest result, from its words and from its statement's
+// words. The tree holds back each key it acts on and no other, and a key that goes on with a
+// chord the reader began is the page's keymap's, so `t k` from inside the view reaches it.
 test("the view's tree answers the outline's keys, and a check's facts open from its words, its result and its statement", async () => {
   const user = userEvent.setup();
   const one = passing("c-one");
@@ -2187,13 +2176,12 @@ test("the view's tree answers the outline's keys, and a check's facts open from 
   }
 });
 
-// Part V's R8, and the reviewer's finding on pull request #4221 at the rows' ids: each row of
-// the tree carries its own id (`data-verification-row`), which the tree's keys and presses read
-// from the row itself, so no id is paired with a row by where it stands among the others. The
-// ids are the tree's rows in reading order, the issue's first and each check under a statement
-// by that placement of it; and a key that moves onto a check that serves no statement, or onto a
-// node an address named, gives the tab stop to that row's own element, where Enter presses that
-// check and no other.
+// Each row of the tree carries its own id (`data-verification-row`), which the tree's keys and
+// presses read from the row itself, so no id is paired with a row by where it stands among the
+// others. The ids are the tree's rows in reading order, the issue's first and each check under a
+// statement by that placement of it; and a key that moves onto a check that serves no statement,
+// or onto a node an address named, gives the tab stop to that row's own element, where Enter
+// presses that check and no other.
 test("each row of the view's tree carries its own id, and a key gives the tab stop to the row it moves onto", async () => {
   const user = userEvent.setup();
   const one = passing("c-one");
@@ -2248,13 +2236,11 @@ test("each row of the view's tree carries its own id, and a key gives the tab st
   }
 });
 
-// Review 5933840110's second finding on pull request #4221 (at `VerificationFilterBody.tsx:482`),
-// pinned by INFRA-3936's tester on a running build of 6bd12234: on INFRA-1196's check `c-tree`,
-// with 26 results standing, `?q=` with a word one earlier result holds drew all 26 and the line
-// of earlier results open, 15,190 px tall. A query that keeps one earlier result of a check keeps
-// that result and no other: the check draws it, and the earlier results the query did not keep
-// stay folded behind their line, so the view draws no result that the reader neither kept by the
-// query nor opened (part V's R4, ruling 6, and departure 10).
+// Under `?q=` with a word one earlier result holds, a check with 26 results standing once drew
+// all 26 and its line of earlier results open, 15,190 px tall. A query that keeps one earlier
+// result of a check keeps that result and no other: the check draws it, and the earlier results
+// the query did not keep stay folded behind their line, so the view draws no result that the
+// reader neither kept by the query nor opened.
 test("a query that keeps one earlier result draws that result and leaves the others folded", () => {
   const kept = "The page drew the okapi column twice.";
   const many = check({
