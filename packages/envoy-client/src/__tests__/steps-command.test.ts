@@ -212,6 +212,26 @@ describe("dispatch steps", () => {
     );
   });
 
+  // Dispatch stores passed, failed or stopped as the result of a run that ended, and "" as that of
+  // one still running (workflowstore's stepResults). The read's generated type admits those words
+  // and no other, so `bun run typecheck` fails at the directive below once model.StepRecord.Result
+  // loses its enum and the contract is generated again.
+  test("an ended run prints the result Dispatch stored, a word the read's type holds", async () => {
+    const stored: readonly StepRecord["result"][] = ["", "passed", "failed", "stopped"];
+    // @ts-expect-error - a word Dispatch never stores is no result.
+    const notStored: StepRecord["result"] = "skipped";
+    expect(stored).not.toContain(notStored);
+
+    for (const result of stored.filter((word) => word !== "")) {
+      const { result: read } = await readSteps({
+        issue: "LEG-1",
+        tasks: [{ task: "default", steps: [{ ...implementer, result }] }],
+      });
+
+      expect(read.text.split("\n")[1], result).toEndWith(` 2026-11-16T09:40:00Z ${result}`);
+    }
+  });
+
   // Dispatch lists the tasks in the order each first ran, which is neither the order of their
   // names nor the order of all runs' starts: docs first ran before default, and ran again after.
   test("each task's runs print together, in the order the read lists the tasks", async () => {
