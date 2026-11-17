@@ -120,9 +120,9 @@ func observe(ctx context.Context, client *http.Client, url, list string, sets []
 		o.Sessions, o.Interests = sample(body, "envoy_active_sessions"), sample(body, "envoy_active_interests")
 	case resp.StatusCode == http.StatusOK:
 		var rows []struct {
-			SessionID string   `json:"session_id"`
-			Title     string   `json:"title"`
-			Topics    []string `json:"topics"`
+			SessionID string `json:"session_id"`
+			Title     string `json:"title"`
+			Dir       string `json:"dir"`
 		}
 		if err := json.Unmarshal(body, &rows); err != nil {
 			o.Transport = "undecodable 200: " + err.Error()
@@ -145,7 +145,7 @@ func observe(ctx context.Context, client *http.Client, url, list string, sets []
 				}
 				continue
 			}
-			chars[name][i] = variantOf(list, name, i, row.Title, row.Topics)
+			chars[name][i] = variantOf(list, name, i, row.Title, row.Dir)
 		}
 		o.Sets = map[string]string{}
 		for name, c := range chars {
@@ -166,28 +166,17 @@ func observe(ctx context.Context, client *http.Client, url, list string, sets []
 }
 
 // variantOf reads which variant of its record a listed row is: a session row by its title, an
-// interest row by its set's variant topic.
-func variantOf(list, name string, index int, title string, topics []string) byte {
-	if list == "sessions" {
-		rest, ok := strings.CutPrefix(title, fmt.Sprintf("refill %s %d v", name, index))
-		if ok && len(rest) == 1 && rest[0] >= '1' && rest[0] <= '9' {
-			return rest[0]
-		}
-		return '?'
+// interest row by its directory (sessionDir).
+func variantOf(list, name string, index int, title, dir string) byte {
+	text, prefix := title, fmt.Sprintf("refill %s %d v", name, index)
+	if list != "sessions" {
+		text, prefix = dir, "/refill/"+name+"/v"
 	}
-	found := byte('?')
-	prefix := "notifications.refill." + name + ".v"
-	for _, topic := range topics {
-		rest, ok := strings.CutPrefix(topic, prefix)
-		if !ok {
-			continue
-		}
-		if found != '?' || len(rest) != 1 || rest[0] < '1' || rest[0] > '9' {
-			return '?'
-		}
-		found = rest[0]
+	rest, ok := strings.CutPrefix(text, prefix)
+	if ok && len(rest) == 1 && rest[0] >= '1' && rest[0] <= '9' {
+		return rest[0]
 	}
-	return found
+	return '?'
 }
 
 // sample is the value of the metric's sample in a /metrics answer, or nil when the answer has none.

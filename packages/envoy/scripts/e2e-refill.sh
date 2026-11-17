@@ -229,8 +229,12 @@ say "building refillrig, and the listener and natsd unless given"
 (
   cd "$envoy_dir"
   go build -o "$rig" ./internal/testnats/cmd/refillrig
-  [[ -n "$listener_bin" ]] || go build -o "${bin_dir}/listener" ./cmd/listener
-  [[ -n "$natsd_bin" ]] || go build -o "${bin_dir}/natsd" ./internal/testnats/cmd/natsd
+  if [[ -z "$listener_bin" ]]; then
+    go build -o "${bin_dir}/listener" ./cmd/listener
+  fi
+  if [[ -z "$natsd_bin" ]]; then
+    go build -o "${bin_dir}/natsd" ./internal/testnats/cmd/natsd
+  fi
 )
 listener_binary="${listener_bin:-${bin_dir}/listener}"
 natsd_binary="${natsd_bin:-${bin_dir}/natsd}"
@@ -491,10 +495,10 @@ reread_phase() {
 }
 
 # run_reread registers old and both through the listener, then recreates the session bucket
-# holding both with changed titles and new, the interest bucket holding both with changed topics
-# and new, and the session bucket again with the very records it holds, so only its creation time
-# changes. A phase that could not recreate its bucket ends the scenario: what the next phase
-# expects the buckets to hold is unknown.
+# holding both with changed titles and new, the interest bucket holding both with changed
+# directories and new, and the session bucket again with the very records it holds, so only its
+# creation time changes. A phase that could not recreate its bucket ends the scenario: what the
+# next phase expects the buckets to hold is unknown.
 run_reread() {
   local n=$reread_count phases=() universe first second phase label name kind before after steady
   universe="old=${n},both=${n},new=${n}"

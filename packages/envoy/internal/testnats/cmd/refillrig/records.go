@@ -71,15 +71,20 @@ func sessionTitle(set string, index, variant int) string {
 	return fmt.Sprintf("refill %s %d v%d", set, index, variant)
 }
 
-func variantTopic(set string, variant int) string {
-	return fmt.Sprintf("notifications.refill.%s.v%d", set, variant)
+// sessionDir is the directory a seeded session's records name: its set's, and the variant they
+// were written at. The listener keeps a registration's dir on the interest row it writes and serves
+// it on GET /v1/interests/, so a poll reads an interest row's variant from it (variantOf). The
+// session record names the same directory, so the two buckets agree.
+func sessionDir(set string, variant int) string {
+	return fmt.Sprintf("/refill/%s/v%d", set, variant)
 }
 
-// topics are the topics a seeded session subscribes to: its set's variant topic, and the role topic
-// for the first session of a set seeded with a role, which makes that session the role's holder in
-// every list row (cmd/listener roleNames).
-func topics(set recordSet, index int, role string) []string {
-	out := []string{variantTopic(set.name, set.variant)}
+// topics are the topics a seeded session subscribes to besides its own agent subject: the role
+// topic for the first session of a set seeded with a role, which makes that session the role's
+// holder in every list row (cmd/listener roleNames), and none for any other. A registration names
+// no other topic, since the listener drops a topic that no stream subject captures.
+func topics(index int, role string) []string {
+	out := []string{}
 	if role != "" && index == 0 {
 		out = append(out, contracts.RoleTopicPrefix+role)
 	}
@@ -89,7 +94,7 @@ func topics(set recordSet, index int, role string) []string {
 func sessionRecord(set recordSet, index int, now int64) session.SessionEntry {
 	return session.SessionEntry{
 		MachineID:      machineID,
-		Dir:            "/refill/" + set.name,
+		Dir:            sessionDir(set.name, set.variant),
 		Title:          sessionTitle(set.name, index, set.variant),
 		UpdatedAt:      now,
 		SelfSubscribed: true,
@@ -101,8 +106,8 @@ func interestRecord(set recordSet, index int, now int64, role string) store.Inte
 	return store.Interest{
 		SessionID: id,
 		MachineID: machineID,
-		Dir:       "/refill/" + set.name,
-		Topics:    append(topics(set, index, role), contracts.AgentSubject(id)),
+		Dir:       sessionDir(set.name, set.variant),
+		Topics:    append(topics(index, role), contracts.AgentSubject(id)),
 		UpdatedAt: now,
 	}
 }

@@ -80,7 +80,7 @@ fills the bucket, and continues it once the bucket is full, just after a tick of
 
 - `reread`: registers 3,000 `old` and 3,000 `both` sessions, then recreates the session bucket
   holding `both` with changed titles and 3,000 `new`, the interest bucket the same way with changed
-  topics, and the session bucket again with the very records it holds (only its creation time
+  directories, and the session bucket again with the very records it holds (only its creation time
   changes). Each new bucket carries 100,000 delete markers among its records, so the read outlasts
   many list answers. Every `old` and `both` row must be listed until the read's completed
   `cache warm-up` line, a delivered row never goes back, and the list is exactly the bucket after
@@ -129,7 +129,17 @@ verdict passes, 1 on a `FAIL`, and 4 on an `INVALID` with no `FAIL`. `--listener
 `--natsd-bin` run other builds, such as the merge base's for a negative control. The evidence (each
 scenario's listener and NATS logs and every poll, one JSON line each) goes to `--out` (default
 `$TMPDIR/envoy-e2e-refill`). `E2E_REFILL_NATS_PORT` (14232) and `E2E_REFILL_PORT` (19030) move the
-ports. A full run takes about ten minutes, so it is a manual proof, not a CI job.
+ports.
+
+A record's set and variant are in what the listener keeps of it: the session id names the set, a
+session row's title (`refill <set> <index> v<n>`) and an interest row's directory
+(`/refill/<set>/v<n>`) name the variant. The listener drops a registration's topic that no stream
+subject captures, so no seeded record carries its variant in a topic. `refillrig register` asks for
+each session's own consumer, as a plugin does: the listener refuses a registration that asks for
+none.
+
+A full run takes about ten minutes. CI runs it as the `envoy-refill` job of
+`.github/workflows/ci.yaml` on every change its `envoy_refill` filter matches.
 
 ## dev-airlock.sh
 
