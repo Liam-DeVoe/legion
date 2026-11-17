@@ -20,6 +20,7 @@ import type {
   CommentWithTrees,
   DispatchEvent,
   DisplayTree,
+  GraphEdge,
   GraphReferences,
   Issue,
   IssueDetails,
@@ -49,17 +50,32 @@ import {
 import { NoTooltips } from "./NoTooltips";
 import { MARGIN_SECTION_NAMES, PROPERTY_LABELS } from "./page-structure";
 import {
+  ANSWER_LINES,
   BLOCKED_BY_REFUSALS,
   CONTROL_LABELS,
   issueStatusWord,
+  NODE_REFERENCES_WORDS,
   NODE_TYPE_NAMES,
+  sentenceCase,
 } from "./page-words";
 import { architecture } from "./shared-controls-fixture";
 import { DetailsSlot } from "./slots/details";
+import { issueTreeKey, issueTreeQuery, type TreeAnswer } from "./tree-read/tree-read";
 import { blockedByRefusal } from "./useIssueBlockedBy";
 import { type IssueHeaderWrites, useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
 const issue: IssueDetails = { ...marginIssue, last_seq: 250, status: "todo" };
+
+/** The issue's tree read with no node and no tuple in it, as the outline reads it before Details
+ *  draws (`tree-read/tree-read.ts`). */
+const EMPTY_TREE: TreeAnswer = {
+  converted: false,
+  cursor: null,
+  nodes: [],
+  tree: null,
+  tuples: [],
+  view_of: null,
+};
 
 /** Details as the details slot draws it (`slots/details.tsx`), alone and inside `NoTooltips`:
  *  the panel over its own set of the issue's writes, on the cached issue, so a write's landing
@@ -70,6 +86,10 @@ function renderDetails(beside?: (issue: IssueDetails) => ReactNode, drawer?: Mar
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
   });
+  // The outline's tree read, as the page holds it by the time Details draws: Details' run rows
+  // only observe it (`useRunRows`), so Details drawn alone would wait on a read nothing sends. A
+  // case that needs another answer puts it in the client this returns.
+  queryClient.setQueryData(issueTreeKey(issue.key), EMPTY_TREE);
   const view = render(
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
       <QueryClientProvider client={queryClient}>
@@ -824,6 +844,147 @@ test("Referenced by's control is in the page's ink, opens the list and reads the
     ).toBe(toggle);
   } finally {
     unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// A command bar run the reader asked is in no reader's `referenced_by_count`, so Details' control
+// of Referenced by is a control at every count, and it reads the rows its list shows, the list's
+// own and the reader's runs, only once both reads have answered (dispatch://INFRA-4064 R2).
+test("Referenced by counts the reader's runs once both reads answer, and is a control at zero", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const node = graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference });
+  const otherComment = "44444444-4444-4444-8444-444444444444";
+  // CORE-2's comment cites CORE-1: a row of the list's own (`referenced-by-page.test.tsx`).
+  const cited: GraphEdge = {
+    created_at: "2026-11-16T10:00:00Z",
+    direction: "in",
+    excerpt: { text: "CORE-2's comment cites CORE-1." },
+    kind: "mentions",
+    node: graphNode({
+      id: otherComment,
+      issue_key: "CORE-2",
+      kind: "comment",
+      project: "CORE",
+      ref: `dispatch://CORE-2/comment/${otherComment}`,
+    }),
+    source_seq: 7,
+  };
+  let edges: GraphEdge[] = [];
+  const getReferences = spyOn(api, "getReferences").mockImplementation(async () => ({
+    edges,
+    node,
+  }));
+  const getIssueTree = spyOn(api, "getIssueTree").mockRejectedValue(new ApiError(500, {}));
+  const counted = (count: number) => `${PROPERTY_LABELS.referenced_by} (${count})`;
+  const run = "6b1d3f5a-8c2e-4a7b-9d0f-1e2c3b4a5d6f";
+  const question = "Close this once the checks pass";
+  getIssue.mockResolvedValue({ ...issue, referenced_by_count: 0 });
+  let view = renderDetails();
+
+  try {
+    // Nothing references the issue and the reader asked no run: a control all the same.
+    const zero = await screen.findByRole("button", { name: PROPERTY_LABELS.referenced_by });
+    expect(zero, "Referenced by's control says the list is open").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    await user.click(zero);
+    expect(
+      await screen.findByRole("button", { name: counted(0) }),
+      "Referenced by's control does not read the rows of the list it opened"
+    ).toBe(zero);
+    view.unmount();
+
+    // The reader's run changed the issue, and CORE-2's comment cites it: the issue's count holds
+    // the comment alone.
+    edges = [cited];
+    getReferences.mockClear();
+    getIssue.mockResolvedValue({ ...issue, referenced_by_count: 1 });
+    view = renderDetails();
+    const { queryClient } = view;
+    act(() => {
+      queryClient.setQueryData<TreeAnswer>(issueTreeKey(issue.key), {
+        ...EMPTY_TREE,
+        nodes: [
+          {
+            attributes: {},
+            author: { id: "alice", kind: "user" },
+            id: run,
+            made_at: "2026-11-17T09:00:00Z",
+            parent: issue.key,
+            rank: null,
+            state: "live",
+            supertag: "interaction",
+            text: question,
+            visibility: "author",
+          },
+        ],
+        tuples: [{ from: issue.key, kind: "changed_by_run", to: run }],
+      });
+    });
+    const toggle = await screen.findByRole("button", { name: PROPERTY_LABELS.referenced_by });
+    expect(
+      // The list's own read: the issue's reference with no kind. Blocks, in an open drawer,
+      // reads the same reference for `blocked_by` alone.
+      getReferences.mock.calls.filter(([to, options]) => to === reference && options === undefined),
+      "Details read the list before the reader opened it"
+    ).toHaveLength(0);
+    await user.click(toggle);
+    expect(
+      await screen.findByRole("button", { name: counted(2) }),
+      "Referenced by's control does not count the reader's run with the list's own row"
+    ).toBe(toggle);
+    const list = screen.getByRole("region", { name: "Referenced by" });
+    const listed = within(list).getByRole("link", { name: "Comment · CORE-2" });
+    const runRows = list.querySelector<HTMLElement>("[data-extra-references]");
+    if (runRows === null) throw new Error("the list draws no row of the reader's run");
+    expect(
+      within(runRows).getByRole("link", {
+        name: sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction),
+      })
+    ).toHaveAttribute("href", `/runs/${run}`);
+    expect(runRows).toHaveTextContent(question);
+    expect(
+      listed.compareDocumentPosition(runRows) & Node.DOCUMENT_POSITION_FOLLOWING,
+      "the run's row stands before the list's own"
+    ).toBeTruthy();
+    view.unmount();
+
+    // The outline's tree read failed: the list keeps its own row, with the failure under it.
+    view = renderDetails();
+    const failing = view.queryClient;
+    await act(async () => {
+      await failing.resetQueries({ exact: true, queryKey: issueTreeKey(issue.key) });
+      await failing.prefetchQuery(issueTreeQuery(issue.key));
+    });
+    const unread = await screen.findByRole("button", { name: PROPERTY_LABELS.referenced_by });
+    await user.click(unread);
+    expect(
+      await screen.findByRole("button", { name: counted(1) }),
+      "Referenced by's control does not read the list's own rows while the tree read failed"
+    ).toBe(unread);
+    const kept = within(screen.getByRole("region", { name: "Referenced by" })).getByRole("link", {
+      name: "Comment · CORE-2",
+    });
+    const failure = screen.getByText(ANSWER_LINES.references_unreadable);
+    expect(
+      kept.compareDocumentPosition(failure) & Node.DOCUMENT_POSITION_FOLLOWING,
+      "the tree read's failure stands before the list's own row"
+    ).toBeTruthy();
+    const line = failure.parentElement;
+    if (line === null) throw new Error("the tree read's failure stands in no line");
+    const treeReads = getIssueTree.mock.calls.length;
+    await user.click(within(line).getByRole("button", { name: CONTROL_LABELS.retry }));
+    await waitFor(() =>
+      expect(getIssueTree, "Retry did not read the tree again").toHaveBeenCalledTimes(treeReads + 1)
+    );
+  } finally {
+    view.unmount();
+    getIssueTree.mockRestore();
     getReferences.mockRestore();
     restore();
   }

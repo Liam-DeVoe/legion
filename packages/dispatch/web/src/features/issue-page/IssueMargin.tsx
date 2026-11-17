@@ -56,8 +56,15 @@ import {
   PROPERTY_LABELS,
   pageChrome,
 } from "./page-structure";
-import { CONTROL_LABELS, FILE_WORDS, issueStatusWord, PROGRESS_NOUNS } from "./page-words";
+import {
+  ANSWER_LINES,
+  CONTROL_LABELS,
+  FILE_WORDS,
+  issueStatusWord,
+  PROGRESS_NOUNS,
+} from "./page-words";
 import { ROW_LINK } from "./row-references";
+import { useRunRows } from "./run-references/run-references";
 import { useIssueBlockedBy } from "./useIssueBlockedBy";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { type MarginSections, useMarginSections } from "./useMarginSections";
@@ -235,6 +242,9 @@ export function IssueMarginPanel({
   // leaves out (`listedEdges`, dispatch://INFRA-3948 R10).
   const referencesRead = useQuery({ ...referencesQuery(issueReference), enabled: false });
   const referencesListed = listedEdges(referencesRead.data?.edges, issueReference, true)?.length;
+  // The command bar runs the reader asked that changed the issue, from the outline's tree read:
+  // this observes that read and sends no request of its own (`useRunRows`).
+  const runs = useRunRows(issue);
   // Approve and Request changes are here wherever no approval request waits on the reader,
   // and in the header while one does (R31): the approvals are all this reads of the count, so it
   // hands it no decisions.
@@ -514,36 +524,41 @@ export function IssueMarginPanel({
         </Row>
         <Row wide>
           {/* Details' own control of the list, with the name, the role and the states of the
-              application's `ReferencedByToggle`, in the page's ink rather than its link blue. A
-              count of zero is a fact and not a control, as there: opening it would only say
-              that nothing references the issue. Otherwise it reads the rows the list shows once
-              the list has been read. */}
-          {issue.referenced_by_count === 0 ? (
-            <span
-              className={`inline-flex min-h-11 items-center text-sm md:min-h-0 ${pageQuietText}`}
-            >
-              Referenced by (0)
-            </span>
-          ) : (
-            <button
-              aria-controls={referencesPanelId}
-              aria-expanded={referencesOpen}
-              className={`inline-flex min-h-11 items-center text-left text-sm font-medium md:min-h-0 ${ROW_LINK} ${pageInkText}`}
-              onClick={() => setReferencesOpen((open) => !open)}
-              type="button"
-            >
-              {referencesListed === undefined
-                ? PROPERTY_LABELS.referenced_by
-                : `${PROPERTY_LABELS.referenced_by} (${referencesListed})`}
-            </button>
-          )}
+              application's `ReferencedByToggle`, in the page's ink rather than its link blue. It
+              is a control at every count: a command bar run the reader asked is in no reader's
+              `referenced_by_count`, so a zero is no reason to shut the list. It reads the rows
+              the list shows once both its reads have answered, the list's own and the runs'
+              (dispatch://INFRA-4064 R2). */}
+          <button
+            aria-controls={referencesPanelId}
+            aria-expanded={referencesOpen}
+            className={`inline-flex min-h-11 items-center text-left text-sm font-medium md:min-h-0 ${ROW_LINK} ${pageInkText}`}
+            onClick={() => setReferencesOpen((open) => !open)}
+            type="button"
+          >
+            {referencesListed === undefined || !runs.settled
+              ? PROPERTY_LABELS.referenced_by
+              : `${PROPERTY_LABELS.referenced_by} (${referencesListed + runs.rows.length})`}
+          </button>
           {referencesOpen ? (
-            <ReferencedBy
-              className="w-full"
-              page
-              reference={issueReference}
-              toggle={{ id: referencesPanelId }}
-            />
+            <>
+              <ReferencedBy
+                className="w-full"
+                extraRows={runs.rows}
+                page
+                reference={issueReference}
+                toggle={{ id: referencesPanelId }}
+              />
+              {/* A tree read that failed leaves the list's own rows drawn, with the failure
+                  under them and its Retry, which reads the tree again. */}
+              {runs.failed ? (
+                <DetailsErrorLine
+                  message={ANSWER_LINES.references_unreadable}
+                  onRetry={runs.retry}
+                  retrying={runs.retrying}
+                />
+              ) : null}
+            </>
           ) : null}
         </Row>
         {/* Every document and file of the issue, each opening its own address, folded after ten

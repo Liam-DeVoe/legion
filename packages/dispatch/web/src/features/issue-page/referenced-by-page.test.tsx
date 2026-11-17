@@ -27,6 +27,7 @@ import type { IssueField } from "./IssueFieldForms";
 import { IssueMarginPanel } from "./IssueMargin";
 import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
 import { NoTooltips } from "./NoTooltips";
+import { issueTreeKey, type TreeAnswer } from "./tree-read/tree-read";
 import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
 // On the new page the outline is the issue's conversation, so Details' list of what references
@@ -175,6 +176,17 @@ const issue: IssueDetails = { ...marginIssue, last_seq: 250, status: "todo" };
 function renderDetails(drawer: MarginDrawer) {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
+  });
+  // The outline's tree read, as the page holds it by the time Details draws, here with no run in
+  // it: Details' run rows only observe it (`useRunRows`), so Details drawn alone would wait on a
+  // read nothing sends.
+  queryClient.setQueryData<TreeAnswer>(issueTreeKey("CORE-1"), {
+    converted: false,
+    cursor: null,
+    nodes: [],
+    tree: null,
+    tuples: [],
+    view_of: null,
   });
   const view = render(
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
