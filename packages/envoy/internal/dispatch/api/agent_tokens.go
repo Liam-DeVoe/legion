@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -287,20 +288,18 @@ func callerScopes(actor model.Actor) []string {
 	return model.Scopes
 }
 
-// codeTokenProjectsInput refuses a list no token may hold: more keys than maxTokenProjects, a key
-// the caller does not see, or, from a credential that lists projects, a list naming none.
+// codeTokenProjectsInput refuses a list no token may hold: more keys than
+// contracts.MaxTokenProjects, a key the caller does not see, or, from a credential that lists
+// projects, a list naming none.
 const codeTokenProjectsInput = "TOKEN_PROJECTS_INPUT"
-
-// maxTokenProjects is how many projects one token lists at most, as agent_tokens.projects' own
-// check holds it.
-const maxTokenProjects = 16
 
 // tokenProjects is the list a mint or an edit gives a token: the one the body names, or, where it
 // names none, the list the caller's own credential holds. It writes its own refusal and answers
-// false for a list of more than maxTokenProjects keys, for a key the caller does not see, and for
-// an empty list from a credential that lists projects, because a token listing nothing sees every
-// public project its person sees. Every project a credential holding a list sees is on that list
-// (internal/dispatch/access, the rule), so such a credential gives a token only a part of its own.
+// false for a list of more than contracts.MaxTokenProjects keys, for a key the caller does not
+// see, and for an empty list from a credential that lists projects, because a token listing
+// nothing sees every public project its person sees. Every project a credential holding a list
+// sees is on that list (internal/dispatch/access, the rule), so such a credential gives a token
+// only a part of its own.
 // A key named twice is listed once, and the list is stored sorted, as Credential.Projects holds it.
 //
 // What the caller sees is the reader the write's gate already resolved over the caller
@@ -325,9 +324,9 @@ func (s *server) tokenProjects(w http.ResponseWriter, r *http.Request, requested
 	}
 	projects := slices.Compact(slices.Sorted(slices.Values(named)))
 	switch {
-	case len(projects) > maxTokenProjects:
+	case len(projects) > contracts.MaxTokenProjects:
 		writeError(w, codeTokenProjectsInput, http.StatusBadRequest, fmt.Sprintf(
-			"a token lists at most %d projects; this one names %d", maxTokenProjects, len(projects)))
+			"a token lists at most %d projects; this one names %d", contracts.MaxTokenProjects, len(projects)))
 		return nil, false
 	case len(projects) == 0 && len(own) > 0:
 		writeError(w, codeTokenProjectsInput, http.StatusBadRequest,

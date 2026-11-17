@@ -127,8 +127,8 @@ func requireRefused(t *testing.T, database *store.Store, response *httptest.Resp
 // PRIVATE_PROJECT_NOT_PROVISIONED and calls no writer. For a project the list names, the record
 // is written through the route's own transaction as its last step, and any refusal rolls the
 // whole write back and answers 409 PRIVATE_PROJECTS_UNAVAILABLE naming the bucket. The route
-// makes no other bus call: not after a commit that failed, and not for public, whose key the
-// writer's own pass deletes.
+// makes no other bus call: not after a commit that failed, and not for public, whose key is the
+// writer's own pass to delete.
 func TestAProjectBecomesPrivateOnlyWhenTheDeploymentAllows(t *testing.T) {
 	private := map[string]string{"visibility": model.ProjectPrivate}
 	public := map[string]string{"visibility": model.ProjectPublic}
@@ -242,7 +242,7 @@ func TestAProjectBecomesPrivateOnlyWhenTheDeploymentAllows(t *testing.T) {
 			t.Fatalf("PATCH PRIV private with a writer that accepts = %d %s, PRIV %s; want 200 and PRIV private",
 				made.Code, made.Body.String(), visibilityOf(t, database, "PRIV"))
 		}
-		// public makes no bus call: the writer's own pass deletes the key.
+		// public makes no bus call: deleting the key is the writer's own pass.
 		made = dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", public, "alice")
 		if made.Code != http.StatusOK || visibilityOf(t, database, "PRIV") != model.ProjectPublic {
 			t.Fatalf("PATCH PRIV public = %d %s; want 200 and PRIV public", made.Code, made.Body.String())

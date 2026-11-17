@@ -192,6 +192,11 @@ const ReceiptTimeoutCause = "The listener didn't answer within the send window; 
 // cannot drift apart.
 const MaxBroadcastRecipients = 100
 
+// MaxTokenProjects is the most projects one personal agent token lists. Generated from
+// MAX_TOKEN_PROJECTS in packages/contracts so the server's limit and the dashboard's
+// cannot drift apart.
+const MaxTokenProjects = 16
+
 // SearchQueryMax is the longest GET /api/v1/search query, in UTF-16 units. Generated from
 // SEARCH_QUERY_MAX in packages/contracts so the server's refusal and the `dispatch search`
 // command's cannot drift apart.

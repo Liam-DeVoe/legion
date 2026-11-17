@@ -36,6 +36,7 @@ import {
   MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
+  MAX_TOKEN_PROJECTS,
   PROJECT_NAME_MAX,
   RECEIPT_TIMEOUT_CAUSE,
   SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
@@ -283,6 +284,11 @@ const ReceiptTimeoutCause = ${JSON.stringify(RECEIPT_TIMEOUT_CAUSE)}
 // MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's
 // cannot drift apart.
 const MaxBroadcastRecipients = ${MAX_BROADCAST_RECIPIENTS}
+
+// MaxTokenProjects is the most projects one personal agent token lists. Generated from
+// MAX_TOKEN_PROJECTS in packages/contracts so the server's limit and the dashboard's
+// cannot drift apart.
+const MaxTokenProjects = ${MAX_TOKEN_PROJECTS}
 
 // SearchQueryMax is the longest GET /api/v1/search query, in UTF-16 units. Generated from
 // SEARCH_QUERY_MAX in packages/contracts so the server's refusal and the \`dispatch search\`
