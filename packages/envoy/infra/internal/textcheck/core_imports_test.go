@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // TestCoreAndTheListenerAgreeOnAnAllowedHost (infra/core/allowed_hosts_agreement_test.go) imports
@@ -34,7 +34,7 @@ func moduleDeps(t *testing.T, pattern string) []string {
 	list.Dir = filepath.Join("..", "..")
 	// Standard output alone is the list: what go writes on standard error (a module it downloads)
 	// is no package.
-	out, err := cmdtest.GoOutput(list)
+	out, err := testgo.Output(list)
 	require.NoError(t, err)
 	return strings.Fields(string(out))
 }

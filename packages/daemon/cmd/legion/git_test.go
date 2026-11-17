@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testgo"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
-	"github.com/sjawhar/legion/daemon/internal/testgo"
 )
 
 // trailerLegion is a `legion` for a test's commands: a two-line script that runs this test binary

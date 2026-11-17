@@ -31,12 +31,12 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/sjawhar/envoy/testgo"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
-	"github.com/sjawhar/legion/daemon/internal/testgo"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 

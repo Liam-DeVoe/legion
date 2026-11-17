@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/testgo"
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // RootEnv names the checkout whose packages/envoy is built. A driver that runs one checkout's

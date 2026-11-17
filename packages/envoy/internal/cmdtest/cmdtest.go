@@ -4,10 +4,6 @@
 package cmdtest
 
 import (
-	"bytes"
-	"errors"
-	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -20,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // Build builds the main package in the test's working directory, its own command's, into a binary
@@ -117,34 +114,11 @@ func runBuild(t testing.TB, c Command, overlay string) string {
 	args = append(args, target)
 	cmd := exec.Command("go", args...)
 	cmd.Dir, cmd.Env = c.Dir, c.Env
-	if _, err := GoOutput(cmd); err != nil {
+	if _, err := testgo.Output(cmd); err != nil {
 		t.Errorf("build %s: %v", c.Name, err)
 		return ""
 	}
 	return binary
-}
-
-// GoOutput runs cmd, a go command a test starts, and returns its standard output. go's standard
-// error also goes to this process's as go writes it, so a go command that stalls, as a module
-// download that never ends does, is named in the test's output when the test times out: a buffer
-// is read only once go returns, and the timeout's panic loses it. A cmd.Stderr already set gets
-// the stream too; cmd.Stdout must be unset. When go fails, the error carries what go wrote on
-// both streams, as each arrived.
-func GoOutput(cmd *exec.Cmd) ([]byte, error) {
-	if cmd.Stdout != nil {
-		return nil, errors.New("cmdtest.GoOutput: cmd.Stdout is set, and GoOutput returns standard output itself")
-	}
-	var stdout bytes.Buffer
-	output := &LockedBuffer{}
-	stderr := []io.Writer{os.Stderr, output}
-	if cmd.Stderr != nil {
-		stderr = append(stderr, cmd.Stderr)
-	}
-	cmd.Stdout, cmd.Stderr = io.MultiWriter(&stdout, output), io.MultiWriter(stderr...)
-	if err := cmd.Run(); err != nil {
-		return stdout.Bytes(), fmt.Errorf("%w\n%s", err, output.String())
-	}
-	return stdout.Bytes(), nil
 }
 
 // Process is a binary a test started, with its combined output.

@@ -18,7 +18,7 @@ import (
 	"os/exec"
 	"sync"
 
-	"github.com/sjawhar/legion/daemon/internal/testgo"
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // lists is the go command's answer for each pattern asked of it in this process, each asked on

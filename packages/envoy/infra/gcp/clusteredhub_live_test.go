@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // The tests in this file run what gcp:ClusteredNatsHub deploys on this machine, so they carry the
@@ -68,7 +69,7 @@ func installTool(dir, module, binary string) (string, error) {
 	cmd := exec.Command("go", "install", module)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOBIN="+dir, "GOWORK=off")
-	if _, err := cmdtest.GoOutput(cmd); err != nil {
+	if _, err := testgo.Output(cmd); err != nil {
 		return "", fmt.Errorf("go install %s: %w", module, err)
 	}
 	path := filepath.Join(dir, binary)

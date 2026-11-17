@@ -633,6 +633,9 @@ jobs:
               # is a module of its own, so Go's internal rule bars it from internal/contracts,
               # where the generated values are.
               - 'packages/envoy/sessiontiming/*'
+              # The one helper every go command a test starts runs through, the daemon's tests
+              # and its testbuild and testtypes among them.
+              - 'packages/envoy/testgo/*'
               - 'packages/envoy/testnatsimages/*'
             # The Dispatch server, `go list -deps ./cmd/dispatch` in packages/envoy (its embedded
             # migrations and pmdoc schema included): what the daemon's outbox test builds
@@ -1000,8 +1003,12 @@ jobs:
               - *dispatch_server
               - 'packages/envoy/daemonpermissions/*'
               - 'packages/envoy/dispatchbody/*'
+              # The buffer testgo keeps go's output in.
+              - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/sessiontiming/*'
+              # The helper the daemon's tests run go through.
+              - 'packages/envoy/testgo/*'
               - 'packages/envoy/testnatsimages/*'
               - 'packages/contracts/**'
               - 'packages/envoy-client/**'
@@ -1085,7 +1092,6 @@ jobs:
               - '!packages/daemon/internal/stream/**/*_test.go'
               - '!packages/daemon/internal/supervise/**/*_test.go'
               - '!packages/daemon/internal/testbin/**/*_test.go'
-              - '!packages/daemon/internal/testgo/**/*_test.go'
               - '!packages/daemon/internal/testnats/**/*_test.go'
               - '!packages/daemon/internal/testpg/**/*_test.go'
               - '!packages/daemon/internal/testtmp/**/*_test.go'
@@ -2085,6 +2091,8 @@ jobs:
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
+              # cmdtest's runBuild runs go through it.
+              - 'packages/envoy/testgo/*'
               # The relayed shapes routes_shapes.go names.
               - 'packages/envoy/internal/broker/wire/*'
               - 'packages/envoy/infra/gcp/testdata/dispatch-pod.golden'
@@ -2599,6 +2607,7 @@ jobs:
               - *listener_command
               - 'packages/envoy/daemonpermissions/*'
               - 'packages/envoy/internal/cmdtest/*'
+              - 'packages/envoy/testgo/*'
               - 'packages/envoy/internal/contracts/**'
               - 'packages/envoy/internal/dispatch/githubapp/**'
               - 'packages/envoy/internal/fixtureenv/*'
@@ -2623,6 +2632,7 @@ jobs:
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
+              - '!packages/envoy/testgo/**/*_test.go'
               # END generated
             envoy_go:
               - *ci_router
@@ -2832,6 +2842,7 @@ jobs:
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
+              - '!packages/envoy/testgo/**/*_test.go'
               # END generated
             # `go test -tags multiprocess ./cmd/dispatch`, the same closure as dispatch_memory.
             dispatch_multiprocess:
@@ -2863,6 +2874,7 @@ jobs:
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
+              - '!packages/envoy/testgo/**/*_test.go'
               # END generated
             # The two-build job's Go step alone, behind a gate of its own (dispatch_two_builds_go):
             # `go test -tags twobuild ./cmd/dispatch`, the same closure as dispatch_multiprocess,
@@ -2953,6 +2965,7 @@ jobs:
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
+              - '!packages/envoy/testgo/**/*_test.go'
               # END generated
             # The two-build job: its Go step's reads above, named again so the job runs for the
             # change that starts the step, and the browser half,
@@ -3047,6 +3060,7 @@ jobs:
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
+              - '!packages/envoy/testgo/**/*_test.go'
               # END generated
             # The server-change soak (listener-server-change): `go test -tags serverchange
             # ./cmd/listener`. The listener's own packages, and what its test binary compiles
@@ -3086,6 +3100,7 @@ jobs:
               - 'packages/envoy/internal/broker/wire/*'
               - 'packages/envoy/internal/bus/bustest/*'
               - 'packages/envoy/internal/cmdtest/*'
+              - 'packages/envoy/testgo/*'
               - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
               - 'packages/envoy/internal/dispatch/agentsecrets/*'
@@ -3152,6 +3167,7 @@ jobs:
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
+              - '!packages/envoy/testgo/**/*_test.go'
               # END generated
             # `go test -tags multiprocess ./cmd/broker`, and the agent-secrets binary
             # cmd/broker/outage_test.go:317-318 builds.
@@ -3199,6 +3215,7 @@ jobs:
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/buildversion/*'
               - 'packages/envoy/internal/cmdtest/*'
+              - 'packages/envoy/testgo/*'
               - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/githubapp/githubapptest/*'
               - 'packages/envoy/internal/fold/*'
@@ -3225,6 +3242,7 @@ jobs:
               - '!packages/envoy/cmd/agent-secrets/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/testgo/**/*_test.go'
               # END generated
             # The Lean model of the airlock and the Go code it covers (airlock-lean): `lake build`
             # and the axiom print read the model's own project, and the two fuzz runs compile the
@@ -3299,6 +3317,7 @@ jobs:
               - 'packages/envoy/listenfd/**'
               - 'packages/envoy/migrationid/**'
               - 'packages/envoy/roleholder/**'
+              - 'packages/envoy/testgo/*'
               - 'packages/envoy/docker/rds-global-bundle.pem'
               # TestSmoke compiles in the root workspace.
               - 'go.work'
@@ -3386,6 +3405,7 @@ jobs:
               - '!packages/envoy/internal/weborigin/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
+              - '!packages/envoy/testgo/**/*_test.go'
               # END generated
             # The local acceptance run drives the Go listener and renders every frame with the
             # shared TypeScript renderer, so a change to either side, or to the contracts both
@@ -3502,6 +3522,7 @@ jobs:
               - 'packages/envoy/roleholder/**'
               - 'packages/envoy/scripts/**'
               - 'packages/envoy/sessiontiming/**'
+              - 'packages/envoy/testgo/**'
               - 'packages/envoy/testnatsimages/**'
               - '.omp-pin'
               - '.bun-version'
@@ -3941,6 +3962,7 @@ jobs:
               - '!packages/envoy/loadtest/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
+              - '!packages/envoy/testgo/**/*_test.go'
               # END generated
             # The API race job. Not packages/envoy/**, as envoy_go_race has: that root was here
             # because internal/dispatch/api's lock_level_test.go, event_insert_guard_test.go and

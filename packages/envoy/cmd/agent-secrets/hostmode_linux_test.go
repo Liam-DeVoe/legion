@@ -22,7 +22,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
-	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // fakeHelperWithPids answers one canned line per connection and records the peer pid of each
@@ -62,7 +62,7 @@ func TestRegisterExecRunsTheCommandAsTheRegisteredPid(t *testing.T) {
 	sock, pids := fakeHelperWithPids(t, helper.Response{OK: true, State: "enrolling", RuntimeID: "h:1:1"})
 	cmd := exec.Command("go", "run", ".", "register", "--exec", "--", "sh", "-c", "echo $$")
 	cmd.Env = append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock)
-	out, err := cmdtest.GoOutput(cmd)
+	out, err := testgo.Output(cmd)
 	if err != nil {
 		t.Fatalf("register --exec: %v", err)
 	}
