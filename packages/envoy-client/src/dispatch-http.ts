@@ -2357,7 +2357,9 @@ export class DispatchClient {
     // failed attempt.
     const headers: Record<string, string> = { Accept: accept };
     // The credential awaits what it must for a request (a broker credential's trade, and the
-    // identity it reads for it) under the same signal as the request itself.
+    // identity it reads for it) under the same signal as the request itself: the call's own
+    // deadline and the client's. A broker credential waiting on a pod's missing registration
+    // stops at it, naming the session.
     const bounded = signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal]);
     if (call !== undefined) call.verdict = false;
     let presented = await this.#credential.headers(method, url, undefined, bounded);
@@ -2607,8 +2609,8 @@ export class DispatchClient {
   }
 
   /**
-   * `GET /healthz`'s `idempotency_keys`, bounded at `KEY_LAYER_PROBE_MS`, and its credential at the
-   * credential's own bound. Its status is not read: Dispatch answers 503 whenever its database or
+   * `GET /healthz`'s `idempotency_keys`, bounded at `KEY_LAYER_PROBE_MS`, its credential included.
+   * Its status is not read: Dispatch answers 503 whenever its database or
    * NATS is down, the outage a failed write most likely met, and still says
    * `idempotency_keys: true`, a fact of its binary. A probe that fails, times out, answers no JSON
    * or leaves the field out is false: the write is reported as it stands rather than resent, since
@@ -2617,11 +2619,15 @@ export class DispatchClient {
   async #probeKeyedLayer(): Promise<boolean> {
     try {
       const probe = `${this.#baseUrl}/healthz`;
-      const headers = await this.#credential.headers("GET", probe);
+      // The probe is shared by the writes that fail together, so it runs under its own bound and
+      // under no write's signal. Its credential is given that bound too: a broker credential
+      // waiting on a pod's missing registration stops at it, and the trade goes on.
+      const bound = AbortSignal.timeout(KEY_LAYER_PROBE_MS);
+      const headers = await this.#credential.headers("GET", probe, undefined, bound);
       const response = await this.fetchImpl(probe, {
         method: "GET",
         headers: { Accept: "application/json", ...headers },
-        signal: AbortSignal.timeout(KEY_LAYER_PROBE_MS),
+        signal: bound,
       });
       if (!isJson(response)) return false;
       const health: unknown = await response.json();
