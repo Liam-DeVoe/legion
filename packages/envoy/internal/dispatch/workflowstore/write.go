@@ -100,18 +100,22 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 
 	setting := map[string]any{}
 	var tuples []tuple
+	var report string
 	for _, attribute := range stated {
 		if _, holds := held[attribute.name]; holds {
 			continue
 		}
 		setting[attribute.name] = attribute.value
 		tuples = append(tuples, tuple{fromID: id, kind: attribute.name, toKind: KindValue, toID: attribute.text})
+		if attribute.name == AttributeReport {
+			report = attribute.text
+		}
 	}
 	if made {
 		tuples = append(tuples, tuple{fromID: id, kind: RelationPartOf, toKind: KindIssue, toID: write.Issue})
 	}
-	if report, sets := setting[AttributeReport]; sets {
-		tuples = append(tuples, tuple{fromID: id, kind: RelationReports, toKind: KindHandoff, toID: report.(string)})
+	if report != "" {
+		tuples = append(tuples, tuple{fromID: id, kind: RelationReports, toKind: KindHandoff, toID: report})
 	}
 	if len(setting) == 0 {
 		return stepFrom(id, heldText)
