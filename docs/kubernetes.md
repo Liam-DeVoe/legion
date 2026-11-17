@@ -2118,6 +2118,18 @@ delete from outbox where kind = 'supervise' and payload->>'op' = 'step_stop';
 
 Each deleted row costs the stop of one step's process: that process runs on until its issue closes, and the way back above drops the task's stop with the plan rows.
 
+#### Rolling back the release that gives each owner the deployment's plan guidance
+
+This release adds one top-level key to `legion.yaml`, `plan_guidance`: the path of a Markdown file that the daemon reads at boot and appends to the system prompt of each owner alone ([Configuration](#configuration)).
+It adds no store migration, no column and no outbox kind, so there is no SQL to run and nothing to undo in the database.
+
+**`plan_guidance` must come out of `legion.yaml` before the earlier image is pinned.**
+An earlier loader knows no such key and refuses the file by name (`unknown key plan_guidance`), so its daemon does not start while the key stands.
+The copy the daemon wrote under its state directory, `plan-guidance.md`, is read by no earlier release and costs it nothing where it stays.
+
+What the rollback costs is the guidance: an owner of the earlier release composes its prompt without it, and writes its plans from Legion's own text alone.
+Legion requires none of the guidance and refuses no plan for a step it lacks, so no plan given under this release is refused after the rollback.
+
 #### Rolling back the release whose update round ends at its bound
 
 This release's migration `20261113110610_drop_claim_update_answer_marks` takes two columns off `claims`: `update_answered_by_turn_end` and `update_reasked_for_push_check`, which the two `alter` statements below add back.
