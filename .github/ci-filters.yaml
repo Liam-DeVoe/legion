@@ -140,6 +140,8 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/roleholder/*'
   # why: .github/ci-notes/ci.md#daemon_envoy_deps-the-daemon-reads-the-envoy-session-timings-heartbeat
   - 'packages/envoy/sessiontiming/*'
+  - 'packages/envoy/subjectforms/*'
+  - 'packages/envoy/natsversion/*'
   - 'packages/envoy/testnatsimages/*'
 dispatch_server: &dispatch_server
   - 'packages/envoy/cmd/dispatch/*'
@@ -151,6 +153,8 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/internal/bus/*'
   - 'packages/envoy/internal/cistore/*'
   - 'packages/envoy/internal/contracts/*'
+  # internal/session's repair lock (KnownSessions.repairMu).
+  - 'packages/envoy/internal/ctxlock/*'
   - 'packages/envoy/internal/dispatch/accesslog/*'
   - 'packages/envoy/internal/dispatch/agentsecrets/*'
   - 'packages/envoy/internal/dispatch/agentstream/*'
@@ -218,6 +222,8 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/listenfd/*'
   - 'packages/envoy/migrationid/*'
   - 'packages/envoy/roleholder/*'
+  # internal/bus refuses a nats-server below the floor this package holds.
+  - 'packages/envoy/natsversion/*'
 legion_command: &legion_command
   - 'packages/daemon/cmd/legion/*'
   - 'packages/daemon/internal/admit/*'
@@ -304,6 +310,10 @@ legion_command: &legion_command
   - 'packages/envoy/roleholder/*'
   # why: .github/ci-notes/ci.md#legion_command-the-one-public-door-onto-the-generated-envoy-session
   - 'packages/envoy/sessiontiming/*'
+  # The doors onto the readers of a message name's two forms and onto the
+  # nats-server versions the daemon refuses, for the same reason.
+  - 'packages/envoy/subjectforms/*'
+  - 'packages/envoy/natsversion/*'
 # The listener's packages, `go list -deps ./cmd/listener` in packages/envoy.
 listener_command: &listener_command
   - 'packages/envoy/cmd/listener/*'
@@ -313,6 +323,8 @@ listener_command: &listener_command
   - 'packages/envoy/internal/cistore/*'
   - 'packages/envoy/internal/config/*'
   - 'packages/envoy/internal/contracts/*'
+  # internal/session's repair lock (KnownSessions.repairMu).
+  - 'packages/envoy/internal/ctxlock/*'
   - 'packages/envoy/internal/dedupe/*'
   - 'packages/envoy/internal/envconf/*'
   - 'packages/envoy/internal/fold/*'
@@ -332,6 +344,8 @@ listener_command: &listener_command
   - 'packages/envoy/internal/webhook/*'
   - 'packages/envoy/listenfd/*'
   - 'packages/envoy/roleholder/*'
+  # internal/bus refuses a nats-server below the floor this package holds.
+  - 'packages/envoy/natsversion/*'
 # The jj .github/actions/install-jj installs, and the mise it installs that jj with.
 jj_install: &jj_install
   - '.github/actions/install-jj/**'
@@ -435,6 +449,8 @@ plugin_pack:
   - 'packages/envoy/dispatchbody/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/sessiontiming/*'
+  - 'packages/envoy/subjectforms/*'
+  - 'packages/envoy/natsversion/*'
   - 'packages/envoy/testnatsimages/*'
   - 'packages/contracts/**'
   - 'packages/envoy-client/**'
@@ -1003,6 +1019,9 @@ test:
   - *claude_envoy_build
   # scripts/e2e/lib/held-port.test.ts:45 builds the real envoy-listener.
   - *listener_command
+  # scripts/e2e/lib/nats-image.test.ts builds natsfloor, the command it asks the NATS
+  # floor through; its natsversion package is in the listener's list above.
+  - 'packages/envoy/natsversion/cmd/natsfloor/*'
   # why: .github/ci-notes/ci.md#test-each-harness-steps-own-gate-named-here-so-the-job-runs
   - *release_push_test
   - *release_bump_test
@@ -1082,6 +1101,7 @@ test:
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
   - '!packages/envoy/internal/**/*_test.go'
   - '!packages/envoy/listenfd/**/*_test.go'
+  - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#guide_layout-the-guides-layout-step-of-the-test-job-ci-job-testyamls
@@ -1213,6 +1233,8 @@ dispatch_command_tests: &dispatch_command_tests
   - 'packages/envoy/internal/cistore/*'
   - 'packages/envoy/internal/cmdtest/*'
   - 'packages/envoy/internal/contracts/**'
+  # internal/session's repair lock (KnownSessions.repairMu).
+  - 'packages/envoy/internal/ctxlock/*'
   - 'packages/envoy/internal/envconf/*'
   - 'packages/envoy/internal/fold/*'
   - 'packages/envoy/internal/githubappjwt/*'
@@ -1239,6 +1261,7 @@ dispatch_command_tests: &dispatch_command_tests
   - 'packages/envoy/listenfd/*'
   - 'packages/envoy/migrationid/*'
   - 'packages/envoy/roleholder/*'
+  - 'packages/envoy/natsversion/*'
   # The relayed shapes routes_shapes.go names.
   - 'packages/envoy/internal/broker/wire/*'
   - 'packages/envoy/infra/gcp/testdata/dispatch-pod.golden'
@@ -1382,6 +1405,8 @@ pi_legion:
   - 'packages/envoy/migrationid/*'
   - 'packages/envoy/roleholder/*'
   - 'packages/envoy/sessiontiming/*'
+  - 'packages/envoy/subjectforms/*'
+  - 'packages/envoy/natsversion/*'
   - *go_workspace
   # The guides and docs the skills guard sweeps (src/skills-guard.test.ts:143-148).
   - 'AGENTS.md'
@@ -1450,6 +1475,7 @@ dispatch_ui:
   - 'packages/contracts/src/repo.ts'
   - 'packages/contracts/src/sha256.ts'
   - 'packages/contracts/src/slack.ts'
+  - 'packages/contracts/src/subject-project.ts'
   - 'packages/contracts/src/subject.ts'
   - 'packages/contracts/src/tool-schema.ts'
   - 'packages/contracts/src/trailing-slash.ts'
@@ -1523,6 +1549,7 @@ dispatch_browser:
   - 'packages/contracts/src/repo.ts'
   - 'packages/contracts/src/sha256.ts'
   - 'packages/contracts/src/slack.ts'
+  - 'packages/contracts/src/subject-project.ts'
   - 'packages/contracts/src/subject.ts'
   - 'packages/contracts/src/tool-schema.ts'
   - 'packages/contracts/src/trailing-slash.ts'
@@ -1638,6 +1665,7 @@ envoy_infra_go:
   - '!packages/envoy/internal/**/*_test.go'
   - '!packages/envoy/listenfd/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
+  - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 envoy_go:
@@ -1776,6 +1804,7 @@ dispatch_memory:
   - '!packages/envoy/internal/**/*_test.go'
   - '!packages/envoy/listenfd/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
+  - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 # `go test -tags multiprocess ./cmd/dispatch`, the same closure as dispatch_memory.
@@ -1808,6 +1837,7 @@ dispatch_multiprocess:
   - '!packages/envoy/internal/**/*_test.go'
   - '!packages/envoy/listenfd/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
+  - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#dispatch_two_builds_go-the-two-build-jobs-go-step-alone-behind-a-gate-of
@@ -1869,6 +1899,7 @@ dispatch_two_builds_go:
   - 'packages/contracts/src/repo.ts'
   - 'packages/contracts/src/sha256.ts'
   - 'packages/contracts/src/slack.ts'
+  - 'packages/contracts/src/subject-project.ts'
   - 'packages/contracts/src/subject.ts'
   - 'packages/contracts/src/tool-schema.ts'
   - 'packages/contracts/src/trailing-slash.ts'
@@ -1892,6 +1923,7 @@ dispatch_two_builds_go:
   - '!packages/envoy/internal/**/*_test.go'
   - '!packages/envoy/listenfd/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
+  - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#dispatch_two_builds-the-two-build-job-its-go-steps-reads-above-named-again
@@ -1951,6 +1983,7 @@ dispatch_two_builds:
   - 'packages/contracts/src/repo.ts'
   - 'packages/contracts/src/sha256.ts'
   - 'packages/contracts/src/slack.ts'
+  - 'packages/contracts/src/subject-project.ts'
   - 'packages/contracts/src/subject.ts'
   - 'packages/contracts/src/tool-schema.ts'
   - 'packages/contracts/src/trailing-slash.ts'
@@ -1979,6 +2012,7 @@ dispatch_two_builds:
   - '!packages/envoy/internal/**/*_test.go'
   - '!packages/envoy/listenfd/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
+  - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#listener_server_change-the-server-change-soak-listener-server-change-go
@@ -2079,6 +2113,7 @@ listener_server_change:
   - '!packages/envoy/internal/**/*_test.go'
   - '!packages/envoy/listenfd/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
+  - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 # `go test -tags multiprocess ./cmd/broker`, and the agent-secrets binary
@@ -2214,6 +2249,7 @@ envoy_smoke:
   - 'packages/envoy/listenfd/**'
   - 'packages/envoy/migrationid/**'
   - 'packages/envoy/roleholder/**'
+  - 'packages/envoy/natsversion/**'
   - 'packages/envoy/docker/rds-global-bundle.pem'
   # TestSmoke compiles in the root workspace.
   - 'go.work'
@@ -2295,6 +2331,7 @@ envoy_smoke:
   - '!packages/envoy/internal/webhook/**/*_test.go'
   - '!packages/envoy/internal/weborigin/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
+  - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 envoy_e2e_local:
@@ -2383,6 +2420,8 @@ worker_image:
   - 'packages/envoy/roleholder/**'
   - 'packages/envoy/scripts/**'
   - 'packages/envoy/sessiontiming/**'
+  - 'packages/envoy/subjectforms/**'
+  - 'packages/envoy/natsversion/**'
   - 'packages/envoy/testnatsimages/**'
   - '.omp-pin'
   - '.bun-version'
@@ -2567,6 +2606,7 @@ envoy_go_race:
   - '!packages/envoy/internal/brokerclient/**/*_test.go'
   - '!packages/envoy/internal/brokertoken/**/*_test.go'
   - '!packages/envoy/internal/bus/norace_test.go'
+  - '!packages/envoy/internal/bus/session_consumer_scan_live_test.go'
   - '!packages/envoy/internal/bus/stream_max_consumers_live_test.go'
   - '!packages/envoy/internal/cistore/**/*_test.go'
   - '!packages/envoy/internal/cmdtest/**/*_test.go'
@@ -2644,6 +2684,7 @@ envoy_go_race:
   - '!packages/envoy/listenfd/**/*_test.go'
   - '!packages/envoy/loadtest/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
+  - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#envoy_go_race_api-the-api-race-job-not-packagesenvoy-as-envoy_go_race-has-that
@@ -2769,6 +2810,7 @@ envoy_go_race_api:
   - 'packages/envoy/internal/testwait/*'
   - 'packages/envoy/migrationid/*'
   - 'packages/envoy/roleholder/*'
+  - 'packages/envoy/natsversion/*'
   # The relayed shapes routes_shapes.go names, which this job's own package compiles.
   - 'packages/envoy/internal/broker/wire/*'
   - 'packages/contracts/schemas/dispatch-openapi.json'
@@ -2839,6 +2881,7 @@ envoy_go_race_api:
   - '!packages/envoy/internal/session/**/*_test.go'
   - '!packages/envoy/internal/store/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
+  - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#envoy_go_race_docs-the-document-services-own-race-job-not-packagesenvoy-as-envoy_go_race
