@@ -424,11 +424,7 @@ func newStepRecordsRigOn(t *testing.T, proof liveProof, dispatch *scratchDispatc
 	r.cfg.DispatchURL = r.dispatch.base
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Step records"}, http.StatusCreated, nil)
 	r.person(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
-	var created struct {
-		Key     string `json:"key"`
-		Rank    string `json:"rank"`
-		LastSeq int64  `json:"last_seq"`
-	}
+	var created createdIssue
 	r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": "One issue walks to done"}, http.StatusCreated, &created)
 	r.key = created.Key
 	r.person(http.MethodPatch, "/api/v1/issues/"+r.key, map[string]any{"status": "in_progress", "labels": []string{"legion"}}, http.StatusOK, &created)
@@ -439,6 +435,21 @@ func newStepRecordsRigOn(t *testing.T, proof liveProof, dispatch *scratchDispatc
 	// restart: a restarted daemon re-observes a claim it finds live and does not launch it again.
 	r.worker(claim.RoleArchitect)
 	return r
+}
+
+// createdIssue is an issue as Dispatch answers its creation: its key, its rank and the sequence
+// the daemon's store records as the last it saw of the issue.
+type createdIssue struct {
+	Key     string `json:"key"`
+	Rank    string `json:"rank"`
+	LastSeq int64  `json:"last_seq"`
+}
+
+// openPullRequest is pull request number of issue, open at stepRecordsHead on the branch
+// legion/<issue>, which GitHub reports clean, as the daemon's store records it.
+func openPullRequest(issue string, number int) record.PullRequest {
+	return record.PullRequest{State: record.PullRequestOpen, Issue: issue, Repo: liveRepo, Number: number,
+		Branch: "legion/" + issue, HeadSHA: stepRecordsHead, MergeState: record.MergeStateClean, Failing: []string{}}
 }
 
 // seed records the issue as the daemon holds it the moment its architect's spec is approved: a
@@ -464,10 +475,7 @@ func (r *stepRecordsRig) seed(rank string, seq int64) {
 		}); err != nil {
 			return err
 		}
-		return r.records.PutPullRequest(ctx, tx, record.PullRequest{
-			State: record.PullRequestOpen, Issue: r.key, Repo: liveRepo, Number: r.number, Branch: "legion/" + r.key,
-			HeadSHA: stepRecordsHead, MergeState: record.MergeStateClean, Failing: []string{},
-		})
+		return r.records.PutPullRequest(ctx, tx, openPullRequest(r.key, r.number))
 	}); err != nil {
 		t.Fatalf("seed %s: %v", r.key, err)
 	}
@@ -1267,11 +1275,7 @@ func TestAChildsAcceptanceRecordNamesItsTreeArchitect(t *testing.T) {
 func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 	t := r.t
 	t.Helper()
-	var created struct {
-		Key     string `json:"key"`
-		Rank    string `json:"rank"`
-		LastSeq int64  `json:"last_seq"`
-	}
+	var created createdIssue
 	r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": "A child the tree's architect accepts"}, http.StatusCreated, &created)
 	number := r.number + 1
 	parent := r.key
@@ -1284,10 +1288,7 @@ func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 		}); err != nil {
 			return err
 		}
-		return r.records.PutPullRequest(ctx, tx, record.PullRequest{
-			State: record.PullRequestOpen, Issue: created.Key, Repo: liveRepo, Number: number, Branch: "legion/" + created.Key,
-			HeadSHA: stepRecordsHead, MergeState: record.MergeStateClean, Failing: []string{},
-		})
+		return r.records.PutPullRequest(ctx, tx, openPullRequest(created.Key, number))
 	}); err != nil {
 		t.Fatalf("seed %s: %v", created.Key, err)
 	}
