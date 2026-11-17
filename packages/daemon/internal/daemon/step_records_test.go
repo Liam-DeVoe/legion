@@ -1382,8 +1382,12 @@ type stepOwner struct {
 
 // stepsOwnedBy says whether read holds exactly the records of want, each of the task default,
 // ended with its result and its return, and named for its owner, owners[i] for want[i]: its
-// agent, session and model exactly; the error names the first record that is missing or wrong.
+// agent, session and model exactly; the error names the first record that is missing or wrong, or
+// an owner list that is not one owner for each record of want.
 func stepsOwnedBy(read stepRecordsRead, want []stepWant, owners []stepOwner) error {
+	if len(owners) != len(want) {
+		return fmt.Errorf("%d owners for %d records, want one for each, owners[i] want[i]'s", len(owners), len(want))
+	}
 	for i, w := range want {
 		got, owner := read.find(w.kind, w.step, w.attempt), owners[i]
 		name := fmt.Sprintf("%s %d attempt %d", w.kind, w.step, w.attempt)
