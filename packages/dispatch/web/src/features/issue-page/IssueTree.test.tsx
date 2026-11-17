@@ -926,6 +926,68 @@ test("f steps through a row's chips, links and then the controls no key presses"
   }
 });
 
+// Home on the first row moves the focus to no other row, and from a chip `f` stopped on, the row
+// already holds the focus through the chip: the row's own placing, which runs as a row takes the
+// focus, does not run. A reader who scrolled the row off the screen from there is brought back
+// to it by the key all the same (`moveToRow`), as by a key that moves the focus to another row.
+test("Home from a chip of the first row brings the row back on screen after the reader scrolled it off", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const root = node({
+    children: [
+      node({
+        chips: [
+          {
+            answered: true,
+            gone: false,
+            name: "The spec block",
+            ref: `dispatch://${KEY}/spec#b-r1`,
+          },
+        ],
+        id: "comment-1",
+        text: "The first words.",
+        type: "comment",
+      }),
+      node({ id: "comment-2", text: "The second words.", type: "comment" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  // happy-dom lays nothing out, so the first row's box is given once the reader has scrolled it
+  // off: 400 px above the window's top. Every other box, and that one before, is empty.
+  let scrolledOff = false;
+  const off = { bottom: -360, top: -400 };
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return scrolledOff && this.matches('[data-node-row][data-node-id="comment-1"]')
+      ? new DOMRect(0, off.top, 800, off.bottom - off.top)
+      : new DOMRect();
+  });
+  const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});
+  try {
+    const { container } = renderTree(root);
+    await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
+    await user.keyboard("f");
+    expect(document.activeElement?.textContent).toBe("The spec block");
+    expect(focusedRow(container)).toBe("comment-1");
+
+    scrolledOff = true;
+    await user.keyboard("{Home}");
+    expect(document.activeElement).toBe(rowsFor(container, "comment-1")[0]);
+    expect(scrolled, "Home left the row the reader scrolled off the screen").toHaveBeenCalledTimes(
+      1
+    );
+    // Scrolled by that much, the row stands whole inside the window.
+    const by = (scrolled.mock.calls[0]?.[0] as ScrollToOptions | undefined)?.top ?? 0;
+    expect(off.top - by).toBeGreaterThanOrEqual(0);
+    expect(off.bottom - by).toBeLessThanOrEqual(window.innerHeight);
+  } finally {
+    boxes.mockRestore();
+    scrolled.mockRestore();
+  }
+});
+
 test("Escape leaves the caret for the placement it was taken from, not the node's first row", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -1921,12 +1983,16 @@ test("an address's node takes the focus back from what holds the tree", async ()
 });
 
 // A row the page takes the reader to of its own accord - the node an address names, the open
-// question the page opens on - takes the focus in the frame after the commit that draws it, not
-// in that commit: a focus given there made the browser lay the whole new page out inside the
-// reader's press, 831 ms of a 3.9 s press that changed the view on a large issue. It is focused
-// without a scroll, and the page's one rule places it after. A reader who acts before that frame
-// keeps the focus where they put it.
-test("a row the page lands on takes the focus in the next frame, without a scroll, unless the reader acted first", async () => {
+// question the page opens on, or the outline's first row where no question waits - takes the
+// focus in the frame after the commit that draws it, not in that commit: a focus given there
+// made the browser lay the whole new page out inside the reader's press, 831 ms of a 3.9 s press
+// that changed the view on a large issue. It is focused once, without a scroll; the page's one
+// rule places the node and the question after, and the first row stays where it stands. A read
+// that draws a row above the first before the frame comes gives the focus to that row, and the
+// row the frame was first asked for takes none. Before the frame, a key the reader presses keeps
+// the focus where it is, even a key that moves none, and so does a script's focus on a control,
+// which is no act of the reader's.
+test("a row the page lands on takes the focus in the next frame, without a scroll, unless a key or a script's focus came first", async () => {
   setViewport(1440);
   const first = node({ id: "comment-1", text: "The first words.", type: "comment" });
   const named = node({ id: "comment-2", text: "The second words.", type: "comment" });
@@ -1939,6 +2005,13 @@ test("a row the page lands on takes the focus in the next frame, without a scrol
   });
   const addressed = node({ children: [first, named], id: KEY, type: "issue" });
   const asking = node({ children: [first, question], id: KEY, type: "issue" });
+  const landings = [
+    ["the node an address names", addressed, [addressed, named], "comment-2"],
+    ["the open question the page opens on", asking, undefined, "ask-1"],
+    // The same issue with no address: no question waits on the reader, so the page opens on its
+    // first row.
+    ["the first row the page opens on", addressed, undefined, "comment-1"],
+  ] as const;
   const realFocus = HTMLElement.prototype.focus;
   const focuses: { readonly element: HTMLElement; readonly options: FocusOptions | undefined }[] =
     [];
@@ -1957,10 +2030,7 @@ test("a row the page lands on takes the focus in the next frame, without a scrol
     await act(async () => frame.promise);
   };
   try {
-    for (const [what, root, reveal, landsOn] of [
-      ["the node an address names", addressed, [addressed, named], "comment-2"],
-      ["the open question the page opens on", asking, undefined, "ask-1"],
-    ] as const) {
+    for (const [what, root, reveal, landsOn] of landings) {
       focuses.length = 0;
       const view = renderTree(root, reveal === undefined ? {} : { reveal });
       const row = rowsFor(view.container, landsOn)[0];
@@ -1976,21 +2046,58 @@ test("a row the page lands on takes the focus in the next frame, without a scrol
       view.unmount();
     }
 
-    // The reader presses a key and puts the focus on a control before the frame: the landing
-    // leaves it there.
+    // A read draws a row above the first before the frame: the frame focuses the row that is
+    // first when it comes, and the row it was first asked for, still on the page, takes no focus.
     focuses.length = 0;
-    const { control } = controlOutside();
-    const view = renderTree(addressed, { reveal: [addressed, named] });
-    await act(async () => {
-      control.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Shift" }));
-      control.focus();
-    });
-    await nextFrame();
-    expect(document.activeElement, "the landing took the focus from where the reader put it").toBe(
-      control
+    const tree = renderPageTree(node({ children: [first], id: KEY, type: "issue" }));
+    const { container } = tree.view;
+    const asked = rowsFor(container, "comment-1")[0];
+    tree.redraw(
+      node({
+        children: [node({ id: "comment-0", text: "Older words.", type: "comment" }), first],
+        id: KEY,
+        type: "issue",
+      })
     );
-    expect(focusesOf(rowsFor(view.container, "comment-2")[0])).toEqual([]);
-    view.unmount();
+    expect(asked?.isConnected, "the read took the first row it was asked for off the page").toBe(
+      true
+    );
+    await nextFrame();
+    expect(focusedRow(container), "the row first when the frame came has no focus").toBe(
+      "comment-0"
+    );
+    expect(focusesOf(asked), "the row the frame was first asked for took the focus").toEqual([]);
+    expect(focusesOf(rowsFor(container, "comment-0")[0])).toEqual([{ preventScroll: true }]);
+    tree.view.unmount();
+
+    // Before the frame, a key the reader presses with the focus on the page - Shift alone, which
+    // moves no focus - or a script's focus on a control with no key pressed: each landing leaves
+    // the focus where that left it.
+    const { control } = controlOutside();
+    const pressShift = () => {
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Shift" }));
+    };
+    for (const [what, root, reveal, landsOn] of landings) {
+      for (const [came, run, stays] of [
+        ["a key that moves no focus", pressShift, document.body],
+        ["a script's focus on a control", () => control.focus(), control],
+      ] as const) {
+        focuses.length = 0;
+        const view = renderTree(root, reveal === undefined ? {} : { reveal });
+        expect(document.activeElement).toBe(document.body);
+        await act(async () => run());
+        await nextFrame();
+        expect(document.activeElement, `${what} took the focus from where ${came} left it`).toBe(
+          stays
+        );
+        expect(
+          focusesOf(rowsFor(view.container, landsOn)[0]),
+          `${what} was focused after ${came}`
+        ).toEqual([]);
+        view.unmount();
+        await act(async () => control.blur());
+      }
+    }
   } finally {
     focus.mockRestore();
   }
