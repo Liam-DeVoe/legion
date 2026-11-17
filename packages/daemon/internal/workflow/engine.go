@@ -1937,15 +1937,12 @@ func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Is
 // plan, behind a row creating its branch (record.IssueBranch): its first worker's start waits for
 // that row, so no worker's push is the one that creates the branch. A member whose earlier row a
 // linger dropped, or one admitted before the daemon queued such rows, gets its row here. The plan
-// the transition walks is settled first (planFirstStep), only for an issue standing at admitted,
-// which the move starts: an issue past it, which no row of the table moves on the gate's opening,
-// keeps the plan rows it has, none for an issue that started its work before Legion took plans
-// (R20).
+// the transition walks is settled first (planFirstStep). Its one caller, StartFirstPhase, runs for
+// an issue the waiting line offers at admitted (record.LineFirstPhase), so the issue always
+// stands there.
 func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-	if issue.Phase == phase.Admitted {
-		if err := e.planFirstStep(ctx, tx, issue); err != nil {
-			return err
-		}
+	if err := e.planFirstStep(ctx, tx, issue); err != nil {
+		return err
 	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.IssueBranch{Generation: issue.Generation}); err != nil {
 		return err

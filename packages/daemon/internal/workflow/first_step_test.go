@@ -58,9 +58,7 @@ func assertDefaultPlan(t *testing.T, stored *record.StoredPlan, key string, gene
 // project's default_steps, and the first of them running, which is planning for a project that
 // names none and implementing for `default_steps: [implementer, reviewer]`, whose run starts no
 // planner. An owner's plan whose one block names no steps stores the project's default steps under
-// the block's id, and the first step writes no default plan beside it. The twin (R20): an issue
-// that started its work before the release holds no plan rows, and a first step on it writes none
-// and moves nothing.
+// the block's id, and the first step writes no default plan beside it.
 func TestAnIssueWithNoPlanStoresTheDefaultSteps(t *testing.T) {
 	t.Run("a project that names no default_steps stores today's line and starts planning", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -118,21 +116,6 @@ func TestAnIssueWithNoPlanStoresTheDefaultSteps(t *testing.T) {
 			[]string{"implementer/implementation", "reviewer/review"}}
 		if got := walkStandingOf(t, pool, engine, root.Key, root.Generation); !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s after its first step stands at %+v, want %+v: the owner's task on the project's default steps, and no default plan", root.Key, got, want)
-		}
-	})
-
-	t.Run("the twin: an issue that started before the release holds no rows, and a first step writes none", func(t *testing.T) {
-		pool := migratedPool(t)
-		engine := returnEngine()
-		root := stepRoot(t, pool, phase.Implementing)
-
-		firstStep(t, pool, engine, root.Key)
-
-		if got := walkStandingOf(t, pool, engine, root.Key, root.Generation); !reflect.DeepEqual(got, walkStanding{phase: phase.Implementing}) {
-			t.Fatalf("%s, which started before the release, stands at %+v after a first step, want implementing with no plan rows", root.Key, got)
-		}
-		if got := planRowsOf(t, pool, root.Key); got != [3]int{} {
-			t.Fatalf("the plan rows of %s = %v, want none", root.Key, got)
 		}
 	})
 }
