@@ -227,7 +227,7 @@ export function NodeRow({
   // R1's one line, cut from the words of the node's first block (`lineWords`), as every one-line
   // drawing of a node is cut, so a heading never runs into the paragraph after it.
   const first = firstLineOf(lineWords(node));
-  // A lens with no verdict draws `LENS_WORDS.no_verdict` in its words' place (INFRA-4065 R1).
+  // A lens with no verdict draws `LENS_WORDS.no_verdict` in its words' place.
   const noVerdict = node.type === "lens" && node.text === "";
   // How many nodes a folded branch holds: on its one line, and after its words once its focus
   // or its pin draws them whole, so the reader still knows what the fold hides (R1).
@@ -924,9 +924,9 @@ export function NodeOptions({
  * the writer's acts alone. Its answer, copied or failed, is said after it in the page's words.
  *
  * In the outline, after Copy reference and its answer, a node of this issue that the invoke
- * route takes draws the Lens act and its menu of lens kinds (`lenses/LensMenu.tsx`,
- * dispatch://INFRA-4065 R4), offered through the context `TreeRows.tsx` provides. It writes as
- * the reader, whether or not a writer is, and carries `data-row-lens` rather than `data-row-act`.
+ * route takes draws the Lens act and its menu of lens kinds (`lenses/LensMenu.tsx`), offered
+ * through the context `TreeRows.tsx` provides. It writes as the reader, whether or not a writer
+ * is, and carries `data-row-lens` rather than `data-row-act`.
  *
  * A press leaves the focus where it is until the action moves it to the line, as the row's other
  * controls do, so the press never lands on a row that moved under it. Each is out of the tab

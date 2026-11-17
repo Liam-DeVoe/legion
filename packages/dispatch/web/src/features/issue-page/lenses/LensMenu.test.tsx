@@ -24,7 +24,7 @@ import { type TreeAnswer, type TreeAnswerNode, useTreeRead } from "../tree-read/
 import { lensActFor } from "./LensMenu";
 
 /**
- * The Lens act of a focused row and its menu of lens kinds (dispatch://INFRA-4065 R4, R6, R8).
+ * The Lens act of a focused row and its menu of lens kinds.
  *
  * The rows are drawn by `TreeRows`, as the outline draws them, under a router at the address the
  * test names, so the act is offered the way the page offers it; where a case counts the rows, they
@@ -145,7 +145,7 @@ function Rows({ isClosed = false, nodes }: { isClosed?: boolean; nodes: readonly
   );
 }
 
-/** The issue of J's fixtures, with its spec, whose tree the tree read answers. */
+/** The issue of `spec-filter/spec-fixtures.ts`, with its spec, whose tree the tree read answers. */
 const ISSUE = issueDetails();
 
 /** One node of the tree read, live and seen by the project, with no words unless it holds some. */
@@ -316,7 +316,7 @@ async function letRequestsSettle(): Promise<void> {
   await act(() => promise);
 }
 
-// R4, R6: the menu is read only when it opens, once in a load; it is titled in the page's words
+// The menu is read only when it opens, once in a load; it is titled in the page's words
 // and lists each kind in the catalogue's order, by its words and its first source's standard as
 // the catalogue holds them. The act is one of the row's acts and no writer's act.
 test("the menu lists the catalogue in order", async () => {
@@ -414,7 +414,7 @@ test("the menu lists the catalogue in order", async () => {
   }
 });
 
-// R4, R6: a failed read says so and lists no kind; the next opening reads the catalogue again,
+// A failed read says so and lists no kind; the next opening reads the catalogue again,
 // and once it answers, no opening after it reads it.
 test("a failed catalogue read says so and reads again at the next opening", async () => {
   const user = userEvent.setup();
@@ -465,7 +465,7 @@ test("a failed catalogue read says so and reads again at the next opening", asyn
   }
 });
 
-// R4: a pick sends the node's address and the kind's id and nothing more, says that it is out
+// A pick sends the node's address and the kind's id and nothing more, says that it is out
 // while it is, and leaves every item where it is; the 201 closes the menu.
 test("a pick sends on and kind alone", async () => {
   const user = userEvent.setup();
@@ -504,7 +504,7 @@ test("a pick sends on and kind alone", async () => {
   }
 });
 
-// R4: a refusal adds no row and says one sentence at the row, with the role `status`: the 404's
+// A refusal adds no row and says one sentence at the row, with the role `status`: the 404's
 // own, and the page's for any other. A 500 is no verdict: the write is tried again under its key
 // and the menu says it is out, until the reader stops it (the shell's Stop trying), which is the
 // refusal the menu then says. The sentence stands until the menu opens again. The rows are the
@@ -603,7 +603,7 @@ test("a refusal adds no row", async () => {
   }
 });
 
-// R4: Escape closes the menu and gives the focus back to the row, from a kind and from the menu
+// Escape closes the menu and gives the focus back to the row, from a kind and from the menu
 // while the catalogue is read; nothing is sent.
 test("Escape gives the focus back", async () => {
   const user = userEvent.setup();
@@ -637,7 +637,7 @@ test("Escape gives the focus back", async () => {
   }
 });
 
-/** The kinds of node the invoke route takes (R4), written out rather than read from the code:
+/** The kinds of node the invoke route takes, written out rather than read from the code:
  *  every block of the issue's documents, a criterion and a reading as much as a statement, and
  *  an ask, a comment, a message, a lens, a finding, a risk and a constraint. */
 const OFFERED: readonly NodeType[] = [
@@ -690,7 +690,7 @@ const NOT_TAKEN = [
   "dispatch://lens/not-a-uuid",
 ];
 
-// R4: the act is drawn in the outline alone, on a node of this issue the invoke route takes; a
+// The act is drawn in the outline alone, on a node of this issue the invoke route takes; a
 // view draws none, and neither does a route that names no issue. A closed issue keeps it.
 test("the Lens act is offered in the outline alone, on the kinds the route takes", async () => {
   const outline = { issueKey: KEY, outline: true };
@@ -736,7 +736,7 @@ test("the Lens act is offered in the outline alone, on the kinds the route takes
   expect(await drawsAct("/"), "a route that names no issue").toBe(false);
 });
 
-// R4, R9: while the menu is open every key but Tab is its own and has its default prevented, so
+// While the menu is open every key but Tab is its own and has its default prevented, so
 // the page's keymap, which passes such a key by, moves nothing of the tree; Tab closes the menu
 // and goes on.
 test("no key pressed in the menu reaches the tree", async () => {

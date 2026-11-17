@@ -26,10 +26,9 @@ import { LENS_ANSWERS, LENS_WORDS, type NodeType } from "../page-words";
 import { lensKindsQuery, useInvokeLens } from "./lens-reads";
 
 /**
- * What a focused row needs to offer the Lens act (dispatch://INFRA-4065 R4): the issue the page
- * is on, and whether the address's preset is the outline, the one place the act is drawn.
- * `TreeRows.tsx` provides it from the address; a route that names no issue provides none, and
- * `RowActs` then draws no act.
+ * What a focused row needs to offer the Lens act: the issue the page is on, and whether the
+ * address's preset is the outline, the one place the act is drawn. `TreeRows.tsx` provides it
+ * from the address; a route that names no issue provides none, and `RowActs` then draws no act.
  */
 export interface LensAct {
   readonly issueKey: string;
@@ -39,7 +38,7 @@ export interface LensAct {
 export const LensActContext = createContext<LensAct | undefined>(undefined);
 
 /** Whether the invoke route takes a node of each kind: a block of one of the issue's documents,
- *  an ask, a comment, a message, a lens, a finding, a risk and a constraint (R4). Every kind is
+ *  an ask, a comment, a message, a lens, a finding, a risk and a constraint. Every kind is
  *  named, so a kind the page learns to draw says here whether it takes the act. */
 const INVOKED_ON: Readonly<Record<NodeType, boolean>> = {
   ask: true,
@@ -88,7 +87,7 @@ export function lensActFor(node: TreeNode, act: LensAct): boolean {
 }
 
 /**
- * The Lens act of a focused row and the menu of lens kinds it opens (R4, R6).
+ * The Lens act of a focused row and the menu of lens kinds it opens.
  *
  * The act is one of `RowActs`' controls, drawn the way they are and out of the tab order unless
  * `tabStops` holds, so `f` reaches it as a control no key presses (`useTreeKeymap.ts`'s

@@ -7,14 +7,14 @@ import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 
 /**
  * What a row of a lens, a finding, a risk or a constraint carries beyond a `TreeNode`'s own
- * fields, and what a statement a constraint names carries (dispatch://INFRA-4065 R1 to R5).
- * Every fact comes from part T's tree read; nothing here sends a request.
+ * fields, and what a statement a constraint names carries. Every fact comes from the tree read;
+ * nothing here sends a request.
  *
- * `lensDrafts` is the step of T's `treeDraftSteps` that drafts these four kinds, and `lensChips`
- * the mark of T's `treeDraftMarks` that puts the chips on the drafts once every node has been
- * drafted. Both read the answer in its own order and order nothing: the read's order is the
- * outline's (R1). This module imports only types from `tree-read/` and `issue-tree.ts`, which
- * import it, so no import cycle closes (`biome.json`'s `noImportCycles`).
+ * `lensDrafts` is the step of `tree-read/tree-nodes.ts`'s `treeDraftSteps` that drafts these
+ * four kinds, and `lensChips` the mark of its `treeDraftMarks` that puts the chips on the drafts
+ * once every node has been drafted. Both read the answer in its own order and order nothing: the
+ * read's order is the outline's. This module imports only types from `tree-read/` and
+ * `issue-tree.ts`, which import it, so no import cycle closes (`biome.json`'s `noImportCycles`).
  */
 
 /** One chip that names another node of the tree: a lens, a check or a constraint. */
@@ -29,7 +29,7 @@ export interface LensChip {
   readonly chrome?: true;
   /** The target's id in the tree read, only where a step drafted it: the link's `?node=`. */
   readonly id?: string;
-  /** The target's state and visibility, as the tree read gives them (part X). */
+  /** The target's state and visibility, as the tree read gives them, for the node marks. */
   readonly state?: string;
   readonly visibility?: string;
 }
@@ -37,7 +37,8 @@ export interface LensChip {
 /** One lens of the tree, as the chain of a focused lens draws it. */
 export interface LensPlace {
   readonly kindWords: string;
-  /** The first line of the row it stands under. */
+  /** The words the row it stands under draws its one line from, as that row's draft holds them
+   *  (`TreeDraftContext.lineOf`); `LensChain.tsx` cuts them as that row does. */
   readonly onLine?: string;
   /** Its id in the tree read, where a step drafted it. */
   readonly id?: string;
@@ -62,12 +63,12 @@ export interface LensFacts {
 }
 
 /** A kind's words with their first letter in capitals, as a lens's tag and a chip that names a
- *  lens draw them (R1, R2). A chain entry and a menu item draw the words as the node holds them. */
+ *  lens draw them. A chain entry and a menu item draw the words as the node holds them. */
 export function kindWords(words: string): string {
   return sentenceCase(words);
 }
 
-/** The words of a chip that names a lens (R2): its kind's words `kind`, capitalised and cut as
+/** The words of a chip that names a lens: its kind's words `kind`, capitalised and cut as
  *  its tag is; where `kind` holds none, the page's word for a lens, which the chip marks as the
  *  page's (`chrome`). The outline's trigger chips and the chain's last chip are named alike. */
 export function lensChipWords(kind: string | undefined): Pick<LensChip, "chrome" | "words"> {
@@ -92,21 +93,22 @@ const NO_CHIPS: Pick<LensFacts, "constrainedBy" | "preventedBy" | "triggered" | 
   triggeredBy: [],
 };
 
-/** The kinds of node whose words a lens on one of their blocks reads: INFRA-1950 stores such a
- *  lens under the item's block, which no step drafts (R1). */
+/** The kinds of node whose words a lens on one of their blocks reads: the server stores such a
+ *  lens under the item's block, which no step drafts. */
 const ITEMS: Readonly<Record<string, true>> = { ask: true, comment: true, message: true };
 
 /**
- * The draft of a lens, a finding, a risk or a constraint of the issue (R1, R3, R5); undefined
- * for any other node, which T's other steps are asked for. A catalogue node drafts no row: a
+ * The draft of a lens, a finding, a risk or a constraint of the issue; undefined for any other
+ * node, which the tree read's other steps are asked for. A catalogue node drafts no row: a
  * `lens_kind`, and a constraint the read marks as context or whose parent is not the issue.
  *
  * It stands under its parent's row (`parentsOf`), with its address as its reference
- * (`addressOf`), and its author and time as T's steps give a turn's. Its words: a lens's verdict,
- * or none, which its row draws as `LENS_WORDS.no_verdict`; a finding's text and its reading, as
- * T's steps read a node's; a risk's heading; a constraint's words (`constraintWords`). Each
- * stored string is read through `plainWords` (R8), but a kind's words, which are drawn as the
- * `lens_kind` node holds them. Its lens facts carry no chip yet: `lensChips` adds them.
+ * (`addressOf`), and its author and time as the other steps give a turn's. Its words: a lens's
+ * verdict, or none, which its row draws as `LENS_WORDS.no_verdict`; a finding's text and its
+ * reading, as the other steps read a node's; a risk's heading; a constraint's words
+ * (`constraintWords`). Each stored string is read through `plainWords`, but a kind's words,
+ * which are drawn as the `lens_kind` node holds them. Its lens facts carry no chip yet:
+ * `lensChips` adds them.
  */
 export function lensDrafts(
   node: TreeAnswerNode,
@@ -166,16 +168,16 @@ export function lensDrafts(
 
 /**
  * The chips of `draft`, once every node has been offered to the steps, from the answer's tuples
- * in the answer's order (R2, R3, R5, R7). Each chip carries its target's address, its state and
- * its visibility, and its id in the tree read only where a step drafted the target, which makes
- * it a link to that row (`?node=`).
+ * in the answer's order. Each chip carries its target's address, its state and its visibility,
+ * and its id in the tree read only where a step drafted the target, which makes it a link to
+ * that row (`?node=`).
  *
  * - A lens: a chip for each lens its `triggered_by` tuples name (`triggeredBy`) and for each lens
  *   whose `triggered_by` names it (`triggered`), only for a lens the read holds, each named by its
  *   kind's words as its tag is; and `lenses`, every lens of the answer by its address, one map
  *   shared by every lens.
  * - A risk: a chip for each check its `prevented_by` tuples name, named by that check's line
- *   (R3's `chipWords(lineWords(node))`).
+ *   (`chipWords(lineWords(node))`).
  * - Any draft with a `constrained_by` tuple, a statement above all: a chip for each constraint it
  *   names, by the constraint's words. A catalogue constraint is no row, so its chip is no link. A
  *   draft of another step gains lens facts only where it has such a chip.
@@ -245,7 +247,7 @@ function lensTypeOf(node: TreeAnswerNode, context: TreeDraftContext): LensType |
   }
 }
 
-/** Whether `constraint` is one of the issue's own (R5): under the issue, and not the context
+/** Whether `constraint` is one of the issue's own: under the issue, and not the context
  *  the read brings in for a catalogue constraint a tuple names. */
 function issueConstraint(constraint: TreeAnswerNode, context: TreeDraftContext): boolean {
   return (
@@ -257,13 +259,13 @@ function issueConstraint(constraint: TreeAnswerNode, context: TreeDraftContext):
 
 /**
  * The `dispatch://` address of a lens, a finding, a risk or a constraint of the tree read, which
- * its row's Copy reference copies (R7) and a chip naming it carries: `dispatch://lens/<uuid>`, a
+ * its row's Copy reference copies and a chip naming it carries: `dispatch://lens/<uuid>`, a
  * finding's its lens's with its block id (`dispatch://lens/<uuid>#b-<block id>`),
  * `dispatch://risk/<uuid>` and `dispatch://constraint/<uuid>`; undefined for any other node.
  *
- * Its form is part T's reading of dispatch://INFRA-1253 R8 until that issue's t16a serves the
- * read, and is checked again at gate G1: a node's read id is its store id, bare or after its
- * kind (`lens/<uuid>`), and a finding's is its lens's and its block id after a `#`
+ * The tree read answers no address per node, so this builds one from the node's read id until
+ * the server serves that read: a node's read id is its store id, bare or after its kind
+ * (`lens/<uuid>`), and a finding's is its lens's and its block id after a `#`
  * (`lens/<uuid>#<block id>`, as the server writes one), or its block id alone.
  */
 function addressOf(node: TreeAnswerNode, context: TreeDraftContext): string | undefined {
@@ -280,7 +282,7 @@ function storeId(id: string, kind: string): string {
 }
 
 /**
- * Where a draft of `node` stands, by its read parent (R1): `[]` under the issue, where
+ * Where a draft of `node` stands, by its read parent: `[]` under the issue, where
  * `treeDraftsFrom` places it; under the parent's row where a step drafted the parent; under the
  * ask, the comment or the message the parent is a block of, where no step drafted that block;
  * and nowhere else - undefined, so neither the node nor anything under it is drawn.
@@ -323,8 +325,8 @@ function kindOf(lens: TreeAnswerNode, context: TreeDraftContext): string {
   return "";
 }
 
-/** A constraint's words (R5): a standard's `standard`, else a measurement's
- *  `<measurement>: <value>`, each stored string through `plainWords` (R8). */
+/** A constraint's words: a standard's `standard`, else a measurement's
+ *  `<measurement>: <value>`, each stored string through `plainWords`. */
 function constraintWords(constraint: TreeAnswerNode): string {
   const standard = stringOf(constraint.attributes.standard);
   if (standard !== "") return plainWords(standard);
@@ -345,7 +347,7 @@ function targetsOf(
   });
 }
 
-/** The chip of each of `lenses` that is a lens, named by its kind's words as its tag is (R2). */
+/** The chip of each of `lenses` that is a lens, named by its kind's words as its tag is. */
 function lensChipsTo(lenses: readonly TreeAnswerNode[], context: TreeDraftContext): LensChip[] {
   return uniqueChips(
     lenses.flatMap((lens) => {
@@ -383,11 +385,11 @@ function uniqueChips(chips: readonly LensChip[]): LensChip[] {
 }
 
 /**
- * A check's address, as T's step gives its row one (`tree-read/tree-nodes.ts`' `referenceOf`):
- * the one the results read gives it, where that read holds a row for it; else its block's in
- * the document the read says it is written in (`document`), in its own issue. Only where the
- * read knows no document of the check does its id in the tree read key the chip, which is no
- * `dispatch://` address.
+ * A check's address, as the tree read's step gives its row one (`tree-read/tree-nodes.ts`'s
+ * `referenceOf`): the one the results read gives it, where that read holds a row for it; else
+ * its block's in the document the read says it is written in (`document`), in its own issue.
+ * Only where the read knows no document of the check does its id in the tree read key the chip,
+ * which is no `dispatch://` address.
  */
 function checkAddress(check: TreeAnswerNode, context: TreeDraftContext): string {
   const kept = context.kept.checks.get(context.treeIdOf(check.id))?.ref;

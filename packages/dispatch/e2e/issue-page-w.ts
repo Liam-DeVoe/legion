@@ -19,23 +19,24 @@ import {
 } from "../web/src/api/paths";
 import type { LineName } from "../web/src/features/issue-page/lenses/LensLines";
 import type { NodeType } from "../web/src/features/issue-page/page-words";
+import { mergeTreePages } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { baseUrlOf, getIssueCoverage, getIssueResults, userHeaders } from "./api";
 import { issuePage } from "./issue-page";
 import type { Gate, TreeAnswerWatch } from "./issue-page-t";
 
 /**
- * What the rows of part W of dispatch://INFRA-1196 (dispatch://INFRA-4065,
- * `e2e/issue-page-w.e2e.ts`) write and read, and what part X writes its reserved nodes with:
- * the lenses, findings, risks and constraints of an issue, and the rows and lines the new issue
- * page draws for them (`web/src/features/issue-page/lenses/`).
+ * What the rows of `e2e/issue-page-w.e2e.ts` write and read, and what any other row that needs
+ * a node reserved for its author writes it with: the lenses, findings, risks and constraints of
+ * an issue, and the rows and lines the new issue page draws for them
+ * (`web/src/features/issue-page/lenses/`).
  *
  * - **The writers** send one request each as alice, through the server's own routes
  *   (`packages/envoy/internal/dispatch/api/reasoning_routes.go`), each under an
  *   `Idempotency-Key` of its own, and answer the body the route answers. A refusal throws,
  *   naming the method, the path, the status and the body.
  * - **The seed** `seedLenses` writes, on an issue `seedWholeIssue` made, the lenses, risks and
- *   constraints the Design's "The rows" names, and takes every address it does not write from a
- *   read of the server.
+ *   constraints its own comment lists, and takes every address it does not write from a read of
+ *   the server.
  * - **The readers**: the rows `[data-node-row]` of the four types, each line `[data-lens-line]`
  *   under a row's words (its label `[data-page-chrome]`, its chips `[data-node-chip]` with their
  *   words `[data-chip-name]`, and its stored words `[data-author-text]`), the focused row's act
@@ -45,19 +46,18 @@ import type { Gate, TreeAnswerWatch } from "./issue-page-t";
  *   `[data-lens-chain-entry]`), a row by the id the tree read gives its node
  *   (`data-node-read-id`), and the page's own words.
  * - **The tree read**: what the page received of `GET /api/v1/issues/{key}/tree` - its newest
- *   read whose every page answered, part T's `treeAnswerOf` (`e2e/issue-page-t.ts`), held until
- *   it holds what a row waits for (`heldTreeAnswer`), and the pages of each read
- *   (`treePagesOf`) - and the read ids of the nodes `seedLenses` wrote, read from that answer
- *   (`lensReadIds`), so a row names each node by the id the page itself received and never
- *   builds one.
- * - **The gate** GF (`findingGate`), which a clause of a row waits on as the rows wait on part
- *   T's gates: a `Gate` of T's, read by T's `owedUnless`.
+ *   read whose every page answered, `e2e/issue-page-t.ts`'s `treeAnswerOf`, held until it holds
+ *   what a row waits for (`heldTreeAnswer`), and the pages of each read (`treePagesOf`) - and
+ *   the read ids of the nodes `seedLenses` wrote, read from that answer (`lensReadIds`), so a
+ *   row names each node by the id the page itself received and never builds one.
+ * - **The gate** `findingGate`, which a clause of a row waits on as the rows wait on the gates
+ *   of `e2e/issue-page-t.ts`: a `Gate`, read by that file's `owedUnless`.
  */
 
 /** What the writers answer, each the 201 body of its route as `@legion/contracts` names it:
  *  `POST /api/v1/issues/{key}/lenses` the lens with its findings, `…/nodes/{id}/findings` the
  *  finding, `…/risks` the risk, `…/constraints` the constraint, and `…/nodes/{id}/pointers` both
- *  ends of the tuple. Part X's rows name them from here. */
+ *  ends of the tuple. Other rows name them from here. */
 export type { ConstraintRead, LensFinding, LensInvoked, PointerWritten, RiskWritten };
 
 /** What `POST /api/v1/issues/{key}/constraints` takes. */
@@ -204,15 +204,14 @@ export interface LensSeed {
 }
 
 /**
- * Writes, on the issue `key` that `seedWholeIssue` made, as the Design's "The rows" names it: a
- * trade-off analysis on statement 1 with one finding and no verdict; a pre-mortem on statement 1
- * triggered by it, with a verdict, and two risks under it, A prevented by check 1 and B by
- * nothing; a standard and a measurement constraint; and statement 5 constrained by the standard
- * and statement 6 by the catalogue's `lens_kinds[0].sources[0].ref`. Each statement's and the
- * check's address is read from the server (the coverage read's `ref`, the results read's check
- * `ref`), never built. The lens kinds are the catalogue's ids (migration
- * `20261116123354_lens_catalogue.up.sql`). The writes go one after another, so the lenses of
- * statement 1 stand in the order written.
+ * Writes, on the issue `key` that `seedWholeIssue` made: a trade-off analysis on statement 1
+ * with one finding and no verdict; a pre-mortem on statement 1 triggered by it, with a verdict,
+ * and two risks under it, A prevented by check 1 and B by nothing; a standard and a measurement
+ * constraint; and statement 5 constrained by the standard and statement 6 by the catalogue's
+ * `lens_kinds[0].sources[0].ref`. Each statement's and the check's address is read from the
+ * server (the coverage read's `ref`, the results read's check `ref`), never built. The lens
+ * kinds are the catalogue's ids (migration `20261116123354_lens_catalogue.up.sql`). The writes
+ * go one after another, so the lenses of statement 1 stand in the order written.
  */
 export async function seedLenses(key: string): Promise<LensSeed> {
   const [coverage, results, catalogue] = await Promise.all([
@@ -289,7 +288,7 @@ export async function seedLenses(key: string): Promise<LensSeed> {
 // The readers.
 // ---------------------------------------------------------------------------------------------
 
-/** The types of the rows part W draws. */
+/** The types of the rows `lenses/lens-drafts.ts` drafts. */
 const LENS_ROW_TYPES = [
   "lens",
   "finding",
@@ -415,9 +414,10 @@ export function chromeTexts(page: Page): Promise<string[]> {
     );
 }
 
-/** The id the page draws the node `readId` names under (`data-node-id`, the id G's readers take),
- *  read off the first row that carries its read id (`data-node-read-id`) - a check under two
- *  statements is drawn twice under one id - or null where the page draws none. */
+/** The id the page draws the node `readId` names under (`data-node-id`, the id the readers of
+ *  `e2e/issue-page-g.ts` take), read off the first row that carries its read id
+ *  (`data-node-read-id`) - a check under two statements is drawn twice under one id - or null
+ *  where the page draws none. */
 export async function drawnIdOf(page: Page, readId: string): Promise<string | null> {
   expect(readId, `${readId} cannot be written into a selector`).not.toContain('"');
   const rows = issuePage(page).locator(`${SELECTORS.nodeRow}[data-node-read-id="${readId}"]`);
@@ -496,10 +496,11 @@ function treeReadAnswer(response: Response): boolean {
 /** How long `heldTreeAnswer` waits for the read a write sends again. */
 const TREE_HELD_MS = 30_000;
 
-/** Waits until the newest read `watch` holds (part T's `treeAnswerOf`) is one `holds` is true
- *  of, and answers it: T's `heldAnswer` answers any read whose every page answered, and this the
- *  read a write sent again, once it holds what that write changed. A reload is no such wait: the
- *  read from before it already holds what a row looks for, so a row polls what the page draws. */
+/** Waits until the newest read `watch` holds (`e2e/issue-page-t.ts`'s `treeAnswerOf`) is one
+ *  `holds` is true of, and answers it: that file's `heldAnswer` answers any read whose every
+ *  page answered, and this the read a write sent again, once it holds what that write changed.
+ *  A reload is no such wait: the read from before it already holds what a row looks for, so a
+ *  row polls what the page draws. */
 export async function heldTreeAnswer(
   watch: TreeAnswerWatch,
   what: string,
@@ -530,7 +531,7 @@ export interface TreePage {
 /** Keeps each page of the tree read with no view the page receives from now on, so a row counts
  *  the pages a read has against the requests it sent; the answer reads them, in the order they
  *  arrived, once every page received so far has been read. A page whose body the browser let go
- *  of before it was read is none, as part T's `treeAnswerOf` reads it. */
+ *  of before it was read is none, as `e2e/issue-page-t.ts`'s `treeAnswerOf` reads it. */
 export function treePagesOf(page: Page): () => Promise<TreePage[]> {
   const kept: Promise<TreePage | undefined>[] = [];
   page.on("response", (response) => {
@@ -549,7 +550,7 @@ export function treePagesOf(page: Page): () => Promise<TreePage[]> {
 
 /** The read ids of what `seedLenses` wrote, as the issue's tree read holds them. */
 export interface LensReadIds {
-  /** The check risk A's `prevented_by` tuple names. */
+  /** The check the `prevented_by` tuple of risk A names. */
   readonly check1: string;
   /** The node under the trade-off analysis: its one finding. */
   readonly finding: string;
@@ -569,9 +570,9 @@ export interface LensReadIds {
  * The read id of each node `seedLenses` wrote on issue `key`, found in `answer` by what the seed
  * wrote into it and by the server's own tuples, never built: the pre-mortem by its verdict, the
  * trade-off analysis by the pre-mortem's `triggered_by`, the finding as the node under it, each
- * risk by its heading and check 1 by risk A's `prevented_by`, each constraint by its standard or
- * its measurement. A node of another issue, and the context a view or a catalogue tuple brings
- * in, is none of them. Throws, naming the node, where the answer holds none.
+ * risk by its heading and check 1 by the `prevented_by` of risk A, each constraint by its
+ * standard or its measurement. A node of another issue, and the context a view or a catalogue
+ * tuple brings in, is none of them. Throws, naming the node, where the answer holds none.
  */
 export function lensReadIds(answer: IssueTreeAnswer, key: string, seeded: LensSeed): LensReadIds {
   const own = answer.nodes.filter(
@@ -619,16 +620,11 @@ export function lensIdsIn(answer: IssueTreeAnswer): string[] {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The gate: a clause whose gate is not on W's base is a row of its own, which skips.
+// The gate: a clause whose server change is not on the base is a row of its own, which skips.
 // ---------------------------------------------------------------------------------------------
 
-/** The decisions every owed row cites, as part T's gates cite them (INFRA-1196's 61, 127 and
- *  135, as decision 170 reads them).
- *  A copy of `issue-page-t.ts`'s `OWED_BY`: W imports it once T exports it. */
-const OWED_BY = "decisions 61, 127, 135";
-
 /** Issue `key`'s tree read with no view, every page of it in order, read through the signed-in
- *  page's own request context, as part T's gates read it. */
+ *  page's own request context, as `issue-page-t.ts`'s gates read it. */
 async function requestedTreeRead(page: Page, key: string): Promise<IssueTreeAnswer> {
   const pageAt = async (cursor: string | null): Promise<IssueTreeAnswer> => {
     const path = routeUrl(
@@ -643,30 +639,24 @@ async function requestedTreeRead(page: Page, key: string): Promise<IssueTreeAnsw
     return (await response.json()) as IssueTreeAnswer;
   };
   const first = await pageAt(null);
-  const pages = [first];
+  const rest: IssueTreeAnswer[] = [];
   let cursor = first.cursor;
   while (cursor !== null) {
     const next = await pageAt(cursor);
-    pages.push(next);
+    rest.push(next);
     cursor = next.cursor;
   }
-  // A copy of `issue-page-t.ts`'s `mergedPages`: W imports it once T exports it.
-  return {
-    ...first,
-    cursor: null,
-    nodes: pages.flatMap((one) => one.nodes),
-    tuples: pages.flatMap((one) => one.tuples),
-  };
+  return mergeTreePages([first, ...rest]);
 }
 
 /**
- * GF: INFRA-1950's commit 5c85ffdc1b on the model, which makes a lens invoked on a finding point
- * at it as `lens_block`, the kind the graph addresses a finding by, so the tree read stands that
- * lens under the finding. The probe invokes a lens on the finding `seedLenses` wrote on issue
- * `key` (`invokeLens`) and reads every page of the issue's tree read through the signed-in
- * page's own request context, as T's `treeReadGate` reads it: met only where that read holds a
- * lens whose parent is the finding. The probe's lens stays, a lens on the finding before the
- * row's own.
+ * Whether the server's commit 5c85ffdc1b on the node model is on the base: it makes a lens
+ * invoked on a finding point at it as `lens_block`, the kind the graph addresses a finding by,
+ * so the tree read stands that lens under the finding. The probe invokes a lens on the finding
+ * `seedLenses` wrote on issue `key` (`invokeLens`) and reads every page of the issue's tree read
+ * through the signed-in page's own request context, as `issue-page-t.ts`'s `treeReadGate` reads
+ * it: met only where that read holds a lens whose parent is the finding. The probe's lens stays,
+ * a lens on the finding before the row's own.
  */
 export async function findingGate(page: Page, key: string, seeded: LensSeed): Promise<Gate> {
   await invokeLens(key, { kind: "trade-off", on: seeded.finding.address });
@@ -675,7 +665,7 @@ export async function findingGate(page: Page, key: string, seeded: LensSeed): Pr
   return {
     met: answer.nodes.some((node) => node.supertag === "lens" && node.parent === finding),
     owed:
-      "owed on GF: INFRA-1950's 5c85ffdc1b (a lens invoked on a finding stands under no finding " +
-      `of the tree read here); ${OWED_BY}`,
+      "owed until a lens invoked on a finding stands under that finding in the tree read " +
+      "(the node model's commit 5c85ffdc1b)",
   };
 }

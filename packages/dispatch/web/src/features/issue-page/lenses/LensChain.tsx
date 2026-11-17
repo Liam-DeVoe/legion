@@ -12,12 +12,11 @@ import { lensChainQuery } from "./lens-reads";
 import { NodeLink } from "./NodeLink";
 
 /**
- * The chain a focused lens stands in (dispatch://INFRA-4065 R2, R6): the lenses that triggered
- * it and the lenses it triggered, from the lens read at the lens's own address. It is drawn only
- * for a lens that has a trigger chip, and the read is sent only once the reader presses
- * `LENS_WORDS.show_chain`: the focus alone sends nothing, because `j` passes every row. The read
- * is held once in a load (`lensChainQuery`), so a later press draws the held answer and sends
- * nothing.
+ * The chain a focused lens stands in: the lenses that triggered it and the lenses it triggered,
+ * from the lens read at the lens's own address. It is drawn only for a lens that has a trigger
+ * chip, and the read is sent only once the reader presses `LENS_WORDS.show_chain`: the focus
+ * alone sends nothing, because `j` passes every row. The read is held once in a load
+ * (`lensChainQuery`), so a later press draws the held answer and sends nothing.
  *
  * Of the answer's chains it draws the one that holds this lens, in the answer's order. The
  * others are the chains of the lenses invoked on this lens, which are its rows. Each entry names
@@ -79,8 +78,8 @@ function Chain({
  * lens, where an answer is held; else, where no read is out, that the read failed or that the
  * lens is gone (404); else that the chain is being read. An answer once held stays drawn through
  * a later read that fails - a refresh of every read the page holds sends this one again - since
- * TanStack keeps the answer and sets the error beside it (dispatch://INFRA-1196 decision 98), as
- * the menu says its catalogue's.
+ * TanStack keeps the answer and sets the error beside it, and a failed refresh over a held
+ * answer blanks nothing, as the menu says its catalogue's.
  */
 function ChainAnswer({
   address,

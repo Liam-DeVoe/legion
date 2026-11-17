@@ -191,7 +191,7 @@ export interface TreeNode {
    *  row draws after "Kept by" (R2); absent for every other node. */
   readonly keptBy?: Actor;
   /** What a lens, a finding, a risk or a constraint carries beyond these fields, and the chips of
-   *  a statement a constraint names (dispatch://INFRA-4065 R1 to R5); absent on every other node. */
+   *  a statement a constraint names; absent on every other node. */
   readonly lens?: LensFacts;
   /** The choices an ask offers, in its own order; absent for every other node and for an ask
    *  that offers none. */

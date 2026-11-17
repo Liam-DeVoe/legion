@@ -86,9 +86,9 @@ export function TreeRows({
   const agentText = useAgentText();
   // The reader, whose own words carry the ink rule and whose name is drawn in the ink (R34).
   const reader = useQuery(whoAmIQuery()).data?.login;
-  // The Lens act a focused row offers (dispatch://INFRA-4065 R4): the issue the address names and
-  // whether its preset is the outline, read as the page's slots read their address. A route that
-  // names no issue offers no act. One value while the address stands, so no row draws again.
+  // The Lens act a focused row offers: the issue the address names and whether its preset is
+  // the outline, read as the page's slots read their address. A route that names no issue
+  // offers no act. One value while the address stands, so no row draws again.
   const { pathname, search } = useLocation();
   const route = parseIssuePath(pathname, search);
   const issueKey = route?.key;

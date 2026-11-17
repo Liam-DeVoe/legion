@@ -12,13 +12,12 @@ import { NodeLink } from "./NodeLink";
 export type LineName = keyof typeof LENS_WORDS | "kind" | "reference";
 
 /**
- * The lines a row draws under its words from its lens facts (dispatch://INFRA-4065 R1, R2, R3,
- * R5), each only where it has something:
+ * The lines a row draws under its words from its lens facts, each only where it has something:
  *
  * - a lens: the lenses that triggered it, then the lenses it triggered, each as a chip;
  * - a risk: its early warning, then the checks that prevent it, or the one line saying none does;
- * - a statement a constraint names: those constraints, as chips, in the outline and in J's Spec
- *   view alike;
+ * - a statement a constraint names: those constraints, as chips, in the outline and in the Spec
+ *   view (`spec-filter/SpecFilterBody.tsx`) alike;
  * - a constraint: a standard's reference, or where a measurement was taken.
  *
  * With `body` the row also draws a lens's kind's words whole, which its tag cuts, and a risk's
