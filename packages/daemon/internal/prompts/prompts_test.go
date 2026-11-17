@@ -915,9 +915,13 @@ func TestEveryPromptGivesTheSeparatePodLine(t *testing.T) {
 // that give and stop a plan, the notices that a stopped task, a parent held before its retro and a
 // plan of an earlier owner send it, the two stops a task-stopped notice tells of (a failed step's,
 // and another architect's stop_task, whose notice names that architect) and the stop it is not
-// sent for (its own), and the three sentences that say when a plan must be given and how a plan
-// replaces the default steps once the work started. Both architect compositions share that part,
-// so both are read. This shows the text is loaded, never that an owner follows it.
+// sent for (its own), the three sentences that say when a plan must be given and how a plan
+// replaces the default steps once the work started, and the answers a later version gets from the
+// workflow (workflow.planGiven): the running task's block, its text included, is refused and the
+// unchanged block taken, each refusal names its cause and changes nothing so the same version can
+// be given again, and an issue that started its work before Legion took plans takes none. Both
+// architect compositions share that part, so both are read. This shows the text is loaded, never
+// that an owner follows it.
 func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -946,7 +950,10 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				"An issue whose work started before you gave it a plan runs the task default, the project's default steps. To give it a plan, call stop_task on the task default, then register_plan with a version whose one task replaces it: Legion starts that task at its first step.",
 				"A task you stop stays held until you give a later version of the plan that changes it, or, on a root, until a person sets the root `todo`, and Legion then starts it at its first step. retry_or_escalate refuses that hold, a retry and an escalation alike (`TASK_STOPPED`), and refuses an issue held before its retro for the issues beneath it (`HELD_FOR_CHILDREN`).",
 				"It refuses a task the plan does not hold (`TASK_NOT_FOUND`) and one that is done or left the workflow with its issue (`TASK_DONE`), and a stop of a task already stopped changes nothing.",
-				"Legion refuses one that changes or removes the running task (`PLAN_REFUSED`, with the reason `task <id> is running: stop it with stop_task before you change it.`)",
+				"A later version may change or remove only a task that waits or is stopped. Legion refuses one that changes or removes the running task, a change of the text in its block alone included (`PLAN_REFUSED`, with the reason `task <id> is running: stop it with stop_task before you change it.`). It takes one that leaves the running task's block as it is, and the task goes on at its step.",
+				"It also refuses a version at or below the one it holds (`PLAN_VERSION_OLD`), a version of another document than the plan you gave (`PLAN_DOCUMENT_CHANGED`), a version that changes a task that is done or left the workflow (`TASK_DONE`), and a plan given for a generation the issue left before Legion applied it (`PLAN_STALE_GENERATION`).",
+				"A refusal changes nothing, and the same version can be given again: one refused for a generation the issue left at once, and one refused while its task ran after stop_task.",
+				"An issue that started its work before Legion took plans takes no plan (`PLAN_REFUSED`): it runs the steps it started with to their end.",
 				"Where another architect of your tree stopped it with `stop_task`, its reason names that architect, the notice carries `stoppedBy`, and no step failed.",
 				"A stop you make yourself sends you no notice: the 200 answer of `stop_task` is the record.",
 			} {

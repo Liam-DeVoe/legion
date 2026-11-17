@@ -101,14 +101,19 @@ need from the planner's plan into your task's text.
   `retry_or_escalate` refuses the hold, a retry and an escalation alike (`409 TASK_STOPPED`), as
   the daemon refuses an operator's restart of it.
 - A later version may change or remove only a task that waits or is stopped. Legion refuses one
-  that changes or removes the running task with `PLAN_REFUSED` and the reason `task <id> is
-  running: stop it with stop_task before you change it.` It takes a version that leaves the running
-  task's block as it is, including one that changes only the text outside the block.
+  that changes or removes the running task, a change of the text in its block alone included,
+  with `PLAN_REFUSED` and the reason `task <id> is running: stop it with stop_task before you
+  change it.` It takes a version that leaves the running task's block as it is, including one
+  that changes only the text outside the block, and the task goes on at its step. A block that
+  names no `steps` and a block that writes the default steps out are different blocks, so a
+  version that turns one into the other changes the task.
 - Legion refuses a version at or below the one it holds (`PLAN_VERSION_OLD`), a version above
   Dispatch's latest (`VERSION_NOT_IN_DISPATCH`), a version of another document than the plan in
-  force (`PLAN_DOCUMENT_CHANGED`), a version that changes a task that is done (`TASK_DONE`), and a
-  plan given for a generation the issue left before Legion applied it (`PLAN_STALE_GENERATION`):
-  give that plan again.
+  force (`PLAN_DOCUMENT_CHANGED`), a version that changes a task that is done or left the
+  workflow (`TASK_DONE`), and a plan given for a generation the issue left before Legion applied
+  it (`PLAN_STALE_GENERATION`).
+- A refusal records nothing, so the same version can be given again: one refused
+  `PLAN_STALE_GENERATION` at once, and one refused while its task ran after `stop_task`.
 - An issue that started its work before Legion took plans has no task, and Legion takes no plan for
   it: `<KEY> started its work before Legion took plans, so it runs the steps it started with to
   their end. This plan changed nothing.`
