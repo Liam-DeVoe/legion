@@ -26,13 +26,17 @@ const project = "INFRA";
 const key = "INFRA-42";
 const plan = "plan default (1 tasks: planner implementer tester reviewer acceptance:owner)";
 const line42 = `${key} closed 2026-11-20T11:20:00.123456Z ${plan} ratings 4/5 "The plan fit the work; the review sent it back once." time 2h20m failed steps 1`;
-// A whole answer: the issue rated once, an issue rated twice whose second reason holds a quotation
-// mark and a line break, and an issue finished before the release that rates each plan, which
-// lists no plan, no rating and no time.
+// A whole answer: an issue its owner planned in two tasks, rated once; an issue rated twice whose
+// second reason holds a quotation mark and a line break; the issue rated once; an issue whose
+// owner's plan has a first task with no steps, which `dispatch plans` prints as `-`; and an issue
+// finished before the release that rates each plan, which lists no plan, no rating and no time.
+const owner = "plan owner (2 tasks: implementer reviewer)";
 const whole = [
-  `${project}: 3 finished issues`,
+  `${project}: 5 finished issues`,
+  `INFRA-44 closed 2026-11-20T13:00:00Z ${owner} ratings 3/5 "Two tasks were one too many." time 1h2m failed steps 0`,
   `INFRA-43 closed 2026-11-20T12:00:00Z ${plan} ratings 2/5 "The plan had no test step.", 5/5 "It said \\"ship it\\"\\nand it shipped." time 0h55m failed steps 0`,
   line42,
+  "INFRA-30 closed 2026-11-19T10:00:00Z plan owner (1 tasks: -) ratings none time 0h5m failed steps 0",
   "INFRA-7 closed 2026-11-01T08:00:00Z plan none ratings none time - failed steps 0",
 ];
 // changed is whole with the line that matches pick replaced by its edit.
@@ -80,6 +84,14 @@ describe("plan-ratings-read.sh", () => {
     expect(code).toBe(0);
   });
 
+  test("an issue its owner planned passes, exit 0, naming the owner's plan, among a plan whose first task has no steps", () => {
+    const { code, stdout } = read(whole.join("\n") + "\n", [project, "INFRA-44"]);
+    expect(stdout).toContain(
+      `PASS: INFRA-44: ${owner}, ratings 3/5 "Two tasks were one too many.", time 1h2m, failed steps 0`
+    );
+    expect(code).toBe(0);
+  });
+
   test("an issue with no plan, no rating and no time fails, exit 1, one line per fault", () => {
     const { code, stdout } = read(whole.join("\n") + "\n", [project, "INFRA-7"]);
     expect(stdout).toContain("FAIL: INFRA-7 lists no plan: INFRA-7 closed");
@@ -121,7 +133,7 @@ describe("plan-ratings-read.sh", () => {
       [`${project}: ${lines.length} finished issues`, ...lines].join("\n") + "\n"
     );
     expect(stdout).toContain(
-      `FAIL: the read lists 2 finished issues of ${project} and no line of ${key}`
+      `FAIL: the read lists 4 finished issues of ${project} and no line of ${key}`
     );
     expect(stdout).not.toContain("PASS");
     expect(code).toBe(1);
@@ -164,9 +176,9 @@ describe("plan-ratings-read.sh", () => {
       `UNKNOWN: the first line of the answer is no header of ${project}`
     );
     expect(header.code).toBe(2);
-    const short = read(`${project}: 4 finished issues\n` + whole.slice(1).join("\n") + "\n");
+    const short = read(`${project}: 6 finished issues\n` + whole.slice(1).join("\n") + "\n");
     expect(short.stdout).toContain(
-      "UNKNOWN: the header says 4 finished issues and 3 lines of issues follow it"
+      "UNKNOWN: the header says 6 finished issues and 5 lines of issues follow it"
     );
     expect(short.code).toBe(2);
     const torn = read(
