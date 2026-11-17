@@ -1,4 +1,4 @@
-import { beforeAll, expect, spyOn, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, renderHook, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -53,10 +53,9 @@ const issue: IssueDetails = { ...marginIssue, last_seq: 250, status: "todo" };
 
 const state: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
 
-// A document's approval reason comes with its reading (`doc`), which the engine makes.
-beforeAll(async () => {
-  await warmMarkdownRenderer();
-});
+// A document's approval reason comes with its reading (`doc`), which the engine makes. The file
+// waits for the engine at its top level, before any test, so its `bun:test` import stays as it was.
+await warmMarkdownRenderer();
 
 /** The server answers a PATCH with the narrow `Issue`: no artifacts, children or open asks. */
 function narrowIssue(details: IssueDetails): Issue {

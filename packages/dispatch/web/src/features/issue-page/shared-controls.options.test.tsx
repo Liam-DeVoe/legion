@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { type RenderResult, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
@@ -153,10 +153,9 @@ interface Stubs {
   readonly whoAmI: Mock<typeof api.whoAmI>;
 }
 
-// A document's approval reason comes with its reading (`doc`), which the engine makes.
-beforeAll(async () => {
-  await warmMarkdownRenderer();
-});
+// A document's approval reason comes with its reading (`doc`), which the engine makes. The file
+// waits for the engine at its top level, before any test, so its `bun:test` import stays as it was.
+await warmMarkdownRenderer();
 
 let stubs: Stubs;
 
