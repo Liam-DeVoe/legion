@@ -516,13 +516,21 @@ export async function executePhaseOp(
           `handoff_complete reports this session's own issue ${claim.issue}; leave issue out, or name ${claim.issue}, not ${named}`
         );
       }
+      // The rating of the plan is built here, where the call was parsed: `PhaseOpArguments`' pair
+      // refines hold the two fields together, so this is where the two become the one value the
+      // completion carries, under the daemon's names, or nothing.
+      const { plan_rating: planRating, plan_reason: planReason } = args;
+      const rating =
+        planRating === undefined || planReason === undefined
+          ? undefined
+          : { planRating, planReason };
       // Retried whole while the daemon restarts: the record, the handoff report and a fresh grant
       // are read again on each attempt. A repeat never applies twice, but it cannot tell a landed
       // attempt from a refused one (the daemon records both under the completion's key), so its
       // refusal is passed on, marked as possibly following an applied attempt.
       return retryWhileDaemonRestarts(
         "handoff_complete",
-        () => completeHandoff(runtime, args),
+        () => completeHandoff(runtime, args, rating),
         runtime.restart
       );
     }
@@ -708,10 +716,19 @@ async function releaseRecords(
   };
 }
 
-/** One attempt of `handoff_complete` (`executePhaseOp`'s doc comment). */
+/** The rating of the plan a completion carries, under the daemon's names: the two together, which
+ * `PhaseOpArguments` takes only together. */
+interface PlanRatingGiven {
+  readonly planRating: number;
+  readonly planReason: string;
+}
+
+/** One attempt of `handoff_complete` (`executePhaseOp`'s doc comment), with the rating of the plan
+ * the call gave, or none. */
 async function completeHandoff(
   runtime: PhaseOpRuntime,
-  args: Extract<z.infer<typeof PhaseOpArguments>, { op: "handoff_complete" }>
+  args: Extract<z.infer<typeof PhaseOpArguments>, { op: "handoff_complete" }>,
+  rating: PlanRatingGiven | undefined
 ): Promise<Readonly<Record<string, unknown>>> {
   const { daemon, claim } = runtime;
   // The record is read before anything is minted: it says what this call has to carry. An issue
@@ -768,7 +785,7 @@ async function completeHandoff(
       summary: args.summary,
       verdict: args.verdict ?? "",
       ...(args.wake_at === undefined ? {} : { wakeAt: args.wake_at }),
-      ...planRatingOf(args),
+      ...rating,
     });
   }
   if (args.verdict === "pending") {
@@ -791,23 +808,6 @@ async function completeHandoff(
     summary: args.summary,
     verdict: args.verdict ?? "",
     ...report,
-    ...planRatingOf(args),
+    ...rating,
   });
-}
-
-/** The rating of the plan a completion carries, under the daemon's names (`planRating`,
- * `planReason`): the two, or `undefined` for a completion that carries neither. `PhaseOpArguments`
- * refuses one without the other, so a lone one reaching here throws rather than go unsent. */
-function planRatingOf(args: {
-  readonly plan_rating?: number | undefined;
-  readonly plan_reason?: string | undefined;
-}): { readonly planRating: number; readonly planReason: string } | undefined {
-  const { plan_rating: planRating, plan_reason: planReason } = args;
-  if (planRating === undefined && planReason === undefined) return undefined;
-  if (planRating === undefined || planReason === undefined) {
-    throw new Error(
-      "handoff_complete's plan_rating and plan_reason come together, and one reached the request alone"
-    );
-  }
-  return { planRating, planReason };
 }
