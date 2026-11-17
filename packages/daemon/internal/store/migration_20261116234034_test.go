@@ -20,7 +20,7 @@ const phaseReviewedHeadVersion = 20261116234034
 // such commit, so every reviewer's row the upgrade finds reads none, and the next round of an issue
 // already in review reads the whole change as it did before; the decision beside it is left as it
 // was. A commit written after it reads back as it was written, through a store reopened as a
-// daemon restart reopens it.
+// daemon restart reopens it, and the column refuses null, which the phases read cannot scan.
 func TestThePhaseReviewedHeadMigrationLeavesEveryRowWithNoCommitAndTheCommitRoundTrips(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -64,5 +64,12 @@ func TestThePhaseReviewedHeadMigrationLeavesEveryRowWithNoCommitAndTheCommitRoun
 		if got := phaseRowOf(t, st, "LEGION-208", claim.RoleReviewer).ReviewedHead; got != reviewed {
 			t.Fatalf("the reviewer's row reads the reviewed commit %q, want %q as it was written", got, reviewed)
 		}
+	}
+
+	// The column refuses null: the phases read scans it into a string (record.PhaseRow.ReviewedHead),
+	// where the empty string is no commit, and a null would fail every read of the issue's rows.
+	if _, err := store.Pool().Exec(ctx, "update phases set reviewed_head = null where issue = 'LEGION-208'"); err == nil ||
+		!strings.Contains(err.Error(), "null value") {
+		t.Fatalf("setting reviewed_head to null = %v, want the not-null constraint to refuse it", err)
 	}
 }
