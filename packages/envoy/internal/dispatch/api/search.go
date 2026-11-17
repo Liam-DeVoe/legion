@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -1028,7 +1029,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	searchText := strings.TrimSpace(query.Get("q"))
 	if utf8.RuneCountInString(searchText) < 2 {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "q must be at least 2 characters")
+		writeError(w, r, apicode.InvalidQuery, "q must be at least 2 characters")
 		return
 	}
 	// q is capped as `dispatch search` caps it, counted after trimming so a query the command
@@ -1037,12 +1038,12 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	// it short.
 	if length := itemblocks.Units16(searchText); length > contracts.SearchQueryMax {
 		tooLong := capExceededError("q", length, contracts.SearchQueryMax)
-		writeError(w, tooLong.code, tooLong.status, tooLong.message+"; "+contracts.SearchQueryHint)
+		writeError(w, r, tooLong.code, tooLong.message+"; "+contracts.SearchQueryHint)
 		return
 	}
 	project := strings.TrimSpace(query.Get("project"))
 	if project != "" && !projectKeyPattern.MatchString(project) {
-		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("project", project))
+		writeError(w, r, apicode.InvalidProject, projectKeyProblem("project", project))
 		return
 	}
 	// number_project is the project of the page the search was made from, which a bare issue
@@ -1051,7 +1052,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	// project is, and is refused under a code of its own.
 	numberProject := strings.TrimSpace(query.Get("number_project"))
 	if numberProject != "" && !projectKeyPattern.MatchString(numberProject) {
-		writeError(w, "INVALID_NUMBER_PROJECT", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidNumberProject,
 			projectKeyProblem("number_project", numberProject))
 		return
 	}
@@ -1064,12 +1065,12 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	keywordsOnly := false
 	if parsed, present, valid := parseQueryBool(query, "keywords_only", true, false); present {
 		if !valid {
-			writeError(w, "INVALID_KEYWORDS_ONLY", http.StatusBadRequest, "keywords_only must be true or false")
+			writeError(w, r, apicode.InvalidKeywordsOnly, "keywords_only must be true or false")
 			return
 		}
 		keywordsOnly = parsed
 	}
-	status, author, since, ok := parseSearchFilters(w, query)
+	status, author, since, ok := parseSearchFilters(w, r, query)
 	if !ok {
 		return
 	}
@@ -1077,7 +1078,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	limit := searchDefaultLimit
 	if parsed, present, valid := parseQueryInt(query, "limit", 1, searchMaxLimit); present {
 		if !valid {
-			writeError(w, "INVALID_LIMIT", http.StatusBadRequest, "limit must be an integer from 1 to 50")
+			writeError(w, r, apicode.InvalidLimit, "limit must be an integer from 1 to 50")
 			return
 		}
 		limit = parsed
@@ -1085,7 +1086,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	offset := 0
 	if parsed, present, valid := parseQueryInt(query, "offset", 0, math.MaxInt); present {
 		if !valid {
-			writeError(w, "INVALID_OFFSET", http.StatusBadRequest, "offset must be a non-negative integer")
+			writeError(w, r, apicode.InvalidOffset, "offset must be a non-negative integer")
 			return
 		}
 		offset = parsed
@@ -1100,7 +1101,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		keywordsOnly: keywordsOnly, trees: wantsDisplayTrees(r), reading: &reading}
 	response, err := s.runSearch(r.Context(), parameters)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// What search made of the words, and which filters it narrowed every leg by, for a caller
@@ -1114,7 +1115,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	if err := s.attachAskStates(r.Context(), s.deps.Store.Pool, response.Results, reader); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	reader.resolve()

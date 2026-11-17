@@ -262,7 +262,7 @@ func TestOnlyAVerdictIsStored(t *testing.T) {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
 				if run == 1 {
-					writeError(w, "SOMETHING", status, "this attempt")
+					WriteJSON(w, status, errorBody{Code: "SOMETHING", Error: "this attempt"})
 					return
 				}
 				answerRun(run, w, r)
@@ -282,7 +282,7 @@ func TestOnlyAVerdictIsStored(t *testing.T) {
 	for _, status := range []int{http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound, http.StatusConflict} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
 			rig := newKeyedRig(t, func(_ int32, w http.ResponseWriter, _ *http.Request) {
-				writeError(w, "REFUSED", status, "refused")
+				WriteJSON(w, status, errorBody{Code: "REFUSED", Error: "refused"})
 			})
 			first := rig.send(t, "a", nil, "alice", "k")
 			again := rig.send(t, "a", nil, "alice", "k")
@@ -430,7 +430,7 @@ func TestEveryKeyedAnswerNamesItsKey(t *testing.T) {
 	rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.PathValue("thing") == "broken":
-			writeError(w, "BROKEN", http.StatusInternalServerError, "the handler's own failure")
+			WriteJSON(w, http.StatusInternalServerError, errorBody{Code: "BROKEN", Error: "the handler's own failure"})
 		case r.PathValue("thing") == "slow":
 			if slowRuns.Add(1) == 1 {
 				close(running)
@@ -671,7 +671,7 @@ func TestAFailureAfterACommittedWriteIsAnsweredCommitted(t *testing.T) {
 		if err := write(r.Context(), nil); err != nil {
 			t.Errorf("write: %v", err)
 		}
-		writeError(w, "AFTER_THE_WRITE", http.StatusInternalServerError, "failed after the write")
+		WriteJSON(w, http.StatusInternalServerError, errorBody{Code: "AFTER_THE_WRITE", Error: "failed after the write"})
 	})
 	if first := rig.send(t, "a", nil, "alice", "half"); first.Code != http.StatusInternalServerError {
 		t.Fatalf("first: status=%d, want 500", first.Code)
@@ -706,7 +706,7 @@ func TestAHolderThatLostItsKeyCommitsNoWrite(t *testing.T) {
 		}
 		if err != nil {
 			s := &server{}
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		answerRun(run, w, r)

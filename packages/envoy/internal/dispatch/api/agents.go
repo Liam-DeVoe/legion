@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -113,13 +114,13 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.deps.Envoy == nil {
-		writeError(w, "ENVOY_UNAVAILABLE", http.StatusServiceUnavailable, "ENVOY_URL is not configured")
+		writeError(w, r, apicode.EnvoyUnavailable, "ENVOY_URL is not configured")
 		return
 	}
 
 	roster, err := s.readRouteRoster(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !roster.answered && s.lifetime.Err() != nil {
@@ -135,10 +136,10 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 		// Retry-After the listener sent, never the unreachable listener dispatch://INFRA-261
 		// forbids (listIssues refuses a judged filter the same way).
 		if roster.reason == model.RouteReasonRefilling {
-			writeEnvoyRefilling(w, roster.retryAfter)
+			writeEnvoyRefilling(w, r, roster.retryAfter)
 			return
 		}
-		s.writeEnvoyError(w, roster.err)
+		s.writeEnvoyError(w, r, roster.err)
 		return
 	}
 	if len(roster.sessions) == 0 {
@@ -160,12 +161,12 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 	}
 	openAsks, err := s.agentOpenAskCounts(r.Context(), sessionIDs)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	activity, err := s.agentLastActivity(r.Context(), sessionIDs)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 

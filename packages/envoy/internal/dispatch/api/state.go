@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -35,7 +36,7 @@ func (s *server) getUserState(w http.ResponseWriter, r *http.Request) {
 		from user_issue_state where login = $1 order by issue_key
 	`, actor.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -45,17 +46,17 @@ func (s *server) getUserState(w http.ResponseWriter, r *http.Request) {
 		var value userIssueState
 		var dismissed []byte
 		if err := rows.Scan(&key, &value.Pinned, &value.LastReadSeq, &dismissed, &value.Seq); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if err := json.Unmarshal(dismissed, &value.Dismissed); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		state[key] = value
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, state)
@@ -86,24 +87,24 @@ type userStateStaleError struct {
 func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 	var input userIssueStateInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
-	if actor, ok = actSessionFromBody(w, actor, input.Actor); !ok {
+	if actor, ok = actSessionFromBody(w, r, actor, input.Actor); !ok {
 		return
 	}
 	if input.LastReadSeq != nil && *input.LastReadSeq < 0 {
-		writeError(w, "INVALID_STATE", http.StatusBadRequest, "last_read_seq must be non-negative")
+		writeError(w, r, apicode.InvalidState, "last_read_seq must be non-negative")
 		return
 	}
 	key := r.PathValue("key")
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -111,7 +112,7 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 		insert into user_issue_state (login, issue_key) values ($1, $2)
 		on conflict (login, issue_key) do nothing
 	`, actor.ID, key); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	value := userIssueState{}
@@ -120,16 +121,17 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 		select pinned, last_read_seq, dismissed, seq
 		from user_issue_state where login = $1 and issue_key = $2 for update
 	`, actor.ID, key).Scan(&value.Pinned, &value.LastReadSeq, &encodedDismissed, &value.Seq); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := json.Unmarshal(encodedDismissed, &value.Dismissed); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if input.Seq != nil && *input.Seq <= value.Seq {
-		WriteJSON(w, http.StatusConflict, userStateStaleError{
-			Code:  "STATE_STALE",
+		code, status := refusalPair(r, apicode.StateStale)
+		WriteJSON(w, status, userStateStaleError{
+			Code:  code,
 			Error: "user state was updated by another write",
 			State: value,
 		})
@@ -150,7 +152,7 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 	}
 	encodedDismissed, err = encodeJSON(value.Dismissed)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if _, err := tx.Exec(r.Context(), `
@@ -158,12 +160,12 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 		set pinned = $3, last_read_seq = $4, dismissed = $5, seq = $6
 		where login = $1 and issue_key = $2
 	`, actor.ID, key, value.Pinned, value.LastReadSeq, encodedDismissed, value.Seq); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	var project string
 	if err := tx.QueryRow(r.Context(), `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// changed names which of pinned, last_read_seq and dismissed this write moved from the row it
@@ -183,11 +185,11 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 		"user_state.updated", actor, map[string]any{"login": actor.ID, "state": value, "changed": changed},
 	))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)
@@ -275,7 +277,7 @@ func (s *server) getUserAgentState(w http.ResponseWriter, r *http.Request) {
 	}
 	states, err := s.loadUserAgentStates(r.Context(), actor.ID, nil)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, states)
@@ -289,10 +291,10 @@ func parseAgentStateCutoff(name string, value *string) (*time.Time, error) {
 	}
 	parsed, err := time.Parse(time.RFC3339, *value)
 	if err != nil {
-		return nil, errorf(http.StatusBadRequest, "INVALID_STATE", "%s must be an RFC3339 timestamp", name)
+		return nil, errorf(apicode.InvalidState, "%s must be an RFC3339 timestamp", name)
 	}
 	if parsed.After(time.Now().Add(agentStateCutoffSkew)) {
-		return nil, errorf(http.StatusBadRequest, "INVALID_STATE", "%s must not be in the future", name)
+		return nil, errorf(apicode.InvalidState, "%s must not be in the future", name)
 	}
 	return &parsed, nil
 }
@@ -333,22 +335,22 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 	}
 	var input userAgentStateInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if input.ClearedBefore == nil && input.ReadThrough == nil && len(input.ReadReplies) == 0 && input.Pinned == nil {
-		writeError(w, "INVALID_STATE", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidState,
 			"cleared_before, read_through, read_replies or pinned is required")
 		return
 	}
 	clearedBefore, err := parseAgentStateCutoff("cleared_before", input.ClearedBefore)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	readThrough, err := parseAgentStateCutoff("read_through", input.ReadThrough)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// An id is taken in any form uuid.Parse reads and sent to Postgres in the canonical one, which
@@ -357,7 +359,7 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 	for _, id := range input.ReadReplies {
 		parsed, err := uuid.Parse(id)
 		if err != nil {
-			s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_STATE",
+			s.writeHandlerError(w, r, errorf(apicode.InvalidState,
 				"read_replies: %q is not a message id", id))
 			return
 		}
@@ -371,13 +373,13 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 	// The state is announced on an event the session owns, and only a session id a route can
 	// name can own one, so any other is refused here rather than failing the write.
 	if _, err := model.ParseRoute("session:" + sessionID); err != nil {
-		s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_STATE",
+		s.writeHandlerError(w, r, errorf(apicode.InvalidState,
 			"session id %q is not one Dispatch can route", sessionID))
 		return
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -396,7 +398,7 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 			values ($1, $2, least($3::timestamptz, now()))
 			on conflict (login, session_id) do update set cleared_before = excluded.cleared_before
 		`, actor.ID, sessionID, *clearedBefore); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -407,7 +409,7 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 			on conflict (login, session_id) do update set
 				read_through = greatest(user_agent_read.read_through, excluded.read_through)
 		`, model.CanonicalLogin(actor.ID), sessionID, *readThrough); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -428,7 +430,7 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 			`
 		}
 		if _, err := tx.Exec(r.Context(), pin, model.CanonicalLogin(actor.ID), sessionID); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -447,12 +449,12 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 			limit 1
 		`, readReplies, sessionID).Scan(&foreign)
 		if err == nil {
-			s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_STATE",
+			s.writeHandlerError(w, r, errorf(apicode.InvalidState,
 				"read_replies: %s is not a message session %s wrote", foreign, sessionID))
 			return
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		// A reply the session's read mark has already passed is read without a row, and the
@@ -472,7 +474,7 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 			on conflict do nothing
 		`, model.CanonicalLogin(actor.ID), sessionID, readReplies)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		announce = announce || inserted.RowsAffected() > 0
@@ -492,7 +494,7 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		if _, err := tx.Exec(r.Context(), pruneAgentReplies,
 			model.CanonicalLogin(actor.ID), []string{sessionID},
 		); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -503,24 +505,24 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 	if !announce {
 		// Nothing was written; end the transaction before the state is read through the pool.
 		if err := tx.Rollback(r.Context()); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	} else {
 		event, err := s.appendEvent(r.Context(), tx, userAgentStateEvent(actor, sessionID))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if err := tx.Commit(r.Context()); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		s.publish(r.Context(), event)
 	}
 	states, err := s.loadUserAgentStates(r.Context(), actor.ID, &sessionID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, states[sessionID])

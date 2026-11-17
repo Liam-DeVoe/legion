@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -732,6 +734,9 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	s.routeIndex = routeIndexEntries(routes)
 	replays := s.keyedReplays()
 	for _, route := range routes {
+		// Every route the table holds is a /api/v1 one; the version reaches the error writers on
+		// the request (withAPIVersion) and the drain from here.
+		version := apiV1
 		handler := route.Handler
 		if keyedMethod(route.Method) {
 			handler = s.keyedWrites(route.Method, route.Pattern, handler, replays[route.Method+" "+route.Pattern])
@@ -790,15 +795,16 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 			// unread is the drain's guard (drainingWriter.askedContinue) and the keyed layer's
 			// (answerDrainedRepeat), which TestAnEarlyAnswerToAClientWaitingToContinueAsksForNoBody
 			// pins: without either, the client is told to continue and the answer waits on its body.
-			handler = s.drainBeforeAnswer(route.Method, route.Pattern, handler)
+			handler = s.drainBeforeAnswer(version, route.Method, route.Pattern, handler)
 		}
-		// The access-log line is outermost, so it records what every layer answered - a keyed
-		// replay, a refused login, an early answer the drain held - and the caller the first of
-		// them resolved. Compression sits just inside it, so every one of those answers is
-		// compressed for a caller that takes gzip and the line counts the bytes that went on the
-		// wire. The two websockets below carry no compressed answer: the upgrade is not a body,
-		// and the frames after it are the socket's (compressAnswers).
-		mux.HandleFunc(route.Method+" "+route.Pattern, accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler)))))
+		// The access-log line is outermost but for the version, so it records what every layer
+		// answered - a keyed replay, a refused login, an early answer the drain held - and the
+		// caller the first of them resolved. Compression sits just inside it, so every one of those
+		// answers is compressed for a caller that takes gzip and the line counts the bytes that went
+		// on the wire. The two websockets below carry no compressed answer: the upgrade is not a
+		// body, and the frames after it are the socket's (compressAnswers). The version is put on
+		// the request before any of them, so every layer that refuses answers for it.
+		mux.HandleFunc(route.Method+" "+route.Pattern, withAPIVersion(version, accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler))))))
 	}
 	if websocket, ok := deps.Docs.(interface {
 		ServeHTTP(http.ResponseWriter, *http.Request)
@@ -854,9 +860,11 @@ func (s *server) whileCallerResolves(handler http.HandlerFunc) http.HandlerFunc 
 	}
 }
 
+// apiError is a refusal a handler returns rather than writes: its code, which carries the name
+// and the status each version answers it with, and its message. writeHandlerError writes it for
+// the version of the request it answers.
 type apiError struct {
-	status  int
-	code    string
+	code    apicode.Code
 	message string
 	// retryAfter is the Retry-After the answer carries, in whole seconds, and 0 for an answer
 	// that carries none. Only a refusal that knows when the caller may come back sets it
@@ -871,8 +879,14 @@ type apiError struct {
 
 func (e *apiError) Error() string { return e.message }
 
-func errorf(status int, code, format string, args ...any) *apiError {
-	return &apiError{status: status, code: code, message: fmt.Sprintf(format, args...)}
+// statusFor is the status e answers r with, in the version r's route serves.
+func (e *apiError) statusFor(r *http.Request) int {
+	_, status, _ := codePair(requestAPIVersion(r), e.code)
+	return status
+}
+
+func errorf(code apicode.Code, format string, args ...any) *apiError {
+	return &apiError{code: code, message: fmt.Sprintf(format, args...)}
 }
 
 // parseQueryInt reads one query parameter as an integer within [min, max]. present is false
@@ -954,7 +968,7 @@ func (s *server) refuseChangedLogin(handler http.HandlerFunc) http.HandlerFunc {
 			handler(w, r)
 			return
 		}
-		writeError(w, contracts.DispatchLoginChanged, http.StatusConflict, fmt.Sprintf(
+		writeError(w, r, apicode.LoginChanged, fmt.Sprintf(
 			"this write was pressed by %q and its request is not signed in as them: nothing ran; it goes only as the person who pressed it",
 			login))
 	}
@@ -979,7 +993,7 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	}
 	if token, present := auth.BearerToken(r); present {
 		if token == "" {
-			return model.Actor{}, false, errorf(http.StatusUnauthorized, "UNAUTHORIZED", "invalid bearer token")
+			return model.Actor{}, false, errorf(apicode.Unauthorized, "invalid bearer token")
 		}
 		if auth.MatchesSharedAgentToken(r, token, s.deps.AgentTokens) {
 			accesslog.Note(r.Context(), accesslog.KindSharedToken, "")
@@ -995,13 +1009,13 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 			return model.Actor{}, false, err
 		}
 		if actor.Owner == nil {
-			return model.Actor{}, false, errorf(http.StatusUnauthorized, "UNAUTHORIZED", "invalid bearer token")
+			return model.Actor{}, false, errorf(apicode.Unauthorized, "invalid bearer token")
 		}
 		accesslog.Note(r.Context(), accesslog.KindToken, *actor.Owner)
 		return actor, false, nil
 	}
 	if s.deps.Identity == nil {
-		return model.Actor{}, false, errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
+		return model.Actor{}, false, errorf(apicode.IdentityError, "identity service unavailable")
 	}
 	login, err := s.deps.Identity.Login(r)
 	if err != nil {
@@ -1034,7 +1048,7 @@ var (
 func (s *server) serviceTokenActor(r *http.Request, token string) (model.Actor, bool, error) {
 	claims, err := s.deps.OIDC.Verify(r.Context(), token)
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
-		return model.Actor{}, false, errorf(http.StatusServiceUnavailable, "OIDC_ISSUER_UNAVAILABLE",
+		return model.Actor{}, false, errorf(apicode.OIDCIssuerUnavailable,
 			"the service-account token issuer cannot be reached; try again in a minute")
 	}
 	if err != nil {
@@ -1044,7 +1058,7 @@ func (s *server) serviceTokenActor(r *http.Request, token string) (model.Actor, 
 		// before any authorization, so logging them lets anyone write what they
 		// like into the operator's log on every request.
 		slog.Warn("dispatch: service-account token rejected", "reason", reason)
-		return model.Actor{}, false, errorf(http.StatusUnauthorized, "OIDC_TOKEN_INVALID",
+		return model.Actor{}, false, errorf(apicode.OIDCTokenInvalid,
 			"service-account token rejected (%s)", reason)
 	}
 	accesslog.Note(r.Context(), accesslog.KindService, claims.Subject)
@@ -1089,7 +1103,7 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		// anything else than that same session is the mismatch.
 		named := supplied != nil && (strings.TrimSpace(supplied.ID) != "" || strings.TrimSpace(supplied.Kind) != "")
 		if named && (supplied.Kind != "session" || strings.TrimSpace(supplied.ID) != authenticated.ID) {
-			return model.Actor{}, errorf(http.StatusForbidden, "ACTOR_SESSION_MISMATCH",
+			return model.Actor{}, errorf(apicode.ActorSessionMismatch,
 				"this request's credential acts for session %s; its actor names another writer", authenticated.ID)
 		}
 		// Recorded: the actor a handler writes and compares carries no credential, as a stored
@@ -1102,7 +1116,7 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		return actor, nil
 	}
 	if supplied == nil || supplied.Kind != "session" || strings.TrimSpace(supplied.ID) == "" {
-		return model.Actor{}, errorf(http.StatusBadRequest, "ACTOR_KIND", "bearer callers require actor.kind session")
+		return model.Actor{}, errorf(apicode.ActorKind, "bearer callers require actor.kind session")
 	}
 	accesslog.Note(r.Context(), accesslog.KindSession, supplied.ID)
 	return model.Actor{
@@ -1119,20 +1133,22 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 
 // writeAuthenticationError answers a caller that did not resolve: 401 NO_IDENTITY, or 503
 // SIGNIN_UNAVAILABLE for a person whose lapsed confirmation the sign-in issuer could not renew,
-// as identity.WriteError renders both; anything else as writeHandlerError does. Only identity's
-// own sentinels reach identity.WriteError, so a service-account token's issuer outage
-// (serviceTokenActor's OIDC_ISSUER_UNAVAILABLE) never reads as the sign-in issuer's.
-func (s *server) writeAuthenticationError(w http.ResponseWriter, err error) {
+// with the code and message identity.Refusal gives each, as identity.WriteError renders them;
+// anything else as writeHandlerError does. Only identity's own sentinels reach identity.Refusal,
+// so a service-account token's issuer outage (serviceTokenActor's OIDC_ISSUER_UNAVAILABLE) never
+// reads as the sign-in issuer's.
+func (s *server) writeAuthenticationError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, identity.ErrNoIdentity) || errors.Is(err, identity.ErrSignInUnavailable) {
-		identity.WriteError(w, err)
+		code, message := identity.Refusal(err)
+		writeError(w, r, code, message)
 		return
 	}
-	s.writeHandlerError(w, err)
+	s.writeHandlerError(w, r, err)
 }
 
 func (s *server) requireAuthenticated(w http.ResponseWriter, r *http.Request) bool {
 	if _, _, err := s.optionalActor(r); err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return false
 	}
 	return true
@@ -1141,7 +1157,7 @@ func (s *server) requireAuthenticated(w http.ResponseWriter, r *http.Request) bo
 func (s *server) requireActor(w http.ResponseWriter, r *http.Request, supplied *model.Actor) (model.Actor, bool) {
 	actor, err := s.actorFrom(r, supplied)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return model.Actor{}, false
 	}
 	return actor, true
@@ -1155,16 +1171,11 @@ func (s *server) decodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst 
 		return true
 	}
 	if err := decodeJSON(r, dst); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return false
 	}
 	return true
 }
-
-// codeScopeRequired refuses a caller whose credential does not hold an OAuth scope the route
-// needs: the deployment's shared token and a pod's projected token hold none, and a personal
-// token holds the set its own row names.
-const codeScopeRequired = "OAUTH_SCOPE_REQUIRED"
 
 // insufficientScopeChallenge is the WWW-Authenticate header RFC 6750 section 3.1 gives a refusal
 // for a scope the credential does not hold. Both ways of writing that refusal go through it, so
@@ -1177,9 +1188,9 @@ func insufficientScopeChallenge(scope string) string {
 // does not hold, under the challenge RFC 6750 section 3.1 gives that refusal. writeError sets no
 // header, so the header goes on here and the body through it, which keeps the refusal the same
 // shape as every other.
-func refuseMissingScope(w http.ResponseWriter, scope, message string) {
+func refuseMissingScope(w http.ResponseWriter, r *http.Request, scope, message string) {
 	w.Header().Set("WWW-Authenticate", insufficientScopeChallenge(scope))
-	writeError(w, codeScopeRequired, http.StatusForbidden, message)
+	writeError(w, r, apicode.OAuthScopeRequired, message)
 }
 
 // missingScopeError is refuseMissingScope as an error, for a check that cannot run at the gate
@@ -1187,7 +1198,7 @@ func refuseMissingScope(w http.ResponseWriter, scope, message string) {
 // writeHandlerError writes the challenge header from the error's scope, so such a refusal is the
 // gate's own answer in every part a caller can see.
 func missingScopeError(scope, message string) *apiError {
-	return &apiError{status: http.StatusForbidden, code: codeScopeRequired, message: message, scope: scope}
+	return &apiError{code: apicode.OAuthScopeRequired, message: message, scope: scope}
 }
 
 // gateRouteScopes is the one place a route's OAuth scopes are enforced: register wraps every row
@@ -1205,12 +1216,12 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 	return func(w http.ResponseWriter, r *http.Request) {
 		actor, human, err := s.optionalActor(r)
 		if err != nil {
-			s.writeAuthenticationError(w, err)
+			s.writeAuthenticationError(w, r, err)
 			return
 		}
 		for _, scope := range scopes {
 			if !actor.Credential.Holds(scope) {
-				refuseMissingScope(w, scope, fmt.Sprintf(
+				refuseMissingScope(w, r, scope, fmt.Sprintf(
 					"this request's credential does not hold the %s scope, which this route requires", scope))
 				return
 			}
@@ -1248,11 +1259,11 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Actor, bool) {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return model.Actor{}, false
 	}
 	if !actor.Credential.Holds(model.ScopePerson) {
-		refuseMissingScope(w, model.ScopePerson, fmt.Sprintf(
+		refuseMissingScope(w, r, model.ScopePerson, fmt.Sprintf(
 			"this request's credential does not hold the %s scope, which this route requires", model.ScopePerson))
 		return model.Actor{}, false
 	}
@@ -1268,7 +1279,7 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 		session := credential.Session
 		if named := strings.TrimSpace(r.URL.Query().Get("session")); named != "" {
 			if session != "" && named != session {
-				writeError(w, "ACTOR_SESSION_MISMATCH", http.StatusForbidden, fmt.Sprintf(
+				writeError(w, r, apicode.ActorSessionMismatch, fmt.Sprintf(
 					"this request's credential acts for session %s; its session parameter names another session", session))
 				return model.Actor{}, false
 			}
@@ -1298,7 +1309,7 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 // whose input struct does not declare one is a 400, and four of the mutating rows a person's
 // scope opened are DELETEs with no body at all. A browser's actor names no agent (act is nil),
 // so there is nothing for a body to name, and its body actor is ignored here as it always was.
-func actSessionFromBody(w http.ResponseWriter, actor model.Actor, supplied *model.Actor) (model.Actor, bool) {
+func actSessionFromBody(w http.ResponseWriter, r *http.Request, actor model.Actor, supplied *model.Actor) (model.Actor, bool) {
 	named := ""
 	if supplied != nil && supplied.Kind == "session" {
 		named = strings.TrimSpace(supplied.ID)
@@ -1307,7 +1318,7 @@ func actSessionFromBody(w http.ResponseWriter, actor model.Actor, supplied *mode
 		return actor, true
 	}
 	if actor.Act.Session != "" && actor.Act.Session != named {
-		writeError(w, "ACTOR_SESSION_MISMATCH", http.StatusForbidden, fmt.Sprintf(
+		writeError(w, r, apicode.ActorSessionMismatch, fmt.Sprintf(
 			"this request acts for session %s; its actor names another session", actor.Act.Session))
 		return model.Actor{}, false
 	}
@@ -1342,11 +1353,11 @@ func (s *server) callerHoldsScope(r *http.Request, scope string) bool {
 func (s *server) requireCallerScope(w http.ResponseWriter, r *http.Request, scope string) bool {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return false
 	}
 	if !actor.Credential.Holds(scope) {
-		refuseMissingScope(w, scope, fmt.Sprintf(
+		refuseMissingScope(w, r, scope, fmt.Sprintf(
 			"this request's credential does not hold the %s scope, which this field requires", scope))
 		return false
 	}
@@ -1357,13 +1368,14 @@ func (s *server) requireCallerScope(w http.ResponseWriter, r *http.Request, scop
 // "<field> is N characters over the M-character limit (L/M)". Lengths are UTF-16 units
 // (itemblocks.Units16).
 func capExceededError(field string, length, limit int) *apiError {
-	return errorf(http.StatusBadRequest, "CAP_EXCEEDED",
+	return errorf(apicode.CapExceeded,
 		"%s is %d characters over the %d-character limit (%d/%d)", field, length-limit, limit, length, limit)
 }
 
-// countExceededError is capExceededError for item counts (options, labels).
-func countExceededError(code, field string, count, limit int) *apiError {
-	return errorf(http.StatusBadRequest, code,
+// countExceededError is capExceededError for item counts (options, labels), under the code of the
+// field it counts.
+func countExceededError(code apicode.Code, field string, count, limit int) *apiError {
+	return errorf(code,
 		"%s is %d over the %d-item limit (%d/%d)", field, count-limit, limit, count, limit)
 }
 
@@ -1380,19 +1392,20 @@ func blockBoundError(err error) *apiError {
 	}
 	var decision *itemblocks.DecisionBlock
 	if errors.As(err, &decision) {
-		return errorf(http.StatusBadRequest, "DECISION_BLOCK_IN_BODY", "%s", err)
+		return errorf(apicode.DecisionBlockInBody, "%s", err)
 	}
-	return errorf(http.StatusBadRequest, "CAP_EXCEEDED", "%s", err)
+	return errorf(apicode.CapExceeded, "%s", err)
 }
 
-func capExceeded(w http.ResponseWriter, field string, length, limit int) {
+func capExceeded(w http.ResponseWriter, r *http.Request, field string, length, limit int) {
 	err := capExceededError(field, length, limit)
-	writeError(w, err.code, err.status, err.message)
+	writeError(w, r, err.code, err.message)
 }
 
-// requireUUIDPath rejects a `{id}` path value that is no id with 400 <KIND>_ID_INPUT before it
-// reaches a uuid column (where pgx would surface it as a 500). kind is "ask", "comment", or
-// "message".
+// requireUUIDPath rejects a `{id}` path value that is no id with 400 code, the kind's
+// <KIND>_ID_INPUT, before it reaches a uuid column (where pgx would surface it as a 500). kind
+// names the id in the message: "ask", "comment", "message", and the kinds idPathProblem words as
+// whole uuids.
 //
 // The value it reads is the one the prefix layer left (resolveIDPrefixes): an id written as a
 // unique prefix is already the whole id by the time this runs, and what reaches here is an id
@@ -1403,9 +1416,9 @@ func capExceeded(w http.ResponseWriter, field string, length, limit int) {
 // A value uuid.Parse reads in one of its other spellings reaches here already rewritten to the
 // canonical one: the prefix layer canonicalizes the {id} of every route that takes one
 // (canonicalizeUUIDPath), so this parse only decides whether the value is an id at all.
-func requireUUIDPath(w http.ResponseWriter, r *http.Request, kind string) bool {
+func requireUUIDPath(w http.ResponseWriter, r *http.Request, kind string, code apicode.Code) bool {
 	if _, err := uuid.Parse(r.PathValue("id")); err != nil {
-		writeError(w, strings.ToUpper(kind)+"_ID_INPUT", http.StatusBadRequest, idPathProblem(kind))
+		writeError(w, r, code, idPathProblem(kind))
 		return false
 	}
 	return true
@@ -1477,7 +1490,7 @@ func decodeJSONTestHook(r *http.Request, value any) error {
 // that value's type does not declare, and nil when it declares them all.
 func refuseUndeclaredMembers(value any, body []byte) error {
 	if undeclared := undeclaredMembers(value, body); len(undeclared) > 0 {
-		return errorf(http.StatusBadRequest, "INVALID_JSON", "the hook does not take: %s", strings.Join(undeclared, ", "))
+		return errorf(apicode.InvalidJSON, "the hook does not take: %s", strings.Join(undeclared, ", "))
 	}
 	return nil
 }
@@ -1488,7 +1501,7 @@ func refuseUndeclaredMembers(value any, body []byte) error {
 func readJSONBody(r *http.Request, value any, limit int64, tooLarge *apiError) ([]byte, error) {
 	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || (contentType != "application/json" && !strings.HasSuffix(contentType, "+json")) {
-		return nil, errorf(http.StatusUnsupportedMediaType, "JSON_CONTENT_TYPE", "JSON mutations require Content-Type application/json")
+		return nil, errorf(apicode.JSONContentType, "JSON mutations require Content-Type application/json")
 	}
 	r.Body = http.MaxBytesReader(maxBytesDiscarder{}, r.Body, limit)
 	var read bytes.Buffer
@@ -1498,10 +1511,10 @@ func readJSONBody(r *http.Request, value any, limit int64, tooLarge *apiError) (
 		if errors.As(err, &maxBytes) {
 			return nil, tooLarge
 		}
-		return nil, errorf(http.StatusBadRequest, "INVALID_JSON", "invalid JSON body: %v", err)
+		return nil, errorf(apicode.InvalidJSON, "invalid JSON body: %v", err)
 	}
 	if decoder.More() {
-		return nil, errorf(http.StatusBadRequest, "INVALID_JSON", "request body must contain one JSON value")
+		return nil, errorf(apicode.InvalidJSON, "request body must contain one JSON value")
 	}
 	if refusal := unstorableJSON("", read.Bytes()); refusal != nil {
 		return nil, refusal
@@ -1524,8 +1537,85 @@ type errorBody struct {
 	Error string `json:"error"`
 }
 
-func writeError(w http.ResponseWriter, code string, status int, message string) {
-	WriteJSON(w, status, errorBody{Code: code, Error: message})
+// writeError is the one error writer of both API versions: it answers code as the version the
+// mount put on the request names it (requestAPIVersion), with its v1 name and status on a
+// /api/v1 route and its v2 ones on a /api/v2 route. A code the version does not answer - the
+// zero Code, a code of the other version alone, or AnswerNotKept, whose status is the call's
+// (writeErrorAt) - is the server's own mistake, answered 500 INTERNAL with the site that wrote
+// it logged (renderCode). So a v2-only code written on a /api/v1 route answers 500: a handler or
+// helper both versions share must never return or write a v2-only code (one /api/v1 alone answers
+// likewise on /api/v2); a refusal only /api/v2 gives is decided on a path only /api/v2 takes.
+func writeError(w http.ResponseWriter, r *http.Request, code apicode.Code, message string) {
+	writeVersionedError(w, requestAPIVersion(r), code, 0, message)
+}
+
+// writeErrorAt is writeError for the one code whose status is the call's (apicode.AnswerNotKept,
+// the status of the first answer a keyed write could not keep): it answers that code at status,
+// and any other code as writeError answers a code the version does not answer.
+func writeErrorAt(w http.ResponseWriter, r *http.Request, code apicode.Code, status int, message string) {
+	writeVersionedError(w, requestAPIVersion(r), code, status, message)
+}
+
+// writeVersionedError is writeError and writeErrorAt for a version given rather than read from a
+// request, which the one writer that refuses from inside a ResponseWriter needs: the drain holds
+// no request, and the mount builds it with the route's version (drainingWriter.begin). status is
+// the call's status for a code that takes one, and 0 for every other.
+func writeVersionedError(w http.ResponseWriter, version apiVersion, code apicode.Code, status int, message string) {
+	name, answered := renderCode(version, code, status)
+	WriteJSON(w, answered, errorBody{Code: name, Error: message})
+}
+
+// refusalPair is the name and status the request's version answers code with, for a refusal
+// whose body carries more than errorBody does (editPreconditionError, issueClaimedError and the
+// like): the handler writes that body with this name and status, as writeError would write its
+// own.
+func refusalPair(r *http.Request, code apicode.Code) (string, int) {
+	return renderCode(requestAPIVersion(r), code, 0)
+}
+
+// codePair is the name and status code answers with under version, and whether that version
+// answers it at all. A code whose status is the call's answers with status 0 here.
+func codePair(version apiVersion, code apicode.Code) (string, int, bool) {
+	if version == apiV2 {
+		return code.Name(), code.Status(), code.InV2()
+	}
+	return code.V1Name(), code.V1Status(), code.InV1()
+}
+
+// renderCode is the name and status code answers with under version. callStatus is the status
+// of a code that takes its status from the call, and 0 for any other. A code the version does
+// not answer, or one given a status it does not take (or not given the one it does), renders as
+// INTERNAL 500, and the site that wrote it - the first caller outside the writers - is logged,
+// since only the server's own code can be at fault.
+func renderCode(version apiVersion, code apicode.Code, callStatus int) (string, int) {
+	name, status, answers := codePair(version, code)
+	if code.StatusFromCall() {
+		status = callStatus
+	}
+	if !answers || code.StatusFromCall() != (callStatus != 0) {
+		slog.Error("dispatch: a refusal was written with a code its API version does not answer",
+			"code", code.String(), "version", int(version), "call_status", callStatus, "site", refusalSite())
+		name, status, _ = codePair(version, apicode.InternalError)
+	}
+	return name, status
+}
+
+// refusalSite is the file and line of the first caller outside the error writers, for
+// renderCode's log line.
+func refusalSite() string {
+	pcs := make([]uintptr, 16)
+	frames := runtime.CallersFrames(pcs[:runtime.Callers(2, pcs)])
+	for {
+		frame, more := frames.Next()
+		switch frame.Function[strings.LastIndex(frame.Function, ".")+1:] {
+		case "renderCode", "writeVersionedError", "writeError", "writeErrorAt", "refusalPair", "writeHandlerError":
+		default:
+			return frame.File + ":" + strconv.Itoa(frame.Line)
+		}
+		if !more {
+			return "unknown"
+		}
+	}
 }
 
 func encodeJSON(value any) ([]byte, error) {
@@ -1554,7 +1644,7 @@ func (s *server) publish(ctx context.Context, events ...model.Event) {
 
 func (s *server) begin(ctx context.Context) (pgx.Tx, error) {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
-		return nil, errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
+		return nil, errorf(apicode.DatabaseUnavailable, "database unavailable")
 	}
 	tx, err := s.deps.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -1567,7 +1657,7 @@ func (s *server) begin(ctx context.Context) (pgx.Tx, error) {
 // refusal begin would make when there is no database.
 func (s *server) readyPool() (*store.Pool, error) {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
-		return nil, errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
+		return nil, errorf(apicode.DatabaseUnavailable, "database unavailable")
 	}
 	return s.deps.Store.Pool, nil
 }
@@ -1611,7 +1701,7 @@ const (
 )
 
 // errIssueClosed is the refusal of a write that a closed issue does not take.
-var errIssueClosed error = errorf(http.StatusConflict, "ISSUE_CLOSED", "issue is closed")
+var errIssueClosed error = errorf(apicode.IssueClosed, "issue is closed")
 
 // refuseClosed is the one place the writes that take the owner's lock through ownerStatus refuse
 // a closed owner: the locked checks (requireOpenOwnerStatus, lockCommentOwner, lockedComment) and

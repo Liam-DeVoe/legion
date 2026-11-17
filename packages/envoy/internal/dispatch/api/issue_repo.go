@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 // parseIssueRepo decodes the tri-state `repo` field of an issue write. Absent → (nil, false): leave
@@ -24,11 +25,11 @@ func parseIssueRepo(raw json.RawMessage) (repo *string, provided bool, err error
 	}
 	var value string
 	if err := json.Unmarshal(raw, &value); err != nil {
-		return nil, true, errorf(http.StatusBadRequest, "INVALID_ISSUE", `repo must be "owner/name" or null`)
+		return nil, true, errorf(apicode.InvalidIssue, `repo must be "owner/name" or null`)
 	}
 	canonical, _, err := externalRef(strings.TrimSpace(value) + "#1")
 	if err != nil {
-		return nil, true, errorf(http.StatusBadRequest, "INVALID_ISSUE", `repo must be "owner/name" (got %q)`, value)
+		return nil, true, errorf(apicode.InvalidIssue, `repo must be "owner/name" (got %q)`, value)
 	}
 	return &canonical, true, nil
 }
@@ -42,7 +43,7 @@ func checkIssueRepoMapped(ctx context.Context, tx pgx.Tx, repo, project string) 
 		select 1 from repo_projects where repo = $1 and project = $2 for key share
 	`, repo, project).Scan(new(int))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return errorf(http.StatusBadRequest, "REPO_NOT_MAPPED", "%s is not mapped to project %s (Settings → Repositories → Projects)", repo, project)
+		return errorf(apicode.RepoNotMapped, "%s is not mapped to project %s (Settings → Repositories → Projects)", repo, project)
 	}
 	return err
 }

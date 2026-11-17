@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -234,23 +235,23 @@ func (s *server) getNearCopyChecks(w http.ResponseWriter, r *http.Request) {
 		Checks:  []model.NearCopyCheck{},
 	}
 	if !projectKeyPattern.MatchString(page.Project) {
-		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("project", page.Project))
+		writeError(w, r, apicode.InvalidProject, projectKeyProblem("project", page.Project))
 		return
 	}
 	from, to, err := parseOptionalWindow(query)
 	if err != nil {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
+		writeError(w, r, apicode.InvalidQuery, err.Error())
 		return
 	}
 	page.From, page.To = from, to
 	limit, err := parseEventLimit(query.Get("limit"), nearCopyChecksPageMax)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	pool, err := s.readyPool()
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	var afterAt *time.Time
@@ -258,7 +259,7 @@ func (s *server) getNearCopyChecks(w http.ResponseWriter, r *http.Request) {
 	if raw := strings.TrimSpace(query.Get("after")); raw != "" {
 		parsed, err := uuid.Parse(raw)
 		if err != nil {
-			writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf("after %q is not a near-copy check id", raw))
+			writeError(w, r, apicode.InvalidQuery, fmt.Sprintf("after %q is not a near-copy check id", raw))
 			return
 		}
 		id := parsed.String()
@@ -267,12 +268,12 @@ func (s *server) getNearCopyChecks(w http.ResponseWriter, r *http.Request) {
 			select created_at from near_copy_checks where id = $1::uuid and project_key = $2
 		`, id, page.Project).Scan(&at)
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, "INVALID_QUERY", http.StatusBadRequest,
+			writeError(w, r, apicode.InvalidQuery,
 				fmt.Sprintf("after %s is no near-copy check of project %s", raw, page.Project))
 			return
 		}
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		afterAt, afterID = &at, &id
@@ -280,20 +281,20 @@ func (s *server) getNearCopyChecks(w http.ResponseWriter, r *http.Request) {
 	rows, err := pool.Query(r.Context(), nearCopyChecksPageQuery,
 		page.Project, page.From, page.To, afterAt, afterID, limit+1)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var check model.NearCopyCheck
 		if err := scanNearCopyCheck(rows, &check); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		page.Checks = append(page.Checks, check)
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if len(page.Checks) > limit {
@@ -310,12 +311,12 @@ func (s *server) getNearCopyCheck(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	if !requireUUIDPath(w, r, "near_copy_check") {
+	if !requireUUIDPath(w, r, "near_copy_check", apicode.NearCopyCheckIDInput) {
 		return
 	}
 	pool, err := s.readyPool()
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	id := r.PathValue("id")
@@ -324,11 +325,11 @@ func (s *server) getNearCopyCheck(w http.ResponseWriter, r *http.Request) {
 		select `+nearCopyCheckColumns+`, spec from near_copy_checks where id = $1::uuid
 	`, id), &check)
 	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, "NEAR_COPY_CHECK_NOT_FOUND", http.StatusNotFound, "near-copy check "+id+" not found")
+		writeError(w, r, apicode.NearCopyCheckNotFound, "near-copy check "+id+" not found")
 		return
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, check)

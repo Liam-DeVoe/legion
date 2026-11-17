@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -29,19 +30,17 @@ import (
 // the stream needs is the record's (going.go), so any pod serves the stream of a run another pod
 // is answering, or of a run whose pod is gone.
 
-// codeGoingRequestNotFound is the one answer the stream gives for every run a caller may not
-// read: a run the record does not hold, an id that is not a uuid, and a run that is somebody
-// else's. One answer for all three is what keeps an id from telling a caller anything it did not
-// already know - whether that run exists, and whether it is anyone's.
-const codeGoingRequestNotFound = "GOING_REQUEST_NOT_FOUND"
-
-// codeGoingAskerNamesNobody refuses the POST of a credential that names nobody: the
-// deployment's shared token, which resolves as {} (server.go). The stream serves a run to the
-// credential that asked it and to no other, and comparing identities cannot tell two holders
-// of one shared token apart, so such a run would be readable by nobody - the model called, the
-// deployment's paced quota spent, and every reader of it answered 404. It is refused where
+// GOING_REQUEST_NOT_FOUND (apicode.GoingRequestNotFound) is the one answer the stream gives for
+// every run a caller may not read: a run the record does not hold, an id that is not a uuid, and a
+// run that is somebody else's. One answer for all three is what keeps an id from telling a caller
+// anything it did not already know - whether that run exists, and whether it is anyone's.
+//
+// GOING_ASKER_NAMES_NOBODY (apicode.GoingAskerNamesNobody) refuses the POST of a credential that
+// names nobody: the deployment's shared token, which resolves as {} (server.go). The stream serves
+// a run to the credential that asked it and to no other, and comparing identities cannot tell two
+// holders of one shared token apart, so such a run would be readable by nobody - the model called,
+// the deployment's paced quota spent, and every reader of it answered 404. It is refused where
 // that is cheap and plain, before anything is recorded.
-const codeGoingAskerNamesNobody = "GOING_ASKER_NAMES_NOBODY"
 
 // goingStreamPoll is how often an open stream reads the record for frames the run has stored
 // since its last read. The frames are rows, so a reader learns of one by reading: this is the
@@ -87,7 +86,7 @@ type goingCapability struct {
 // run takes contracts.GoingRunWindow, which is far too long to hold an answer for.
 //
 // A credential that names nobody is refused here, before anything is recorded
-// (codeGoingAskerNamesNobody): the stream would serve its run to no reader at all.
+// (apicode.GoingAskerNamesNobody): the stream would serve its run to no reader at all.
 //
 // A deployment with no model configured records the question exactly the same way and stores the
 // run's error frame instead of answering it (startGoingRun), so a caller learns that from the
@@ -100,37 +99,37 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	// reader with it. Recorded, as every actor a row holds is (model.Actor.Recorded).
 	caller, _, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	actor := caller.Recorded()
-	// A credential that names nobody asks nothing: see codeGoingAskerNamesNobody. Refused here,
+	// A credential that names nobody asks nothing: see apicode.GoingAskerNamesNobody. Refused here,
 	// before the record, so no run is stored and no quota is spent on an answer no reader of it
 	// would ever be served.
 	if !goingActorNamesSomebody(actor) {
-		writeError(w, codeGoingAskerNamesNobody, http.StatusForbidden,
+		writeError(w, r, apicode.GoingAskerNamesNobody,
 			"this credential names nobody, so the run it asked for would be nobody's to read: ask under a credential that names a session, a person or a workload")
 		return
 	}
 	var input createGoingRequestInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	words := strings.TrimSpace(input.Words)
 	if words == "" {
-		writeError(w, "GOING_INPUT", http.StatusBadRequest, "words is required: the question to answer")
+		writeError(w, r, apicode.GoingInput, "words is required: the question to answer")
 		return
 	}
 	// Counted as search counts its own query, after trimming, so a question this route accepts
 	// is one the answerer can send whole.
 	if length := itemblocks.Units16(words); length > contracts.GoingWordsMax {
-		capExceeded(w, "words", length, contracts.GoingWordsMax)
+		capExceeded(w, r, "words", length, contracts.GoingWordsMax)
 		return
 	}
 	project := strings.TrimSpace(input.Project)
 	if project != "" && !projectKeyPattern.MatchString(project) {
-		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("project", project))
+		writeError(w, r, apicode.InvalidProject, projectKeyProblem("project", project))
 		return
 	}
 	// The project comes from the body, not from the address, so this row is classed
@@ -138,7 +137,7 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	// (issue_create.go). It runs before the row is written: a credential that may write one
 	// project asks only of that project, and asking of every project is asking outside it.
 	if covers, scoped := s.callerProject(r); scoped && covers != project {
-		refuseWriteOutsideProjectScope(w, covers, project)
+		refuseWriteOutsideProjectScope(w, r, covers, project)
 		return
 	}
 	// Detached from the request, as a broadcast's deliveries are (broadcasts.go): SIGTERM
@@ -162,12 +161,12 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	// only runs out its deadline.
 	answering, err := store.ForConcurrentRead(context.WithoutCancel(r.Context()))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	request, err := s.recordGoingRequest(r.Context(), actor, project, words)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.detached.goDetached(func() { s.startGoingRun(answering, request) })
@@ -268,7 +267,7 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 	// a token row, the sign-in issuer's confirmation - worth paying once.
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	id := r.PathValue("id")
@@ -276,16 +275,16 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 	// a uuid comes back as a Postgres error rather than pgx.ErrNoRows, and this route answers an
 	// id nobody could hold exactly as it answers one nobody does.
 	if _, err := uuid.Parse(id); err != nil {
-		writeGoingRequestNotFound(w)
+		writeGoingRequestNotFound(w, r)
 		return
 	}
 	request, err := s.readGoingRequest(r.Context(), id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		writeGoingRequestNotFound(w)
+		writeGoingRequestNotFound(w, r)
 		return
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The whole credential, through model.Actor.SameCredential and never SameAs alone, which
@@ -295,7 +294,7 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 	// without it, such a row would be served to every holder of the deployment's shared token,
 	// which resolves as {} exactly as that author does.
 	if !goingActorNamesSomebody(request.Author) || !request.Author.SameCredential(actor) {
-		writeGoingRequestNotFound(w)
+		writeGoingRequestNotFound(w, r)
 		return
 	}
 	after := goingResumeFrom(r)
@@ -373,7 +372,7 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 // asked for would be a run every holder could claim and none is served.
 //
 // It is asked twice, of the asker and of the run's author. The POST refuses an asker that
-// names nobody (codeGoingAskerNamesNobody) before anything is recorded, so no row this route
+// names nobody (apicode.GoingAskerNamesNobody) before anything is recorded, so no row this route
 // writes has such an author. The stream asks it of the author it read all the same, because
 // model.Actor.SameCredential reports two credentials that name nobody as one: that comparison
 // alone would serve a row authored by {} to every holder of the shared token, and the stream
@@ -410,10 +409,10 @@ func writeGoingFrame(w http.ResponseWriter, frame goingEvent) error {
 	return err
 }
 
-// writeGoingRequestNotFound is the stream's one refusal; see codeGoingRequestNotFound for why
+// writeGoingRequestNotFound is the stream's one refusal; see apicode.GoingRequestNotFound for why
 // every run a caller may not read is answered with it.
-func writeGoingRequestNotFound(w http.ResponseWriter) {
-	writeError(w, codeGoingRequestNotFound, http.StatusNotFound, "no answer run of that id is yours to read")
+func writeGoingRequestNotFound(w http.ResponseWriter, r *http.Request) {
+	writeError(w, r, apicode.GoingRequestNotFound, "no answer run of that id is yours to read")
 }
 
 // getGoingCapability answers whether this deployment has a model configured, and nothing else:

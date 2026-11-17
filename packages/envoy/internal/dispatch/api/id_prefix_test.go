@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -433,8 +434,8 @@ func TestAProjectScopedTokenIsRefusedAPrefixOfAnotherProjectsAsk(t *testing.T) {
 			t.Fatalf("%s: status=%d body=%s, want 403", name, refused.Code, refused.Body.String())
 		}
 		refusal := decodeBody[refusalAnswer](t, refused)
-		if refusal.Code != codeProjectScope {
-			t.Fatalf("%s: refusal = %+v, want %s", name, refusal, codeProjectScope)
+		if refusal.Code != apicode.ProjectScope.V1Name() {
+			t.Fatalf("%s: refusal = %+v, want %s", name, refusal, apicode.ProjectScope.V1Name())
 		}
 		if !strings.Contains(refusal.Error, brokerTestProject) || !strings.Contains(refusal.Error, other.key) {
 			t.Fatalf("%s: refusal %q names neither %s nor %s", name, refusal.Error, brokerTestProject, other.key)
@@ -874,7 +875,7 @@ func unknownIDRouteRequest(t *testing.T, handler http.Handler, method, path stri
 // the layer leaves as written (text.IsIDPrefix), so the answer is the handler's own - and holds
 // what the handler writes to what the table claims, the {block_id} of the two block routes with
 // a document that exists and a block id nothing carries. A row whose code is wrong fails by its
-// own name. The one route that answers no 404 for an id it does not hold (notFoundNone) is held
+// own name. The one route that answers no 404 for an id it does not hold (NoNotFound) is held
 // to that: its answer is anything but a 404.
 func TestEveryResolvingIDRouteAnswersTheNotFoundItNames(t *testing.T) {
 	// Every route the table mounts, the test hooks' one that takes a document id included.
@@ -899,20 +900,21 @@ func TestEveryResolvingIDRouteAnswersTheNotFoundItNames(t *testing.T) {
 			probe := unknownIDRouteProbes[name]
 			// Each wildcard the row resolves, with every other value naming something that
 			// exists: the {id} against a document that is there for the {block_id}'s probe.
-			probes := []struct{ what, path, want string }{}
+			type idProbe struct {
+				what, path string
+				want       apicode.Code
+				none       bool
+			}
+			probes := []idProbe{}
 			if entry.Kind != "" {
-				probes = append(probes, struct{ what, path, want string }{
-					"an id", fill(route.Pattern, unknown, "b1"), entry.NotFound,
-				})
+				probes = append(probes, idProbe{"an id", fill(route.Pattern, unknown, "b1"), entry.NotFound, entry.NoNotFound})
 			}
 			if entry.Blocks {
-				probes = append(probes, struct{ what, path, want string }{
-					"a block id", fill(route.Pattern, issue.PrimaryArtifactID, unknown), entry.BlockNotFound,
-				})
+				probes = append(probes, idProbe{"a block id", fill(route.Pattern, issue.PrimaryArtifactID, unknown), entry.BlockNotFound, false})
 			}
 			for _, each := range probes {
 				answer := unknownIDRouteRequest(t, handler, route.Method, each.path, probe, routeProbeBody(route))
-				if each.want == notFoundNone {
+				if each.none {
 					if answer.Code == http.StatusNotFound {
 						t.Fatalf("%s answers 404 %s for %s nothing carries; idRoutes says it answers none: %s",
 							name, decodeBody[refusedAnswer](t, answer).Code, each.what, answer.Body.String())
@@ -921,11 +923,11 @@ func TestEveryResolvingIDRouteAnswersTheNotFoundItNames(t *testing.T) {
 				}
 				if answer.Code != http.StatusNotFound {
 					t.Fatalf("%s answers %d for %s nothing carries, not the 404 idRoutes names (%s): %s",
-						name, answer.Code, each.what, each.want, answer.Body.String())
+						name, answer.Code, each.what, each.want.V1Name(), answer.Body.String())
 				}
-				if code := decodeBody[refusedAnswer](t, answer).Code; code != each.want {
+				if code := decodeBody[refusedAnswer](t, answer).Code; code != each.want.V1Name() {
 					t.Fatalf("%s answers 404 %q for %s nothing carries; idRoutes names %q, which is what a prefix nothing carries gets",
-						name, code, each.what, each.want)
+						name, code, each.what, each.want.V1Name())
 				}
 			}
 		})

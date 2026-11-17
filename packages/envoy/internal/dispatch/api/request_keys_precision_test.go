@@ -34,7 +34,7 @@ func TestALockOnlyTransactionMarksNothing(t *testing.T) {
 			t.Errorf("commit the lock: %v", err)
 		}
 		if run == 1 {
-			writeError(w, "AFTER_THE_LOCK", http.StatusInternalServerError, "failed after the lock")
+			WriteJSON(w, http.StatusInternalServerError, errorBody{Code: "AFTER_THE_LOCK", Error: "failed after the lock"})
 			return
 		}
 		answerRun(run, w, r)
@@ -77,7 +77,7 @@ func TestACommitThatFailsAfterTheMarkLeavesNoMark(t *testing.T) {
 			}
 		}
 		if err := tx.Commit(r.Context()); err != nil {
-			writeError(w, "COMMIT_FAILED", http.StatusInternalServerError, err.Error())
+			WriteJSON(w, http.StatusInternalServerError, errorBody{Code: "COMMIT_FAILED", Error: err.Error()})
 			return
 		}
 		answerRun(run, w, r)
@@ -196,7 +196,7 @@ func TestARecoveredReplayKeepsNothingOfARefusal(t *testing.T) {
 		t.Fatalf("a success's stored body = %s, want it handed to the replay", body)
 	}
 	response := httptest.NewRecorder()
-	(&server{}).writeRefreshed(response, stored, map[string]any{"id": "m1"})
+	(&server{}).writeRefreshed(response, nil, stored, map[string]any{"id": "m1"})
 	var answer map[string]json.RawMessage
 	if err := json.Unmarshal(response.Body.Bytes(), &answer); err != nil {
 		t.Fatal(err)

@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -409,8 +410,8 @@ func TestANamedBrokerTokenLimitsWritesToItsProject(t *testing.T) {
 	other := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
 		"project": "OTHER", "title": "Written into another project", "spec": "# Spec",
 	}))
-	if refusal := decodeBody[refusalAnswer](t, other); other.Code != http.StatusForbidden || refusal.Code != codeProjectScope {
-		t.Fatalf("a named token's write into another project: status=%d body=%s, want 403 %s", other.Code, other.Body.String(), codeProjectScope)
+	if refusal := decodeBody[refusalAnswer](t, other); other.Code != http.StatusForbidden || refusal.Code != apicode.ProjectScope.V1Name() {
+		t.Fatalf("a named token's write into another project: status=%d body=%s, want 403 %s", other.Code, other.Body.String(), apicode.ProjectScope.V1Name())
 	}
 }
 

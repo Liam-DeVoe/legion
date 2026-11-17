@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -88,18 +89,18 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 	answer := issueDecisions{OpenQuestions: []issueAskRow{}, Decisions: []model.Decision{}}
 	spec, specFound, err := s.issueSpecDocument(r.Context(), key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if specFound {
 		if answer.OpenQuestions, err = s.specOpenQuestions(r.Context(), key, spec.ID, reader); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	document, found, err := s.issueDecisionsDocument(r.Context(), key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !found {
@@ -114,7 +115,7 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 		specID = spec.ID
 	}
 	if answer.Decisions, err = s.readDecisions(r.Context(), document, reference, specID, reader); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	reader.resolve()
@@ -173,7 +174,7 @@ func artifactMissing(err error) bool {
 	if !errors.As(err, &apiErr) {
 		return false
 	}
-	return apiErr.code == "ARTIFACT_NOT_FOUND" || apiErr.code == "ARTIFACT_REFERENCE_AMBIGUOUS"
+	return apiErr.code == apicode.ArtifactNotFound || apiErr.code == apicode.ArtifactReferenceAmbiguous
 }
 
 // specOpenQuestions are the issue's open asks whose block is in its spec, oldest first, in the
@@ -765,33 +766,33 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 	}
 	var input keepDecisionInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if input.TextSHA256 == "" {
-		writeError(w, "INVALID_KEEP", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidKeep,
 			"text_sha256 is the text_sha256 the decision was read at")
 		return
 	}
 	document, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	blockID := r.PathValue("block_id")
 	decision, err := s.keptDecision(r.Context(), document, blockID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if decision.TextSHA256 != input.TextSHA256 {
-		writeError(w, "DECISION_CHANGED", http.StatusConflict,
+		writeError(w, r, apicode.DecisionChanged,
 			"the decision changed since it was read; read it again and keep what it says now")
 		return
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -806,7 +807,7 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 	`, document.ID, blockID, decisionTextSum(decision.Text), decision.ChangedVersion,
 		model.CanonicalLogin(actor.ID)).
 		Scan(&keep.BlockID, &keep.TextSHA256, &keep.ChangedVersion, &keep.KeptBy, &keep.KeptAt); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	event, err := s.appendEvent(r.Context(), tx, issueOwner(*document.IssueKey).event("decision.kept", actor, map[string]any{
@@ -815,11 +816,11 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 		"changed_version": keep.ChangedVersion,
 	}))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)
@@ -831,7 +832,7 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 // Keep and the view never disagree about which document holds the decisions - and that block is
 // the heading of a decision outside `## Replaced`.
 func (s *server) keptDecision(ctx context.Context, document model.Artifact, blockID string) (model.Decision, error) {
-	notFound := errorf(http.StatusNotFound, "TARGET_NOT_FOUND", "no decision %q in %s", blockID, document.Name)
+	notFound := errorf(apicode.TargetNotFound, "no decision %q in %s", blockID, document.Name)
 	if document.IssueKey == nil {
 		return model.Decision{}, notFound
 	}
@@ -863,7 +864,7 @@ func (s *server) getDocumentRead(w http.ResponseWriter, r *http.Request) {
 	}
 	document, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	read := model.DocumentRead{ArtifactID: document.ID}
@@ -873,7 +874,7 @@ func (s *server) getDocumentRead(w http.ResponseWriter, r *http.Request) {
 		select version, read_at from user_document_reads where login = $1 and artifact_id = $2::uuid
 	`, model.CanonicalLogin(actor.ID), document.ID).Scan(&version, &at)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	read.Version, read.ReadAt = version, at
@@ -895,16 +896,16 @@ func (s *server) putDocumentRead(w http.ResponseWriter, r *http.Request) {
 	}
 	var input documentReadInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if input.Version == nil || *input.Version < 0 {
-		writeError(w, "INVALID_STATE", http.StatusBadRequest, "version must be a whole number that is not negative")
+		writeError(w, r, apicode.InvalidState, "version must be a whole number that is not negative")
 		return
 	}
 	document, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	read := model.DocumentRead{ArtifactID: document.ID}
@@ -915,7 +916,7 @@ func (s *server) putDocumentRead(w http.ResponseWriter, r *http.Request) {
 		on conflict (login, artifact_id) do update set version = excluded.version, read_at = now()
 		returning version, read_at
 	`, model.CanonicalLogin(actor.ID), document.ID, *input.Version).Scan(&version, &at); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	read.Version, read.ReadAt = &version, &at

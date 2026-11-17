@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -47,29 +48,29 @@ type messageRead struct {
 func (s *server) createMessage(w http.ResponseWriter, r *http.Request) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	var input createMessageInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !human {
 		if actor, err = bearerSessionActor(r, actor, input.Actor); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	delivery, err := validateCreateMessage(&input)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	issueKey := r.PathValue("key")
 	message, advice, err := s.createStoredMessage(r.Context(), &issueKey, input, delivery, false, actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusCreated, withAdvice(newShapedMessage(message, wantsDisplayTrees(r)), advice))
@@ -104,7 +105,7 @@ func (s *server) createAgentMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	var input createAgentMessageInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	target := "session:" + r.PathValue("session_id")
@@ -114,12 +115,12 @@ func (s *server) createAgentMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	delivery, err := validateCreateMessage(&messageInput)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	message, _, err := s.createStoredMessage(r.Context(), nil, messageInput, delivery, input.ConnectedOnly, actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusCreated, newShapedMessage(message, wantsDisplayTrees(r)))
@@ -166,7 +167,7 @@ func (s *server) recoveredMessage(ctx context.Context, point messageRecovery) (m
 func (s *server) replayAgentMessage(w http.ResponseWriter, r *http.Request, point messageRecovery, _ []byte) {
 	message, err := s.recoveredMessage(r.Context(), point)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusCreated, newShapedMessage(message, wantsDisplayTrees(r)))
@@ -178,10 +179,10 @@ func (s *server) replayAgentMessage(w http.ResponseWriter, r *http.Request, poin
 func (s *server) replayIssueMessage(w http.ResponseWriter, r *http.Request, point messageRecovery, stored []byte) {
 	message, err := s.recoveredMessage(r.Context(), point)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	s.writeRefreshed(w, stored, message)
+	s.writeRefreshed(w, r, stored, message)
 }
 
 // sendHeldMessageOn makes sure a keyed send's message is on its way before its repeat is answered,
@@ -284,7 +285,7 @@ func (s *server) createStoredMessage(
 		if err := lockReplyParentMessage(ctx, tx, parent.ID); err != nil {
 			return model.Message{}, nil, err
 		}
-		if block, err = s.replyBlockOf(ctx, tx, refs.ItemMessage, parent.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE"); err != nil {
+		if block, err = s.replyBlockOf(ctx, tx, refs.ItemMessage, parent.ID, *input.InReplyToBlock, "in_reply_to_block", apicode.InvalidMessage); err != nil {
 			return model.Message{}, nil, err
 		}
 		parent.ReplyBody = messageReplyPreview(block.excerpt)
@@ -438,21 +439,21 @@ func messageEvent(message model.Message, eventType string, actor model.Actor, pa
 func validateCreateMessage(input *createMessageInput) (string, error) {
 	input.Body = pmdoc.LineFeeds(input.Body)
 	if strings.TrimSpace(input.Body) == "" {
-		return "", errorf(http.StatusBadRequest, "INVALID_MESSAGE", "message body is required")
+		return "", errorf(apicode.InvalidMessage, "message body is required")
 	}
 	if err := blockBoundError(itemblocks.Check("body", input.Body)); err != nil {
 		return "", err
 	}
 	target, delivery, err := validateMessageDelivery(input.Target, input.Delivery)
 	if err != nil {
-		return "", errorf(http.StatusBadRequest, "MESSAGE_INPUT", "%s", err)
+		return "", errorf(apicode.MessageInput, "%s", err)
 	}
 	input.Target = target
 	if input.InReplyToBlock != nil && input.InReplyTo == nil {
-		return "", errorf(http.StatusBadRequest, "INVALID_MESSAGE", "in_reply_to_block requires in_reply_to, the message whose block it names")
+		return "", errorf(apicode.InvalidMessage, "in_reply_to_block requires in_reply_to, the message whose block it names")
 	}
 	if input.Urgency != nil && !validMessageUrgency(*input.Urgency) {
-		return "", errorf(http.StatusBadRequest, "MESSAGE_INPUT", "urgency must be one of low, med, high, blocking")
+		return "", errorf(apicode.MessageInput, "urgency must be one of low, med, high, blocking")
 	}
 	return delivery, nil
 }
@@ -572,9 +573,9 @@ func loadMessageReplyParent(
 	if inReplyTo == nil {
 		return messageReplyParent{}, nil
 	}
-	invalid := errorf(http.StatusBadRequest, "MESSAGE_INPUT", "in_reply_to must identify a message on this issue")
+	invalid := errorf(apicode.MessageInput, "in_reply_to must identify a message on this issue")
 	if issueKey == nil {
-		invalid = errorf(http.StatusBadRequest, "MESSAGE_INPUT", "in_reply_to must identify a message of this session's conversation")
+		invalid = errorf(apicode.MessageInput, "in_reply_to must identify a message of this session's conversation")
 	}
 	if strings.TrimSpace(*inReplyTo) == "" {
 		return messageReplyParent{}, invalid
@@ -731,12 +732,12 @@ func messageTarget(target *string) string {
 }
 
 func (s *server) getMessage(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "message") {
+	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "message", apicode.MessageIDInput) {
 		return
 	}
 	read, err := s.readMessage(r.Context(), r.PathValue("key"), r.PathValue("id"), wantsDisplayTrees(r))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, read)
@@ -769,22 +770,22 @@ func (s *server) getMessageThread(w http.ResponseWriter, r *http.Request) {
 func (s *server) readableMessageThread(w http.ResponseWriter, r *http.Request) (messageRead, bool) {
 	_, _, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return messageRead{}, false
 	}
-	if !requireUUIDPath(w, r, "message") {
+	if !requireUUIDPath(w, r, "message", apicode.MessageIDInput) {
 		return messageRead{}, false
 	}
 	var rootID string
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), messageThreadCTE+`
 		select id::text from thread where in_reply_to is null
 	`, r.PathValue("id")).Scan(&rootID); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return messageRead{}, false
 	}
 	read, err := s.readMessage(r.Context(), "", rootID, wantsDisplayTrees(r))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return messageRead{}, false
 	}
 	// A direct conversation is the person's own, so a credential of theirs reads it whole and
@@ -793,12 +794,12 @@ func (s *server) readableMessageThread(w http.ResponseWriter, r *http.Request) (
 	if !s.callerHoldsScope(r, model.ScopePerson) && read.Message.IssueKey == nil {
 		session := strings.TrimSpace(r.URL.Query().Get("session"))
 		if session == "" {
-			writeError(w, "SESSION_REQUIRED", http.StatusBadRequest,
+			writeError(w, r, apicode.SessionRequired,
 				"a direct conversation is read as a session in it: name yours in ?session=")
 			return messageRead{}, false
 		}
 		if !read.hasSession(session) {
-			writeError(w, "THREAD_FORBIDDEN", http.StatusForbidden,
+			writeError(w, r, apicode.ThreadForbidden,
 				"session "+session+" is not in this direct conversation: its root targets another session and it has not replied in it")
 			return messageRead{}, false
 		}
@@ -892,7 +893,7 @@ func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), listIssueRootMessagesQuery, r.PathValue("key"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -900,19 +901,19 @@ func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		root, err := scanMessage(rows)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		roots = append(roots, root)
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	rows.Close()
 	result, err := s.hydrateMessageThreads(r.Context(), roots, wantsDisplayTrees(r))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, result)
@@ -925,7 +926,7 @@ func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	sessionID := strings.TrimSpace(r.PathValue("session_id"))
 	if sessionID == "" {
-		writeError(w, "MESSAGE_INPUT", http.StatusBadRequest, "session id is required")
+		writeError(w, r, apicode.MessageInput, "session id is required")
 		return
 	}
 	// Newest activity first: a conversation moves up when anyone replies anywhere in it, so the
@@ -985,7 +986,7 @@ func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
 		order by moved desc, id desc
 	`, unreadDirectRepliesArgs(actor.ID, &sessionID)...)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -995,20 +996,20 @@ func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
 		var holdsUnread bool
 		message, err := scanMessage(rows, &holdsUnread)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		roots = append(roots, message)
 		unread[message.ID] = holdsUnread
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	rows.Close()
 	result, err := s.hydrateMessageThreads(r.Context(), roots, wantsDisplayTrees(r))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Only this list has an unread verdict to carry; a root the query left out of the map is

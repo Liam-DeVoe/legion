@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -57,7 +58,7 @@ func (s *server) listComments(w http.ResponseWriter, r *http.Request) {
 func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner owner, artifactFilter, name string) {
 	watermark, lastSeq, ownerHeld, err := s.commentListWatermark(r.Context(), owner)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	trees := wantsDisplayTrees(r)
@@ -71,7 +72,7 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 	}
 	comments, err := s.loadOwnerComments(r.Context(), s.deps.Store.Pool, owner, artifactFilter)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	reader := s.readDisplayTrees(r.Context(), trees)
@@ -79,7 +80,7 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 	reader.resolve()
 	encoded, err := encodeListAnswer(reads)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.writeListAnswer(w, key, encoded, ownerHeld)
@@ -109,7 +110,7 @@ func (s *server) commentListWatermark(ctx context.Context, owner owner) (int64, 
 			       exists(select 1 from artifacts where id = $1)
 		`, *owner.ArtifactID
 	default:
-		return 0, 0, false, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
+		return 0, 0, false, errorf(apicode.OwnerInvalid, "owner requires exactly one issue or artifact")
 	}
 	var watermark, lastSeq int64
 	var ownerHeld bool
@@ -139,7 +140,7 @@ func (s *server) loadOwnerComments(ctx context.Context, q queryer, owner owner, 
 	case owner.ArtifactID != nil:
 		ownerColumn, ownerValue = "artifact_id", *owner.ArtifactID
 	default:
-		return nil, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
+		return nil, errorf(apicode.OwnerInvalid, "owner requires exactly one issue or artifact")
 	}
 	rows, err := q.Query(ctx, fmt.Sprintf(`
 		select `+commentColumns+`
@@ -179,27 +180,27 @@ type commentRead struct {
 }
 
 func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "comment") {
+	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "comment", apicode.CommentIDInput) {
 		return
 	}
 	comment, err := s.loadComment(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	comments, err := s.hydrateCommentSideTables(r.Context(), s.deps.Store.Pool, []model.Comment{comment})
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	comments[0].AnchorPosition, err = s.anchorBlock(r.Context(), comments[0].Anchor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	replies, err := s.loadReplyChain(r.Context(), s.deps.Store.Pool, "reply_to", comment.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
@@ -289,7 +290,7 @@ func (s *server) loadOwnedCommentForUpdate(
 ) (model.Comment, error) {
 	comment, err := s.loadCommentForUpdate(ctx, tx, id)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !commentHasOwner(comment, owner)) {
-		return model.Comment{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "reply_to must identify a comment on this owner")
+		return model.Comment{}, errorf(apicode.InvalidComment, "reply_to must identify a comment on this owner")
 	}
 	if err != nil {
 		return model.Comment{}, err

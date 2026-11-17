@@ -279,7 +279,7 @@ func openAPIRequestBodyTypes() (map[reflect.Type]bool, []reflect.Type) {
 		}
 	}
 	// The default answer every refusal richer than it rides on (responses).
-	openAPIReach(reflect.TypeOf(errorBody{}), response, nil)
+	openAPIReach(reflect.TypeFor[errorBody](), response, nil)
 
 	var bothDirections []reflect.Type
 	for _, body := range bodies {
@@ -909,7 +909,7 @@ func (e *openAPIEmitter) responses(route apiRoute, shape routeShape) (*openapi31
 		responses.WithMapOfResponseOrReferenceValuesItem(
 			fmt.Sprintf("%d", status), openapi31.ResponseOrReference{Response: response})
 	}
-	refusal, err := e.schema(errorBody{})
+	refusal, err := e.schema(reflect.Zero(reflect.TypeFor[errorBody]()).Interface())
 	if err != nil {
 		return nil, err
 	}

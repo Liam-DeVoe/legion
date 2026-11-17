@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -259,7 +260,7 @@ func parseInboxReadScope(input inboxThreadFilters) (inboxReadScope, error) {
 			}
 			level, known := inboxReadPriorityLevels[name]
 			if !known {
-				return scope, errorf(http.StatusBadRequest, "INVALID_QUERY",
+				return scope, errorf(apicode.InvalidQuery,
 					"priority takes P0, P1, P2, P3 and %s", inboxReadNone)
 			}
 			scope.priorities = append(scope.priorities, level)
@@ -274,7 +275,7 @@ func parseInboxReadScope(input inboxThreadFilters) (inboxReadScope, error) {
 				continue
 			}
 			if !validUrgency(name) {
-				return scope, errorf(http.StatusBadRequest, "INVALID_QUERY",
+				return scope, errorf(apicode.InvalidQuery,
 					"urgency takes low, med, high, blocking and %s", inboxReadNone)
 			}
 		}
@@ -365,28 +366,28 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 	}
 	var input inboxReadRequest
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if input.ReadThrough == nil {
-		writeError(w, "INVALID_STATE", http.StatusBadRequest, "read_through is required")
+		writeError(w, r, apicode.InvalidState, "read_through is required")
 		return
 	}
 	// The cutoff is checked as every read mark here is checked - RFC3339, and no further ahead of
 	// the server clock than a minute - and then carried on as the caller's own text, which the
 	// statements cast.
 	if _, err := parseAgentStateCutoff("read_through", input.ReadThrough); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	scope, err := parseInboxReadScope(input.inboxThreadFilters)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	marked, events, err := s.markInboxReadThreads(r.Context(), actor, *input.ReadThrough, scope)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), events...)

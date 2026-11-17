@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -121,7 +122,7 @@ var maskedBoundary = []byte("\x00boundary\x00")
 
 // errRequestKeyTakenOver is a holder's refusal to commit what it made once a repeat past the lease
 // has taken its key over: the transaction rolls back, so the key's request is made once.
-var errRequestKeyTakenOver = errorf(http.StatusConflict, contracts.IdempotencyKeyInFlight,
+var errRequestKeyTakenOver = errorf(apicode.KeyInFlight,
 	"another attempt under this %s took the request over; this attempt was not run: ask again under the same key",
 	contracts.IdempotencyKeyHeader)
 
@@ -153,15 +154,15 @@ var replayKeptMembers = []string{"advice", "ask_waiting_on"}
 // answer's shape: the replayKeptMembers stored holds and fresh does not (a write's advice, a reply's
 // ask_waiting_on) kept, and nothing else of stored, so a member the fresh read leaves out is never
 // answered stale. With no stored answer it answers fresh alone. Its status is the write's own 201.
-func (s *server) writeRefreshed(w http.ResponseWriter, stored []byte, fresh any) {
+func (s *server) writeRefreshed(w http.ResponseWriter, r *http.Request, stored []byte, fresh any) {
 	encoded, err := json.Marshal(fresh)
 	if err != nil {
-		s.writeHandlerError(w, fmt.Errorf("encode a replayed resource: %w", err))
+		s.writeHandlerError(w, r, fmt.Errorf("encode a replayed resource: %w", err))
 		return
 	}
 	var current map[string]json.RawMessage
 	if err := json.Unmarshal(encoded, &current); err != nil {
-		s.writeHandlerError(w, fmt.Errorf("read a replayed resource: %w", err))
+		s.writeHandlerError(w, r, fmt.Errorf("read a replayed resource: %w", err))
 		return
 	}
 	var answer map[string]json.RawMessage
@@ -247,7 +248,7 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 			return
 		}
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		actor, human, err := s.optionalActor(r)
@@ -268,7 +269,7 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 		inFlight, err := s.requestKeyInFlight(r.Context(), login, key)
 		if err != nil {
 			w.Header().Set(contracts.IdempotencyKeyHeader, key)
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if inFlight {
@@ -288,16 +289,16 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 			// Dispatch's own failure, not the request's: answered as a 5xx under the key, which
 			// nothing has claimed, so the client asks again under it.
 			w.Header().Set(contracts.IdempotencyKeyHeader, key)
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		case err != nil:
-			writeError(w, "REQUEST_BODY_UNREADABLE", http.StatusBadRequest, "could not read the request body: "+err.Error())
+			writeError(w, r, apicode.RequestBodyUnreadable, "could not read the request body: "+err.Error())
 			return
 		}
 		replayable, err := body.reader()
 		if err != nil {
 			w.Header().Set(contracts.IdempotencyKeyHeader, key)
-			s.writeHandlerError(w, fmt.Errorf("reread a keyed request's body: %w", err))
+			s.writeHandlerError(w, r, fmt.Errorf("reread a keyed request's body: %w", err))
 			return
 		}
 		if body.size > bodyLimit {
@@ -459,7 +460,7 @@ func requestKeyHeader(r *http.Request) (key string, present bool, err error) {
 	if len(values) == 0 {
 		return "", false, nil
 	}
-	invalid := errorf(http.StatusBadRequest, contracts.IdempotencyKeyInvalid,
+	invalid := errorf(apicode.KeyInvalid,
 		"%s must be sent once, as 1 to %d letters, digits, '.', '_', ':' or '-', bare or in double quotes",
 		contracts.IdempotencyKeyHeader, contracts.IdempotencyKeyMax)
 	if len(values) != 1 {
@@ -812,12 +813,12 @@ func (s *server) claimRequestKey(
 			return claim, false
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
-			s.writeHandlerError(w, fmt.Errorf("claim an idempotency key: %w", err))
+			s.writeHandlerError(w, r, fmt.Errorf("claim an idempotency key: %w", err))
 			return claim, true
 		}
 		held, found, err := s.readHeldRequestKey(ctx, login, key)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return claim, true
 		}
 		if !found {
@@ -832,7 +833,7 @@ func (s *server) claimRequestKey(
 				delete from request_keys
 				where login = $1 and idempotency_key = $2 and created_at < now() - make_interval(secs => $3)
 			`, login, key, contracts.IdempotencyKeyTTL.Seconds()); err != nil {
-				s.writeHandlerError(w, fmt.Errorf("expire an idempotency key: %w", err))
+				s.writeHandlerError(w, r, fmt.Errorf("expire an idempotency key: %w", err))
 				return claim, true
 			}
 			continue
@@ -845,7 +846,7 @@ func (s *server) claimRequestKey(
 			  and status is null and recovery is null and committed_at is null
 		`, login, key, held.attempt)
 		if err != nil {
-			s.writeHandlerError(w, fmt.Errorf("take over an idempotency key: %w", err))
+			s.writeHandlerError(w, r, fmt.Errorf("take over an idempotency key: %w", err))
 			return claim, true
 		}
 		if tag.RowsAffected() == 1 {
@@ -853,7 +854,7 @@ func (s *server) claimRequestKey(
 			return claim, false
 		}
 	}
-	writeKeyInFlight(w, key)
+	writeKeyInFlight(w, r, key)
 	return claim, true
 }
 
@@ -886,20 +887,20 @@ func (s *server) readHeldRequestKey(ctx context.Context, login, key string) (hel
 func answerHeldKey(w http.ResponseWriter, r *http.Request, key string, held heldRequestKey, state keyState, replay keyedReplay) bool {
 	switch state {
 	case keyReused:
-		writeError(w, contracts.IdempotencyKeyReused, http.StatusUnprocessableEntity, fmt.Sprintf(
+		writeError(w, r, apicode.KeyReused, fmt.Sprintf(
 			"%s %q was already used for %s %s with different content; this request was not run: a changed request needs a new key",
 			contracts.IdempotencyKeyHeader, key, held.method, held.path))
 	case keyRecovered:
 		w.Header().Set(contracts.IdempotencyReplayedHeader, "?1")
 		replay(w, r, held.recovery, held.storedSuccess())
 	case keyAnswered:
-		replayStoredAnswer(w, held)
+		replayStoredAnswer(w, r, held)
 	case keyInFlight:
-		writeKeyInFlight(w, key)
+		writeKeyInFlight(w, r, key)
 	case keyCommitted:
 		// The holder committed its write and its process died, or it failed, before its answer
 		// was kept: running the request again would make the write twice.
-		writeKeyCommitted(w, key, held)
+		writeKeyCommitted(w, r, key, held)
 	default:
 		return false
 	}
@@ -931,7 +932,7 @@ func (s *server) answerDrainedRepeat(
 ) {
 	if expectsContinue(r) {
 		w.Header().Set(contracts.IdempotencyKeyHeader, key)
-		writeKeyInFlight(w, key)
+		writeKeyInFlight(w, r, key)
 		return
 	}
 	limit, tooLarge := routeBody(method, pattern)
@@ -943,10 +944,10 @@ func (s *server) answerDrainedRepeat(
 	case err != nil:
 		w.Header().Set("Connection", "close")
 		w.Header().Set(contracts.IdempotencyKeyHeader, key)
-		writeKeyInFlight(w, key)
+		writeKeyInFlight(w, r, key)
 		return
 	case size > limit:
-		writeError(w, tooLarge.code, tooLarge.status, tooLarge.message)
+		writeError(w, r, tooLarge.code, tooLarge.message)
 		return
 	}
 	lift()
@@ -955,29 +956,29 @@ func (s *server) answerDrainedRepeat(
 	defer cancel()
 	held, found, err := s.readHeldRequestKey(ctx, login, key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if found && answerHeldKey(w, r, key, held, held.state(hex.EncodeToString(digest.Sum(nil)), replay != nil), replay) {
 		return
 	}
-	writeKeyFreed(w, key)
+	writeKeyFreed(w, r, key)
 }
 
 // writeKeyFreed answers a repeat whose body was read and not kept while its first request gave the
 // key up (answerDrainedRepeat): it was not run, and is told to ask again under the key, as a repeat
 // whose first request still runs is, so the client's retry runs it.
-func writeKeyFreed(w http.ResponseWriter, key string) {
+func writeKeyFreed(w http.ResponseWriter, r *http.Request, key string) {
 	w.Header().Set("Retry-After", "1")
-	writeError(w, contracts.IdempotencyKeyInFlight, http.StatusConflict, fmt.Sprintf(
+	writeError(w, r, apicode.KeyInFlight, fmt.Sprintf(
 		"the first request under %s %q ended while this one's body arrived, and this one, whose body was not kept, was not run: ask again under the same key",
 		contracts.IdempotencyKeyHeader, key))
 }
 
 // writeKeyInFlight answers a repeat whose first request still holds the key.
-func writeKeyInFlight(w http.ResponseWriter, key string) {
+func writeKeyInFlight(w http.ResponseWriter, r *http.Request, key string) {
 	w.Header().Set("Retry-After", "1")
-	writeError(w, contracts.IdempotencyKeyInFlight, http.StatusConflict, fmt.Sprintf(
+	writeError(w, r, apicode.KeyInFlight, fmt.Sprintf(
 		"the first request under %s %q is still running; this one was not run: ask again under the same key",
 		contracts.IdempotencyKeyHeader, key))
 }
@@ -985,18 +986,18 @@ func writeKeyInFlight(w http.ResponseWriter, key string) {
 // writeKeyCommitted answers a repeat whose first request committed its write and lost its answer:
 // Dispatch does not run the request again, and has nothing to replay (Google AIP-155's lost
 // answer; a route that commits a recovery point answers the resource instead).
-func writeKeyCommitted(w http.ResponseWriter, key string, held heldRequestKey) {
-	writeError(w, contracts.IdempotencyKeyCommitted, http.StatusConflict, fmt.Sprintf(
+func writeKeyCommitted(w http.ResponseWriter, r *http.Request, key string, held heldRequestKey) {
+	writeError(w, r, apicode.KeyCommitted, fmt.Sprintf(
 		"the write under %s %q (%s %s) landed, but Dispatch lost its answer, so it is not run again and has no answer to replay: read what it wrote",
 		contracts.IdempotencyKeyHeader, key, held.method, held.path))
 }
 
 // replayStoredAnswer answers a repeat with the first request's stored answer: its status, every
 // header its handler set, and its body. held is keyAnswered, so its status is set.
-func replayStoredAnswer(w http.ResponseWriter, held heldRequestKey) {
+func replayStoredAnswer(w http.ResponseWriter, r *http.Request, held heldRequestKey) {
 	w.Header().Set(contracts.IdempotencyReplayedHeader, "?1")
 	if !held.kept {
-		writeError(w, contracts.IdempotencyAnswerNotKept, *held.status, fmt.Sprintf(
+		writeErrorAt(w, r, apicode.AnswerNotKept, *held.status, fmt.Sprintf(
 			"Dispatch ran this request and answered %d, but its answer was larger than the %d bytes a key keeps, so it is not replayed: read what the request wrote to see it",
 			*held.status, keyedAnswerKept))
 		return
@@ -1170,7 +1171,7 @@ func replayRecovered[T recoveryPoint](
 	return func(w http.ResponseWriter, r *http.Request, recovery json.RawMessage, stored []byte) {
 		var point T
 		if err := json.Unmarshal(recovery, &point); err != nil {
-			s.writeHandlerError(w, fmt.Errorf("read a recovery point: %w", err))
+			s.writeHandlerError(w, r, fmt.Errorf("read a recovery point: %w", err))
 			return
 		}
 		replay(w, r, point, stored)

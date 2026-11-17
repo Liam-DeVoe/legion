@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -334,12 +335,12 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 	}
 	state, err := randomToken()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "state")
+		writeCodeError(w, http.StatusInternalServerError, "state", codeSigninStartFailed)
 		return
 	}
 	nonce, err := randomToken()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "state")
+		writeCodeError(w, http.StatusInternalServerError, "state", codeSigninStartFailed)
 		return
 	}
 	authURL, err := r.ctx.SignIn.AuthURL(req.Context(), callbackURL(r.ctx.ServerURL, req), state, nonce)
@@ -356,7 +357,7 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 		Exp:   time.Now().Add(oauthStateTTL).Unix(),
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "state")
+		writeCodeError(w, http.StatusInternalServerError, "state", codeSigninStartFailed)
 		return
 	}
 	http.SetCookie(w, oauthStateCookieFor(value, oauthStateMaxAge, !r.ctx.InsecureCookie))
@@ -384,18 +385,18 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 	}
 	code, state, err := auth.ParseCallback(req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeCodeError(w, http.StatusBadRequest, err.Error(), codeAuthParamsInvalid)
 		return
 	}
 	http.SetCookie(w, oauthStateCookieFor("", -1, !r.ctx.InsecureCookie))
 	cookie, err := req.Cookie(oauthStateCookie)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid or expired state — start over at /auth/start")
+		writeCodeError(w, http.StatusBadRequest, "invalid or expired state — start over at /auth/start", codeAuthStateInvalid)
 		return
 	}
 	pending, ok := verifyOAuthState(r.ctx.SigningKey, cookie.Value, time.Now())
 	if !ok || subtle.ConstantTimeCompare([]byte(state), []byte(pending.State)) != 1 {
-		writeError(w, http.StatusBadRequest, "invalid or expired state — start over at /auth/start")
+		writeCodeError(w, http.StatusBadRequest, "invalid or expired state — start over at /auth/start", codeAuthStateInvalid)
 		return
 	}
 	session, err := r.ctx.SignIn.Exchange(req.Context(), callbackURL(r.ctx.ServerURL, req), code, pending.Nonce)
@@ -406,7 +407,7 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 	}
 	if err != nil {
 		slog.Warn("dispatch: sign-in code exchange failed", "error", err)
-		writeError(w, http.StatusBadGateway, "sign-in failed: "+err.Error())
+		writeCodeError(w, http.StatusBadGateway, "sign-in failed: "+err.Error(), codeSigninFailed)
 		return
 	}
 	email, err := r.ctx.SignInRule.Person(session.Claims)
@@ -418,7 +419,7 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 	subject := r.ctx.SignInRule.Subject(session.Claims)
 	if err := r.ctx.SignInRule.WriteSignIn(req.Context(), r.ctx.People, email, subject, session.RefreshToken); err != nil {
 		slog.Error("dispatch: record sign-in failed", "email", email, "error", err)
-		writeError(w, http.StatusInternalServerError, "record sign-in")
+		writeCodeError(w, http.StatusInternalServerError, "record sign-in", codeSigninRecordFailed)
 		return
 	}
 	if !r.issueSession(w, req, email, subject) {
@@ -446,7 +447,7 @@ func (r *router) issueSession(w http.ResponseWriter, req *http.Request, email, s
 		generation, err = r.ctx.Sessions.EnsureSession(req.Context(), email)
 		if err != nil {
 			slog.Error("dispatch: ensure session generation failed", "email", email, "error", err)
-			writeError(w, http.StatusInternalServerError, "session generation")
+			writeCodeError(w, http.StatusInternalServerError, "session generation", codeSessionFailed)
 			return false
 		}
 	}
@@ -458,7 +459,7 @@ func (r *router) issueSession(w http.ResponseWriter, req *http.Request, email, s
 				return false
 			}
 			slog.Error("dispatch: read the account the sign-in recorded failed", "email", email, "error", err)
-			writeError(w, http.StatusInternalServerError, "record sign-in")
+			writeCodeError(w, http.StatusInternalServerError, "record sign-in", codeSigninRecordFailed)
 			return false
 		}
 	}
@@ -474,7 +475,7 @@ func (r *router) authLogout(w http.ResponseWriter, req *http.Request) {
 	if r.ctx.Sessions != nil {
 		if err := r.ctx.Sessions.RevokeSessions(req.Context(), email); err != nil {
 			slog.Warn("dispatch: revoke sessions failed", "email", email, "error", err)
-			writeError(w, http.StatusInternalServerError, "revoke session")
+			writeCodeError(w, http.StatusInternalServerError, "revoke session", codeSessionFailed)
 			return
 		}
 	}
@@ -581,18 +582,24 @@ func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 	normalized := filepath.Clean("/" + requestedPath)
 	if isReservedPath(normalized, serverRoots) {
 		// An unknown API path writes its access-log line too, so a client calling a route that
-		// does not exist is visible beside the callers of the routes that do.
+		// does not exist is visible beside the callers of the routes that do. A path under
+		// /api/v2 answers that version's no-route code and points at its own index; every other
+		// root answers as /api/v1 always has.
 		accesslog.HandlerFunc(unmatchedRoute, func(w http.ResponseWriter, req *http.Request) {
-			api.WriteJSON(w, http.StatusNotFound, map[string]string{
-				"code":  "NOT_FOUND",
+			code, status, hint := apicode.NotFound.V1Name(), apicode.NotFound.V1Status(), "GET /api/v1 lists every route"
+			if isReservedPath(normalized, apiV2Roots) {
+				code, status, hint = apicode.NoRoute.Name(), apicode.NoRoute.Status(), "GET /api/v2 lists every route"
+			}
+			api.WriteJSON(w, status, map[string]string{
+				"code":  code,
 				"error": "no route for " + req.Method + " " + req.URL.Path,
-				"hint":  "GET /api/v1 lists every route",
+				"hint":  hint,
 			})
 		})(w, req)
 		return
 	}
 	if r.ctx.WebDistDir == "" {
-		writeError(w, http.StatusNotFound, "dashboard build not found")
+		writeCodeError(w, http.StatusNotFound, "dashboard build not found", codeDashboardNotBuilt)
 		return
 	}
 	if normalized == "/" {
@@ -623,7 +630,7 @@ func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if err != nil && !isMissingFile(err) {
-		writeError(w, http.StatusInternalServerError, "stat failed")
+		writeCodeError(w, http.StatusInternalServerError, "stat failed", codeStaticReadFailed)
 		return
 	}
 	// The store's key is a Postgres text parameter, which cannot carry a NUL byte or invalid UTF-8
@@ -634,7 +641,7 @@ func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if !isBrowserRoute(normalized) {
-		writeError(w, http.StatusNotFound, "not found")
+		writeCodeError(w, http.StatusNotFound, "not found", codeStaticNotFound)
 		return
 	}
 	servePage(w, req, filepath.Join(r.ctx.WebDistDir, "index.html"))
@@ -714,7 +721,7 @@ func (r *router) serveRetainedAsset(w http.ResponseWriter, req *http.Request, ke
 		return
 	}
 	if errors.Is(err, ErrAssetNotFound) {
-		writeError(w, http.StatusNotFound, "not found")
+		writeCodeError(w, http.StatusNotFound, "not found", codeStaticNotFound)
 		return
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
@@ -723,7 +730,7 @@ func (r *router) serveRetainedAsset(w http.ResponseWriter, req *http.Request, ke
 	}
 	if err != nil {
 		slog.Error("dispatch: retained asset store failed", "key", key, "error", err)
-		writeError(w, http.StatusBadGateway, "retained asset store unavailable")
+		writeCodeError(w, http.StatusBadGateway, "retained asset store unavailable", codeAssetStoreUnavailable)
 		return
 	}
 	r.retainedHeld.Release(held - int64(len(asset)))
@@ -780,7 +787,7 @@ func refuseRetainedAssetAtCap(w http.ResponseWriter, key string) {
 	slog.Warn("dispatch: retained asset refused at the memory cap", "key", key, "cap_bytes", maxRetainedBytesHeld)
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Retry-After", "1")
-	writeError(w, http.StatusServiceUnavailable, "retained assets are at their memory cap; retry")
+	writeCodeError(w, http.StatusServiceUnavailable, "retained assets are at their memory cap; retry", codeAssetStoreBusy)
 }
 
 // isBrowserRoute reports whether an unmatched, non-static path should fall
@@ -822,11 +829,11 @@ func isReservedPath(normalized string, roots []string) bool {
 func servePage(w http.ResponseWriter, req *http.Request, path string) {
 	page, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		writeError(w, http.StatusNotFound, "dashboard build not found")
+		writeCodeError(w, http.StatusNotFound, "dashboard build not found", codeDashboardNotBuilt)
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "read failed")
+		writeCodeError(w, http.StatusInternalServerError, "read failed", codeStaticReadFailed)
 		return
 	}
 	w.Header().Set("Content-Type", contentType(path))
@@ -917,7 +924,7 @@ func (r *router) enforceCookieOrigin(next http.Handler) http.Handler {
 			next.ServeHTTP(w, req)
 			return
 		}
-		writeError(w, http.StatusForbidden, "invalid request origin")
+		writeAPIRefusal(w, req, apicode.OriginRefused, "invalid request origin")
 	})
 }
 
@@ -960,12 +967,53 @@ func oauthStateCookieFor(value string, maxAge int, secure bool) *http.Cookie {
 	}
 }
 
-func writeError(w http.ResponseWriter, status int, message string) {
-	api.WriteJSON(w, status, map[string]string{"error": message})
-}
+// The router's own refusal codes, for the /auth routes and the dashboard's files. They answer no
+// /api path, so they are this package's own and not apicode's, as SIGNIN_UNCONFIGURED,
+// SIGNIN_SUPERSEDED, EVENT_HEAD_UNAVAILABLE and the dev sign-in's codes are.
+const (
+	// codeSigninStartFailed is a sign-in /auth/start could not open: no random state or nonce,
+	// or a state cookie that could not be signed.
+	codeSigninStartFailed = "SIGNIN_START_FAILED"
+	// codeAuthParamsInvalid is an /auth/callback whose code or state the issuer did not send.
+	codeAuthParamsInvalid = "AUTH_PARAMS_INVALID"
+	// codeAuthStateInvalid is an /auth/callback with no state cookie, or one that does not
+	// verify, has lapsed, or names another sign-in's state.
+	codeAuthStateInvalid = "AUTH_STATE_INVALID"
+	// codeSigninFailed is a code exchange the issuer refused or did not answer.
+	codeSigninFailed = "SIGNIN_FAILED"
+	// codeSigninRecordFailed is a sign-in whose person could not be recorded or read back.
+	codeSigninRecordFailed = "SIGNIN_RECORD_FAILED"
+	// codeSessionFailed is a session generation that could not be ensured or revoked.
+	codeSessionFailed = "SESSION_FAILED"
+	// codeDashboardNotBuilt is a dashboard path on a server with no dashboard build to serve.
+	codeDashboardNotBuilt = "DASHBOARD_NOT_BUILT"
+	// codeStaticNotFound is a file path no build holds, here or in the asset store.
+	codeStaticNotFound = "STATIC_NOT_FOUND"
+	// codeStaticReadFailed is a dashboard file the filesystem failed to stat or read.
+	codeStaticReadFailed = "STATIC_READ_FAILED"
+	// codeAssetStoreUnavailable is an asset store read that failed.
+	codeAssetStoreUnavailable = "ASSET_STORE_UNAVAILABLE"
+	// codeAssetStoreBusy is a retained asset refused at the memory cap or past its fetch bound.
+	codeAssetStoreBusy = "ASSET_STORE_BUSY"
+)
+
+// apiV2Roots is the path root of /api/v2, whose refusals the router writes under that version's
+// names (writeAPIRefusal) and whose unknown paths answer NO_ROUTE.
+var apiV2Roots = []string{"/api/v2"}
 
 func writeCodeError(w http.ResponseWriter, status int, message, code string) {
 	api.WriteJSON(w, status, map[string]string{"error": message, "code": code})
+}
+
+// writeAPIRefusal answers a refusal the router writes in front of every route with a code of the
+// API's own list (apicode): under the name and status /api/v2 gives it on a path under /api/v2,
+// and under /api/v1's on any other path, the /auth routes and the dashboard's among them.
+func writeAPIRefusal(w http.ResponseWriter, req *http.Request, code apicode.Code, message string) {
+	name, status := code.V1Name(), code.V1Status()
+	if isReservedPath(filepath.Clean("/"+req.URL.Path), apiV2Roots) {
+		name, status = code.Name(), code.Status()
+	}
+	writeCodeError(w, status, message, name)
 }
 
 // writeSignInRefusedPage answers the sign-in callback, a top-level browser navigation back from

@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -150,17 +151,18 @@ type issueClaimedError struct {
 
 // writeClaimError answers a claim refusal: the 409 ISSUE_CLAIMED body carries the claim
 // itself, and every other failure follows the usual handler mapping.
-func (s *server) writeClaimError(w http.ResponseWriter, err error) {
+func (s *server) writeClaimError(w http.ResponseWriter, r *http.Request, err error) {
 	var conflict *claimConflict
 	if errors.As(err, &conflict) {
-		WriteJSON(w, http.StatusConflict, issueClaimedError{
+		code, status := refusalPair(r, apicode.IssueClaimed)
+		WriteJSON(w, status, issueClaimedError{
 			Claim: &conflict.claim,
-			Code:  "ISSUE_CLAIMED",
+			Code:  code,
 			Error: conflict.Error(),
 		})
 		return
 	}
-	s.writeHandlerError(w, err)
+	s.writeHandlerError(w, r, err)
 }
 
 // holderLiveness is what the listener answered about the claim's holder, read with no
@@ -195,7 +197,7 @@ var errHolderUnjudged = errors.New("claim holder was not covered by the liveness
 // which a holder of any other kind never produces, so no read is made for a human's claim.
 func (s *server) fetchHolderLiveness(ctx context.Context, holder model.IssueClaim) (holderLiveness, error) {
 	if s.deps.Envoy == nil {
-		return holderLiveness{}, errorf(http.StatusServiceUnavailable, "ENVOY_UNAVAILABLE",
+		return holderLiveness{}, errorf(apicode.EnvoyUnavailable,
 			"ENVOY_URL is not configured, so Dispatch cannot tell whether %s is still working", claimHolder(holder.Actor, ""))
 	}
 	session, err := s.deps.Envoy.Session(ctx, holder.Actor.ID)
@@ -204,7 +206,7 @@ func (s *server) fetchHolderLiveness(ctx context.Context, holder model.IssueClai
 	}
 	if err != nil {
 		if errors.Is(err, envoy.ErrUnavailable) {
-			return holderLiveness{}, errorf(http.StatusServiceUnavailable, "ENVOY_UNAVAILABLE", "%s", err.Error())
+			return holderLiveness{}, errorf(apicode.EnvoyUnavailable, "%s", err.Error())
 		}
 		return holderLiveness{}, err
 	}
@@ -623,7 +625,7 @@ func (s *server) claimCycle(
 		return
 	}
 	if err != nil {
-		s.writeClaimError(w, err)
+		s.writeClaimError(w, r, err)
 		return
 	}
 	if applied.event.ID != 0 {
@@ -642,7 +644,7 @@ type claimIssueInput struct {
 func (s *server) claimIssue(w http.ResponseWriter, r *http.Request) {
 	var input claimIssueInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -659,7 +661,7 @@ func (s *server) claimIssue(w http.ResponseWriter, r *http.Request) {
 	rule := personRule{override: input.Force, forcible: true}
 	s.claimCycle(w, r, key, actor, rule, func(before model.Issue, judged judgement) (claimChange, error) {
 		if before.ClosedAt != nil {
-			return claimChange{}, errorf(http.StatusConflict, "ISSUE_CLOSED", "issue is closed")
+			return claimChange{}, errorf(apicode.IssueClosed, "issue is closed")
 		}
 		if blocked := claimBlockedBy(before.Claim, actor, rule, judged, time.Now()); blocked != nil {
 			return claimChange{}, blocked
@@ -694,7 +696,7 @@ func (s *server) claimIssue(w http.ResponseWriter, r *http.Request) {
 func (s *server) answerContendedClaim(w http.ResponseWriter, r *http.Request, key string) {
 	current, err := s.readIssueClaim(r.Context(), key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	message := "the claim on " + key + " changed twice while this request ran, so nothing was applied; read the issue and try again"
@@ -702,9 +704,10 @@ func (s *server) answerContendedClaim(w http.ResponseWriter, r *http.Request, ke
 		message = claimHolder(current.Actor, "") + " holds the claim on " + key +
 			" as of this read; it changed twice while this request ran, so nothing was applied — read the issue and try again"
 	}
-	WriteJSON(w, http.StatusConflict, issueClaimedError{
+	code, status := refusalPair(r, apicode.ClaimContended)
+	WriteJSON(w, status, issueClaimedError{
 		Claim: current,
-		Code:  "CLAIM_CONTENDED",
+		Code:  code,
 		Error: message,
 	})
 }
@@ -715,19 +718,19 @@ func (s *server) answerContendedClaim(w http.ResponseWriter, r *http.Request, ke
 func (s *server) releaseIssueClaim(w http.ResponseWriter, r *http.Request) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	if !human {
 		// A bearer names its own session in the body, as it does on every other write.
 		var input actorInput
 		if err := decodeJSON(r, &input); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		actor, err = bearerSessionActor(r, actor, input.Actor)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}

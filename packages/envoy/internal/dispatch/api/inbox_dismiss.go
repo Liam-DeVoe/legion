@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -402,18 +403,18 @@ func parseInboxDismissRows(values []string) (inboxDismissRows, error) {
 	for _, value := range values {
 		row := strings.TrimSpace(value)
 		if strings.HasPrefix(row, inboxDismissAskPrefix) {
-			return rows, errorf(http.StatusBadRequest, "INVALID_QUERY",
+			return rows, errorf(apicode.InvalidQuery,
 				"an ask is answered or snoozed, not dismissed; threads takes %s<id> and %s<id>",
 				inboxDismissReplyPrefix, inboxDismissAgentPrefix)
 		}
 		kind, id, found := strings.Cut(row, ":")
 		if !found || (kind+":" != inboxDismissReplyPrefix && kind+":" != inboxDismissAgentPrefix) {
-			return rows, errorf(http.StatusBadRequest, "INVALID_QUERY",
+			return rows, errorf(apicode.InvalidQuery,
 				"threads takes %s<id> and %s<id>", inboxDismissReplyPrefix, inboxDismissAgentPrefix)
 		}
 		parsed, err := uuid.Parse(id)
 		if err != nil {
-			return rows, errorf(http.StatusBadRequest, "INVALID_QUERY",
+			return rows, errorf(apicode.InvalidQuery,
 				"%s%s names no thread: the id must be a uuid", kind, ":"+id)
 		}
 		if kind+":" == inboxDismissReplyPrefix {
@@ -521,7 +522,7 @@ func inboxDismissSeenByRow(
 			row = inboxDismissAgentPrefix + named.roots[0]
 		}
 		if row == "" {
-			return nil, errorf(http.StatusBadRequest, "INVALID_QUERY",
+			return nil, errorf(apicode.InvalidQuery,
 				"seen_replies names %s, which threads does not: it takes one entry per row"+
 					" threads names", key)
 		}
@@ -544,7 +545,7 @@ func readInboxDismissSeenEntry(
 ) error {
 	value, carried := drawn[row]
 	if !carried {
-		return errorf(http.StatusBadRequest, "INVALID_QUERY",
+		return errorf(apicode.InvalidQuery,
 			"seen_replies leaves %s out: a dismissal carries what the page drew in every row"+
 				" threads names", row)
 	}
@@ -557,11 +558,11 @@ func readInboxDismissSeenEntry(
 // inboxDismissSeenRefused is that refusal, and inboxDismissSeenNoReply the one an id that is not
 // a uuid answers, whichever field of whichever kind carried it.
 func inboxDismissSeenRefused(row, takes string) error {
-	return errorf(http.StatusBadRequest, "INVALID_QUERY", "seen_replies[%s] %s", row, takes)
+	return errorf(apicode.InvalidQuery, "seen_replies[%s] %s", row, takes)
 }
 
 func inboxDismissSeenNoReply(row, field string) error {
-	return errorf(http.StatusBadRequest, "INVALID_QUERY",
+	return errorf(apicode.InvalidQuery,
 		"seen_replies[%s].%s names no reply: a reply the page drew is named by its id, a uuid",
 		row, field)
 }
@@ -574,12 +575,12 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 	}
 	var input inboxDismissRequest
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	rows, err := parseInboxDismissRows(input.Threads)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Which form the body is, read once here and once in the transaction's own read
@@ -587,7 +588,7 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 	// the server to decide whether the filters narrow the named rows or name rows of their own.
 	named := rows.named()
 	if named && (input.DismissThrough != nil || input.narrows()) {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidQuery,
 			"name threads or the list's filters with dismiss_through, not both")
 		return
 	}
@@ -595,19 +596,19 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 	// holds a row to nothing, and under the list's filters the read that chooses the rows draws
 	// them (readInboxDismissThreads), the server standing in for the page there.
 	if input.SeenReplies != nil && input.Restore {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidQuery,
 			"a restore clears the marks and takes no seen_replies")
 		return
 	}
 	if input.SeenReplies != nil && !named {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidQuery,
 			"seen_replies goes with threads: under the list's filters the server draws the rows"+
 				" itself and holds each of them to what it drew")
 		return
 	}
 	if named && !input.Restore {
 		if err := readInboxDismissSeen(&rows, input.SeenReplies); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -619,22 +620,22 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 		// matched against, read as every mark on these routes is read (RFC3339, no further ahead of
 		// the server clock than a minute) and carried on as the caller's own text.
 		if input.DismissThrough == nil {
-			writeError(w, "INVALID_STATE", http.StatusBadRequest, "dismiss_through is required")
+			writeError(w, r, apicode.InvalidState, "dismiss_through is required")
 			return
 		}
 		if _, err := parseAgentStateCutoff("dismiss_through", input.DismissThrough); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		scope, err = parseInboxReadScope(input.inboxThreadFilters)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	dismissed, events, err := s.dismissInboxThreads(r.Context(), actor, inboxDismissPlanOf(input), rows, scope)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), events...)

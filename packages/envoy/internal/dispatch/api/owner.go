@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -54,8 +55,7 @@ func (s *server) documentOwnerFromRequest(ctx context.Context, q queryer, r *htt
 	}
 	if artifact.IssueKey != nil {
 		return model.Artifact{}, owner{}, errorf(
-			http.StatusBadRequest,
-			"ARTIFACT_LINKED",
+			apicode.ArtifactLinked,
 			"artifact belongs to issue %s; use /api/v1/issues/%s/...",
 			*artifact.IssueKey,
 			*artifact.IssueKey,
@@ -63,8 +63,7 @@ func (s *server) documentOwnerFromRequest(ctx context.Context, q queryer, r *htt
 	}
 	if artifact.SessionID != nil {
 		return model.Artifact{}, owner{}, errorf(
-			http.StatusBadRequest,
-			"ARTIFACT_AGENT_OWNED",
+			apicode.ArtifactAgentOwned,
 			"artifact belongs to agent %s's conversation, which holds files and images only: it has no comments, asks, events or subscribers, which belong to an issue's or a project's documents",
 			*artifact.SessionID,
 		)
@@ -80,7 +79,7 @@ func (s *server) loadProject(ctx context.Context, q queryer, key string) (model.
 		&project.CreatedAt,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return model.Project{}, errorf(http.StatusNotFound, "PROJECT_NOT_FOUND", "project not found")
+			return model.Project{}, errorf(apicode.ProjectNotFound, "project not found")
 		}
 		return model.Project{}, err
 	}
@@ -118,7 +117,7 @@ const ownerRowLock = " for no key update"
 // any transaction opens; lock is that lock's clause, empty for the unlocked read.
 func ownerStatus(ctx context.Context, q queryer, owner owner, lock string) (*string, bool, error) {
 	if (owner.IssueKey == nil) == (owner.ArtifactID == nil) {
-		return nil, false, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
+		return nil, false, errorf(apicode.OwnerInvalid, "owner requires exactly one issue or artifact")
 	}
 	if owner.IssueKey != nil {
 		status, open, err := issueStatus(ctx, q, *owner.IssueKey, lock)
@@ -131,7 +130,7 @@ func ownerStatus(ctx context.Context, q queryer, owner owner, lock string) (*str
 		select true from artifacts where id = $1 and issue_key is null`+lock,
 		*owner.ArtifactID).Scan(new(bool)); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, false, errorf(http.StatusNotFound, "ARTIFACT_NOT_FOUND", "artifact not found")
+			return nil, false, errorf(apicode.ArtifactNotFound, "artifact not found")
 		}
 		return nil, false, err
 	}
@@ -149,7 +148,7 @@ func ownerStatus(ctx context.Context, q queryer, owner owner, lock string) (*str
 // twice.
 func (s *server) refuseOwnerBeforeResolving(ctx context.Context, owner owner, write closedWrite) error {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
-		return errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
+		return errorf(apicode.DatabaseUnavailable, "database unavailable")
 	}
 	_, open, err := ownerStatus(ctx, s.deps.Store.Pool, owner, "")
 	if err != nil {

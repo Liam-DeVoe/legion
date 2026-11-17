@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -307,7 +308,7 @@ func TestEveryIDRouteIsNamed(t *testing.T) {
 	})
 
 	t.Run("a row that resolves a kind and gives a reason fails it too", func(t *testing.T) {
-		withIDRoute(t, "GET /api/v1/widgets/{id}", idRoute{Kind: "ask", NotFound: "NOT_FOUND", Reason: "and also not"})
+		withIDRoute(t, "GET /api/v1/widgets/{id}", idRoute{Kind: "ask", NotFound: apicode.NotFound, Reason: "and also not"})
 		undecided := undecidedIDRoutes([]apiRoute{
 			{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/widgets/{id}", Auth: authAny}},
 		})
@@ -328,7 +329,7 @@ func TestEveryIDRouteIsNamed(t *testing.T) {
 
 	t.Run("a row that resolves a block and names no 404 for it fails it too", func(t *testing.T) {
 		withIDRoute(t, "GET /api/v1/widgets/{id}/blocks/{block_id}",
-			idRoute{Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND", Blocks: true})
+			idRoute{Kind: "artifact", NotFound: apicode.ArtifactNotFound, Blocks: true})
 		undecided := undecidedIDRoutes([]apiRoute{
 			{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/widgets/{id}/blocks/{block_id}", Auth: authAny}},
 		})
@@ -353,9 +354,9 @@ func TestEveryIDRouteIsNamed(t *testing.T) {
 			if strings.Contains(name, "{block_id}") && !entry.Blocks {
 				t.Errorf("idRoutes leaves the {block_id} of %q unresolved", name)
 			}
-			for column, code := range map[string]string{"NotFound": entry.NotFound, "BlockNotFound": entry.BlockNotFound} {
-				if code != "" && code != notFoundNone && !strings.HasSuffix(code, "NOT_FOUND") {
-					t.Errorf("idRoutes gives %q the %s code %q, which is no not-found code", name, column, code)
+			for column, code := range map[string]apicode.Code{"NotFound": entry.NotFound, "BlockNotFound": entry.BlockNotFound} {
+				if !code.IsZero() && !strings.HasSuffix(code.V1Name(), "NOT_FOUND") {
+					t.Errorf("idRoutes gives %q the %s code %q, which is no not-found code", name, column, code.V1Name())
 				}
 			}
 		}
@@ -425,7 +426,7 @@ func authRefusal(response *httptest.ResponseRecorder) (bool, string) {
 		}
 		_ = json.Unmarshal(response.Body.Bytes(), &body)
 		switch body.Code {
-		case codeScopeRequired, "REPLY_FORBIDDEN", "ACCEPT_FORBIDDEN", "HANDOFF_FORBIDDEN":
+		case apicode.OAuthScopeRequired.V1Name(), "REPLY_FORBIDDEN", "ACCEPT_FORBIDDEN", "HANDOFF_FORBIDDEN":
 			return true, "403 " + body.Code
 		}
 	}
@@ -514,7 +515,7 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 		t.Helper()
 		response := probe(route, credential)
 		refused, why := authRefusal(response)
-		if !refused || why != "403 "+codeScopeRequired {
+		if !refused || why != "403 "+apicode.OAuthScopeRequired.V1Name() {
 			t.Fatalf("%s %s needs %v but answers a %s caller %d %s", route.Method, route.Pattern, route.OAuthScopes, credential, response.Code, response.Body.String())
 		}
 	}

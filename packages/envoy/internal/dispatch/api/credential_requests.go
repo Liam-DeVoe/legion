@@ -25,6 +25,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -48,9 +49,9 @@ func noteActingAgent(r *http.Request, actor model.Actor) {
 // requireAgentSecrets answers 404 FEATURE_OFF when this Dispatch has no broker configured
 // (DISPATCH_AGENT_SECRETS_URL unset); every credential-request route but the pending list needs it
 // after actingPerson.
-func (s *server) requireAgentSecrets(w http.ResponseWriter) (*agentsecrets.Client, bool) {
+func (s *server) requireAgentSecrets(w http.ResponseWriter, r *http.Request) (*agentsecrets.Client, bool) {
 	if s.deps.AgentSecrets == nil {
-		writeError(w, "FEATURE_OFF", http.StatusNotFound, "agent-secrets is not configured on this Dispatch")
+		writeError(w, r, apicode.FeatureOff, "agent-secrets is not configured on this Dispatch")
 		return nil, false
 	}
 	return s.deps.AgentSecrets, true
@@ -63,7 +64,7 @@ func (s *server) requireAgentSecrets(w http.ResponseWriter) (*agentsecrets.Clien
 // token, or 503 AGENT_SECRETS_UNAVAILABLE for anything else (a transport failure). The token
 // gets its own code because the broker was never asked: the fix is in Dispatch's deployment, and
 // the log line naming the file is the operator's only pointer to it.
-func relayBrokerResponse(w http.ResponseWriter, body json.RawMessage, err error) {
+func relayBrokerResponse(w http.ResponseWriter, r *http.Request, body json.RawMessage, err error) {
 	if err != nil {
 		var brokerErr *agentsecrets.Error
 		if errors.As(err, &brokerErr) {
@@ -75,10 +76,10 @@ func relayBrokerResponse(w http.ResponseWriter, body json.RawMessage, err error)
 		var tokenErr *agentsecrets.AccountTokenError
 		if errors.As(err, &tokenErr) {
 			slog.Error("dispatch: cannot read its ServiceAccount token for the secrets broker", "path", tokenErr.Path, "error", tokenErr.Err)
-			writeError(w, "AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE", http.StatusInternalServerError, "Dispatch cannot read its own ServiceAccount token for the secrets broker")
+			writeError(w, r, apicode.AgentSecretsAccountTokenUnreadable, "Dispatch cannot read its own ServiceAccount token for the secrets broker")
 			return
 		}
-		writeError(w, "AGENT_SECRETS_UNAVAILABLE", http.StatusServiceUnavailable, "the secrets broker is unreachable")
+		writeError(w, r, apicode.AgentSecretsUnavailable, "the secrets broker is unreachable")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -90,7 +91,7 @@ func relayBrokerResponse(w http.ResponseWriter, body json.RawMessage, err error)
 // caller's canonical login. Anything else is refused before it ever reaches the broker.
 func resolveApproverMe(w http.ResponseWriter, r *http.Request, actor model.Actor) (string, bool) {
 	if approver := r.URL.Query().Get("approver"); approver != "me" {
-		writeError(w, "APPROVER_ME_ONLY", http.StatusBadRequest, `approver must be the literal value "me"`)
+		writeError(w, r, apicode.ApproverMeOnly, `approver must be the literal value "me"`)
 		return "", false
 	}
 	return model.CanonicalLogin(actor.ID), true
@@ -104,11 +105,11 @@ func resolveApproverMe(w http.ResponseWriter, r *http.Request, actor model.Actor
 func (s *server) readRelayBody(w http.ResponseWriter, r *http.Request) (json.RawMessage, bool) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxJSONRequestBytes))
 	if err != nil {
-		writeError(w, "REQUEST_TOO_LARGE", http.StatusRequestEntityTooLarge, "request body exceeds the size limit")
+		writeError(w, r, apicode.RequestTooLarge, "request body exceeds the size limit")
 		return nil, false
 	}
 	if refusal := unstorableJSON("", body); refusal != nil {
-		s.writeHandlerError(w, refusal)
+		s.writeHandlerError(w, r, refusal)
 		return nil, false
 	}
 	return json.RawMessage(body), true
@@ -132,7 +133,7 @@ func (s *server) decisionFor(w http.ResponseWriter, r *http.Request, actor model
 	var input credentialDecisionInput
 	if len(body) > 0 {
 		if err := json.Unmarshal(body, &input); err != nil {
-			writeError(w, "INVALID_DECISION", http.StatusBadRequest, "request body must be a JSON object")
+			writeError(w, r, apicode.InvalidDecision, "request body must be a JSON object")
 			return agentsecrets.Decision{}, false
 		}
 	}
@@ -159,7 +160,7 @@ func (s *server) listCredentialPending(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body, err := s.deps.AgentSecrets.Pending(r.Context(), login)
-	relayBrokerResponse(w, body, err)
+	relayBrokerResponse(w, r, body, err)
 }
 
 // --- POST .../{id}/approve, .../{id}/deny, .../machine-lookup ---
@@ -174,7 +175,7 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	noteActingAgent(r, actor)
-	client, ok := s.requireAgentSecrets(w)
+	client, ok := s.requireAgentSecrets(w, r)
 	if !ok {
 		return
 	}
@@ -183,7 +184,7 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	body, err := client.Approve(r.Context(), r.PathValue("id"), decision)
-	relayBrokerResponse(w, body, err)
+	relayBrokerResponse(w, r, body, err)
 }
 
 func (s *server) denyCredentialRecord(w http.ResponseWriter, r *http.Request) {
@@ -192,7 +193,7 @@ func (s *server) denyCredentialRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	noteActingAgent(r, actor)
-	client, ok := s.requireAgentSecrets(w)
+	client, ok := s.requireAgentSecrets(w, r)
 	if !ok {
 		return
 	}
@@ -201,7 +202,7 @@ func (s *server) denyCredentialRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body, err := client.Deny(r.Context(), r.PathValue("id"), decision)
-	relayBrokerResponse(w, body, err)
+	relayBrokerResponse(w, r, body, err)
 }
 
 func (s *server) lookupMachineCredential(w http.ResponseWriter, r *http.Request) {
@@ -210,7 +211,7 @@ func (s *server) lookupMachineCredential(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	noteActingAgent(r, actor)
-	client, ok := s.requireAgentSecrets(w)
+	client, ok := s.requireAgentSecrets(w, r)
 	if !ok {
 		return
 	}
@@ -219,7 +220,7 @@ func (s *server) lookupMachineCredential(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	body, err := client.MachineLookup(r.Context(), relayBody)
-	relayBrokerResponse(w, body, err)
+	relayBrokerResponse(w, r, body, err)
 }
 
 // --- GET /api/v1/credential-grants, POST .../{id}/revoke ---
@@ -229,7 +230,7 @@ func (s *server) listCredentialGrants(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	client, ok := s.requireAgentSecrets(w)
+	client, ok := s.requireAgentSecrets(w, r)
 	if !ok {
 		return
 	}
@@ -238,7 +239,7 @@ func (s *server) listCredentialGrants(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body, err := client.Grants(r.Context(), login)
-	relayBrokerResponse(w, body, err)
+	relayBrokerResponse(w, r, body, err)
 }
 
 // revokeCredentialGrant ends a grant as the caller: the broker allows it only when the caller's
@@ -250,12 +251,12 @@ func (s *server) revokeCredentialGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	noteActingAgent(r, actor)
-	client, ok := s.requireAgentSecrets(w)
+	client, ok := s.requireAgentSecrets(w, r)
 	if !ok {
 		return
 	}
 	body, err := client.RevokeByApprover(r.Context(), r.PathValue("id"), model.CanonicalLogin(actor.ID))
-	relayBrokerResponse(w, body, err)
+	relayBrokerResponse(w, r, body, err)
 }
 
 // --- GET /api/v1/machine-logins, POST .../{id}/revoke ---
@@ -269,12 +270,12 @@ func (s *server) listMachineLogins(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	client, ok := s.requireAgentSecrets(w)
+	client, ok := s.requireAgentSecrets(w, r)
 	if !ok {
 		return
 	}
 	body, err := client.MachineLogins(r.Context(), model.CanonicalLogin(actor.ID))
-	relayBrokerResponse(w, body, err)
+	relayBrokerResponse(w, r, body, err)
 }
 
 // revokeMachineLogin ends a machine login, expired or not, and with it every session that login
@@ -287,12 +288,12 @@ func (s *server) revokeMachineLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	noteActingAgent(r, actor)
-	client, ok := s.requireAgentSecrets(w)
+	client, ok := s.requireAgentSecrets(w, r)
 	if !ok {
 		return
 	}
 	body, err := client.RevokeMachineLogin(r.Context(), r.PathValue("id"), model.CanonicalLogin(actor.ID))
-	relayBrokerResponse(w, body, err)
+	relayBrokerResponse(w, r, body, err)
 }
 
 // --- GET /api/v1/signins, POST .../{id}/revoke ---
@@ -306,12 +307,12 @@ func (s *server) listSignIns(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	client, ok := s.requireAgentSecrets(w)
+	client, ok := s.requireAgentSecrets(w, r)
 	if !ok {
 		return
 	}
 	body, err := client.SignIns(r.Context(), model.CanonicalLogin(actor.ID))
-	relayBrokerResponse(w, body, err)
+	relayBrokerResponse(w, r, body, err)
 }
 
 // revokeSignIn ends one of the caller's own sign-ins: that machine trades no token for them
@@ -325,12 +326,12 @@ func (s *server) revokeSignIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	noteActingAgent(r, actor)
-	client, ok := s.requireAgentSecrets(w)
+	client, ok := s.requireAgentSecrets(w, r)
 	if !ok {
 		return
 	}
 	body, err := client.RevokeSignIn(r.Context(), r.PathValue("id"), model.CanonicalLogin(actor.ID))
-	relayBrokerResponse(w, body, err)
+	relayBrokerResponse(w, r, body, err)
 }
 
 // --- GET /api/v1/credentials/capabilities ---

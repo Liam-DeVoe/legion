@@ -20,26 +20,23 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 )
 
-const (
-	// codePriorityInput refuses a body no priority can be written from: a title with nothing in
-	// it or one longer than an issue title may be, an id that is no priority id, a title no id
-	// can be derived from, and a patch that names nothing to write.
-	codePriorityInput = "PRIORITY_INPUT"
-	// codePriorityExists refuses a create of an id the store already holds, as a project create
-	// refuses a key it holds (PROJECT_EXISTS): a second create would write its own history over
-	// the first write's.
-	codePriorityExists = "PRIORITY_EXISTS"
-	// codePriorityNotFound answers a write addressed to an id no priority row carries.
-	codePriorityNotFound = "PRIORITY_NOT_FOUND"
-	// codeRankInput refuses a move to a place the order does not have, which is the code and
-	// the wording the issue board's own drag is refused with (issue_rank.go).
-	codeRankInput = "RANK_INPUT"
-)
+// The priority routes' own refusals:
+//   - PRIORITY_INPUT (apicode.PriorityInput) refuses a body no priority can be written from: a
+//     title with nothing in it or one longer than an issue title may be, an id that is no priority
+//     id, a title no id can be derived from, and a patch that names nothing to write.
+//   - PRIORITY_EXISTS (apicode.PriorityExists) refuses a create of an id the store already holds,
+//     as a project create refuses a key it holds (PROJECT_EXISTS): a second create would write
+//     its own history over the first write's.
+//   - PRIORITY_NOT_FOUND (apicode.PriorityNotFound) answers a write addressed to an id no
+//     priority row carries.
+//   - RANK_INPUT (apicode.RankInput) refuses a move to a place the order does not have, which is
+//     the code and the wording the issue board's own drag is refused with (issue_rank.go).
 
 // priorityIDMax is the longest priority id, in bytes, which for the ASCII the grammar admits is
 // characters too. The id is a btree key of priority_nodes and of priority_tuples_inbound, and
@@ -93,12 +90,12 @@ func priorityIDRefusal(id string, derived bool) string {
 // title is (contracts.IssueTitleMax, in UTF-16 units after the trim), on a create and a rename
 // alike. A title is one line a page heads itself with, and the id a create derives from it is
 // bounded apart (priorityIDMax).
-func refusePriorityTitle(w http.ResponseWriter, title string) bool {
+func refusePriorityTitle(w http.ResponseWriter, r *http.Request, title string) bool {
 	length := itemblocks.Units16(title)
 	if length <= contracts.IssueTitleMax {
 		return false
 	}
-	writeError(w, codePriorityInput, http.StatusBadRequest, fmt.Sprintf(
+	writeError(w, r, apicode.PriorityInput, fmt.Sprintf(
 		"a title is at most %d characters, as an issue title is, and this one is %d", contracts.IssueTitleMax, length))
 	return true
 }
@@ -150,7 +147,7 @@ func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := s.readPriorities(r.Context(), projects, query.Get("summary") == "true")
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, body)
@@ -177,7 +174,7 @@ type createPriorityInput struct {
 func (s *server) createPriority(w http.ResponseWriter, r *http.Request) {
 	var input createPriorityInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -186,10 +183,10 @@ func (s *server) createPriority(w http.ResponseWriter, r *http.Request) {
 	}
 	input.Title = strings.TrimSpace(input.Title)
 	if input.Title == "" {
-		writeError(w, codePriorityInput, http.StatusBadRequest, "title is required")
+		writeError(w, r, apicode.PriorityInput, "title is required")
 		return
 	}
-	if refusePriorityTitle(w, input.Title) {
+	if refusePriorityTitle(w, r, input.Title) {
 		return
 	}
 	input.Owner = strings.TrimSpace(input.Owner)
@@ -197,18 +194,18 @@ func (s *server) createPriority(w http.ResponseWriter, r *http.Request) {
 	derived := id == ""
 	if derived {
 		if id = priorityIDFromTitle(input.Title); id == "" {
-			writeError(w, codePriorityInput, http.StatusBadRequest,
+			writeError(w, r, apicode.PriorityInput,
 				"this title holds no letter or digit an id can be written from: name the id in id")
 			return
 		}
 	}
 	if refusal := priorityIDRefusal(id, derived); refusal != "" {
-		writeError(w, codePriorityInput, http.StatusBadRequest, refusal)
+		writeError(w, r, apicode.PriorityInput, refusal)
 		return
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -217,7 +214,7 @@ func (s *server) createPriority(w http.ResponseWriter, r *http.Request) {
 	// creates at once write two keys rather than one (prioritystore.RankAt).
 	order, err := prioritystore.RankAt(r.Context(), tx, id, "", "")
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	at := time.Now().UTC()
@@ -229,20 +226,20 @@ func (s *server) createPriority(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := prioritystore.Create(r.Context(), tx, id, values, actor, at); err != nil {
 		if errors.Is(err, prioritystore.ErrPriorityExists) {
-			writeError(w, codePriorityExists, http.StatusConflict,
+			writeError(w, r, apicode.PriorityExists,
 				fmt.Sprintf("a priority with the id %q is already written", id))
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	event, err := s.appendEvent(r.Context(), tx, priorityEvent(actor, id, model.PriorityCreated))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)
@@ -285,7 +282,7 @@ type patchPriorityInput struct {
 func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 	var input patchPriorityInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -296,11 +293,11 @@ func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 	if input.Title != nil {
 		title := strings.TrimSpace(*input.Title)
 		if title == "" {
-			writeError(w, codePriorityInput, http.StatusBadRequest,
+			writeError(w, r, apicode.PriorityInput,
 				"title is required: a write renames a priority or leaves its name alone")
 			return
 		}
-		if refusePriorityTitle(w, title) {
+		if refusePriorityTitle(w, r, title) {
 			return
 		}
 		values[prioritystore.AttributeTitle] = title
@@ -312,7 +309,7 @@ func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 		values[prioritystore.AttributeOwner] = strings.TrimSpace(*input.Owner)
 	}
 	if len(values) == 0 && input.Rank == nil {
-		writeError(w, codePriorityInput, http.StatusBadRequest,
+		writeError(w, r, apicode.PriorityInput,
 			"a write names at least one of title, description, owner and rank")
 		return
 	}
@@ -325,7 +322,7 @@ func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 			after = strings.TrimSpace(*input.Rank.After)
 		}
 		if before == "" && after == "" {
-			writeError(w, codeRankInput, http.StatusBadRequest,
+			writeError(w, r, apicode.RankInput,
 				"rank names the priority this one lands above in before, the one it lands below in after, or both")
 			return
 		}
@@ -333,37 +330,37 @@ func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
 	at := time.Now().UTC()
 	if err := prioritystore.SetAttributes(r.Context(), tx, id, values, actor, at); err != nil {
-		s.refusePriorityWrite(w, id, err)
+		s.refusePriorityWrite(w, r, id, err)
 		return
 	}
 	if input.Rank != nil {
 		if _, err := prioritystore.Move(r.Context(), tx, id, before, after, actor, at); err != nil {
-			s.refusePriorityWrite(w, id, err)
+			s.refusePriorityWrite(w, r, id, err)
 			return
 		}
 	}
 	node, held, err := prioritystore.Read(r.Context(), tx, id)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !held {
-		writeError(w, codePriorityNotFound, http.StatusNotFound, fmt.Sprintf("no priority of the id %q", id))
+		writeError(w, r, apicode.PriorityNotFound, fmt.Sprintf("no priority of the id %q", id))
 		return
 	}
 	event, err := s.appendEvent(r.Context(), tx, priorityEvent(actor, id, model.PriorityChanged))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)
@@ -390,21 +387,21 @@ func (s *server) deletePriority(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
 	if err := prioritystore.SetState(r.Context(), tx, id, prioritystore.StateGone, actor, time.Now().UTC()); err != nil {
-		s.refusePriorityWrite(w, id, err)
+		s.refusePriorityWrite(w, r, id, err)
 		return
 	}
 	event, err := s.appendEvent(r.Context(), tx, priorityEvent(actor, id, model.PriorityDeleted))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)
@@ -445,16 +442,16 @@ func (s *server) priorityHistory(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	_, held, err := prioritystore.Read(r.Context(), s.deps.Store.Pool, id)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !held {
-		writeError(w, codePriorityNotFound, http.StatusNotFound, fmt.Sprintf("no priority of the id %q", id))
+		writeError(w, r, apicode.PriorityNotFound, fmt.Sprintf("no priority of the id %q", id))
 		return
 	}
 	tuples, err := prioritystore.Timeline(r.Context(), s.deps.Store.Pool, id)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	acts := make([]model.PriorityAct, 0, len(tuples))
@@ -489,14 +486,14 @@ func priorityActFrom(tuple prioritystore.Tuple, id string) model.PriorityAct {
 // id whose priority is gone are both 404 ErrNoPriority, since a priority whose state is gone is
 // no priority; a move to a place the order does not have is 400; and anything else is the
 // handler error every route answers a failed statement with.
-func (s *server) refusePriorityWrite(w http.ResponseWriter, id string, err error) {
+func (s *server) refusePriorityWrite(w http.ResponseWriter, r *http.Request, id string, err error) {
 	switch {
 	case errors.Is(err, prioritystore.ErrNoPriority):
-		writeError(w, codePriorityNotFound, http.StatusNotFound, fmt.Sprintf("no priority of the id %q", id))
+		writeError(w, r, apicode.PriorityNotFound, fmt.Sprintf("no priority of the id %q", id))
 	case errors.Is(err, prioritystore.ErrRankNeighbor):
-		writeError(w, codeRankInput, http.StatusBadRequest, err.Error())
+		writeError(w, r, apicode.RankInput, err.Error())
 	default:
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 	}
 }
 

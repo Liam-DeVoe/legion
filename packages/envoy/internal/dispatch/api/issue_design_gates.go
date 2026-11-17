@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -66,7 +67,7 @@ type issueDesignGatesInput struct {
 func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 	var input issueDesignGatesInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The actor is resolved as every write's is, so a caller that names none is turned away
@@ -76,7 +77,7 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if input.Gates == nil {
-		writeError(w, "INVALID_ISSUE", http.StatusBadRequest, fmt.Sprintf(
+		writeError(w, r, apicode.InvalidIssue, fmt.Sprintf(
 			"gates is required: the document each design-gate step (%s) records on this issue, or [] for an issue whose gates record none",
 			strings.Join(model.GatedStepsKnown, ", ")))
 		return
@@ -84,17 +85,17 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 	gates := *input.Gates
 	for index, gate := range gates {
 		if !slices.Contains(model.GatedStepsKnown, gate.Step) {
-			writeError(w, "INVALID_ISSUE", http.StatusBadRequest, fmt.Sprintf(
+			writeError(w, r, apicode.InvalidIssue, fmt.Sprintf(
 				"%q is not a design-gate step: gates names %s", gate.Step, strings.Join(model.GatedStepsKnown, ", ")))
 			return
 		}
 		if slices.ContainsFunc(gates[:index], func(earlier issueDesignGate) bool { return earlier.Step == gate.Step }) {
-			writeError(w, "INVALID_ISSUE", http.StatusBadRequest, fmt.Sprintf(
+			writeError(w, r, apicode.InvalidIssue, fmt.Sprintf(
 				"%q is named twice: gates names each design-gate step once, with the one document that step records", gate.Step))
 			return
 		}
 		if gate.ArtifactID == "" {
-			writeError(w, "INVALID_ISSUE", http.StatusBadRequest, fmt.Sprintf(
+			writeError(w, r, apicode.InvalidIssue, fmt.Sprintf(
 				"%q names no document: artifact_id is the document that step's gate recorded", gate.Step))
 			return
 		}
@@ -114,7 +115,7 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -132,16 +133,16 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 		select key from issues where key = $1 for key share
 	`, r.PathValue("key")).Scan(&issue); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", r.PathValue("key")))
+			writeError(w, r, apicode.IssueNotFound, fmt.Sprintf("no issue %s", r.PathValue("key")))
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if _, err := tx.Exec(r.Context(), `
 		delete from design_gates where issue = $1 and not (step = any($2::text[]))
 	`, issue, steps); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The delete above stands for the publish that names no gate — the one that clears a record,
@@ -155,12 +156,12 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 			from unnest($2::text[], $3::text[]) as published(step, artifact_id)
 			on conflict (issue, step) do update set artifact_id = excluded.artifact_id
 		`, issue, steps, documents); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, issueDesignGates{Issue: issue, Gates: gates})

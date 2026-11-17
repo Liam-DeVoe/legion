@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 // An answer given before a request's body is read reaches some clients as a failed connection
@@ -68,8 +70,8 @@ func expectsContinue(r *http.Request) bool {
 // handoff write's, errMarkdownRoundTripTooLarge the markdown round trip's, and errJSONTooLarge
 // every other route's (routeBody, decodeJSON).
 var (
-	errUploadTooLarge = errorf(http.StatusRequestEntityTooLarge, "CAP_EXCEEDED", "artifact blob exceeds 25 MB")
-	errJSONTooLarge   = errorf(http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "request body exceeds %d bytes", maxJSONRequestBytes)
+	errUploadTooLarge = errorf(apicode.CapExceededTooLarge, "artifact blob exceeds 25 MB")
+	errJSONTooLarge   = errorf(apicode.RequestTooLarge, "request body exceeds %d bytes", maxJSONRequestBytes)
 )
 
 // drainBeforeAnswer serves a route whose requests carry a body - every route but a GET - so that
@@ -86,8 +88,9 @@ var (
 // after it. A body a layer already read to its end, or past the limit itself (its handler's 413),
 // is left as it is, and so is the body of a client that asked to be told to continue before
 // sending it (Expect: 100-continue) and was never told: it sends nothing, and the first read would
-// tell it to send all of it.
-func (s *server) drainBeforeAnswer(method, pattern string, handler http.HandlerFunc) http.HandlerFunc {
+// tell it to send all of it. The drain refuses from inside the answer's writer, where no request
+// is in reach, so the mount builds it with the version its route serves (writeVersionedError).
+func (s *server) drainBeforeAnswer(version apiVersion, method, pattern string, handler http.HandlerFunc) http.HandlerFunc {
 	limit, tooLarge := routeBody(method, pattern)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Body == nil || r.Body == http.NoBody {
@@ -98,6 +101,7 @@ func (s *server) drainBeforeAnswer(method, pattern string, handler http.HandlerF
 		r.Body = body
 		handler(&drainingWriter{
 			ResponseWriter: w,
+			version:        version,
 			body:           body,
 			limit:          limit,
 			tooLarge:       tooLarge,
@@ -129,6 +133,7 @@ func (b *drainedBody) Read(p []byte) (int, error) {
 // (drainBeforeAnswer).
 type drainingWriter struct {
 	http.ResponseWriter
+	version       apiVersion
 	body          *drainedBody
 	limit         int64
 	tooLarge      *apiError
@@ -167,7 +172,7 @@ func (w *drainingWriter) begin(status int) {
 	}
 	// The body runs past the limit: the answer is the limit's.
 	clear(w.ResponseWriter.Header())
-	writeError(w.ResponseWriter, w.tooLarge.code, w.tooLarge.status, w.tooLarge.message)
+	writeVersionedError(w.ResponseWriter, w.version, w.tooLarge.code, 0, w.tooLarge.message)
 	w.replaced = true
 }
 

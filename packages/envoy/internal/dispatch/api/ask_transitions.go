@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -68,19 +69,18 @@ func answerTransition(actor model.Actor, selected []string, text *string, option
 		Apply: func(ctx context.Context, tx pgx.Tx, ask model.Ask) (model.Ask, error) {
 			if options.Revision != nil && !stringPointersEqual(options.Revision.EditedAt, ask.EditedAt) {
 				return model.Ask{}, errorf(
-					http.StatusConflict,
-					"ASK_EDITED",
+					apicode.AskEdited,
 					"the question changed after you reviewed it; review the latest version and confirm your answer",
 				)
 			}
 			if ask.State == "answered" {
 				switch {
 				case ask.Kind == "approval":
-					return model.Ask{}, errorf(http.StatusConflict, "ASK_APPROVAL_REVIEW", "an approval is a review of a document version; record a new review on the document instead")
+					return model.Ask{}, errorf(apicode.AskApprovalReview, "an approval is a review of a document version; record a new review on the document instead")
 				case !ask.Answer.At.Equal(*options.ReplacesAnswer):
-					return model.Ask{}, errorf(http.StatusConflict, "ASK_ANSWER_CHANGED", "the answer changed after you reviewed it; review the current answer and confirm your change")
+					return model.Ask{}, errorf(apicode.AskAnswerChanged, "the answer changed after you reviewed it; review the current answer and confirm your change")
 				case model.CanonicalLogin(ask.Answer.User) != model.CanonicalLogin(actor.ID):
-					return model.Ask{}, errorf(http.StatusForbidden, "NOT_ANSWERER", "only the person who gave the current answer may change it")
+					return model.Ask{}, errorf(apicode.NotAnswerer, "only the person who gave the current answer may change it")
 				}
 				previousAnswer = ask.Answer
 			}
@@ -92,13 +92,13 @@ func answerTransition(actor model.Actor, selected []string, text *string, option
 				}
 			default:
 				if !ask.Multiple && len(selected) > 1 {
-					return model.Ask{}, errorf(http.StatusBadRequest, "INVALID_ANSWER", "single-select asks accept at most one selected answer")
+					return model.Ask{}, errorf(apicode.InvalidAnswer, "single-select asks accept at most one selected answer")
 				}
 				if len(selected) > 0 && !selectedOptions(ask.Options, selected) {
-					return model.Ask{}, errorf(http.StatusBadRequest, "INVALID_ANSWER", "selected answers must be ask option labels")
+					return model.Ask{}, errorf(apicode.InvalidAnswer, "selected answers must be ask option labels")
 				}
 				if len(selected) == 0 && !hasText {
-					return model.Ask{}, errorf(http.StatusBadRequest, "INVALID_ANSWER", "answer requires a selected option or free-text answer")
+					return model.Ask{}, errorf(apicode.InvalidAnswer, "answer requires a selected option or free-text answer")
 				}
 			}
 			// An answer that chose no option stores an empty list, never null.
@@ -154,7 +154,7 @@ func parseAnswerPrecondition(field string, raw json.RawMessage) (value *string, 
 	}
 	var text string
 	if err := json.Unmarshal(raw, &text); err != nil {
-		return nil, true, errorf(http.StatusBadRequest, "INVALID_ANSWER", "%s must be an RFC3339 timestamp or null", field)
+		return nil, true, errorf(apicode.InvalidAnswer, "%s must be an RFC3339 timestamp or null", field)
 	}
 	return &text, true, nil
 }
@@ -168,7 +168,7 @@ func parseReplacesAnswer(raw json.RawMessage) (*time.Time, error) {
 	}
 	value, err := time.Parse(time.RFC3339Nano, *text)
 	if err != nil {
-		return nil, errorf(http.StatusBadRequest, "INVALID_ANSWER", "expected_answer_at must be an RFC3339 timestamp or null")
+		return nil, errorf(apicode.InvalidAnswer, "expected_answer_at must be an RFC3339 timestamp or null")
 	}
 	return &value, nil
 }
@@ -191,39 +191,39 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !requireUUIDPath(w, r, "ask") {
+	if !requireUUIDPath(w, r, "ask", apicode.AskIDInput) {
 		return
 	}
 	var input answerAskInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The acting session the body names, where the caller's credential proved none: this route
 	// has always decoded an actor, and a personal token names its session nowhere else.
-	if actor, ok = actSessionFromBody(w, actor, input.Actor); !ok {
+	if actor, ok = actSessionFromBody(w, r, actor, input.Actor); !ok {
 		return
 	}
 	// Before the transition opens its own transaction: an answer's text rides the ask.answered
 	// event beside the ask's wording, so it takes the same bound.
 	if input.Text != nil {
 		if length := itemblocks.Units16(*input.Text); length > contracts.DispatchEventBodyMax {
-			capExceeded(w, "text", length, contracts.DispatchEventBodyMax)
+			capExceeded(w, r, "text", length, contracts.DispatchEventBodyMax)
 			return
 		}
 	}
 	expectedEditedAt, provided, err := parseAnswerPrecondition("expected_edited_at", input.ExpectedEditedAt)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !provided {
-		writeError(w, "ASK_REVISION_REQUIRED", http.StatusBadRequest, "expected_edited_at is required")
+		writeError(w, r, apicode.AskRevisionRequired, "expected_edited_at is required")
 		return
 	}
 	replacesAnswer, err := parseReplacesAnswer(input.ExpectedAnswerAt)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	transition := answerTransition(actor, input.Selected, input.Text, answerOptions{
@@ -296,7 +296,7 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, transition)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
@@ -313,12 +313,12 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	if !requireUUIDPath(w, r, "ask") {
+	if !requireUUIDPath(w, r, "ask", apicode.AskIDInput) {
 		return
 	}
 	var input resolveAskInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -328,18 +328,18 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 	kind := strings.TrimSpace(input.Kind)
 	reason := strings.TrimSpace(input.Reason)
 	if kind != "retracted" && kind != "resolved" {
-		writeError(w, "INVALID_RESOLUTION", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidResolution,
 			`resolution kind must be "retracted" or "resolved", not `+strconv.Quote(kind))
 		return
 	}
 	if reason == "" {
-		writeError(w, "INVALID_RESOLUTION", http.StatusBadRequest, "resolution requires a kind and reason")
+		writeError(w, r, apicode.InvalidResolution, "resolution requires a kind and reason")
 		return
 	}
 	// A resolution's reason rides the ask.resolved event, so it takes the event's bound; before
 	// the transition opens its transaction, so nothing is written.
 	if length := itemblocks.Units16(reason); length > contracts.DispatchEventBodyMax {
-		capExceeded(w, "reason", length, contracts.DispatchEventBodyMax)
+		capExceeded(w, r, "reason", length, contracts.DispatchEventBodyMax)
 		return
 	}
 	// Settlement's own retraction reason is how a resolution written before this rule is
@@ -347,7 +347,7 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 	// A caller writing that reason would have their retract undone, so it is not theirs to
 	// write.
 	if strings.HasPrefix(reason, docs.SettlementRetractionReason) {
-		writeError(w, "INVALID_RESOLUTION", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidResolution,
 			"reason may not begin with "+strconv.Quote(docs.SettlementRetractionReason)+", which marks a retraction the document's settlement wrote")
 		return
 	}
@@ -361,7 +361,7 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
@@ -404,17 +404,17 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !requireUUIDPath(w, r, "ask") {
+	if !requireUUIDPath(w, r, "ask", apicode.AskIDInput) {
 		return
 	}
 	var input declineAskInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The acting session the body names, where the caller's credential proved none, as the
 	// answer route reads it: a personal token names its session nowhere else.
-	if actor, ok = actSessionFromBody(w, actor, input.Actor); !ok {
+	if actor, ok = actSessionFromBody(w, r, actor, input.Actor); !ok {
 		return
 	}
 	note := ""
@@ -424,7 +424,7 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 	// The note is the resolution's reason and rides the ask.resolved event, so it takes the
 	// event's bound; before the transition opens its transaction, so nothing is written.
 	if length := itemblocks.Units16(note); length > contracts.DispatchEventBodyMax {
-		capExceeded(w, "note", length, contracts.DispatchEventBodyMax)
+		capExceeded(w, r, "note", length, contracts.DispatchEventBodyMax)
 		return
 	}
 	// The resolve route refuses a reason opening with docs.SettlementRetractionReason because
@@ -440,7 +440,7 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 			// a read before the transaction would decide on a row another writer could still
 			// move. Under the row lock the kind refused is the kind this write would close.
 			if ask.Kind == "approval" {
-				return model.Ask{}, errorf(http.StatusConflict, "ASK_NOT_DECLINABLE",
+				return model.Ask{}, errorf(apicode.AskNotDeclinable,
 					"an approval request is answered with %s or %s; it is not declined",
 					docs.ApprovalOptionApprove, docs.ApprovalOptionRequestChanges)
 			}
@@ -451,7 +451,7 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
@@ -548,21 +548,21 @@ func (s *server) transitionAskTx(ctx context.Context, tx pgx.Tx, id string, tran
 	switch ask.State {
 	case "open":
 		if transition.ReplacesAnswer != nil {
-			return model.Ask{}, errorf(http.StatusConflict, "ASK_ANSWER_CHANGED", "the answer changed after you reviewed it; review the current answer and confirm your change")
+			return model.Ask{}, errorf(apicode.AskAnswerChanged, "the answer changed after you reviewed it; review the current answer and confirm your change")
 		}
 	case "answered":
 		switch {
 		case transition.EventType != "ask.answered":
-			return model.Ask{}, errorf(http.StatusConflict, "ASK_ANSWERED", "ask is already answered")
+			return model.Ask{}, errorf(apicode.AskAnswered, "ask is already answered")
 		case transition.ReplacesAnswer == nil:
 			// A first answer to an ask someone answered first.
-			return model.Ask{}, errorf(http.StatusConflict, "ASK_CLOSED", "ask is already answered")
+			return model.Ask{}, errorf(apicode.AskClosed, "ask is already answered")
 		}
 		// A change to the current answer, which Apply checks is the answer the human reviewed.
 	case "resolved":
-		return model.Ask{}, errorf(http.StatusConflict, "ASK_RESOLVED", "ask is already resolved")
+		return model.Ask{}, errorf(apicode.AskResolved, "ask is already resolved")
 	default:
-		return model.Ask{}, errorf(http.StatusInternalServerError, "ASK_STATE_INVALID", "ask has an invalid state")
+		return model.Ask{}, errorf(apicode.AskStateInvalid, "ask has an invalid state")
 	}
 	return transition.Apply(ctx, tx, ask)
 }

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
@@ -871,8 +872,8 @@ func TestListIssuesPinnedFilterAndLabels(t *testing.T) {
 	// `?pinned=true` reads the calling person's pins, so the shared token, which holds no scope,
 	// is turned away.
 	if bearer := agentRequest(t, handler, http.MethodGet, "/api/v1/issues?pinned=true", nil, "agent-token"); bearer.Code != http.StatusForbidden ||
-		!strings.Contains(bearer.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-		t.Fatalf("the shared token's pinned issues: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), codeScopeRequired)
+		!strings.Contains(bearer.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
+		t.Fatalf("the shared token's pinned issues: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), apicode.OAuthScopeRequired.V1Name())
 	}
 }
 

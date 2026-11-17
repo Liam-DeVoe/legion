@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
@@ -407,7 +408,7 @@ func parsePriorityFilter(values []string) (priorities []int16, unset bool, err e
 		case "0", "1", "2", "3":
 			priorities = append(priorities, int16(value[0]-'0'))
 		default:
-			return nil, false, errorf(http.StatusBadRequest, "INVALID_PRIORITY", "priority filter values must be 0 to 3 or %s, got %q", unsetPriorityFilter, raw)
+			return nil, false, errorf(apicode.InvalidPriority, "priority filter values must be 0 to 3 or %s, got %q", unsetPriorityFilter, raw)
 		}
 	}
 	return priorities, unset, nil
@@ -430,7 +431,7 @@ func parseAdvancesFilter(values []string) (ids []string, none, some bool, err er
 		case anyAdvancesFilter:
 			some = true
 		case "":
-			return nil, false, false, errorf(http.StatusBadRequest, "INVALID_ADVANCES",
+			return nil, false, false, errorf(apicode.InvalidAdvances,
 				"advances filter values must be a priority id, %s or %s, got %q", noAdvancesFilter, anyAdvancesFilter, raw)
 		default:
 			ids = append(ids, value)
@@ -538,14 +539,14 @@ func (a *advancesScan) resolve() []model.IssueAdvance {
 
 func normalizeIssueLabels(values []string) ([]string, error) {
 	if len(values) > maxIssueLabels {
-		return nil, countExceededError("LABELS_INPUT", "labels", len(values), maxIssueLabels)
+		return nil, countExceededError(apicode.LabelsInput, "labels", len(values), maxIssueLabels)
 	}
 	labels := make([]string, 0, len(values))
 	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		label := strings.TrimSpace(value)
 		if length := itemblocks.Units16(label); length == 0 || length > maxIssueLabel16 {
-			return nil, errorf(http.StatusBadRequest, "LABELS_INPUT", "each label must be 1 to %d characters", maxIssueLabel16)
+			return nil, errorf(apicode.LabelsInput, "each label must be 1 to %d characters", maxIssueLabel16)
 		}
 		key := strings.ToLower(label)
 		if _, duplicate := seen[key]; duplicate {
@@ -575,7 +576,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	parent := strings.TrimSpace(query.Get("parent"))
 	labels, err := normalizeIssueLabels(query["label"])
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	for index, label := range labels {
@@ -587,7 +588,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	if query.Has("updated_since") {
 		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(query.Get("updated_since")))
 		if err != nil {
-			writeError(w, "INVALID_UPDATED_SINCE", http.StatusBadRequest, "updated_since must be an RFC3339 timestamp")
+			writeError(w, r, apicode.InvalidUpdatedSince, "updated_since must be an RFC3339 timestamp")
 			return
 		}
 		updatedSince = &parsed
@@ -596,7 +597,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	if query.Has("closed_since") {
 		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(query.Get("closed_since")))
 		if err != nil {
-			writeError(w, "INVALID_CLOSED_SINCE", http.StatusBadRequest, "closed_since must be an RFC3339 timestamp")
+			writeError(w, r, apicode.InvalidClosedSince, "closed_since must be an RFC3339 timestamp")
 			return
 		}
 		closedSince = &parsed
@@ -605,7 +606,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	if query.Has("closed_before") {
 		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(query.Get("closed_before")))
 		if err != nil {
-			writeError(w, "INVALID_CLOSED_BEFORE", http.StatusBadRequest, "closed_before must be an RFC3339 timestamp")
+			writeError(w, r, apicode.InvalidClosedBefore, "closed_before must be an RFC3339 timestamp")
 			return
 		}
 		closedBefore = &parsed
@@ -614,27 +615,27 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	// microsecond are a valid window, not a backwards one, and the statement answers whatever
 	// stored times fall between their rounded values (none, unless the lower bound is whole).
 	if closedSince != nil && closedBefore != nil && !closedSince.Before(*closedBefore) {
-		writeError(w, "INVALID_CLOSED_WINDOW", http.StatusBadRequest, "closed_since must be before closed_before")
+		writeError(w, r, apicode.InvalidClosedWindow, "closed_since must be before closed_before")
 		return
 	}
 	priorities, unsetPriority, err := parsePriorityFilter(query["priority"])
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	advances, noAdvances, anyAdvances, err := parseAdvancesFilter(query["advances"])
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	routeStatus, err := parseRouteStatusFilter(query.Get("route_status"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	page, err := parseIssuePage(query)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// A route matters only while there is work to reach, so the route_status filter reads open
@@ -669,7 +670,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 		issues, err = s.scanIssueSummaries(r.Context(), listQuery, arguments)
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if routed := slices.ContainsFunc(issues, func(issue model.IssueSummary) bool { return issue.Route != nil }); routed {
@@ -680,7 +681,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 			// read of the stored answer is the database's failure and is answered as one, and only
 			// a listener that did not answer is the listener's.
 			if roster, err = s.readRouteRoster(r.Context()); err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 		} else {
@@ -690,10 +691,10 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 			// No route can be judged, so a filter for a judged state refuses rather than answer
 			// a list that would read as "every route reaches someone" (or "nobody's does").
 			if roster.reason == model.RouteReasonRefilling {
-				writeEnvoyRefilling(w, roster.retryAfter)
+				writeEnvoyRefilling(w, r, roster.retryAfter)
 				return
 			}
-			writeError(w, "ENVOY_UNAVAILABLE", http.StatusServiceUnavailable,
+			writeError(w, r, apicode.EnvoyUnavailable,
 				"the Envoy listener did not answer, so Dispatch cannot tell which routes reach a live session; route_status=unknown lists the routed issues")
 			return
 		}
@@ -855,7 +856,7 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	read, err := s.readIssue(r.Context(), r.PathValue("key"), wantsDisplayTrees(r))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// One roster read serves both answers beside the issue: where its route reaches, and what

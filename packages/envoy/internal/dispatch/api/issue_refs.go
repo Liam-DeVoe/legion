@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 var externalRefPattern = regexp.MustCompile(`^([^/\s]+)/([^/\s#]+)#([1-9][0-9]*)$`)
@@ -23,7 +25,7 @@ func (s *server) resolveIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	key, err := s.resolveIssueRef(r.Context(), r.URL.Query().Get("ref"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, issueRefResolved{Key: key})
@@ -71,8 +73,7 @@ func (s *server) resolveIssueRef(ctx context.Context, ref string) (string, error
 		return keys[0], nil
 	default:
 		return "", errorf(
-			http.StatusBadRequest,
-			"AMBIGUOUS_ISSUE_REF",
+			apicode.AmbiguousIssueRef,
 			"external issue reference %q is linked to multiple Dispatch issues: %s",
 			ref,
 			strings.Join(keys, ", "),
@@ -83,7 +84,7 @@ func (s *server) resolveIssueRef(ctx context.Context, ref string) (string, error
 func validateExternalURL(raw string) error {
 	value, err := url.ParseRequestURI(strings.TrimSpace(raw))
 	if err != nil || !value.IsAbs() || value.Host == "" || (value.Scheme != "http" && value.Scheme != "https") {
-		return errorf(http.StatusBadRequest, "INVALID_URL", "external link URL must be an absolute HTTP(S) URL")
+		return errorf(apicode.InvalidURL, "external link URL must be an absolute HTTP(S) URL")
 	}
 	return nil
 }
@@ -91,7 +92,7 @@ func validateExternalURL(raw string) error {
 func externalRef(ref string) (repo string, number string, err error) {
 	match := externalRefPattern.FindStringSubmatch(strings.TrimSpace(ref))
 	if match == nil {
-		return "", "", errorf(http.StatusBadRequest, "INVALID_ISSUE_REF", "invalid issue reference %q", ref)
+		return "", "", errorf(apicode.InvalidIssueRef, "invalid issue reference %q", ref)
 	}
 	return canonicalRepo(match[1], match[2]), match[3], nil
 }

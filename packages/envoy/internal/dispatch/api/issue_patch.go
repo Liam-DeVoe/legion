@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -54,7 +55,7 @@ type updateIssueInput struct {
 func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	var input updateIssueInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -66,7 +67,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		var err error
 		blockers, err = normalizeIssueBlockers(*input.BlockedBy)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -75,18 +76,18 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		var err error
 		advances, err = normalizeIssueAdvances(*input.Advances)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if input.Title != nil {
 		*input.Title = strings.TrimSpace(*input.Title)
 		if *input.Title == "" {
-			writeError(w, "INVALID_ISSUE", http.StatusBadRequest, "title must not be blank")
+			writeError(w, r, apicode.InvalidIssue, "title must not be blank")
 			return
 		}
 		if length := itemblocks.Units16(*input.Title); length > contracts.IssueTitleMax {
-			capExceeded(w, "title", length, contracts.IssueTitleMax)
+			capExceeded(w, r, "title", length, contracts.IssueTitleMax)
 			return
 		}
 	}
@@ -94,30 +95,30 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if input.Status != nil {
 		status = strings.TrimSpace(*input.Status)
 		if status == "" {
-			writeError(w, "INVALID_ISSUE", http.StatusBadRequest, "status must not be blank")
+			writeError(w, r, apicode.InvalidIssue, "status must not be blank")
 			return
 		}
 		if !model.IsIssueStatus(status) {
-			writeError(w, "INVALID_STATUS", http.StatusBadRequest, "status is not in the Legion lifecycle")
+			writeError(w, r, apicode.InvalidStatus, "status is not in the Legion lifecycle")
 			return
 		}
 	}
 	if input.Route != nil && *input.Route != "" {
 		if _, err := model.ParseRoute(*input.Route); err != nil {
-			writeError(w, "ROUTE_INVALID", http.StatusBadRequest, "invalid route")
+			writeError(w, r, apicode.RouteInvalid, "invalid route")
 			return
 		}
 	}
 	var labels, labelsAdd []string
 	if input.Labels != nil && input.LabelsAdd != nil {
-		writeError(w, "LABELS_INPUT", http.StatusBadRequest, "labels and labels_add cannot both be set")
+		writeError(w, r, apicode.LabelsInput, "labels and labels_add cannot both be set")
 		return
 	}
 	if input.Labels != nil {
 		var err error
 		labels, err = normalizeIssueLabels(*input.Labels)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -125,33 +126,33 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		var err error
 		labelsAdd, err = normalizeIssueLabels(*input.LabelsAdd)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	priority, priorityProvided, err := parseIssuePriority(input.Priority)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	assignee, assigneeProvided, err := s.parseIssueAssignee(r.Context(), input.Assignee)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	parent, parentProvided, err := parseIssueParent(input.Parent)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	components, componentsProvided, err := parseIssueComponents(input.Components)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	repo, repoProvided, err := parseIssueRepo(input.Repo)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
@@ -165,7 +166,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -182,18 +183,18 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if dependencyWrite || input.Rank != nil {
 		var project string
 		if err := tx.QueryRow(r.Context(), `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if dependencyWrite {
 			if err := lockIssueDependencyWrite(r.Context(), tx, project, callerProject, blockers); err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 		}
 		if input.Rank != nil {
 			if err := lockProjectRankAllocation(r.Context(), tx, project); err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 		}
@@ -225,21 +226,21 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		lock = lockPatchRowsAndParent
 	}
 	if err := lock(r.Context(), tx, key, named...); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	before, err := s.loadIssue(r.Context(), tx, key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if input.ExpectedSeq != nil && *input.ExpectedSeq != int64(before.LastSeq) {
-		writeError(w, "ISSUE_CHANGED", http.StatusConflict, "issue changed since the hand-over read")
+		writeError(w, r, apicode.IssueChanged, "issue changed since the hand-over read")
 		return
 	}
 	if parentProvided && parent != nil {
 		if err := validateIssueParent(r.Context(), tx, key, before.Project, *parent); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -256,7 +257,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		addsLink := input.ExternalLinks != nil && !isExternalLinksSubset(*input.ExternalLinks, before.ExternalLinks)
 		others := input.Title != nil || input.Labels != nil || input.LabelsAdd != nil || priorityProvided || input.Route != nil || addsLink || assigneeProvided || parentProvided || input.BlockedBy != nil || input.Advances != nil || repoProvided
 		if others || (input.Status != nil && !reopening) || (input.Status == nil && input.Rank == nil && !componentsProvided && input.ExternalLinks == nil) {
-			writeError(w, "ISSUE_CLOSED", http.StatusConflict, "issue is closed")
+			writeError(w, r, apicode.IssueClosed, "issue is closed")
 			return
 		}
 	}
@@ -268,13 +269,13 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if input.Advances != nil {
 		heldAdvances = ownAdvances(before.Advances)
 		if err := refuseAdvancesRevision(heldAdvances, before.AdvancesRevision, input.AdvancesRevision, advances); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if repo != nil {
 		if err := checkIssueRepoMapped(r.Context(), tx, *repo, before.Project); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -309,7 +310,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if input.Rank != nil {
 		issueRank, err := s.rankForInput(r.Context(), tx, before.Project, key, *input.Rank)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		set("rank", issueRank)
@@ -330,7 +331,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if input.LabelsAdd != nil {
 		labels, err = mergeIssueLabels(before.Labels, labelsAdd)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		set("labels", labels)
@@ -352,50 +353,50 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if changed {
 		sets = append(sets, "updated_at = "+issueUpdatedNow)
 		if _, err := tx.Exec(r.Context(), `update issues set `+strings.Join(sets, ", ")+` where key = $1`, args...); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if previousClaim != nil {
 		// Closing releases the claim through the one writer of those columns.
 		if err := writeIssueClaim(r.Context(), tx, key, nil); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if componentsProvided {
 		if err := writeIssueComponents(r.Context(), tx, key, before.Project, *components); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if input.BlockedBy != nil {
 		if err := writeBlockedBy(r.Context(), tx, key, before.Project, callerProject, blockers); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if input.Advances != nil {
 		if err := writeIssueAdvances(r.Context(), tx, key, heldAdvances, advances, actor, time.Now().UTC()); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if parentProvided && parent != nil {
 		if err := assertParentLeavesNoDependencyCycle(r.Context(), tx, key, *parent); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 
 	if input.ExternalLinks != nil {
 		if _, err := tx.Exec(r.Context(), `delete from issue_external_links where issue_key = $1`, key); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		for _, link := range *input.ExternalLinks {
 			if err := validateExternalURL(link.URL); err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			kind := link.Kind
@@ -408,19 +409,19 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			var owner string
 			err := tx.QueryRow(r.Context(), `select issue_key from issue_external_links where url = $1`, link.URL).Scan(&owner)
 			if err == nil {
-				writeError(w, "EXTERNAL_LINK_TAKEN", http.StatusConflict, fmt.Sprintf("%s is already linked from %s", link.URL, owner))
+				writeError(w, r, apicode.ExternalLinkTaken, fmt.Sprintf("%s is already linked from %s", link.URL, owner))
 				return
 			}
 			if !errors.Is(err, pgx.ErrNoRows) {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			if _, err := tx.Exec(r.Context(), `insert into issue_external_links (issue_key, url, kind) values ($1, $2, $3)`, key, link.URL, kind); err != nil {
 				if isUniqueViolation(err) {
-					writeError(w, "EXTERNAL_LINK_TAKEN", http.StatusConflict, fmt.Sprintf("%s is already linked from another issue", link.URL))
+					writeError(w, r, apicode.ExternalLinkTaken, fmt.Sprintf("%s is already linked from another issue", link.URL))
 					return
 				}
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 		}
@@ -431,7 +432,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, "", before.Status, false,
 		)
 		if err := ledger.Commit(r.Context()); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		WriteJSON(w, http.StatusOK, withAdvice(before, advice))
@@ -464,7 +465,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(owners) > 1 {
 		if err := s.deps.Events.LockOwners(r.Context(), tx, owners...); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -478,14 +479,14 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		_, events, err = s.restoreIssueAsksTx(documentCtx, tx, key, actor)
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Read once every event so far is in, the document writes' own included, so the response's
 	// last_seq and open asks are what a read of the issue answers.
 	after, err := s.loadIssue(r.Context(), tx, key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	eventType := "issue.updated"
@@ -500,12 +501,12 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	changedFields := issueChangedFields(before, after)
 	edgeChanges, err := issueEdgeChanges(r.Context(), tx, before, after, slices.Contains(changedFields, "title"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	payload, err := newIssueEventPayload(r.Context(), tx, after, edgeChanges, changedFields)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// nil on a write that left the assignee alone, which is what tells issueWriteThreadLogins to
@@ -519,20 +520,20 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			r.Context(), tx, key, statusChanged, slices.Contains(changedFields, "closed_at"), movedAssignees,
 		)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	event, err := s.appendEvent(r.Context(), tx, issueOwner(key).event(eventType, actor, payload))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	events = append(events, event)
 	if previousClaim != nil {
 		released, err := s.appendEvent(r.Context(), tx, claimEvent("issue.released", key, actor, after, previousClaim, "closed"))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		after.LastSeq++
@@ -545,7 +546,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			map[string]any{"child_key": after.Key, "from": before.Status, "to": after.Status},
 		))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		events = append(events, childEvent)
@@ -556,7 +557,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 				"child.removed", actor, map[string]any{"child_key": after.Key},
 			))
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			events = append(events, removedEvent)
@@ -566,7 +567,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 				"child.added", actor, map[string]any{"child_key": after.Key},
 			))
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			events = append(events, addedEvent)
@@ -590,12 +591,12 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		if err := tx.QueryRow(r.Context(), `
 			update issues set closed_at = clock_timestamp() where key = $1 and closed_at is not null returning closed_at
 		`, key).Scan(&after.ClosedAt); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// A change of closed_at reaches the document rooms of every process, this one's included, from

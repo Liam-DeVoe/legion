@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 )
@@ -43,12 +44,12 @@ func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, kind, s
 		return true
 	}
 	if err := s.refuseUploadBeforeItsObject(r.Context(), target, input.name, kind); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return false
 	}
 	if err := s.deps.Files.Put(r.Context(), sha, input.contentType, input.content); err != nil {
 		slog.Error("dispatch: store an uploaded file", "sha256", sha, "size", len(input.content), "error", err)
-		writeError(w, "FILE_STORE_UNAVAILABLE", http.StatusBadGateway, "the file store did not accept the upload")
+		writeError(w, r, apicode.FileStoreUnavailable, "the file store did not accept the upload")
 		return false
 	}
 	return true
@@ -148,12 +149,12 @@ func (s *server) serveFileVersion(w http.ResponseWriter, r *http.Request, artifa
 	}
 	if s.deps.Files == nil {
 		slog.Error("dispatch: a file version holds no bytes and no file store is configured", "artifact", artifactID, "version", number, "sha256", deref(sha))
-		writeError(w, "FILE_STORE_UNAVAILABLE", http.StatusServiceUnavailable, "this file's bytes are in a store this server is not configured to read")
+		writeError(w, r, apicode.FileStoreUnconfigured, "this file's bytes are in a store this server is not configured to read")
 		return
 	}
 	if sha == nil {
 		slog.Error("dispatch: a file version holds no bytes and records no hash to read them by", "artifact", artifactID, "version", number)
-		writeError(w, "FILE_MISSING", http.StatusInternalServerError, "this file's bytes cannot be found")
+		writeError(w, r, apicode.FileMissing, "this file's bytes cannot be found")
 		return
 	}
 	object, err := s.deps.Files.Get(r.Context(), *sha)
@@ -162,11 +163,11 @@ func (s *server) serveFileVersion(w http.ResponseWriter, r *http.Request, artifa
 			// The row names an object the bucket does not hold: not an outage a retry mends, a
 			// restore from the bucket's versioning.
 			slog.Error("dispatch: a file version's object is missing from the file store", "artifact", artifactID, "version", number, "sha256", *sha, "error", err)
-			writeError(w, "FILE_MISSING", http.StatusInternalServerError, "this file's bytes cannot be found")
+			writeError(w, r, apicode.FileMissing, "this file's bytes cannot be found")
 			return
 		}
 		slog.Error("dispatch: read a file version from the file store", "artifact", artifactID, "version", number, "sha256", *sha, "error", err)
-		writeError(w, "FILE_STORE_UNAVAILABLE", http.StatusBadGateway, "the file store did not return this file")
+		writeError(w, r, apicode.FileStoreUnavailable, "the file store did not return this file")
 		return
 	}
 	defer object.Body.Close()
@@ -176,7 +177,7 @@ func (s *server) serveFileVersion(w http.ResponseWriter, r *http.Request, artifa
 	// leaves the client short of Content-Length rather than whole.
 	if size != nil && object.Size != *size {
 		slog.Error("dispatch: a file version's object is not the size the row records", "artifact", artifactID, "version", number, "sha256", *sha, "row_size", *size, "object_size", object.Size)
-		writeError(w, "FILE_MISSING", http.StatusInternalServerError, "this file's bytes cannot be found")
+		writeError(w, r, apicode.FileMissing, "this file's bytes cannot be found")
 		return
 	}
 	headers(object.Size)

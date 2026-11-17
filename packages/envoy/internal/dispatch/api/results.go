@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -100,7 +101,7 @@ type checkResultRecorded struct {
 func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	var input checkResultInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -108,13 +109,13 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := input.refusal(); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	issueKey := r.PathValue("key")
 	pool, err := s.readyPool()
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
@@ -127,13 +128,13 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// does protect, the block's indexed version and digest, is read again under it below.
 	check, err := s.resolveCheck(r.Context(), pool, issueKey, input.Check)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// A check CI proves takes no result from a role, refused here, before refuseUnknownCommit,
 	// so no GitHub read is spent on it.
 	if err := refuseCheckProvedByCI(r.Context(), pool, check); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
@@ -174,13 +175,13 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// two issue row locks costs. Nothing is written before it, so a refusal leaves no row and no
 	// event behind.
 	if err := s.refuseUnknownCommit(r.Context(), checkRepo, input.Commit); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -192,12 +193,12 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// the parent and another hold the parent while waiting for the child; lockIssueRows is the
 	// one key order every writer of two issue rows takes.
 	if _, err := lockIssueRows(r.Context(), tx, issueKey, check.IssueKey); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	recordingOpen, checkOpen, err := issuesOpenForResult(r.Context(), tx, issueKey, check.IssueKey)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The version, digest and attributes the row is judged by are the block's as this
@@ -208,7 +209,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// attributes only when that digest moved, which is the only way the block's words can have
 	// changed.
 	if err := s.refreshResolvedCheck(r.Context(), tx, &check, input.Check); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Asked again under the locks: a document write can have given the block a ci_check since the
@@ -216,7 +217,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// transaction, so whichever of a racing result and a racing ci_check commits, every reader
 	// reads the block as one kind of check.
 	if err := refuseCheckProvedByCI(r.Context(), tx, check); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// A closed issue takes a result only for a check that runs after the merge or on the default
@@ -224,12 +225,12 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// the production check unrecordable. A result for a pre-merge check stays refused there, as a
 	// document version does; a comment and a message are the other writes a closed issue takes.
 	if (!recordingOpen || !checkOpen) && check.Attributes.When != checkWhenAfterMerge && check.Attributes.When != checkWhenDefaultBranch {
-		writeError(w, "ISSUE_CLOSED", http.StatusConflict,
+		writeError(w, r, apicode.IssueClosed,
 			fmt.Sprintf("issue is closed: only a result for a check whose when is after_merge or default_branch is recorded there, and %s is %s", check.BlockID, check.Attributes.When))
 		return
 	}
 	if err := s.refuseResultScreenshots(r.Context(), tx, issueKey, check.IssueKey, input.Screenshots); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
@@ -249,17 +250,17 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 		When: check.Attributes.When, Verdict: result.Verdict, Role: result.Role, CommitSHA: result.CommitSHA,
 	}))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	seq := int64(event.Seq)
 	result.EventSeq = &seq
 	if err := insertCheckResult(r.Context(), tx, &result); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The read-through runs before the event: the Verification tab refetches on
@@ -303,18 +304,18 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	}
 	at := r.URL.Query().Get("at")
 	if at != noCommitNamed && !resultCommitSHA.MatchString(at) {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidQuery,
 			"at must be a commit of 40 lowercase hex characters")
 		return
 	}
 	issueKey := r.PathValue("key")
 	if err := s.requireIssueExists(r.Context(), issueKey); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	artifact, held, err := s.verificationDocument(r.Context(), s.deps.Store.Pool, issueKey, "")
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	body := issueCheckResults{Checks: []model.CheckBlock{}, Issue: issueKey, VerificationArtifactID: artifact.ID}
@@ -324,17 +325,17 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	}
 	checks, err := s.checkBlocksOf(r.Context(), s.deps.Store.Pool, artifact)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	recorded, err := loadCheckResults(r.Context(), s.deps.Store.Pool, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	retracted, err := loadCheckResultRetractions(r.Context(), s.deps.Store.Pool, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	for index := range checks {
@@ -350,7 +351,7 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		checks[index].Results = results
 	}
 	if err := s.deriveCIResults(r.Context(), issueKey, checks); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Every head GitHub has to be asked for is learned before the first check is answered, so
@@ -369,25 +370,25 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 // refusal is every refusal a result's own fields earn, before anything is read.
 func (input checkResultInput) refusal() error {
 	if strings.TrimSpace(input.Check) == "" {
-		return errorf(http.StatusBadRequest, "RESULT_INPUT", "check names the check block the result proves")
+		return errorf(apicode.ResultInput, "check names the check block the result proves")
 	}
 	if !checkResultRole.MatchString(input.Role) {
-		return errorf(http.StatusBadRequest, "RESULT_INPUT",
+		return errorf(apicode.ResultInput,
 			"role is required and is at most 32 characters of a-z and -, the word the pull-request line prints")
 	}
 	if input.Verdict != "pass" && input.Verdict != "fail" {
-		return errorf(http.StatusBadRequest, "RESULT_INPUT", "verdict is pass or fail")
+		return errorf(apicode.ResultInput, "verdict is pass or fail")
 	}
 	if !resultCommitSHA.MatchString(input.Commit) {
-		return errorf(http.StatusBadRequest, "RESULT_INPUT", "commit is the 40-character lowercase hex commit the check ran at")
+		return errorf(apicode.ResultInput, "commit is the 40-character lowercase hex commit the check ran at")
 	}
 	for name, count := range map[string]int{"failed": input.Failed, "skipped": input.Skipped, "excluded": input.Excluded} {
 		if count < 0 {
-			return errorf(http.StatusBadRequest, "RESULT_INPUT", "%s counts cases and cannot be negative", name)
+			return errorf(apicode.ResultInput, "%s counts cases and cannot be negative", name)
 		}
 	}
 	if input.Verdict == "pass" && (input.Failed > 0 || input.Skipped > 0 || input.Excluded > 0) {
-		return errorf(http.StatusBadRequest, "RESULT_CONTRADICTS",
+		return errorf(apicode.ResultContradicts,
 			"a pass counts no failed, skipped or excluded case; this one counts %d failed, %d skipped and %d excluded",
 			input.Failed, input.Skipped, input.Excluded)
 	}
@@ -420,11 +421,11 @@ func issuesOpenForResult(ctx context.Context, tx pgx.Tx, issueKey, checkIssueKey
 	}
 	recording, held := open[issueKey]
 	if !held {
-		return false, false, errorf(http.StatusNotFound, "NOT_FOUND", "issue not found")
+		return false, false, errorf(apicode.NotFound, "issue not found")
 	}
 	check, held := open[checkIssueKey]
 	if !held {
-		return false, false, errorf(http.StatusNotFound, "NOT_FOUND", "issue not found")
+		return false, false, errorf(apicode.NotFound, "issue not found")
 	}
 	return recording, check, nil
 }
@@ -432,12 +433,12 @@ func issuesOpenForResult(ctx context.Context, tx pgx.Tx, issueKey, checkIssueKey
 // requireIssueExists is the read route's 404 for an issue nobody has.
 func (s *server) requireIssueExists(ctx context.Context, key string) error {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
-		return errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
+		return errorf(apicode.DatabaseUnavailable, "database unavailable")
 	}
 	var exists bool
 	if err := s.deps.Store.Pool.QueryRow(ctx, `select true from issues where key = $1`, key).Scan(&exists); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return errorf(http.StatusNotFound, "NOT_FOUND", "issue not found")
+			return errorf(apicode.NotFound, "issue not found")
 		}
 		return fmt.Errorf("read issue %s: %w", key, err)
 	}
@@ -537,7 +538,7 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 		for index, check := range found {
 			issues[index] = check.IssueKey
 		}
-		return resolvedCheck{}, errorf(http.StatusConflict, "CHECK_AMBIGUOUS",
+		return resolvedCheck{}, errorf(apicode.CheckAmbiguous,
 			"check %s is a check of the Verification document of %s: name one with its reference, %s",
 			blockID, strings.Join(issues, " and "), strings.Join(references, " or "))
 	}
@@ -549,7 +550,7 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 }
 
 func unknownCheck(value string) error {
-	return errorf(http.StatusBadRequest, "UNKNOWN_CHECK",
+	return errorf(apicode.UnknownCheck,
 		"%s is no check of this issue's Verification document or of one above it", value)
 }
 
@@ -628,7 +629,7 @@ func refuseCheckProvedByCI(ctx context.Context, q queryer, check resolvedCheck) 
 	if err != nil || rule != "" {
 		return err
 	}
-	return errorf(http.StatusConflict, "CHECK_PROVED_BY_CI",
+	return errorf(apicode.CheckProvedByCI,
 		"check %s is proved by CI run %q: dispatch results reads its result from that run, and no role records one",
 		check.BlockID, check.Attributes.CICheck)
 }
@@ -806,7 +807,7 @@ func (s *server) refuseResultScreenshots(ctx context.Context, q queryer, issueKe
 		ref, ok := text.ParseRef(screenshot, "")
 		if !ok || ref.Kind != "artifact" || ref.IssueKey == "" ||
 			(ref.IssueKey != issueKey && ref.IssueKey != checkIssueKey) {
-			return errorf(http.StatusBadRequest, "RESULT_INPUT",
+			return errorf(apicode.ResultInput,
 				"screenshot %q names no image document of %s or %s", screenshot, issueKey, checkIssueKey)
 		}
 		var found bool
@@ -814,7 +815,7 @@ func (s *server) refuseResultScreenshots(ctx context.Context, q queryer, issueKe
 			select true from artifacts where issue_key = $1 and slug = $2 and kind = 'image'
 		`, ref.IssueKey, ref.ID).Scan(&found)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return errorf(http.StatusBadRequest, "RESULT_INPUT",
+			return errorf(apicode.ResultInput,
 				"screenshot %q names no image document of %s or %s", screenshot, issueKey, checkIssueKey)
 		}
 		if err != nil {
@@ -923,7 +924,7 @@ func (s *server) refuseUnknownCommit(ctx context.Context, repo *string, sha stri
 	if held {
 		return nil
 	}
-	return errorf(http.StatusBadRequest, "RESULT_COMMIT_UNKNOWN",
+	return errorf(apicode.ResultCommitUnknown,
 		"%s holds no commit %s: record the result once the commit is pushed", *repo, sha)
 }
 

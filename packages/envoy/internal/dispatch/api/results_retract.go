@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -47,7 +48,7 @@ type retractedResult struct {
 func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	var input checkResultRetractionInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -56,11 +57,11 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	}
 	reason := strings.TrimSpace(input.Reason)
 	if reason == "" {
-		writeError(w, "RETRACTION_INPUT", http.StatusBadRequest,
+		writeError(w, r, apicode.RetractionInput,
 			"reason says why the result is wrong, and the retraction keeps it for every later reader")
 		return
 	}
-	if !requireUUIDPath(w, r, "result") {
+	if !requireUUIDPath(w, r, "result", apicode.ResultIDInput) {
 		return
 	}
 	resultID := r.PathValue("id")
@@ -71,7 +72,7 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	person := s.callerHoldsScope(r, model.ScopePerson)
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -83,20 +84,20 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	// record route takes its issue rows before it inserts, so the two cannot deadlock.
 	result, err := lockRetractedResult(r.Context(), tx, resultID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := s.refuseRetractionBy(r.Context(), tx, actor, person, result); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	retracted, err := resultIsRetracted(r.Context(), tx, resultID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if retracted {
-		writeError(w, "RESULT_RETRACTED", http.StatusConflict, fmt.Sprintf(
+		writeError(w, r, apicode.ResultRetracted, fmt.Sprintf(
 			"result %s was retracted already. Read the retraction that stands, and record a new result for the check.",
 			resultID))
 		return
@@ -111,7 +112,7 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 			CheckBlockID: result.CheckBlockID, CommitSHA: result.CommitSHA, Reason: reason,
 		}))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	seq := int64(event.Seq)
@@ -119,11 +120,11 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 		ResultID: resultID, Reason: reason, Session: sessionOf(actor), Actor: actor, EventSeq: &seq,
 	}
 	if err := insertCheckResultRetraction(r.Context(), tx, &retraction); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)
@@ -164,7 +165,7 @@ func (s *server) refuseRetractionBy(
 	if session != "" && session == holder {
 		return nil
 	}
-	return errorf(http.StatusForbidden, "RETRACTION_FORBIDDEN",
+	return errorf(apicode.RetractionForbidden,
 		"three callers retract this result: the session that recorded it, the session holding the Dispatch claim of %s, and a person. Take that claim, or send the request with a personal token.",
 		result.IssueKey)
 }
@@ -194,7 +195,7 @@ func lockRetractedResult(ctx context.Context, tx pgx.Tx, id string) (retractedRe
 	`, id).Scan(&result.IssueKey, &result.CheckIssueKey, &result.CheckBlockID,
 		&result.CommitSHA, &result.Session)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return retractedResult{}, errorf(http.StatusNotFound, "RESULT_NOT_FOUND", "result not found")
+		return retractedResult{}, errorf(apicode.ResultNotFound, "result not found")
 	}
 	if err != nil {
 		return retractedResult{}, fmt.Errorf("read result %s: %w", id, err)

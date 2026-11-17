@@ -480,7 +480,9 @@ func (s *server) runTestHook(ctx context.Context, call testHookCall) (int, []byt
 	case hookQuiesceDocuments:
 		if err := s.deps.Docs.Quiesce(ctx); err != nil {
 			answer := &testHookAnswer{header: http.Header{}}
-			s.writeHandlerError(answer, err)
+			// No request: another process's notification reaches this hook too, and a hook's
+			// failure is answered as /api/v1 answers it, as testHookFailure's are.
+			s.writeHandlerError(answer, nil, err)
 			return answer.status, answer.body.Bytes()
 		}
 	case hookPublishFrame:

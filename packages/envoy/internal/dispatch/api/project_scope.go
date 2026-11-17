@@ -63,21 +63,18 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-const (
-	// codeProjectScope refuses a write the caller's credential does not cover: an object of
-	// another project, or one this check could not resolve to the caller's own.
-	codeProjectScope = "PROJECT_SCOPE"
-	// codeProjectScopeDeployment refuses a project-scoped caller a write that belongs to the
-	// deployment rather than to any one project.
-	codeProjectScopeDeployment = "PROJECT_SCOPE_DEPLOYMENT"
-	// codeSessionScope refuses a caller whose credential proved one session a write addressed
-	// to another session's own rows.
-	codeSessionScope = "SESSION_SCOPE"
-)
+// The scope checks' refusals:
+//   - PROJECT_SCOPE (apicode.ProjectScope) refuses a write the caller's credential does not
+//     cover: an object of another project, or one this check could not resolve to the caller's
+//     own.
+//   - PROJECT_SCOPE_DEPLOYMENT (apicode.ProjectScopeDeployment) refuses a project-scoped caller a
+//     write that belongs to the deployment rather than to any one project.
+//   - SESSION_SCOPE (apicode.SessionScope) refuses a caller whose credential proved one session a
+//     write addressed to another session's own rows.
 
 // brokerCredentialActor is the caller an access token the secrets broker issued decided, and
 // whether this request presents one that resolved at all. Every other credential answers false
@@ -281,7 +278,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 					handler(w, r)
 					return
 				}
-				refuseWriteOutsideProjectScope(w, covers, "")
+				refuseWriteOutsideProjectScope(w, r, covers, "")
 			}
 		}
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -292,7 +289,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 			}
 			belongsTo, err := resolve(r.Context(), s.deps.Store.Pool, r)
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			if belongsTo != covers {
@@ -300,7 +297,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 				// to none, a row that is not there, and an id Postgres will not read.
 				// Refusing those too is what makes the check fail closed — not what hides
 				// which ids exist, which this does not claim to do (the file comment).
-				refuseWriteOutsideProjectScope(w, covers, belongsTo)
+				refuseWriteOutsideProjectScope(w, r, covers, belongsTo)
 				return
 			}
 			handler(w, r)
@@ -312,7 +309,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 				handler(w, r)
 				return
 			}
-			writeError(w, codeProjectScopeDeployment, http.StatusForbidden, fmt.Sprintf(
+			writeError(w, r, apicode.ProjectScopeDeployment, fmt.Sprintf(
 				"this request's credential may write project %s and nothing else; %s %s belongs to the deployment rather than to a project",
 				covers, route.Method, route.Pattern))
 		}
@@ -328,14 +325,14 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 // project the write belongs to where one resolved, and nothing of the credential itself. It
 // names no project at all for a write that resolved to none, since there is none to name and
 // an invented one would say something about what exists.
-func refuseWriteOutsideProjectScope(w http.ResponseWriter, covers, belongsTo string) {
+func refuseWriteOutsideProjectScope(w http.ResponseWriter, r *http.Request, covers, belongsTo string) {
 	if belongsTo == "" {
-		writeError(w, codeProjectScope, http.StatusForbidden, fmt.Sprintf(
+		writeError(w, r, apicode.ProjectScope, fmt.Sprintf(
 			"this request's credential may write project %s; this write resolves to no project of that credential's",
 			covers))
 		return
 	}
-	writeError(w, codeProjectScope, http.StatusForbidden, fmt.Sprintf(
+	writeError(w, r, apicode.ProjectScope, fmt.Sprintf(
 		"this request's credential may write project %s; this write belongs to project %s", covers, belongsTo))
 }
 
@@ -370,7 +367,7 @@ func (s *server) withinSessionScope(route apiRoute, handler http.HandlerFunc) ht
 			return
 		}
 		if addressed := r.PathValue("session_id"); addressed != proved && !personsOwnWrite {
-			writeError(w, codeSessionScope, http.StatusForbidden, fmt.Sprintf(
+			writeError(w, r, apicode.SessionScope, fmt.Sprintf(
 				"this request's credential acts for session %s; %s %s writes into session %s",
 				proved, route.Method, route.Pattern, addressed))
 			return
@@ -409,7 +406,7 @@ func (s *server) writeNeedsASignedInPerson(handler http.HandlerFunc) http.Handle
 			handler(w, r)
 			return
 		}
-		writeError(w, contracts.DispatchSignInRequired, http.StatusForbidden, fmt.Sprintf(
+		writeError(w, r, apicode.SignInRequired, fmt.Sprintf(
 			"this request's credential acts for service %s and no person, so there is nobody to "+
 				"record this write under; run `agent-secrets login` on this machine and try again",
 			*actor.Service))

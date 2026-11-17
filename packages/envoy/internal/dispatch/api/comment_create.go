@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -61,28 +62,28 @@ func askReplyTurn(actor model.Actor, requested *string) string {
 func validateCommentMentions(input commentInput) (string, []string, error) {
 	if len(input.Mentions) == 0 {
 		if input.Delivery != nil {
-			return "", nil, errorf(http.StatusBadRequest, "MENTION_INPUT", "delivery requires mentions")
+			return "", nil, errorf(apicode.MentionInput, "delivery requires mentions")
 		}
 		return "", nil, nil
 	}
 	if len(input.Mentions) > 10 {
-		return "", nil, errorf(http.StatusBadRequest, "MENTION_INPUT", "mentions allow at most 10 targets")
+		return "", nil, errorf(apicode.MentionInput, "mentions allow at most 10 targets")
 	}
 	delivery := "steer"
 	if input.Delivery != nil {
 		delivery = *input.Delivery
 		if !validDelivery(delivery) {
-			return "", nil, errorf(http.StatusBadRequest, "MENTION_INPUT", "delivery must be one of btw, aside, steer")
+			return "", nil, errorf(apicode.MentionInput, "delivery must be one of btw, aside, steer")
 		}
 	}
 	targets := make([]string, 0, len(input.Mentions))
 	seen := make(map[string]struct{}, len(input.Mentions))
 	for _, mention := range input.Mentions {
 		if _, err := model.ParseRoute(mention.Target); err != nil {
-			return "", nil, errorf(http.StatusBadRequest, "MENTION_INPUT", "mention target must be role:<name> or session:<id>")
+			return "", nil, errorf(apicode.MentionInput, "mention target must be role:<name> or session:<id>")
 		}
 		if _, duplicate := seen[mention.Target]; duplicate {
-			return "", nil, errorf(http.StatusBadRequest, "MENTION_INPUT", "mentions must not repeat a target")
+			return "", nil, errorf(apicode.MentionInput, "mentions must not repeat a target")
 		}
 		seen[mention.Target] = struct{}{}
 		targets = append(targets, mention.Target)
@@ -180,18 +181,18 @@ func (s *server) replayComment(w http.ResponseWriter, r *http.Request, point com
 	ctx, pool := r.Context(), s.deps.Store.Pool
 	comment, err := s.loadComment(ctx, pool, point.CommentID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	owed, err := s.owedCommentMentions(ctx, comment.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if len(owed) > 0 {
 		created, err := s.loadCommentCreatedEvent(ctx, pool, comment)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		sending := context.WithoutCancel(ctx)
@@ -202,7 +203,7 @@ func (s *server) replayComment(w http.ResponseWriter, r *http.Request, point com
 			}
 			claimed, mine, err := s.claimQueuedMention(sending, item.key())
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			if !mine {
@@ -214,10 +215,10 @@ func (s *server) replayComment(w http.ResponseWriter, r *http.Request, point com
 	}
 	hydrated, err := s.hydrateCommentSideTables(ctx, pool, []model.Comment{comment})
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	s.writeRefreshed(w, stored, hydrated[0])
+	s.writeRefreshed(w, r, stored, hydrated[0])
 }
 
 // owedCommentMentions is each mention of the comment whose one attempt is pending with no live
@@ -255,24 +256,24 @@ func (s *server) normalizeCommentThreadTarget(
 	input commentInput,
 ) (commentThreadTarget, error) {
 	if input.ReplyTo != nil && input.AskID != nil {
-		return commentThreadTarget{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "reply_to and ask_id cannot both be set")
+		return commentThreadTarget{}, errorf(apicode.InvalidComment, "reply_to and ask_id cannot both be set")
 	}
 	if input.Anchor != nil && (input.ReplyTo != nil || input.AskID != nil) {
-		return commentThreadTarget{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "replies cannot carry anchors")
+		return commentThreadTarget{}, errorf(apicode.InvalidComment, "replies cannot carry anchors")
 	}
 	if input.Suggestion != nil && (input.ReplyTo != nil || input.AskID != nil) {
-		return commentThreadTarget{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "replies cannot carry suggestions")
+		return commentThreadTarget{}, errorf(apicode.InvalidComment, "replies cannot carry suggestions")
 	}
 	if input.ReplyToBlock != nil && input.ReplyTo == nil && input.AskID == nil {
-		return commentThreadTarget{}, errorf(http.StatusBadRequest, "INVALID_COMMENT",
+		return commentThreadTarget{}, errorf(apicode.InvalidComment,
 			"reply_to_block requires reply_to, the comment whose block it names, or ask_id, the ask whose part it names")
 	}
 	if input.ReplyTo != nil {
 		if strings.TrimSpace(*input.ReplyTo) == "" {
-			return commentThreadTarget{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "reply_to must be a full comment id")
+			return commentThreadTarget{}, errorf(apicode.InvalidComment, "reply_to must be a full comment id")
 		}
 		if _, err := uuid.Parse(*input.ReplyTo); err != nil {
-			return commentThreadTarget{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "reply_to must be a full comment id")
+			return commentThreadTarget{}, errorf(apicode.InvalidComment, "reply_to must be a full comment id")
 		}
 		parent, err := s.loadOwnedCommentForUpdate(ctx, tx, owner, *input.ReplyTo)
 		if err != nil {
@@ -318,7 +319,7 @@ func (s *server) normalizeCommentThreadTarget(
 func (s *server) namedReplyBlock(
 	ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID, blockID string,
 ) (*namedBlock, error) {
-	return s.replyBlockOf(ctx, tx, kind, itemID, blockID, "reply_to_block", "INVALID_COMMENT")
+	return s.replyBlockOf(ctx, tx, kind, itemID, blockID, "reply_to_block", apicode.InvalidComment)
 }
 
 // threadHeadOf climbs reply_to from an already-locked comment to the head of its thread: the
@@ -355,7 +356,7 @@ func (s *server) threadHeadFrom(
 			return commentThreadTarget{ReplyTo: &root.ID, ReplyRoot: &root}, nil
 		}
 		if depth >= parentDepthCap {
-			return commentThreadTarget{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "reply_to must identify a comment on this owner")
+			return commentThreadTarget{}, errorf(apicode.InvalidComment, "reply_to must identify a comment on this owner")
 		}
 		next, err := s.loadOwnedCommentForUpdate(ctx, tx, owner, *root.ReplyTo)
 		if err != nil {
@@ -379,7 +380,7 @@ func (s *server) describeAsk(
 		  and a.artifact_id is not distinct from $3
 	`, *askID, owner.IssueKey, owner.ArtifactID).Scan(&target.AskQuestion, &target.AskState, &target.AskMoved)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return commentThreadTarget{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "ask_id must identify an ask on this owner")
+		return commentThreadTarget{}, errorf(apicode.InvalidComment, "ask_id must identify an ask on this owner")
 	}
 	return target, err
 }
@@ -502,7 +503,7 @@ func (s *server) readCommentRoutes(ctx context.Context, owner owner, askID *stri
 		return commentRoute{}, false, nil
 	}
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
-		return commentRoute{}, false, errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
+		return commentRoute{}, false, errorf(apicode.DatabaseUnavailable, "database unavailable")
 	}
 	// An ask id that is no uuid names no ask; the transaction refuses it (normalizeCommentThreadTarget).
 	var ask *string
@@ -600,7 +601,7 @@ func (s *server) lockCommentOwner(ctx context.Context, tx pgx.Tx, owner owner, r
 func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner owner) {
 	var input commentInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// A comment's body and its suggestion are markdown a reader is shown, so both reach the store
@@ -615,16 +616,16 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		return
 	}
 	if input.Suggestion == nil && strings.TrimSpace(input.Body) == "" {
-		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, "comment body is required")
+		writeError(w, r, apicode.InvalidComment, "comment body is required")
 		return
 	}
 	if err := blockBoundError(itemblocks.Check("body", input.Body)); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	delivery, mentionTargets, err := validateCommentMentions(input)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
@@ -642,7 +643,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	}
 	if len(mentionTargets) > 0 {
 		if err := s.refuseOwnerBeforeResolving(r.Context(), owner, write); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -653,11 +654,11 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		func(ctx context.Context, resolved commentResolution) (commentWrite, error) {
 			return s.beginCommentWrite(ctx, owner, resolved, write)
 		},
-		errorf(http.StatusConflict, "ROUTE_CHANGED",
+		errorf(apicode.RouteChanged,
 			"the issue's delivery route changed while this comment was being written; post it again"),
 	)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	tx, status, route, resolvedMentions := start.tx, start.status, start.route, start.mentions
@@ -686,16 +687,16 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	}
 	threadTarget, err := s.normalizeCommentThreadTarget(r.Context(), tx, owner, input)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if input.Turn != nil {
 		if threadTarget.AskID == nil {
-			writeError(w, "TURN_REQUIRES_ASK", http.StatusBadRequest, "turn is only valid on a reply to an ask")
+			writeError(w, r, apicode.TurnRequiresAsk, "turn is only valid on a reply to an ask")
 			return
 		}
 		if *input.Turn != "human" && *input.Turn != "agent" {
-			writeError(w, "INVALID_COMMENT", http.StatusBadRequest, "turn must be human or agent")
+			writeError(w, r, apicode.InvalidComment, "turn must be human or agent")
 			return
 		}
 	}
@@ -733,7 +734,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	turn := threadTarget.replyTurn(actor, input.Turn)
 	var rowID string
 	if err := tx.QueryRow(r.Context(), `select gen_random_uuid()::text`).Scan(&rowID); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	markKind := docs.MarkComment
@@ -742,7 +743,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	}
 	anchor, artifactName, snapshot, err := s.resolveAnchor(documentCtx, tx, owner, input.Anchor, markKind, rowID, actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
@@ -752,19 +753,19 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	}
 	projectionKind, err := s.commentProjectionKind(documentCtx, projection)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	author, err := encodeJSON(actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	var anchorJSON any
 	if anchor != nil {
 		anchorJSON, err = encodeJSON(anchor)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -774,7 +775,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		suggestion = &model.Suggestion{ReplaceWith: input.Suggestion.ReplaceWith}
 		suggestionJSON, err = encodeJSON(suggestion)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -785,7 +786,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		returning created_at
 	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Body, anchorJSON, input.ReplyTo, input.AskID, turn, suggestionJSON,
 		threadTarget.ReplyBlock.nodeID(), threadTarget.Answers).Scan(&comment.CreatedAt); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The recovery point in the comment's own transaction: a repeat under the key is answered with
@@ -793,13 +794,13 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// request ends; a repeat that took the key over meanwhile refuses it here, and the comment
 	// rolls back.
 	if err := bindRequestKeyRecovery(r.Context(), tx, commentRecovery{CommentID: rowID}); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	waitingOn := threadTarget.waitingOnAfter(turn)
 	if input.AskID != nil {
 		if err := asks.FollowAuthor(r.Context(), tx, *input.AskID, actor); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -819,7 +820,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	comment.Answers = threadTarget.Answers
 	if comment.Anchor != nil {
 		if err := s.deps.Docs.ProjectMark(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, commentMarkRecord(comment, nil, projectionKind), actor); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -837,7 +838,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 				set resolved = false, resolved_by = null, resolved_at = null
 				where id = $1
 			`, root.ID); err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			root.Resolved = false
@@ -846,14 +847,14 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 			reopenedRoot = &root
 			reopenedArtifactName, err = s.commentArtifactName(r.Context(), tx, root)
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 		}
 		if root.Anchor != nil {
 			replies, err := s.loadReplyChain(r.Context(), tx, "reply_to", root.ID)
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			// A decided or orphaned suggestion's mark is gone, so it has no projection kind to
@@ -862,14 +863,14 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 			rootProjectionKind := ""
 			kind, kindErr := s.commentProjectionKind(documentCtx, root)
 			if kindErr != nil && !errors.Is(kindErr, docs.ErrAnchorMissing) {
-				s.writeHandlerError(w, kindErr)
+				s.writeHandlerError(w, r, kindErr)
 				return
 			}
 			if kindErr == nil {
 				rootProjectionKind = kind
 			}
 			if err := s.deps.Docs.ProjectMark(documentCtx, root.Anchor.ArtifactID, root.Anchor.MarkID, commentMarkRecord(root, replies, rootProjectionKind), actor); err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 		}
@@ -881,7 +882,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 			insert into comment_mentions (comment_id, target, delivery, resolved_session_id)
 			values ($1, $2, $3, $4)
 		`, comment.ID, mention.Target, mention.Delivery, mention.SessionID); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		resolveError := (*string)(nil)
@@ -904,7 +905,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 			comment.ID, mention.Target, mention.Delivery, mention.SessionID, resolveError,
 		), &claimed)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		attempts = append(attempts, attempt)
@@ -912,14 +913,14 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	}
 	referenceChanges, err := refs.ReplaceCountedItem(r.Context(), tx, refs.ItemComment, comment.ID, comment.Body, s.deps.ServerURL, comment.CreatedAt)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	events := []model.Event{}
 	if snapshot != nil {
 		snapshotEvent, err := s.commitArtifactVersionEvent(r.Context(), tx, owner, actor, anchor.ArtifactID, artifactName, *snapshot, nil)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		events = append(events, snapshotEvent)
@@ -927,7 +928,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	if reopenedRoot != nil {
 		payload, err := s.commentEventPayload(r.Context(), tx, reopenedRoot, reopenedArtifactName, commentEventThread{}, model.ReferenceChanges{})
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		event, err := s.appendEvent(r.Context(), tx, owner.event(
@@ -936,7 +937,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 			payload,
 		))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		events = append(events, event)
@@ -945,7 +946,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		r.Context(), tx, &comment, artifactName, threadTarget.eventThread(waitingOn), referenceChanges,
 	)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	payload.SuppressRoute = suppressRoute
@@ -954,7 +955,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	payload.MentionsDecideRoutes = start.decidesRoutes
 	payload.ThreadLogins, err = commentThreadLogins(r.Context(), tx, comment)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	event, err := s.appendEvent(r.Context(), tx, owner.event(
@@ -963,11 +964,11 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		payload,
 	))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := refs.Stamp(r.Context(), tx, "comment", comment.ID, event.ID); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	events = append(events, event)
@@ -978,7 +979,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), events...)

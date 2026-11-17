@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -1446,8 +1447,8 @@ func TestBearerReadRoutesDoNotRequireActor(t *testing.T) {
 
 	// The inbox is one of the rows the person scope opens, and the shared token holds no scope.
 	inbox := agentRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "agent-token")
-	if inbox.Code != http.StatusForbidden || !strings.Contains(inbox.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-		t.Fatalf("the shared token's inbox: status=%d body=%s, want 403 %s", inbox.Code, inbox.Body.String(), codeScopeRequired)
+	if inbox.Code != http.StatusForbidden || !strings.Contains(inbox.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
+		t.Fatalf("the shared token's inbox: status=%d body=%s, want 403 %s", inbox.Code, inbox.Body.String(), apicode.OAuthScopeRequired.V1Name())
 	}
 	anonymous := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key, nil, "")
 	if anonymous.Code != http.StatusUnauthorized {
@@ -1486,8 +1487,8 @@ func TestPerUserIssueStateIsIsolated(t *testing.T) {
 		t.Fatalf("Bob state leaked Alice pin: status=%d body=%s", bob.Code, bob.Body.String())
 	}
 	session := agentRequest(t, handler, http.MethodGet, "/api/v1/me/state", nil, "agent-token")
-	if session.Code != http.StatusForbidden || !strings.Contains(session.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-		t.Fatalf("the shared token's state: status=%d body=%s, want 403 %s", session.Code, session.Body.String(), codeScopeRequired)
+	if session.Code != http.StatusForbidden || !strings.Contains(session.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
+		t.Fatalf("the shared token's state: status=%d body=%s, want 403 %s", session.Code, session.Body.String(), apicode.OAuthScopeRequired.V1Name())
 	}
 }
 

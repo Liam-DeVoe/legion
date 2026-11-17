@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
@@ -33,24 +34,24 @@ func (s *server) listSessionAnswers(w http.ResponseWriter, r *http.Request) {
 	}
 	session, err := requestSessionID(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	query := r.URL.Query()
 	since, err := parseSessionAnswersSince(query, time.Now().UTC())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	maxChars, limited, valid := parseQueryInt(query, "max_chars", 1, sessionAnswersMaxChars)
 	if limited && !valid {
-		s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_QUERY",
+		s.writeHandlerError(w, r, errorf(apicode.InvalidQuery,
 			"max_chars must be one integer from 1 to %d", sessionAnswersMaxChars))
 		return
 	}
 	items, err := sessionanswers.List(r.Context(), s.deps.Store.Pool, session, since)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	response := model.SessionAnswersResponse{SessionID: session, Since: since, Total: len(items), Items: items}
@@ -68,18 +69,18 @@ func parseSessionAnswersSince(query url.Values, now time.Time) (time.Time, error
 		return now.Add(-sessionAnswersWindow), nil
 	}
 	if len(values) != 1 {
-		return time.Time{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "since must be one RFC3339 timestamp")
+		return time.Time{}, errorf(apicode.InvalidQuery, "since must be one RFC3339 timestamp")
 	}
 	since, err := time.Parse(time.RFC3339, values[0])
 	if err != nil {
-		return time.Time{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "since must be an RFC3339 timestamp")
+		return time.Time{}, errorf(apicode.InvalidQuery, "since must be an RFC3339 timestamp")
 	}
 	since = since.UTC()
 	if since.Before(now.Add(-sessionAnswersOldest)) {
-		return time.Time{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "since must be no more than 7 days ago")
+		return time.Time{}, errorf(apicode.InvalidQuery, "since must be no more than 7 days ago")
 	}
 	if since.After(now) {
-		return time.Time{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "since must not be in the future")
+		return time.Time{}, errorf(apicode.InvalidQuery, "since must not be in the future")
 	}
 	return since, nil
 }

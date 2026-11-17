@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -521,8 +522,8 @@ func TestAnsweringAnApprovalAskNeedsTheApproveScope(t *testing.T) {
 		t.Fatalf("answer an approval ask without approve: status=%d body=%s, want 403", refused.Code, refused.Body.String())
 	}
 	body := decodeBody[refusalAnswer](t, refused)
-	if body.Code != codeScopeRequired || !strings.Contains(body.Error, model.ScopeApprove) {
-		t.Fatalf("the refusal = %+v, want %s naming the approve scope", body, codeScopeRequired)
+	if body.Code != apicode.OAuthScopeRequired.V1Name() || !strings.Contains(body.Error, model.ScopeApprove) {
+		t.Fatalf("the refusal = %+v, want %s naming the approve scope", body, apicode.OAuthScopeRequired.V1Name())
 	}
 	if got, want := refused.Header().Get("WWW-Authenticate"), insufficientScopeChallenge(model.ScopeApprove); got != want {
 		t.Fatalf("the refusal's challenge = %q, want %q", got, want)

@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -60,7 +61,7 @@ func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 	}
 	artifacts, err := s.loadArtifacts(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
@@ -173,13 +174,13 @@ func (s *server) refuseUploadToAClosedIssue(handler http.HandlerFunc) http.Handl
 		// Only the issue's own refusal (closed, missing) stands aside for the key: a check that
 		// failed is answered as it always was.
 		var ownerRefusal *apiError
-		if keyed && errors.As(refusal, &ownerRefusal) && ownerRefusal.status < http.StatusInternalServerError {
+		if keyed && errors.As(refusal, &ownerRefusal) && ownerRefusal.statusFor(r) < http.StatusInternalServerError {
 			answers, err := s.requestKeyAnswersItself(r.Context(), requestKeyLogin(actor, human), requestKey)
 			if err != nil {
 				// As the keyed layer answers its own failed lookup: under the key, which nothing has
 				// claimed, so the client asks again under it.
 				w.Header().Set(contracts.IdempotencyKeyHeader, requestKey)
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			if answers {
@@ -187,7 +188,7 @@ func (s *server) refuseUploadToAClosedIssue(handler http.HandlerFunc) http.Handl
 				return
 			}
 		}
-		s.writeHandlerError(w, refusal)
+		s.writeHandlerError(w, r, refusal)
 	}
 }
 
@@ -202,7 +203,7 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 	r.Body = http.MaxBytesReader(w, r.Body, maxArtifactBlobSize+(1<<20))
 	requestType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil {
-		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, "invalid artifact input type")
+		writeError(w, r, apicode.ArtifactInput, "invalid artifact input type")
 		return
 	}
 
@@ -214,7 +215,7 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 	case "multipart/form-data":
 		input, ok = s.multipartArtifactUpload(w, r)
 	default:
-		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, "artifact input must be JSON or multipart")
+		writeError(w, r, apicode.ArtifactInput, "artifact input must be JSON or multipart")
 		return
 	}
 	if !ok {
@@ -225,25 +226,25 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 		return
 	}
 	if input.name == "" {
-		writeError(w, "INVALID_ARTIFACT", http.StatusBadRequest, "artifact name is required")
+		writeError(w, r, apicode.InvalidArtifact, "artifact name is required")
 		return
 	}
 	if len(input.content) > maxArtifactBlobSize {
-		s.writeHandlerError(w, errUploadTooLarge)
+		s.writeHandlerError(w, r, errUploadTooLarge)
 		return
 	}
 	mediaType, _, err := mime.ParseMediaType(input.contentType)
 	if err != nil {
-		writeError(w, "INVALID_ARTIFACT", http.StatusBadRequest, "invalid artifact content type")
+		writeError(w, r, apicode.InvalidArtifact, "invalid artifact content type")
 		return
 	}
 	kind, storedType := artifactKind(mediaType, input.contentType, input.content)
 	if kind == "doc" && target.Session != "" {
-		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, agentOwnsFilesOnly)
+		writeError(w, r, apicode.ArtifactInput, agentOwnsFilesOnly)
 		return
 	}
 	if kind == "doc" && len(input.content) > maxDocumentMarkdownBytes {
-		writeError(w, "CAP_EXCEEDED", http.StatusRequestEntityTooLarge, "a markdown document is at most 1 MiB; a larger file is stored as a binary artifact under another content type")
+		writeError(w, r, apicode.CapExceededTooLarge, "a markdown document is at most 1 MiB; a larger file is stored as a binary artifact under another content type")
 		return
 	}
 	// A markdown document is stored as text. Its inline content was read as a JSON string, which
@@ -251,12 +252,12 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 	// holding either. Any other file is stored as bytes, beside its part's Content-Type as text; the
 	// document path stores no part header.
 	if kind == "doc" && !text.StorableBytes(input.content) {
-		s.writeHandlerError(w, unstorableText("file", string(input.content)))
+		s.writeHandlerError(w, r, unstorableText("file", string(input.content)))
 		return
 	}
 	if kind != "doc" {
 		if refusal := unstorableText("file Content-Type", input.contentType); refusal != nil {
-			s.writeHandlerError(w, refusal)
+			s.writeHandlerError(w, r, refusal)
 			return
 		}
 	}
@@ -274,25 +275,25 @@ func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (art
 	if err := decoder.Decode(&body); err != nil {
 		var maxBytesError *http.MaxBytesError
 		if errors.As(err, &maxBytesError) {
-			s.writeHandlerError(w, errUploadTooLarge)
+			s.writeHandlerError(w, r, errUploadTooLarge)
 		} else {
-			writeError(w, "INVALID_JSON", http.StatusBadRequest, "invalid JSON body")
+			writeError(w, r, apicode.InvalidJSON, "invalid JSON body")
 		}
 		return artifactUploadInput{}, false
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		writeError(w, "INVALID_JSON", http.StatusBadRequest, "request body must contain one JSON value")
+		writeError(w, r, apicode.InvalidJSON, "request body must contain one JSON value")
 		return artifactUploadInput{}, false
 	}
 	if refusal := unstorableJSON("", read.Bytes()); refusal != nil {
-		s.writeHandlerError(w, refusal)
+		s.writeHandlerError(w, r, refusal)
 		return artifactUploadInput{}, false
 	}
 	logUndeclaredMembers(r, &body, read.Bytes())
 	// `primary` stays declared, though no upload may set it, so that it is refused by name rather
 	// than ignored: an upload never makes a document the issue's primary one.
 	if body.Primary != nil {
-		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, "primary is fixed at issue creation")
+		writeError(w, r, apicode.ArtifactInput, "primary is fixed at issue creation")
 		return artifactUploadInput{}, false
 	}
 	blank := body.Content == nil || strings.TrimSpace(*body.Content) == ""
@@ -320,13 +321,13 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 		var spool *fs.PathError
 		switch {
 		case errors.As(err, &tooLarge):
-			s.writeHandlerError(w, errUploadTooLarge)
+			s.writeHandlerError(w, r, errUploadTooLarge)
 		case errors.Is(err, multipart.ErrMessageTooLarge):
-			writeError(w, "CAP_EXCEEDED", http.StatusRequestEntityTooLarge, "the upload's form fields are too large to read")
+			writeError(w, r, apicode.CapExceededTooLarge, "the upload's form fields are too large to read")
 		case errors.As(err, &spool):
-			s.writeHandlerError(w, fmt.Errorf("spool multipart upload: %w", err))
+			s.writeHandlerError(w, r, fmt.Errorf("spool multipart upload: %w", err))
 		default:
-			writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, "invalid multipart body: "+err.Error())
+			writeError(w, r, apicode.ArtifactInput, "invalid multipart body: "+err.Error())
 		}
 		return artifactUploadInput{}, false
 	}
@@ -342,24 +343,24 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 		}
 	}()
 	if refusal := unstorableForm(r.MultipartForm.Value); refusal != nil {
-		s.writeHandlerError(w, refusal)
+		s.writeHandlerError(w, r, refusal)
 		return artifactUploadInput{}, false
 	}
 	var supplied *model.Actor
 	if raw := r.FormValue("actor"); raw != "" {
 		var actor model.Actor
 		if err := json.Unmarshal([]byte(raw), &actor); err != nil {
-			writeError(w, "INVALID_JSON", http.StatusBadRequest, "invalid multipart actor")
+			writeError(w, r, apicode.InvalidJSON, "invalid multipart actor")
 			return artifactUploadInput{}, false
 		}
 		if refusal := unstorableJSON("actor", []byte(raw)); refusal != nil {
-			s.writeHandlerError(w, refusal)
+			s.writeHandlerError(w, r, refusal)
 			return artifactUploadInput{}, false
 		}
 		supplied = &actor
 	}
 	if _, exists := r.MultipartForm.Value["primary"]; exists {
-		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, "primary is fixed at issue creation")
+		writeError(w, r, apicode.ArtifactInput, "primary is fixed at issue creation")
 		return artifactUploadInput{}, false
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
@@ -368,17 +369,17 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 		if err == nil {
 			_ = file.Close()
 		}
-		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, "provide either a file or inline JSON content")
+		writeError(w, r, apicode.ArtifactInput, "provide either a file or inline JSON content")
 		return artifactUploadInput{}, false
 	}
 	if err != nil {
-		writeError(w, "INVALID_ARTIFACT", http.StatusBadRequest, "artifact file is required")
+		writeError(w, r, apicode.InvalidArtifact, "artifact file is required")
 		return artifactUploadInput{}, false
 	}
 	defer file.Close()
 	content, err := io.ReadAll(io.LimitReader(file, maxArtifactBlobSize+1))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return artifactUploadInput{}, false
 	}
 	contentType := header.Header.Get("Content-Type")
@@ -454,7 +455,7 @@ func (s *server) storeArtifact(
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -464,28 +465,28 @@ func (s *server) storeArtifact(
 	case target.Session != "":
 		session = &target.Session
 		if err := lockAgentArtifacts(r.Context(), tx, target.Session); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	case target.IssueKey != nil:
 		issueStatus, err = s.requireOpenOwnerStatus(r.Context(), tx, issueOwner(*target.IssueKey))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if err := tx.QueryRow(r.Context(), `select project_key from issues where key = $1`, *target.IssueKey).Scan(&project); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	default:
 		loaded, err := s.loadProject(r.Context(), tx, target.Project)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		project = &loaded.Key
 		if err := lockProjectArtifacts(r.Context(), tx, loaded.Key); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -495,16 +496,16 @@ func (s *server) storeArtifact(
 	if errors.Is(err, pgx.ErrNoRows) {
 		created = true
 		if refusal := newArtifactNameRefusal(input.name); refusal != nil {
-			s.writeHandlerError(w, refusal)
+			s.writeHandlerError(w, r, refusal)
 			return
 		}
 		slug, err := s.nextArtifactSlug(r.Context(), tx, target, input.name)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if refusal := newArtifactKeyRefusal(target, slug); refusal != nil {
-			s.writeHandlerError(w, refusal)
+			s.writeHandlerError(w, r, refusal)
 			return
 		}
 		// The role the insert below writes, which the minted slug decides. A create with no
@@ -512,12 +513,12 @@ func (s *server) storeArtifact(
 		// name that gives one of their slugs is refused.
 		role := documentRole(target, kind, slug)
 		if input.blank && role != nil {
-			s.writeHandlerError(w, createRoleNameRefusal(input.name, slug, *role))
+			s.writeHandlerError(w, r, createRoleNameRefusal(input.name, slug, *role))
 			return
 		}
 		actorJSON, err := encodeJSON(actor)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		artifact, err = scanArtifact(tx.QueryRow(r.Context(), `
@@ -526,17 +527,17 @@ func (s *server) storeArtifact(
 			returning `+artifactColumns,
 			target.IssueKey, project, session, slug, input.name, kind, role, actorJSON))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	} else if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	} else if artifact.Kind != kind {
-		s.writeHandlerError(w, artifactKindMismatch(input.name, artifact, kind))
+		s.writeHandlerError(w, r, artifactKindMismatch(input.name, artifact, kind))
 		return
 	} else if input.blank {
-		s.writeHandlerError(w, blankWriteToADocumentThatExists(input.name, artifact))
+		s.writeHandlerError(w, r, blankWriteToADocumentThatExists(input.name, artifact))
 		return
 	}
 	// A document the release before this one created during the rolling deploy carries no role:
@@ -549,7 +550,7 @@ func (s *server) storeArtifact(
 	if !created && artifact.Role == "" {
 		if role := documentRole(target, artifact.Kind, artifact.Slug); role != nil {
 			if _, err := tx.Exec(r.Context(), `update artifacts set role = $2 where id = $1 and role is null`, artifact.ID, *role); err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			artifact.Role = *role
@@ -563,14 +564,14 @@ func (s *server) storeArtifact(
 	// against a settlement's owner -> room, and Postgres would break the cycle with a 500.
 	if target.IssueKey == nil && target.Session == "" && !created {
 		if err := s.requireOpenOwner(r.Context(), tx, ownerForArtifact(artifact)); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 
 	var nextNumber int
 	if err := tx.QueryRow(r.Context(), `select coalesce(max(number), 0) + 1 from artifact_versions where artifact_id = $1`, artifact.ID).Scan(&nextNumber); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	var version model.Version
@@ -596,12 +597,12 @@ func (s *server) storeArtifact(
 			documentMarkdown, err = s.deps.Docs.ReplaceText(documentCtx, artifact.ID, string(input.content), actor)
 		}
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		version, err = writeDocumentVersion(r.Context(), tx, artifact.ID, nextNumber, documentMarkdown, []model.Actor{actor}, documentSummary, ledger.RenderStampOf(artifact.ID, documentMarkdown))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		// The version credits the uploader alone, and holds the upload's write to the document,
@@ -613,18 +614,18 @@ func (s *server) storeArtifact(
 		// The version row exists now, so the count names it (LEGION-542).
 		err = recordDocumentTaskProgress(r.Context(), tx, artifact.ID, documentReadBack, documentMarkdown)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		documentChanges, err = s.deps.Docs.IndexDocumentReferences(documentCtx, artifact.ID, version.Number, documentMarkdown)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	} else {
 		authors, err := encodeJSON([]model.Actor{actor})
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		size := len(input.content)
@@ -632,7 +633,7 @@ func (s *server) storeArtifact(
 		if s.deps.Files != nil {
 			keep, err := fleetServesFilesFromRows(r.Context(), tx)
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			if !keep {
@@ -648,11 +649,11 @@ func (s *server) storeArtifact(
 			&version.Number, &version.Named, &version.Summary, &versionAuthors, &version.CreatedAt,
 			&version.Size, &version.MIME, &version.SHA256,
 		); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if err := json.Unmarshal(versionAuthors, &version.Authors); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -666,7 +667,7 @@ func (s *server) storeArtifact(
 			r.Context(), tx, s.deps.Events, artifact.ID, version, documentMarkdown, actor, false, s.deps.ServerURL,
 		)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		// It carries the document's newest approval when its text is the approved text again and
@@ -676,13 +677,13 @@ func (s *server) storeArtifact(
 			r.Context(), tx, s.deps.Events, artifact.ID, version.Number, documentMarkdown, documentReadBack, s.deps.ServerURL,
 		)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		movedEvents = append(movedEvents, carried...)
 		diff, err = s.namedVersionDiff(r.Context(), tx, artifact.ID, version)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -699,12 +700,12 @@ func (s *server) storeArtifact(
 	if target.ownsEvents() {
 		event, err := s.appendEvent(r.Context(), tx, ownerForArtifact(artifact).event(eventType, actor, payload))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if kind == "doc" {
 			if err := refs.Stamp(r.Context(), tx, "artifact", artifact.ID, event.ID); err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 		}
@@ -741,7 +742,7 @@ func (s *server) storeArtifact(
 		)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if kind == "doc" {
@@ -784,7 +785,7 @@ func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The artifact detail is the artifact. Its inbound edges are the graph's to read
@@ -817,16 +818,16 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 	}
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if artifact.Kind != "doc" {
-		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
+		writeError(w, r, apicode.NotDocument, "artifact is not a document")
 		return
 	}
 	markdown, token, blocks, err := s.artifactTextBody(r, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The markdown and the version are two unsynchronised reads, in both directions: the live
@@ -835,7 +836,7 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 	// primitive; `version` says which version the document has, not which one this markdown is.
 	version, err := latestVersionNumber(r.Context(), s.deps.Store.Pool, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	answer := artifactText{Markdown: markdown, Token: token, Version: version, Blocks: blocks}
@@ -885,20 +886,20 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 	}
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if artifact.Kind != "doc" {
-		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
+		writeError(w, r, apicode.NotDocument, "artifact is not a document")
 		return
 	}
 	blocks, err := s.deps.Docs.Blocks(r.Context(), artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := s.describeBlocks(r.Context(), artifact.ID, blocks); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, blocks)
@@ -938,16 +939,16 @@ func (s *server) getArtifactBlockPath(w http.ResponseWriter, r *http.Request) {
 	}
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if artifact.Kind != "doc" {
-		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
+		writeError(w, r, apicode.NotDocument, "artifact is not a document")
 		return
 	}
 	path, err := s.deps.Docs.BlockPath(r.Context(), artifact.ID, r.PathValue("block_id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, path)
@@ -1013,7 +1014,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	}
 	number, err := strconv.Atoi(r.PathValue("number"))
 	if err != nil || number < 1 {
-		writeError(w, "INVALID_VERSION", http.StatusBadRequest, "version number must be positive")
+		writeError(w, r, apicode.InvalidVersion, "version number must be positive")
 		return
 	}
 	// Exactly `true` asks for the download, as `blocks=true` asks for the blocks of the /text
@@ -1021,7 +1022,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	download := r.URL.Query().Get("download") == "true"
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	latest := 0
@@ -1035,7 +1036,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		var markdown string
 		version, err := s.loadVersion(r.Context(), s.deps.Store.Pool, artifact.ID, number, &markdown)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if download {
@@ -1075,7 +1076,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), `
 		select content, mime, sha256, size from artifact_versions where artifact_id = $1 and number = $2
 	`, artifact.ID, number).Scan(&content, &contentType, &sha, &size); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.serveFileVersion(w, r, artifact.ID, filename, number, download, content, contentType, sha, size)
@@ -1128,7 +1129,7 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 	}
 	var input createVersionInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -1137,53 +1138,53 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 	}
 	summary := strings.TrimSpace(input.Summary)
 	if summary == "" {
-		writeError(w, "INVALID_VERSION", http.StatusBadRequest, "named versions require a summary")
+		writeError(w, r, apicode.InvalidVersion, "named versions require a summary")
 		return
 	}
 	if err := validateArtifactRequestRef(r); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
 	artifact, err := s.loadArtifactForRequest(r.Context(), tx, r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	eventOwner := ownerForArtifact(artifact)
 	if err := s.requireOpenOwner(r.Context(), tx, eventOwner); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if artifact.Kind != "doc" {
-		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
+		writeError(w, r, apicode.NotDocument, "artifact is not a document")
 		return
 	}
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
 	named, err := s.deps.Docs.NamedVersion(documentCtx, artifact.ID, summary, actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	version := named.Version
 	diff, err := s.namedVersionDiff(r.Context(), tx, artifact.ID, version)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	event, err := s.commitArtifactVersionEvent(r.Context(), tx, eventOwner, actor, artifact.ID, artifact.Name, named, diff)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)
@@ -1226,7 +1227,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	var input editArtifactInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -1235,11 +1236,11 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if artifact.Kind != "doc" {
-		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
+		writeError(w, r, apicode.NotDocument, "artifact is not a document")
 		return
 	}
 	// release ends the conditional edit gate once: right after the commit, which is all a later
@@ -1249,7 +1250,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	if input.Precondition != nil {
 		acquired, err := s.deps.Docs.AcquireConditionalEdit(r.Context(), artifact.ID)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		release = sync.OnceFunc(acquired)
@@ -1257,21 +1258,21 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
 	eventOwner := ownerForArtifact(artifact)
 	status, err := s.requireOpenOwnerStatus(r.Context(), tx, eventOwner)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
 	edit, err := s.deps.Docs.ApplyOps(documentCtx, artifact.ID, input.Ops, actor, input.Precondition)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	var written *docs.VersionResult
@@ -1283,14 +1284,14 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		if summary != "" {
 			namedVersion, err := s.deps.Docs.NamedVersion(documentCtx, artifact.ID, summary, actor)
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			written = &namedVersion
 		} else {
 			snapshot, err := s.deps.Docs.SnapshotVersion(documentCtx, artifact.ID, actor)
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			if snapshot.Wrote {
@@ -1302,13 +1303,13 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 			if written.Version.Named {
 				diff, err = s.namedVersionDiff(r.Context(), tx, artifact.ID, written.Version)
 				if err != nil {
-					s.writeHandlerError(w, err)
+					s.writeHandlerError(w, r, err)
 					return
 				}
 			}
 			event, err := s.commitArtifactVersionEvent(r.Context(), tx, eventOwner, actor, artifact.ID, artifact.Name, *written, diff)
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			published = append(published, event)
@@ -1342,7 +1343,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	release()
@@ -1524,7 +1525,7 @@ func validateArtifactRequestRef(r *http.Request) error {
 func parseArtifactID(id string) (string, error) {
 	parsed, err := uuid.Parse(id)
 	if err != nil {
-		return "", errorf(http.StatusNotFound, "ARTIFACT_NOT_FOUND", "artifact not found")
+		return "", errorf(apicode.ArtifactNotFound, "artifact not found")
 	}
 	return parsed.String(), nil
 }
@@ -1594,7 +1595,7 @@ func resolveDocumentReference[T any](
 
 func isArtifactNotFound(err error) bool {
 	var apiErr *apiError
-	return errors.As(err, &apiErr) && apiErr.code == "ARTIFACT_NOT_FOUND"
+	return errors.As(err, &apiErr) && apiErr.code == apicode.ArtifactNotFound
 }
 
 func (s *server) loadDocumentReferences(ctx context.Context, q queryer, target artifactTarget) ([]model.Artifact, error) {
@@ -1634,8 +1635,7 @@ func documentReferenceError(target artifactTarget, reference string, documents [
 	}
 	if len(documents) <= documentHintLimit {
 		return errorf(
-			http.StatusNotFound,
-			"ARTIFACT_NOT_FOUND",
+			apicode.ArtifactNotFound,
 			`document %q not found by slug; %s documents: %s`,
 			reference,
 			scope,
@@ -1643,8 +1643,7 @@ func documentReferenceError(target artifactTarget, reference string, documents [
 		)
 	}
 	return errorf(
-		http.StatusNotFound,
-		"ARTIFACT_NOT_FOUND",
+		apicode.ArtifactNotFound,
 		`document %q not found by slug; %s %d documents include: %s; GET %s lists them all`,
 		reference,
 		scope,
@@ -1756,8 +1755,7 @@ func ambiguousDocumentReferenceError(target artifactTarget, reference string, do
 		scope = "issue"
 	}
 	return errorf(
-		http.StatusBadRequest,
-		"ARTIFACT_REFERENCE_AMBIGUOUS",
+		apicode.ArtifactReferenceAmbiguous,
 		`%q names %d documents on this %s; use a slug: %s`,
 		reference,
 		len(documents),
@@ -1822,7 +1820,7 @@ func (s *server) loadArtifactRow(ctx context.Context, q queryer, row pgx.Row) (m
 func scanArtifactOrNotFound(row pgx.Row) (model.Artifact, error) {
 	artifact, err := scanArtifact(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return model.Artifact{}, errorf(http.StatusNotFound, "ARTIFACT_NOT_FOUND", "artifact not found")
+		return model.Artifact{}, errorf(apicode.ArtifactNotFound, "artifact not found")
 	}
 	if err != nil {
 		return model.Artifact{}, err
@@ -2146,7 +2144,7 @@ var aliasedDecisionsRole = documentRolePredicate("a", model.ArtifactRoleDecision
 // artifactKindMismatch is the 400 refusing an upload under name, of kind, as the next version of
 // artifact, the one the name or slug finds, whose kind is another.
 func artifactKindMismatch(name string, artifact model.Artifact, kind string) error {
-	return errorf(http.StatusBadRequest, "ARTIFACT_KIND_MISMATCH",
+	return errorf(apicode.ArtifactKindMismatch,
 		"%q names artifact %s (%s), whose kind is %s; this upload's kind is %s, so it cannot be its next version: give it another name",
 		name, artifact.Slug, artifact.Name, artifact.Kind, kind)
 }
@@ -2156,7 +2154,7 @@ func artifactKindMismatch(name string, artifact model.Artifact, kind string) err
 // document; under a name a document already holds it would store a version holding nothing over
 // the text that document has, which no caller means by typing a title.
 func blankWriteToADocumentThatExists(name string, artifact model.Artifact) error {
-	return errorf(http.StatusBadRequest, "ARTIFACT_INPUT",
+	return errorf(apicode.ArtifactInput,
 		"%q names artifact %s (%s), which exists; a write with no content makes no document and writes no version: edit it with dispatch doc-edit, or give the new document another name",
 		name, artifact.Slug, artifact.Name)
 }
@@ -2167,7 +2165,7 @@ func blankWriteToADocumentThatExists(name string, artifact model.Artifact) error
 // not the title, so every spelling that gives it reads the same refusal, and a title whose slug
 // the owner already holds - which mints `plan-md-2` - is a document of its own.
 func createRoleNameRefusal(name, slug, role string) error {
-	return errorf(http.StatusBadRequest, "ARTIFACT_ROLE_NAME",
+	return errorf(apicode.ArtifactRoleName,
 		"%q gives the slug %s, the slug of the issue's %s document, which Dispatch makes itself; give this document another name",
 		name, slug, role)
 }
@@ -2178,7 +2176,7 @@ func newArtifactNameRefusal(name string) error {
 	if len(name) <= maxNewArtifactKeyBytes {
 		return nil
 	}
-	return errorf(http.StatusBadRequest, "INVALID_ARTIFACT",
+	return errorf(apicode.InvalidArtifact,
 		"artifact name is %d bytes, past the %d bytes a new artifact's name may hold; give it a shorter name",
 		len(name), maxNewArtifactKeyBytes)
 }
@@ -2191,7 +2189,7 @@ func newArtifactKeyRefusal(target artifactTarget, slug string) error {
 	if key <= maxNewArtifactKeyBytes {
 		return nil
 	}
-	return errorf(http.StatusBadRequest, "INVALID_ARTIFACT",
+	return errorf(apicode.InvalidArtifact,
 		"the reference key `%s/<slug>` this name gives a new artifact is %d bytes, past the %d bytes a new artifact's reference key may hold; give it a shorter name",
 		target.refPrefix(), key, maxNewArtifactKeyBytes)
 }
@@ -2235,17 +2233,17 @@ func (s *server) beginArtifactWrite(w http.ResponseWriter, r *http.Request) (pgx
 	ctx := r.Context()
 	artifact, err := loadArtifactRowByID(ctx, s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return nil, model.Artifact{}, artifactTarget{}, false
 	}
 	tx, err := s.begin(ctx)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return nil, model.Artifact{}, artifactTarget{}, false
 	}
 	refused := func(err error) (pgx.Tx, model.Artifact, artifactTarget, bool) {
 		_ = tx.Rollback(ctx)
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return nil, model.Artifact{}, artifactTarget{}, false
 	}
 	var target artifactTarget

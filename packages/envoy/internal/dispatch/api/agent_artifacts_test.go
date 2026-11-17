@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -328,8 +329,8 @@ func TestAnUploadIsHeldToTheSessionTheCredentialProved(t *testing.T) {
 		t.Fatalf("an upload into another session: status=%d body=%s, want 403", intruding.Code, intruding.Body.String())
 	}
 	refusal := decodeBody[refusalAnswer](t, intruding)
-	if refusal.Code != codeSessionScope {
-		t.Fatalf("refusal = %+v, want %s", refusal, codeSessionScope)
+	if refusal.Code != apicode.SessionScope.V1Name() {
+		t.Fatalf("refusal = %+v, want %s", refusal, apicode.SessionScope.V1Name())
 	}
 	if !strings.Contains(refusal.Error, brokerTestSession) || !strings.Contains(refusal.Error, anotherSession) {
 		t.Fatalf("refusal %q names neither the session the credential proved (%s) nor the session addressed (%s)",

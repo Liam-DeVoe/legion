@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -235,8 +236,11 @@ var writeClasses = map[string]writeScope{
 // wherever a whole one does, so it fails where a whole one fails. It is read from the route
 // rather than assumed, and the routes disagree — a document's read answers ARTIFACT_NOT_FOUND,
 // a comment's thread NOT_FOUND and a comment's delivery COMMENT_NOT_FOUND — so it is written
-// per route and not per kind. BlockNotFound is the same for the {block_id}. notFoundNone is the
-// route that answers no 404 at all for an id it does not hold, which then keeps that answer.
+// per route and not per kind. BlockNotFound is the same for the {block_id}. NoNotFound marks the
+// route that answers no 404 at all for an id it does not hold, which names no NotFound: a prefix
+// that names nothing is left as written there, and the route answers what it always answers. Only
+// DELETE /api/v1/me/asks/{id}/snooze is one: un-snoozing a row nobody snoozed is the state the
+// caller asked for, and it answers 204 whatever ask the id names.
 //
 // Reason is why a route looks up no prefix, written exactly where Kind is empty and Blocks is
 // false: an id of a kind refs.ResolvePrefix does not read, so nothing is looked for and the
@@ -248,16 +252,11 @@ type idRoute struct {
 	Kind          string
 	WithinIssue   bool
 	Blocks        bool
-	NotFound      string
-	BlockNotFound string
+	NotFound      apicode.Code
+	NoNotFound    bool
+	BlockNotFound apicode.Code
 	Reason        string
 }
-
-// notFoundNone is the NotFound of a route that answers no 404 for an id it does not hold, so a
-// prefix that names nothing is left as written and that route answers what it always answers.
-// Only DELETE /api/v1/me/asks/{id}/snooze is one: un-snoozing a row nobody snoozed is the state
-// the caller asked for, and it answers 204 whatever ask the id names.
-const notFoundNone = "none"
 
 // resolves reports whether the route looks a prefix up at all, which is what makes Reason
 // required. It does not decide the wrapping: register wraps every route idRoutes names, since
@@ -284,75 +283,75 @@ var idRoutes = map[string]idRoute{
 	// A document's own routes, and the caller's read mark on one: the {id} is an artifact,
 	// looked for among every document and file, as a whole artifact id is. Every one of them
 	// reads the row through loadArtifact, which answers ARTIFACT_NOT_FOUND.
-	"GET /api/v1/artifacts/{id}":                             {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"POST /api/v1/artifacts/{id}/_test/outside-schema":       {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"POST /api/v1/artifacts/{id}/_test/newer-content":        {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"POST /api/v1/artifacts/{id}/approval-requests":          {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"GET /api/v1/artifacts/{id}/asks":                        {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"POST /api/v1/artifacts/{id}/asks":                       {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"GET /api/v1/artifacts/{id}/blocks":                      {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"GET /api/v1/artifacts/{id}/comments":                    {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"POST /api/v1/artifacts/{id}/comments":                   {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"POST /api/v1/artifacts/{id}/edits":                      {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"GET /api/v1/artifacts/{id}/events":                      {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"POST /api/v1/artifacts/{id}/plan-reviews":               {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"POST /api/v1/artifacts/{id}/rebuild":                    {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"PATCH /api/v1/artifacts/{id}":                           {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"DELETE /api/v1/artifacts/{id}":                          {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"GET /api/v1/artifacts/{id}/references":                  {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"GET /api/v1/artifacts/{id}/reviews":                     {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"POST /api/v1/artifacts/{id}/reviews":                    {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"POST /api/v1/artifacts/{id}/versions/{number}/reviews":  {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"GET /api/v1/artifacts/{id}/subscribers":                 {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}": {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"GET /api/v1/artifacts/{id}/text":                        {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"POST /api/v1/artifacts/{id}/versions":                   {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"GET /api/v1/artifacts/{id}/versions/{number}":           {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"GET /api/v1/me/documents/{id}/read":                     {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	"PUT /api/v1/me/documents/{id}/read":                     {Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
+	"GET /api/v1/artifacts/{id}":                             {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"POST /api/v1/artifacts/{id}/_test/outside-schema":       {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"POST /api/v1/artifacts/{id}/_test/newer-content":        {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"POST /api/v1/artifacts/{id}/approval-requests":          {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"GET /api/v1/artifacts/{id}/asks":                        {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"POST /api/v1/artifacts/{id}/asks":                       {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"GET /api/v1/artifacts/{id}/blocks":                      {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"GET /api/v1/artifacts/{id}/comments":                    {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"POST /api/v1/artifacts/{id}/comments":                   {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"POST /api/v1/artifacts/{id}/edits":                      {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"GET /api/v1/artifacts/{id}/events":                      {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"POST /api/v1/artifacts/{id}/plan-reviews":               {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"POST /api/v1/artifacts/{id}/rebuild":                    {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"PATCH /api/v1/artifacts/{id}":                           {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"DELETE /api/v1/artifacts/{id}":                          {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"GET /api/v1/artifacts/{id}/references":                  {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"GET /api/v1/artifacts/{id}/reviews":                     {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"POST /api/v1/artifacts/{id}/reviews":                    {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"POST /api/v1/artifacts/{id}/versions/{number}/reviews":  {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"GET /api/v1/artifacts/{id}/subscribers":                 {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}": {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"GET /api/v1/artifacts/{id}/text":                        {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"POST /api/v1/artifacts/{id}/versions":                   {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"GET /api/v1/artifacts/{id}/versions/{number}":           {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"GET /api/v1/me/documents/{id}/read":                     {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
+	"PUT /api/v1/me/documents/{id}/read":                     {Kind: "artifact", NotFound: apicode.ArtifactNotFound},
 
 	// The two routes that also name a block of that document, each answering TARGET_NOT_FOUND
 	// for a block id the document does not hold.
-	"GET /api/v1/artifacts/{id}/blocks/{block_id}":       {Kind: "artifact", Blocks: true, NotFound: "ARTIFACT_NOT_FOUND", BlockNotFound: "TARGET_NOT_FOUND"},
-	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep": {Kind: "artifact", Blocks: true, NotFound: "ARTIFACT_NOT_FOUND", BlockNotFound: "TARGET_NOT_FOUND"},
+	"GET /api/v1/artifacts/{id}/blocks/{block_id}":       {Kind: "artifact", Blocks: true, NotFound: apicode.ArtifactNotFound, BlockNotFound: apicode.BlockNotFound},
+	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep": {Kind: "artifact", Blocks: true, NotFound: apicode.ArtifactNotFound, BlockNotFound: apicode.BlockNotFound},
 
 	// An ask's own routes and the caller's snooze of one. Each reads the row through loadAsk
 	// or loadAskOwner, whose missing row is writeHandlerError's NOT_FOUND; the snooze write
 	// answers its own NOT_FOUND, and the un-snooze answers 204 for any ask at all.
-	"GET /api/v1/asks/{id}":                           {Kind: "ask", NotFound: "NOT_FOUND"},
-	"PATCH /api/v1/asks/{id}":                         {Kind: "ask", NotFound: "NOT_FOUND"},
-	"PUT /api/v1/asks/{id}/asked-of":                  {Kind: "ask", NotFound: "NOT_FOUND"},
-	"POST /api/v1/asks/{id}/answer":                   {Kind: "ask", NotFound: "NOT_FOUND"},
-	"POST /api/v1/asks/{id}/resolve":                  {Kind: "ask", NotFound: "NOT_FOUND"},
-	"POST /api/v1/asks/{id}/decline":                  {Kind: "ask", NotFound: "NOT_FOUND"},
-	"GET /api/v1/asks/{id}/followers":                 {Kind: "ask", NotFound: "NOT_FOUND"},
-	"PUT /api/v1/asks/{id}/followers/{session_id}":    {Kind: "ask", NotFound: "NOT_FOUND"},
-	"DELETE /api/v1/asks/{id}/followers/{session_id}": {Kind: "ask", NotFound: "NOT_FOUND"},
-	"PUT /api/v1/me/asks/{id}/snooze":                 {Kind: "ask", NotFound: "NOT_FOUND"},
-	"DELETE /api/v1/me/asks/{id}/snooze":              {Kind: "ask", NotFound: notFoundNone},
+	"GET /api/v1/asks/{id}":                           {Kind: "ask", NotFound: apicode.NotFound},
+	"PATCH /api/v1/asks/{id}":                         {Kind: "ask", NotFound: apicode.NotFound},
+	"PUT /api/v1/asks/{id}/asked-of":                  {Kind: "ask", NotFound: apicode.NotFound},
+	"POST /api/v1/asks/{id}/answer":                   {Kind: "ask", NotFound: apicode.NotFound},
+	"POST /api/v1/asks/{id}/resolve":                  {Kind: "ask", NotFound: apicode.NotFound},
+	"POST /api/v1/asks/{id}/decline":                  {Kind: "ask", NotFound: apicode.NotFound},
+	"GET /api/v1/asks/{id}/followers":                 {Kind: "ask", NotFound: apicode.NotFound},
+	"PUT /api/v1/asks/{id}/followers/{session_id}":    {Kind: "ask", NotFound: apicode.NotFound},
+	"DELETE /api/v1/asks/{id}/followers/{session_id}": {Kind: "ask", NotFound: apicode.NotFound},
+	"PUT /api/v1/me/asks/{id}/snooze":                 {Kind: "ask", NotFound: apicode.NotFound},
+	"DELETE /api/v1/me/asks/{id}/snooze":              {Kind: "ask", NoNotFound: true},
 
 	// A comment's own routes. The reads and the thread writes answer writeHandlerError's
 	// NOT_FOUND; the two delivery routes answer COMMENT_NOT_FOUND of their own.
-	"GET /api/v1/comments/{id}":             {Kind: "comment", NotFound: "NOT_FOUND"},
-	"PATCH /api/v1/comments/{id}":           {Kind: "comment", NotFound: "NOT_FOUND"},
-	"GET /api/v1/comments/{id}/blocks":      {Kind: "comment", NotFound: "NOT_FOUND"},
-	"POST /api/v1/comments/{id}/accept":     {Kind: "comment", NotFound: "NOT_FOUND"},
-	"POST /api/v1/comments/{id}/reject":     {Kind: "comment", NotFound: "NOT_FOUND"},
-	"POST /api/v1/comments/{id}/reopen":     {Kind: "comment", NotFound: "NOT_FOUND"},
-	"POST /api/v1/comments/{id}/resolve":    {Kind: "comment", NotFound: "NOT_FOUND"},
-	"POST /api/v1/comments/{id}/deliveries": {Kind: "comment", NotFound: "COMMENT_NOT_FOUND"},
-	"POST /api/v1/comments/{id}/reply":      {Kind: "comment", NotFound: "COMMENT_NOT_FOUND"},
+	"GET /api/v1/comments/{id}":             {Kind: "comment", NotFound: apicode.NotFound},
+	"PATCH /api/v1/comments/{id}":           {Kind: "comment", NotFound: apicode.NotFound},
+	"GET /api/v1/comments/{id}/blocks":      {Kind: "comment", NotFound: apicode.NotFound},
+	"POST /api/v1/comments/{id}/accept":     {Kind: "comment", NotFound: apicode.NotFound},
+	"POST /api/v1/comments/{id}/reject":     {Kind: "comment", NotFound: apicode.NotFound},
+	"POST /api/v1/comments/{id}/reopen":     {Kind: "comment", NotFound: apicode.NotFound},
+	"POST /api/v1/comments/{id}/resolve":    {Kind: "comment", NotFound: apicode.NotFound},
+	"POST /api/v1/comments/{id}/deliveries": {Kind: "comment", NotFound: apicode.CommentNotFound},
+	"POST /api/v1/comments/{id}/reply":      {Kind: "comment", NotFound: apicode.CommentNotFound},
 
 	// A message, by any id in its conversation. The issue form names an owner, so a prefix of
 	// it is looked for among that issue's messages alone; the owner-free forms look among
 	// every message, a direct conversation's included. The reads answer NOT_FOUND and the
 	// three delivery routes MESSAGE_NOT_FOUND.
-	"GET /api/v1/messages/{id}":                              {Kind: "message", NotFound: "NOT_FOUND"},
-	"GET /api/v1/messages/{id}/blocks":                       {Kind: "message", NotFound: "NOT_FOUND"},
-	"POST /api/v1/messages/{id}/deliveries":                  {Kind: "message", NotFound: "MESSAGE_NOT_FOUND"},
-	"POST /api/v1/messages/{id}/deliveries/{attempt}/accept": {Kind: "message", NotFound: "MESSAGE_NOT_FOUND"},
-	"POST /api/v1/messages/{id}/reply":                       {Kind: "message", NotFound: "MESSAGE_NOT_FOUND"},
-	"GET /api/v1/issues/{key}/messages/{id}":                 {Kind: "message", WithinIssue: true, NotFound: "NOT_FOUND"},
+	"GET /api/v1/messages/{id}":                              {Kind: "message", NotFound: apicode.NotFound},
+	"GET /api/v1/messages/{id}/blocks":                       {Kind: "message", NotFound: apicode.NotFound},
+	"POST /api/v1/messages/{id}/deliveries":                  {Kind: "message", NotFound: apicode.MessageNotFound},
+	"POST /api/v1/messages/{id}/deliveries/{attempt}/accept": {Kind: "message", NotFound: apicode.MessageNotFound},
+	"POST /api/v1/messages/{id}/reply":                       {Kind: "message", NotFound: apicode.MessageNotFound},
+	"GET /api/v1/issues/{key}/messages/{id}":                 {Kind: "message", WithinIssue: true, NotFound: apicode.NotFound},
 
 	// The routes whose id names none of the five kinds a prefix shortens — an ask, a comment,
 	// a message, a document, a document block — so no prefix is looked for and the handler
@@ -398,8 +397,8 @@ func hasIDWildcard(pattern string) bool {
 // undecidedIDRoutes names every route whose pattern carries an id wildcard that idRoutes
 // leaves undecided: one it does not name, one that resolves nothing and gives no reason, one
 // that names a kind and a reason at once, one that resolves an id or a block without saying
-// what 404 that route answers for one it does not hold, and one that resolves nothing and
-// names such an answer anyway.
+// what 404 that route answers for one it does not hold, one that says both that it answers no
+// 404 and which 404 it answers, and one that resolves nothing and names such an answer anyway.
 func undecidedIDRoutes(routes []apiRoute) []string {
 	var undecided []string
 	for _, route := range routes {
@@ -415,11 +414,13 @@ func undecidedIDRoutes(routes []apiRoute) []string {
 			undecided = append(undecided, name+": idRoutes names a kind to resolve and a reason not to")
 		case !entry.resolves() && strings.TrimSpace(entry.Reason) == "":
 			undecided = append(undecided, name+": idRoutes resolves no prefix there and gives no reason")
-		case entry.Kind != "" && entry.NotFound == "":
+		case entry.Kind != "" && entry.NotFound.IsZero() && !entry.NoNotFound:
 			undecided = append(undecided, name+": idRoutes resolves an id there and does not say what 404 the route answers for one it does not hold")
-		case entry.Blocks && entry.BlockNotFound == "":
+		case entry.NoNotFound && !entry.NotFound.IsZero():
+			undecided = append(undecided, name+": idRoutes says the route answers no 404 for an id it does not hold and names one anyway")
+		case entry.Blocks && entry.BlockNotFound.IsZero():
 			undecided = append(undecided, name+": idRoutes resolves a block id there and does not say what 404 the route answers for one the document does not hold")
-		case !entry.resolves() && (entry.NotFound != "" || entry.BlockNotFound != ""):
+		case !entry.resolves() && (!entry.NotFound.IsZero() || !entry.BlockNotFound.IsZero() || entry.NoNotFound):
 			undecided = append(undecided, name+": idRoutes resolves nothing there and names a not-found answer anyway")
 		}
 	}
@@ -704,8 +705,8 @@ func (s *server) routes() []apiRoute {
 		{http.MethodGet, "/api/v1/related-checks", authAny, "Count the related-item checks recorded when an issue, an ask or a new decision block was written, within [from, to) (RFC3339, each optional) and of ?project= and ?source_kind= (issue, ask or decision_block; any other is 400 INVALID_QUERY) when given: {project, source_kind, from, to} echo the filters (null when absent), total, by_source_kind, by_outcome (found, none, not_made), by_search (meaning_and_keywords, keywords_only, not_made), by_reason (each reason a check was not made or searched by keywords only), completed (found or none), skipped_for_time (reason timeout), other_project_offers, and keyword_ms and total_ms each {count, p50, p95, max, over_300ms}: the checks holding that time, its discrete percentiles and largest value (null with no check), and how many took over 300 ms. other_project_offers is how many ask creates of the window offered at least one answered question of another project (other_projects), a count of writes and not of items, read from write_suggestions over the same window and under the same filters, and zero for a source kind no such row carries; the two records are written at different moments and only the check's own row is retried, so a count at a window's edge can name one fewer write than the window's total. The meaning_ms recorded for such a check holds the whole meaning stage, the wait for the other projects' answers with it, which is at most 300 ms after the asking project's own query answered.", s.getRelatedChecks},
 		{http.MethodGet, "/api/v1/near-copy-checks", authAny, fmt.Sprintf("List one project's near-copy gate answers, one row for each create the gate answered (an external create runs no gate and has none), recorded when the create was refused or once it was written: the rows of ?project= (required; 400 INVALID_PROJECT when it is not a key) within [from, to) (RFC3339, each optional; 400 INVALID_QUERY when from is not before to), oldest first, at most ?limit= (1 to %d, default %d), after the row whose id ?after= names (400 INVALID_QUERY when it is no row of the project). A window should end some time before now: a row written in its create's transaction holds that transaction's start as created_at and is seen only once the transaction commits, so a reader that pages up to now and resumes with ?after= can miss it. {project, from, to} echo the query (null when absent), checks are the rows, and next_after is the id to pass as ?after= for the next page, null on the last. A row is {id, created_at, project, actor_kind, actor_id, outcome, reason, force, title, spec_sha256, parent, issue, candidates, refuse_score, nudge_score, build_commit}, with no spec: GET /api/v1/near-copy-checks/{id} reads one row with it. outcome is refused (the gate refused it and nothing was written; every 409 POSSIBLE_DUPLICATE has this row, written before the answer), forced (written past a refusal with force), nudged (written, its closest open issue named as a likely duplicate), passed (written with nothing named) or not_made (no check that could stop the create was made, and it went in unchecked); reason is bound, failed or unrecorded for not_made and null otherwise; force is whether the create asked for it; spec_sha256 is the sha256 of the spec as sent, on every row; issue is the key written, null for a refusal; candidates are the issues the gate read at or above nudge_score, at most %d, best first, each {key, title, score}; refuse_score and nudge_score are the build's bars and build_commit the commit it was built from, null for an unstamped build. A refusal is answered only once its row is known to be written: otherwise it refuses nothing, and the create goes in as not_made, reason unrecorded, writing its row in its own transaction. The row of every other create that went in is written after the commit, on a context of its own bounded to %s, and tried once more in the background for up to %s when a timeout or a lock stopped it, so one whose row still could not be written has none and is otherwise unchanged.", nearCopyChecksPageMax, nearCopyChecksPageMax, duplicateCandidateLimit, nearCopyRecordTimeout, relatedRecordRetryTimeout), s.getNearCopyChecks},
 		{http.MethodGet, "/api/v1/near-copy-checks/{id}", authAny, "One near-copy gate answer by id: the row GET /api/v1/near-copy-checks lists, with spec, the spec as sent, on a refused row alone (absent on every other, whose issue holds it; empty for a refused create that sent none); 404 NEAR_COPY_CHECK_NOT_FOUND when there is none, 400 NEAR_COPY_CHECK_ID_INPUT for an id that is not a uuid.", s.getNearCopyCheck},
-		{http.MethodPost, "/api/v1/going/requests", authAny, fmt.Sprintf("Ask a question of what Dispatch holds {words, project}: records the question and answers 201 with its run - {id, author, project, words, created_at, ends_at}, whose ends_at is the %s the run has to answer in - and answers it behind that, each frame of the answer stored for GET /api/v1/going/requests/{id}/stream to carry. words is required (400 GOING_INPUT when it is blank) and at most %d characters (400 CAP_EXCEEDED); project is the project key the question is asked of, empty asking of every project (400 INVALID_PROJECT when it is not a key), and a credential scoped to one project asks only of that project. The run belongs to the credential that asked it, which the stream compares its reader with, so a credential that names nobody - the deployment's shared token - is refused 403 %s and records nothing: no reader of that run could ever be served it. With no model configured the run is recorded all the same and its stream carries the error frame %s, so a reader learns that from the stream, where every other failure of a run is reported, and not from a status of this route's own.", contracts.GoingRunWindow, contracts.GoingWordsMax, codeGoingAskerNamesNobody, contracts.GoingErrorNoModelConfigured), s.createGoingRequest},
-		{http.MethodGet, "/api/v1/going/requests/{id}/stream", authAny, fmt.Sprintf("One run's answer as server-sent events: each frame is `id:` its sequence, `event:` its name (%s, %s, %s, %s, %s, %s, %s) and `data:` the JSON that frame carries, flushed as it is written, and the stream ends on %s or %s. Last-Event-ID resumes after that sequence, so a reader that drops rereads nothing. Any pod serves it, since the frames are rows and not the memory of the process that took the POST: a run past its ends_at that stored no ending is ended by the reader itself, with the error %s, which is how a stream ends when the pod that took the POST is gone. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 %s, so an id tells a caller nothing it did not already know.", contracts.GoingEventText, contracts.GoingEventItem, contracts.GoingEventCut, contracts.GoingEventChanged, contracts.GoingEventNone, contracts.GoingEventEnd, contracts.GoingEventError, contracts.GoingEventEnd, contracts.GoingEventError, contracts.GoingErrorAnswerDidNotArrive, codeGoingRequestNotFound), s.streamGoingAnswer},
+		{http.MethodPost, "/api/v1/going/requests", authAny, fmt.Sprintf("Ask a question of what Dispatch holds {words, project}: records the question and answers 201 with its run - {id, author, project, words, created_at, ends_at}, whose ends_at is the %s the run has to answer in - and answers it behind that, each frame of the answer stored for GET /api/v1/going/requests/{id}/stream to carry. words is required (400 GOING_INPUT when it is blank) and at most %d characters (400 CAP_EXCEEDED); project is the project key the question is asked of, empty asking of every project (400 INVALID_PROJECT when it is not a key), and a credential scoped to one project asks only of that project. The run belongs to the credential that asked it, which the stream compares its reader with, so a credential that names nobody - the deployment's shared token - is refused 403 %s and records nothing: no reader of that run could ever be served it. With no model configured the run is recorded all the same and its stream carries the error frame %s, so a reader learns that from the stream, where every other failure of a run is reported, and not from a status of this route's own.", contracts.GoingRunWindow, contracts.GoingWordsMax, apicode.GoingAskerNamesNobody.V1Name(), contracts.GoingErrorNoModelConfigured), s.createGoingRequest},
+		{http.MethodGet, "/api/v1/going/requests/{id}/stream", authAny, fmt.Sprintf("One run's answer as server-sent events: each frame is `id:` its sequence, `event:` its name (%s, %s, %s, %s, %s, %s, %s) and `data:` the JSON that frame carries, flushed as it is written, and the stream ends on %s or %s. Last-Event-ID resumes after that sequence, so a reader that drops rereads nothing. Any pod serves it, since the frames are rows and not the memory of the process that took the POST: a run past its ends_at that stored no ending is ended by the reader itself, with the error %s, which is how a stream ends when the pod that took the POST is gone. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 %s, so an id tells a caller nothing it did not already know.", contracts.GoingEventText, contracts.GoingEventItem, contracts.GoingEventCut, contracts.GoingEventChanged, contracts.GoingEventNone, contracts.GoingEventEnd, contracts.GoingEventError, contracts.GoingEventEnd, contracts.GoingEventError, contracts.GoingErrorAnswerDidNotArrive, apicode.GoingRequestNotFound.V1Name()), s.streamGoingAnswer},
 		{http.MethodGet, "/api/v1/going/capability", authAny, "Whether this deployment has a text model configured: {model_configured} and nothing else, so no endpoint, deployment name or credential can appear in it. Any caller Dispatch admits reads it, a pod's own agent token included.", s.getGoingCapability},
 		{http.MethodGet, "/api/v1/agents", authAny, "Live sessions with roles, capabilities, open asks, and last activity, from Dispatch's copy of the Envoy listener's session list, at most 5 s old.", s.listAgents},
 		{http.MethodGet, "/api/v1/agents/{session_id}/answers", authAny, "What people wrote that Dispatch delivered to one session, newest first by at, then by id: each ask's current answer (replaced when it changed an earlier answer), each comment at its current body (edited_at when edited; a resolved comment stays), each message, and each ask a person declined to answer, once however it arrived. It reads the ask.answered, comment.created, message.created, message.answered and ask.resolved events a person wrote whose published_destinations hold the session's own topic, the session's message deliveries the listener took (targeted and broadcast messages, handed to the running session or queued for it) and its comment deliveries (mentions) in those same two states; of an ask's resolutions it lists the decline alone, and it never lists an agent's or the system's words, a retraction, a withdrawal, another resolution, a hand-back, or a delivery to a role: route's topic. Each item names its relation to the session (mentioned_you over replied_on_your_ask over replied_in_a_comment_thread over commented_on_a_document over commented_on_an_issue for a comment; replied_to_your_message over sent_you_a_message for a message; answered_your_ask for an answer; declined_your_ask for a decline), the ask and its whole question on an answer, on a decline and on a reply in an ask's thread, its owner, dispatch:// ref and href (null owner and ref, and /agents/<session_id>/live, for a direct message). A decline carries a kind of its own, declined, at the resolution's own time, its id the ask's, and its words in two parts: text, the person's own note, empty when they wrote none, and dispatch_words, the sentences Dispatch wrote for the asking agent; nobody chose an option, so it carries no selected. ?since= (RFC3339, default 72 hours ago; older than 7 days or in the future is 400 INVALID_QUERY) starts the window; ?max_chars= (1-100000, else 400 INVALID_QUERY) stops the list after the item whose words take the running sum past it, counting the UTF-16 units of text and, on a decline, of dispatch_words beside it, while total counts every item in the window; {session_id, since, total, items}. A session_id that is not a session id is 400 INVALID_SESSION_ID, as on the agent artifact routes. Not an authorization boundary: direct-message text already reaches every authenticated caller through GET /api/v1/events, and a person may read any session's list.", s.listSessionAnswers},

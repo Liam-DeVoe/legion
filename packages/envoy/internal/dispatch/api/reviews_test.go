@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -655,14 +656,14 @@ func TestAReviewByACallerWhoMayNotReviewIsRefusedForItsCredentialBeforeItsNumber
 				send: func() *httptest.ResponseRecorder {
 					return rig.serve(caller.presenting(t, http.MethodPost, path, machineToken, body))
 				},
-				code: codeScopeRequired,
+				code: apicode.OAuthScopeRequired.V1Name(),
 			},
 			{
 				caller: "a personal token holding no scope",
 				send: func() *httptest.ResponseRecorder {
 					return agentRequest(t, rig.handler, http.MethodPost, path, body, unscoped)
 				},
-				code: codeScopeRequired,
+				code: apicode.OAuthScopeRequired.V1Name(),
 			},
 			{
 				caller: "a person's broker token whose session parameter names another session",

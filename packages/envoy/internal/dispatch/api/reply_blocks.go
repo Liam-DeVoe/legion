@@ -3,10 +3,10 @@ package api
 import (
 	"context"
 	"maps"
-	"net/http"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -42,7 +42,7 @@ type namedBlock struct {
 // target at the item's first indexing and none after it (refs.indexItemBlocks), and either way it
 // is no new fact of this request.
 func (s *server) replyBlockOf(
-	ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID, blockID, field, code string,
+	ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID, blockID, field string, code apicode.Code,
 ) (*namedBlock, error) {
 	if _, err := refs.IndexItemIfOwed(ctx, tx, kind, itemID, s.deps.ServerURL); err != nil {
 		return nil, err
@@ -52,7 +52,7 @@ func (s *server) replyBlockOf(
 		return nil, err
 	}
 	if !found {
-		return nil, errorf(http.StatusBadRequest, code, "%s %s is not a block of %s %s", field, blockID, kind, itemID)
+		return nil, errorf(code, "%s %s is not a block of %s %s", field, blockID, kind, itemID)
 	}
 	return &namedBlock{node: node, excerpt: excerpt}, nil
 }

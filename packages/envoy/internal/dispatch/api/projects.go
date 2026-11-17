@@ -7,6 +7,7 @@ import (
 	"unicode"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -37,7 +38,7 @@ func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), projectListQuery)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -45,13 +46,13 @@ func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var project model.Project
 		if err := rows.Scan(&project.Key, &project.Name, &project.OpenAsks, &project.GatedSteps, &project.CreatedAt); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		projects = append(projects, project)
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, projects)
@@ -81,7 +82,7 @@ type createdProject struct {
 func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	var input createProjectInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -91,21 +92,21 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	input.Key = strings.TrimSpace(input.Key)
 	input.Name = strings.TrimSpace(input.Name)
 	if !projectKeyPattern.MatchString(input.Key) {
-		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("key", input.Key))
+		writeError(w, r, apicode.InvalidProject, projectKeyProblem("key", input.Key))
 		return
 	}
 	if input.Name == "" {
-		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, "project name is required")
+		writeError(w, r, apicode.InvalidProject, "project name is required")
 		return
 	}
 	// Any bearer writes a name into the project list every dashboard reads, and no route renames a
 	// project, so a name is capped as an issue title is and shows a reader what it says.
 	if length := itemblocks.Units16(input.Name); length > contracts.ProjectNameMax {
-		capExceeded(w, "name", length, contracts.ProjectNameMax)
+		capExceeded(w, r, "name", length, contracts.ProjectNameMax)
 		return
 	}
 	if problem := projectNameProblem(input.Name); problem != "" {
-		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, problem)
+		writeError(w, r, apicode.InvalidProject, problem)
 		return
 	}
 	// Every project names a person. The column refuses nothing
@@ -130,19 +131,19 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if projectDefault == "" {
-		writeError(w, "INVALID_PROJECT", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidProject,
 			"default_assignee is required: this credential acts for no person, so the call must name "+
 				"the person a project's unowned work lands on")
 		return
 	}
 	projectDefault, err := s.allowedLogin(r.Context(), projectDefault)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -153,19 +154,19 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	`, input.Key, input.Name, projectDefault).Scan(
 		&created.Key, &created.Name, &created.GatedSteps, &created.DefaultAssignee, &created.CreatedAt); err != nil {
 		if isUniqueViolation(err) {
-			writeError(w, "PROJECT_EXISTS", http.StatusConflict, "a project with this key already exists")
+			writeError(w, r, apicode.ProjectExists, "a project with this key already exists")
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	event, err := s.appendEvent(r.Context(), tx, projectOwner(created.Key).event("project.created", actor, created.Project))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)

@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -291,12 +292,12 @@ func parseThreadOwner(rawIssue, rawArtifact string) (issue string, artifact *str
 	issue = strings.TrimSpace(rawIssue)
 	rawArtifact = strings.TrimSpace(rawArtifact)
 	if issue != "" && rawArtifact != "" {
-		return "", nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "name issue or artifact, not both")
+		return "", nil, errorf(apicode.InvalidQuery, "name issue or artifact, not both")
 	}
 	if rawArtifact != "" {
 		parsed, err := uuid.Parse(rawArtifact)
 		if err != nil {
-			return "", nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "artifact must be a document id")
+			return "", nil, errorf(apicode.InvalidQuery, "artifact must be a document id")
 		}
 		canonical := parsed.String()
 		artifact = &canonical
@@ -340,7 +341,7 @@ func parseThreadKinds(values []string) (reply, agent bool, err error) {
 		case myReplyKindAgent:
 			agent = true
 		default:
-			return false, false, errorf(http.StatusBadRequest, "INVALID_QUERY",
+			return false, false, errorf(apicode.InvalidQuery,
 				"kind takes %s and %s", myReplyKindReply, myReplyKindAgent)
 		}
 	}
@@ -377,7 +378,7 @@ func parseMyRepliesState(r *http.Request) (state string, err error) {
 	case myRepliesStateUnread, myRepliesStateInbox, myRepliesStateDismissed:
 		return value, nil
 	default:
-		return "", errorf(http.StatusBadRequest, "INVALID_QUERY", "state is %s, %s or %s",
+		return "", errorf(apicode.InvalidQuery, "state is %s, %s or %s",
 			myRepliesStateUnread, myRepliesStateInbox, myRepliesStateDismissed)
 	}
 }
@@ -400,7 +401,7 @@ func myRepliesCursorOf(row model.MyReplyRow) string {
 // mark and the thread id it names, as myRepliesCursorOf writes them.
 func parseMyRepliesCursor(raw string) (*myRepliesCursor, error) {
 	at, thread, found := strings.Cut(raw, ",")
-	refusal := errorf(http.StatusBadRequest, "INVALID_QUERY", "cursor is one this route answered in next_cursor")
+	refusal := errorf(apicode.InvalidQuery, "cursor is one this route answered in next_cursor")
 	if !found {
 		return nil, refusal
 	}
@@ -429,7 +430,7 @@ func parseMyRepliesPage(r *http.Request, state string) (limit *int, offset int, 
 	if state == myRepliesStateDismissed {
 		for _, name := range []string{"limit", "offset"} {
 			if query.Has(name) {
-				return nil, 0, nil, errorf(http.StatusBadRequest, "INVALID_QUERY",
+				return nil, 0, nil, errorf(apicode.InvalidQuery,
 					"%s is not a query parameter of state=%s, which pages with cursor, %d rows at a time",
 					name, myRepliesStateDismissed, myRepliesDismissedPage)
 			}
@@ -444,19 +445,19 @@ func parseMyRepliesPage(r *http.Request, state string) (limit *int, offset int, 
 		return &page, 0, cursor, nil
 	}
 	if query.Has("cursor") {
-		return nil, 0, nil, errorf(http.StatusBadRequest, "INVALID_QUERY",
+		return nil, 0, nil, errorf(apicode.InvalidQuery,
 			"cursor is a query parameter of state=%s alone; this state pages with limit and offset",
 			myRepliesStateDismissed)
 	}
 	if value, present, valid := parseQueryInt(query, "limit", 1, myAnswersMaxLimit); present {
 		if !valid {
-			return nil, 0, nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "limit must be one integer from 1 to %d", myAnswersMaxLimit)
+			return nil, 0, nil, errorf(apicode.InvalidQuery, "limit must be one integer from 1 to %d", myAnswersMaxLimit)
 		}
 		limit = &value
 	}
 	if value, present, valid := parseQueryInt(query, "offset", 0, math.MaxInt); present {
 		if !valid {
-			return nil, 0, nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "offset must be one non-negative integer")
+			return nil, 0, nil, errorf(apicode.InvalidQuery, "offset must be one non-negative integer")
 		}
 		offset = value
 	}
@@ -493,22 +494,22 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	}
 	wantReply, wantAgent, err := parseMyRepliesKinds(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	state, err := parseMyRepliesState(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	limit, offset, from, err := parseMyRepliesPage(r, state)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	issue, artifact, err := parseMyRepliesOwner(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// An Agent row has no issue and no document, so a read narrowed to one owner holds none.
@@ -521,12 +522,12 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	}
 	tx, err := s.deps.Store.Pool.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
-		s.writeHandlerError(w, fmt.Errorf("read my replies: %w", err))
+		s.writeHandlerError(w, r, fmt.Errorf("read my replies: %w", err))
 		return
 	}
 	defer tx.Rollback(r.Context())
 	if err := tx.QueryRow(r.Context(), "select now()").Scan(&response.AsOf); err != nil {
-		s.writeHandlerError(w, fmt.Errorf("read my replies: %w", err))
+		s.writeHandlerError(w, r, fmt.Errorf("read my replies: %w", err))
 		return
 	}
 
@@ -552,14 +553,14 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 		if counted {
 			var total int
 			if err := tx.QueryRow(r.Context(), countQuery, countArgs...).Scan(&total); err != nil {
-				s.writeHandlerError(w, fmt.Errorf("count my replies: %w", err))
+				s.writeHandlerError(w, r, fmt.Errorf("count my replies: %w", err))
 				return
 			}
 			response.Total += total
 		}
 		read, err := s.readMyReplyRows(r.Context(), tx, pageQuery, myRepliesPageArgs(countArgs, reach, from))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		rows = append(rows, read...)
@@ -571,7 +572,7 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 		read, total, err := s.readMyAgentRows(r.Context(), tx,
 			myAgentPageQuery(state, from, counted), myRepliesPageArgs(args, reach, from), counted)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		response.Total += total
@@ -608,11 +609,11 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 		response.NextCursor = myRepliesCursorOf(rows[len(rows)-1])
 	}
 	if err := nameAgentSessions(r.Context(), tx, rows); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, fmt.Errorf("read my replies: %w", err))
+		s.writeHandlerError(w, r, fmt.Errorf("read my replies: %w", err))
 		return
 	}
 	response.Rows = append(response.Rows, rows...)
@@ -744,27 +745,27 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !requireUUIDPath(w, r, "thread") {
+	if !requireUUIDPath(w, r, "thread", apicode.ThreadIDInput) {
 		return
 	}
 	var input threadReadInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if input.ReadThrough == nil {
-		writeError(w, "INVALID_STATE", http.StatusBadRequest, "read_through is required")
+		writeError(w, r, apicode.InvalidState, "read_through is required")
 		return
 	}
 	if _, err := parseAgentStateCutoff("read_through", input.ReadThrough); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	login := model.CanonicalLogin(actor.ID)
 	threadID := r.PathValue("id")
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -778,7 +779,7 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// A closed issue is not refused: reading a thread on a closed issue is reading it.
@@ -788,7 +789,7 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 		_, err = tx.Exec(r.Context(), `select 1 from artifacts where id = $1 for share`, *artifactID)
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// read_through is cast by Postgres from the caller's own text rather than bound as a parsed
@@ -800,7 +801,7 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 		where login = $1 and thread_id = $2 and read_through < least($3::text::timestamptz, now())
 	`, login, threadID, *input.ReadThrough)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// A revisit that moves nothing announces nothing: the thread on screen marks itself on every
@@ -813,11 +814,11 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 		"user_thread_state.updated", actor, model.UserThreadStateEventPayload{Login: login, ThreadID: threadID},
 	))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)

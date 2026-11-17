@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
@@ -71,7 +72,7 @@ func (s *server) callerStillResolves(r *http.Request) error {
 // such credential kind, and this is what an Authorization header that is not a bearer has always
 // been here (auth.BearerToken reads no token from it).
 func errNoBrokerConfigured() *apiError {
-	return errorf(http.StatusUnauthorized, "UNAUTHORIZED", "invalid bearer token")
+	return errorf(apicode.Unauthorized, "invalid bearer token")
 }
 
 // brokerTokenActor authenticates a caller presenting an access token the secrets broker issued,
@@ -115,20 +116,20 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	switch {
 	case err == nil:
 	case errors.Is(err, brokertoken.ErrNotActive):
-		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_NOT_ACTIVE",
+		return model.Actor{}, false, errorf(apicode.BrokerTokenNotActive,
 			"the secrets broker does not hold this access token as live")
 	case errors.Is(err, brokertoken.ErrKeyMismatch):
-		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_KEY_MISMATCH",
+		return model.Actor{}, false, errorf(apicode.BrokerTokenKeyMismatch,
 			"the DPoP proof's key is not the key this access token is bound to")
 	case errors.Is(err, brokertoken.ErrProofInvalid), errors.Is(err, brokertoken.ErrNotPresented):
-		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_PROOF_INVALID",
+		return model.Actor{}, false, errorf(apicode.BrokerTokenProofInvalid,
 			"the DPoP proof did not verify")
 	case errors.Is(err, brokertoken.ErrNotASession):
-		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_NOT_A_SESSION",
+		return model.Actor{}, false, errorf(apicode.BrokerTokenNotASession,
 			"this access token is not a session's credential: the secrets broker names no session for it")
 	case errors.Is(err, brokertoken.ErrRateLimited):
 		wait := s.deps.BrokerTokens.RetryAfter()
-		refusal := errorf(http.StatusTooManyRequests, "BROKER_TOKEN_RATE_LIMITED",
+		refusal := errorf(apicode.BrokerTokenRateLimited,
 			"too many access tokens checked from this address; try again in %s", wait)
 		// The one rounding every bucket of internal/ratelimit's refusals carries, the broker's
 		// own 429s included, so a caller reads one wait the same way whichever refused it.
@@ -138,7 +139,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		// The class only, as serviceTokenActor logs one: this runs before any authorization, so
 		// anything the caller chose would be theirs to write into the operator's log.
 		slog.Warn("dispatch: the secrets broker could not be reached to check an access token", "error", err)
-		return model.Actor{}, false, errorf(http.StatusServiceUnavailable, "BROKER_UNAVAILABLE",
+		return model.Actor{}, false, errorf(apicode.BrokerUnavailable,
 			"the secrets broker cannot be reached; try again in a minute")
 	}
 	// Both scopes go to a token the broker scoped to its person: that token is the person's own

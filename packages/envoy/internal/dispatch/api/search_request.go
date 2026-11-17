@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -353,11 +354,11 @@ func searchAppliedFilters(parameters searchParameters) model.SearchFilters {
 // the refusal itself when one of them is repeated, blank or unreadable, each under a code of its
 // own, exactly as the project and the page parameters beside them are refused. A filter the
 // request leaves out narrows nothing.
-func parseSearchFilters(w http.ResponseWriter, query url.Values) (status, author string, since *time.Time, ok bool) {
+func parseSearchFilters(w http.ResponseWriter, r *http.Request, query url.Values) (status, author string, since *time.Time, ok bool) {
 	if values, present := query["status"]; present {
 		status = strings.TrimSpace(values[0])
 		if len(values) != 1 || !model.IsIssueStatus(status) {
-			writeError(w, "INVALID_STATUS", http.StatusBadRequest,
+			writeError(w, r, apicode.InvalidStatus,
 				"status must be one of "+strings.Join(model.IssueStatuses, ", "))
 			return "", "", nil, false
 		}
@@ -365,7 +366,7 @@ func parseSearchFilters(w http.ResponseWriter, query url.Values) (status, author
 	if values, present := query["author"]; present {
 		author = strings.TrimSpace(values[0])
 		if len(values) != 1 || !searchAuthorPattern.MatchString(author) || itemblocks.Units16(author) > searchAuthorMax {
-			writeError(w, "INVALID_AUTHOR", http.StatusBadRequest, fmt.Sprintf(
+			writeError(w, r, apicode.InvalidAuthor, fmt.Sprintf(
 				"author must be one actor id - a person's login or a session id, with no whitespace - of at most %d characters",
 				searchAuthorMax))
 			return "", "", nil, false
@@ -374,7 +375,7 @@ func parseSearchFilters(w http.ResponseWriter, query url.Values) (status, author
 	if values, present := query["updated_since"]; present {
 		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(values[0]))
 		if len(values) != 1 || err != nil {
-			writeError(w, "INVALID_UPDATED_SINCE", http.StatusBadRequest, "updated_since must be an RFC3339 timestamp")
+			writeError(w, r, apicode.InvalidUpdatedSince, "updated_since must be an RFC3339 timestamp")
 			return "", "", nil, false
 		}
 		since = &parsed
