@@ -494,10 +494,10 @@ func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.Linge
 		return intake.Result{}, err
 	}
 	// The close retires every member, and one that still awaits its merge and is not handed over
-	// has no later write to end its merge step, which the linger left open for a
-	// merge that did not come: under a parked root, a member held from merging or whose pull
-	// request closed (unfinishedHandOvers). Its step ends here, stopped. A member handed over
-	// keeps the step open for its readmit to end (admit's readmit).
+	// has no later write to end its merge step, which the linger left open for a merge that did
+	// not come: under a parked root, a member held from merging or whose pull request closed
+	// (unfinishedHandOvers). Its step ends here, stopped. A member handed over keeps the step
+	// open for its readmit to end (admit's readmit).
 	for _, member := range members {
 		if member.Key == issue.Key || !awaitsMerge(member) || slices.ContainsFunc(handed, func(h record.Issue) bool { return h.Key == member.Key }) {
 			continue
