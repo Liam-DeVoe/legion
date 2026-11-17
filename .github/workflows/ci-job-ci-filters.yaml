@@ -44,6 +44,14 @@ jobs:
       - name: Check every CI filter matches every file its job reads
         run: .github/scripts/check-ci-filters.sh
 
+      # release.yaml's LEGION_GO_INPUTS decides, with LEGION_VERSION_ARGS, whether a commit
+      # releases a new `legion`, and a package the binary links that it does not name changes the
+      # binary and releases nothing. This job has the Go and the filter (every Go file, module
+      # file and workflow) the check needs, so a change that moves what cmd/legion links fails
+      # here until the block is written again.
+      - name: Check release.yaml's legion version inputs are what cmd/legion links
+        run: .github/scripts/check-legion-version-inputs.sh
+
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

@@ -1771,6 +1771,8 @@ SMOKE_IMAGE_STEP = "Build the listener image the smoke test runs against"
 BASE_IMAGES_STEP = "Read the smoke image's base images"
 FOLD_CHECK_STEP = "Check every changelog fragment renders"
 CHECK_STEP = "Check every CI filter matches every file its job reads"
+VERSION_INPUTS_STEP = "Check release.yaml's legion version inputs are what cmd/legion links"
+VERSION_INPUTS = ".github/scripts/check-legion-version-inputs.sh"
 GUIDES_STEP = "Check the guides' semantic line breaks"
 COPY_STEP = "Copy every image the package does not hold"
 PACKAGE_STEP = "Check the package holds every row of .github/ci-images.yaml"
@@ -2027,6 +2029,10 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2172 imports this table to derive the plain step's -run lists"),
         ("AGENTS.md", "check-ci-filters.test.sh:2579 holds the guide's slow-suite list to the jobs the full-ci label gates"),
+    ]),
+    harness("check_legion_version_inputs_test", "Test the legion version input check",
+            f"{SCRIPTS}/check-legion-version-inputs.test.sh", [
+        (VERSION_INPUTS, "the script under test, symlinked into every fixture (check-legion-version-inputs.test.sh:39)"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
         (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:47)"),
@@ -3040,7 +3046,9 @@ GATES = [
     # This check itself: it lists every module's packages (vet mode: each package directory, its
     # dependencies' and the test files, without the files tests read), reads the target lists
     # the runs above expand, reads every workflow of .github/workflows, and is its own script,
-    # engine, data, rules and path model.
+    # engine, data, rules and path model. The job's second step, the legion version-input check,
+    # lists ./cmd/legion once per legion release target, as release.yaml's Build legion step
+    # compiles it, and reads release.yaml's version arguments, block and version step.
     gate("ci_filters", "ci-filters", runs=[
         run(DAEMON, ["./..."], f"{at('ci-filters', CHECK_STEP)}: go list over the daemon module", mode="vet", step=CHECK_STEP,
             text=".github/scripts/check-ci-filters.sh"),
@@ -3048,16 +3056,23 @@ GATES = [
             text=".github/scripts/check-ci-filters.sh"),
         run(INFRA, ["./..."], f"{at('ci-filters', CHECK_STEP)}: go list over the envoy-infra module", mode="vet", step=CHECK_STEP,
             text=".github/scripts/check-ci-filters.sh"),
+        *[run(DAEMON, ["./cmd/legion"], f"{at('ci-filters', VERSION_INPUTS_STEP)}: go list -deps for {target}", mode="build",
+              step=VERSION_INPUTS_STEP, text=VERSION_INPUTS,
+              env={"CGO_ENABLED": "0", "GOOS": target.split("/")[0], "GOARCH": target.split("/")[1]})
+          for target in targets(GO_TARGETS, "legion")],
     ], reads=reads(
         ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.go", "the pi_legion gate's go run -overlay compiles it"),
         (".github/scripts/check-ci-filters.sh", at("ci-filters", CHECK_STEP)),
+        (VERSION_INPUTS, at("ci-filters", VERSION_INPUTS_STEP)),
+        (".github/workflows/release.yaml", f"{VERSION_INPUTS} holds its LEGION_GO_INPUTS block to what go names beyond "
+                                           "LEGION_VERSION_ARGS's paths, and legion_build's version step to passing it"),
         (".github/scripts/ci_filter_coverage.py", "check-ci-filters.sh's engine"),
         (".github/scripts/ci_job_reads.py", "check-ci-filters.sh's data"),
         (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and "
                                                  "ci-caches.yaml, which ci_filter_coverage.main() runs"),
         (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it"),
         ("package.json", "ci_job_reads.py reads the workspace list from the root manifest"),
-        (GO_TARGETS, "ci_job_reads.py expands the notices and pack runs over it"),
+        (GO_TARGETS, f"ci_job_reads.py expands the notices and pack runs over it, and {VERSION_INPUTS} its listings"),
         (CLIENT_TARGETS, "ci_job_reads.py expands the notices runs over it"),
         (INFRA_TARGETS, "ci_job_reads.py expands the notices runs over it"),
         (DOCS_SITE, "ci_filter_coverage.py looks the docs gate's step citations up in it"),
