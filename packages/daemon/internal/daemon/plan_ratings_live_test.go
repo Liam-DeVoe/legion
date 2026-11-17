@@ -100,12 +100,11 @@ func (l *planRatingsLive) readByProject() {
 	}
 	l.note("control: scripts/e2e/plan-ratings-read.sh %s %s, which is not finished, exit 1: %s", l.cfg.Project, unfinished, lastLine(out))
 
-	failed := want[0].steps.find("step", 4, 1).ID
-	if failed == "" {
-		t.Fatalf("the records of %s hold no record of step 4 attempt 1", want[0].key)
-	}
-	l.deleteStepRecord(failed)
-	l.note("control: deleted %s's failed review's record %s from Dispatch's database (its workflow_nodes row and its workflow_tuples rows)", want[0].key, failed)
+	// stepsHold passed over want[0].steps, and it refuses a read that holds no record of step 4
+	// attempt 1 (stepRecordsTen), so this find answers that record's id.
+	deleted := want[0].steps.find("step", 4, 1).ID
+	l.deleteNode(deleted)
+	l.note("control: deleted %s's failed review's record %s from Dispatch's database (its workflow_nodes row and its workflow_tuples rows)", want[0].key, deleted)
 	out, code = l.plans()
 	if code != 0 {
 		t.Fatalf("control: `dispatch plans --project %s` after the delete exited %d: %s", l.cfg.Project, code, out)

@@ -38,7 +38,7 @@ func TestABootOpensTheRunTheReleaseBeforeStartedSoItsAgentsCompletionWaitsForIts
 		{name: "control: no row after the boot, as a boot without the pass leaves it", noRow: true, model: "stand-in/planner-first"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := newStepRecordsRig(t)
+			r := newStepRecordsRig(t, 1)
 			planner := r.plannerTheReleaseBeforeStarted()
 			if tc.noRow {
 				r.exec(`delete from step_starts where issue = $1`, r.key)
@@ -75,7 +75,7 @@ func TestABootOpensTheRunTheReleaseBeforeStartedSoItsAgentsCompletionWaitsForIts
 // The boot opens a run no start counted once: a boot that runs again finds the run's row open and
 // counts nothing again, and neither boot queues a record of the run.
 func TestABootThatRunsAgainCountsNothingAgain(t *testing.T) {
-	r := newStepRecordsRig(t)
+	r := newStepRecordsRig(t, 1)
 	planner := r.plannerTheReleaseBeforeStarted()
 	opened := r.issueStartRows()
 	var starts int64
@@ -90,14 +90,14 @@ func TestABootThatRunsAgainCountsNothingAgain(t *testing.T) {
 		at == nil || !at.Equal(raised) {
 		t.Fatalf("step_starts after the boot = %q; want planning's run alone, open at the count 0, the planner's, started when its entry was raised at %s", opened, raised)
 	}
-	if queued := r.unfinishedStepRows(); queued != 0 {
+	if queued := r.unfinishedRows(record.OutboxKindStepRecord); queued != 0 {
 		t.Fatalf("the boot queued %d step records, want none", queued)
 	}
 	r.restart()
 	if again := r.issueStartRows(); len(again) != 1 || again[0] != opened[0] {
 		t.Fatalf("step_starts after a second boot = %q, want it as the first boot left it, %q", again, opened)
 	}
-	if queued := r.unfinishedStepRows(); queued != 0 {
+	if queued := r.unfinishedRows(record.OutboxKindStepRecord); queued != 0 {
 		t.Fatalf("the second boot queued %d step records, want none", queued)
 	}
 }
@@ -120,7 +120,7 @@ func (r *stepRecordsRig) plannerTheReleaseBeforeStarted() *stepClaimant {
 	r.d.stop()
 	r.exec(`delete from step_starts where issue = $1`, r.key)
 	r.exec(`delete from outbox where issue = $1 and kind = $2`, r.key, string(record.OutboxKindStepRecord))
-	r.deleteStepRecord(started)
+	r.deleteNode(started)
 	r.reboot()
 	return planner
 }

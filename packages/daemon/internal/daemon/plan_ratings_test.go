@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -36,12 +37,12 @@ import (
 // second. The control deletes the failed review's record from Dispatch's store, its node and its
 // tuples, and the same assertion must then fail on the first issue's failed steps.
 func TestTheReadOfAProjectHoldsEachRetrosRating(t *testing.T) {
-	r := newStepRecordsRigWith(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 3)
+	r := newStepRecordsRig(t, 3)
 	want := r.walkThreeRated()
 	r.waitPlans("the three finished issues, each rated", want)
 
 	t.Run("control", func(t *testing.T) {
-		r.deleteStepRecord(want[0].steps.find("step", 4, 1).ID)
+		r.deleteNode(want[0].steps.find("step", 4, 1).ID)
 		read, err := r.readPlans()
 		if err != nil {
 			t.Fatalf("read the project's plans after the delete: %v", err)
@@ -57,31 +58,41 @@ func TestTheReadOfAProjectHoldsEachRetrosRating(t *testing.T) {
 // daemon takes it and writes no rating. The case is the one a deploy meets: the implementer is in
 // its retro's turn when the daemon of the release before stops, and the daemon of this release
 // boots on the store it left, where the claim records the contract its plugin registered,
-// PlanRatingContract-1. This daemon relaunches a stale claim onto its own plugin, but it holds the
+// PlanRatingContract-1. That release wrote no plan: this one writes the run's plan at the move out
+// of admitted (workflow's defaultPlan), so the walk to the retro, which this daemon makes, writes
+// one, and the deploy deletes it from Dispatch's store, its node and its tuples, once the outbox
+// holds no row of it. Dispatch then holds what the release before wrote of the run: its step
+// records and no plan. This daemon relaunches a stale claim onto its own plugin, but it holds the
 // relaunch of a claim in a turn for that turn's end and serves the turn until then
 // (refreshStalePlugins, supervise's holdStaleRelaunch, api's staleClaim). So the old plugin's
 // completion of the retro, which carries no rating, is taken: the issue moves to merging, the
 // relaunch comes at the turn's end, the walk ends at done, and the read by project lists the issue
-// with no rating. The merge's record ends after the retro's completion, and a lane runs an issue's
-// records one at a time in the order they are due (outbox_lanes.go), so a rating row the
-// completion had written would have run before the read holds the seven records.
+// with no plan and no rating. The merge's record ends after the retro's completion, and a lane runs
+// an issue's records one at a time in the order they are due (outbox_lanes.go), so a plan or a
+// rating the daemon had written after the boot would have run before the read holds the seven
+// records.
 //
 // Before the deploy, the same completion from the same claim at this release's contract is
 // refused PLAN_RATING_REQUIRED, so the contract the claim records is what decides, and the
 // daemon's own view of the claim after the boot must read the old contract.
 func TestAnOldPluginsRetroCompletesWithNoRatingAcrossTheDeploy(t *testing.T) {
-	r := newStepRecordsRig(t)
+	r := newStepRecordsRig(t, 1)
 	r.walkToRetro()
 	implementer := r.worker(claim.RoleImplementer)
 	implementer.take()
 	r.unratedRetroRefused(implementer)
 
+	plan := workflow.PlanID(r.key, r.d.state().Issues[r.key].Generation)
+	testwait.WithinPolling(t, stepRecordsWait, 50*time.Millisecond, "Dispatch's take of the plan "+plan+" of "+r.key, func() bool {
+		return r.unfinishedRows(record.OutboxKindPlanRecord) == 0
+	})
 	old := api.PlanRatingContract - 1
 	r.restartWith(func() {
 		tag, err := r.st.Pool().Exec(context.Background(), "update claims set plugin_contract = $1 where token = $2", old, string(implementer.token))
 		if err != nil || tag.RowsAffected() != 1 {
 			t.Fatalf("record %s at plugin contract %d, as the daemon of the release before left it: %d rows, %v", implementer.token, old, tag.RowsAffected(), err)
 		}
+		r.deleteNode(plan)
 	})
 	implementer.waitState(supervise.StateWorking)
 	if got := r.d.claim(implementer.token).PluginContract; got != old {
@@ -94,18 +105,20 @@ func TestAnOldPluginsRetroCompletesWithNoRatingAcrossTheDeploy(t *testing.T) {
 	r.merge()
 	var steps stepRecordsRead
 	r.waitSteps("the seven records of the walk whose retro gave no rating", func(got stepRecordsRead) error { steps = got; return stepsHold(got, stepRecordsSeven) })
-	r.waitPlans("the finished issue whose retro gave no rating", []ratedWant{{walkIssue: r.issues[0], steps: steps}})
+	r.waitPlans("the finished issue whose retro gave no rating", []ratedWant{{walkIssue: r.issues[0], steps: steps, unplanned: true}})
 }
 
 // ratedWant is what the read by project must list of one issue: the issue, with the title Dispatch
-// was given for it, its rating with its reason (nil for none), its count of failed steps, and its
+// was given for it, its rating with its reason (nil for none), its count of failed steps, its
 // records as GET steps read them once its walk was done, from which its time, its run's plan and
-// the id of its retro come.
+// the id of its retro come, and whether it is unplanned: an issue whose run started under the
+// release before the one that writes each run's plan, which lists no plan.
 type ratedWant struct {
 	walkIssue
-	rating *intake.PlanRating
-	failed int
-	steps  stepRecordsRead
+	rating    *intake.PlanRating
+	failed    int
+	steps     stepRecordsRead
+	unplanned bool
 }
 
 // walkThreeRated walks the rig's three issues to done side by side, one step of each issue in
@@ -206,10 +219,10 @@ func failedStepsSay(issue string, got, want int) string {
 // plansHold says whether read lists exactly the issues of want, in want's order, which is newest
 // close first, each closed, with the title Dispatch was given for it, the default plan of its own
 // run (the plan node the daemon wrote for that issue and the generation of its records,
-// workflow.PlanID, so no two issues list one plan), its rating with its reason on its retro's
-// record (or none), its count of failed steps, and its time: the earliest start and the latest end
-// of the records of its steps, and their difference in whole seconds. The error names the first
-// issue that is missing or wrong.
+// workflow.PlanID, so no two issues list one plan), or no plan for an unplanned one, its rating
+// with its reason on its retro's record (or none), its count of failed steps, and its time: the
+// earliest start and the latest end of the records of its steps, and their difference in whole
+// seconds. The error names the first issue that is missing or wrong.
 func plansHold(read projectPlansRead, want []ratedWant) error {
 	if len(read.Issues) != len(want) {
 		return fmt.Errorf("the read lists %d finished issues, want %d", len(read.Issues), len(want))
@@ -230,6 +243,9 @@ func plansHold(read projectPlansRead, want []ratedWant) error {
 			return fmt.Errorf("%s is listed with no close", w.key)
 		case got.Title != w.title:
 			return fmt.Errorf("%s is listed with the title %q, want %q", w.key, got.Title, w.title)
+		case w.unplanned && plan != nil:
+			return fmt.Errorf("%s lists the plan %+v, want none: its run started before the release that writes each run's plan", w.key, *plan)
+		case w.unplanned:
 		case plan == nil:
 			return fmt.Errorf("%s lists no plan, want the default plan", w.key)
 		case plan.Issue != w.key || plan.Generation != retro.Generation || plan.ID != workflow.PlanID(w.key, retro.Generation):
@@ -292,18 +308,7 @@ func (r *stepRecordsRig) readPlans() (projectPlansRead, error) {
 // waitPlansRead waits for the read by project to satisfy hold, and fails with hold's last answer.
 func (r *stepRecordsRig) waitPlansRead(what string, hold func(projectPlansRead) error) {
 	r.t.Helper()
-	var last error
-	if !testwait.Holds(stepRecordsWait, 100*time.Millisecond, func() bool {
-		read, err := r.readPlans()
-		if err != nil {
-			last = err
-			return false
-		}
-		last = hold(read)
-		return last == nil
-	}) {
-		r.t.Fatalf("%s never reached the read of %s: %v", what, r.cfg.Project, last)
-	}
+	waitRead(r, what, "the read of "+r.cfg.Project, 100*time.Millisecond, r.readPlans, hold)
 }
 
 // waitPlans waits for the read by project to hold want, and fails with plansHold's last answer.

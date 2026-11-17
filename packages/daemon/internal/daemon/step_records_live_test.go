@@ -40,6 +40,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -137,7 +138,7 @@ func (l *stepRecordsLive) outage() {
 		t.Fatalf("control: with Dispatch stopped `dispatch steps --issue %s` exited %d and printed %q, want a non-zero exit naming the unreachable server; the walk rode through no outage", l.key, code, out)
 	}
 	l.note("control: `dispatch steps --issue %s` with Dispatch stopped exits %d: %s", l.key, code, firstLine(strings.TrimSpace(out)))
-	unfinished := l.unfinishedStepRows()
+	unfinished := l.unfinishedRows(record.OutboxKindStepRecord)
 	if unfinished == 0 {
 		t.Fatalf("control: the outbox holds no unfinished step record of %s while Dispatch is stopped: either Dispatch took each record (no outage) or the daemon wrote none", l.key)
 	}
@@ -199,7 +200,7 @@ func (l *stepRecordsLive) readByIssue() {
 	if failed == "" {
 		t.Fatalf("GET /api/v1/issues/%s/steps holds no record of step 4 attempt 1", l.key)
 	}
-	l.deleteStepRecord(failed)
+	l.deleteNode(failed)
 	l.note("control: deleted the failed review's record %s from Dispatch's database (its workflow_nodes row and its workflow_tuples rows)", failed)
 	out, err = l.stepsHoldTen("in the control, after the delete,")
 	if err == nil {

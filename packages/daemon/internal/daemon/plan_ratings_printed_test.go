@@ -25,10 +25,17 @@ func readScriptPassed(out string, line planLine) bool {
 	return strings.Contains(out, fmt.Sprintf("PASS: %s: plan %s, ratings %s, time ", line.issue, line.plan, line.printedRatings))
 }
 
+// defaultPlanPrinted is the default plan as `dispatch plans` prints it: its source, its one task
+// and that task's steps, workflow.DefaultSteps.
+func defaultPlanPrinted() string {
+	return fmt.Sprintf("default (1 tasks: %s)", strings.Join(workflow.DefaultSteps(), " "))
+}
+
 // plansPrintedWith is what `dispatch plans --project SR1` prints of one finished issue whose
 // ratings print as ratings, the answer both tests below parse.
 func plansPrintedWith(ratings string) string {
-	return "SR1: 1 finished issues\nSR1-1 closed 2026-11-17T00:00:00Z plan default (1 tasks: planner) ratings " + ratings + " time 0h1m failed steps 0"
+	return "SR1: 1 finished issues\nSR1-1 closed 2026-11-17T00:00:00Z plan " + defaultPlanPrinted() +
+		" ratings " + ratings + " time 0h1m failed steps 0"
 }
 
 // The read script prints the ratings as the command printed them, and plans.ts prints each reason
@@ -41,7 +48,7 @@ func TestTheReadScriptsPassIsReadAsTheCommandPrintedTheRatings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pass := `PASS: SR1-1: plan default (1 tasks: planner), ratings 4/5 "Done in <1 day & no rework.", time 0h1m, failed steps 0`
+	pass := fmt.Sprintf(`PASS: SR1-1: plan %s, ratings 4/5 "Done in <1 day & no rework.", time 0h1m, failed steps 0`, defaultPlanPrinted())
 	if !readScriptPassed(printed+"\n"+pass+"\n", lines[0]) {
 		t.Errorf("the script's PASS line %q was not read as naming the ratings of %q", pass, lines[0].text)
 	}
@@ -187,7 +194,7 @@ func plansPrintedHold(project, out string, want []ratedWant) ([]planLine, error)
 		}
 		before = closed
 	}
-	plan := fmt.Sprintf("default (1 tasks: %s)", strings.Join(workflow.DefaultSteps(), " "))
+	plan := defaultPlanPrinted()
 	for place, w := range want {
 		got := lines[place]
 		if got.issue != w.key {

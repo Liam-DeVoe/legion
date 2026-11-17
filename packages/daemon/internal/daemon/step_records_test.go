@@ -82,7 +82,7 @@ var stepRecordsTen = []stepWant{
 // record from Dispatch's store, its node and its tuples, and the same assertion must then name the
 // missing record.
 func TestTheReadOfAnIssueListsEachStepThatRan(t *testing.T) {
-	r := newStepRecordsRig(t)
+	r := newStepRecordsRig(t, 1)
 	r.plan()
 	r.implement()
 	r.test()
@@ -98,7 +98,7 @@ func TestTheReadOfAnIssueListsEachStepThatRan(t *testing.T) {
 	failed := read.find("step", 4, 1)
 
 	t.Run("control", func(t *testing.T) {
-		r.deleteStepRecord(failed.ID)
+		r.deleteNode(failed.ID)
 		read, err := r.readSteps()
 		if err != nil {
 			t.Fatalf("read the issue's steps after the delete: %v", err)
@@ -118,7 +118,7 @@ func TestTheReadOfAnIssueListsEachStepThatRan(t *testing.T) {
 // issue's seven records reach it, each ended. The control holds the outage real: while Dispatch is
 // stopped, the outbox holds the issue's step records unfinished and the read finds no server.
 func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
-	r := newStepRecordsRig(t)
+	r := newStepRecordsRig(t, 1)
 	r.plan()
 	r.implement()
 	r.test()
@@ -129,7 +129,7 @@ func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
 	r.merge()
 
 	t.Run("control", func(t *testing.T) {
-		if unfinished := r.unfinishedStepRows(); unfinished == 0 {
+		if unfinished := r.unfinishedRows(record.OutboxKindStepRecord); unfinished == 0 {
 			t.Fatal("the outbox holds no unfinished step record of the issue while Dispatch is stopped: either Dispatch took each record (no outage) or the daemon wrote none")
 		}
 		if _, err := r.readSteps(); err == nil {
@@ -156,7 +156,7 @@ func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
 // boot token it holds. The tester answers again and completes, the walk ends at done, and the read
 // holds exactly one record of testing for that run, ended, under the id its start wrote.
 func TestTheDaemonRestartsInTheMiddleOfAStep(t *testing.T) {
-	r := newStepRecordsRig(t)
+	r := newStepRecordsRig(t, 1)
 	r.plan()
 	r.implement()
 	tester := r.worker(claim.RoleTester)
@@ -209,7 +209,7 @@ var stepRecordsSeven = []stepWant{
 // record of its own at the next count, started when its entry was raised, and the tester's run
 // this release counted under its own id.
 func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
-	r := newStepRecordsRig(t)
+	r := newStepRecordsRig(t, 1)
 	r.plan()
 	r.implement()
 	r.test()
@@ -412,19 +412,12 @@ type walkIssue struct {
 	number int
 }
 
-// newStepRecordsRig is newStepRecordsRigOn over the package's broker and a Dispatch of this
-// checkout, which the package's own tests run.
-func newStepRecordsRig(t *testing.T) *stepRecordsRig {
+// newStepRecordsRig is newStepRecordsRigWith for a run of issues issues over the package's broker
+// and a Dispatch of this checkout, which the package's own tests run. The live drivers call
+// newStepRecordsRigWith themselves, through newStepRecordsLive (step_records_live_test.go).
+func newStepRecordsRig(t *testing.T, issues int) *stepRecordsRig {
 	t.Helper()
-	return newStepRecordsRigOn(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}))
-}
-
-// newStepRecordsRigOn is newStepRecordsRigWith for a run of one issue, which newStepRecordsRig
-// gives the package's broker. The live drivers call newStepRecordsRigWith themselves, through
-// newStepRecordsLive (step_records_live_test.go).
-func newStepRecordsRigOn(t *testing.T, proof liveProof, dispatch *scratchDispatch) *stepRecordsRig {
-	t.Helper()
-	return newStepRecordsRigWith(t, proof, dispatch, 1)
+	return newStepRecordsRigWith(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), issues)
 }
 
 // newStepRecordsRigWith sets up dispatch, a running Dispatch, with the run's project, its
@@ -940,23 +933,30 @@ func (r *stepRecordsRig) waitSteps(what string, hold func(stepRecordsRead) error
 // waitStepsOf waits for issue's read to satisfy hold, and fails with hold's last answer.
 func (r *stepRecordsRig) waitStepsOf(issue, what string, hold func(stepRecordsRead) error) {
 	r.t.Helper()
+	waitRead(r, what, "Dispatch", time.Second, func() (stepRecordsRead, error) { return r.readStepsOf(issue) }, hold)
+}
+
+// waitRead waits for read to answer something that satisfies hold, reading again every interval,
+// and fails naming where the read goes and hold's last answer.
+func waitRead[T any](r *stepRecordsRig, what, where string, interval time.Duration, read func() (T, error), hold func(T) error) {
+	r.t.Helper()
 	var last error
-	if !testwait.Holds(stepRecordsWait, time.Second, func() bool {
-		read, err := r.readStepsOf(issue)
+	if !testwait.Holds(stepRecordsWait, interval, func() bool {
+		got, err := read()
 		if err != nil {
 			last = err
 			return false
 		}
-		last = hold(read)
+		last = hold(got)
 		return last == nil
 	}) {
-		r.t.Fatalf("%s never reached Dispatch: %v", what, last)
+		r.t.Fatalf("%s never reached %s: %v", what, where, last)
 	}
 }
 
-// deleteStepRecord deletes record id from Dispatch's own store, as the store holds it: its node
-// and every tuple that names it.
-func (r *stepRecordsRig) deleteStepRecord(id string) {
+// deleteNode deletes node id, a step record or a plan, from Dispatch's own store, as the store
+// holds it: its node and every tuple that names it.
+func (r *stepRecordsRig) deleteNode(id string) {
 	t := r.t
 	t.Helper()
 	ctx := context.Background()
@@ -974,13 +974,13 @@ func (r *stepRecordsRig) deleteStepRecord(id string) {
 	}
 }
 
-// unfinishedStepRows is how many step records of the issue the daemon's outbox holds unfinished.
-func (r *stepRecordsRig) unfinishedStepRows() int {
+// unfinishedRows is how many rows of kind of the issue the daemon's outbox holds unfinished.
+func (r *stepRecordsRig) unfinishedRows(kind record.OutboxKind) int {
 	r.t.Helper()
 	var count int
 	if err := r.st.Pool().QueryRow(context.Background(),
-		"select count(*) from outbox where issue = $1 and kind = $2", r.key, string(record.OutboxKindStepRecord)).Scan(&count); err != nil {
-		r.t.Fatalf("count the issue's step records in the outbox: %v", err)
+		"select count(*) from outbox where issue = $1 and kind = $2", r.key, string(kind)).Scan(&count); err != nil {
+		r.t.Fatalf("count the issue's %s rows in the outbox: %v", kind, err)
 	}
 	return count
 }
@@ -1324,16 +1324,21 @@ func (c *stepClaimant) grant() string {
 type stepRecordsGitHub struct {
 	url string
 	mu  sync.Mutex
-	// numbers is each pull request opened, in order; branches and done are its branch and
-	// whether it merged, by number.
-	numbers  []int
-	branches map[int]string
-	done     map[int]bool
+	// pulls is each pull request opened, in the order they were opened.
+	pulls []stepRecordsPull
+}
+
+// stepRecordsPull is one pull request of the walk: its number, the branch it is open on, and
+// whether GitHub has merged it.
+type stepRecordsPull struct {
+	number int
+	branch string
+	merged bool
 }
 
 func newStepRecordsGitHub(t *testing.T) *stepRecordsGitHub {
 	t.Helper()
-	g := &stepRecordsGitHub{branches: map[int]string{}, done: map[int]bool{}}
+	g := &stepRecordsGitHub{}
 	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/"+liveRepo)
 		pull, reviews := strings.CutSuffix(strings.TrimPrefix(rest, "/pulls/"), "/reviews")
@@ -1370,47 +1375,67 @@ func newStepRecordsGitHub(t *testing.T) *stepRecordsGitHub {
 func (g *stepRecordsGitHub) open(branch string, number int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.numbers = append(g.numbers, number)
-	g.branches[number] = branch
+	g.pulls = append(g.pulls, stepRecordsPull{number: number, branch: branch})
 }
 
 // opened is whether pull request number was opened.
 func (g *stepRecordsGitHub) opened(number int) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	_, ok := g.branches[number]
-	return ok
+	return g.find(number) != nil
 }
 
 // merged is GitHub's merge of pull request number: every read from now on answers it merged.
 func (g *stepRecordsGitHub) merged(number int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.done[number] = true
+	if pull := g.find(number); pull != nil {
+		pull.merged = true
+	}
+}
+
+// find is the pull request number, nil where none was opened. Its caller holds g.mu.
+func (g *stepRecordsGitHub) find(number int) *stepRecordsPull {
+	for place := range g.pulls {
+		if g.pulls[place].number == number {
+			return &g.pulls[place]
+		}
+	}
+	return nil
 }
 
 // pullRequests is each pull request as GitHub answers it now, in the order they were opened.
 func (g *stepRecordsGitHub) pullRequests() []string {
 	g.mu.Lock()
-	numbers := append([]int(nil), g.numbers...)
-	g.mu.Unlock()
-	pulls := make([]string, len(numbers))
-	for place, number := range numbers {
-		pulls[place] = g.pullRequest(number)
+	defer g.mu.Unlock()
+	answers := make([]string, len(g.pulls))
+	for place, pull := range g.pulls {
+		answers[place] = pull.answer()
 	}
-	return pulls
+	return answers
 }
 
-// pullRequest is pull request number as GitHub answers it now.
+// pullRequest is pull request number as GitHub answers it now, the empty text where none was
+// opened, which the handler asks for none (opened).
 func (g *stepRecordsGitHub) pullRequest(number int) string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	pull := g.find(number)
+	if pull == nil {
+		return ""
+	}
+	return pull.answer()
+}
+
+// answer is the pull request as GitHub's REST API answers it: open at stepRecordsHead and clean
+// until it merges, closed and merged from then on.
+func (p stepRecordsPull) answer() string {
 	state, merged, mergeable := "open", false, "clean"
-	if g.done[number] {
+	if p.merged {
 		state, merged, mergeable = "closed", true, "unknown"
 	}
 	return fmt.Sprintf(`{"number":%d,"state":%q,"merged":%t,"merge_commit_sha":%q,"mergeable":true,"mergeable_state":%q,"head":{"ref":%q,"sha":%q},"base":{"ref":"main"},"updated_at":"2026-11-17T00:00:00Z"}`,
-		number, state, merged, "merge-"+stepRecordsHead, mergeable, g.branches[number], stepRecordsHead)
+		p.number, state, merged, "merge-"+stepRecordsHead, mergeable, p.branch, stepRecordsHead)
 }
 
 // The record of a member of a tree: a child's acceptance is its tree's work, so the record of its
@@ -1419,7 +1444,7 @@ func (g *stepRecordsGitHub) pullRequest(number int) string {
 // child stands in reviewing under the walk's root, on a pull request of its own; a person's
 // approval moves it to accepting, and the root's architect signs it off through its own route.
 func TestAChildsAcceptanceRecordNamesItsTreeArchitect(t *testing.T) {
-	r := newStepRecordsRig(t)
+	r := newStepRecordsRig(t, 1)
 	child := r.childInAccepting()
 	r.signOff(child)
 	architect := r.worker(claim.RoleArchitect)
@@ -1457,7 +1482,7 @@ func (r *stepRecordsRig) childInAccepting() string {
 // (api.Options.AwaitStream, which serve gives the daemon's awaitStream), so the record of planning
 // ends naming the planner's session and that answer's model, not the model of the answer before.
 func TestACompletionNamesTheModelItsStreamReadAheadOfIt(t *testing.T) {
-	r := newStepRecordsRig(t)
+	r := newStepRecordsRig(t, 1)
 	planner := r.worker(claim.RolePlanner)
 	planner.model = "stand-in/planner-first"
 	planner.take()
@@ -1488,7 +1513,7 @@ func TestACompletionNamesTheModelItsStreamReadAheadOfIt(t *testing.T) {
 // with another, and the child's acceptance ends failed, back at implementing, with the architect's
 // session and the second model.
 func TestAnArchitectsMoveBackOutOfAcceptingNamesTheModelThatAnsweredLast(t *testing.T) {
-	r := newStepRecordsRig(t)
+	r := newStepRecordsRig(t, 1)
 	child := r.childInAccepting()
 	architect := r.worker(claim.RoleArchitect)
 	architect.model = "stand-in/architect-first"
@@ -1520,7 +1545,7 @@ func TestAnArchitectsMoveBackOutOfAcceptingNamesTheModelThatAnsweredLast(t *test
 // read ahead of the request (heldRequest). The child leaves the workflow, and its acceptance ends
 // stopped, returned nowhere, with the architect's session and the second model.
 func TestAParkOfAChildInAcceptingNamesTheModelThatAnsweredLast(t *testing.T) {
-	r := newStepRecordsRig(t)
+	r := newStepRecordsRig(t, 1)
 	child := r.childInAccepting()
 	architect := r.worker(claim.RoleArchitect)
 	architect.model = "stand-in/architect-first"
@@ -1653,7 +1678,7 @@ func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 // planner's session and no model, as for an agent that named none. The model that answered first
 // did not answer last, so the record does not name it.
 func TestAModelHoldingANulIsNotKept(t *testing.T) {
-	r := newStepRecordsRig(t)
+	r := newStepRecordsRig(t, 1)
 	planner := r.worker(claim.RolePlanner)
 	planner.model = "stand-in/first"
 	planner.answer()
@@ -1678,7 +1703,7 @@ func TestAModelHoldingANulIsNotKept(t *testing.T) {
 // the merge names its token and no session and no model. A step that runs names no session yet:
 // its end names the session and the model together.
 func TestEachRecordNamesItsOwnAgentsSessionAndModel(t *testing.T) {
-	r := newStepRecordsRig(t)
+	r := newStepRecordsRig(t, 1)
 	planner := r.worker(claim.RolePlanner)
 	planner.model = "stand-in/planner"
 	planner.take()

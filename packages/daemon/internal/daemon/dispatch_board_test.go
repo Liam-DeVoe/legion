@@ -320,19 +320,21 @@ func (b *liveDispatch) writeStep(key, id string, write map[string]any, rates boo
 			stored[field] = value
 		}
 	}
-	answer := map[string]any{"attempt": 0}
+	answer := map[string]any{}
 	for field, value := range stored {
 		answer[field] = value
 	}
+	attempt := 0
 	for _, other := range b.stepOrder {
 		record := b.steps[other]
 		if record["task"] == stored["task"] && record["kind"] == stored["kind"] && record["step"] == stored["step"] {
-			answer["attempt"] = answer["attempt"].(int) + 1
+			attempt++
 		}
 		if other == id {
 			break
 		}
 	}
+	answer["attempt"] = attempt
 	if err := json.NewEncoder(w).Encode(answer); err != nil {
 		b.t.Errorf("write the step record %s: %v", id, err)
 	}
