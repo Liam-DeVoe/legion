@@ -298,8 +298,9 @@ func (a *countingAcker) NakWithDelay(time.Duration) error { a.naks.Add(1); retur
 
 // A reply whose subject names another session than the frame's moves nothing, whatever its word:
 // no answer to the server, the frame still awaited and not marked answered, and the run's pause
-// backoff untouched. Each is logged. The control is the frame's own session's done, on the same
-// token, which acks it and ends it.
+// backoff untouched. The first is logged and the next held back, until relayRefusedReplyLogEvery
+// has passed, when the next line says how many it held. The control is the frame's own session's
+// done, on the same token, which acks it and ends it.
 func TestAReplyNamingAnotherSessionMovesNoFrame(t *testing.T) {
 	var logs bytes.Buffer
 	relays := &sessionRelays{replyPrefix: "relay.reply.", frames: map[string]*relayFrame{}, logger: logging.NewWithWriter("test", &logs)}
@@ -309,10 +310,13 @@ func TestAReplyNamingAnotherSessionMovesNoFrame(t *testing.T) {
 	frame := &relayFrame{run: run, acker: acker, sentAt: time.Now(), delivered: 1}
 	relays.frames[token] = frame
 	run.outstanding[token] = frame
+	forge := func(word string) {
+		relays.onReply(&natsgo.Msg{Subject: relays.replyPrefix + "ses_one." + token, Data: []byte(word)})
+	}
 
 	words := []string{relayReplyReceived, relayReplyProgress, relayReplyDone, relayReplyNak}
 	for _, word := range words {
-		relays.onReply(&natsgo.Msg{Subject: relays.replyPrefix + "ses_one." + token, Data: []byte(word)})
+		forge(word)
 	}
 	if acker.acks.Load()+acker.inProgress.Load()+acker.naks.Load() != 0 {
 		t.Fatalf("another session's replies answered the server: %d acks, %d in progress, %d naks",
@@ -321,13 +325,41 @@ func TestAReplyNamingAnotherSessionMovesNoFrame(t *testing.T) {
 	if relays.frames[token] != frame || run.outstanding[token] != frame || frame.answered || run.answered.Load() {
 		t.Fatal("another session's replies changed the frame: it is no longer awaited, or it is marked answered")
 	}
-	if got := strings.Count(logs.String(), relayRefusedReplyLine); got != len(words) {
-		t.Fatalf("the relay logged %d refusals, want %d:\n%s", got, len(words), logs.String())
-	}
-	for _, field := range []string{`"session_id":"ses_two"`, `"reply_session_id":"ses_one"`, `"reply":"done"`} {
-		if !strings.Contains(logs.String(), field) {
-			t.Fatalf("the refusal lines carry no %s:\n%s", field, logs.String())
+	refusals := func() []string {
+		var lines []string
+		for line := range strings.SplitSeq(strings.TrimSpace(logs.String()), "\n") {
+			if strings.Contains(line, relayRefusedReplyLine) {
+				lines = append(lines, line)
+			}
 		}
+		return lines
+	}
+	first := refusals()
+	if len(first) != 1 {
+		t.Fatalf("the relay logged %d refusals for %d replies within a minute, want the first alone:\n%s", len(first), len(words), logs.String())
+	}
+	for _, field := range []string{`"session_id":"ses_two"`, `"reply_session_id":"ses_one"`, `"reply":"received"`, `"held":0`} {
+		if !strings.Contains(first[0], field) {
+			t.Fatalf("the first refusal line carries no %s: %s", field, first[0])
+		}
+	}
+
+	// A minute on, the next refusal is logged and counts the three held back.
+	relays.framesMu.Lock()
+	relays.refusedLoggedAt = relays.refusedLoggedAt.Add(-relayRefusedReplyLogEvery)
+	relays.framesMu.Unlock()
+	forge(relayReplyDone)
+	lines := refusals()
+	if len(lines) != 2 {
+		t.Fatalf("the relay logged %d refusals once a minute had passed, want 2:\n%s", len(lines), logs.String())
+	}
+	for _, field := range []string{`"reply":"done"`, `"held":3`} {
+		if !strings.Contains(lines[1], field) {
+			t.Fatalf("the second refusal line carries no %s: %s", field, lines[1])
+		}
+	}
+	if acker.acks.Load()+acker.inProgress.Load()+acker.naks.Load() != 0 || relays.frames[token] != frame {
+		t.Fatal("the logged refusal moved the frame")
 	}
 
 	relays.onReply(&natsgo.Msg{Subject: relays.replyPrefix + "ses_two." + token, Data: []byte(relayReplyDone)})

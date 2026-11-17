@@ -122,6 +122,13 @@ const (
 	// about ten round trips and the round trip, not the server, bounds a restart: 32 at once still
 	// restart 1,000 sessions in about 10 s at a 30 ms round trip, where 8 would take 40 s.
 	relayRestartLimit = 32
+	// relayRefusedReplyLogEvery is how often the relay writes its line for a reply that names
+	// another session than its frame's (sessionRelays.onReply): the first such reply, then at most
+	// one a minute, each saying how many it held back since the line before. Only a holder of the
+	// shared session user or of a host user can send such replies, and it can send them as fast as
+	// it likes, so the line must not grow with them; one a minute still tells an operator it is
+	// going on, as admissionWarnEvery does for the listener's shared-token admissions.
+	relayRefusedReplyLogEvery = time.Minute
 )
 
 // relayEvent is what the relay loop is told about a session; the flags of the events it has not
@@ -227,7 +234,9 @@ type sessionRelays struct {
 	// restarts holds a token for each relay restarting its consumer, relayRestartLimit at most.
 	restarts chan struct{}
 
-	// framesMu guards frames and each relay's outstanding and unanswered frames.
+	// framesMu guards frames, each relay's outstanding and unanswered frames, and refusedLoggedAt
+	// and refusedHeld: when onReply last wrote its line for a reply naming another session than
+	// its frame's, and how many such replies it has held back since (relayRefusedReplyLogEvery).
 	framesMu sync.Mutex
 	// frames maps the token of every frame awaiting done or nak to it: the random last token of
 	// its reply subject. Among sessions on per-session credentials (the NATS auth service's grant,
@@ -235,7 +244,9 @@ type sessionRelays struct {
 	// can read that subject. A holder of the shared session user or of a host user reads every
 	// session's relay subject, frames' reply subjects with them, and may publish to each, so neither
 	// the token nor onReply's check of the session the subject names stops it.
-	frames map[string]*relayFrame
+	frames          map[string]*relayFrame
+	refusedLoggedAt time.Time
+	refusedHeld     int
 }
 
 // relayCancelReason is why the loop cancelled a run. It is the cause the cancellation carries
@@ -1174,9 +1185,10 @@ func relayNakDelayFor(delivered uint64) time.Duration {
 // frame awaits, or with any other body, is ignored.
 //
 // A reply moves only the frame of the session its subject names, the session the frame was sent
-// to: one whose subject names another session is logged and moves nothing, so a session that
-// learned another's token cannot acknowledge that session's message away under its own reply
-// prefix, the one its grant lets it publish to (bus.SessionReplies).
+// to: one whose subject names another session moves nothing, so a session that learned another's
+// token cannot acknowledge that session's message away under its own reply prefix, the one its
+// grant lets it publish to (bus.SessionReplies). The first such reply is logged at WARN, then at
+// most one every relayRefusedReplyLogEvery, each line counting the replies held back before it.
 func (m *sessionRelays) onReply(msg *nats.Msg) {
 	rest, ok := strings.CutPrefix(msg.Subject, m.replyPrefix)
 	if !ok {
@@ -1200,9 +1212,20 @@ func (m *sessionRelays) onReply(msg *nats.Msg) {
 		return
 	}
 	if frame.run.sessionID != sessionID {
+		now := time.Now()
+		logLine := m.refusedLoggedAt.IsZero() || now.Sub(m.refusedLoggedAt) >= relayRefusedReplyLogEvery
+		held := m.refusedHeld
+		if logLine {
+			m.refusedLoggedAt, m.refusedHeld = now, 0
+		} else {
+			m.refusedHeld++
+		}
 		m.framesMu.Unlock()
-		m.logger.Warn("session relay refused a reply naming another session than the one its frame was sent to; the frame is unchanged",
-			slog.String("session_id", frame.run.sessionID), slog.String("reply_session_id", sessionID), slog.String("reply", reply))
+		if logLine {
+			m.logger.Warn("session relay refused a reply naming another session than the one its frame was sent to; the frame is unchanged",
+				slog.String("session_id", frame.run.sessionID), slog.String("reply_session_id", sessionID), slog.String("reply", reply),
+				slog.Int("held", held))
+		}
 		return
 	}
 	frame.answered = true
