@@ -2553,6 +2553,67 @@ test("a failed items read marks the done rows' facts cells and names the error u
   ).toBeInTheDocument();
 });
 
+// `exclude_tree` leaves out each tree it names: the root itself, and every row whose facts name
+// that root. A row's tree is in its facts, so the view shows its loading state until the board
+// and the items of its done rows answer, never a list from a read that has not answered.
+test("exclude_tree leaves out the rows of each tree it names, and shows the loading state until the facts that name a row's tree answer", async () => {
+  const sockets = liveSockets();
+  const answer = Promise.withResolvers<readonly EvalItemRow[]>();
+  const items = answerItems(() => answer.promise);
+  const child = factsRow("CORE-6", "2026-11-12T10:00:00Z", 1);
+  table(
+    [...VIEW_ROWS(), issue("CORE-6", { status: "done", closed_at: "2026-11-12T10:00:00Z" })],
+    "?view=done&exclude_tree=CORE-5",
+    {},
+    {},
+    Promise.resolve(DAEMON)
+  );
+  expect(await screen.findByRole("status", { name: "Loading issues" })).toBeDefined();
+  await answerBoard(sockets, legionBoard({ "CORE-3": boardFacts(2) }));
+  await waitFor(() => expect(items).toHaveBeenCalled());
+  expect(screen.getByRole("status", { name: "Loading issues" })).toBeDefined();
+  expect(screen.queryByText("No issues match these filters.")).toBeNull();
+
+  answer.resolve([
+    factsRow("CORE-5", "2026-11-11T10:00:00Z", 3),
+    { ...child, cols: { ...child.cols, root_key: "CORE-5", tree_depth: 1 } },
+  ]);
+  await screen.findByRole("row", { name: "CORE-3 Work CORE-3" });
+  expect(listedKeys()).toEqual(["CORE-3"]);
+});
+
+// Each tree left out is a chip of the control row and a line of the Filters panel, each with the
+// remove that gives its rows back and leaves the other tree out.
+test("each tree exclude_tree leaves out is a chip of the row and a line of the Filters panel, and either remove gives its rows back", async () => {
+  const user = userEvent.setup();
+  const sockets = liveSockets();
+  answerItems(async () => [factsRow("CORE-5", "2026-11-11T10:00:00Z", 3)]);
+  table(VIEW_ROWS(), "?exclude_tree=CORE-3&exclude_tree=CORE-5", {}, {}, Promise.resolve(DAEMON));
+  expect(await screen.findByRole("status", { name: "Loading issues" })).toBeDefined();
+  await answerBoard(
+    sockets,
+    legionBoard({ "CORE-2": { ...boardFacts(2), root_key: "CORE-3", tree_depth: 1 } })
+  );
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  expect(listedKeys()).toEqual(["CORE-1"]);
+  const chip = screen.getByRole("button", { name: "Remove Not in tree CORE-3 filter" });
+  expect(chip).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "Remove Not in tree CORE-5 filter" })).toBeDefined();
+
+  await user.click(screen.getByRole("button", { name: /^Filters/ }));
+  const panel = screen.getByRole("list", { name: "Other narrowings" });
+  expect(within(panel).getByText("Not in tree CORE-3")).toBeDefined();
+  await user.click(within(panel).getByRole("button", { name: "Remove Not in tree CORE-5" }));
+  await waitFor(() => expect(routeSearch()).not.toContain("exclude_tree=CORE-5"));
+  expect(routeSearch()).toContain("exclude_tree=CORE-3");
+  expect(listedKeys()).toEqual(["CORE-1"]);
+
+  await user.click(screen.getByRole("button", { name: "Remove Not in tree CORE-3 filter" }));
+  await waitFor(() => expect(listedKeys().sort()).toEqual(["CORE-1", "CORE-2"]));
+  expect(routeSearch()).not.toContain("exclude_tree");
+  expect(screen.queryByRole("button", { name: /^Remove Not in tree / })).toBeNull();
+});
+
 /** Done, in a project with a daemon whose board's map holds CORE-3 and not CORE-5: the items read
  *  of CORE-5's close day, and the counts of each read made. */
 async function doneWithFacts(rows = VIEW_ROWS()) {

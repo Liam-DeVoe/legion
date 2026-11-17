@@ -89,7 +89,7 @@ import {
   planMove,
 } from "./board-model";
 import { useBoardMoves } from "./board-moves";
-import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
+import { IssueFlagChips, NarrowingList, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
 import { formatPhaseTime, formatWorkTime } from "./issues-legion";
 import { type Item, MEASURE_METHODS, sinceMs, workerName, workHoursOf } from "./issues-table-model";
@@ -539,6 +539,8 @@ function BoardLineView({
   );
 }
 
+const NO_NARROWINGS: readonly FilterChip[] = [];
+
 /**
  * The control row above the Board: the view's search, the Filters panel with the Labels picker
  * (which writes `label=`, as the table's Labels column filter does) and the three flags, a chip
@@ -561,6 +563,7 @@ export function BoardControlRow({
   controls,
   groupBy,
   labelOptions,
+  narrowings = NO_NARROWINGS,
   onClear,
   onSearch,
   search,
@@ -576,6 +579,9 @@ export function BoardControlRow({
   groupBy?: { readonly value: BoardBy; readonly onChange: (by: BoardBy) => void };
   /** The labels the Labels picker offers. */
   labelOptions: readonly string[];
+  /** The narrowings among `chips` that are no column and no flag (`exclude_tree`), which the
+   *  Filters panel lists too, each with its remove. */
+  narrowings?: readonly FilterChip[];
   onClear: (() => void) | undefined;
   onSearch: (search: string) => void;
   /** The view's search. */
@@ -676,6 +682,7 @@ export function BoardControlRow({
                 >
                   Unclaimed
                 </Chip>
+                <NarrowingList narrowings={narrowings} />
               </>
             )}
           </PanelTrigger>

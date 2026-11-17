@@ -17,7 +17,7 @@ import { StepButton } from "../../components/StepButton";
 import { useAddressUpdate } from "../../lib/page-address";
 import { borderDefault, issueStatusScale, surfaceMutedBg } from "../../theme/classes";
 import { issueStatuses, statusLabel } from "./board-model";
-import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
+import { IssueFlagChips, NarrowingList, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
 import {
   COLUMNS,
@@ -84,6 +84,8 @@ export function IssueTableStatus({
  *  row of them: the filter panel behind the trigger, or the display menu at the right end. */
 type ToolbarPanel = "flags" | "view";
 
+const NO_NARROWINGS: readonly FilterChip[] = [];
+
 /**
  * The one row the List's controls sit in: the search box, the trigger over the three flags that
  * narrow no column of the table, the chips of every narrowing that is on - the issues a link
@@ -96,6 +98,7 @@ type ToolbarPanel = "flags" | "view";
 export function IssueTableToolbar({
   clear,
   controls,
+  narrowings = NO_NARROWINGS,
   ownStatuses,
   searchRef,
   selection,
@@ -109,6 +112,9 @@ export function IssueTableToolbar({
   clear?: { readonly on: boolean; readonly run: () => void };
   /** The page's own controls, in the place of the columns menu the row draws by itself. */
   controls?: ReactNode;
+  /** The narrowings an address carries that are no column and no flag (`exclude_tree`): each a
+   *  chip of the row and a line of the Filters panel, with its remove. */
+  narrowings?: readonly FilterChip[];
   /** The statuses the view lists by itself, which draw no chip and which taking the Status
    *  chip off goes back to: the open statuses where unset. */
   ownStatuses?: readonly string[];
@@ -198,7 +204,7 @@ export function IssueTableToolbar({
   // the write below takes out of the address.
   const narrowed = filters.length > 0 || search !== "" || flags.needsYou || flags.unread;
   const chips = filterChips(
-    [...(selection === undefined ? [] : [selection]), ...flagged, ...columned],
+    [...(selection === undefined ? [] : [selection]), ...flagged, ...narrowings, ...columned],
     "compact"
   );
   const clearFilters = () =>
@@ -278,7 +284,7 @@ export function IssueTableToolbar({
         size="compact"
         trigger={
           <PanelTrigger
-            count={flagged.length + columned.length}
+            count={flagged.length + narrowings.length + columned.length}
             label="Filters"
             onOpenChange={(open) => setOpenPanel(open ? "flags" : undefined)}
             open={openPanel === "flags"}
@@ -291,6 +297,7 @@ export function IssueTableToolbar({
                 <Chip onClick={() => setUnclaimed(!unclaimed)} selected={unclaimed}>
                   Unclaimed
                 </Chip>
+                <NarrowingList narrowings={narrowings} />
               </>
             )}
           </PanelTrigger>

@@ -117,6 +117,7 @@ import {
   clearNarrowings,
   currentAddress,
   expandView,
+  inExcludedTree,
   isBoardFedColumn,
   isSavedViewChanged,
   isViewChanged,
@@ -128,6 +129,7 @@ import {
   type SavedViews,
   savedViewQuery,
   shownColumns,
+  useExcludedTrees,
   useSavedViews,
   useViewLayout,
   type ViewLayout,
@@ -716,6 +718,10 @@ function IssueTableBody({
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
   const { attachAbove, boxWidth } = layout;
   const flags = useIssueFilters();
+  // The trees an Evals link leaves out (`exclude_tree`), a narrowing of the Issues tab alone: a
+  // row is in a tree when it is the tree's root or its facts name that root.
+  const [excludedTrees, keepTree] = useExcludedTrees();
+  const excluded = tab === undefined ? NO_PICKS : excludedTrees;
   const userState = useQuery(userStateQuery());
   const viewer = useQuery(whoAmIQuery()).data?.login;
   const [selection, setSelection] = useState<RowSelectionState>({});
@@ -769,7 +775,8 @@ function IssueTableBody({
     !flags.needsYou &&
     !flags.unread &&
     view.selection === null &&
-    filters.every((filter) => filter.id === "status" || filter.id === "closed");
+    filters.every((filter) => filter.id === "status" || filter.id === "closed") &&
+    excluded.length === 0;
   const windowFrom = closedWindow?.from;
   const windowTo = closedWindow?.to;
   const windowRolling = closedWindow?.rolling;
@@ -815,9 +822,12 @@ function IssueTableBody({
   const boardWaits =
     hasLegion &&
     (filters.some(({ id }) => isBoardFedColumn(id) || id === "queue") ||
-      reading.some(isBoardFedColumn));
+      reading.some(isBoardFedColumn) ||
+      excluded.length > 0);
   const factsWait =
-    hasLegion && done !== undefined && reading.some((id) => FACTS_COLUMNS.includes(id));
+    hasLegion &&
+    done !== undefined &&
+    (reading.some((id) => FACTS_COLUMNS.includes(id)) || excluded.length > 0);
   const openPending = readsOpen && issues.isPending;
   const loading =
     openPending ||
@@ -843,12 +853,25 @@ function IssueTableBody({
   const items = useMemo(
     () =>
       allItems.filter(
-        ({ issue }) =>
+        ({ facts, issue }) =>
           (picked === null || picked.keys.has(issue.key)) &&
           (!flags.needsYou || issue.open_asks > 0) &&
-          (!flags.unread || issueIsUnread(issue, userState.data?.[issue.key]?.last_read_seq ?? 0))
+          (!flags.unread ||
+            issueIsUnread(issue, userState.data?.[issue.key]?.last_read_seq ?? 0)) &&
+          !inExcludedTree(issue.key, facts?.root_key, excluded)
       ),
-    [allItems, flags.needsYou, flags.unread, picked, userState.data]
+    [allItems, excluded, flags.needsYou, flags.unread, picked, userState.data]
+  );
+  // Each tree left out, as a chip of the control row and a line of the Filters panel, each with
+  // the remove that gives its rows back.
+  const excludedChips = useMemo<FilterChip[]>(
+    () =>
+      excluded.map((tree) => ({
+        key: `exclude_tree:${tree}`,
+        label: `Not in tree ${tree}`,
+        remove: () => keepTree(tree),
+      })),
+    [excluded, keepTree]
   );
   // What the table is narrowed to, and the way back to every row: removing the chip clears
   // `only=` and leaves every other control where the reader set it. It is a chip of the control
@@ -1242,13 +1265,16 @@ function IssueTableBody({
         {tabs}
         {listingNotices}
         <BoardControlRow
-          chips={boardChips({
-            columns: table.getAllLeafColumns(),
-            flags,
-            own: tab.ownAddress,
-            search,
-            setSearch,
-          })}
+          chips={[
+            ...boardChips({
+              columns: table.getAllLeafColumns(),
+              flags,
+              own: tab.ownAddress,
+              search,
+              setSearch,
+            }),
+            ...excludedChips,
+          ]}
           controls={
             <>
               {layoutSwitch}
@@ -1274,6 +1300,7 @@ function IssueTableBody({
               : undefined
           }
           labelOptions={labelOptions}
+          narrowings={excludedChips}
           onClear={
             narrowingsDiffer(params, tab.ownAddress)
               ? () => update((current) => clearNarrowings(current, tab.ownAddress))
@@ -1367,6 +1394,7 @@ function IssueTableBody({
               </>
             )
           }
+          narrowings={excludedChips}
           ownStatuses={tab?.base.statuses}
           searchRef={searchRef}
           selection={pickedChip}
