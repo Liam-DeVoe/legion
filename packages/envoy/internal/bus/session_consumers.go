@@ -153,6 +153,13 @@ func sessionConsumerNameOf(sessionID string) (string, error) {
 // wait out their whole timeout for an answer a refused request never gets. The configuration and
 // the answers are the jetstream package's types. A pull (SessionPull) sends its own pull
 // requests, so starting one costs no API call.
+//
+// Every request it sends goes through requestConfirmed: a consumer's info, create, update and
+// delete, the consumer list, the stream read and each stored-message read. So a call made while
+// nats.go reconnects the connection waits for the connection within its ctx, and fails as
+// ErrReconnecting, `bus: NATS is reconnecting`, when ctx ends first or when a request fails while
+// the connection is still not connected. The listener answers that error as a bus that did not
+// answer (cmd/listener sessionDelivery.refused), not as a consumer it could not make.
 type SessionConsumers struct {
 	client *Client
 	// ackWait is SessionConsumerAckWait, shortened by a test that waits out a redelivery.

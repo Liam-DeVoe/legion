@@ -23,7 +23,7 @@ var ErrReconnecting = errors.New("NATS is reconnecting")
 // reconnectingSend is a send nats.go refused while it connects or reconnects the connection:
 // nats.ErrReconnectBufExceeded, which it answers to every publish then, since the client keeps no
 // reconnect buffer, nats.ErrConnectionReconnecting, or any error a JetStream request returns while
-// it does (namedRequests.named). Its text is `bus: NATS is reconnecting`,
+// it does (namedOn). Its text is `bus: NATS is reconnecting`,
 // ErrReconnecting's under this package's prefix, so a caller that wraps it adds no `bus:` of its
 // own. The text of nats.ErrReconnectBufExceeded is `nats: outbound buffer limit exceeded`, and a
 // reader of an answer or a log line reads that as a client that sent too much, where the bus is
@@ -45,6 +45,12 @@ func (e reconnectingSend) Unwrap() []error { return []error{ErrReconnecting, e.r
 //     the client's own, which Client.JS hands its callers, the stream ensure's, the subject
 //     read's, the leader read of a key (KeyValue.GetFromLeader), and the contexts EnsureKeyValue,
 //     OpenKeyValue and SetKeyValueMaxAge are handed;
+//   - a JetStream API request this package builds itself (Client.requestConfirmed), which also
+//     names any error a request returns while the connection reconnects (namedOn): every request
+//     SessionConsumers sends - a consumer's info, create, update and delete, the consumer list
+//     and the stream read - and each stored-message read (Client.NextStoredMessage,
+//     Client.LastStoredMessage); and a SessionConsumers call that waits for a stream read another
+//     call started (streamRead.wait);
 //   - a session consumer's pull request (SessionPull.pull) and each answer to a message it pulled
 //     (sessionAck);
 //   - a publish, JetStream or core, and a core request (Client.refused, window.unsent,
@@ -77,7 +83,7 @@ func Reconnecting(err error) error {
 //
 // conn is the connection the context sends on, whose state named reads. It is nil only for a
 // context a caller handed without its connection (SetKeyValueMaxAge), whose requests are named
-// for nats.go's refusal alone (Reconnecting).
+// for nats.go's refusal alone (namedOn).
 type namedRequests struct {
 	nats.JetStreamContext
 	conn *nats.Conn
@@ -103,21 +109,27 @@ func namedJetStream(conn *nats.Conn, js nats.JetStreamContext) nats.JetStreamCon
 	return namedRequests{JetStreamContext: js, conn: conn}
 }
 
-// named is err, a request's answer, as the ErrReconnecting it is when the request was made while
-// nats.go connects or reconnects the connection: nats.go's refusal of its send (Reconnecting), or
-// any error the request returns while the connection reports that state. The state is read because
-// nats.go refuses some requests then before it sends anything, with words of its own that say
-// nothing true: a KV bucket's lookup and create first check the server's version, which a
-// connection that is reconnecting does not report, and answer "nats: key-value requires at least
-// server version 2.6.2". The error nats.go gave stays in the chain (reconnectingSend), so a caller
-// that reads it still finds it.
-func (j namedRequests) named(err error) error {
-	if err == nil || j.conn == nil || !connecting(j.conn) {
+// named is err, a request's answer, named by the state of the context's connection (namedOn).
+func (j namedRequests) named(err error) error { return namedOn(j.conn, err) }
+
+// namedOn is err, the answer of a request made on conn, as the ErrReconnecting it is when the
+// request was made while nats.go connects or reconnects conn: nats.go's refusal of its send
+// (Reconnecting), or any error the request returns while conn reports that state. The state is
+// read because nats.go answers some requests then with words of its own that say nothing true. It
+// refuses a KV bucket's lookup and create before it sends anything: both first check the server's
+// version, which a connection that is reconnecting does not report, and answer "nats: key-value
+// requires at least server version 2.6.2". And a request sent just before the connection dropped
+// waits for a reply that never comes, and answers its caller's deadline. The error nats.go gave
+// stays in the chain (reconnectingSend), so a caller that reads it still finds it. An error that
+// is ErrReconnecting already is returned as it is, such as a wait for the connection that ended
+// first (reconnectWaitEnded). A nil conn names nats.go's refusal alone.
+//
+// It is the one rule every place that names a request's error follows: a legacy JetStream context
+// (namedRequests), a request this package builds itself (Client.requestConfirmed), and a call
+// that waits for such a request another call made (streamRead.wait).
+func namedOn(conn *nats.Conn, err error) error {
+	if err == nil || errors.Is(err, ErrReconnecting) || conn == nil || !connecting(conn) {
 		return Reconnecting(err)
-	}
-	var named reconnectingSend
-	if errors.As(err, &named) {
-		return err
 	}
 	return reconnectingSend{refusal: err}
 }

@@ -990,7 +990,9 @@ func (m *sessionRelays) settleFilter(ctx context.Context, sessionID string, wrot
 			restart = false
 			return wrote, filterWriteLanded
 		}
-		return m.delivery.storedFilterStep(ctx, m.registry, sessionID, filterAfterRestart)
+		// Each failure is logged where it is met; a relay restart has no client to answer.
+		revision, outcome, _ := m.delivery.storedFilterStep(ctx, m.registry, sessionID, filterAfterRestart)
+		return revision, outcome
 	})
 }
 

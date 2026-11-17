@@ -4101,6 +4101,12 @@ A read-only broker token carries no project either, but none of the three checks
   A send that waits for no connection fails at once with `bus: NATS is reconnecting` (`bus.Reconnecting`): a bucket call with no deadline, a write of the CI store or the legion agent registry, a request through a JetStream context the bus builds or is handed (`bus.Client.JS`, which the listener's own reads and writes of its durable consumer go through, the stream's ensure and keeper, and the context `bus.EnsureKeyValue`, `bus.OpenKeyValue` or `bus.SetKeyValueMaxAge` is handed), a session consumer's pull request, and each ack, progress or nak of a message it pulled.
   So does a send the connection drops under after its wait.
   A request through a context whose connection the bus knows, every one but the context `bus.SetKeyValueMaxAge` is handed, is named by that connection's state as well, whatever nats.go answers it with: nats.go refuses some requests before it sends anything, a KV bucket's lookup among them, with words of its own (`nats: key-value requires at least server version 2.6.2`).
+  A JetStream API request the bus builds itself waits for the connection within its caller's deadline, and is named by that connection's state in the same way (`bus.Client.requestConfirmed`).
+  Every request of the session-consumer connection (`bus.SessionConsumers`) is such a request: a consumer's info, create, update and delete, the consumer list, the stream read and its stored-message reads.
+  So is every stored-message read of the listener's own connection, such as a read of a kept role lane.
+  Such a call fails with `bus: NATS is reconnecting: context deadline exceeded` when its deadline ends in the wait, and with `bus: NATS is reconnecting` when it fails while the connection is still not connected.
+  The routes whose client waits for a consumer call run it within 3.5 s of the request's arrival (`routeConsumerCallTimeout`, seven tenths of `contracts.ListenerCallTimeout`): `POST /v1/interests/subscribe`, `POST /v1/interests/unsubscribe` and `DELETE /v1/interests/<session_id>`.
+  A consumer call of theirs that failed because NATS is reconnecting is answered the bus-outage `503` that names the reconnect, as their store work would be.
   No answer and no log line holds nats.go's own `nats: outbound buffer limit exceeded`, which said nothing of the reconnect.
   A subscription nats.go re-sent on the reconnected connection is kept as it is; one on a replaced connection is bound again.
   Every reconnect recreates the interest, role claim, session and CI KV watchers on the reconnected connection, because a server restart loses their ordered consumers and nats.go would replace them only after missed heartbeats, and a connection the bus dials to replace a closed one moves them onto itself.
@@ -4931,6 +4937,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   A registration of `@sjawhar/pi-envoy` 14.1.0 or later that asks for no consumer is answered as if it had asked, with no `epoch` and no `resume` (`readsUnaskedRelay`, "Session consumers").
   A registration this listener can give no consumer is refused by name before anything is written, so it leaves no interest row and no session entry:
   `503 {"error":…,"reason":"no_grant"}`, `"consumer_limit"` or `"consumer_error"`, and `409 {"error":…,"reason":"not_requested"}` or `"invalid_session_id"` ("Session consumers", "No consumer").
+  A consumer call that failed because NATS is reconnecting writes nothing either, and is answered as store work the bus did not answer: `503 {"error":"envoy: the message bus did not answer: give <session id> its session consumer: bus: NATS is reconnecting…"}` with `Retry-After: 1`.
 
 - `/v1/interests/unsubscribe` (POST)
 
@@ -4951,8 +4958,10 @@ Each item below names an endpoint and its method, then its contract, and an item
   A stored subscription this build cannot decode (`store.ErrMalformedInterest`) routes none of its topics, so it is left as it is, logged at WARN naming the session, and the route still releases the role claims it is authorised to and answers 200.
   A write route (below the list).
   The row it rewrites also drops any stored topic reaching a private stream subject other than the session's own agent subject, as `/v1/interests/subscribe` says.
-  A session whose entry records consumer delivery has its consumer's filter set to the topics left before the call answers (`sessionDelivery.refollow`);
-  a failure there is logged, and the plugin drops a frame no followed topic matches.
+
+- An unsubscribe of a session whose entry records consumer delivery sets the consumer's filter to the topics left before it answers (`sessionDelivery.refollow`), within `routeConsumerCallTimeout` of the request's arrival.
+  A failure there is logged, and the plugin drops a frame no followed topic matches.
+  A failure because NATS is reconnecting is answered the bus-outage `503` instead, and the client's retry removes the same topics again and sets the filter.
 
 - An unsubscribe naming a topic in either form of its name takes out every form of it the record holds (`store.Remove`), and `removed` names each, the named form first and then the record's other forms (`otherFormsHeld`), so a client that followed both forms and dropped one reads that both are gone.
 
@@ -5054,6 +5063,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   A batch that fails after those checks answers `{"error":"…wrote <n> of <m> legion agents, then entries[<i>]: …","written":<n>}` with the failed entry's own status: a 503 with `Retry-After: 1` for a read or write the bucket did not answer, which the caller sends again (every write is idempotent); a 409 for a session another write claimed after the batch read it; a 400 or 413 for a key NATS refuses, as the single PUT answers it.
 
 The write routes - `POST /v1/interests/subscribe`, `POST /v1/interests/unsubscribe`, `POST /v1/roles/set`, `DELETE /v1/interests/<session_id>` and `DELETE /v1/sessions/<session_id>` - do every store read and write within one 3.5 s budget (`sendRequestBudget`) taken from the request's own context (`store.Registry.UpsertWithin`, `Remove`, `SetRoleWithPrevious`, `session.SessionRegistry.PutWithin` and `Delete`, each bucket call bounded by `bus.Bounded`), where a silent bus held them for the 10 s JetStream wait.
+The consumer calls a client waits for run within a bound of the same length taken from the same start (`routeConsumerCallTimeout`, "NATS reconnects indefinitely, in place").
 Store work that did not answer, whatever it names, is `503 {"error":"envoy: the message bus did not answer: <reason>"}` with `Retry-After: 1` (`writeStoreError`).
 While NATS reconnects, each bucket call waits for the connection within the budget, and the reason of a call whose budget ends first says `bus: NATS is reconnecting` (`bus.ErrReconnecting`).
 The store's own answers keep the answers they had:
@@ -5316,7 +5326,7 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   Where that floor's next message has aged out of the stream, the answer says `gap: true`, although the client may hold every message.
   Both cases need a consumer to go without a delete, which the sweep and the reaper exist to prevent, and the INFO line counts each lowered start, these included ("The log lines of a start" above).
   A record read that fails fails the create, for a caller's start as for a start of 0 (`bus.SessionConsumers.resumeFloor`), so no consumer is created that could skip what the record protects.
-  A registration is then refused `503 consumer_error`, or `503 no_grant` where the server refused the read for want of a grant, and its next heartbeat tries again.
+  A registration is then answered `503` as for any failed consumer call ("No consumer"), and its next heartbeat tries again.
   A repair logs the failure.
   A delete whose resume record could not be published deletes nothing, leaving it to the next pass.
 
@@ -5431,6 +5441,7 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
 - **No consumer:** the registration is refused and nothing is written -- no interest row, no session entry -- since a session nothing delivers to is not registered (`subscribeHandler`, which runs the decision before both writes).
   The refusal names its reason: `503 no_grant` for a listener whose consumer call the server refused for want of a grant (`bus.ErrConsumerNotGranted`), which logs one WARN for the episode and is then answered without a server call for 10 minutes (`noGrantBackoff`);
   `503 consumer_limit` for a registration whose consumer the server refuses to create because the `ENVOY_NOTIFICATIONS` stream already holds as many consumers as its `max_consumers` allows (`bus.ErrConsumerLimitReached`, `consumerLimitRefusal`), so this listener can give that session no consumer and the session receives nothing until the cap is raised, which the refusal tells the operator to do;
+  a call that failed because NATS is reconnecting (`bus.ErrReconnecting`) is no refusal by name, and is answered the bus-outage `503` under `envoy: the message bus did not answer`, naming the reconnect (`deliveryRefusal.unanswered`, `writeStoreError`);
   `503 consumer_error` for any other failed call and for a listener holding no session-consumer connection;
   `409 not_requested` for a registration that asks for no consumer, unless it comes from `@sjawhar/pi-envoy` 14.1.0 or later, which is given one instead (`readsUnaskedRelay`);
   and `409 invalid_session_id` for an id that names no consumer.

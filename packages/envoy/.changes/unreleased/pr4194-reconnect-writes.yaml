@@ -5,8 +5,14 @@ body: |-
   the connection, reads the deadline again before it sends, and sends nothing once the deadline
   has ended. Every other send made while the connection reconnects fails as
   `bus: NATS is reconnecting`: a publish, each JetStream stream and consumer request, a session
-  relay's pull and each answer to a message it pulled. A route answers that error 503 with that
-  reason, and a log line names it the same way.
+  relay's pull and each answer to a message it pulled. A registration's consumer calls fail the
+  same way: the read of the stream, the read of the session's resume record, and the consumer's
+  info, create and update. So does the consumer's filter update of an unsubscribe and of a
+  `DELETE /v1/interests/<session_id>`. Each waits for the connection within its route's bound,
+  which is 3.5 s of the client's 5 s attempt. A route answers that error 503 with that reason,
+  and a log line names it the same way. A registration whose consumer call failed so is answered
+  that 503 inside the client's attempt, not `503 consumer_error` after it, and an unsubscribe is
+  answered that 503, not a 200 after the client's attempt.
 time: 2026-11-16T18:39:53Z
 custom:
     Issue: pr4194

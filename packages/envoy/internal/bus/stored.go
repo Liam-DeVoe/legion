@@ -38,7 +38,10 @@ type StoredMessage struct {
 // nats.ErrMsgNotFound (nothing at or after seq on subject) and nats.ErrStreamNotFound (no such
 // stream); nats.ErrNoResponders when no JetStream answers; ErrPublishDenied, wrapping the server's
 // permissions violation, when the connection's user may not make the read, reported as soon as the
-// server refuses it rather than once the wait runs out; and ctx's error when ctx ends first.
+// server refuses it rather than once the wait runs out; and ctx's error when ctx ends first. A
+// read made while nats.go connects or reconnects the connection waits for it within ctx, and fails
+// as ErrReconnecting when ctx ends first or when the read fails while the connection is still not
+// connected (requestConfirmed).
 func (c *Client) NextStoredMessage(ctx context.Context, subject string, seq uint64) (StoredMessage, error) {
 	return c.storedMessage(ctx, struct {
 		Seq     uint64 `json:"seq"`
@@ -56,7 +59,8 @@ func (c *Client) NextStoredMessage(ctx context.Context, subject string, seq uint
 // Its errors are NextStoredMessage's: the stream's own API errors as *nats.APIError, so errors.Is
 // matches nats.ErrMsgNotFound (the stream holds nothing on subject) and nats.ErrStreamNotFound (no
 // such stream); nats.ErrNoResponders when no JetStream answers; ErrPublishDenied when the
-// connection's user may not make the read; and ctx's error when ctx ends first.
+// connection's user may not make the read; ctx's error when ctx ends first; and ErrReconnecting
+// while NATS is reconnecting (requestConfirmed).
 func (c *Client) LastStoredMessage(ctx context.Context, subject string) (StoredMessage, error) {
 	return c.storedMessage(ctx, struct {
 		LastFor string `json:"last_by_subj"`
@@ -265,6 +269,14 @@ func (c *Client) storedMessage(ctx context.Context, request any) (StoredMessage,
 // out its whole deadline, since core NATS answers a denied publish to no one but the async error
 // callback. One publishConfirmed cannot confirm for another reason still waits for its reply, and
 // returns that reason if ctx ends first. A no-responders status reply is nats.ErrNoResponders.
+//
+// Every request SessionConsumers sends goes through it, and so does each stored-message read
+// (storedMessage), so it is the one place their errors are named when NATS is reconnecting. A
+// request made while nats.go connects or reconnects the connection waits for it within ctx
+// (ensureConnWithContext), and a ctx that ends first is
+// `bus: NATS is reconnecting: context deadline exceeded`, with nothing sent. Any error the request
+// returns once it is made, while the connection reports that state, is
+// `bus: NATS is reconnecting` (namedOn), with nats.go's error kept in the chain.
 func (c *Client) requestConfirmed(ctx context.Context, subject string, data []byte) (*nats.Msg, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
@@ -275,6 +287,13 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 		return nil, err
 	}
 	conn := c.Connection()
+	reply, err := c.requestConfirmedOn(ctx, conn, subject, data)
+	return reply, namedOn(conn, err)
+}
+
+// requestConfirmedOn is requestConfirmed's request on conn, once conn can take it. Its error is
+// left for requestConfirmed to name.
+func (c *Client) requestConfirmedOn(ctx context.Context, conn *nats.Conn, subject string, data []byte) (*nats.Msg, error) {
 	inbox := conn.NewInbox()
 	replies, err := conn.SubscribeSync(inbox)
 	if err != nil {

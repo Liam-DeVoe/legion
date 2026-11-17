@@ -57,11 +57,34 @@ const (
 	consumerPluginMinimumVersion = "14.1.0"
 )
 
-// sessionConsumerCallTimeout bounds the consumer calls a registration makes before it answers,
-// those of one relay restart, timed from when it holds its turn and the session's lock
-// (sessionRelays.restart), and the delete a reaped session's record, a deregistration or the
-// sweep asks for, with the bucket read before it and the repair after it (deleteConsumer).
+// sessionConsumerCallTimeout bounds the consumer calls of one relay restart, timed from when it
+// holds its turn and the session's lock (sessionRelays.restart), and the delete a reaped session's
+// record, a deregistration or the sweep asks for, with the bucket read before it and the repair
+// after it (deleteConsumer). No client waits for the calls of a restart or a delete: a relay
+// restart and a sweep run on goroutines of their own, and a deregistration's delete runs after its
+// answer (deleteAfterAnswer). A route whose client waits for its consumer calls bounds them itself
+// (routeConsumerCallTimeout).
 const sessionConsumerCallTimeout = 5 * time.Second
+
+// routeConsumerCallTimeout bounds every consumer call a route makes before it answers, timed from
+// when the route takes the request. Three routes make such calls while their client waits:
+//   - POST /v1/interests/subscribe (subscribeHandler): the read of the stream's identity and the
+//     consumer's create or update on each pass (consumerFor), and the repair after the session's
+//     entry is written (confirmRegistered);
+//   - POST /v1/interests/unsubscribe: the consumer's filter update (refollow);
+//   - DELETE /v1/interests/<session_id> (adminInterestsHandler): the same filter update.
+//
+// DELETE /v1/sessions/<session_id> makes its consumer call after it answers (deleteAfterAnswer),
+// so this bound does not apply to it.
+//
+// The bound is seven tenths of the client's one attempt (contracts.ListenerCallTimeout,
+// LISTENER_CALL_TIMEOUT_MS): 3.5 s of 5 s, the share sendRequestBudget gives a route's store work.
+// The client reads no answer that comes after its attempt ends: it gives up and tries again. So a
+// route that waits out a slow or a reconnecting server and answers at 5 s answers nobody, and its
+// client reads its own timeout, not the reason. The rest of the attempt is for the store work
+// after the last consumer call, which ends within sendRequestBudget, and for the answer's trip to
+// the client. The bound comes from the client's attempt, so a change of that attempt moves it too.
+const routeConsumerCallTimeout = contracts.ListenerCallTimeout * 7 / 10
 
 // noGrantBackoff is how long, after a consumer call the server refused for want of a grant, every
 // registration that asks for a consumer is refused no_grant without a call to the server; the next
@@ -114,6 +137,14 @@ type deliveryRefusal struct {
 	// bucket holds before it returns (registerSession). Every other refusal is decided before
 	// anything is sent.
 	filtered bool
+	// unanswered is set on the refusal of a registration whose consumer call failed because NATS
+	// is reconnecting (bus.ErrReconnecting), and holds that call's error; status, Error and Reason
+	// are then unset. Such a registration is not refused by name, since the bus did not answer it.
+	// The route answers the error as it answers store work the bus did not answer
+	// (registerSession, writeStoreError): 503 with Retry-After: 1 under busUnansweredPrefix, its
+	// reason `bus: NATS is reconnecting`, which is what a new session's registration is answered
+	// when its first bucket read meets the same reconnect.
+	unanswered error
 }
 
 // sessionDeliveryOutcome is what sessionDelivery.register did for one registration.
@@ -338,12 +369,14 @@ func (m *sessionDelivery) close() {
 // consumer, and it holds the start of a create as it does for the delete's repair; a consumer the
 // stream holds keeps its own position whatever start the call names, so what a repair of it
 // changes is the filter.
+//
+// ctx bounds the repair: it carries the registration's deadline and not its client's cancel
+// (registerPass), so the repair ends inside the registration's bound
+// (routeConsumerCallTimeout). The answer waits for it.
 func (m *sessionDelivery) confirmRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64) {
 	if m == nil || m.consumers == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
-	defer cancel()
 	m.repairRegistered(ctx, d, sessionID, ackFloor, repairAfterRegistration)
 }
 
@@ -726,6 +759,9 @@ func versionPart(version string, i int) (int, bool) {
 // It returns the session's lock held over that filter, which the caller releases (register); a
 // refusal decided before the lock was taken returns noUnlock. A refusal decided after the call
 // was sent says the filter may be on the consumer (deliveryRefusal.filtered).
+//
+// ctx bounds its calls: the route bounds every consumer call of one registration, from when it
+// takes the request, by routeConsumerCallTimeout (subscribeHandler).
 func (m *sessionDelivery) consumerFor(ctx context.Context, body subscribeBody, topics []string) (sessionDeliveryOutcome, *deliveryRefusal, func()) {
 	var delivery subscribeDelivery
 	if body.Delivery != nil {
@@ -762,8 +798,6 @@ func (m *sessionDelivery) consumerFor(ctx context.Context, body subscribeBody, t
 	if m.grantRefused() {
 		return sessionDeliveryOutcome{}, noGrantRefusal(body.SessionID), noUnlock
 	}
-	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
-	defer cancel()
 	streamID, err := m.consumers.StreamID(ctx)
 	if err != nil {
 		return sessionDeliveryOutcome{}, m.refused(body.SessionID, err), noUnlock
@@ -831,7 +865,8 @@ func consumerLimitRefusal(sessionID string) *deliveryRefusal {
 
 // refused is the refusal of a registration whose consumer call for sessionID failed with err:
 // every cause may pass of itself, so all are 503. A refusal for want of a grant starts the
-// no-grant backoff (noGrantBackoff), or extends the episode running (grantRefusal).
+// no-grant backoff (noGrantBackoff), or extends the episode running (grantRefusal). A call that
+// failed because NATS is reconnecting is no refusal by name (deliveryRefusal.unanswered).
 func (m *sessionDelivery) refused(sessionID string, err error) *deliveryRefusal {
 	if m.grantRefusal("create or update a session consumer", sessionID, err) {
 		return noGrantRefusal(sessionID)
@@ -848,6 +883,11 @@ func (m *sessionDelivery) refused(sessionID string, err error) *deliveryRefusal 
 		m.logger.Warn("the stream holds as many consumers as its max_consumers allows; the registration is refused until max_consumers is raised",
 			slog.String("session_id", sessionID), slog.String("stream", bus.Stream), slog.String("error", err.Error()))
 		return consumerLimitRefusal(sessionID)
+	}
+	if errors.Is(err, bus.ErrReconnecting) {
+		// The bus did not answer, so the route answers and logs the error as it does for store
+		// work the bus did not answer (registerSession), and the client reads the reconnect.
+		return &deliveryRefusal{unanswered: fmt.Errorf("give %s its session consumer: %w", sessionID, err)}
 	}
 	m.logger.Warn("session consumer call failed; the registration is refused",
 		slog.String("session_id", sessionID), slog.String("error", err.Error()))
@@ -923,9 +963,16 @@ func (m *sessionDelivery) granted() {
 // refollow sets the filter of sessionID's consumer to its stored interest topics after a change
 // that removed some (an unsubscribe), when the session's entry records consumer delivery; a
 // session whose entry records none, an entry the previous build wrote, or whose consumer is gone,
-// is left alone, and its next registration sets the filter. A failure is logged, not returned:
-// the consumer then still delivers a topic the session no longer follows, and the plugin drops a
-// frame no followed topic matches.
+// is left alone, and its next registration sets the filter. Every other failure than the one
+// below is logged, not returned: the consumer then still delivers a topic the session no longer
+// follows, and the plugin drops a frame no followed topic matches.
+//
+// The one failure it returns is a write that failed because NATS is reconnecting
+// (bus.ErrReconnecting, storedFilterWrite). The route answers it as store work the bus did not
+// answer (writeStoreError), as a registration's consumer call that fails the same way is answered
+// (deliveryRefusal.unanswered): the client reads the reconnect, and its retry, which removes the
+// same topics again, sets the filter. ctx bounds the write (routeConsumerCallTimeout, from when
+// the route took the request).
 //
 // The topics are read from the bucket, not from the cache, and under the session's lock, as
 // register's consumer call is made under it: the lock orders this listener's own calls, so a
@@ -940,12 +987,15 @@ func (m *sessionDelivery) granted() {
 // follows, which an unsubscribe changes whatever the session's entry records, while this filter
 // names the ones its consumer carries. Each call site writes the record itself
 // (recordFollowedTopics).
-func (m *sessionDelivery) refollow(ctx context.Context, d *listenerDeps, sessionID string) {
+func (m *sessionDelivery) refollow(ctx context.Context, d *listenerDeps, sessionID string) error {
 	entry, err := d.sessions.Get(sessionID)
 	if err != nil || entry.Delivery != session.DeliveryConsumer {
-		return
+		return nil
 	}
-	m.storedFilterWrite(ctx, d.registry, sessionID, filterAfterUnsubscribe)
+	if err := m.storedFilterWrite(ctx, d.registry, sessionID, filterAfterUnsubscribe); err != nil {
+		return fmt.Errorf("set the filter of %s's session consumer: %w", sessionID, err)
+	}
+	return nil
 }
 
 // recordFollowedTopics brings sessionID's known-session record up to date with the topics its
