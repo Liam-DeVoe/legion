@@ -30,7 +30,7 @@ func engineRunningByDefault(t *testing.T, words ...string) *Engine {
 }
 
 // assertDefaultPlan fails unless key's run at generation holds the plan of the default steps
-// alone (R5): version 0 of the source default, with no document and no giver, and one task,
+// alone: version 0 of the source default, with no document and no giver, and one task,
 // default, whose block text says so and whose steps are steps, run by default.
 func assertDefaultPlan(t *testing.T, stored *record.StoredPlan, key string, generation uint64, steps []string) {
 	t.Helper()
@@ -54,7 +54,7 @@ func assertDefaultPlan(t *testing.T, stored *record.StoredPlan, key string, gene
 }
 
 // An issue whose owner gives no plan stores the project's default steps at the start of its work
-// (R5; StartFirstPhase's gateOpened): one version 0 of the source default, one task default, the
+// (StartFirstPhase's gateOpened): one version 0 of the source default, one task default, the
 // project's default_steps, and the first of them running, which is planning for a project that
 // names none and implementing for `default_steps: [implementer, reviewer]`, whose run starts no
 // planner. An owner's plan whose one block names no steps stores the project's default steps under
@@ -120,7 +120,7 @@ func TestAnIssueWithNoPlanStoresTheDefaultSteps(t *testing.T) {
 	})
 }
 
-// An owner's plan starts its first step (C2-2): `implementer reviewer` given while the root stands
+// An owner's plan starts its first step: `implementer reviewer` given while the root stands
 // at admitted starts implementing at its first step, and no planner claim starts. A plan the owner
 // gave at generation 0 for a child the daemon had not recorded is carried to the child's
 // generation when its first step starts (StartFirstPhase), each task from its start, and the child
@@ -237,9 +237,9 @@ func TestAnOwnersPlanStartsItsFirstStep(t *testing.T) {
 
 // An issue admitted in this release that its owner gave no plan holds the rows of the task
 // default from its first step, so a plan its owner gives later is judged as a later version over
-// them (R16): while default runs it is refused with the running task's text, never with the text
+// them: while default runs it is refused with the running task's text, never with the text
 // of an issue that started its work before Legion took plans; once the owner stops default, the
-// same version is taken and its task starts. The twin (R20): an issue that started its work before
+// same version is taken and its task starts. The twin: an issue that started its work before
 // the release, with no plan rows, is refused with that earlier release's text.
 func TestAnIssueOfThisReleaseJudgesALaterPlanAsALaterVersion(t *testing.T) {
 	t.Run("the default task running refuses it, and stopped takes it", func(t *testing.T) {

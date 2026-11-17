@@ -72,7 +72,7 @@ type Config struct {
 	ProductionCheckRole claim.Role
 	// DefaultSteps are the project's default steps (config.Project.RunsByDefault): the steps of
 	// the one task default of an issue whose owner gives no plan, and of a task whose block names
-	// neither steps nor a sub-owner (R5). Nil takes the steps of a project that names none.
+	// neither steps nor a sub-owner. Nil takes the steps of a project that names none.
 	DefaultSteps []plan.Step
 	Clock        func() time.Time
 	// ReviewAppLogin is the review App's bot login (<slug>[bot]) from its boot token lease. A review

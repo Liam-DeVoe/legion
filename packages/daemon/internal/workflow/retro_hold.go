@@ -14,14 +14,14 @@ import (
 
 // beneathRetro is the issues beneath issue still in the workflow (openBeneath) where its move into
 // to is the pass of its task's last step into the retro, on a plan with no acceptance step, and
-// nothing for every other move (B-8, C2-1). A parent's head proves its children's merged work, and
+// nothing for every other move. A parent's head proves its children's merged work, and
 // a task with no step acceptance:owner has no sign-off to refuse a parent while one of them runs
 // (SIGNOFF_CHILD_IN_WORKFLOW), so such a parent is held before its retro instead (transition),
 // from retro for its children (record.HoldForChildren), until the last of them leaves
 // (startHeldRetro). The hold stands in place of the retro, which keeps no slot (record.KeepsSlot
 // reads record.StandsAt), so the parent holds none of the slots its children may need. An issue
 // with no plan rows walks today's line, whose retro follows the owner's acceptance, so it is never
-// held so (R20).
+// held so.
 func (e *Engine) beneathRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, to phase.Phase) ([]string, error) {
 	if !w.Stored || to != phase.Retro || slices.Contains(w.Line, phase.Accepting) {
 		return nil, nil

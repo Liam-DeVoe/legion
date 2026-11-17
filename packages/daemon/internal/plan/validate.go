@@ -13,7 +13,7 @@ import (
 // is Validate's and does not say "yet".
 const noTask = "the plan has no task block, so it gives Legion no work."
 
-// notYet ends each reason of Supported: what a later release carries out (C6).
+// notYet ends each reason of Supported: what a later release carries out.
 const notYet = " This release of Legion does not carry it out yet."
 
 // todaysOrder is the order this release runs the steps of a task in, as its refusal names it.
@@ -25,10 +25,10 @@ var todaysOrder = func() string {
 	return strings.Join(names, ", ")
 }()
 
-// Validate is what Legion cannot carry out in any release (R14): a plan with no task, and each
-// step that names a role neither d nor the plan's own role blocks define, refused once for each
-// role at the first step that names it (B-11). It refuses no plan for a step the plan lacks. The
-// other refusals of R14 need an attribute or a block that Supported refuses in this release, so
+// Validate is what Legion cannot carry out in any release: a plan with no task, and each step
+// that names a role neither d nor the plan's own role blocks define, refused once for each role
+// at the first step that names it. It refuses no plan for a step the plan lacks. The other causes
+// no release carries out need an attribute or a block that Supported refuses in this release, so
 // the release that lifts that refusal adds them here.
 func Validate(p Plan, d Deployment) []Refusal {
 	if len(p.Tasks) == 0 {
@@ -53,7 +53,7 @@ func Validate(p Plan, d Deployment) []Refusal {
 	return refusals
 }
 
-// Supported is what this release does not carry out yet (C6): more than one task, a role block,
+// Supported is what this release does not carry out yet: more than one task, a role block,
 // and, for each task, `needs`, `owner`, `part_of` and `merges`, each key but the owner's on
 // acceptance, acceptance with no key, a role named at two steps, steps in another order than
 // today's, and no implementer. A task that names no steps runs the project's default steps,

@@ -105,7 +105,7 @@ type Project struct {
 }
 
 // defaultStepWords is `default_steps` for a project that names none, as the file would write it:
-// today's line up to the owner's acceptance (R5). With the retro and the merge Legion runs after
+// today's line up to the owner's acceptance. With the retro and the merge Legion runs after
 // them, that is today's seven phases. It is the one definition of the default steps.
 var defaultStepWords = []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}
 
@@ -120,7 +120,7 @@ var unsetDefaultSteps = func() []plan.Step {
 
 // RunsByDefault is the project's default steps: the steps a task whose plan block names neither
 // steps nor a sub-owner runs, and the steps of the one task `default` of an issue whose owner
-// gives no plan (R5). They are `default_steps`, or today's line up to the owner's acceptance for
+// gives no plan. They are `default_steps`, or today's line up to the owner's acceptance for
 // a project that names none, and for a Project the loader never read, so a configuration built
 // without the field runs today's line rather than no step. The answer is the caller's own.
 func (p Project) RunsByDefault() []plan.Step {

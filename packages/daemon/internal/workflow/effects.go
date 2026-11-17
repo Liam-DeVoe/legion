@@ -787,7 +787,7 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // (record.PhaseRow.StepTask, StepPlace): the walk's task and the place of the step the issue stands
 // in (stepAt), from 1 for a step and 0 for the retro on the implementer's row and the merge on the
 // merger's, so the row's facts are the facts of that step's run. An issue with no plan rows keeps
-// no task and place 0 (R20), and the architect's entry is no step of the issue's task.
+// no task and place 0, as it always did, and the architect's entry is no step of the issue's task.
 func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack, verbatim bool) (int64, error) {
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
 	if err != nil {
@@ -935,7 +935,7 @@ func WorkingCopy(issue record.Issue, dir func(record.Issue) string) Standing {
 // standingPart is where the work of a worker started in issue's phase stands, the part of its
 // task after the continue line (Standing). Every start names its working copy (WorkingCopy). An
 // issue with no plan rows names nothing else, so it is told today's task with that one line, and
-// the prompts read a task with no `Task:` line as such an issue's (R20). An issue with plan rows
+// the prompts read a task with no `Task:` line as such an issue's. An issue with plan rows
 // names its one task: a step's worker is told ` Task: <id>. Step <i> of <n>: <role>.`, the task's
 // steps (stepsLine), ` Task text: ` and the text of the task's block, and the report of each step
 // before its own (reportsBefore). The retro and the merge run no step of the task, so their worker

@@ -15,7 +15,7 @@ import (
 // plan rows (record.Store.Plan at the issue's generation) walks the line of its one task's steps
 // (plan.Line): each step runs as the phase of its role, then Legion's own retro and merge. A run
 // with none, which is every issue that ran before plan rows existed, walks today's line,
-// phase.Order, with Stored false, and its table is Table, row for row (R20). Every behaviour that
+// phase.Order, with Stored false, and its table is Table, row for row. Every behaviour that
 // differs from today reads Stored and nothing else.
 //
 // Line and Steps are read only: an unstored walk's Line is phase.Order itself.
@@ -95,7 +95,7 @@ func (w Walk) steps() []phase.Phase {
 	return w.Line[:len(w.Line)-2]
 }
 
-// issuePhaseOf is the phase an issue whose one task stands at place in state stands in (A-8): done
+// issuePhaseOf is the phase an issue whose one task stands at place in state stands in: done
 // for a task that is done or left the workflow before it was done (record.TaskLeft), whatever its
 // place, which is the phase of an issue out of the workflow; the phase of the step at place, retro
 // or merging at the task's retro or merge; and admitted for a task at no act, which has not
@@ -180,7 +180,7 @@ func (e *Engine) WriteIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 
 // row is the row of w's table that moves an issue standing in from on trigger, into target where
 // a target is named, whose guard admits snapshot. A failed step of a task with plan rows returns
-// its work to the step its plan reads (R7: returnTarget, or the step a completion names), which is
+// its work to the step its plan reads (returnTarget, or the step a completion names), which is
 // an earlier step of the task's line but not always implementing, the one target of the table's
 // two returns (stepRows). Such a return is the table's row of the failed step's trigger with that
 // step as its target (returnRow).
@@ -196,8 +196,8 @@ func (w Walk) row(from phase.Phase, trigger TriggerKind, target phase.Phase, sna
 	return Row{}, false
 }
 
-// returnsWork says whether trigger is a failed step returning its task's work to an earlier step
-// (R7): the tester's fail and a review's request for changes. A backward move names its own
+// returnsWork says whether trigger is a failed step returning its task's work to an earlier step:
+// the tester's fail and a review's request for changes. A backward move names its own
 // target, which a backward row of the line serves, and a conflicting head goes back to
 // implementing whatever the plan says (TriggerConflict).
 func returnsWork(trigger TriggerKind) bool {
@@ -224,7 +224,7 @@ func (w Walk) returnRow(from phase.Phase, trigger TriggerKind, target phase.Phas
 }
 
 // returnTarget is the step the failed step of w's task standing at from returns the work to when
-// the completion names none (R7): the first step before it whose recorded type is implementation
+// the completion names none: the first step before it whose recorded type is implementation
 // (record.PlanStep.Type), as the phase that step runs as. ok is false where no step before it has
 // that type: the task then stops (stopUnreturned). Each failed step a plan of this release can
 // hold comes after its implementer (plan.Supported), so only a stored type that no plan gives
@@ -263,7 +263,7 @@ func (w Walk) returnOf(issue record.Issue, trigger TriggerKind, target phase.Pha
 }
 
 // returnStep is the phase of step n of w's task, the step that the report of the failed step
-// standing at failed names as the one its task returns to (R7, returnTo), or why that report is
+// standing at failed names as the one its task returns to (returnTo), or why that report is
 // refused, which changes nothing: an issue with no plan rows has no step to name, a place past the
 // task's last step names no step of it, and the failed step itself or a later one is not earlier
 // (the spec's words: a report that names a step of another task, or a step that is not earlier).
