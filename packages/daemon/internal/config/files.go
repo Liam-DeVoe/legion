@@ -13,6 +13,10 @@ import (
 // under the state directory.
 const DeploymentInstructionsFile = "deployment-instructions.md"
 
+// PlanGuidanceFile is the copy of the operator's plan guidance an owner's prompt reads, under the
+// state directory.
+const PlanGuidanceFile = "plan-guidance.md"
+
 // ExperimentsDir is the directory under the state directory holding the copies of every declared
 // variant's instructions, a directory per experiment: a launch's prompt reads the copy of each
 // arm its unit was drawn into. It is a directory per experiment rather than one flat
@@ -170,6 +174,38 @@ func WriteDeploymentInstructions(contents []byte, stateDir, legionID string) (st
 	}
 	target := filepath.Join(stateDir, DeploymentInstructionsFile)
 	body := fmt.Sprintf("# Deployment instructions (%s)\n\n%s", legionID, contents)
+	if err := os.WriteFile(target, []byte(body), 0o644); err != nil {
+		return "", fmt.Errorf("write %s: %w", target, err)
+	}
+	return target, nil
+}
+
+// ReadPlanGuidance is the operator's plan guidance file (`plan_guidance`), refused naming the
+// operator's path when it is missing, unreadable, or blank: a configured file with nothing in it is
+// a misconfiguration, not an empty guidance. It writes nothing, so boot reads it with every other
+// refusal before it writes anything, and `legion start --check-config` refuses what boot refuses.
+func ReadPlanGuidance(path string) ([]byte, error) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("plan guidance file %s could not be read: %w", path, err)
+	}
+	if strings.TrimSpace(string(contents)) == "" {
+		return nil, fmt.Errorf("plan guidance file %s is empty", path)
+	}
+	return contents, nil
+}
+
+// WritePlanGuidance writes `# Plan guidance of this deployment (<legionID>)`, a blank line,
+// Legion's sentence that the guidance binds no plan, a blank line, and contents, which
+// ReadPlanGuidance answered, verbatim to `<stateDir>/plan-guidance.md`, returning that path. Boot
+// writes it once, before the first pane opens, so an owner's launch reads exactly what boot read
+// and never the operator's own path, which may change underneath a running daemon.
+func WritePlanGuidance(contents []byte, stateDir, legionID string) (string, error) {
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return "", fmt.Errorf("create state directory %s: %w", stateDir, err)
+	}
+	target := filepath.Join(stateDir, PlanGuidanceFile)
+	body := fmt.Sprintf("# Plan guidance of this deployment (%s)\n\nLegion requires none of this guidance and refuses no plan for a step it lacks.\n\n%s", legionID, contents)
 	if err := os.WriteFile(target, []byte(body), 0o644); err != nil {
 		return "", fmt.Errorf("write %s: %w", target, err)
 	}
