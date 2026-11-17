@@ -52,7 +52,9 @@ import (
 // process holds at the broker, publishes nothing to its Envoy role, and sends that process no task
 // and no compaction (holdRecorded, ensureEnrolled, heldRolePublisher, sendPending, compactStart).
 // The process runs on under the session until it is stopped, and keeps the Envoy role its session
-// claimed, so a message another session sends to that role still reaches it; it takes no forget
+// claimed, so a message another session sends to that role still reaches it: the daemon can free
+// the role at the listener, but the process claims a free role again at its next heartbeat, so a
+// later change withholds the role from the contained session at the listener. It takes no forget
 // while it is live, so the operator suspends it (`legion claims suspend`) once its runtime answers,
 // or stops its pod or pane by hand, before the steps above. The next boot asks again, and those
 // steps need a daemon that serves (review rounds 11 to 13 of #4220). A statement that makes such a

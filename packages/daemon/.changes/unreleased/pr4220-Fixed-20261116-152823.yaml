@@ -27,8 +27,9 @@ body: |-
   Envoy role its session claimed, so a message another session sends to that role still reaches
   it, until an operator suspends it (`legion claims suspend --claim <token>`) once its runtime
   answers, or stops its pod or pane by hand; it takes no `legion claims forget-session` while it is
-  live. Dispatch's role holders name a live claim's session only while the claim holds it. For
-  each claim the boot names that is not the rightful holder,
+  live. A later change withholds the role from the contained session at the Envoy listener.
+  Dispatch's role holders name a live claim's session only while the claim holds it. For each
+  claim the boot names that is not the rightful holder,
   an operator runs `legion claims forget-session` as its state allows, then resumes a suspended
   one, retries a failed one and leaves a retired one as it is, and for a name held for none records
   the rightful holder (`update claim_sessions set claim = '<token>' where project = '<project>' and

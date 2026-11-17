@@ -6380,7 +6380,7 @@ each issue's pod (every role of it alike) and the image probe's.
   A name only an abandoned session records suspends nothing, since nothing resumes or enrolls an abandoned session; the boot logs it at Warn.
   A suspension that fails for another reason, such as a stop the runtime refuses, is logged at Error (`… failed; it is left as it is …`) naming the claim, and the boot goes on, so the steps below can run.
   The claim is then contained but not stopped: its hold refuses every relaunch, resume and new enrollment of it, the daemon revokes the enrollment its process holds at the broker, publishes nothing to its Envoy role, and sends that process no task and no compaction; the next boot asks again.
-  Its process runs on under the session until it is stopped, and it keeps the Envoy role its session claimed, so a message another session sends to that role still reaches it.
+  Its process runs on under the session until it is stopped, and it keeps the Envoy role its session claimed, so a message another session sends to that role still reaches it; a later change withholds the role from the contained session at the Envoy listener.
   Once the line's statement makes such a claim the holder of its session, Dispatch is shown it as its role's holder at the next boot, or once the claim is suspended and resumed, since the statement writes no claim and the publication follows claim writes.
   Only a boot whose time runs out on the suspensions fails.
 
