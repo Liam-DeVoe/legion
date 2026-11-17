@@ -155,7 +155,8 @@ func ReplaceCountedItemEdit(
 
 // replaceItemRefs indexes the item's blocks and their mentions (IndexItem) and reconciles its own
 // references (replaceRefs) to located, the mentions of body, and returns the targets either
-// inserted or deleted.
+// inserted or deleted. The references come after the blocks, so the settle of the forms queue
+// that follows them is after both deletes and covers the item's whole text.
 func replaceItemRefs(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -169,7 +170,7 @@ func replaceItemRefs(
 	if err != nil {
 		return nil, err
 	}
-	changed, err := replaceRefs(ctx, tx, string(kind), itemID, text.Refs(located), nil)
+	changed, err := replaceRefs(ctx, tx, string(kind), itemID, text.Refs(located), nil, true)
 	if err != nil {
 		return nil, err
 	}
@@ -800,7 +801,10 @@ func OwedItemBlocks(ctx context.Context, q Queryer, limit int) ([]OwedItemBlock,
 // unless the item's index is owed, so every mention it records is of text an earlier write
 // already appended an event for. A block mention takes the source_seq of the item's own refs row
 // for its target at the item's first indexing (indexItemBlocks) and none otherwise, and no
-// ?since= read lists a row with none until a later write of the item stamps it (Stamp).
+// ?since= read lists a row with none until a later write of the item stamps it (Stamp). Its index
+// is the item's whole text - the blocks, then the item's own references, an ask's question's
+// beside its parts - so it settles what the forms queue holds for the item after every delete it
+// made (RefsFormsOwed), which rebuild-refs leaves owed until this index runs.
 func IndexOwedItemBlocks(ctx context.Context, pool Pool, item OwedItemBlock, serverURL string) (bool, error) {
 	tables, err := item.Kind.tables()
 	if err != nil {

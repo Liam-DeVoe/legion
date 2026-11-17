@@ -44,7 +44,6 @@ import {
   type CheckWhen,
   type DeliveryAttemptState,
   MAX_ISSUE_ADVANCES,
-  MAX_ISSUE_BLOCKERS,
   type ResultCommitStands,
 } from "@legion/contracts";
 
@@ -660,7 +659,7 @@ export const ANSWER_LINES = freeze({
   saving_release: "Releasing…",
   saving_reopen: "Reopening…",
   /** What Send says while the send is out, on the answer line and on the write line of the box
-   *  at the foot of the outline (dispatch://INFRA-3949 R5), beside the busy words above. */
+   *  at the foot of the outline, beside the busy words above. */
   sending: "Sending…",
   /** What the write line says while a file pasted or dropped into its draft uploads: on its Send,
    *  and on the status line under the field. */
@@ -672,7 +671,7 @@ export const ANSWER_LINES = freeze({
   /** What the box says when Dispatch refused a comment on a statement whose words its document
    *  holds twice (`TARGET_AMBIGUOUS`): the box places a statement's comment by the statement's
    *  whole words alone, so the same words are refused again whatever is sent, and the draft
-   *  stays in the box (dispatch://INFRA-3949 R11). */
+   *  stays in the box. */
   statement_twice:
     "The statement's words stand twice in its document, so the comment cannot be placed under it.",
 } as const);
@@ -730,10 +729,10 @@ export const DELIVERY_STATE_WORDS = freeze({
  * (`BlockedByControl.tsx`), one sentence per refusal, in place of the server's message, which
  * names the field by its wire token (`blocked_by issue CORE-9 not found`, R21). Each sentence is
  * cut where the issue it is about goes: that key is the server's detail and the reader's own
- * text, drawn between `before` and `after`. `BLOCKED_BY_INPUT` is three refusals, told apart by
- * the key it names: no issue, the issue itself, or none at all for a list over the limit; and
- * `DEPENDENCY_CYCLE` is two, the issue the list would make wait on itself, or none for a chain
- * longer than Dispatch follows (`packages/envoy/internal/dispatch/api/issue_parent.go`).
+ * text, drawn between `before` and `after`. `BLOCKED_BY_INPUT` is two refusals, told apart by
+ * the key it names: no issue, or the issue itself; and `DEPENDENCY_CYCLE` is two, the issue the
+ * list would make wait on itself, or none for a chain longer than Dispatch follows
+ * (`packages/envoy/internal/dispatch/api/issue_parent.go`).
  */
 export const BLOCKED_BY_REFUSALS = freeze({
   cycle: {
@@ -748,7 +747,6 @@ export const BLOCKED_BY_REFUSALS = freeze({
     before:
       "These issues wait on one another through more links than Dispatch follows, so it cannot check them for a loop.",
   },
-  too_many: { after: "", before: `An issue can wait on at most ${MAX_ISSUE_BLOCKERS} issues.` },
 } as const);
 
 /** One refusal of a blocked-by list the page has a sentence for. */
@@ -1112,13 +1110,12 @@ export const CONTROL_LABELS = freeze({
   /** The act of a focused question, comment or message that aims the box's criterion line. */
   write_criterion: "Write a criterion",
   /** What the box at the foot of the outline says while it is empty and writes a comment or a
-   *  question on the issue itself (dispatch://INFRA-3949 R3): where the words go, as the reply's
+   *  question on the issue itself: where the words go, as the reply's
    *  and the answer's placeholders say where theirs go. */
   issue_placeholder: "Write on the issue…  (Enter sends)",
   /** Each placeholder of that box in the shorter words it says at 760 px and below, where its
    *  line is about 240 px wide and a placeholder is one line, cut by the line's edge: each fits
-   *  that width whole (dispatch://INFRA-3949 R1, the tester's finding F9 of
-   *  dispatch://INFRA-1196). */
+   *  that width whole. */
   issue_placeholder_phone: "Write on the issue…",
   reply_placeholder_phone: "Your reply, under the row…",
   /** What the box's criterion line says while it is empty, at 760 px and below. */

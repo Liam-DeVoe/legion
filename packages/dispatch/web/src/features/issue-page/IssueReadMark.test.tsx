@@ -1,5 +1,5 @@
 /**
- * The issue's read mark at the end of the new page's outline (dispatch://INFRA-3949 R9): the end
+ * The issue's read mark at the end of the new page's outline: the end
  * three-quarters on screen for a second writes the issue's head as read, once, and a mark already
  * at the head is written again by nothing; nor is the end on screen before the outline holds the
  * reads it draws the conversation from.

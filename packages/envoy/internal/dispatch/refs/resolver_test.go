@@ -464,7 +464,7 @@ func TestAFailedResolverLeavesTheWriteStoringTheTextAsWritten(t *testing.T) {
 	if want := text.ExtractAt(body, resolverServer); !reflect.DeepEqual(located, want) {
 		t.Errorf("a failed resolver read %#v; want the text as written, %#v", located, want)
 	}
-	if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil, true); err != nil {
 		t.Fatalf("the write failed on what its body cites: %v", err)
 	}
 	want := []Target{{"ask", resolverAsk[:8]}}

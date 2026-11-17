@@ -251,8 +251,7 @@ function* paintBlockInSlices(
 interface MarkdownBodyProps {
   /** Classes a host's line asks of the body's own element, after the renderer's: a reason drawn
    *  as a value of a line inside `NoTooltips`, held to that line's width so a long word wraps
-   *  there (`ApprovalSteps`, `IssueComponentsLine`; decision 104 of
-   *  dispatch://INFRA-1196/artifact/part-decisions-md). None, the default, draws the renderer's
+   *  there (`ApprovalSteps`, `IssueComponentsLine`). None, the default, draws the renderer's
    *  classes alone. */
   className?: string;
   /** The text this body holds: parsed and drawn where it has no `tree`, and written into the
@@ -339,6 +338,11 @@ interface MarkdownBodyProps {
  * whether those cards are drawn at all, is the host's property (`ReferenceHostIs`): inside a
  * link or a button nothing is a link of its own, and an element that can hold no markup - or a
  * diff, whose point is the characters it swaps - holds this text as the characters it is.
+ *
+ * The body takes no class. Its size and its line come from the element around it
+ * (`.dispatch-markdown`'s `font-size: inherit; line-height: inherit`, styles.css, a rule in no
+ * layer that overrides any utility on the renderer's own element), so a caller sizes a wrapper,
+ * as it does for `MarkdownPreview`.
  */
 export function MarkdownBody(props: MarkdownBodyProps): ReactNode {
   const host = useReferenceHost();

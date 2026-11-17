@@ -282,7 +282,7 @@ function attempt(
   const plan = deliveryPlan(baseBody, parties.named ? plainDelivery : undefined);
   // A reply names what it answers: a comment by `reply_to`, and an ask by `ask_id`, which the
   // server takes under an ask in any state - an open ask's question back, and a word under an
-  // answered or resolved one, which carries no turn (dispatch://INFRA-3677).
+  // answered or resolved one, which carries no turn.
   const parent =
     replyTo === null
       ? {}

@@ -114,8 +114,7 @@ func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]
 		}
 		// The grammar reads a person's reference since the picker writes one, but this read has
 		// no target to answer of it (refs.TargetOf), so it refuses it by name as it refuses a
-		// reference the grammar cannot read (decision 142 of
-		// dispatch://INFRA-1196/artifact/part-decisions-md).
+		// reference the grammar cannot read.
 		if ref.Kind == "person" {
 			return nil, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q names a person, which this read answers nothing of", strings.TrimSpace(value))
 		}

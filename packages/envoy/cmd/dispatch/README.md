@@ -192,6 +192,8 @@ absent is accepted, one naming the same session is accepted and its `origin` kep
 A token scoped to one project carries that project on every actor it writes, set from the token and never from the body;
 a token scoped to its person names no single project and carries none.
 A read-only token names no project either.
+Every actor such a write records carries `proven: true`, as a browser's person does, while a session a body names under any other credential carries no `proven`:
+a reader that trusts only a session the server saw proved reads that mark, and a document version's author keeps it only when every write merged into that author carried it.
 Each refusal is its own code and none repeats the token:
 `401 BROKER_TOKEN_NOT_ACTIVE` (the broker does not hold the token live), `401 BROKER_TOKEN_PROOF_INVALID` (the proof did not meet RFC 9449 Section 4.3, a proof presented twice included
 — a proof is single use by its `jti` and target URI), `401 BROKER_TOKEN_KEY_MISMATCH` (a sound proof signed by a key that is not the token's), `401 BROKER_TOKEN_NOT_A_SESSION` (the token is live but is no session's credential:
@@ -940,7 +942,7 @@ What the two processes share, and what each keeps to itself:
 
 - No leased background loop runs a pass beside another process's pass of the same loop.
   Each pass takes a named session-level advisory lease for its length (`duty.Exclusive`), so a process whose attempt lands inside another's pass finds it held and logs a skip.
-  The twelve timer loops — the delivery reconcile, the architecture import, the webhook redelivery sweep, the CI reconcile pass (lease `ci-reconcile`, beside the redelivery sweep in what it recovers), the hourly document compaction sweep (lease `document-compaction`, first tick at start, with or without NATS), the block index reconciliation, the term-statistics refresh, the repair of closed and reopened issues' asks, the keyed writes' maintenance sweep (lease `suggestion-outcomes`), the document settlement resumption, the prune of the registry of live server processes and the display tree fill (`texttreefill`, lease `text-tree-fill`)
+  The thirteen timer loops — the delivery reconcile, the architecture import, the webhook redelivery sweep, the CI reconcile pass (lease `ci-reconcile`, beside the redelivery sweep in what it recovers), the hourly document compaction sweep (lease `document-compaction`, first tick at start, with or without NATS), the block index reconciliation, the reference forms drain (lease `refs-forms`, at the block index's pace on a loop of its own), the term-statistics refresh, the repair of closed and reopened issues' asks, the keyed writes' maintenance sweep (lease `suggestion-outcomes`), the document settlement resumption, the prune of the registry of live server processes and the display tree fill (`texttreefill`, lease `text-tree-fill`)
   — also record each pass in `duty_passes` (migration `0115`), in a row per lease and period, so a process whose tick lands between another's passes
   — the ordinary case, since each ticker draws its phase at boot and a rolling update starts the second process minutes after the first
   — finds the period already served and logs the same skip: each runs once per period across the processes.
@@ -954,7 +956,7 @@ What the two processes share, and what each keeps to itself:
 
 - The embeddings `project_key` fill (lease `embeddings-project-key-fill`, `api.RunEmbeddingProjectKeyFill`) is leased and is no loop of a cadence: it is one pass of one to two hours that labels the rows stored before migration `20261109120000`, started once at boot, and it takes its lease with no period because the cursor row of `20261109120100` says when there is nothing left to do, so the process of a roll that finds the lease held logs the skip and fills nothing.
   That process then tries for the lease again every five minutes until that cursor row reads done, so a holder killed mid-pass costs the labelling one wait rather than lasting until something next boots, and each process's goroutine and its lease-pool connection go back for good once the rows are labelled.
-  Seventeen names are leased in all: the fourteen leased loops of the two items above, the CI reconcile among them, one per delivery durable for the intake's take-over, and the fill, and the lease pool holds a connection for each of those callers and for each of the four callers of the two intakes' holds, twenty-one (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pool.go` lists the names; every caller reserves its connection by name at boot and `store.LeaseCallers.Complete` refuses to serve unless the reservations are exactly the pool's size).
+  Eighteen names are leased in all: the fifteen leased loops of the two items above, the CI reconcile among them, one per delivery durable for the intake's take-over, and the fill, and the lease pool holds a connection for each of those callers and for each of the four callers of the two intakes' holds, twenty-two (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pool.go` lists the names; every caller reserves its connection by name at boot and `store.LeaseCallers.Complete` refuses to serve unless the reservations are exactly the pool's size).
   The delivery live hub, the event-stream relay, the process's shared listener connection, with the document rooms' room sync and the woken loops' wakes on it, and the document rooms' timers stay per-process by design (below), the embedding queue and the task progress reconciliation claim their own work, and the outbox publishes under its hold (above);
   the embedding queue's coverage pass runs in every process with no lease, each of its steps safe beside another process's, and only the processes whose embedder has the one active identity embed or drop a vector (Search, below);
   `cmd/dispatch/main.go` says at the call site which loop is which and why.
@@ -1139,12 +1141,12 @@ During the roll that releases this behaviour, processes of the earlier build beh
 Every change this build writes still notifies `dispatch_doc_changed`, which the earlier build reads, and an issue that the earlier build closes still closes this build's rooms through the trigger.
 
 **Each process holds its own connections, so a second process doubles them.**
-Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 21 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 112 connections to Postgres (`store.ConnectionsPerProcess`):
+Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 22 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 113 connections to Postgres (`store.ConnectionsPerProcess`):
 
 | Pool | Connections | What takes them |
 | --- | --- | --- |
 | Shared (`sharedPoolSize`) | 64 | Requests, settlements, and the document writers that hold a room's lock on a connection of their own (`lockRoom` through `withRoomLock`: snapshots, prunes, deletions). |
-| Leases (`store.LeasePoolSize`) | 21 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`) and the delivery intakes' holds (`duty.Hold`), the embeddings `project_key` fill and the display tree fill among them, one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`). |
+| Leases (`store.LeasePoolSize`) | 22 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`) and the delivery intakes' holds (`duty.Hold`), the embeddings `project_key` fill and the display tree fill among them, one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`). |
 | Room appends (`roomAppendsPoolSize`) | 8 | The document rooms' batches of browser updates; `application_name=dispatch-room-appends`. |
 | Rooms (`RoomsPoolSize`) | 4 | Document loads; `application_name=dispatch-rooms`. |
 | Compaction (`compactionPoolSize`) | 2 | A document's compaction: the read transaction of the rows it folds, and its write back under the document's lock (`Pool.Compaction`); `application_name=dispatch-compaction`. |
@@ -1155,7 +1157,7 @@ Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a se
 | Registry (`registryPoolSize`) | 1 | Held for the life of the process: the heartbeat that stamps its row in the registry of live server processes every 5 seconds (`processes.Register`). |
 | Listeners (`listenerConnections`) | 5 | What the process may hold at once, each on a connection of its own: the events outbox's `LISTEN` on `dispatch_events` and `dispatch_duty_holds`, the shared listener hub the document rooms' room sync and the woken background loops wait on, and the document rooms' NOTIFY sender, each held for the life of the process, and the delivery hub's and the event stream relay's, each held only while something subscribes to them. |
 
-Two processes at their ceiling hold 224, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
+Two processes at their ceiling hold 226, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
 
 **A connection is closed after its next response once it is 60 seconds old** (`maxConnAge`, `cmd/dispatch/conn_age.go`):
 the server stamps each connection's accept time and answers the first request it reads at that age or later with `Connection: close`, and a request carrying an `Upgrade` header, a websocket handshake, keeps its connection.
@@ -1420,7 +1422,7 @@ A process that finds it held tries again
   a key passes its window by the clock alone, an answer run passes its own by the clock too, and a delivery is owed because the process holding it died, which commits nothing to announce.
   It keeps the lease name the suggestion outcome sweep carried this work under, so during a roll the earlier release's pass and this one still exclude each other on it.
 
-Outside these classes, the document compaction sweep (lease `document-compaction`) runs every hour from a tick at start whether or not NATS is configured, the display tree fill (lease `text-tree-fill`, `texttreefill.Run`) runs every hour from a tick at start and holds its lease for a whole pass, which is as long as it takes to store a tree for every stored text that has none at this build's display-parser version, the outbox's publish scan is woken, never periodic (`outbox.Run`), the settlement resumption still runs every minute, the block index reconciliation (lease `block-index`) runs every 30 s (every 2 s while a batch is full) and the repair of closed and reopened issues' asks (lease `issue-ask-repair`, Database migrations below) every 10 minutes after its boot pass, each recording its passes in `duty_passes` with its period, and the per-feature listeners (the delivery live hub, the event stream relay and the events outbox) keep their own connections and keep-alive pings.
+Outside these classes, the document compaction sweep (lease `document-compaction`) runs every hour from a tick at start whether or not NATS is configured, the display tree fill (lease `text-tree-fill`, `texttreefill.Run`) runs every hour from a tick at start and holds its lease for a whole pass, which is as long as it takes to store a tree for every stored text that has none at this build's display-parser version, the outbox's publish scan is woken, never periodic (`outbox.Run`), the settlement resumption still runs every minute, the block index reconciliation (lease `block-index`) and the reference forms drain (lease `refs-forms`, `docs.Service.RunRefsFormsReconciliation`) each run every 30 s (every 2 s while a batch is full) and the repair of closed and reopened issues' asks (lease `issue-ask-repair`, Database migrations below) every 10 minutes after its boot pass, each recording its passes in `duty_passes` with its period, and the per-feature listeners (the delivery live hub, the event stream relay and the events outbox) keep their own connections and keep-alive pings.
 Each pass of the settlement resumption arms at most 50 owed documents, closed and open issues' alike: first the documents that no pass tried, then the documents that a pass tried, oldest try first.
 The pass records each try in the database (`doc_settlements_pending.tried_at`), so the process that takes the lease next reads the same record.
 
@@ -1872,7 +1874,8 @@ It touches no row; its census answers `0`.
 
 Migration `0126_block_grammar_seed` owes the same index to every comment, ask and issue message already stored whose text holds `#b-`, read with the three triggers' predicates.
 The triggers are live by then, so a write that lands while it runs is owed by its trigger, and a row a trigger has already written keeps its `enqueued_at`.
-It takes `ACCESS SHARE` on `comments`, `asks` and `messages`, which no write waits behind, and writes only `block_grammar_owed`.
+It takes `ACCESS SHARE` on `comments`, `asks` and `messages` and writes only `block_grammar_owed`.
+A write of a text it has already owed still waits until it commits, since that write's trigger meets the `(kind, id)` key the seed has inserted and not yet committed, and a writer touching two such texts in the reverse of the seed's order can deadlock with it (`40P01`), which the migration runner does not retry.
 Its census answers `0`: the one table it writes is `0121`'s, which holds no row at deploy, and the rows it inserts are new work owed, not a rewrite.
 
 Migration `0127_asks_block_id_key` creates `block_id_key(id)`, the SHA-256 of a block id's UTF-8 bytes, written to be immutable so an index can use it, and rebuilds `asks_block_id_unique` (`0018`) and `asks_anchor_block_id_idx` (`0023`) under their names over it.
@@ -2295,9 +2298,56 @@ Each touches no row; each census answers `0`.
 Migration `20261103205042_refs_grammar_seed` owes that index to every text already stored:
 each comment, each ask, each issue message and each document with a markdown version, and each such document's scope.
 Those triggers are live by then, so a write that lands while it runs is owed by its trigger, and a row a trigger has already written keeps its `enqueued_at`.
-It takes `ACCESS SHARE` on `comments`, `asks`, `messages`, `artifacts` and `artifact_versions`, which no write waits behind, and writes only `refs_grammar_owed`.
+It takes `ACCESS SHARE` on `comments`, `asks`, `messages`, `artifacts` and `artifact_versions` and writes only `refs_grammar_owed`.
+A write of a text already stored still waits until it commits, since that write's trigger meets the `(kind, id)` key the seed has inserted and not yet committed, and a writer touching two stored sources in the reverse of the seed's order can deadlock with it (`40P01`), which the migration runner does not retry.
 Its census answers `0`: the one table it writes is `20261103205037`'s, which holds no row at deploy, and the rows it inserts are new work owed, not a rewrite.
 The server drains them itself, a fourth batch of `docs.Service.RunBlockIndexReconciliation` (`packages/envoy/AGENTS.md`), so the links and the edges of text stored before this release appear with no edit and no command run.
+
+Migration `20261117025900_refs_forms_owed` creates `refs_forms_owed (kind, id, enqueued_at)`, the queue of text owed an index with the reference forms INFRA-1702 adds
+— an issue's tab addresses (`dispatch://CORE-45/plan`, `/verification`, `/activity`, `/children`, `/artifacts`, `/collaborators`, `/conversation`, `/log`, and the same as dashboard URLs) and a document's dashboard URLs (`https://<origin>/issues/CORE-50/artifact/notes-md`, with `?v=` and `#b-`) — which a build that predates them reads none of, so its re-index of a text deletes the refs rows they wrote.
+`kind` is `comment`, `ask`, `message` or `artifact` (a document at its latest version), with no `scope`, since these forms change no `#id`, and `refs_forms_owed_enqueued` is the index the drain reads oldest first.
+A row stays owed until a build that reads these forms has indexed that text itself.
+It is a queue of its own rather than a row of `refs_grammar_owed`, for three reasons:
+a server of the previous release drains that table and settles a row by `(kind, id)` alone, so it would consume these rows with the grammar it knows;
+this release drains that table inside the block-index pass, under `block-index`, a lease whose period one process serves for all, so a period an older process served would drain nothing of this step;
+and that drain settles a document's row by owing it a block index, which any build's block-index pass may then write with the grammar it knows.
+It also creates the two trigger functions the four migrations after it attach (`refs_forms_owe`, whose kind is its trigger's argument, and `refs_forms_owe_version`).
+It creates a table, an index and two functions and touches no row, and the release before it neither reads nor writes any of them; its census answers `0`.
+
+Migrations `20261117025901_comments_refs_forms_trigger`, `20261117025902_asks_refs_forms_trigger`, `20261117025903_messages_refs_forms_trigger` and `20261117025904_artifact_versions_refs_forms_trigger` attach those functions on the writes `20261103205038`-`20261103205041` owe `refs_grammar_owed` for, with the same predicates, each in its own migration so each transaction holds one table's `SHARE ROW EXCLUSIVE` alone:
+a build that predates these forms re-reads the whole text on each such write, which deletes their rows.
+The asks trigger also owes every write of an ask's `options` and of its `answer`, which `20261103205039` does not watch:
+they are the ask's other parts, which such a build re-indexes on that write, its answer's one row write (`update asks set state = 'answered', answer = …`) included.
+The asks' scope triggers have no counterpart here.
+A write this release makes settles its own row in the write's transaction once it has indexed the source's whole text (`refs.replaceRefs`, `refs.IndexAskParts`), so only a write of an earlier build is left owed.
+Each touches no row; each census answers `0`.
+
+Migration `20261117025905_refs_forms_seed` owes that index to every text already stored: each comment, each ask, each issue message and each document with a markdown version.
+Those triggers are live by then, so a write that lands while it runs is owed by its trigger, and a row a trigger has already written keeps its `enqueued_at`.
+It takes `ACCESS SHARE` on `comments`, `asks`, `messages`, `artifacts` and `artifact_versions` and writes only `refs_forms_owed`.
+A write of a text already stored still waits until the seed commits, since its trigger's insert meets the `(kind, id)` key the seed has inserted and not yet committed, and a writer touching two stored sources in the reverse of the seed's order (comments, asks, messages, documents) can deadlock with it (`40P01`), which the migration runner does not retry.
+Its census answers `0`: the one table it writes is `20261117025900`'s, which holds no row at deploy, and the rows it inserts are new work owed, not a rewrite.
+
+Migration `20261117025906_refs_forms_delete_trigger` owes `refs_forms_owed` every source whose edges a delete from `refs` removes, through one statement trigger over the deleted rows (`refs_forms_owe_deleted`), which owes each source of the statement once and keeps a row already owed as it stands.
+An older build re-indexes text without writing its source row
+— its drain of a `refs_grammar_owed` `scope` row, and its block-index pass of a document left owed one —
+and no source trigger sees that, while its delete drops the edges of these forms all the same.
+Only the four source kinds are owed, and only a `from_id` in the canonical lowercase spelling a source's `id::text` writes; a synthetic source's id owes nothing and is passed over rather than refused.
+It holds `refs`' lock alone for its short transaction and touches no row; its census answers `0`.
+
+Migrations `20261117025907_block_refs_refs_forms_delete_trigger`, `20261117025908_comment_block_refs_refs_forms_delete_trigger`, `20261117025909_message_block_refs_refs_forms_delete_trigger` and `20261117025910_ask_block_refs_refs_forms_delete_trigger` owe the same on a delete from each block table, through a statement trigger of the same shape on each:
+`block_refs` owes its document, `comment_block_refs` its comment, `message_block_refs` its issue message and `ask_block_refs` its ask.
+Such a build's re-index drops the edges a block holds with a delete of its own, which deletes no `refs` row where the text names the target elsewhere too
+— a bare `CORE-1` in one block and `dispatch://CORE-1/plan` in another keep the refs edge, which the bare key still finds, while the second block loses its own —
+and its re-index of an ask's parts on a resolution writes no column the asks trigger watches.
+A delete that cascades from the owner's own delete owes nothing: the owner is gone, and owes no text.
+Each holds its table's lock alone for its short transaction and touches no row; each census answers `0`.
+
+This release settles a source's row only in a transaction that indexed the source's whole text, its blocks too, after every delete that index made:
+`refs.replaceRefs` after the block index the same write made before it, an ask's parts index after its question (`refs.IndexAskParts`, which reconciles the question's references itself on a write that holds the parts alone, as an answer, a resolution and the block index of an owed ask do), a gone source's re-index and `refs.ForgetDocument` after their delete, and `rebuild-refs`' orphan sweep, which deletes the edges of every gone source and then what the queue holds for every gone source, in one transaction.
+A write that leaves the source's blocks for later settles nothing of this queue: `rebuild-refs`' re-index of each source, and a document version with no rendering, leave the source owed until this release's own block index of it, which a process of the previous release may otherwise take and write without these forms.
+So only a delete by a build that does not settle the queue, or a write of this release that left the blocks to its block index, leaves a source owed.
+The server drains the queue itself, in a duty of its own (`docs.Service.RunRefsFormsReconciliation`, lease `refs-forms`, `packages/envoy/AGENTS.md`), so the edges of these forms in text stored before this release, or rewritten by the release before it, appear with no edit and no command run.
 
 Migration `20261102110000_artifact_document_roles` gives `artifacts` a nullable `role`, `verification` for the document an issue holds as `verification.md` and `plan` for its `plan.md`, null for every other document.
 The upload route sets it from the slug when it creates the row and never changes it, as `is_primary` never changes, and the Verification and Plan tabs find their document by it rather than by reading names back.

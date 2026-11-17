@@ -137,6 +137,7 @@ export function ArtifactHeader({
         className={`flex flex-wrap items-center justify-between gap-3 rounded-lg p-3 ${card} ${
           highlighted ? highlightRing : ""
         }`}
+        data-highlighted={highlighted ? "" : undefined}
         data-testid="artifact-header"
       >
         <div className="min-w-0">

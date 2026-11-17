@@ -6,6 +6,7 @@ import { DISPATCH_READING_SURFACES, type DispatchReadingProof } from "@legion/co
 import * as ts from "typescript";
 
 import { type ListedRow, rowsOfListing } from "../configurations";
+import { rowLimit } from "./bounded-subprocess";
 import { listing, projectArguments, retained } from "./playwright-listing";
 
 /**
@@ -39,11 +40,6 @@ import { listing, projectArguments, retained } from "./playwright-listing";
  *  no other: Playwright matches it against each spec's path, where `inbox-reading-pane.e2e.ts`
  *  holds `reading-` but not `e2e/reading-`. */
 const READING_LISTING_ARGUMENTS = [...projectArguments(["chromium"]), "e2e/reading-"];
-
-/** The ceiling of each test that awaits the listing: where something is wrong rather than slow,
- *  as e2e/__tests__/no-browser-rows.test.ts sets its own. A listing that names one project and
- *  one group of files takes a few seconds on this pod. */
-const listingTimeout = 180_000;
 
 /** What a driver drives: the id its title starts with, before the colon - a row's surface, or a
  *  surface, a `/` and one of its arms (`DispatchReadingArm`). A row of a reading spec whose title
@@ -101,7 +97,7 @@ test(
   async () => {
     expect((await drivers).length).toBeGreaterThan(0);
   },
-  listingTimeout
+  rowLimit("listing")
 );
 
 test.each(DRIVEN_IDS.map((driven) => [driven] as const))(
@@ -116,7 +112,7 @@ test.each(DRIVEN_IDS.map((driven) => [driven] as const))(
         : `${driven} has ${files.length} drivers in the reading specs: ${files.join(", ") || "none"}`
     ).toBe(driven);
   },
-  listingTimeout
+  rowLimit("listing")
 );
 
 test(
@@ -127,7 +123,7 @@ test(
       .map((driver) => `${driver.file}: ${driver.title}`);
     expect(stray).toEqual([]);
   },
-  listingTimeout
+  rowLimit("listing")
 );
 
 test(
@@ -140,7 +136,7 @@ test(
       .map((driver) => `${driver.file}: ${driver.title} (expected ${driver.expectedStatus})`);
     expect(unrun).toEqual([]);
   },
-  listingTimeout
+  rowLimit("listing")
 );
 
 test("every row the list does not render says why", () => {
@@ -318,5 +314,5 @@ test(
     );
     expect(unrun).toEqual([]);
   },
-  listingTimeout
+  rowLimit("listing")
 );

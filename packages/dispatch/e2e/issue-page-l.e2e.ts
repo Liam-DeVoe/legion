@@ -5,7 +5,8 @@ import {
   CONTROL_LABELS,
   PRESET_NAMES,
 } from "../web/src/features/issue-page/page-words";
-import { getArtifactBlocks, getIssueEvents, getMyState, listComments } from "./api";
+import { DWELL_MS } from "../web/src/features/shell/useDwell";
+import { createAsk, getArtifactBlocks, getIssueEvents, getMyState, listComments } from "./api";
 import { seedReplyNesting } from "./issue-layout-seed";
 import { gotoIssue, phase } from "./issue-page";
 import {
@@ -56,14 +57,15 @@ import { commentWithBody } from "./margin-helpers";
 import { expect, test } from "./test";
 
 /**
- * Part L of dispatch://INFRA-1196, "Writing" (dispatch://INFRA-3949): the new issue page's one
+ * Writing on the new issue page: the page's one
  * box to write in, held at the foot of the screen; a reply drawn under what it answers; and the
  * read mark at the outline's end. Each row is one check of
- * dispatch://INFRA-3949/artifact/verification-md, named by its `-g` string: rows (1) to (4) are
+ * the verification document, named by its `-g` string: rows (1) to (4) are
  * c-replies, (5) and (6) c-box, (7) c-mark, (8) the outline's half of c-statement-reply, and (9)
- * its Spec view half, owed on part J and skipped until J is under this part's head (`@owed`).
+ * its Spec view half, owed until the Spec view's keymap takes the box's writer and skipped until
+ * then (`@owed`).
  *
- * The rows are on the real stack, each through D's `phase` (a reset database, alice signed in,
+ * The rows are on the real stack, each through `phase` (a reset database, alice signed in,
  * the new page turned on with `withIssuePage`): every row writes from the box and then reads its
  * own write, as Dispatch stored it and as the outline draws it from the server's reads. Rows (1)
  * to (5) are the checkpoint's (`git show 29111db16c41:packages/dispatch/e2e/issue-layout.e2e.ts`),
@@ -223,7 +225,7 @@ async function oneRowHolding(page: Page, words: string, what: string): Promise<s
   return id;
 }
 
-// c-replies (1). R3 and R16 of dispatch://INFRA-1196 and dispatch://INFRA-3677: a reply is drawn
+// c-replies (1): a reply is drawn
 // under the entry it answers, at any depth, a resolved question's reply included; every node
 // that takes a reply draws the control; a reply from the box lands under its target; an answer
 // is drawn in the question's row; and a comment with no target is drawn at the outline's top
@@ -300,7 +302,7 @@ test("a reply is drawn under the entry it answers, and every node takes a reply 
       await expect.poll(() => parentOfRow(page, id), { message: what }).toBe(parent);
     };
 
-    // A reply sent from a resolved ask's control is drawn under that ask (INFRA-3677).
+    // A resolved ask still takes a reply: one sent from its control is drawn under that ask.
     await replyFromRow(page, seeded.resolvedAsk, "A reply on the resolved question.");
     await drawnUnder(
       (await commentWithBody(seeded.key, undefined, "A reply on the resolved question.")).id,
@@ -365,7 +367,7 @@ test("a reply is drawn under the entry it answers, and every node takes a reply 
   });
 });
 
-// c-replies (2). dispatch://INFRA-3677: a question its asker resolved still takes a reply, which
+// c-replies (2): a question its asker resolved still takes a reply, which
 // Dispatch stores with the question's `ask_id` and the outline draws under the question rather
 // than under the issue or nowhere.
 // SLOW(>=2s): a seeded thread and three questions, a reply written from the box and polled until
@@ -844,6 +846,141 @@ test("the box stays at the foot, grows as it is typed and writes both kinds @pho
   });
 });
 
+// The box stands 8 px above the screen's foot in every state it rests in, and the
+// reach it publishes for the focused row and the read mark is its own height. A box that grows
+// and then shrinks while the page stands at the outline's end is the case to read: a reply aimed
+// at the last row and ended with the target line's own control, the pointer's way out of a reply.
+// SLOW(>=2s): forty comments seeded, a reply aimed and ended, and the page scrolled to its end
+// twice, each place polled until the box has settled.
+test("the box that shrinks at the outline's end stands 8 px above the foot again", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedFortyComments, async (page, seeded) => {
+    const at = `at ${DESKTOP.width}x${DESKTOP.height}`;
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await expect(composerField(page), `the box is not drawn ${at}`).toBeVisible();
+    const last = (await drawnRows(page)).at(-1)?.id ?? "";
+    await focusRow(page, last);
+    await page.keyboard.press("r");
+    await expect(
+      composerTarget(page),
+      `r on the last row draws no target line ${at}`
+    ).toBeVisible();
+
+    // The reader scrolls to the page's end with the reply open, and ends the reply with the
+    // target line's control.
+    const toTheEnd = async () => {
+      await page.mouse.move(DESKTOP.width / 2, DESKTOP.height / 2);
+      await page.mouse.wheel(0, 100_000);
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () => document.documentElement.scrollHeight - window.innerHeight - window.scrollY
+          )
+        )
+        .toBeLessThanOrEqual(1);
+    };
+    await toTheEnd();
+    await composer(page).getByRole("button", { name: CONTROL_LABELS.write_on_issue }).click();
+    await expect(composerTarget(page), `the reply did not end ${at}`).toHaveCount(0);
+
+    // The reach the box publishes is its own height once it has shrunk back to one line, and
+    // the line stands 8 px above the foot at the outline's end.
+    const reach = () =>
+      composer(page).evaluate((section) => ({
+        height: Math.round(section.getBoundingClientRect().height),
+        published: Math.round(
+          Number.parseFloat(
+            document.documentElement.style.getPropertyValue("--issue-composer-height")
+          )
+        ),
+      }));
+    await expect
+      .poll(async () => (await reach()).height, { message: `the box is not one line again ${at}` })
+      .toBeLessThan(60);
+    await toTheEnd();
+    await expectFormAtFoot(page, `${at}, at the outline's end after the reply ended`);
+    const settled = await reach();
+    expect(
+      settled.published,
+      `the box publishes a reach of ${settled.published} px while it is ${settled.height} px tall ${at}`
+    ).toBe(settled.height);
+  });
+});
+
+// The answer line's options, Decline to answer and Send answer stand inside the box and inside
+// the screen at every width, however many options the question offers: on a phone the controls
+// stand under the field, and a row of them that is wider than the line wraps. A question of four
+// options whose labels are a few words each, as the questions on real issues are, is the case to
+// read.
+// SLOW(>=2s): forty comments and a question of four options seeded, and the answer line opened
+// at two widths.
+test("the answer line's options and Send answer stand inside the box and the screen @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const seed = async () => {
+    const forty = await seedFortyComments();
+    const question = await createAsk(
+      forty.key,
+      {
+        options: [
+          { label: "B, a document switcher (recommended)" },
+          { label: "A, one scroll with no switcher" },
+          { label: "C, four tabs, Decisions first, as your message named" },
+          { label: "Other" },
+        ],
+        question: "Which layout does the issue page take?",
+      },
+      { actor: { id: "e2e-box-asker", kind: "session" as const }, as: "agent" as const }
+    );
+    return { ...forty, fourOptions: question.id };
+  };
+  await phase(browser, seed, async (page, seeded) => {
+    for (const size of [DESKTOP, PHONE]) {
+      const at = `at ${size.width}x${size.height}`;
+      await page.setViewportSize({ height: size.height, width: size.width });
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectIssuePageDrawn(page);
+      await expect(composerField(page), `the box is not drawn ${at}`).toBeVisible();
+      await focusRow(page, seeded.fourOptions);
+      await page.keyboard.press("a");
+      await expect(composerField(page), `a put no caret in the box ${at}`).toBeFocused();
+      await expect(
+        composer(page).locator("[data-answer-option]"),
+        `the answer line draws no option ${at}`
+      ).toHaveCount(4);
+
+      // Each control the answer line draws ends inside the box and inside the screen.
+      const outside = await composer(page).evaluate((section) => {
+        const edge = Math.min(
+          section.getBoundingClientRect().right,
+          document.documentElement.clientWidth
+        );
+        return [...section.querySelectorAll<HTMLElement>("button")]
+          .filter((control) => control.getClientRects().length > 0)
+          .filter((control) => control.getBoundingClientRect().right > edge + 0.5)
+          .map((control) =>
+            (control.getAttribute("aria-label") ?? control.textContent ?? "").trim()
+          );
+      });
+      expect(outside, `a control of the answer line ends past the box or the screen ${at}`).toEqual(
+        []
+      );
+      const sideways = await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth
+      );
+      expect(sideways, `the answer line makes the page scroll sideways ${at}`).toBeLessThanOrEqual(
+        0
+      );
+      await page.keyboard.press("Escape");
+    }
+  });
+});
+
 /** The forty comments of `seedFortyComments`, an issue of one comment, whose outline is shorter
  *  than the screen, and an issue with a spec of one statement: each unread for the reader. */
 async function seedReadMarks() {
@@ -862,7 +999,7 @@ async function seedReadMarks() {
 // read through its newest event, once; nothing else does - not an outline whose end is off
 // screen or under the box, and not a view, whose end is not the conversation's. An outline
 // shorter than the screen has its end on screen at load, and is marked with no scroll.
-// SLOW(>=2s): three two-second waits for a write that must not come, and two marks polled.
+// SLOW(>=2s): five waits of two dwells each for a write that must not come, and two marks polled.
 test("the end of the outline on screen for a second marks the issue read", async ({ browser }) => {
   test.setTimeout(120_000);
   await phase(browser, seedReadMarks, async (page, seeded) => {
@@ -889,7 +1026,10 @@ test("the end of the outline on screen for a second marks the issue read", async
       await onScreen(outlineEnd(page)),
       "the outline's end is on screen at load, so its absence proves nothing"
     ).toBe(false);
-    await page.waitForTimeout(2_000);
+    // The read mark must not be written while the outline's end is off screen, and a write that
+    // never comes leaves nothing to poll for, so this span is the check: two dwells long, so a
+    // dwell begun even as it starts ends at its middle, and its write leaves before its end.
+    await page.waitForTimeout(2 * DWELL_MS);
     expect(fortyWrites, "the end of the outline off screen wrote the read mark").toEqual([]);
     expect(await mark(key), "the end of the outline off screen marked the issue read").toBeLessThan(
       head
@@ -902,7 +1042,10 @@ test("the end of the outline on screen for a second marks the issue read", async
       under !== null && under.lastBottom > under.boxTop && under.lastBottom < under.viewport,
       `the outline's last row does not end under the box: ${JSON.stringify(under)}`
     ).toBe(true);
-    await page.waitForTimeout(2_000);
+    // Nor while the end is under the box, which hides it from the reader though the window holds
+    // it: the span is the check again, two dwells long, so a dwell begun by the scroll above ends
+    // by its middle, and its write leaves before its end.
+    await page.waitForTimeout(2 * DWELL_MS);
     expect(fortyWrites, "the end of the outline under the box wrote the read mark").toEqual([]);
     expect(
       await mark(key),
@@ -916,8 +1059,10 @@ test("the end of the outline on screen for a second marks the issue read", async
         timeout: 3_000,
       })
       .toBe(head);
-    // Read once more after the write has settled, so a second write is counted too.
-    await page.waitForTimeout(1_000);
+    // The mark goes out once and never again, and a write that never comes leaves nothing to poll
+    // for, so this span is the check: a repeat would leave as the first write's answer is drawn,
+    // and a second dwell begun then would write one dwell later, so two dwells see either.
+    await page.waitForTimeout(2 * DWELL_MS);
     expect(
       fortyWrites.map((write) => write.input),
       "the end of the outline on screen did not write the mark once"
@@ -941,8 +1086,9 @@ test("the end of the outline on screen for a second marks the issue read", async
       await page.evaluate(() => window.scrollY),
       "the page scrolled to mark an outline shorter than the screen read"
     ).toBe(0);
-    // Read once more after the write has settled, so a second write is counted too.
-    await page.waitForTimeout(1_000);
+    // Once and never again here too: a repeat would leave as the first write's answer is drawn,
+    // and a second dwell begun then would write one dwell later, so two dwells see either.
+    await page.waitForTimeout(2 * DWELL_MS);
     expect(shortWrites, "the short outline's end did not write the mark once").toHaveLength(1);
 
     // A view's end is not the conversation's: the Spec view, whole on screen, marks nothing.
@@ -962,7 +1108,10 @@ test("the end of the outline on screen for a second marks the issue read", async
       ),
       "the Spec view is not whole on screen"
     ).toBe(true);
-    await page.waitForTimeout(2_000);
+    // The Spec view must not write the read mark, and a write that never comes leaves nothing to
+    // poll for, so this span is the check: two dwells long, so a mark drawn at the view's end, on
+    // screen since the scroll above, would dwell by its middle and be sent before its end.
+    await page.waitForTimeout(2 * DWELL_MS);
     expect(specWrites, "the Spec view wrote the read mark").toEqual([]);
     expect(await mark(spec), "the Spec view marked the issue read").toBe(before);
   });
@@ -1113,7 +1262,7 @@ test("r on a statement writes a comment under it", async ({ browser }) => {
 test.skip("r on a statement in the Spec view writes a comment under it @owed", {
   annotation: {
     description:
-      "Owed on part J of INFRA-1196 (decisions 74 and 61): the Spec view's rows take the writer's r only once J passes the writer to the view's keymap; skipped under decision 127.",
+      "Owed: the Spec view's rows take the writer's r only once the view's keymap is passed the box's writer, which it is not yet, so this reading is skipped until then.",
     type: "owed",
   },
 }, async ({ browser }) => {

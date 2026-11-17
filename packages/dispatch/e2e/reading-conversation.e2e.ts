@@ -28,8 +28,8 @@ import { expect, test } from "./test";
  * their names and link nothing. A handoff is no record of the reference graph, so a `#id` in
  * its words names nothing, and its driver holds the other five forms.
  *
- * The new issue page's outline is one more of an issue's own pages (dispatch://INFRA-1196,
- * `RowText.tsx`): a row draws its node's words through the renderer, and the row's own pass makes
+ * The new issue page's outline is one more of an issue's own pages (`RowText.tsx`): a row draws
+ * its node's words through the renderer, and the row's own pass makes
  * the chips its references read as. A row leaves a `#id` as written, so its driver holds the
  * other five forms too.
  */

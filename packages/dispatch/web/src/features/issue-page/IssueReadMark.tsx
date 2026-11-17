@@ -40,8 +40,8 @@ export function IssueReadMark({ issueKey }: { issueKey: string }): ReactNode {
   // screen with none of the conversation above it, so the dwell waits on them, as main's
   // Conversation tab draws no end of the conversation before its reads answer. One whose first
   // read failed holds none, and the issue is not marked read over rows never drawn. An answer
-  // held is enough: a refetch that fails keeps the rows the outline drew (dispatch://INFRA-1196
-  // decision 98). The outline makes these reads and keeps them fresh, so the mark's mount asks
+  // held is enough: a refetch that fails keeps the rows the outline drew. The outline makes
+  // these reads and keeps them fresh, so the mark's mount asks
   // for none of them again (`refetchOnMount: false`), and one the outline is already making is
   // that same request, under the same key, not a second one.
   const asks = useQuery({

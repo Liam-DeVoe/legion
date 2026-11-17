@@ -55,9 +55,15 @@ func MentionExcerpts(markdown string, blocks []model.ArtifactBlock, located []te
 
 // RecordExcerpts stores, on every mention the document fromID writes, the excerpt excerpts holds
 // for its target, or none, as of the document's version: the excerpt GET /api/v1/references
-// answers that mention with. A row already holding a later version's excerpt is left as it is, so
-// the reconciliation, which reads the document outside the version write's transaction, never
-// overwrites what a later version stored.
+// answers that mention with. It writes only a row whose excerpt is owed (excerpt_version null) or
+// older than version. A row already holding a later version's excerpt is left as it is, so the
+// reconciliation, which reads the document outside the version write's transaction, never
+// overwrites what a later version stored. A row already holding this version's excerpt is left as
+// it is too: a re-index of a version already indexed - the block index of a document owed one,
+// the forms drain (docs.Service.drainFormsDocument) - reads the same text and the same blocks, and
+// the excerpt that version's write stored was cut as the block's own row was (IndexBlocks writes
+// a block's excerpt only when its text changed), where a cut that moved since (BlockExcerpt)
+// would rewrite the mention's excerpt and leave the block's own as it was.
 //
 // The guard admits a row a version write has just marked owed (ClearExcerpts, excerpt_version
 // null) while the reconciliation, holding an older version's number, read the document, so the
@@ -98,14 +104,14 @@ func RecordExcerpts(ctx context.Context, q Queryer, fromID string, version int, 
 			       case when excerpt_version is not null then excerpt_text end as served_text,
 			       case when excerpt_version is not null and excerpt_text is not null then coalesce(excerpt_block_id, '') end as served_block
 			from refs
-			where from_kind = 'artifact' and from_id = $1 and coalesce(excerpt_version, 0) <= $2
+			where from_kind = 'artifact' and from_id = $1 and (excerpt_version is null or excerpt_version < $2)
 		),
 		written as (
 			update refs r
 			set excerpt_version = $2,
 			    (excerpt_block_id, excerpt_text) = (select e.block_id, e.text from e where e.kind = r.to_kind and e.id = r.to_id)
 			where r.from_kind = 'artifact' and r.from_id = $1
-			  and coalesce(r.excerpt_version, 0) <= $2
+			  and (r.excerpt_version is null or r.excerpt_version < $2)
 			returning r.to_kind, r.to_id, r.excerpt_text as served_text,
 			          case when r.excerpt_text is not null then coalesce(r.excerpt_block_id, '') end as served_block
 		)

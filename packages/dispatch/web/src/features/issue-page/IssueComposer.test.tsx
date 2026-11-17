@@ -45,7 +45,7 @@ import {
 import { ANSWER_LINES, CONTROL_LABELS, type NodeType } from "./page-words";
 
 /**
- * The new issue page's one box to write in (dispatch://INFRA-3949 R1 to R7 and R11), drawn as
+ * The new issue page's one box to write in, drawn as
  * the page draws it: under the page's writer and its words (`slots/providers.tsx`), at the foot of
  * the outline the body slot draws (`IssueTree`), or of a view's rows where a view is on. Each
  * case presses what a reader presses - a row's `r` and `a`, the box's own controls and keys - and
@@ -783,6 +783,20 @@ test("the box sets the foot height while drawn and removes it while hidden", asy
   expect(footHeight()).toBe("");
 });
 
+// The reach the box publishes is its own height wherever it stands. At the outline's end the read
+// mark, which the reach moves down (`slots/foot.tsx`), can make the page longer than the box's
+// place, so a box that has just shrunk stands above the screen's foot; a reach read off that
+// place would hold the mark there, and the box above the foot, until the box next changed size.
+test("the box publishes its own height while it stands above the screen's foot", () => {
+  const page = renderPage({ viewOn: true });
+  const section = composerBox();
+  // A box of one line, 54 px tall, whose foot stands 15 px above the screen's.
+  section.getBoundingClientRect = () => new DOMRect(0, window.innerHeight - 69, 1000, 54);
+  page.redraw({});
+  expect(section).not.toHaveAttribute("hidden");
+  expect(footHeight()).toBe("54px");
+});
+
 // IC:92: the line that writes on the issue stays mounted while the box answers a question or
 // edits a comment, so what the reader was typing there is still there when that ends.
 test("a comment typed in the box is still there after an answer or an edit ends", async () => {
@@ -1340,32 +1354,94 @@ test("r on a statement keeps the box on a refused reply, and the send carries th
   });
 });
 
-// The same rule for a reply: a reply Dispatch refused holds the box on the comment it answers
-// when the reader presses `a` on an open question, so the refused words are never sent as a
-// comment on the issue once the answer line is done.
-test("a on an open question keeps the box on a refused reply", async () => {
-  const user = userEvent.setup();
+/** What the refused-reply helpers below use of a page `renderPage` drew. */
+interface DrawnPage {
+  readonly press: (user: UserEvent, nodeId: string, key: string) => Promise<void>;
+  readonly writer: () => OutlineWriter;
+}
+
+/** Replies to bob's comment with "My reply to bob", which Dispatch refuses (400): the box then
+ *  holds a refused reply, its words in the field. */
+async function refuseReply(user: UserEvent, page: DrawnPage): Promise<void> {
   stub(
     spyOn(api, "createComment").mockRejectedValue(
       new ApiError(400, { code: "INVALID_INPUT", error: "The reply was refused." })
     )
   );
-  const page = renderPage();
   await page.press(user, "comment-1", "r");
   await waitFor(() => expect(writeField()).toHaveFocus());
   await user.keyboard("My reply to bob{Enter}");
   await waitFor(() =>
     expect(within(composerBox()).getByRole("alert")).toHaveTextContent("The reply was refused.")
   );
+}
 
-  // `a` on the open question: the box stays on bob's comment, with no answer line.
-  await page.press(user, "ask-1", "a");
+/** That the box is still on the refused reply to bob's comment, with no answer and no edit set
+ *  beside it, the caret in the line and the refused words in it. */
+async function onRefusedReply(page: DrawnPage): Promise<void> {
   expect(targetWords()).toBe(`${CONTROL_LABELS.replying_to} bob Earlier words`);
   expect(composerBox().querySelector("form[data-answering]")).toBeNull();
   expect(page.writer().answer).toBeUndefined();
+  expect(page.writer().editing).toBeUndefined();
   expect(page.writer().reply?.id).toBe("comment-1");
   await waitFor(() => expect(writeField()).toHaveFocus());
   expect(writeField().value).toBe("My reply to bob");
+}
+
+// The same rule for a reply: a reply Dispatch refused holds the box on the comment it answers
+// when the reader presses `a` on an open question, so the refused words are never sent as a
+// comment on the issue once the answer line is done.
+test("a on an open question keeps the box on a refused reply", async () => {
+  const user = userEvent.setup();
+  const page = renderPage();
+  await refuseReply(user, page);
+  await page.press(user, "ask-1", "a");
+  await onRefusedReply(page);
+});
+
+// A change of the reader's own answer, pressed on its row, keeps the box on a refused reply as
+// an Answer does: the line it would open seeds the old answer's words, and the reply's would be
+// lost.
+test("a change of answer keeps the box on a refused reply", async () => {
+  const user = userEvent.setup();
+  const drawn = outline();
+  // ask-2's row carries the reader's own answer, so it offers to change it.
+  const root = {
+    ...drawn,
+    children: drawn.children.map((child) =>
+      child.id === "ask-2"
+        ? { ...child, answer: { at: ANSWERED_AT, by: ALICE, selected: ["No"], text: "Old reason" } }
+        : child
+    ),
+  };
+  const page = renderPage({}, root);
+  await refuseReply(user, page);
+  await act(async () => rowOf("ask-2").focus());
+  const change = rowOf("ask-2").querySelector<HTMLElement>('[data-row-act="change-answer"]');
+  if (change === null) throw new Error("the answered question's row drew no change of answer");
+  await user.click(change);
+  await onRefusedReply(page);
+});
+
+// An option picked on an open question's row keeps the box on a refused reply as an Answer does.
+test("an option picked on a question's row keeps the box on a refused reply", async () => {
+  const user = userEvent.setup();
+  const page = renderPage();
+  await refuseReply(user, page);
+  const option = rowOf("ask-1").querySelector<HTMLElement>('[data-pick-option="Yes"]');
+  if (option === null) throw new Error("the open question's row drew no option to pick");
+  await user.click(option);
+  await onRefusedReply(page);
+});
+
+// An Edit of the reader's own comment keeps the box on a refused reply: the edit would put the
+// comment's words in place of the reply's. No row draws Edit yet, so the case asks the writer.
+test("an Edit keeps the box on a refused reply", async () => {
+  const user = userEvent.setup();
+  const page = renderPage();
+  await refuseReply(user, page);
+  await act(async () => page.writer().edit("comment-2", "My own words"));
+  await onRefusedReply(page);
 });
 
 // Ending a refused reply in the box lets it go, as ending a statement does: the target line's
@@ -1373,18 +1449,8 @@ test("a on an open question keeps the box on a refused reply", async () => {
 // row then aims the box at that row.
 test("a refused reply let go with the target line's control frees a Reply on another row", async () => {
   const user = userEvent.setup();
-  stub(
-    spyOn(api, "createComment").mockRejectedValue(
-      new ApiError(400, { code: "INVALID_INPUT", error: "The reply was refused." })
-    )
-  );
   const page = renderPage();
-  await page.press(user, "comment-1", "r");
-  await waitFor(() => expect(writeField()).toHaveFocus());
-  await user.keyboard("My reply to bob{Enter}");
-  await waitFor(() =>
-    expect(within(composerBox()).getByRole("alert")).toHaveTextContent("The reply was refused.")
-  );
+  await refuseReply(user, page);
 
   // The target line's control: the box writes on the issue.
   await user.click(
@@ -1403,6 +1469,56 @@ test("a refused reply let go with the target line's control frees a Reply on ano
   const held = heldSends(page.client).get(["issue-composer", KEY]);
   expect(held?.status).toBe("refused");
   expect(held?.request.replyTo).toBeNull();
+});
+
+// A reply the reader stopped may have reached Dispatch, so a Retry of it goes under its own key.
+// Once the reader lets the reply go with the target line's control, the same words go to the
+// issue as a comment under a new key: under the old one Dispatch would hold a reply, and would
+// refuse a comment sent with that key as the key used for another request.
+test("a stopped reply let go with the target line's control is sent under a new key", async () => {
+  const user = userEvent.setup();
+  // Dispatch is down until the reader stops the reply, and takes the comment after.
+  let down = true;
+  const createComment = stub(
+    spyOn(api, "createComment").mockImplementation(async (_issue, input) => {
+      if (down) throw new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
+      return commentRecord("comment-9", ALICE, input.body ?? "");
+    })
+  );
+  const page = renderPage();
+  await page.press(user, "comment-1", "r");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  await user.keyboard("My reply to bob");
+
+  jest.useFakeTimers();
+  const clocked = userOnFakeClock();
+  try {
+    // The reply, tried until its deadline, and stopped.
+    await clocked.keyboard("{Enter}");
+    await jump(SEND_DEADLINE_MS);
+    await clocked.click(within(composerBox()).getByRole("button", { name: "Stop trying" }));
+    await jump(0);
+    expect(heldSends(page.client).get(["issue-composer", KEY])?.status).toBe("refused");
+    const tried = createComment.mock.calls.length;
+    expect(tried).toBeGreaterThan(0);
+    down = false;
+
+    // The target line's control, then Send: the words go to the issue.
+    await clocked.click(
+      within(composerBox()).getByRole("button", { name: CONTROL_LABELS.write_on_issue })
+    );
+    expect(targetWords()).toBeNull();
+    await clocked.click(writeField());
+    await clocked.keyboard("{Enter}");
+    await jump(0);
+    expect(createComment).toHaveBeenCalledTimes(tried + 1);
+    const [, comment, bounds] = createComment.mock.calls[tried] ?? [];
+    expect(comment).toEqual({ body: "My reply to bob" });
+    expect(bounds?.key).toBeDefined();
+    expect(bounds?.key).not.toBe(createComment.mock.calls[0]?.[2]?.key);
+  } finally {
+    realClock();
+  }
 });
 
 // The reading list's `issue-page-composer-target`: the target line and the answer's options draw
@@ -1454,7 +1570,7 @@ test("the target line reads the entry, the question and its options as their pla
 
 /** The classes of `element` and of everything inside it that are a colour of the dashboard's
  *  palette (`theme/classes.ts`'s slate greys and rose and red refusals), which nothing inside the
- *  issue page is drawn in (decision 56 of dispatch://INFRA-1196). */
+ *  issue page is drawn in, since the page has a palette of its own. */
 function dashboardColours(element: Element): string[] {
   return [element, ...element.querySelectorAll("*")]
     .flatMap((one) => [...one.classList])

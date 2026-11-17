@@ -95,7 +95,7 @@ function issueComment(request: Partial<SentRequest>): SentRequest {
 
 // A reply to an ask names the ask by `ask_id`, which the server files under the ask in any state -
 // an open ask's question back, and a word under an answered or resolved one - where `reply_to`
-// would name a comment of that id (dispatch://INFRA-3677).
+// would name a comment of that id.
 test("a reply to an ask is sent with ask_id", async () => {
   const createComment = bun
     .spyOn(client.api, "createComment")

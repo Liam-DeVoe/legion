@@ -16,7 +16,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -277,12 +276,6 @@ func validateBroadcastInput(body, delivery string, sessionIDs []string) ([]strin
 	if len(requested) == 0 {
 		return nil, errorf(http.StatusBadRequest, "BROADCAST_INPUT", "session_ids must name at least one session")
 	}
-	// contracts.MaxBroadcastRecipients bounds one send, and the dashboard refuses the same number
-	// before it asks. A runaway guard rather than a product limit.
-	if len(requested) > contracts.MaxBroadcastRecipients {
-		return nil, errorf(http.StatusBadRequest, "BROADCAST_INPUT",
-			"a broadcast reaches at most %d sessions (%d selected)", contracts.MaxBroadcastRecipients, len(requested))
-	}
 	return requested, nil
 }
 
@@ -331,9 +324,9 @@ func (s *server) replayBroadcast(w http.ResponseWriter, r *http.Request, point b
 //
 // The reads run broadcastResolveConcurrency at a time under one budget taken from the
 // request's context (broadcastResolveAllowance), and those two together are what keep a send's
-// resolution short: one request may name contracts.MaxBroadcastRecipients sessions, so a
-// hundred reads that each wait out a five-second listener timeout, run one after another,
-// would hold the request for the better part of ten minutes. Bounded at eight in flight and
+// resolution short: one request may name every session the roster lists, 905 of them on
+// 2026-11-08, so that many reads that each wait out a five-second listener timeout, run one after
+// another, would hold the request for over an hour. Bounded at eight in flight and
 // cut off at five seconds altogether, the resolution costs a send five seconds at worst,
 // whatever the listener does.
 func (s *server) resolveBroadcastSessions(

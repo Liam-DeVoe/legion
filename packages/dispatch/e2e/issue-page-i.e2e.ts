@@ -939,11 +939,10 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
 // What waits on another issue, and is not read here: a criterion under the words that raised
 // it, a requirement under its criterion, and the left arrow walking up from a requirement to
 // them (dispatch://INFRA-1253); a lens under its node and a finding under its lens
-// (INFRA-1950); a reading under its decision (INFRA-1150); and a comment anchored to a node other
-// than a statement under that node, an edge the model does not store (INFRA-1149, INFRA-1253), so
-// it sits under the issue as any node with no stored parent does. A comment anchored inside a
-// statement is read under that statement, which the page finds by the anchor's block (part L,
-// dispatch://INFRA-3949 R11).
+// (both waiting on another issue); a reading under its decision (on a third); and a comment
+// anchored to a node other than a statement under that node, an edge the model does not store
+// yet, so it sits under the issue as any node with no stored parent does. A comment anchored
+// inside a statement is read under that statement, which the page finds by the anchor's block.
 // SLOW(>=2s): three seeds, each loaded cold with its branches unfolded press by press, and the
 // first seed's parents read off the page one whole read at a time.
 test("each node sits under the parent the model stores", async ({ browser }) => {

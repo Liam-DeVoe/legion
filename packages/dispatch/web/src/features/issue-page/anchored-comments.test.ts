@@ -5,8 +5,8 @@ import { buildIssueTree, type TreeNode } from "./issue-tree";
 import { blockNodeId } from "./tree-drafts";
 
 /**
- * Where the outline draws a comment anchored inside a statement (dispatch://INFRA-3949 R11,
- * decision 77's D2): under that statement, the anchor's block mapped to the statement whose
+ * Where the outline draws a comment anchored inside a statement: under that statement, which it
+ * finds by the anchor's block, mapped to the statement whose
  * range holds it in the spec's blocks read, since the server stores the lowest block holding the
  * anchor's words (`pmdoc.BlockIDForRange`) - the paragraph of a one-paragraph statement, the
  * statement itself for words across two of its paragraphs.

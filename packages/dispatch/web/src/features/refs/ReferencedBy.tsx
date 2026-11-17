@@ -222,15 +222,18 @@ function Excerpt({
       {rendered ? (
         // The head of a stored body, drawn by the renderer from the reading the server made of
         // it: one clamped run until the reader opens it, the whole of it after.
+        // The type is on the element around the renderer in both, as `.dispatch-markdown` takes
+        // it from there (styles.css).
         clamped ? (
-          <MarkdownPreview
-            className={`mt-1 text-sm ${textSecondaryOnSurface}`}
-            lines={3}
-            markdown={text}
-            source={source}
-            surface="referenced-by-excerpt"
-            tree={tree}
-          />
+          <div className={`mt-1 text-sm ${textSecondaryOnSurface}`}>
+            <MarkdownPreview
+              lines={3}
+              markdown={text}
+              source={source}
+              surface="referenced-by-excerpt"
+              tree={tree}
+            />
+          </div>
         ) : (
           <div className={`mt-1 text-sm ${textSecondaryOnSurface}`}>
             <MarkdownBody
