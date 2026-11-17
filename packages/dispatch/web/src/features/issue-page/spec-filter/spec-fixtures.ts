@@ -161,7 +161,7 @@ export function answerNode(
 }
 
 /** One decision of the issue's decisions document as the Spec view read answers it, as context
- *  (dispatch://INFRA-1253 R8): a decision block, with the members INFRA-1150's decisions read
+ *  (`mark: "context"`): a decision block, with the members the decisions read
  *  answers for that decision, by the same names. */
 export function decision(block: string, partial: Partial<TreeAnswerNode> = {}): TreeAnswerNode {
   return answerNode(block, "decision", {

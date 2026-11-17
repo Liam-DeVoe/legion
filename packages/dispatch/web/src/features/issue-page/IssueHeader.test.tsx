@@ -8,17 +8,15 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
-import {
-  artifactRecordHandler,
-  decisionsAndReadMarkHandlers,
-} from "../../__tests__/proof-document";
+import { artifactRecordHandler } from "../../__tests__/proof-document";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import { issueQuery } from "../../api/queries";
 import type { Ask, IssueCoverage, IssueDetails, Project, UserIssueState } from "../../api/types";
-import { parseIssuePath } from "../refs/routes";
+import { buildDispatchReference, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { HeaderSlot } from "./slots/header";
+import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
  * The header's cases of `features/issue/IssuePage.test.tsx` at INFRA-1196's checkpoint, each
@@ -155,7 +153,7 @@ function stubHeader(
 }
 
 /** The header's other reads, each answered with the API's empty shape: the coverage, whose
- *  statements the count's decisions are read against, the decisions and the document's record. */
+ *  statements the count's decisions are read against, and the document's record. */
 function answerHeaderReads(): void {
   answerRequests(
     http.get("/api/v1/issues/:key/coverage", ({ params }) =>
@@ -179,8 +177,7 @@ function answerHeaderReads(): void {
         view_of: null,
       })
     ),
-    artifactRecordHandler((id) => (stubbedIssue.artifacts ?? []).find((each) => each.id === id)),
-    ...decisionsAndReadMarkHandlers()
+    artifactRecordHandler((id) => (stubbedIssue.artifacts ?? []).find((each) => each.id === id))
   );
 }
 
@@ -259,6 +256,99 @@ test("the header updates whose turn when a human clarification is latest", async
     });
     await waitFor(() =>
       expect(screen.getByTestId("issue-whose-turn").textContent).toBe("Waiting on agents (1)")
+    );
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+/** One node of the tree read's answer, under the issue, with what the case gives it. */
+function treeNode(id: string, supertag: string, extra: Partial<TreeAnswerNode>): TreeAnswerNode {
+  return {
+    attributes: {},
+    author: null,
+    id,
+    made_at: "2026-09-10T00:00:00Z",
+    parent: issue.key,
+    rank: null,
+    state: "live",
+    supertag,
+    text: `Words of ${id}.`,
+    visibility: "project",
+    ...extra,
+  };
+}
+
+// The count of what waits on the reader counts each decision of the review list, which the
+// header reads off the tree read's decision nodes: an agent's decision that waits for review,
+// tied to a statement the coverage read holds, counts beside the open question whose turn is the
+// reader's.
+test("the header's count counts a waiting decision node tied to a statement", async () => {
+  const statement = buildDispatchReference({ block: { id: "r1" }, key: issue.key, kind: "spec" });
+  const spec = { artifact_id: "artifact-1", slug: "spec" };
+  answerRequests(
+    http.get("/api/v1/issues/:key/coverage", ({ params }) =>
+      Response.json({
+        gaps: [],
+        has_plan: false,
+        issue: String(params.key),
+        requirements: [
+          { block_id: "r1", checks: 1, gaps: [], plan_tasks: 0, ref: statement, text: "R1." },
+        ],
+        spec_artifact_id: "artifact-1",
+      } satisfies IssueCoverage)
+    ),
+    http.get("/api/v1/issues/:key/tree", () =>
+      Response.json({
+        converted: false,
+        cursor: null,
+        nodes: [
+          treeNode("r1", "requirement", { document: { ...spec, position: 0 } }),
+          treeNode("d1", "decision", {
+            asks: [],
+            changed_at: "2026-09-10T00:00:00Z",
+            changed_version: 1,
+            document: { ...spec, position: 1 },
+            kept: null,
+            kind: "agent",
+            links: [
+              {
+                created_at: "2026-09-10T00:00:00Z",
+                created_version: 1,
+                from_block: "d1",
+                stale: false,
+                to: {
+                  changed_at: null,
+                  changed_by: null,
+                  id: "r1",
+                  kind: "block",
+                  made_at: null,
+                  made_by: null,
+                  parent: null,
+                  parent_version: null,
+                  ref: statement,
+                },
+              },
+            ],
+            replaced: false,
+            text_sha256: "sum-d1",
+            unsure: false,
+            waiting_review: true,
+          }),
+        ],
+        tree: null,
+        tuples: [{ from: "d1", kind: "shaped", to: "r1" }],
+        view_of: null,
+      } satisfies TreeAnswer)
+    )
+  );
+  const restore = stubHeader({ ...issue, open_asks: [{ ...openIssueAsk, last_reply: null }] });
+  const view = renderHeader();
+
+  try {
+    await waitFor(() =>
+      expect(screen.getByTestId("issue-whose-turn").textContent).toBe("Waiting on you (2)")
     );
   } finally {
     view.unmount();

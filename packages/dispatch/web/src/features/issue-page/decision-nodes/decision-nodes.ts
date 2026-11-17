@@ -2,33 +2,33 @@ import type { Actor, Decision, DecisionLink, DisplayTree, IssueDetails } from ".
 import { buildDispatchReference, parseDispatchReference } from "../../refs/routes";
 import { wordsOf } from "../../refs/tree-fragment";
 import type { IssueTreeReads, TreeAsk } from "../issue-tree";
+import { blockNodeId } from "../tree-drafts";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
 
 /**
- * The decisions of a tree read's answer, or of one of its views, in the shape INFRA-1150's
+ * The decisions of a tree read's answer, or of one of its views, in the shape the
  * decisions read answers them (`Decision`), so every reader of that read - the Decisions filter's
  * parts, the review list, the Spec filter's column, the header's count, Keep and Change - reads
- * them with no change of its own (dispatch://INFRA-4097/artifact/plan-md#b-t3).
+ * them with no change of its own.
  *
  * A decision is a node of supertag `decision`, whose members the read answers on the node by the
- * decisions read's names and values (dispatch://INFRA-1253 R8), or a person's: a question they
- * answered that carries `shaped` ties (dispatch://INFRA-1150 R1), whose members are the ones
+ * decisions read's names and values, or a person's: a question they
+ * answered that carries `shaped` ties, whose members are the ones
  * today's decisions read gives a person's decision (`api/decisions.go`'s `readDecisions`). Who
  * decided is no member of either: it is the person a `decided_by` tuple names, whom the read
  * answers as context.
  *
- * Beside the answer this reads the issue's key, which a node of this issue is addressed in, and
- * the asks read: the answer holds no ask's answer, and it names an ask block by its block, so the
- * asks read is what says an ask is answered and which ask a block is, as it is for the outline
- * (`tree-read/tree-nodes.ts`).
+ * Beside the answer this reads the issue's key, which a node of this issue is addressed in, its
+ * documents and its open asks, and the asks read: the answer holds no ask's answer, and it names
+ * an ask block by its block, so the issue's asks are what say an ask is answered and which ask a
+ * block is (`askOfNode`), for the outline (`tree-read/tree-nodes.ts`) as for every decision.
  *
  * This module is pure, and it imports no code of `issue-tree.ts` or of `tree-read/`, only their
  * types: the outline's steps (`tree-read/tree-nodes.ts`) are to read the decisions from here, and
  * `issue-tree.ts` is to build the outline from those steps (that module's own comment), so either
- * import would close a cycle (`biome.json`'s `noImportCycles`). So a node's address is made here
- * by the outline's own rule (`tree-nodes.ts`'s `referenceOf`, which is private to it), with the
- * same `buildDispatchReference`, and the heading is cut by `decisionQuote` rather than
- * `issue-tree.ts`'s `lineWords`.
+ * import would close a cycle (`biome.json`'s `noImportCycles`). So the rule a node is addressed
+ * by lives here, and the outline reads it from here (`nodeReference`, `askIdOf`, `askOfNode`);
+ * the heading is cut by `decisionQuote` rather than `issue-tree.ts`'s `lineWords`.
  */
 
 /** One decision of the answer, as the decisions read answers a decision. */
@@ -44,16 +44,17 @@ export interface DecisionNode extends Decision {
   readonly node: TreeAnswerNode;
 }
 
-/** What `decisionNodes` reads beside the answer: the issue, for its key, and the asks read. The
- *  page's reads (`IssueTreeReads`) pass as they are. */
+/** What `decisionNodes` reads beside the answer: the issue, for its key and, where the caller
+ *  holds them, its documents and its open asks, and the asks read, which together say which ask
+ *  an ask node is (`askOfNode`). The page's reads (`IssueTreeReads`) pass as they are. */
 export type DecisionReads = Pick<IssueTreeReads, "asks"> & {
-  readonly issue: Pick<IssueDetails, "key">;
+  readonly issue: Pick<IssueDetails, "key"> &
+    Partial<Pick<IssueDetails, "artifacts" | "open_asks">>;
 };
 
 /** The answer and the reads, looked up by the read's own ids. */
 interface Lookup {
-  /** The row of the asks read that the ask node is: an ask block's by the block the row names,
-   *  an ask of the conversation's by its own id. */
+  /** The row of the issue's asks that the ask node is (`askOfNode`). */
   readonly askOf: (node: TreeAnswerNode) => TreeAsk | undefined;
   readonly key: string;
   readonly nodeOf: (readId: string) => TreeAnswerNode | undefined;
@@ -141,7 +142,8 @@ function fromDecision(node: TreeAnswerNode, lookup: Lookup): DecisionNode | unde
  */
 function fromAnsweredAsk(node: TreeAnswerNode, lookup: Lookup): DecisionNode | undefined {
   const ask = lookup.askOf(node);
-  if (ask?.state !== "answered") return undefined;
+  const ref = referenceOf(node, lookup);
+  if (ask?.state !== "answered" || ref === undefined) return undefined;
   if (!lookup.tuplesFrom(node.id).some((tuple) => tuple.kind === "shaped")) return undefined;
   return {
     ...wordsAndAuthor(node, lookup),
@@ -152,7 +154,7 @@ function fromAnsweredAsk(node: TreeAnswerNode, lookup: Lookup): DecisionNode | u
     kept: null,
     kind: "person",
     links: shapedLinks(node, lookup),
-    ref: buildDispatchReference({ id: ask.id, key: node.issue ?? lookup.key, kind: "ask" }),
+    ref,
     replaced: false,
     text_sha256: "",
     waiting_review: false,
@@ -171,7 +173,7 @@ function wordsAndAuthor(
   return {
     author: authorOf(node, lookup),
     block_id: node.id,
-    // A converted decision's old `##` heading is its first paragraph (INFRA-1150 T11), so the
+    // A converted decision's old `##` heading is its first paragraph, so the
     // heading every accessible name reads ("Keep <heading>") is that paragraph's words.
     heading: decisionQuote(node) ?? "",
     node,
@@ -195,9 +197,10 @@ function authorOf(node: TreeAnswerNode, lookup: Lookup): Actor | null {
 /**
  * An answered ask's `shaped` ties as the decisions read answers a decision's links: each naming
  * the node the tie reaches by that node's address, where it has one, as the outline's chip names
- * it (`tree-nodes.ts`'s `chipTo`), and not stale, since the answer says no tie is. A tie reaches a
- * block - `shaped` is a `block[]` - and the members of the link no reader reads are the ones the
- * tuple holds no value for: the ask's own time and no version.
+ * it (`tree-nodes.ts`'s `chipTo`, which names an issue by its own address too), and not stale,
+ * since the answer says no tie is. A tie reaches a block - `shaped` is a `block[]` - and the
+ * members of the link no reader reads are the ones the tuple holds no value for: the ask's own
+ * time and no version.
  */
 function shapedLinks(node: TreeAnswerNode, lookup: Lookup): DecisionLink[] {
   return lookup.tuplesFrom(node.id).flatMap((tuple) => {
@@ -208,7 +211,10 @@ function shapedLinks(node: TreeAnswerNode, lookup: Lookup): DecisionLink[] {
         ? parseDispatchReference(tuple.to) === undefined
           ? undefined
           : tuple.to
-        : referenceOf(target, lookup);
+        : (referenceOf(target, lookup) ??
+          (target.supertag === "issue"
+            ? buildDispatchReference({ key: target.id, kind: "issue" })
+            : undefined));
     if (ref === undefined) return [];
     return [
       {
@@ -233,37 +239,94 @@ function shapedLinks(node: TreeAnswerNode, lookup: Lookup): DecisionLink[] {
 }
 
 /**
- * The node's own `dispatch://` address, as the outline makes it (`tree-nodes.ts`'s
- * `referenceOf`, and `chipTo`'s for an issue): a comment's and a message's own, an ask's by the
- * ask it is, a typed block's in the document its `document` member names, and an issue's own. A
- * node of another issue is addressed in that issue. Anything else has none.
+ * The node's own address (`buildDispatchReference`), by the one rule the outline
+ * (`tree-read/tree-nodes.ts`'s `referenceOf`) and every reader of a decision address a node by: a
+ * comment's and a message's own, an ask's by the ask it is (`askIdOf`, from `ask`, the row of the
+ * issue's asks it is), and a typed block's, a decision's among them, in the document its
+ * `document` member names. A node of another issue is addressed in that issue; `key` is this
+ * issue's. Anything else has none.
  */
-function referenceOf(node: TreeAnswerNode, lookup: Lookup): string | undefined {
-  const key = node.issue ?? lookup.key;
+export function nodeReference(
+  node: TreeAnswerNode,
+  key: string,
+  ask: Pick<TreeAsk, "id"> | undefined
+): string | undefined {
+  const issue = node.issue ?? key;
   if (node.supertag === "comment" || node.supertag === "message") {
-    return buildDispatchReference({ id: node.id, key, kind: node.supertag });
+    return buildDispatchReference({ id: node.id, key: issue, kind: node.supertag });
   }
-  // The ask the asks read says it is, else its own id where it is no block of a document.
-  const ask =
-    node.supertag === "ask"
-      ? (lookup.askOf(node)?.id ?? (node.document === undefined ? node.id : undefined))
-      : undefined;
-  if (ask !== undefined) return buildDispatchReference({ id: ask, key, kind: "ask" });
-  if (node.document !== undefined) {
-    return buildDispatchReference({
-      block: { id: node.id },
-      key,
-      kind: "artifact",
-      slug: node.document.slug,
-    });
-  }
-  return node.supertag === "issue"
-    ? buildDispatchReference({ key: node.id, kind: "issue" })
-    : undefined;
+  const askId = node.supertag === "ask" ? askIdOf(node, ask) : undefined;
+  if (askId !== undefined) return buildDispatchReference({ id: askId, key: issue, kind: "ask" });
+  return node.document === undefined
+    ? undefined
+    : buildDispatchReference({
+        block: { id: node.id },
+        key: issue,
+        kind: "artifact",
+        slug: node.document.slug,
+      });
 }
 
-/** The answer's nodes and tuples, and the asks read, each looked up by the read's own ids; a
- *  later row of the asks read over an earlier one of the same place, as the outline reads it. */
+/** The id of the ask an ask node is: that of `ask`, the row of the issue's asks it is
+ *  (`askOfNode`), else the node's own where it is no block of a document, whose id would be the
+ *  block's. */
+export function askIdOf(
+  node: TreeAnswerNode,
+  ask: Pick<TreeAsk, "id"> | undefined
+): string | undefined {
+  return ask?.id ?? (node.document === undefined ? node.id : undefined);
+}
+
+/** The issue's asks by id: the issue read's open asks and the asks read, the asks read's where
+ *  both hold one, since it is the newer read of the two. */
+export function issueAsks(reads: DecisionReads): Map<string, TreeAsk> {
+  const asks = new Map<string, TreeAsk>();
+  for (const ask of [...(reads.issue.open_asks ?? []), ...(reads.asks ?? [])]) {
+    asks.set(ask.id, ask);
+  }
+  return asks;
+}
+
+/** The node id an ask is drawn by: the block it was indexed from, in the document that holds that
+ *  block (`block_artifact`), else the document it is anchored in, where it names a block; its own
+ *  id otherwise. */
+export function askNodeId(
+  ask: TreeAsk,
+  slugOf: (artifactId: string) => string | undefined
+): string {
+  const slug = ask.block_artifact?.slug ?? slugOf(ask.artifact_id ?? "");
+  const block = ask.block_id ?? undefined;
+  return slug !== undefined && block !== undefined ? blockNodeId(slug, block) : ask.id;
+}
+
+/**
+ * The row of the issue's asks (`issueAsks`) each ask node is, by the node id the outline draws
+ * either by (`askNodeId`, and `tree-read/tree-nodes.ts`'s `treeIdOf`): an ask block of this issue
+ * by its block and the slug of its document, which a row names by its `block_artifact`, else by
+ * the issue's document its `artifact_id` names; an ask of the conversation by its own row's; and
+ * a node of another issue by its own id. A later row of one place stands over an earlier one.
+ * The outline and every reader of a decision find an ask's row by this one rule.
+ */
+export function askOfNode(reads: DecisionReads): (node: TreeAnswerNode) => TreeAsk | undefined {
+  const slugs = new Map((reads.issue.artifacts ?? []).map((one) => [one.id, one.slug]));
+  const slugOf = (artifactId: string) => slugs.get(artifactId);
+  const asks = issueAsks(reads);
+  const placed = new Map([...asks.values()].map((ask) => [askNodeId(ask, slugOf), ask]));
+  return (node) => {
+    if (node.issue !== undefined && node.issue !== reads.issue.key) return placed.get(node.id);
+    if (node.document !== undefined) return placed.get(blockNodeId(node.document.slug, node.id));
+    const own = asks.get(node.id);
+    return placed.get(own === undefined ? node.id : askNodeId(own, slugOf));
+  };
+}
+
+/** The node's own address (`nodeReference`), with the row of the issue's asks an ask is. */
+function referenceOf(node: TreeAnswerNode, lookup: Lookup): string | undefined {
+  return nodeReference(node, lookup.key, lookup.askOf(node));
+}
+
+/** The answer's nodes and tuples, each looked up by the read's own ids, and the issue's asks by
+ *  the node each is (`askOfNode`). */
 function lookupOf(answer: TreeAnswer, reads: DecisionReads): Lookup {
   const nodes = new Map(answer.nodes.map((node) => [node.id, node]));
   const tuples = new Map<string, TreeTuple[]>();
@@ -272,30 +335,12 @@ function lookupOf(answer: TreeAnswer, reads: DecisionReads): Lookup {
     if (from === undefined) tuples.set(tuple.from, [tuple]);
     else from.push(tuple);
   }
-  const asksById = new Map<string, TreeAsk>();
-  const asksByBlock = new Map<string, TreeAsk>();
-  for (const ask of reads.asks ?? []) {
-    asksById.set(ask.id, ask);
-    // The block an ask was indexed from, in the document that holds that block.
-    const document = ask.block_artifact?.id ?? ask.artifact_id;
-    if (document !== null && ask.block_id !== null) {
-      asksByBlock.set(blockKey(document, ask.block_id), ask);
-    }
-  }
   return {
-    askOf: (node) =>
-      node.document === undefined
-        ? asksById.get(node.id)
-        : asksByBlock.get(blockKey(node.document.artifact_id, node.id)),
+    askOf: askOfNode(reads),
     key: reads.issue.key,
     nodeOf: (readId) => nodes.get(readId),
     tuplesFrom: (readId) => tuples.get(readId) ?? [],
   };
-}
-
-/** One key for block `blockId` of the document `documentId`. */
-function blockKey(documentId: string, blockId: string): string {
-  return `${documentId}#${blockId}`;
 }
 
 /** The decision's first stored paragraph, as markdown: what a decision read with no reading is

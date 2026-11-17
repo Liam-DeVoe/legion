@@ -35,8 +35,8 @@ export type TreeFilter = "spec" | "verification" | "plan";
 const TREE_FILTERS: readonly TreeFilter[] = ["spec", "verification", "plan"];
 
 /** Every view of the tree a read asks for (`?view=`): a role document's (`TreeFilter`), and the
- *  decisions view, the issue's decisions wherever they are written (dispatch://INFRA-4097's plan,
- *  choice 6). That view plays no role, so `blocksOf` takes no such name. */
+ *  decisions view, the issue's decisions wherever they are written. That view plays no role, so
+ *  `blocksOf` takes no such name. */
 export type TreeView = TreeFilter | "decisions";
 
 const TREE_VIEWS: readonly TreeView[] = [...TREE_FILTERS, "decisions"];

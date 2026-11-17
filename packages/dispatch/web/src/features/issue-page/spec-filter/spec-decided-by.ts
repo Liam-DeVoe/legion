@@ -31,11 +31,11 @@ import { statementStandings } from "../verification-filter/statement-state";
  *    line is drawn whether or not" other decisions apply, so it heads the statement's run and
  *    its parent line and its decision line stay one line.
  * 2. **Each `shaped` tie.** A decision whose link names the statement shaped it
- *    (`Decision.links[].to`, dispatch://INFRA-1150 R1): a decision node, or a question a person
+ *    (`Decision.links[].to`): a decision node, or a question a person
  *    answered that carries `shaped` ties, which is that person's decision (`decisionNodes`). The
  *    first decision of the statement heads its run; every other one is named at the end of the
- *    statement's own line, since R5 draws "the decisions that informed it" and a statement may
- *    rest on several. A replaced decision draws no line at all (R5).
+ *    statement's own line, which draws "the decisions that informed it", and a statement may
+ *    rest on several. A replaced decision draws no line at all.
  * 3. **Nothing.** A statement no decision shaped is drawn as such, which is what makes a
  *    missing tie visible (R35).
  *

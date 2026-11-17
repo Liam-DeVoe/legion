@@ -1,10 +1,7 @@
 import type {
   Actor,
-  ArtifactBlock,
   Ask,
   AskWithTrees,
-  Comment,
-  CommentWithTrees,
   DisplayTree,
   IssueCheckResults,
   IssueChild,
@@ -62,7 +59,7 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * R7), and the reads that tell what the answer does not, each matched to its node by its address:
  * the issue read, the coverage read, the results read, the asks, and the one batched reference
  * read, which names what a chip points at outside the answer. Every decision is a node of the
- * answer, with its review state on it (dispatch://INFRA-1253 R8). No document's blocks are read.
+ * answer, with its review state on it. No document's blocks are read.
  */
 
 /** One tie of a node that places nothing, drawn beside the node as its target's name. */
@@ -262,7 +259,7 @@ export interface TreeNode {
   readonly text: string;
   /** The server's reading of `text`, where the read that carried the text sends one: the tree
    *  read's `text_tree` for every node it answers. The row draws the node's words from it, so
-   *  stored markdown is drawn as what it says and the browser parses none of it (R20). A node
+   *  stored markdown is drawn as what it says and the browser parses none of it. A node
    *  whose read sends none draws `text` as stored. */
   readonly tree?: DisplayTree;
   /** Whether this placement is a transclusion rather than the node's edited place. */
@@ -284,19 +281,12 @@ export interface TreeNode {
 }
 
 /** The view answers the page holds, by filter (`TreeNode.views`): the Decisions filter's is the
- *  decisions view, the issue's decisions wherever they are written (dispatch://INFRA-4097's
- *  plan, choice 6). */
+ *  decisions view, the issue's decisions wherever they are written. */
 export interface TreeViews {
   readonly decisions?: TreeAnswer;
   readonly plan?: TreeAnswer;
   readonly spec?: TreeAnswer;
   readonly verification?: TreeAnswer;
-}
-
-/** One document's blocks, as `GET /api/v1/artifacts/{id}/blocks` answers them. */
-export interface DocumentBlocks {
-  readonly artifactId: string;
-  readonly blocks: readonly ArtifactBlock[];
 }
 
 /** An ask as the tree reads it: the issue read's open asks and the asks read both send the
@@ -309,8 +299,6 @@ export interface IssueTreeReads {
   /** The issue's asks, from the conversation; merged with the issue read's open asks by id. */
   readonly asks?: readonly TreeAsk[];
   readonly coverage?: IssueCoverage;
-  /** The issue's comments with each body's reading. The tree read answers each as a node. */
-  readonly comments?: readonly (Comment & Pick<CommentWithTrees, "body_tree">)[];
   readonly issue: IssueDetails;
   /** The issue's messages with their replies. The tree read answers each as a node. */
   readonly messages?: readonly MessageRead[];

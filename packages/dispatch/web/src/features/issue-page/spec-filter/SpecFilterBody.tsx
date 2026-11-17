@@ -183,15 +183,15 @@ export function SpecFilterBody({
   // architect's decision 98 on dispatch://INFRA-1196).
   // The decisions are the decision nodes of the Spec view read (`?view=spec`), which the page
   // holds on the issue's node (`TreeNode.views`), so the body costs no request of its own
-  // (R20): each decision the view holds, and each question a person answered that carries
+  // to draw them: each decision the view holds, and each question a person answered that carries
   // `shaped` ties, which the asks read says is answered (`decisionNodes`). The view read and the
   // asks read are watched by observers that are never enabled, under the keys the page reads
   // them by (`ViewReadProvider`, `useIssueTree.ts`). A view read again after a change of the
   // issue drops its answer before the next one lands (`subscribeTreeFreshness`), so the column
-  // draws the answer it last held until the next one lands, as the Decisions view does
-  // (`decisions-entries.ts`), and after a read again that fails, which leaves the body an answer
-  // to draw (decision 98). Until the view has answered the column says nothing of a statement no
-  // decision shaped, since it does not know yet.
+  // draws the answer it last held until the next one lands, and after a read again that fails,
+  // which leaves the body an answer to draw. Until the view and the asks read have both answered
+  // the column says nothing of a statement no decision shaped, since it does not know yet: a
+  // person's decision is a question they answered, which only the asks read says.
   const specRead = useQuery({ ...viewQuery(issue.key, "spec"), enabled: false });
   const asks = useQuery({
     enabled: false,
@@ -670,7 +670,7 @@ export function SpecFilterBody({
             focused={focused}
             group={group}
             key={group.parent?.id ?? group.runs[0]?.statements[0]?.node.id ?? ""}
-            known={held !== undefined}
+            known={held !== undefined && asks !== undefined}
             line={folds.lines.get(group)}
             marked={marked}
             onCellFocus={focusCell}
@@ -1113,8 +1113,8 @@ function Group({
   context: ReadonlySet<string>;
   focused: string | undefined;
   group: SpecGroup;
-  /** Whether the Spec view read the decisions come from has answered, which is when a run with
-   *  no decision can say that none shaped it. */
+  /** Whether the Spec view read the decisions come from and the asks read have both answered,
+   *  which is when a run with no decision can say that none shaped it. */
   known: boolean;
   /** The line the group's overtaken statements fold to, where it holds any. */
   line?: GroupLine;
@@ -1285,7 +1285,7 @@ function GroupHeading({ parent }: { parent: SpecParent }): ReactNode {
  * The decision that shaped a run of statements, in the left column: the words it came from,
  * where they came from and when, and a link to the whole of it (R5). The bracket at its
  * trailing edge spans the statements it shaped, in the decisions' violet, dashed where an agent
- * decided; a run no decision shaped says so in words (R35), once the Spec view read the
+ * decided; a run no decision shaped says so in words, once the Spec view read the
  * decisions come from has answered, and says nothing before that or where that read failed
  * with none, since it does not know.
  *

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 
 import { api } from "../../../api/client";
 import type { IssueDetails } from "../../../api/types";
@@ -9,29 +9,31 @@ import { type ChangeComment, decisionNodeChanges } from "../decision-review";
 import type { TreeNode } from "../issue-tree";
 import { treeContext } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
-import { issueTreeQuery, type TreeAnswer, viewQuery } from "../tree-read/tree-read";
+import { issueTreeQuery, type TreeAnswer } from "../tree-read/tree-read";
 import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./decisions-parts";
 
 /**
- * The one seam between the page's reads and the Decisions view (dispatch://INFRA-3937 R8): it
- * turns the decisions view, the tree read, the issue's asks and its comments into the view's
+ * The one seam between the page's reads and the Decisions view: it
+ * turns the decisions view, the tree read and the issue's asks into the view's
  * parts, so no other file of the view names a read. The part that draws the model's own entries
- * (dispatch://INFRA-1150's `entries`) replaces this module and leaves the view as it is.
+ * (`entries`) replaces this module and leaves the view as it is.
  *
  * The decisions are the decision nodes of the decisions view (`?view=decisions`), the issue's
  * decisions wherever they are written, which the page holds on the issue's node
- * (`TreeNode.views`, dispatch://INFRA-4097's plan, choice 6), each read as every reader of a
+ * (`TreeNode.views`), each read as every reader of a
  * decision reads it (`decisionNodes`). A decision's Change is the comment the tree read hangs
  * under its node (`decision-review.ts`' `decisionNodeChanges`), so no quote is matched for it. A
- * view that holds no decision, or that has not answered yet, gives no decision and no error: the
- * view draws the questions alone. A view read again - after a Keep (`DecisionActions.tsx`), and
- * after every change of the issue (`subscribeTreeFreshness`) - drops the answer it held before
- * the next one lands, so while that read is out the view draws the answer it last held: with
- * none, every decision would leave the review list until it lands, and the focus with it.
+ * view that holds no decision gives none, and no error. Until the view has answered - it is read
+ * the first time the filter is on in a load (`ViewReadProvider`), and again after a Keep
+ * (`DecisionActions.tsx`) and after every change of the issue (`subscribeTreeFreshness`), each of
+ * which drops the answer it held - and wherever that read fails, the decisions are the decision
+ * nodes of the tree read the page holds, which answers the same decision nodes with the same
+ * members: so every decision stands in its part with its state, never in the folded foot for
+ * want of a row, and the focus stays with it.
  *
  * The reads are the ones the page's tree is built from, under the keys `useIssueTree.ts` reads
- * them by: the tree read, watched and never sent, and the issue's asks and comments, so the view
- * adds no request of its own.
+ * them by: the tree read and the issue's asks, each watched and never sent, so the view adds no
+ * request of its own.
  *
  * The view draws four parts (dispatch://INFRA-1196 R2). A decision another person made is no
  * part of its own: it stands under the reader's decisions, with that person's name on its row,
@@ -55,29 +57,19 @@ export function useDecisionsEntries({
   /** The tree as the Decisions view leaves it. */
   view: TreeNode;
 }): DecisionsParts {
-  // The tree read, which holds each Change under its decision, watched by an observer that is
-  // never enabled: the page's own read fetches it (`useIssueTree.ts`), and the view sends none.
+  // The tree read, which holds each Change under its decision, and the decisions until the view
+  // answers, watched by an observer that is never enabled: the page's own read fetches it
+  // (`useIssueTree.ts`), and the view sends none.
   const tree = useQuery({ ...issueTreeQuery(issue.key), enabled: false }).data;
+  // The issue's asks, which say which answered question is a person's decision
+  // (`decisionNodes`), watched the same way: the page's tree reads them under this key.
   const asks = useQuery({
+    enabled: false,
     queryFn: () => api.listIssueAsks(issue.key, "all"),
     queryKey: ["asks", issue.key],
   }).data;
-  // The issue's comments, under the key the tree reads them by. A Change is written as one, and
-  // its send reads them again (`DecisionActions.tsx`), which reads the tree again
-  // (`subscribeTreeFreshness`), so the Change is drawn under its decision.
-  useQuery({
-    queryFn: () => api.listComments(issue.key),
-    queryKey: ["comments", issue.key],
-  });
-  // The decisions view the page holds, and while a read of it made again is out - which that
-  // read's observer, never enabled, says - the last one it held.
-  const answered = root.views?.decisions;
-  const [last, setLast] = useState(answered);
-  useEffect(() => {
-    if (answered !== undefined) setLast(answered);
-  }, [answered]);
-  const reading = useQuery({ ...viewQuery(issue.key, "decisions"), enabled: false }).isFetching;
-  const held = answered ?? (reading ? last : undefined);
+  // The decisions view the page holds, and the tree read wherever the view holds no answer.
+  const held = root.views?.decisions ?? tree;
   const decisions = useMemo(
     () => (held === undefined ? undefined : decisionNodes(held, { asks, issue })),
     [asks, held, issue]
@@ -112,8 +104,8 @@ export function useDecisionsEntries({
  * The Change each of `decisions` waits on, by the decision's own address (`Decision.ref`), as
  * the parts read one (`decisionsParts`' `changes`): the comment the tree read hangs under the
  * decision's node that `decisionNodeChanges` gives it, with its words, its author and the time
- * it was made. The decisions are the decisions view's and the Changes the tree read's, which
- * answer one node by the same id. None while the tree read has not answered.
+ * it was made. The decisions are the decisions view's, or the tree read's, and the Changes the
+ * tree read's, which answer one node by the same id. None while the tree read has not answered.
  */
 export function changesOf(
   tree: TreeAnswer | undefined,

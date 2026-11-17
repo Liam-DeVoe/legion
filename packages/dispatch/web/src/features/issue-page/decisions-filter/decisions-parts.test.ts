@@ -42,7 +42,7 @@ import {
 
 /**
  * The Decisions filter's four parts, read from the tree, the decision nodes of its decisions
- * view and the asks (dispatch://INFRA-1196 R2, R9, R35). The model is pure, so each case hands
+ * view and the asks. The model is pure, so each case hands
  * it a tree built by hand and reads what it answers.
  */
 
@@ -224,7 +224,7 @@ test("a tie counts where it names a statement of this issue", () => {
   expect(idsOf(parts).agents).toEqual([D("foreign"), D("unreadable")]);
 });
 
-// R2, R9: the filter draws no agent's reading of a person's answer. A decision node the server
+// The filter draws no agent's reading of a person's answer. A decision node the server
 // marks a person's because it names an ask restates that answer where the ask is an answered
 // ask of this issue: the ask's own row is the decision, and it carries the statements that
 // node's ties name.
@@ -304,7 +304,7 @@ test("another person's answer, decline and keep stand with what others decided",
   expect(idsOf(parts).others).toEqual([D("kept-by-bob"), "a-bobs", "declined-by-bob"]);
 });
 
-// The tester's F6: a Change is a comment a person wrote that the tree read hangs under the
+// A Change is a comment a person wrote that the tree read hangs under the
 // decision, since it last changed. The decision then waits on its agent: it says a change was
 // asked for, it leaves the review list for the decisions of whoever asked, and it carries what
 // they wrote. A comment older than the decision's words is no change of them, and the decision
@@ -520,7 +520,7 @@ test("a decision that shaped three statements is one entry that reaches all thre
 
 // c-decisions: "Each entry links to the node that holds it." An ask's address is its own; a
 // decision's is the issue's with the decision's block as its fragment, which opens the outline
-// on that node, where the decision's own address opens the spec. R2: a node's parent is
+// on that node, where the decision's own address opens the spec. A node's parent is
 // one line on its row, since no row of this filter stands under another.
 test("each entry carries its address in the conversation and its parent's line", () => {
   const parts = partsOf(

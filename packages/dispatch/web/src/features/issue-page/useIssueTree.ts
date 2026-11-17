@@ -99,11 +99,11 @@ const NO_AMBIGUOUS_TARGETS: ReadonlySet<string> = new Set();
  * and the reader's login, which says which open questions wait on the reader
  * (`IssueTreeReads.viewer`).
  *
- * Each filter's view read (`viewQuery`), the decisions view among them (dispatch://INFRA-4097's
- * plan, choice 6), is watched here and never sent: `ViewReadProvider`
+ * Each filter's view read (`viewQuery`), the decisions view among them,
+ * is watched here and never sent: `ViewReadProvider`
  * (`tree-read/view-read.tsx`) reads a view the first time its filter is on, and whatever it holds
  * is set on the issue's node (`TreeNode.views`), which `presetView` and `filterSignals` draw a
- * filter from (R4), and the Decisions filter its decisions (`decisions-entries.ts`). The root
+ * filter from, and the Decisions filter its decisions (`decisions-entries.ts`). The root
  * keeps its identity while neither the tree nor a held view changes.
  *
  * The names come last and all at once: the tree is built, every address it holds is read in one
@@ -130,7 +130,10 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     queryFn: () => api.listIssueAsks(key, "all"),
   });
   // Under the keys the margin, the history and the focused row's facts read too, so a reader
-  // opening the panel after the tree finds them answered rather than read a second time.
+  // opening the panel after the tree finds them answered rather than read a second time. The
+  // tree read answers each comment as a node, so the comments build no part of the tree; the
+  // read is held here so that a comment written, a Change among them, reads the tree again
+  // (`subscribeTreeFreshness`).
   const comments = useQuery({
     ...REFRESHED_BY_EVENTS,
     queryKey: ["comments", key],
@@ -172,7 +175,6 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const reads = useMemo<IssueTreeReads>(
     () => ({
       asks: asks.data,
-      comments: comments.data,
       coverage: coverage.data,
       issue,
       messages: messages.data,
@@ -180,16 +182,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       tree: read.answer,
       viewer,
     }),
-    [
-      asks.data,
-      comments.data,
-      coverage.data,
-      issue,
-      messages.data,
-      read.answer,
-      results.data,
-      viewer,
-    ]
+    [asks.data, coverage.data, issue, messages.data, read.answer, results.data, viewer]
   );
   const unnamed = useMemo(() => buildIssueTree(reads), [reads]);
   const refs = useMemo(() => treeReferences(unnamed), [unnamed]);

@@ -7,7 +7,7 @@ import { subscribeTreeFreshness, type TreeView, viewKey, viewQuery } from "./tre
 
 /** The views of the tree the filters read, one for each filter: Spec's, Verification's and
  *  Plan's role documents, and the issue's decisions wherever they are written
- *  (dispatch://INFRA-4097's plan, choice 6). */
+ *  (`?view=decisions`). */
 const VIEW_FILTERS: readonly TreeView[] = ["spec", "verification", "plan", "decisions"];
 
 /**

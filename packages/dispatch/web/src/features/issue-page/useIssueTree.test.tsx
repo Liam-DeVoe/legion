@@ -850,7 +850,7 @@ test("an invalidated comments query reads the tree again", async () => {
   }
 });
 
-// dispatch://INFRA-4097's plan, choice 6: the decisions view is a view of the tree as the others
+// The decisions view is a view of the tree as the others
 // are - watched here and never sent, and set on the root (`root.views`) - and it is kept as fresh.
 // Every event of the issue, a Keep's (`decision.kept`) among them, invalidates the issue's own
 // read (`api/event-refresh.ts`), and the page's one subscription (`subscribeTreeFreshness`, which

@@ -5,12 +5,10 @@ import userEvent from "@testing-library/user-event";
 import { type ReactNode, useEffect, useMemo } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
-import { displayTree } from "../../../__tests__/display-trees";
 import { ApiError, api } from "../../../api/client";
-import type { Actor, ArtifactText, DecisionKeep } from "../../../api/types";
+import type { Actor, DecisionKeep } from "../../../api/types";
 import { pageFocusedRow, pageInkText, pageOwnWordsRule } from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
-import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import type { OutlineRequest } from "../IssueTree";
@@ -197,13 +195,6 @@ interface Served {
   readonly made: readonly TreeAnswerNode[];
 }
 
-/** The spec's text as the server holds it: its title, then each decision's words in the order
- *  `made` gives them. A Change's send reads it to say which place of its quote is the decision's
- *  own (`DecisionActions.tsx`, decision 92). */
-function specText(made: readonly TreeAnswerNode[]): string {
-  return [`# Spec of ${KEY}`, ...made.map((one) => one.text)].join("\n\n");
-}
-
 /** The tree read and its views as the client answers them in a case: from what the server holds
  *  (`renderBody`'s `served`). Put back after each case. */
 let treeReads: Mock<typeof api.getIssueTree> | undefined;
@@ -215,8 +206,9 @@ afterEach(() => {
 /**
  * The body's reads of the issue's tree as the page holds them: the tree read (`useIssueTree.ts`),
  * and the decisions view, which `ViewReadProvider` reads while the filter is on and
- * `useIssueTree.ts` sets on the tree's root (`TreeNode.views`), which is where the body reads it.
- * Both are answered before the body is drawn, as the cache holds them once the page is; a read
+ * `useIssueTree.ts` sets on the tree's root (`TreeNode.views`), which is where the body reads it;
+ * and the issue's comments, which `useIssueTree.ts` holds too, so a write of them is read again.
+ * All are answered before the body is drawn, as the cache holds them once the page is; a read
  * made again - a Keep's (`DecisionActions.tsx`), or the one the page's subscription makes after a
  * write of the issue's comments, as a Change's send is (`subscribeTreeFreshness`) - answers what
  * the server holds then (`treeReads`).
@@ -231,6 +223,7 @@ function HeldReads({
   const client = useQueryClient();
   useEffect(() => subscribeTreeFreshness(client, KEY), [client]);
   useQuery(issueTreeQuery(KEY));
+  useQuery({ queryFn: () => api.listComments(KEY), queryKey: ["comments", KEY] });
   const held = useQuery(viewQuery(KEY, "decisions")).data;
   const rooted = useMemo(
     () => (held === undefined ? root : { ...root, views: { decisions: held } }),
@@ -1362,15 +1355,12 @@ test("each press of the count of what waits goes to the next thing that waits", 
   await waitFor(() => expect(focusedRow(early)).toBe(D("first")));
 });
 
-// The tester's F6: a Change sent on a decision is a comment anchored to its words. Once the tree
+// A Change sent on a decision is a comment anchored to its words. Once the tree
 // read hangs it under the decision - the send reads the issue's comments again, and the page
 // reads its tree again after them (`subscribeTreeFreshness`) - the decision says a change was
 // asked for, leaves the review list for the reader's own decisions, draws no Keep or Change, and
 // draws what the reader asked under its words with a link to it in the conversation.
 test("a decision the reader sent a Change on says so, leaves the review list and draws the change", async () => {
-  // The send reads the spec's text to say which place of the quote in it is the decision's own,
-  // and the reading of that text is the page's engine's, which must be loaded.
-  await warmMarkdownRenderer();
   const user = userEvent.setup();
   const whole = wholeIssue();
   const view = renderBody(whole);
@@ -1383,15 +1373,6 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     return { id: "change-second" } as never;
   });
   const list = spyOn(api, "listComments").mockResolvedValue([]);
-  const markdown = specText(whole.made);
-  const text = spyOn(api, "getArtifactText").mockImplementation(
-    async (): Promise<ArtifactText> => ({
-      markdown,
-      markdown_tree: displayTree(markdown),
-      token: "token",
-      version: 1,
-    })
-  );
   try {
     expect(rowsOfPart(view, "review")).toEqual([D("second"), D("first")]);
     const change = rowOf(view, D("second")).querySelector('button[data-row-action="change"]');
@@ -1401,8 +1382,7 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     await user.click(view.getByRole("button", { name: CONTROL_LABELS.send_change }));
     await waitFor(() => expect(create).toHaveBeenCalled());
     // The comment is anchored to the decision's own words in the spec, the document the decision
-    // is a block of. No heading of the spec reads as the decision's, so the anchor names no
-    // place of the quote, which stands once in the spec (`changeAnchor`).
+    // is a block of, by the quote alone.
     expect(create.mock.calls[0]?.slice(0, 2)).toEqual([
       KEY,
       {
@@ -1436,7 +1416,6 @@ test("a decision the reader sent a Change on says so, leaves the review list and
   } finally {
     create.mockRestore();
     list.mockRestore();
-    text.mockRestore();
   }
 });
 

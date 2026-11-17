@@ -723,11 +723,11 @@ test("the first load reads the tree once and a filter its view once", async ({ b
 });
 
 // c-tree-requests' Decisions clause, owed on G2: the decisions read moves onto the tree read's
-// `view=decisions`, which the load reads once whoever asks; part Q's one read of the decisions
-// document stays until part U.
+// `view=decisions`, which the load does not send and the first press of Decisions in a load sends
+// once; the decisions document's blocks are read at most once in a load.
 // SLOW(>=2s): the whole seeded issue, its load waited out to a 1.5 s quiet window, and Decisions
 // pressed on and off twice with each press waited out.
-test("the first load reads the tree once and a filter its view once, and the load reads the Decisions view once @owed", async ({
+test("the first load reads the tree once and a filter its view once, and Decisions reads its view once when pressed @owed", async ({
   browser,
 }) => {
   test.setTimeout(ROW_MS);
@@ -735,19 +735,21 @@ test("the first load reads the tree once and a filter its view once, and the loa
     owedUnless(await treeReadGate(page, seeded.key));
     const traffic = watchApiRequests(page);
     const load = await firstLoad(page, traffic, seeded.key);
-    owedUnless(decisionsViewGate(load, seeded.key));
-    expect(
-      treeReads(load, seeded.key, "decisions"),
-      "the load reads the Decisions view once, whoever asks"
-    ).toBe(1);
     for (const press of [1, 2]) {
       const from = traffic.requests.length;
       await pressFilter(page, traffic, "decisions");
       const pressed = traffic.requests.slice(from);
+      if (press === 1) {
+        owedUnless(decisionsViewGate(pressed, seeded.key));
+        expect(
+          treeReads(load, seeded.key, "decisions"),
+          "the load sends no Decisions view read"
+        ).toBe(0);
+      }
       expect(
         treeReads(pressed, seeded.key, "decisions"),
-        "Decisions turned on sends no view read beside the load's"
-      ).toBe(0);
+        "Decisions sends its view read once, on its first press in the load"
+      ).toBe(press === 1 ? 1 : 0);
       const blocks = blocksReads(pressed);
       expect(
         blocks.filter((path) => !path.includes(seeded.decisionsArtifactId)),
@@ -958,7 +960,7 @@ test("each filter draws its view read's rows, and each decision that shaped a st
   }
 });
 
-// c-views for Decisions, owed on G2 (INFRA-1253's t16b and t16c): once the load reads the
+// c-views for Decisions, owed while the decisions view goes unserved: once a press reads the
 // decisions as the tree read's `view=decisions`, the Decisions filter draws that view read's rows,
 // as Spec, Verification and Plan draw theirs (INFRA-1196's decision on row 3's gap).
 // SLOW(>=2s): two seeded issues, each load waited out, and Decisions pressed, read until it holds
@@ -972,12 +974,13 @@ test("each filter draws its view read's rows, and the Decisions filter draws its
       owedUnless(await treeReadGate(page, seeded.key));
       const decisions = viewAnswerOf(page, "decisions");
       const traffic = watchApiRequests(page);
-      const load = await firstLoad(page, traffic, seeded.key);
-      owedUnless(decisionsViewGate(load, seeded.key));
+      await firstLoad(page, traffic, seeded.key);
       const reads = await idReadsOf(seeded.key);
       const view = PRESET_NAMES.decisions;
       const where = `${name} under ${view}`;
+      const from = traffic.requests.length;
       const drawn = await pressFilter(page, traffic, "decisions");
+      owedUnless(decisionsViewGate(traffic.requests.slice(from), seeded.key));
       const answer = await heldAnswer(decisions, `the ${view} view read`);
       const expected = viewNodeIds(answer, "decisions", reads);
       expect(
@@ -1103,8 +1106,7 @@ test("a write is drawn without a reload, and Keep is drawn kept in the outline a
     const tree = treeAnswerOf(page);
     const decisions = decisionsReadOf(page, seeded.key);
     const traffic = watchApiRequests(page);
-    const load = await firstLoad(page, traffic, seeded.key);
-    owedUnless(decisionsViewGate(load, seeded.key));
+    await firstLoad(page, traffic, seeded.key);
     owedUnless(partUGate(await heldAnswer(tree, "the tree read"), decisions.read()));
     await unfoldEveryBranch(page);
     const waiting = new Set(
@@ -1127,7 +1129,9 @@ test("a write is drawn without a reload, and Keep is drawn kept in the outline a
       .poll(() => stateWordOf(page, first), { message: 'Keep makes its row read "Kept by" alice' })
       .toMatch(KEPT_BY_ALICE);
 
+    const pressed = traffic.requests.length;
     await pressFilter(page, traffic, "decisions");
+    owedUnless(decisionsViewGate(traffic.requests.slice(pressed), seeded.key));
     const target = nodeRow(page, second).first();
     await target.focus();
     const kept = traffic.requests.length;

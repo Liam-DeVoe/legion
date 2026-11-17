@@ -71,8 +71,8 @@ import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
  *   from the tree.
  * - **When a decision was made** is the time its words last changed (`Decision.changed_at`);
  *   the decisions read holds no other time for one.
- * - **A Change** is a comment a person anchored to the decision's words since it last changed
- *   (`decision-review.ts`'s `decisionChanges`); the decisions read holds no state for it.
+ * - **A Change** is a comment a person wrote that the tree read hangs under the decision's node,
+ *   made since it last changed (`decision-review.ts`'s `decisionNodeChanges`).
  * - **An agent decision's author, its level of uncertainty, its reason and its readings** are
  *   dispatch://INFRA-1150's: the read holds no author and one yes or no, `unsure`, which the
  *   row draws as the one word it has.
@@ -215,8 +215,9 @@ export function waitingOrder(parts: DecisionsParts): readonly string[] {
  * (`presetView`), whose nodes are the ones the filter by words kept and the one the address
  * names. `nodeIdOf` is how this issue addresses a node (`tree-drafts.ts`'s `treeContext`), so
  * a tie resolves to the node it names however its address is written. `changes` is the change
- * a person asked of each decision, by the decision's address (`decisionChanges`), and `reader`
- * who is reading, which is what tells their own decisions from other people's.
+ * a person asked of each decision, by the decision's address (`decisions-entries.ts`'
+ * `changesOf`), and `reader` who is reading, which is what tells their own decisions from other
+ * people's.
  */
 export function decisionsParts({
   asks,
@@ -317,7 +318,8 @@ export function decisionsParts({
     }
     const row = rows.get(node.reference ?? "");
     if (row === undefined) {
-      // A decision the decisions read holds no row for, which is a tree one read ahead of it.
+      // A decision node `decisions` holds no decision for: one no document holds, which has no
+      // address (`decisionNodes`), or one newer than the answer the decisions were read from.
       agents.push({ ...base, ...timeOf(node.at), kind: "decision", shapes: [] });
       continue;
     }

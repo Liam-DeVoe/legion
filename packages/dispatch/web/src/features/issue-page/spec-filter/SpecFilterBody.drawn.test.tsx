@@ -166,7 +166,8 @@ beforeAll(async () => {
 });
 
 /** The body over `tree`, with `made` as the nodes of the Spec view read's answer, `tuples` as
- *  that answer's tuples and `asks` as the issue's asks read, and `checks` as its results read.
+ *  that answer's tuples and `asks` as the issue's asks read, held unless `asksRead` says it is
+ *  still out, and `checks` as its results read.
  *  `specView`, `results`, `coverage` and `blocks` (the tree read) each say how that read stands -
  *  answered, failed, or still out - and each is answered unless a case says so; the Spec view
  *  read is held as the page holds it (`HeldView`). `verification`, where a case names it, gives
@@ -180,6 +181,7 @@ function drawBody(
   made: readonly TreeAnswerNode[] = [],
   {
     asks = [],
+    asksRead = "answered",
     blocks = "answered",
     checks = [],
     context = new Set<string>(),
@@ -195,6 +197,7 @@ function drawBody(
     verification,
   }: {
     asks?: readonly TreeAsk[];
+    asksRead?: "answered" | "out";
     blocks?: ReadState;
     checks?: readonly CheckBlock[];
     context?: Set<string>;
@@ -267,7 +270,7 @@ function drawBody(
     client.setQueryData(viewKey(KEY, "spec"), treeAnswers.specView);
   }
   // The issue's asks, which say which question a person answered (`decisionNodes`).
-  client.setQueryData(["asks", KEY], [...asks]);
+  if (asksRead === "answered") client.setQueryData(["asks", KEY], [...asks]);
   settle(results, spies.results, () => {
     client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf(checks));
     spies.results.mockResolvedValue(resultsOf(checks));
@@ -472,7 +475,7 @@ test("each statement carries one line naming the decision that shaped it, with a
   }
 });
 
-// R5 with dispatch://INFRA-1150 R1: a person's decision is the question they answered, which
+// A person's decision is the question they answered, which
 // carries `shaped` ties in the Spec view's context, and no decision node restates it. It stands
 // beside each statement a tie names, in their own words, and a statement no tie names stands
 // with none.
@@ -535,6 +538,57 @@ test("a person's decision stands beside each statement its shaped tie names", ()
   }
 });
 
+// The words that say no decision shaped a statement wait for the asks read too: a person's
+// decision is a question they answered, which only that read says, so while it is out the column
+// says nothing of a statement such a decision shaped - nor of any other - and once it answers the
+// decision stands beside each.
+test("while the asks read is out, no statement a person's decision shaped reads that none did", async () => {
+  const words = "Put the decisions beside the statements. Please.";
+  const { client, read, view } = drawBody(
+    issueTree([
+      statement("r1"),
+      statement("r2"),
+      statement("r3"),
+      answeredAsk("ask-1", { text: words }),
+    ]),
+    [
+      ...["r1", "r2", "r3"].map((block, position) =>
+        answerNode(block, "requirement", {
+          document: { artifact_id: "artifact-spec", position, slug: SPEC_SLUG },
+          mark: "query",
+        })
+      ),
+      answerNode("ask-1", "ask", { mark: "context" }),
+    ],
+    {
+      asksRead: "out",
+      tuples: [
+        { from: "ask-1", kind: "shaped", to: "r1" },
+        { from: "ask-1", kind: "shaped", to: "r3" },
+      ],
+    }
+  );
+  try {
+    expect(textsOf(view, "[data-spec-nothing]")).toEqual([]);
+    expect(view.container.querySelectorAll("[data-spec-statement]")).toHaveLength(3);
+
+    act(() => {
+      client.setQueryData(["asks", KEY], [askRead("ask-1", words)]);
+    });
+    await waitFor(() =>
+      expect(
+        [...view.container.querySelectorAll("[data-spec-cell]")].map((cell) =>
+          cell.getAttribute("data-decision-id")
+        )
+      ).toEqual(["ask-1", null, "ask-1"])
+    );
+    expect(textsOf(view, "[data-spec-nothing]")).toEqual([EMPTY_STATE_LINES.spec_no_decision_one]);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
 // R35: a statement with no decision beside it is drawn as such, which is what makes a missing
 // tie visible.
 test("a statement no decision shaped says so where its decision would stand", () => {
@@ -559,9 +613,9 @@ test("several statements no decision shaped say so in words that agree with thei
   }
 });
 
-// R35's sentence is true only once the Spec view read the decisions come from has answered:
-// while it is out the column says nothing of a statement, and a read that failed says so in the
-// page's own line.
+// The words that say no decision shaped a statement are true only once the Spec view read the
+// decisions come from has answered: while it is out the column says nothing of a statement, and a
+// read that failed says so in the page's own line.
 test("the column says no decision shaped a statement only once the decisions are read", async () => {
   const out = drawBody(issueTree([statement("r1")]), [], { specView: "out" });
   try {
