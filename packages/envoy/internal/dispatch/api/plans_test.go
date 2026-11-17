@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -129,15 +130,21 @@ func rateRetro(t *testing.T, handler http.Handler, project, issue, id string, ge
 }
 
 // The read of a project lists each of its issues that is done, newest close first, each with the
-// default plan, the rating of its retro with the reason, the time from its first start to its last
-// end, and its count of failed steps; the issue still in progress is not listed.
+// plan its run wrote, the rating of its retro with the reason, the time from its first start to its
+// last end, and its count of failed steps; the issue still in progress is not listed. The two plans
+// differ in id and in steps, so a plan read onto another issue's row is seen.
 func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 	handler := newTestHandler(t)
 	issues := stepIssues(t, handler, "LEG", 3)
 	reviewed, fitted, running := issues[0], issues[1], issues[2]
 	daemon := daemonSession("LEG")
+	fittedSteps := []string{"planner", "implementer", "acceptance:owner"}
+	reviewedPlan := model.PlanRecord{ID: uuid.NewString(), Issue: reviewed, Generation: 1, Source: "default",
+		Tasks: []model.PlanTask{{ID: "default", Steps: defaultStepLine}}}
+	fittedPlan := model.PlanRecord{ID: uuid.NewString(), Issue: fitted, Generation: 1, Source: "default",
+		Tasks: []model.PlanTask{{ID: "default", Steps: fittedSteps}}}
 
-	putPlanRecordOK(t, handler, reviewed, uuid.NewString(), defaultPlanBody(daemon, 1))
+	putPlanRecordOK(t, handler, reviewed, reviewedPlan.ID, defaultPlanBody(daemon, 1))
 	runs := recordRuns(t, handler, "LEG", reviewed,
 		run{"step", "planner", 1, new(at(0)), new(at(5)), "passed"},
 		run{"step", "implementer", 2, new(at(5)), new(at(20)), "passed"},
@@ -150,7 +157,9 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 	rateRetro(t, handler, "LEG", reviewed, runs[5], 1, 4, "The tester found the bug.")
 	closeIssue(t, handler, reviewed)
 
-	putPlanRecordOK(t, handler, fitted, uuid.NewString(), defaultPlanBody(daemon, 1))
+	putPlanRecordOK(t, handler, fitted, fittedPlan.ID, with(defaultPlanBody(daemon, 1), map[string]any{
+		"tasks": []map[string]any{{"id": "default", "steps": fittedSteps}},
+	}))
 	runs = recordRuns(t, handler, "LEG", fitted,
 		run{"step", "planner", 1, new(at(100)), new(at(110)), "passed"},
 		run{"step", "implementer", 2, new(at(110)), new(at(130)), "passed"},
@@ -169,19 +178,19 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 	}
 	for _, want := range []struct {
 		issue          model.FinishedIssue
+		plan           model.PlanRecord
 		rating         int
 		reason         string
 		duration       int64
 		failed         int
 		started, ended time.Time
 	}{
-		{read.Issues[0], 5, "The plan fit the work.", 3600, 0, at(100), at(160)},
-		{read.Issues[1], 4, "The tester found the bug.", 3000, 1, at(0), at(50)},
+		{read.Issues[0], fittedPlan, 5, "The plan fit the work.", 3600, 0, at(100), at(160)},
+		{read.Issues[1], reviewedPlan, 4, "The tester found the bug.", 3000, 1, at(0), at(50)},
 	} {
 		issue := want.issue
-		if issue.Plan == nil || issue.Plan.Source != "default" || issue.Plan.ArtifactID != nil || issue.Plan.Version != nil ||
-			len(issue.Plan.Tasks) != 1 || issue.Plan.Tasks[0].ID != "default" || !slices.Equal(issue.Plan.Tasks[0].Steps, defaultStepLine) {
-			t.Fatalf("%s's plan is %+v, want the default plan of one task default with the default steps", issue.Issue, issue.Plan)
+		if issue.Plan == nil || !reflect.DeepEqual(*issue.Plan, want.plan) {
+			t.Fatalf("%s's plan is %+v, want %+v, the plan its own run wrote", issue.Issue, issue.Plan, want.plan)
 		}
 		if len(issue.Ratings) != 1 || issue.Ratings[0].Rating != want.rating || issue.Ratings[0].Reason != want.reason ||
 			issue.Ratings[0].StepID == "" || issue.Ratings[0].EndedAt == nil {
