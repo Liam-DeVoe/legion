@@ -109,10 +109,31 @@ if [ -n "$workspace" ] && [ "$workspace" != off ]; then
   replaces="$(jq '(.Replace // []) | length' "$work/workspace.json")" ||
     die "jq could not read the replaces of $workspace"
   [ "$replaces" = 0 ] || die "$workspace holds $replaces replace(s), which the copy of it cannot carry"
-  linked="$(go list -m -f '{{.Version}}' "$nats_server")"
-else
-  linked="$(GOWORK=off go list -m -f '{{.Version}}' "$nats_server")"
 fi
+
+# The copy every go command of this script reads and may write in place of the repository's own
+# files: a copy of the workspace file with absolute use paths, or of the module's go.mod and
+# go.sum. Even reading the linked version can record checksums (a go.mod moved to a version whose
+# checksums go.work.sum lacks), so that read goes to the copy too.
+if [ -n "$in_workspace" ]; then
+  cp "$workspace" "$work/go.work"
+  [ ! -f "$workspace.sum" ] || cp "$workspace.sum" "$work/go.work.sum"
+  for use in "${uses[@]}"; do
+    go work edit -dropuse="$use" -use="$(cd "$workspace_dir" && cd "$use" && pwd)" "$work/go.work"
+  done
+  go_cmd=(env "GOWORK=$work/go.work" go)
+  modflags=()
+  build="a copy of $workspace"
+else
+  cp go.mod "$work/go.mod"
+  [ ! -f go.sum ] || cp go.sum "$work/go.sum"
+  go_cmd=(env GOWORK=off "GOFLAGS=${GOFLAGS:+$GOFLAGS }-mod=mod" go)
+  modflags=(-modfile="$work/go.mod")
+  build="a copy of $module/go.mod, with no workspace"
+fi
+flags=(${modflags[@]+"${modflags[@]}"} -tags odatrace -race)
+linked="$("${go_cmd[@]}" list ${modflags[@]+"${modflags[@]}"} -m -f '{{.Version}}' "$nats_server")" ||
+  die "go list could not read the nats-server version $build links"
 [ -n "$server" ] || server="${linked#v}"
 patch_dir="$hooked/v$server"
 [ -f "$patch_dir/server.patch" ] && [ -f "$patch_dir/zz_measure_write.go" ] ||
@@ -155,22 +176,9 @@ for point in ${drops[@]+"${drops[@]}"}; do
 done
 
 if [ -n "$in_workspace" ]; then
-  cp "$workspace" "$work/go.work"
-  [ ! -f "$workspace.sum" ] || cp "$workspace.sum" "$work/go.work.sum"
-  for use in "${uses[@]}"; do
-    go work edit -dropuse="$use" -use="$(cd "$workspace_dir" && cd "$use" && pwd)" "$work/go.work"
-  done
   go work edit -replace="$nats_server=$copy" "$work/go.work"
-  go_cmd=(env "GOWORK=$work/go.work" go)
-  flags=(-tags odatrace -race)
-  build="a copy of $workspace"
 else
-  cp go.mod "$work/go.mod"
-  [ ! -f go.sum ] || cp go.sum "$work/go.sum"
   go mod edit -replace="$nats_server=$copy" "$work/go.mod"
-  go_cmd=(env GOWORK=off "GOFLAGS=${GOFLAGS:+$GOFLAGS }-mod=mod" go)
-  flags=(-modfile="$work/go.mod" -tags odatrace -race)
-  build="a copy of $module/go.mod, with no workspace"
 fi
 echo "forced-order.sh: nats-server v$server, hooked by $patch_dir, in $module, built in $build" >&2
 
