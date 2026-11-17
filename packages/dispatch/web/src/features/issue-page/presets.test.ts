@@ -370,10 +370,16 @@ test("the words filter matches the words a node draws, never its stored source",
   expect(markup.root.children).toEqual([]);
 });
 
-/** `root` with the tree read's states put on it by node id, as the page puts them
- *  (`node-states.ts`): an overtaken node and every node under it are `closed`. */
+/** `root` with the tree read's states put on it by the read's own id, as the page puts them
+ *  (`node-states.ts`): an overtaken node and every node under it are `closed`. Each node is read
+ *  as the node of the tree read whose id is its own, where it carries no read id. */
 function stamped(root: TreeNode, states: Readonly<Record<string, NodeStates>>): TreeNode {
-  return stampStates(root, new Map(Object.entries(states)), heldBy);
+  return stampStates(readAsIds(root), new Map(Object.entries(states)), heldBy);
+}
+
+/** `root` with every node that carries no read id given its own id as one. */
+function readAsIds(root: TreeNode): TreeNode {
+  return { readId: root.id, ...root, children: root.children.map(readAsIds) };
 }
 
 // dispatch://INFRA-4063 R3 and root c-presets: a filter control's count counts its query's own
@@ -469,6 +475,33 @@ test("a proposed decision waiting for review is still on the to-review flag", ()
     count: 2,
     flag: { count: 1, word: "to_review" },
   });
+});
+
+// dispatch://INFRA-4063 R2, R7: a filter that draws a node's parent as one line on its row, with
+// no view read held, draws that parent's marks there too, as its own row would carry them. A
+// parent with no mark carries none.
+test("a filter's parent line carries the marks of the parent it names", () => {
+  const root = stamped(
+    node("CORE-1", "issue", [
+      node("ask-1", "ask", [node("spec#b-r1", "requirement")]),
+      node("ask-2", "ask", [node("spec#b-r2", "requirement")]),
+      node("ask-3", "ask", [node("spec#b-r3", "requirement")]),
+    ]),
+    { "ask-1": { life: "proposed" }, "ask-2": { onlyYou: true } }
+  );
+  const lines = new Map<string, TreeNode["parentLine"]>();
+  const walk = (at: TreeNode): void => {
+    if (at.parentLine !== undefined) lines.set(at.id, at.parentLine);
+    for (const child of at.children) walk(child);
+  };
+  walk(presetView(root, "spec", "").root);
+  expect(lines.get("spec#b-r1")?.life).toBe("proposed");
+  expect(lines.get("spec#b-r1")?.onlyYou).toBeUndefined();
+  expect(lines.get("spec#b-r2")?.onlyYou).toBe(true);
+  expect(lines.get("spec#b-r2")?.life).toBeUndefined();
+  expect(lines.get("spec#b-r3")).toBeDefined();
+  expect("life" in (lines.get("spec#b-r3") ?? {})).toBe(false);
+  expect("onlyYou" in (lines.get("spec#b-r3") ?? {})).toBe(false);
 });
 
 /** One node of a view read, marked as the query's or as context. */

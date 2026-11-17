@@ -17,6 +17,7 @@ import type {
 import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
 import type { LensFacts } from "./lenses/lens-drafts";
+import { closeOvertaken } from "./node-states/node-states";
 import type { GapKind, NodeState, NodeType } from "./page-words";
 import {
   addDecisions,
@@ -166,6 +167,11 @@ export interface ParentLine {
   /** Whether the parent is reserved for its author, who is the reader (`TreeNode.onlyYou`,
    *  dispatch://INFRA-4063 R7). Absent for every other parent. */
   readonly onlyYou?: true;
+  /** The id the tree read gives the parent (`TreeNode.readId`), by which the line takes the
+   *  parent's states (dispatch://INFRA-4063 R1, R2): the parent's own where the tree holds it,
+   *  and the id a view's answer names it by where the view holds it only by that id. Absent for
+   *  a parent drawn from another read. */
+  readonly readId?: string;
   /** The parent's own `dispatch://` address, where the model gives it one: the link a reader
    *  follows to that node, as a chip's is (R18). Absent for a parent that has none. */
   readonly reference?: string;
@@ -542,13 +548,20 @@ function namingContext(reads: IssueTreeReads): TreeContext {
  * decisions read that no node of the answer holds (`addDecisions`, until part U). Until the tree
  * read has answered every page (`IssueTreeReads.tree`), the tree is the issue alone, since a
  * node the read places under one not yet read would otherwise be drawn in the wrong place.
+ * Each node carries the life and visibility the tree read answers for it, and a node at or
+ * under an overtaken one is closed (`node-states.ts`'s `closeOvertaken`, dispatch://INFRA-4063
+ * R1, R5).
  */
 export function buildIssueTree(reads: IssueTreeReads): TreeNode {
   const context = namingContext(reads);
   if (reads.tree === undefined) return assemble(reads.issue, [], context.chipOf);
   const drafts = treeDraftsFrom(reads.tree, reads, { ...context, chipLine, lineWords });
   addDecisions(drafts, reads, context, askNodeIds(drafts, reads.tree, reads));
-  return assemble(reads.issue, [...drafts.values()], context.chipOf);
+  return closeOvertaken(
+    assemble(reads.issue, [...drafts.values()], context.chipOf),
+    reads.tree,
+    heldBy
+  );
 }
 
 /**

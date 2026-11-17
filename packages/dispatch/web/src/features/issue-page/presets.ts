@@ -9,6 +9,7 @@ import {
   type ParentLine,
   type TreeNode,
 } from "./issue-tree";
+import { closeOvertaken } from "./node-states/node-states";
 import {
   type FILTER_SIGNAL_WORDS,
   NODE_TYPE_NAMES,
@@ -158,6 +159,12 @@ export function presetView(
   // Decisions draws from the decisions read, as F does, until that read moves onto a view.
   if (preset === "decisions") return filterView(root, preset, wanted, named);
   const held = root.views?.[preset];
+  // A view's rows carry the states its own answer gives them, and a node it holds by its id alone
+  // those the outline's node of that id carries (dispatch://INFRA-4063 R1).
+  if (held !== undefined) {
+    const view = heldFilterView(root, preset, held, wanted, named);
+    return { ...view, root: closeOvertaken(view.root, held, heldBy, root) };
+  }
   return held === undefined
     ? filterView(root, preset, wanted, named)
     : heldFilterView(root, preset, held, wanted, named);
@@ -406,6 +413,7 @@ function viewParentLine(
   return {
     id: read.id,
     line: read.line,
+    readId: read.id,
     type: read.supertag as NodeType,
   };
 }
@@ -453,6 +461,11 @@ function lineOfParent(node: TreeNode): ParentLine {
   return {
     id: node.id,
     line: parentLineOf(node),
+    // The parent's marks, as the outline's stamp left them on it, so a filter's parent line says
+    // what its row would (dispatch://INFRA-4063 R2, R7).
+    ...(node.life === undefined ? {} : { life: node.life }),
+    ...(node.onlyYou === true ? { onlyYou: true as const } : {}),
+    ...(node.readId === undefined ? {} : { readId: node.readId }),
     // The parent's own address, which makes its line the link a reader follows to it (R18, and
     // R26: a step's row reaches the statement it serves).
     ...(node.reference === undefined ? {} : { reference: node.reference }),

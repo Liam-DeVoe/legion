@@ -4,13 +4,19 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement, type ReactNode } from "react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
 import { api } from "../../../api/client";
-import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
+import {
+  artifactBlocksQuery,
+  issueCoverageQuery,
+  issueQuery,
+  issueResultsQuery,
+} from "../../../api/queries";
 import type { CheckBlock, IssueCheckResults } from "../../../api/types";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
+import { parseIssuePath } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import { contentsEntries } from "../contents-entries";
@@ -18,7 +24,13 @@ import { FocusedNodeProvider } from "../focused-node";
 import { ContentsList } from "../IssueContents";
 import { IssueTree, type OutlineRequest } from "../IssueTree";
 import { overtakenLineOf } from "../issue-address";
-import { heldBy, type NodeChip, type ParentLine, type TreeNode } from "../issue-tree";
+import {
+  buildIssueTree,
+  heldBy,
+  type NodeChip,
+  type ParentLine,
+  type TreeNode,
+} from "../issue-tree";
 import { LensChain } from "../lenses/LensChain";
 import type { LensChip, LensFacts } from "../lenses/lens-drafts";
 import { NodeLink } from "../lenses/NodeLink";
@@ -40,6 +52,7 @@ import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
 import { coverageRead, decisionsRead, issueDetails, statement } from "../spec-filter/spec-fixtures";
 import { NOTHING_OPENED, type OpenedBranches, type OvertakenRow, pathTo } from "../tree-fold";
 import { statesOfRead } from "../tree-read/tree-nodes";
+import { issueTreeKey, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
 import { VerificationFilterBody } from "../verification-filter/VerificationFilterBody";
 import {
   check,
@@ -58,15 +71,19 @@ import {
   withLine,
 } from "./node-states";
 import { OvertakenLine } from "./OvertakenLine";
+import { useOvertakenRefs, useOvertakenTarget } from "./settle-write";
 
 /**
  * A node's life and who may read it, put on a tree built by hand (dispatch://INFRA-4063 R1, R2,
- * R5, R7, `dispatch://INFRA-4063/artifact/plan-md#b-t3`): the states arrive by node id, and every
- * place that draws a node, and every count over the tree, reads them from the one tree. The
- * lines a path opens, and the marks and the line as a row draws them, are read here too
+ * R5, R7, `dispatch://INFRA-4063/artifact/plan-md#b-t3`): the states arrive by the read's own
+ * id, which each node built here carries as its id (`TreeNode.readId`), and every place that
+ * draws a node, and every count over the tree, reads them from the one tree. The lines a path
+ * opens, and the marks and the line as a row draws them, are read here too
  * (`dispatch://INFRA-4063/artifact/plan-md#b-t6`), and so are the tree's keys and its opening
  * on a line, over `IssueTree` drawn under the page's keymap (`renderTree`); the rows of a whole
- * page are the browser's.
+ * page are the browser's. The states the tree read's answers give, with no view and with one,
+ * are read over trees `buildIssueTree` and `presetView` build (`dispatch://INFRA-4063/artifact/
+ * plan-md#b-t8`).
  */
 
 const KEY = "CORE-1";
@@ -86,6 +103,7 @@ function node(
     held: heldBy(children),
     id,
     question: false,
+    readId: id,
     replaced: false,
     text: id,
     transcluded: false,
@@ -110,9 +128,16 @@ function nodeOf(root: TreeNode, id: string): TreeNode | undefined {
   return undefined;
 }
 
-/** `root` with `states` put on it, by node id, as the page puts the tree read's on it. */
+/** `root` with `states` put on it by the read's own id, as the page puts the tree read's on it.
+ *  A node built by another file's helper carries no read id, so each node is read as the node of
+ *  the tree read whose id is its own where it names none. */
 function stamped(root: TreeNode, states: Readonly<Record<string, NodeStates>>): TreeNode {
-  return stampStates(root, new Map(Object.entries(states)), heldBy);
+  return stampStates(readAsIds(root), new Map(Object.entries(states)), heldBy);
+}
+
+/** `root` with every node that carries no read id given its own id as one. */
+function readAsIds(root: TreeNode): TreeNode {
+  return { readId: root.id, ...root, children: root.children.map(readAsIds) };
 }
 
 // R5: the negative control's assertion. An overtaken node and every node under it, at any
@@ -228,7 +253,7 @@ test("a chip and a parent line carry the marks of the node they name", () => {
   const marked = `dispatch://${KEY}/spec#b-r7`;
   const pinned = `${marked}@v3`;
   const plain = `dispatch://${KEY}/spec#b-r8`;
-  const line = (id: string): ParentLine => ({ id, line: `${id}.`, type: "ask" });
+  const line = (id: string): ParentLine => ({ id, line: `${id}.`, readId: id, type: "ask" });
   const root = node(KEY, "issue", [
     node("spec#b-r7", "requirement", [], { reference: marked }),
     node("spec#b-r8", "requirement", [], { reference: plain }),
@@ -1757,5 +1782,366 @@ test("the lens a cut-short chain stopped at carries the tree's marks", async () 
     }
   } finally {
     read.mockRestore();
+  }
+});
+
+/** One node of the tree read's answer as the contract gives it (dispatch://INFRA-1253 R8): live
+ *  and visible to every reader unless the case says otherwise, under the issue unless it names
+ *  another parent. */
+function readNode(
+  id: string,
+  supertag: string,
+  extra: Partial<TreeAnswerNode> = {}
+): TreeAnswerNode {
+  return {
+    attributes: {},
+    author: null,
+    id,
+    made_at: "2026-11-05T00:00:00Z",
+    parent: KEY,
+    rank: null,
+    state: "live",
+    supertag,
+    text: `Words of ${id}.`,
+    visibility: "project",
+    ...extra,
+  };
+}
+
+/** A typed block of the issue's document `slug`, at `position` in it, which the tree draws by a
+ *  tree id (`<slug>#b-<id>`) that is not its read id. */
+function readBlock(
+  id: string,
+  supertag: string,
+  slug: string,
+  position: number,
+  extra: Partial<TreeAnswerNode> = {}
+): TreeAnswerNode {
+  return readNode(id, supertag, {
+    document: { artifact_id: `artifact-${slug}`, position, slug },
+    ...extra,
+  });
+}
+
+/** The issue's own node, which every node of a tree read hangs from. */
+const ISSUE_NODE = readNode(KEY, "issue", { parent: null });
+
+/** One answer of the tree read, or of one of its views, every page merged. */
+function readAnswer(nodes: readonly TreeAnswerNode[]): TreeAnswer {
+  return {
+    converted: true,
+    cursor: null,
+    nodes: [...nodes],
+    tree: "artifact-tree",
+    tuples: [],
+    view_of: null,
+  };
+}
+
+/** The issue the tree read is of, as `issueQuery` loads it. */
+const ISSUE = issueDetails();
+
+/** The outline `buildIssueTree` builds from the tree read's answer of `nodes`, under the issue's
+ *  own node, and from no other read. */
+function outlineOf(nodes: readonly TreeAnswerNode[]): TreeNode {
+  return buildIssueTree({ issue: ISSUE, tree: readAnswer([ISSUE_NODE, ...nodes]) });
+}
+
+/** The first placement under `root` of the node the tree read gives `readId`. */
+function readNodeOf(root: TreeNode, readId: string): TreeNode | undefined {
+  if (root.readId === readId) return root;
+  for (const child of root.children) {
+    const found = readNodeOf(child, readId);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+/** Which of the marks and of `closed` `found` carries a key for. */
+function markKeys(found: TreeNode | undefined): string[] {
+  return ["closed", "life", "onlyYou"].filter((key) => key in (found ?? {}));
+}
+
+/** Each kind the outline draws a row of from the tree read, with the document it is a typed
+ *  block of where it is one. */
+const READ_KINDS: readonly (readonly [NodeType, string | undefined])[] = [
+  ["requirement", "spec"],
+  ["check", "verification-md"],
+  ["plan_task", "plan-md"],
+  ["decision", "decisions-md"],
+  ["callout", "spec"],
+  ["ask", undefined],
+  ["comment", undefined],
+  ["message", undefined],
+];
+
+/** One node of each kind of `READ_KINDS` for each of `values`, under the issue: the node of the
+ *  kind `kind` given the n-th values is read by the id `<kind>-<n>`. */
+function eachKind(values: readonly Partial<TreeAnswerNode>[]): TreeAnswerNode[] {
+  return READ_KINDS.flatMap(([kind, slug], k) =>
+    values.map((extra, n) =>
+      slug === undefined
+        ? readNode(`${kind}-${n}`, kind, extra)
+        : readBlock(`${kind}-${n}`, kind, slug, k * values.length + n, extra)
+    )
+  );
+}
+
+// R1, R5: a node of every kind the outline draws takes its life from the `state` the tree read
+// answers for it, by the read's own id, which a typed block's tree id is not: proposed or
+// overtaken, an overtaken one closed and a proposed one not. A live node and a settled one
+// carry no mark at all.
+test("a node of any kind the tree read answers proposed or overtaken has that life", () => {
+  const root = outlineOf(
+    eachKind([
+      { state: "proposed" },
+      { state: "overtaken" },
+      { state: "live" },
+      { state: "settled" },
+    ])
+  );
+  for (const [kind, slug] of READ_KINDS) {
+    const proposed = readNodeOf(root, `${kind}-0`);
+    const overtaken = readNodeOf(root, `${kind}-1`);
+    expect(proposed?.type, kind).toBe(kind);
+    if (slug !== undefined) expect(proposed?.id, kind).toBe(`${slug}#b-${kind}-0`);
+    expect(markKeys(proposed), kind).toEqual(["life"]);
+    expect(proposed?.life, kind).toBe("proposed");
+    expect(markKeys(overtaken), kind).toEqual(["closed", "life"]);
+    expect(overtaken?.life, kind).toBe("overtaken");
+    for (const id of [`${kind}-2`, `${kind}-3`]) {
+      expect(readNodeOf(root, id)?.type, id).toBe(kind);
+      expect(markKeys(readNodeOf(root, id)), id).toEqual([]);
+    }
+  }
+});
+
+// R1, R7: a node of every kind the outline draws whose `visibility` the tree read answers as
+// `author` is reserved for its author, the reader, and is marked "Only you", beside "Proposed"
+// where both hold; a node every reader may see carries no such mark.
+test("a node of any kind whose visibility is author is marked Only you", () => {
+  const root = outlineOf(
+    eachKind([
+      { visibility: "author" },
+      { state: "proposed", visibility: "author" },
+      { visibility: "project" },
+    ])
+  );
+  for (const [kind] of READ_KINDS) {
+    expect(markKeys(readNodeOf(root, `${kind}-0`)), kind).toEqual(["onlyYou"]);
+    expect(readNodeOf(root, `${kind}-0`)?.onlyYou, kind).toBe(true);
+    expect(markKeys(readNodeOf(root, `${kind}-1`)), kind).toEqual(["life", "onlyYou"]);
+    expect(markKeys(readNodeOf(root, `${kind}-2`)), kind).toEqual([]);
+  }
+  const drawn = render(createElement(NodeMarks, { marks: readNodeOf(root, "decision-0") ?? {} }));
+  try {
+    expect(
+      [...drawn.container.querySelectorAll("[data-node-mark]")].map((mark) => mark.textContent)
+    ).toEqual([ROW_MARK_WORDS.only_you]);
+  } finally {
+    drawn.unmount();
+  }
+});
+
+// R1: a view's rows carry the states the view's own answer gives them, where the tree read with
+// no view answered otherwise: a statement the Spec view answers proposed is marked there though
+// the outline's is live, one it answers live carries no mark though the outline's is proposed,
+// and one it answers reserved for its author is marked "Only you".
+test("a view's rows carry their own state", () => {
+  const outline = outlineOf([
+    readBlock("r1", "requirement", "spec", 0),
+    readBlock("r2", "requirement", "spec", 1, { state: "proposed" }),
+    readBlock("r3", "requirement", "spec", 2),
+  ]);
+  const spec = readAnswer([
+    readBlock("r1", "requirement", "spec", 0, { mark: "query", state: "proposed" }),
+    readBlock("r2", "requirement", "spec", 1, { mark: "query" }),
+    readBlock("r3", "requirement", "spec", 2, { mark: "query", visibility: "author" }),
+  ]);
+  expect(markKeys(readNodeOf(outline, "r1"))).toEqual([]);
+  expect(readNodeOf(outline, "r2")?.life).toBe("proposed");
+
+  const view = presetView({ ...outline, views: { spec } }, "spec", "").root;
+  expect(view.children.map((row) => [row.readId, markKeys(row), row.life, row.onlyYou])).toEqual([
+    ["r1", ["life"], "proposed", undefined],
+    ["r2", [], undefined, undefined],
+    ["r3", ["onlyYou"], undefined, true],
+  ]);
+});
+
+// R1, R2: the Plan view answers a plan task's parent statement by its id, kind and first line
+// alone (`parent_line`), and nothing of its state. The parent line names the statement by its
+// read id and takes the state the tree read with no view gives it, so statement 7 is marked on
+// plan task 7's line, though the view holds no node of it; the plan task itself carries the
+// view's own state, and a live statement's line carries nothing.
+test("a parent line in a view takes its parent's state from the tree when the view holds only its id", () => {
+  const outline = outlineOf([
+    readBlock("r7", "requirement", "spec", 0, { state: "proposed", visibility: "author" }),
+    readBlock("t7", "plan_task", "plan-md", 0, { parent: "r7" }),
+    readBlock("r8", "requirement", "spec", 1),
+    readBlock("t8", "plan_task", "plan-md", 1, { parent: "r8" }),
+  ]);
+  const lineOf = (id: string) => ({ id, line: `Words of ${id}.`, supertag: "requirement" });
+  const plan = readAnswer([
+    readBlock("t7", "plan_task", "plan-md", 0, {
+      mark: "query",
+      parent: "r7",
+      parent_line: lineOf("r7"),
+    }),
+    readBlock("t8", "plan_task", "plan-md", 1, {
+      mark: "query",
+      parent: "r8",
+      parent_line: lineOf("r8"),
+    }),
+  ]);
+
+  const rows = presetView({ ...outline, views: { plan } }, "plan", "").root.children;
+  expect(
+    rows.map((row) => [
+      row.readId,
+      markKeys(row),
+      row.parentLine?.readId,
+      row.parentLine?.life,
+      row.parentLine?.onlyYou,
+    ])
+  ).toEqual([
+    ["t7", [], "r7", "proposed", true],
+    ["t8", [], "r8", undefined, undefined],
+  ]);
+});
+
+// R1, R5: a statement the Verification view's answer holds live, which the tree read with no
+// view answered overtaken, is live in the view: its row carries no mark and is not closed, and
+// neither is the check under it, so the view folds neither into a line nor leaves either out
+// of a count. Only a node the view's answer does not hold takes the outline's marks.
+test("a node the view holds live stays live whatever the outline says", () => {
+  const outline = outlineOf([
+    readBlock("r1", "requirement", "spec", 0, { state: "overtaken" }),
+    readBlock("c1", "check", "verification-md", 0, { parent: "r1" }),
+    readBlock("r2", "requirement", "spec", 1),
+  ]);
+  const verification = readAnswer([
+    readBlock("r1", "requirement", "spec", 0, { mark: "context" }),
+    readBlock("c1", "check", "verification-md", 0, { mark: "query", parent: "r1" }),
+    readBlock("r2", "requirement", "spec", 1, { mark: "context" }),
+  ]);
+  expect(markKeys(readNodeOf(outline, "r1"))).toEqual(["closed", "life"]);
+  expect(markKeys(readNodeOf(outline, "c1"))).toEqual(["closed"]);
+
+  const view = presetView({ ...outline, views: { verification } }, "verification", "").root;
+  for (const readId of ["r1", "c1", "r2"]) {
+    expect(readNodeOf(view, readId), readId).toBeDefined();
+    expect(markKeys(readNodeOf(view, readId)), readId).toEqual([]);
+  }
+  expect(linesIn(view)).toEqual([]);
+});
+
+/** Where the page's address stands, drawn by a probe that runs `useOvertakenTarget` as the
+ *  stage runs it, on the route the address names. */
+function AddressProbe(): ReactNode {
+  const { hash, pathname, search } = useLocation();
+  useOvertakenTarget(ISSUE, parseIssuePath(pathname, search) ?? { key: KEY, kind: "issue" });
+  return createElement("output", { "data-address": `${pathname}${search}${hash}` });
+}
+
+/** The page at `address`, with `tree` the tree read the page holds and no other read. */
+function drawAddress(address: string, tree: TreeAnswer) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(issueTreeKey(KEY), tree);
+  return render(
+    createElement(
+      QueryClientProvider,
+      { client },
+      createElement(MemoryRouter, { initialEntries: [address] }, createElement(AddressProbe))
+    )
+  );
+}
+
+/** The address the probe last drew. */
+function addressOf(container: HTMLElement): string | null | undefined {
+  return container.querySelector("[data-address]")?.getAttribute("data-address");
+}
+
+/** A tree read holding an overtaken decision with a question under it, and a live decision. */
+function overtakenDecision(): TreeAnswer {
+  return readAnswer([
+    ISSUE_NODE,
+    readBlock("d1", "decision", "decisions-md", 0, { state: "overtaken" }),
+    readNode("a1", "ask", { parent: "d1" }),
+    readBlock("d2", "decision", "decisions-md", 1),
+  ]);
+}
+
+// R6, dispatch://INFRA-1196 decision 118: the Decisions view draws an overtaken decision, and
+// each node under one, nowhere, so an address naming one under that view is replaced by the
+// same address under no filter, its search and its fragment kept, where the outline opens the
+// line that holds it. Under another view, or naming a live decision, the address stays. The
+// tree read is the one the page already holds: nothing is read for it.
+test("an address naming an overtaken decision under the Decisions view is replaced by the same address under no filter", async () => {
+  const fetched = spyOn(globalThis, "fetch").mockRejectedValue(new Error("no request"));
+  const reads = [
+    spyOn(api, "getIssue").mockRejectedValue(new Error("no request")),
+    spyOn(api, "getIssueDecisions").mockRejectedValue(new Error("no request")),
+    spyOn(api, "getIssueTree").mockRejectedValue(new Error("no request")),
+  ];
+  const cases: readonly (readonly [string, string])[] = [
+    [`/issues/${KEY}/decisions#b-d1`, `/issues/${KEY}#b-d1`],
+    [`/issues/${KEY}/decisions?q=words#b-d1`, `/issues/${KEY}?q=words#b-d1`],
+    [`/issues/${KEY}/decisions?ask=a1`, `/issues/${KEY}?ask=a1`],
+    [`/issues/${KEY}/decisions#b-d2`, `/issues/${KEY}/decisions#b-d2`],
+    [`/issues/${KEY}/plan#b-d1`, `/issues/${KEY}/plan#b-d1`],
+  ];
+  try {
+    for (const [address, landed] of cases) {
+      const view = drawAddress(address, overtakenDecision());
+      try {
+        await waitFor(() => expect(addressOf(view.container), address).toBe(landed));
+        await act(async () => {});
+        expect(addressOf(view.container), address).toBe(landed);
+      } finally {
+        view.unmount();
+      }
+    }
+    expect(fetched).not.toHaveBeenCalled();
+    for (const read of reads) expect(read).not.toHaveBeenCalled();
+  } finally {
+    fetched.mockRestore();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+/** The references the probe's `useOvertakenRefs` answers, drawn sorted. */
+function OvertakenRefsProbe(): ReactNode {
+  return createElement("output", {
+    "data-refs": [...useOvertakenRefs(KEY)].sort().join(" "),
+  });
+}
+
+// R3: what the header's count of what waits leaves out is read from the tree read and the issue
+// the page already holds, with no request: each node at or under an overtaken one, the question
+// under the overtaken decision by its id among them, and nothing of the live decision.
+test("what waits leaves out what the held tree read closes, and reads nothing for it", async () => {
+  const fetched = spyOn(globalThis, "fetch").mockRejectedValue(new Error("no request"));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(issueTreeKey(KEY), overtakenDecision());
+  client.setQueryData(issueQuery(KEY).queryKey, ISSUE);
+  const view = render(
+    createElement(QueryClientProvider, { client }, createElement(OvertakenRefsProbe))
+  );
+  try {
+    const expected = [
+      ...overtakenRefs(buildIssueTree({ issue: ISSUE, tree: overtakenDecision() })),
+    ].sort();
+    expect(expected).toContain("a1");
+    expect(expected.some((reference) => reference.endsWith("#b-d2"))).toBe(false);
+    await waitFor(() =>
+      expect(view.container.querySelector("[data-refs]")?.getAttribute("data-refs")).toBe(
+        expected.join(" ")
+      )
+    );
+    expect(fetched).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    fetched.mockRestore();
   }
 });

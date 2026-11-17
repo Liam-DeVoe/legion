@@ -4,6 +4,7 @@ import { useLocation } from "react-router-dom";
 import { primarySpec } from "../../../api/issue-cache";
 import { DocumentStages } from "../document-stage";
 import { issueAddress } from "../issue-address";
+import { useOvertakenTarget } from "../node-states/settle-write";
 import type { Preset } from "../page-words";
 import type { SlotProps } from "../slot-props";
 import { ViewReadProvider } from "../tree-read/view-read";
@@ -22,10 +23,15 @@ import { ViewVerificationSlot } from "./view-verification";
  *
  * `DocumentStages` stands around the chosen slot: a document has one editor on the page, which
  * the row being edited in takes onto its own stage (`document-stage.tsx`).
+ *
+ * Under Decisions, an address naming an overtaken node, or a node under one, which that view
+ * draws nowhere, is replaced by the same address under no filter (`useOvertakenTarget`,
+ * dispatch://INFRA-4063 R6).
  */
 export function StageSlot(props: SlotProps): ReactNode {
   const { hash, search } = useLocation();
   const { preset } = issueAddress(props.route, search, hash, primarySpec(props.issue)?.slug);
+  useOvertakenTarget(props.issue, props.route);
   const View = VIEW_SLOTS[preset];
   return (
     <ViewReadProvider issue={props.issue} preset={preset}>

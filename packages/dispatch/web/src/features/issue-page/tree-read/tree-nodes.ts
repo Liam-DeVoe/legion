@@ -309,6 +309,22 @@ export function statesOfRead({
 }
 
 /**
+ * The marks the tree read gives each node of `answer` that carries one (`statesOfRead`), by the
+ * read's own id, which `TreeNode.readId` and `ParentLine.readId` hold (dispatch://INFRA-4063 R1):
+ * what `node-states.ts` puts on the tree drawn from `answer`. It reads the answer alone, so the
+ * states cost no read of their own, and a node the answer does not hold has no entry: the read
+ * answers nothing of a node reserved for another reader (R8).
+ */
+export function nodeStatesOf(answer: TreeAnswer): ReadonlyMap<string, NodeStates> {
+  const states = new Map<string, NodeStates>();
+  for (const node of answer.nodes) {
+    const marks = statesOfRead(node);
+    if (marks.life !== undefined || marks.onlyYou !== undefined) states.set(node.id, marks);
+  }
+  return states;
+}
+
+/**
  * The answer's nodes in the order they are offered to the steps: the read's own walk, a parent
  * before its children, with the nodes that hang from nothing in this issue's tree after the rest,
  * in the read's order among themselves - a node whose parent is in an issue above, which the
