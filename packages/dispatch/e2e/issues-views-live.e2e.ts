@@ -26,6 +26,7 @@ import {
 import { seedDeliveryFixture } from "./delivery-seed";
 import {
   ACME,
+  boardDrawn,
   cardsOf,
   issuesTable,
   routeLive,
@@ -77,9 +78,10 @@ const rowTop = (page: Page, key: string) =>
 /** The first row whose top is at or under the header's bottom, and its top. */
 function firstOnScreen(page: Page) {
   return scrollBox(page).evaluate((node) => {
-    // The header stays at the box's top while the box scrolls; once the window scrolls it past
-    // the window's top, the window's top is where the rows on screen start.
-    const bottom = Math.max(0, node.querySelector("thead")?.getBoundingClientRect().bottom ?? 0);
+    // The header's cells stay at the box's top while the box scrolls (each `th` is sticky; the
+    // `thead` itself scrolls away with the rows); once the window scrolls them past the window's
+    // top, the window's top is where the rows on screen start.
+    const bottom = Math.max(0, node.querySelector("thead th")?.getBoundingClientRect().bottom ?? 0);
     const row = [...node.querySelectorAll("tbody tr[data-issue-row]")].find(
       (one) => one.getBoundingClientRect().top >= bottom - 1
     );
@@ -232,6 +234,8 @@ test("with every live socket held after its first snapshot, reconnects included,
     };
     const made = await writeAsB(todo, "ACME-2");
     await expect.poll(async () => (await getIssue("ACME-2")).status).toBe("done");
+    // Nothing may change on the held pages: the row above reads these same writes at once on an
+    // open socket, so three seconds is room for a write the held sockets let through to show.
     await pages.open.waitForTimeout(3_000);
     expect(await rowKeys(issuesTable(pages.open))).toEqual(before.open);
     expect(await rowKeys(issuesTable(pages.done))).toEqual(before.done);
@@ -336,6 +340,7 @@ test("in the table a row the pointer rests on keeps its top through writes above
       await page.goto(`/projects/${ACME}/issues?view=open&sort=-created`);
       const table = issuesTable(page);
       await expect(table.locator("tbody tr[data-issue-row]").first()).toBeVisible();
+      await boardDrawn(page);
       const keys = await rowKeys(table);
       // Five rows above the box's top, and R the row under them.
       await scrollBox(page).evaluate((node) => {
@@ -486,6 +491,7 @@ test("on the Board a card the pointer rests on or the focus holds keeps its top 
       await expect(
         page.locator('section[data-board-column="todo"] [data-board-card]').first()
       ).toBeVisible();
+      await boardDrawn(page);
       const todo = await columnCards(page, "todo");
       expect(todo.length).toBeGreaterThanOrEqual(12);
       // Todo in view sideways, and the window down until three Todo cards lie above its top.
@@ -576,8 +582,8 @@ function middleColumn(page: Page): Promise<string> {
   });
 }
 
-// SLOW(>=2s): 12 issues seeded in two statuses, then at two sizes two cards written to the top of
-// a column, the second after the window went down and back.
+// SLOW(>=2s): 24 issues seeded in three statuses, then at two sizes two cards written to the top
+// of a column, the second after the window went down and back.
 test("on the Board at the window's top with no hand a card written to the top of the middle column goes above its first card, which keeps its top, also after the window went down and back", async ({
   browser,
 }) => {
@@ -588,16 +594,25 @@ test("on the Board at the window's top with no hand a card written to the top of
   try {
     await seedOpenIssues(8, "todo");
     await seedOpenIssues(8, "in_progress");
+    // Triage holds cards too. On a phone the Board opens on its first column, Triage, which is
+    // then the column nearest the middle of the window, and the anchor holds only a card that is
+    // on screen. A new issue starts in Triage.
+    for (let n = 1; n <= 8; n++) await createIssue({ project: ACME, title: `Triage work ${n}` });
     for (const size of SIZES) {
       const where = `at ${size.width}x${size.height}`;
       await page.setViewportSize(size);
       await page.goto(`/projects/${ACME}/issues?view=open&sort=-created&layout=board`);
       await expect(page.locator("[data-board-card]").first()).toBeVisible();
+      await boardDrawn(page);
       await page.evaluate(() => window.scrollTo(0, 0));
       await handsOff(page);
       const column = await middleColumn(page);
       const [firstCard] = await columnCards(page, column);
       if (firstCard === undefined) throw new Error(`${where}: the middle column is empty`);
+      await expect(
+        card(page, firstCard),
+        `${where}: the middle column's first card`
+      ).toBeInViewport();
       const top = await cardTop(page, firstCard);
       const count = await columnCount(page, column);
       const tab = (await tabCount(page, "Open")) ?? 0;
@@ -871,7 +886,10 @@ test("a second role event's facts write moves the open table's and the open Boar
       )
     ).trim();
     await writeRoleEvent(key, "architect", "9 hours");
-    // The facts row first, as the server stores it, then the pages.
+    // The facts row first, as the server stores it, then the pages. The row is closed at the
+    // issue's newest input, the claim the fixture saw 30 minutes before the seed
+    // (`metrics.ProjectFactsClosed`), so it stores nine hours less that half hour and the time
+    // since the seed, a little under 8.5, and a reader grows it to its own clock.
     await expect
       .poll(
         async () =>
@@ -880,7 +898,7 @@ test("a second role event's facts write moves the open table's and the open Boar
           ),
         { message: "the facts row's work hours after the architect's event", timeout: 75_000 }
       )
-      .toBeGreaterThanOrEqual(8.5);
+      .toBeGreaterThan(8);
     await expect
       .poll(() => workText(table.page, key), {
         timeout: 75_000,

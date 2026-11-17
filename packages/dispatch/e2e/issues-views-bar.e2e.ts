@@ -885,6 +885,8 @@ test("by Legion phase only a drop within Queue writes, the column follows the da
     await card(firstImplementing).focus();
     await page.keyboard.press("Shift+L");
     await refused("Shift+L on the first Implementing card");
+    // No write may follow a refused move: the Board sends a move's PATCH from the handler that
+    // reads the drop or the key, so one sent for any of these would be recorded within 300 ms.
     await page.waitForTimeout(300);
     expect(patches, "a refused move sent a write").toEqual([]);
     const after = await acmeNow();
@@ -929,6 +931,8 @@ test("under a sort by Created a drop within Todo is refused naming the sort and 
     await mouseDrag(page, card(next), card(top), 4);
     const refusal = page.getByTestId("board-refusal");
     await expect(refusal).toContainText("Created");
+    // No write may follow the refused drop: the Board sends a move's PATCH from the handler that
+    // reads the drop, so one sent for this drop would be recorded within 300 ms of the refusal.
     await page.waitForTimeout(300);
     expect(writes).toEqual([]);
     expect((await acmeNow()).get(next)?.rank).toBe(ranks.get(next)?.rank);
@@ -986,7 +990,9 @@ test("under a sort by Created a drop within Todo is refused naming the sort and 
     await expect(
       page.locator('section[data-board-column="done"] [data-board-card]').first()
     ).toBeVisible();
-    expect((await columnCards(page, "done")).sort()).toEqual(done.map((issue) => issue.key).sort());
+    expect([...(await columnCards(page, "done"))].sort()).toEqual(
+      done.map((issue) => issue.key).sort()
+    );
     await page.goto(`/projects/${ACME}/issues?view=open&layout=board`);
     await expect(page.locator("[data-board-card]").first()).toBeVisible();
     await expect(page.getByRole("region", { name: "Done (collapsed)" })).toBeVisible();

@@ -69,6 +69,45 @@ export function settledCounters(project: string): string[] {
   ];
 }
 
+/** The facts consumer's lease (`legionfacts.Lease`), as `duty.Exclusive` takes it for each pass:
+ *  a two-key advisory lock, the loops' namespace (`leaseNamespace`, "LOOP") and the hashtext of
+ *  the lease's name (`packages/envoy/internal/dispatch/duty/exclusive.go`). */
+const FACTS_LEASE = `${0x4c4f4f50}, hashtext('legion-facts')`;
+
+/** Writes `statements`, which add events to the log, so that the facts consumer reads every
+ *  event of this row, these among them: in one transaction under the consumer's lease, with its
+ *  events cursor put back at the log's start.
+ *
+ *  The cursor is the reason. The consumer reads the event log by a global id cursor up to the
+ *  safe horizon (`readEventPage` in `legionfacts/feeds.go`), and every committed event wakes it,
+ *  a direct insert too (the `events_notify` trigger, migration 0107). But the reset before each
+ *  row (`e2e/seed.ts`) empties the events and restarts their ids at 1 under that cursor, and the
+ *  consumer keeps no check of its own against a reset. The event relay has one
+ *  (`eventLogWasReset` in `api/event_stream_relay.go`), which forgets the server's horizon, but
+ *  it runs only once an event wakes the relay. Until then a pass that finds no cursor starts the
+ *  feed at the horizon the server holds (`readFeedHeads`), the old log's, and a pass that read the
+ *  cursor before the reset writes that position back after it. Either leaves the cursor above
+ *  every id the new log hands out, so no event of the row is read until the ids climb past it. A
+ *  project's first whole read still sees the events written before it, and nothing sees the ones
+ *  after: the first role event of a row got its facts, and a later one never did. At 0 the next
+ *  pass reads every event of the row from the start of the new log: each names an issue the
+ *  pass computes again, and the pass writes no row whose values stand (`upsert` in
+ *  `legionfacts/store.go`).
+ *
+ *  The lease keeps a pass out of the transaction: a pass that read the cursor before it would
+ *  write its old position back when it ended. The lock waits for a running pass to end, and a
+ *  pass that tries for the lease meanwhile tries again a pass gap later. */
+export async function writeEventsForFacts(...statements: string[]): Promise<void> {
+  await sql(
+    "BEGIN",
+    `SELECT pg_advisory_xact_lock(${FACTS_LEASE})`,
+    ...statements,
+    `INSERT INTO issue_facts_cursor (name, position) VALUES ('events', 0)
+       ON CONFLICT (name) DO UPDATE SET position = 0`,
+    "COMMIT"
+  );
+}
+
 /** One observation row: the field of one issue (or of the project, under the empty key) as a read
  *  found it, and how long ago that read was. */
 export interface Observation {
@@ -168,7 +207,9 @@ export async function seedLegionFixture(stateUrl: string): Promise<void> {
  *  phase is `done`, and in no tree a card stands in, so the board's `issues` map carries neither
  *  and the items route of `legion-work-time` serves both, by the day each closed.
  *
- *  ACME-6 ends at `last_seq` 2 and ACME-7 at 5, the seqs of their newest events. */
+ *  ACME-6 ends at `last_seq` 2 and ACME-7 at 5, the seqs of their newest events. The rows go in
+ *  through `writeEventsForFacts`, so the facts consumer reads these events whether or not it has
+ *  already read ACME whole. */
 export async function seedLegionMetricsCorpus(): Promise<void> {
   const session = (role: string, issue: string) =>
     `'{"kind":"session","id":"s-${role}","origin":{"session_title":"Legion ${role} · ${issue}"}}'`;
@@ -187,7 +228,7 @@ export async function seedLegionMetricsCorpus(): Promise<void> {
   const observed = (issue: string, field: string, value: string, ago: string) =>
     `INSERT INTO legion_observations (project, issue_key, field, value, observed_at)
        VALUES ('${LEGION_PROJECT}', '${issue}', '${field}', '${value}'::jsonb, now() - interval '${ago}')`;
-  await sql(
+  await writeEventsForFacts(
     `INSERT INTO issues (key, project_key, number, title, status, priority, created_by, rank, created_at, closed_at) VALUES
        ('${root}', '${LEGION_PROJECT}', 6, 'The finished root', 'done', 1, ${SEED_ACTOR}, 'Z', now() - interval '60 hours', now() - interval '20 hours'),
        ('${child}', '${LEGION_PROJECT}', 7, 'The finished child', 'done', 2, ${SEED_ACTOR}, 'Za', now() - interval '50 hours', now() - interval '24 hours')`,

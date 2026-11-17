@@ -856,7 +856,7 @@ test("each of today's addresses lists the rows the API gives, q=epic only the ro
         issue.title,
         issue.assignee ?? "",
         issue.created_by?.id ?? "",
-        issue.claim?.holder?.id ?? "",
+        issue.claim?.actor.id ?? "",
         ...(issue.labels ?? []),
       ].some((text) => text.toLowerCase().includes(word));
     const addresses: readonly (readonly [string, (issue: IssueSummary) => boolean])[] = [
@@ -980,7 +980,7 @@ function inOrder(
 ): { order: (number | null)[]; sorted: boolean } {
   const values = keys.map(value);
   const defined = values.filter((one): one is number => one !== undefined);
-  const firstEmpty = values.findIndex((one) => one === undefined);
+  const firstEmpty = values.indexOf(undefined);
   const sorted =
     defined.every((one, index) => index === 0 || (defined[index - 1] ?? one) <= one) &&
     (firstEmpty === -1 || values.slice(firstEmpty).every((one) => one === undefined));

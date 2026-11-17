@@ -16,7 +16,7 @@
 // that the board names WIDGETS-4 held for its children rather than that some card somewhere is.
 //
 // acme/widgets-shaped placeholders throughout (AGENTS.md: "This repository is public").
-import { settledCounters } from "./legion-seed";
+import { settledCounters, writeEventsForFacts } from "./legion-seed";
 import { sql } from "./psql";
 
 const SEED_ACTOR = `'{"kind":"user","id":"alice"}'`;
@@ -273,10 +273,11 @@ export async function seedLegionFactsFixture(daemonUrl: string): Promise<LegionF
  *  The event takes the issue's next seq, as an event the broker writes does: one statement moves
  *  `last_seq` on by one and writes the event under it, so a later write through the API appends
  *  the event after this one. The session is one of its own per role and issue, since a session's
- *  newest title is the one the consumer reads (`session_titles`). */
+ *  newest title is the one the consumer reads (`session_titles`). It goes in through
+ *  `writeEventsForFacts`, so the consumer reads it however late in the row it comes. */
 export async function writeRoleEvent(issue: string, role: string, ago: string): Promise<void> {
   const actor = `{"kind":"session","id":"s-${role}-${issue}","origin":{"session_title":"Legion ${role} · ${issue}"}}`;
-  await sql(
+  await writeEventsForFacts(
     `WITH next AS (UPDATE issues SET last_seq = last_seq + 1 WHERE key = '${issue}' RETURNING last_seq)
      INSERT INTO events (issue_key, seq, type, actor, payload, notify, created_at)
        SELECT '${issue}', last_seq, 'comment.created', '${actor}'::jsonb, '{}'::jsonb, false,

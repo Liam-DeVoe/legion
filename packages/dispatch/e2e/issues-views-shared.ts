@@ -53,8 +53,9 @@ export interface LiveRules {
   readonly edit?: (frame: BoardFrame) => void;
   /** Drops each board frame after a subscription's first. */
   readonly hold?: boolean;
-  /** Holds each subscription's first board frame until this settles. */
-  readonly first?: Promise<unknown>;
+  /** Holds each subscription's first board frame until the promise this answers settles. It is
+   *  called when that frame arrives, so a hold it starts is measured from the frame. */
+  readonly first?: () => Promise<unknown>;
   /** Drops every frame of a socket, board or not, once its first board snapshot has passed:
    *  the socket stays open and nothing more reaches the page. A socket opened again is read
    *  the same way, so a reconnect brings one snapshot and no more. */
@@ -111,7 +112,7 @@ export async function routeLive(page: Page, rules: LiveRules): Promise<void> {
       const first = !answered.has(frame.sub);
       if (rules.hold === true && !first) return;
       answered.add(frame.sub);
-      if (first && rules.first !== undefined) await rules.first;
+      if (first && rules.first !== undefined) await rules.first();
       if (rules.edit === undefined) route.send(message);
       else {
         rules.edit(frame);
@@ -132,6 +133,17 @@ export async function seedMeasuredAcme(page: Page): Promise<FakeLegionDaemon> {
   await seedFailedLegionRead(ACME, "the daemon did not answer its state route");
   await routeLive(page, { hold: true });
   return daemon;
+}
+
+/** Waits until a page of ACME seeded by `seedMeasuredAcme` has drawn the board's first snapshot,
+ *  whose header carries the failed read as the alert under the tabs. Until then the view's first
+ *  draw is not whole (`viewKey` in `IssuesTable.tsx`): the snapshot's commit starts the table
+ *  at its top again (`useDataTable`) and the anchor holds nothing through it, so a row measures
+ *  where things draw only after this. */
+export async function boardDrawn(page: Page): Promise<void> {
+  await expect(
+    page.getByRole("alert").filter({ hasText: "The last read of the Legion daemon failed" })
+  ).toBeVisible();
 }
 
 /** A tab's accessible name: the view's name, its count where it shows one, and its mark. */
