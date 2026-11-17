@@ -1,7 +1,9 @@
 import { type RefObject, useRef } from "react";
 
-import { useKeymap } from "../shell/keymap";
+import { type KeyBinding, useKeymap } from "../shell/keymap";
+import { focusOnDocument } from "../shell/roving";
 import { type RowAction, rowActionSelector } from "./DecisionActions";
+import { bringOnScreen } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
 import { type OutlineWriter, replyItemOf, takesAnswer } from "./outline-writer";
 import { KEY_REPORTS } from "./page-structure";
@@ -69,6 +71,10 @@ export interface TreeKeyboard {
   /** Whether the tree is read one node at a time, which is how it is drawn at 1024 px and
    *  below: there the arrows that would walk into a branch zoom into it instead. */
   readonly oneNodeAtATime: boolean;
+  /** Whether every read the tree is built from holds its answer (`slots/body.tsx`). Until then
+   *  the next open question or the decision behind a row may be a node that has not arrived, so
+   *  `q` and `w` with nowhere to go say nothing rather than an absence that may be false. */
+  readonly readsHeld: boolean;
   /** The rows as drawn, in the order the keys move through them. */
   readonly rows: readonly DrawnRow[];
   /** The tree the preset left, which the keys that look past the drawn rows walk. */
@@ -112,6 +118,36 @@ function pressedByAKey(control: HTMLElement): boolean {
   return words === CONTROL_LABELS.keep_open || words === CONTROL_LABELS.let_close;
 }
 
+/**
+ * The key that enters a tree drawn as one tab stop (R9): Tab or Shift+Tab pressed on the page
+ * itself enters it at the row that holds the stop, the one the reader last stood on, or at its
+ * first row where none holds it yet. Tab from inside the tree is the browser's own, which leaves
+ * the tree because every row but that one takes no focus. `rows` answers the tree's rows as the
+ * browser holds them, in order, and `moveTo` moves the reader to the row at an index of them.
+ *
+ * It is exported because part K imports it, so its chart is entered as the outline is (the
+ * architect's decision 94).
+ */
+export function treeEnterKey({
+  moveTo,
+  rows,
+}: {
+  readonly rows: () => readonly HTMLElement[];
+  readonly moveTo: (index: number) => void;
+}): KeyBinding {
+  return {
+    id: "tree-enter",
+    keys: ["Tab", "Shift+Tab"],
+    label: "Move into the tree",
+    palette: false,
+    run: () => {
+      const stop = rows().findIndex((row) => row.tabIndex === 0);
+      moveTo(stop === -1 ? 0 : stop);
+    },
+    when: () => focusOnDocument() && rows().length > 0,
+  };
+}
+
 export function useTreeKeymap(tree: TreeKeyboard): void {
   // The row the caret was taken from, so Escape puts the reader back on it rather than on
   // whichever row the tree would otherwise offer.
@@ -140,8 +176,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
   };
   /** Whether the reader is reading: on the page itself, or on a row of the tree. A key that
    *  moves the tree is not taken from a control somewhere else on the page. */
-  const reading = (): boolean =>
-    document.activeElement === null || document.activeElement === document.body || inTheTree();
+  const reading = (): boolean => focusOnDocument() || inTheTree();
   /** The node the reader is on, which is what the keys that act on one node ask for. */
   const focusedRow = (): NodeRow | undefined => {
     const { elements, rows } = drawn();
@@ -174,12 +209,17 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     );
     return [...chips, ...rest.filter((link) => !chips.includes(link)), ...controls];
   };
-  /** Moves to the row `index`, clamped to the tree's ends, and clears whatever a key reported. */
+  /** Moves to the row `index`, clamped to the tree's ends, and clears whatever a key reported.
+   *  A move that lands on the row already holding the focus - Home on the first row, End on the
+   *  last - moves no focus, so the row's own placing never runs, and a row the reader scrolled
+   *  off would stay off: that row is brought on screen here (decision 177). */
   const moveTo = (index: number): void => {
     const { elements } = drawn();
     if (elements.length === 0) return;
     tree.onReport("");
-    elements[Math.min(Math.max(index, 0), elements.length - 1)]?.focus();
+    const target = elements[Math.min(Math.max(index, 0), elements.length - 1)];
+    if (target !== undefined && target === document.activeElement) bringOnScreen(target);
+    target?.focus();
   };
   /** Takes the reader to `id`, unfolding whatever stands between them and it. */
   const goTo = (id: string): void => {
@@ -188,23 +228,8 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
   };
 
   useKeymap("issue", [
-    {
-      // The tree is one tab stop (R9): Tab from the page itself enters it at the row the reader
-      // last stood on, and Tab from inside it is the browser's own, which leaves the tree
-      // because every row but that one takes no focus.
-      id: "tree-enter",
-      keys: ["Tab", "Shift+Tab"],
-      label: "Move into the tree",
-      palette: false,
-      run: () => {
-        const { elements } = drawn();
-        const stop = elements.findIndex((row) => row.tabIndex === 0);
-        moveTo(stop === -1 ? 0 : stop);
-      },
-      when: () =>
-        (document.activeElement === null || document.activeElement === document.body) &&
-        drawn().elements.length > 0,
-    },
+    // The tree is one tab stop (R9), which Tab from the page itself enters (`treeEnterKey`).
+    treeEnterKey({ moveTo, rows: () => drawn().elements }),
     {
       id: "tree-next",
       keys: ["j", "ArrowDown"],
@@ -412,7 +437,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       run: () => {
         const question = nextQuestion(tree.root, focusedRow()?.node.id);
         if (question === undefined) {
-          tree.onReport(KEY_REPORTS.no_next_question);
+          tree.onReport(tree.readsHeld ? KEY_REPORTS.no_next_question : "");
           return;
         }
         goTo(question.id);
@@ -427,7 +452,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         const node = focusedRow()?.node;
         const decision = node === undefined ? undefined : decisionBehind(tree.root, node.id);
         if (decision === undefined) {
-          tree.onReport(KEY_REPORTS.no_decision);
+          tree.onReport(tree.readsHeld ? KEY_REPORTS.no_decision : "");
           return;
         }
         goTo(decision.id);

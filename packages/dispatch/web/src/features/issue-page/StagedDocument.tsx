@@ -80,8 +80,10 @@ export function StagedDocument({
  * the row stays where the reader had it. It is never taller than the room between the band that
  * stays at the top (`--issue-identity-height`) and the box at the foot of the screen
  * (`--issue-composer-height`, `identity-block.ts`), and once the editor is in it the row narrows
- * it to the room left under where it stands (`node-caret.ts`'s `holdEditorAtBlock`). A scroll
- * that reaches either end of it stops there, rather than going on to move the page.
+ * it to the room left under where it stands (`node-caret.ts`'s `holdEditorAtBlock`). A row so low
+ * on the screen that less than half that room is left under it gets half the room instead, and
+ * the page scrolls just as far as brings the box on screen. A scroll that reaches either end of
+ * the box stops there, rather than going on to move the page.
  */
 export function EditorBox({ children }: { children: ReactNode }): ReactNode {
   return (
