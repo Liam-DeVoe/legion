@@ -124,8 +124,10 @@ const (
 	viewDeclineNote = "Not mine to choose: ask the design lead."
 	viewD1Words     = "REST for every service this quarter."
 	viewD1Reason    = "A client that needs streaming would change it."
-	viewAskA1       = ":::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n"
-	viewSpec        = ":::requirement{#r1}\nOne.\n:::\n\n:::requirement{#r2}\nTwo.\n:::\n\n:::requirement{#r3}\nThree.\n:::\n\n" +
+	// viewAskA1 is the answered ask, which shaped the first requirement r1 that the agent's d1
+	// shapes too. The issue the test creates is CORE-1, the first of its project.
+	viewAskA1 = ":::ask{#a1 urgency=\"med\" multiple=\"false\" shaped=\"dispatch://CORE-1/spec#b-r1\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n"
+	viewSpec  = ":::requirement{#r1}\nOne.\n:::\n\n:::requirement{#r2}\nTwo.\n:::\n\n:::requirement{#r3}\nThree.\n:::\n\n" +
 		":::requirement{#r4}\nFour.\n:::\n\n" + viewAskA1 + "\n" +
 		":::ask{#a3 urgency=\"low\" multiple=\"false\"}\nWhich logo?\n\n- Blue: The old one\n- Red: A new one\n:::\n\n" +
 		":::ask{#a4 urgency=\"high\" multiple=\"false\"}\nWho owns the rollout?\n\n- Ops: The ops team\n- Dev: The service team\n:::\n"
@@ -200,6 +202,9 @@ func TestTheDecisionsReadAnswersEveryDecisionInOrder(t *testing.T) {
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", viewSpec)
+	if issue.Key != "CORE-1" {
+		t.Fatalf("the seeded issue is %s, want CORE-1, which the answered ask's shaped link names", issue.Key)
+	}
 	spec := readDecisionDocument(t, database, issue.Key, "spec")
 	pointer := func(block string) string { return "dispatch://" + issue.Key + "/spec#b-" + block }
 	settleIssue(t, documents, issue.Key)
@@ -262,6 +267,13 @@ func TestTheDecisionsReadAnswersEveryDecisionInOrder(t *testing.T) {
 	// The answered ask: its question, its options and the person's answer, character for
 	// character as the store holds them, and the answer once in the whole read.
 	ask := requireEntry(t, entries, "the answered ask", graphstore.KindAsk+":"+answered)
+	// The answered ask shaped r1, through the shaped tuple its ask node holds: its entry answers
+	// that one spec node, from its own block.
+	if targets := shapedTargets(ask); !slices.Equal(targets, []string{spec.address("r1")}) || ask.Shaped[0].FromBlock != "a1" ||
+		ask.Shaped[0].Event == nil {
+		t.Errorf("the answered ask's entry answers the shaped links %s, want one, to %s, from its block a1, with the tuple's event",
+			entryJSON(t, ask.Shaped), spec.address("r1"))
+	}
 	var question string
 	var options []byte
 	if err := database.Pool.QueryRow(ctx, `select question, options from asks where id = $1::uuid`, answered).Scan(&question, &options); err != nil {
@@ -415,6 +427,45 @@ func TestTheDecisionsReadAnswersEveryDecisionInOrder(t *testing.T) {
 	if read.ChangedVersion != ownWords.Number || read.ChangedAt == nil || !read.ChangedAt.Equal(*d1.ChangedAt) || read.TextSHA256 != d1.TextSHA256 {
 		t.Errorf("after a reading was written under it the decision reads changed_version %d at %v summed %s, want %d at %v summed %s: a reading never changes the decision",
 			read.ChangedVersion, read.ChangedAt, read.TextSHA256, ownWords.Number, d1.ChangedAt, d1.TextSHA256)
+	}
+	// The reading edited, and then removed, moves the row again and none of the words.
+	for _, step := range []struct{ what, reading string }{
+		{"edited", "\n:::reading{#g1}\nThe agent reads it as REST for every public service.\n:::\n"},
+		{"removed", ""},
+	} {
+		agentUploadAs(t, handler, issue.Key, "choices.md", choicesText("REST for every public service this quarter.", step.reading), nil)
+		read := requireEntry(t, readEntries(t, handler, issue.Key), "the agent's decision", entryKey(d1))
+		if read.ChangedVersion != ownWords.Number || read.ChangedAt == nil || !read.ChangedAt.Equal(*d1.ChangedAt) || read.TextSHA256 != d1.TextSHA256 {
+			t.Errorf("after its reading was %s the decision reads changed_version %d at %v summed %s, want %d at %v summed %s",
+				step.what, read.ChangedVersion, read.ChangedAt, read.TextSHA256, ownWords.Number, d1.ChangedAt, d1.TextSHA256)
+		}
+	}
+	// A reading written, edited and removed under the answered ask moves the ask block's row and
+	// none of its own words, its question and its options.
+	askBefore := requireEntry(t, readEntries(t, handler, issue.Key), "the answered ask", graphstore.KindAsk+":"+answered)
+	if askBefore.ChangedVersion != 1 || askBefore.ChangedAt == nil || !askBefore.ChangedAt.Equal(versionCreatedAt(t, database, spec.id, 1)) {
+		t.Errorf("the answered ask reads changed_version %d at %v, want version 1, which wrote its block, at its created_at", askBefore.ChangedVersion, askBefore.ChangedAt)
+	}
+	for _, step := range []struct{ what, reading string }{
+		{"written", "The agent reads the answer as REST for every service."},
+		{"edited", "The agent reads the answer as REST for every public service."},
+		{"removed", ""},
+	} {
+		uploadAs(t, handler, issue.Key, "spec.md", withAskReading(t, documentMarkdown(t, handler, spec.id), "a1", "ga", step.reading), "alice")
+		settleIssue(t, documents, issue.Key)
+		if moved := rowChangedVersion(t, database, spec, "a1"); moved <= askBefore.ChangedVersion {
+			t.Fatalf("the reading %s left a1's row at version %d; this case needs the row moved past %d", step.what, moved, askBefore.ChangedVersion)
+		}
+		read := requireEntry(t, readEntries(t, handler, issue.Key), "the answered ask", graphstore.KindAsk+":"+answered)
+		want := []string{}
+		if step.reading != "" {
+			want = []string{spec.address("ga") + "<-" + graphstore.KindPerson + ":alice"}
+		}
+		if read.ChangedVersion != askBefore.ChangedVersion || read.ChangedAt == nil || !read.ChangedAt.Equal(*askBefore.ChangedAt) ||
+			!slices.Equal(readingsOf(read), want) {
+			t.Errorf("after a reading was %s in the answered ask it reads changed_version %d at %v with the readings %v, want %d at %v with %v",
+				step.what, read.ChangedVersion, read.ChangedAt, readingsOf(read), askBefore.ChangedVersion, askBefore.ChangedAt, want)
+		}
 	}
 
 	// Membership waits on no projection: a spec of 2,001 blocks, whose block index is owed and
@@ -719,4 +770,244 @@ func TestAReadingIsAChildNodeOfTheDecisionItReads(t *testing.T) {
 			t.Errorf("the replaced decision names the decision %s through %s", d1, tuple.Kind)
 		}
 	}
+}
+
+// withAskReading is markdown with its ask block blockID holding, after its own content, the one
+// reading readingID of words, or no reading for words "": the block's opening line and its own
+// content kept as they stand.
+func withAskReading(t *testing.T, markdown, blockID, readingID, words string) string {
+	t.Helper()
+	at := strings.Index(markdown, "ask{#"+blockID+" ")
+	if at < 0 {
+		at = strings.Index(markdown, "ask{#"+blockID+"}")
+	}
+	if at < 0 {
+		t.Fatalf("the document holds no ask block %s:\n%s", blockID, markdown)
+	}
+	start := strings.LastIndex(markdown[:at], "\n") + 1
+	fence := markdown[start:at]
+	lineEnd := start + strings.Index(markdown[start:], "\n")
+	closing := strings.Index(markdown[lineEnd:], "\n"+fence+"\n")
+	if closing < 0 {
+		t.Fatalf("the ask block %s holds no closing %s:\n%s", blockID, fence, markdown)
+	}
+	closing += lineEnd
+	opener, content := markdown[start+len(fence):lineEnd], markdown[lineEnd:closing]
+	if cut := strings.Index(content, "\n\n:::reading{"); cut >= 0 {
+		content = content[:cut]
+	}
+	block := ":::" + opener + content + "\n:::\n"
+	if words != "" {
+		block = "::::" + opener + content + "\n\n:::reading{#" + readingID + "}\n" + words + "\n:::\n::::\n"
+	}
+	return markdown[:start] + block + markdown[closing+len(fence)+2:]
+}
+
+// versionMarkdownAt is version number of the document as stored.
+func versionMarkdownAt(t *testing.T, database *store.Store, artifactID string, number int) string {
+	t.Helper()
+	var markdown string
+	if err := database.Pool.QueryRow(context.Background(),
+		`select markdown from artifact_versions where artifact_id = $1::uuid and number = $2`, artifactID, number).Scan(&markdown); err != nil {
+		t.Fatalf("read version %d of %s: %v", number, artifactID, err)
+	}
+	return markdown
+}
+
+// An answered ask's changed_version is the version that last changed its own words, its question
+// and its options: a version that writes the server's attributes into its block, as the roll
+// window does while the release before serves, and the first write on one build that takes them
+// out again, each move the block's row and leave the ask at the version that wrote it.
+func TestAnAnsweredAsksVersionMovesWithItsOwnWordsAloneAndNotWithTheServersAttributes(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	documents := deps.Docs.(*docs.Service)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", "A spec.\n")
+	uploadAs(t, handler, issue.Key, "asks.md", ":::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n\nA note.\n", "alice")
+	settleIssue(t, documents, issue.Key)
+	asks := readDecisionDocument(t, database, issue.Key, "asks-md")
+	askID := blockAskID(t, handler, issue.Key, "a1")
+	opened := rowChangedVersion(t, database, asks, "a1")
+	openedAt := versionCreatedAt(t, database, asks.id, opened)
+	requireAtOpened := func(what string) {
+		t.Helper()
+		entry := requireEntry(t, readEntries(t, handler, issue.Key), "the answered ask", graphstore.KindAsk+":"+askID)
+		if entry.ChangedVersion != opened || entry.ChangedAt == nil || !entry.ChangedAt.Equal(openedAt) {
+			t.Errorf("%s the answered ask reads changed_version %d at %v, want %d at %v, the version that wrote its question and its options",
+				what, entry.ChangedVersion, entry.ChangedAt, opened, openedAt)
+		}
+	}
+	whileTheReleaseBeforeServes(t, database, func() {
+		answerDecisionBlock(t, handler, askID, "bob", []string{"REST"}, "Plain HTTP until a client streams.", nil)
+		settleIssue(t, documents, issue.Key)
+	})
+	inStep := rowChangedVersion(t, database, asks, "a1")
+	if stored := versionMarkdownAt(t, database, asks.id, inStep); inStep <= opened || !strings.Contains(stored, `state="answered"`) {
+		t.Fatalf("the roll window left a1's row at version %d, holding\n%s\nwant a version past %d whose ask block holds the answer's state", inStep, stored, opened)
+	}
+	requireAtOpened("after the roll window wrote the answer into its block,")
+	editIssueDocumentAs(t, handler, issue.Key, "asks-md", "alice", []map[string]any{{"op": "replace", "find": "A note.", "with": "A note, edited."}})
+	settleIssue(t, documents, issue.Key)
+	oneBuild := rowChangedVersion(t, database, asks, "a1")
+	if stored := versionMarkdownAt(t, database, asks.id, oneBuild); oneBuild <= inStep || strings.Contains(stored, `state="`) {
+		t.Fatalf("the first write on one build left a1's row at version %d, holding\n%s\nwant a version past %d whose ask block holds none of the server's attributes", oneBuild, stored, inStep)
+	}
+	requireAtOpened("after the first write on one build took them out,")
+}
+
+// A decision's words and version are read past where the block index stands. A document indexed
+// at its first version and owed its index since reads the newest version's words, and the version
+// that wrote them, off the versions' own markdown; a reading written under it in a later owed
+// version moves neither; and once one pass of the block-index reconciliation indexes the newest
+// version, and records the decision's whole text as changed there, the walk still reads the
+// version between, which that pass covered without recording, as the one that changed its words.
+// A document no pass ever indexed reads its newest version's words too, not those of the version
+// that first wrote its node.
+func TestADecisionsWordsAndVersionAreReadPastWhereTheBlockIndexStands(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	ctx := context.Background()
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", "A spec.\n")
+	const before, after = "The lag decides one way.", "The lag decides another way."
+	document := func(items int, words, reading string) string {
+		var body strings.Builder
+		for range items {
+			body.WriteString("- x\n")
+		}
+		if reading == "" {
+			body.WriteString("\n:::decision{#d1}\n" + words + "\n:::\n")
+		} else {
+			body.WriteString("\n::::decision{#d1}\n" + words + "\n\n:::reading{#g1}\n" + reading + "\n:::\n::::\n")
+		}
+		return body.String()
+	}
+	read := func(what string, doc decisionDocument, words string, version int) {
+		t.Helper()
+		entry := requireEntry(t, readEntries(t, handler, issue.Key), what, refs.BlockNodeKind+":"+doc.address("d1"))
+		if want := versionCreatedAt(t, database, doc.id, version); !strings.Contains(entry.Text, words) ||
+			entry.ChangedVersion != version || entry.ChangedAt == nil || !entry.ChangedAt.Equal(want) {
+			t.Errorf("%s: the decision reads %q at changed_version %d at %v, want its words %q, changed in version %d at %v",
+				what, entry.Text, entry.ChangedVersion, entry.ChangedAt, words, version, want)
+		}
+	}
+
+	// Indexed at its first version by its own write, then owed.
+	agentUploadAs(t, handler, issue.Key, "lag.md", document(itemsUnderTheBlockBound-8, before, ""), nil)
+	lag := readDecisionDocument(t, database, issue.Key, "lag-md")
+	if indexed := blockIndexVersion(t, database, lag.id); indexed == nil || *indexed != 1 {
+		t.Fatalf("the first version of lag.md is indexed at %v, want 1, by its own write", indexed)
+	}
+	agentUploadAs(t, handler, issue.Key, "lag.md", document(itemsOverTheBlockBound, after, ""), nil)
+	if indexed := blockIndexVersion(t, database, lag.id); indexed != nil {
+		t.Fatalf("the second version of lag.md left its blocks indexed at %d, want them owed", *indexed)
+	}
+	read("a document owed its index since its first version", lag, after, 2)
+	agentUploadAs(t, handler, issue.Key, "lag.md", document(itemsOverTheBlockBound, after, "The agent reads it the other way."), nil)
+	read("a reading written in an owed version", lag, after, 2)
+	if _, err := deps.Docs.(*docs.Service).ReconcileBlockIndex(ctx, docs.BlockIndexCursors{}, nil); err != nil {
+		t.Fatalf("one pass of the block-index reconciliation: %v", err)
+	}
+	requireIndexedAt(t, database, lag.id, 3)
+	if row := rowChangedVersion(t, database, lag, "d1"); row != 3 {
+		t.Fatalf("the pass recorded d1's text as changed in version %d, want 3, where the reading made it differ from version 2", row)
+	}
+	read("a pass that indexed versions 2 and 3 at once", lag, after, 2)
+
+	// Never indexed: the node's first version and the newest differ.
+	agentUploadAs(t, handler, issue.Key, "heavy.md", document(itemsOverTheBlockBound, before, ""), nil)
+	agentUploadAs(t, handler, issue.Key, "heavy.md", document(itemsOverTheBlockBound, after, ""), nil)
+	heavy := readDecisionDocument(t, database, issue.Key, "heavy-md")
+	if indexed := blockIndexVersion(t, database, heavy.id); indexed != nil {
+		t.Fatalf("heavy.md is indexed at %d, want it owed since its first version", *indexed)
+	}
+	read("a document no pass ever indexed", heavy, after, 2)
+}
+
+// An answered ask whose block left its document keeps its row, which still names that document,
+// and its entry names no document: no block of it holds the ask.
+func TestAnAnsweredAskWhoseBlockLeftItsDocumentNamesNoDocument(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	documents := deps.Docs.(*docs.Service)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", "A spec.\n")
+	uploadAs(t, handler, issue.Key, "asks.md", ":::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n\nOther.\n", "alice")
+	settleIssue(t, documents, issue.Key)
+	askID := blockAskID(t, handler, issue.Key, "a1")
+	answerDecisionBlock(t, handler, askID, "bob", []string{"REST"}, "Plain HTTP until a client streams.", nil)
+	asks := readDecisionDocument(t, database, issue.Key, "asks-md")
+	if held := requireEntry(t, readEntries(t, handler, issue.Key), "the answered ask", graphstore.KindAsk+":"+askID); held.Document == nil ||
+		held.Document.Block != asks.address("a1") {
+		t.Fatalf("the answered ask names the place %s while its block stands, want %s", entryJSON(t, held.Document), asks.address("a1"))
+	}
+	uploadAs(t, handler, issue.Key, "asks.md", "Other.\n", "alice")
+	settleIssue(t, documents, issue.Key)
+	var rowDocument *string
+	if err := database.Pool.QueryRow(context.Background(), `select block_artifact_id::text from asks where id = $1::uuid`, askID).Scan(&rowDocument); err != nil ||
+		rowDocument == nil || *rowDocument != asks.id {
+		t.Fatalf("the ask's row names the document %v (%v), want asks.md, %s, whose block it left", rowDocument, err, asks.id)
+	}
+	left := requireEntry(t, readEntries(t, handler, issue.Key), "the answered ask", graphstore.KindAsk+":"+askID)
+	if left.Document != nil || left.AnswerState == nil || *left.AnswerState != "answered" {
+		t.Errorf("the answered ask whose block left asks.md reads %s, want it answered and naming no document", entryJSON(t, left))
+	}
+}
+
+// Above the deferral bound no block index runs in the write, and the typed-node pass states each
+// decision and reading of the document that the version no longer holds gone in that write's own
+// transaction: a version that removes a decision and the reading under another leaves both out
+// of the Decisions read, and one that holds no typed block at all leaves the last decision out,
+// before any block-index reconciliation.
+func TestADecisionADeferredVersionRemovesIsGoneBeforeTheBlockIndexRuns(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	ctx := context.Background()
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", "A spec.\n")
+	big := func(blocks string) string {
+		var body strings.Builder
+		for range itemsOverTheBlockBound {
+			body.WriteString("- x\n")
+		}
+		return body.String() + "\n" + blocks
+	}
+	agentUploadAs(t, handler, issue.Key, "big.md", big("::::decision{#d1}\nKeep one.\n\n:::reading{#g1}\nThe agent reads it.\n:::\n::::\n\n"+
+		":::decision{#d2}\nDrop one.\n:::\n"), nil)
+	doc := readDecisionDocument(t, database, issue.Key, "big-md")
+	d1, d2, g1 := refs.BlockNodeKind+":"+doc.address("d1"), refs.BlockNodeKind+":"+doc.address("d2"), doc.address("g1")
+	entries := readEntries(t, handler, issue.Key)
+	if first := requireEntry(t, entries, "the first decision", d1); !slices.Equal(readingsOf(first), []string{g1 + "<-" + graphstore.KindSession + ":" + decidingSession}) {
+		t.Fatalf("the first decision answers the readings %v, want g1", readingsOf(first))
+	}
+	requireEntry(t, entries, "the second decision", d2)
+	requireState := func(what, address, want string) {
+		t.Helper()
+		node, held, err := graphstore.ReadNode(ctx, database.Pool, refs.BlockNodeKind, address)
+		if err != nil || !held || node.State != want {
+			t.Errorf("%s: the node %s is held %t in the state %q (%v), want %s", what, address, held, node.State, err, want)
+		}
+	}
+	notListed := func(what, node string) {
+		t.Helper()
+		if entry, listed := entriesByNode(readEntries(t, handler, issue.Key))[node]; listed {
+			t.Errorf("%s: the Decisions read still lists %s", what, entryJSON(t, entry))
+		}
+	}
+
+	agentUploadAs(t, handler, issue.Key, "big.md", big(":::decision{#d1}\nKeep one.\n:::\n"), nil)
+	if indexed := blockIndexVersion(t, database, doc.id); indexed != nil {
+		t.Fatalf("big.md is indexed at %d, want it owed: no block index runs past the bound", *indexed)
+	}
+	requireState("the version that removed d2", doc.address("d2"), graphstore.StateGone)
+	requireState("the version that removed g1", g1, graphstore.StateGone)
+	requireState("the version that kept d1", doc.address("d1"), graphstore.StateLive)
+	notListed("the version that removed d2", d2)
+	if kept := requireEntry(t, readEntries(t, handler, issue.Key), "the kept decision", d1); len(kept.Readings) != 0 {
+		t.Errorf("the kept decision answers the readings %v after the version that removed g1, want none", readingsOf(kept))
+	}
+
+	agentUploadAs(t, handler, issue.Key, "big.md", big("A paragraph and no decision.\n"), nil)
+	if indexed := blockIndexVersion(t, database, doc.id); indexed != nil {
+		t.Fatalf("big.md is indexed at %d, want it owed", *indexed)
+	}
+	requireState("the version that holds no typed block", doc.address("d1"), graphstore.StateGone)
+	notListed("the version that holds no typed block", d1)
 }

@@ -21,11 +21,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -63,10 +65,9 @@ func TextSum(text string) string {
 //   - Text, its words, and TextSHA256, their sum (TextSum). An agent's words are the decision's
 //     own (refs.DecisionWords), read off the block's text as the block index recorded it last
 //     (document_block_texts), so a reading it closes with is none of them. A decision whose
-//     document still owes its block index holds no such row: its words are read off the
-//     version that wrote its node, the version event its node's source_event names. A person's
-//     words are the ask's question, from its row: the answer is the ask node's, and no other
-//     field restates it.
+//     document owes its block index is read off the document's newest version, whose markdown
+//     holds it as it stands (walker.changed). A person's words are the ask's question, from its
+//     row: the answer is the ask node's, and no other field restates it.
 //   - Kind, `person` for an ask and `agent` for a decision; Heading, the ask's question or the
 //     decision's first paragraph; Ref, the node's own address; Asks, the ask an agent's decision
 //     settles (from_ask) or the ask itself; Unsure, true where its uncertainty is `high`.
@@ -74,9 +75,13 @@ func TextSum(text string) string {
 //     kept_text_sum value (dispatch://INFRA-1150 R2), beside decision_keeps' changed_version,
 //     and waiting_review true for an agent's decision unless it is replaced or the kept sum is its
 //     sum as it stands.
-//   - ChangedVersion, the decision node's own document_blocks.changed_version (an ask's, its
-//     block's row), and ChangedAt, that version's created_at; a decision whose document still
-//     owes its block index answers the version that wrote its node.
+//   - ChangedVersion, the version that last changed the decision's own words (refs.DecisionWords),
+//     which a reading added, changed or removed under it does not move (dispatch://INFRA-1150
+//     R11, at spec version 40): the block's document_blocks.changed_version, walked back over its
+//     stored texts while the words' sum is unchanged (an ask's, its block's row); ChangedAt is that
+//     version's created_at. A decision whose document owes its block index is walked over the
+//     markdown of the versions the index has not recorded, newest first (walker.changed), and an
+//     ask's words leave out the server's attributes its markdown carries (ownWords).
 //   - Links, one for each spec node a current `shaped` tuple reaches, FromBlock the node's own
 //     block (the decision's, or the ask's). Event is the tuple's
 //     source_event and CreatedAt its at; TextChangedEvent is the event that wrote the version the
@@ -85,9 +90,9 @@ func TextSum(text string) string {
 //     written: by the two events where both are held, else by the database's clock (R5). None of
 //     the three computed members is stored.
 //
-// A node whose stored value does not parse - an uncertainty or a replaced outside its type, a
-// version number past a 32-bit integer, words that do not read back - is left out and logged,
-// and the read goes on with the others. TextTree is left for the caller's own reader.
+// A node whose stored value does not parse - an uncertainty or a replaced outside its type, or
+// words that do not read back - is left out and logged, and the read goes on with the others. A
+// failure of the store fails the read. TextTree is left for the caller's own reader.
 func Decisions(ctx context.Context, q graphstore.Queryer, who model.Actor, nodes []Node) ([]model.Decision, error) {
 	decisions := []model.Decision{}
 	if len(nodes) == 0 {
@@ -109,12 +114,16 @@ func Decisions(ctx context.Context, q graphstore.Queryer, who model.Actor, nodes
 	if err != nil {
 		return nil, err
 	}
+	versions := &walker{q: q, versions: map[versionKey]versionRead{}}
 	for index := range nodes {
 		node, found := held[index]
 		if !found {
 			continue
 		}
-		decision, err := node.decision(facts[index], links[index])
+		decision, err := node.decision(ctx, versions, facts[index], links[index])
+		if versions.err != nil {
+			return nil, versions.err
+		}
 		if err != nil {
 			slog.Warn("dispatch: a decision whose stored value does not parse is left out of the read",
 				"kind", node.kind, "node", node.id, "err", err)
@@ -126,9 +135,10 @@ func Decisions(ctx context.Context, q graphstore.Queryer, who model.Actor, nodes
 }
 
 // heldNode is what the store holds of one node Decisions reads: the node row, the document that
-// holds its block, an ask's row, its block's row and the texts the block index recorded of it,
-// its Keep's version, and, for a block no document_blocks row holds, the version the node's
-// source_event names.
+// holds its block, an ask's row, its Keep's version, and what tells the version its words last
+// changed in (walker.changed): its block's document_blocks row, every text the block index
+// recorded of the block, the versions of the document that index recorded, the document's newest
+// version, and whether the document owes its block index.
 type heldNode struct {
 	kind, id, supertag, state string
 
@@ -140,47 +150,45 @@ type heldNode struct {
 	blockID                                string
 	rowVersion                             *int
 	texts                                  []storedText
+	indexed                                []int32
+	latest                                 int
+	owed                                   bool
 	keptVersion                            *int
-	writtenNumber                          *string
-	writtenVersion                         *int
-	writtenAt                              *time.Time
-	writtenMarkdown                        *string
 }
 
 // nodesRead reads each named node, with the document holding its block and that block's rows,
-// in one statement, for the person or session bound at $3. A block node's document is the one
-// whose ref_key opens its address
-// (a ref_key holds no '#'), and an ask's the document holding its block (asks.block_artifact_id).
-// The block's texts are every text the block index recorded of it up to its row's changed version
-// (document_block_texts), newest first, each beside its version's created_at. The fallback
-// version is read only for a block node no document_blocks row holds, off the event its
-// source_event names: the event's own version number for an artifact.version, and 1 for the
-// artifact.created or issue.created that wrote a document's first version. That number is
-// answered as the event's text, so one past a 32-bit integer is the read's to refuse by node
-// rather than the statement's to fail on.
+// in one statement, for the person or session bound at $3, each table read by its own key. A
+// block node's document is the one whose ref_key opens its address (a ref_key holds no '#'), and
+// an ask's the document holding its block (asks.block_artifact_id). The block's texts are every
+// text the block index recorded of it (document_block_texts), newest first, each beside its
+// version's created_at; the document's indexed versions are document_indexed_versions', newest
+// first; and the document owes its block index where document_block_versions holds no version.
 func nodesRead() string {
 	return `
 	select w.n, g.kind, g.id, g.supertag, g.state,
 	       doc.id is not null, coalesce(doc.id::text, ''), coalesce(doc.ref_key, ''), coalesce(doc.slug, ''),
 	       coalesce(doc.kind, ''), doc.issue_key, doc.project_key, doc.session_id, coalesce(doc.is_primary, false),
-	       q.question, q.issue_key,
-	       coalesce(row.block_id, case when g.kind = '` + graphstore.KindAsk + `' then q.block_id
-	                                   when doc.id is not null then substr(g.id, length(doc.ref_key) + 2) end, ''),
+	       q.question, q.issue_key, coalesce(place.block_id, ''),
 	       row.changed_version,
 	       (select json_agg(json_build_object('version', x.version, 'text', x.text, 'at', v.created_at) order by x.version desc)
 	        from document_block_texts x
 	        left join artifact_versions v on v.artifact_id = x.artifact_id and v.number = x.version
-	        where x.artifact_id = row.artifact_id and x.block_id = row.block_id and x.version <= row.changed_version),
+	        where x.artifact_id = doc.id and x.block_id = place.block_id),
+	       (select array_agg(i.version order by i.version desc) from document_indexed_versions i where i.artifact_id = doc.id),
+	       coalesce((select max(v.number) from artifact_versions v where v.artifact_id = doc.id), 0),
+	       doc.id is not null and not exists (
+	         select 1 from document_block_versions b where b.artifact_id = doc.id and b.version is not null),
 	       (select k.changed_version from decision_keeps k
-	        where g.kind = '` + refs.BlockNodeKind + `' and k.artifact_id = doc.id
-	          and k.block_id = coalesce(row.block_id, substr(g.id, length(doc.ref_key) + 2))),
-	       written_number.number, written.number, written.created_at, written.markdown
+	        where g.kind = '` + refs.BlockNodeKind + `' and k.artifact_id = doc.id and k.block_id = place.block_id)
 	from unnest($1::text[], $2::text[]) with ordinality as w (kind, id, n)
 	join graph_nodes g on g.kind = w.kind and g.id = w.id and ` + refs.VisibleRow("g", "$3") + `
 	left join asks q on g.kind = '` + graphstore.KindAsk + `'
 		and q.id = case when g.id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then g.id::uuid end
-	left join artifacts doc on doc.id = case when g.kind = '` + graphstore.KindAsk + `' then q.block_artifact_id end
-		or doc.ref_key = case when g.kind = '` + refs.BlockNodeKind + `' then split_part(g.id, '#', 1) end
+	left join lateral (
+		select a.* from artifacts a where g.kind = '` + graphstore.KindAsk + `' and a.id = q.block_artifact_id
+		union all
+		select a.* from artifacts a where g.kind = '` + refs.BlockNodeKind + `' and a.ref_key = split_part(g.id, '#', 1)
+	) doc on true
 	left join lateral (
 		select b.artifact_id, b.block_id, b.changed_version from document_blocks b
 		where g.kind = '` + refs.BlockNodeKind + `' and b.node_kind = '` + refs.BlockNodeKind + `' and b.node_address = g.id
@@ -189,14 +197,9 @@ func nodesRead() string {
 		where g.kind = '` + graphstore.KindAsk + `' and b.artifact_id = q.block_artifact_id and b.block_id = q.block_id
 	) row on true
 	left join lateral (
-		select case when e.type = 'artifact.version' then e.payload->'version'->>'number' else '1' end as number
-		from events e
-		where row.block_id is null and g.kind = '` + refs.BlockNodeKind + `' and doc.id is not null and e.id = g.source_event
-		  and (e.type = 'artifact.version' and e.payload->>'artifact_id' = doc.id::text
-		       or e.type = 'artifact.created' and e.payload->'artifact'->>'id' = doc.id::text
-		       or e.type = 'issue.created' and e.issue_key = doc.issue_key and doc.is_primary)
-	) written_number on true
-	left join artifact_versions written on written.artifact_id = doc.id and written.number::text = written_number.number
+		select coalesce(row.block_id, case when g.kind = '` + graphstore.KindAsk + `' then q.block_id
+		                                   else substr(g.id, length(doc.ref_key) + 2) end) as block_id
+	) place on doc.id is not null
 	order by w.n`
 }
 
@@ -224,7 +227,7 @@ func readNodes(ctx context.Context, q graphstore.Queryer, who model.Actor, kinds
 			&node.document, &node.artifactID, &node.refKey, &node.slug, &node.artifactKind,
 			&node.issueKey, &node.project, &node.session, &node.primary,
 			&node.question, &node.askIssue, &node.blockID, &node.rowVersion, &texts,
-			&node.keptVersion, &node.writtenNumber, &node.writtenVersion, &node.writtenAt, &node.writtenMarkdown); err != nil {
+			&node.indexed, &node.latest, &node.owed, &node.keptVersion); err != nil {
 			return nil, fmt.Errorf("read a decision node: %w", err)
 		}
 		if texts != nil {
@@ -374,8 +377,9 @@ func textChangedAfterTie(link model.DecisionLink) bool {
 }
 
 // decision is node in model.Decision's shape, with the values it holds (facts) and its links, or
-// the error that says which stored value of it does not parse.
-func (node heldNode) decision(facts []fact, links []model.DecisionLink) (model.Decision, error) {
+// the error that says which stored value of it does not parse. Its words and the version they
+// last changed in come from one walk (walker.changed).
+func (node heldNode) decision(ctx context.Context, versions *walker, facts []fact, links []model.DecisionLink) (model.Decision, error) {
 	decision := model.Decision{
 		NodeKind: node.kind, NodeID: node.id,
 		BlockID: node.blockID, Asks: []string{}, Links: links,
@@ -403,18 +407,35 @@ func (node heldNode) decision(facts []fact, links []model.DecisionLink) (model.D
 		case documentRef != "":
 			decision.Ref = documentRef + "/ask/" + node.id
 		}
-		if err := node.readVersion(&decision, askType); err != nil {
+		// An ask whose block does not read back is still an ask, which settlement flags
+		// `invalid`: its block's row's own version is the one it answers.
+		changed, err := versions.changed(ctx, node, askType)
+		switch {
+		case err != nil && !errors.Is(err, errUnreadable):
 			return model.Decision{}, err
+		case err != nil && node.rowVersion != nil:
+			decision.ChangedVersion = *node.rowVersion
+		case err == nil:
+			decision.ChangedVersion, decision.ChangedAt = changed.version, changed.at
 		}
 	case node.kind == refs.BlockNodeKind && node.supertag == refs.DecisionSupertag && node.state == graphstore.StateLive:
 		decision.Kind = "agent"
 		decision.Ref = refs.BlockRef(documentRef, node.blockID)
-		if err := node.readWords(&decision); err != nil {
+		changed, err := versions.changed(ctx, node, refs.DecisionSupertag)
+		if err != nil {
 			return model.Decision{}, err
 		}
-		if err := node.readVersion(&decision, refs.DecisionSupertag); err != nil {
-			return model.Decision{}, err
+		if changed.block != nil {
+			decision.Text = changed.words
+			content, _ := pmdoc.TypedContent(changed.block)
+			for _, child := range content {
+				if heading := plainText(child); heading != "" {
+					decision.Heading = heading
+					break
+				}
+			}
 		}
+		decision.ChangedVersion, decision.ChangedAt = changed.version, changed.at
 	default:
 		return model.Decision{}, fmt.Errorf("the node is no decision: kind %s, supertag %s, state %s", node.kind, node.supertag, node.state)
 	}
@@ -468,43 +489,207 @@ func (node heldNode) decision(facts []fact, links []model.DecisionLink) (model.D
 // and none of the readings it closes with - say which version last changed the ask.
 const askType = "ask"
 
-// readWords reads an agent's decision's words and heading into decision: off the block's text as
-// the block index recorded it last, else, where its document still owes its block index, off the
-// markdown of the version that wrote its node. Words neither holds are none, and words that do not
-// read back as the decision are an error.
-func (node heldNode) readWords(decision *model.Decision) error {
-	markdown := ""
-	switch {
-	case len(node.texts) > 0 && node.texts[0].Text != nil:
-		markdown = *node.texts[0].Text
-	case node.rowVersion == nil && node.writtenMarkdown != nil:
-		markdown = *node.writtenMarkdown
-	default:
-		return nil
-	}
-	words, block, err := wordsOf(markdown, refs.DecisionSupertag, node.blockID)
-	if err != nil {
-		return err
-	}
-	decision.Text = words
-	content, _ := pmdoc.TypedContent(block)
-	for _, child := range content {
-		if heading := plainText(child); heading != "" {
-			decision.Heading = heading
-			break
-		}
-	}
-	return nil
+// errUnreadable is the error of a block whose text as it stands does not read back as its type.
+var errUnreadable = errors.New("the text does not read back")
+
+// walker reads the versions of the documents one call of Decisions walks, each version read and
+// parsed once however many of its blocks the call reads, through the call's own Queryer, so a
+// caller holding one transaction reads one snapshot. err is the first failure of the store,
+// which ends the call.
+type walker struct {
+	q        graphstore.Queryer
+	versions map[versionKey]versionRead
+	err      error
 }
 
-// wordsOf is the own words of the block of type typ and id blockID that markdown holds - the
-// block rendered alone with the readings it closes with left out (refs.DecisionWords) - and that
-// block, or the error that says markdown does not read back as one.
-func wordsOf(markdown, typ, blockID string) (string, *pmdoc.Node, error) {
-	tree, err := pmdoc.ParseRendering(markdown)
-	if err != nil {
-		return "", nil, fmt.Errorf("the text of %s %q does not read back: %w", typ, blockID, err)
+// versionKey names one version of one document.
+type versionKey struct {
+	artifactID string
+	number     int
+}
+
+// versionRead is one version as the walk reads it: its tree, nil where the document holds no
+// such version, holds no markdown at it or where that markdown does not read back (unreadable),
+// and when the version was written.
+type versionRead struct {
+	tree       *pmdoc.Node
+	at         *time.Time
+	unreadable bool
+}
+
+// version is version number of document artifactID, read once.
+func (w *walker) version(ctx context.Context, artifactID string, number int) versionRead {
+	key := versionKey{artifactID: artifactID, number: number}
+	if read, held := w.versions[key]; held || w.err != nil {
+		return read
 	}
+	var markdown *string
+	var at time.Time
+	read := versionRead{}
+	err := w.q.QueryRow(ctx, `select markdown, created_at from artifact_versions where artifact_id = $1::uuid and number = $2`,
+		artifactID, number).Scan(&markdown, &at)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
+		w.err = fmt.Errorf("read version %d of %s: %w", number, artifactID, err)
+		return read
+	default:
+		read.at = &at
+		if markdown != nil {
+			if tree, err := pmdoc.ParseRendering(*markdown); err == nil {
+				read.tree = tree
+			} else {
+				read.unreadable = true
+			}
+		}
+	}
+	w.versions[key] = read
+	return read
+}
+
+// changedWords is what the walk answers of a block: its own words as it stands, the block they
+// were read off (nil where the document holds no such block now), and the version those words
+// were first held in with that version's time.
+type changedWords struct {
+	words   string
+	block   *pmdoc.Node
+	version int
+	at      *time.Time
+}
+
+// changed is the walk that answers node's block - a decision, or the ask block of an ask (typ) -
+// as it stands: its own words (ownWords) and the version of its document that last changed them,
+// which a reading written, edited or removed under it, and for an ask a write of the server's
+// attributes alone, never moves (dispatch://INFRA-1150 R2 and R11).
+//
+// It reads the document as the block index left it and as it stands past that index. A document
+// that owes its block index (document_block_versions holds no version) stands at its newest
+// version, whose markdown gives the words, and each version the index has not recorded
+// (document_indexed_versions) is read off its own markdown, newest first, as the index itself
+// reads the versions it did not record (refs' textSince). A version the index recorded holds the
+// block's text at its latest document_block_texts row at or before it. A row stands from its
+// version on, so the walk steps from row to row, and reads the unrecorded versions just below
+// each row's version off their markdown, which a pass that indexed several versions at once
+// covered without recording: their block can hold the row's words with another text around them.
+// The walk goes back while the words read the same, and answers the earliest version it reached.
+//
+// A block whose text as it stands does not read back is errUnreadable; an earlier version that
+// does not, or that holds no such block, ends the walk there.
+func (w *walker) changed(ctx context.Context, node heldNode, typ string) (changedWords, error) {
+	var answer changedWords
+	if !node.document || node.latest == 0 {
+		return answer, nil
+	}
+	// The versions the block index recorded come newest first.
+	lastRecorded := 0
+	if len(node.indexed) > 0 {
+		lastRecorded = int(node.indexed[0])
+	}
+	// rowAt is the index of the latest row at or before version n, or -1.
+	rowAt := func(n int) int {
+		for index, text := range node.texts {
+			if text.Version <= n {
+				return index
+			}
+		}
+		return -1
+	}
+	// fromMarkdown is the block's words at version n read off n's markdown, and whether n holds
+	// the block.
+	fromMarkdown := func(n int) (string, *pmdoc.Node, bool, *time.Time, bool) {
+		read := w.version(ctx, node.artifactID, n)
+		if read.tree == nil {
+			return "", nil, false, read.at, read.unreadable
+		}
+		words, block, held := blockWords(read.tree, typ, node.blockID)
+		return words, block, held, read.at, false
+	}
+	// fromRow is the block's words in the text row records, and whether it holds the block.
+	fromRow := func(row int) (string, *pmdoc.Node, bool, bool) {
+		text := node.texts[row].Text
+		if text == nil {
+			return "", nil, false, false
+		}
+		tree, err := pmdoc.ParseRendering(*text)
+		if err != nil {
+			return "", nil, false, true
+		}
+		words, block, held := blockWords(tree, typ, node.blockID)
+		return words, block, held, false
+	}
+	// back walks the unrecorded versions below version, down to below, off their markdown, and
+	// reports whether the words still read the same at the last of them.
+	back := func(version, below int) bool {
+		for n := version - 1; n > below; n-- {
+			words, _, held, at, _ := fromMarkdown(n)
+			if w.err != nil || !held || words != answer.words {
+				return false
+			}
+			answer.version, answer.at = n, at
+		}
+		return true
+	}
+	row := -1
+	if node.owed {
+		words, block, held, at, unreadable := fromMarkdown(node.latest)
+		if unreadable {
+			return answer, fmt.Errorf("version %d of %s %q: %w", node.latest, typ, node.blockID, errUnreadable)
+		}
+		if w.err != nil || !held {
+			return answer, w.err
+		}
+		answer = changedWords{words: words, block: block, version: node.latest, at: at}
+		if !back(node.latest, lastRecorded) || lastRecorded == 0 {
+			return answer, w.err
+		}
+		if row = rowAt(lastRecorded); row < 0 {
+			return answer, nil
+		}
+		if words, _, held, _ := fromRow(row); !held || words != answer.words {
+			return answer, nil
+		}
+		answer.version, answer.at = node.texts[row].Version, node.texts[row].At
+	} else {
+		if len(node.texts) == 0 {
+			return answer, nil
+		}
+		row = 0
+		words, block, held, unreadable := fromRow(row)
+		if unreadable {
+			return answer, fmt.Errorf("the recorded text of %s %q: %w", typ, node.blockID, errUnreadable)
+		}
+		if !held {
+			return answer, nil
+		}
+		answer = changedWords{words: words, block: block, version: node.texts[row].Version, at: node.texts[row].At}
+	}
+	for {
+		version := node.texts[row].Version
+		below := 0
+		for _, recordedVersion := range node.indexed {
+			if int(recordedVersion) < version {
+				below = int(recordedVersion)
+				break
+			}
+		}
+		if !back(version, below) || below == 0 {
+			return answer, w.err
+		}
+		next := rowAt(below)
+		if next < 0 {
+			return answer, nil
+		}
+		if words, _, held, _ := fromRow(next); !held || words != answer.words {
+			return answer, nil
+		}
+		answer.version, answer.at = node.texts[next].Version, node.texts[next].At
+		row = next
+	}
+}
+
+// blockWords is the own words of the block of type typ and id blockID that tree holds (ownWords),
+// that block, and whether tree holds it and its words render.
+func blockWords(tree *pmdoc.Node, typ, blockID string) (string, *pmdoc.Node, bool) {
 	var found *pmdoc.Node
 	pmdoc.Walk(tree, func(block *pmdoc.Node) bool {
 		if id, _ := block.Attrs[pmdoc.BlockIDAttr].(string); block.Type == typ && strings.ReplaceAll(id, "\x00", "\uFFFD") == blockID {
@@ -513,61 +698,34 @@ func wordsOf(markdown, typ, blockID string) (string, *pmdoc.Node, error) {
 		return found == nil
 	})
 	if found == nil {
-		return "", nil, fmt.Errorf("the text of %s %q holds no such block", typ, blockID)
+		return "", nil, false
 	}
-	words, err := refs.DecisionWords(found)
+	words, err := ownWords(found)
 	if err != nil {
-		return "", nil, fmt.Errorf("render the words of %s %q: %w", typ, blockID, err)
+		return "", nil, false
 	}
-	return words, found, nil
+	return words, found, true
 }
 
-// readVersion reads the version decision last changed its own words in, and when that version
-// was written. The block's document_blocks row names the version its whole text last changed in,
-// and a block's text holds the readings it closes with, so a reading written, edited or removed
-// moves that version and leaves the words as they were (R2: the decision's words, its text sum
-// and its Keep are the same whether readings hang under it or not). So the read starts at the
-// row's version and walks back over the texts the block index recorded of the block while the
-// words read the same, and answers the earliest version of that run: the version whose text
-// first held the words the block holds now. A block of type typ is a decision, or an ask block,
-// whose own words are its question and its options. A decision whose document still owes its
-// block index answers the version that wrote its node. A version number past a 32-bit integer is
-// no version a document holds, and an error.
-func (node heldNode) readVersion(decision *model.Decision, typ string) error {
-	switch {
-	case node.rowVersion != nil:
-		decision.ChangedVersion = *node.rowVersion
-		if len(node.texts) == 0 || node.texts[0].Text == nil {
-			return nil
+// ownWords is a typed block's own words: the block rendered alone with the readings it closes
+// with left out (refs.DecisionWords) and with none of the server's attributes its markdown
+// carries, read off the block schema as docs' storedAskAttributes reads them - an ask block's
+// state, answered_by, answered_at, selected, answer, copied_from and copied_from_document - so a
+// version that writes or drops those alone, as the roll window and the first write on one build
+// do, changes no ask's words. A decision's markdown carries none of its server attributes
+// (decided_by, kept_by and kept_text_sum are `markdown: false`), so its words are
+// refs.DecisionWords' as they stand, the words a Keep sums.
+func ownWords(block *pmdoc.Node) (string, error) {
+	attributes, _ := pmdoc.BlockTypeAttributes(block.Type)
+	own := *block
+	own.Attrs = make(pmdoc.Attrs, len(block.Attrs))
+	for name, value := range block.Attrs {
+		if attribute := attributes.Get(name); attribute.Server && attribute.InMarkdown() {
+			continue
 		}
-		changed := node.texts[0]
-		decision.ChangedAt = changed.At
-		// An ask block the strict read refuses is still an ask, which settlement flags `invalid`;
-		// its row's own version is the one it answers. A decision's text read back already
-		// (readWords), so it never stops here.
-		words, _, err := wordsOf(*changed.Text, typ, node.blockID)
-		if err != nil {
-			decision.ChangedVersion = changed.Version
-			return nil
-		}
-		for _, earlier := range node.texts[1:] {
-			if earlier.Text == nil {
-				break
-			}
-			if held, _, err := wordsOf(*earlier.Text, typ, node.blockID); err != nil || held != words {
-				break
-			}
-			changed = earlier
-		}
-		decision.ChangedVersion, decision.ChangedAt = changed.Version, changed.At
-	case node.writtenVersion != nil:
-		decision.ChangedVersion, decision.ChangedAt = *node.writtenVersion, node.writtenAt
-	case node.writtenNumber != nil:
-		if _, err := strconv.ParseInt(*node.writtenNumber, 10, 32); err != nil {
-			return fmt.Errorf("the version that wrote the node, %q, is no version a document holds: %w", *node.writtenNumber, err)
-		}
+		own.Attrs[name] = value
 	}
-	return nil
+	return refs.DecisionWords(&own)
 }
 
 // plainText is the text node holds, its children's included, with its lines joined by a space.

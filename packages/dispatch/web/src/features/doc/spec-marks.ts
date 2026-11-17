@@ -49,12 +49,21 @@ export function shapedNodeChanged(link: DecisionLink): boolean {
   return event !== null && changed !== null ? changed > event : link.stale;
 }
 
+/** Whether an entry of the Decisions read is a decision: an agent's, or an ask a person answered.
+ *  An open ask is a question, and a declined one decided nothing, so neither is drawn beside the
+ *  spec nodes its `shaped` tuples reach, as the old `decisions` member never held them. */
+export function isDecisionEntry(entry: NonNullable<IssueDecisions["entries"]>[number]): boolean {
+  return entry.kind === "agent" || entry.answer_state === "answered";
+}
+
 /** Every spec block a decision shaped whose text changed after the decision tied it, each once,
- *  in the order the read names them: the `shaped` links of the Decisions read's entries. With
- *  `refKey`, only the blocks of that document, whose node ids open `<refKey>#`. */
+ *  in the order the read names them: the `shaped` links of the Decisions read's decisions
+ *  (isDecisionEntry). With `refKey`, only the blocks of that document, whose node ids open
+ *  `<refKey>#`. */
 export function staleSpecBlocks(decisions: IssueDecisions | undefined, refKey?: string): string[] {
   const stale: string[] = [];
   for (const entry of decisions?.entries ?? []) {
+    if (!isDecisionEntry(entry)) continue;
     for (const link of entry.shaped ?? []) {
       const blockId = link.to.block_id;
       if (refKey !== undefined && !link.to.id.startsWith(`${refKey}#`)) continue;

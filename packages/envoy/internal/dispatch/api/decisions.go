@@ -327,11 +327,11 @@ type decisionReading struct {
 }
 
 // entryFactKinds are the values and relations of an entry's node the entries read takes itself;
-// the rest are decisionread's.
+// the rest are decisionread's, kept_by and kept_text_sum among them (decisionEntries).
 var entryFactKinds = []string{
 	graphstore.TupleAnswerState, graphstore.TupleAnswer, graphstore.TupleSelected, graphstore.TupleAnsweredAt,
 	graphstore.TupleResolution, graphstore.TupleAnsweredBy, graphstore.TupleDecidedBy,
-	refs.ValueUncertainty, refs.ValueUncertaintyReason, refs.TupleKeptBy, refs.ValueKeptTextSum,
+	refs.ValueUncertainty, refs.ValueUncertaintyReason,
 }
 
 // decisionEntriesRead is the statement decisionEntries reads an issue's entries with, bound to
@@ -388,6 +388,13 @@ func decisionEntriesRead() string {
 		select m.kind, m.id, q.question, q.options, q.urgency, q.multiple, q.created_at, coalesce(q.block_id, ''),
 		       doc.id is not null, coalesce(doc.id::text, ''), coalesce(doc.ref_key, ''), coalesce(doc.slug, ''),
 		       coalesce(doc.kind, ''), doc.issue_key, coalesce(doc.project_key, ''), doc.session_id, coalesce(doc.is_primary, false),
+		       doc.id is not null and (
+		         exists (select 1 from document_blocks b
+		                 where m.kind = '` + graphstore.KindAsk + `' and b.artifact_id = doc.id and b.block_id = q.block_id offset 0)
+		         or exists (select 1 from document_blocks b
+		                    where m.kind = '` + refs.BlockNodeKind + `' and b.node_kind = m.kind and b.node_address = m.id offset 0)
+		         or not exists (select 1 from document_block_versions v
+		                        where v.artifact_id = doc.id and v.version is not null offset 0)),
 		       (select coalesce(json_agg(json_build_object('kind', f.kind, 'to_kind', f.to_kind, 'to_id', f.to_id)), '[]'::json)
 		        from (` + graphstore.CurrentTupleRead(
 		`t.kind, t.to_kind, case when t.to_kind = '`+graphstore.KindValue+`' then '' else t.to_id end`,
@@ -431,7 +438,9 @@ func decisionEntriesRead() string {
 
 // decisionEntries is the Decisions read's entries for issue key, as who reads them, in one
 // statement over graph_nodes, graph_tuples and the asks row for an ask's wording, and then
-// decisionread.Decisions over the nodes it found. Its members are the store's:
+// decisionread.Decisions over the nodes it found. Both read in one read-only transaction at
+// repeatable read, so the entries answer one state of the store: a Keep or an answer committed
+// between the two reads is in both or in neither. Its members are the store's:
 //
 //   - each live `ask` node of an ask of kind question (asks.kind) the issue holds, on any of its
 //     documents or on the issue itself. A copy of an answered ask on another document opens no
@@ -441,6 +450,12 @@ func decisionEntriesRead() string {
 //     that document alone (decisionEntriesRead), so a decision of a document that still owes its
 //     block index is listed.
 //
+// An entry names the document that holds its node's block where a document_blocks row holds that
+// block, or where the document owes its block index and no row can say so yet: an answered ask
+// whose block left its document keeps its row, which still names that document, and names none.
+// kept_by and kept_text_sum are the Keep decisionread read (model.Decision's Kept), so they and
+// `kept` are one read of the node.
+//
 // Open asks come first, oldest first, then every other entry by its time: an answer's, else a
 // resolution's, else the version the decision's words last changed in, oldest first. An entry
 // whose stored value does not parse - an answer state or an uncertainty outside its type, a
@@ -448,7 +463,12 @@ func decisionEntriesRead() string {
 // decisionread refuses - is left out and logged, and the read goes on. reader is the answer's
 // own, and each entry registers its text with it once the slice has stopped growing.
 func (s *server) decisionEntries(ctx context.Context, who model.Actor, key string, reader *displayTreeReader) ([]decisionEntry, error) {
-	rows, err := s.deps.Store.Pool.Query(ctx, decisionEntriesRead(), key, refs.VisibilityArg(who), entryFactKinds)
+	tx, err := s.deps.Store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, fmt.Errorf("open the read of the decisions of %s: %w", key, err)
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx, decisionEntriesRead(), key, refs.VisibilityArg(who), entryFactKinds)
 	if err != nil {
 		return nil, fmt.Errorf("read the decisions of %s: %w", key, err)
 	}
@@ -460,19 +480,19 @@ func (s *server) decisionEntries(ctx context.Context, who model.Actor, key strin
 		var multiple *bool
 		var opened *time.Time
 		var askBlock string
-		var document bool
+		var document, holds bool
 		var artifactID, refKey, slug, artifactKind string
 		var project string
 		var issueKey, session *string
 		var primary bool
 		var facts, readings []byte
 		if err := rows.Scan(&entry.Node.Kind, &entry.Node.ID, &question, &options, &urgency, &multiple, &opened, &askBlock,
-			&document, &artifactID, &refKey, &slug, &artifactKind, &issueKey, &project, &session, &primary,
+			&document, &artifactID, &refKey, &slug, &artifactKind, &issueKey, &project, &session, &primary, &holds,
 			&facts, &readings); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("read a decision of %s: %w", key, err)
 		}
-		if document {
+		if document && holds {
 			place := decisionEntryDocument{
 				ArtifactID: artifactID,
 				Ref:        refs.ArtifactRef(issueKey, project, session, slug, artifactKind, primary),
@@ -527,9 +547,12 @@ func (s *server) decisionEntries(ctx context.Context, who model.Actor, key strin
 	for index, entry := range entries {
 		nodes[index] = decisionread.Node{Kind: entry.Node.Kind, ID: entry.Node.ID}
 	}
-	decided, err := decisionread.Decisions(ctx, s.deps.Store.Pool, who, nodes)
+	decided, err := decisionread.Decisions(ctx, tx, who, nodes)
 	if err != nil {
 		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("close the read of the decisions of %s: %w", key, err)
 	}
 	byNode := make(map[decisionEntryNode]model.Decision, len(decided))
 	for _, decision := range decided {
@@ -544,6 +567,10 @@ func (s *server) decisionEntries(ctx context.Context, who model.Actor, key strin
 		}
 		entry.Ref, entry.Text, entry.TextSHA256 = decision.Ref, decision.Text, decision.TextSHA256
 		entry.Replaced, entry.Kept, entry.WaitingReview = decision.Replaced, decision.Kept, decision.WaitingReview
+		if decision.Kept != nil {
+			keptBy, keptSum := decision.Kept.KeptBy, decision.Kept.TextSHA256
+			entry.KeptBy, entry.KeptTextSum = &keptBy, &keptSum
+		}
 		entry.ChangedVersion, entry.ChangedAt, entry.Shaped = decision.ChangedVersion, decision.ChangedAt, decision.Links
 		read = append(read, entry)
 	}
@@ -650,10 +677,6 @@ func (entry *decisionEntry) readFacts(encoded []byte) error {
 			}
 		case refs.ValueUncertaintyReason:
 			entry.UncertaintyReason = &value
-		case refs.TupleKeptBy:
-			entry.KeptBy = &value
-		case refs.ValueKeptTextSum:
-			entry.KeptTextSum = &value
 		}
 	}
 	if entry.Resolution != nil && entry.Resolution.Kind == model.AskResolutionDeclined {

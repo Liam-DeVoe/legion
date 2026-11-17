@@ -815,6 +815,50 @@ const issueDecisions: IssueDecisions = {
   open_questions: [],
 };
 
+/** An ask of the spec in answer state `state` that shaped the spec block `to`: an entry of the
+ *  Decisions read held by the ask's own node, declined where `declined` says so. */
+function askOf(id: string, state: string, to: string, declined = false): DecisionEntry {
+  const answered = state === "answered";
+  return {
+    ...decisionOf(id, [decisionLink(id, to)]),
+    answer: answered ? "Yes." : null,
+    answer_state: state,
+    answered_at: answered ? "2026-10-02T00:00:00Z" : null,
+    answered_by: answered ? "bob" : null,
+    declined,
+    declined_note: declined ? "Not mine to choose." : null,
+    kind: declined ? "declined" : "person",
+    node: { id, kind: "ask" },
+    question: `Question ${id}?`,
+    ref: `dispatch://CORE-1/ask/${id}`,
+    selected: answered ? [] : null,
+    waiting_review: false,
+  };
+}
+
+test("an open and a declined ask are no decision beside the spec, and an answered one is", async () => {
+  const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue({
+    ...issueDecisions,
+    entries: [
+      askOf("open-ask", "open", "p-a"),
+      askOf("declined-ask", "resolved", "p-b", true),
+      askOf("answered-ask", "answered", "p-a"),
+    ],
+  });
+  const view = renderDecisionItems(artifact);
+  try {
+    await waitFor(() =>
+      expect(JSON.parse(screen.getByLabelText("Margin decisions").textContent ?? "")).toEqual({
+        decisions: [["p-a", "answered-ask", false]],
+        items: ["decision:answered-ask:CORE-1/spec#p-a"],
+      })
+    );
+  } finally {
+    view.unmount();
+    getIssueDecisions.mockRestore();
+  }
+});
+
 function DecisionItems({ document }: { document: Artifact }) {
   const { decisions, items } = useMarginItems(
     { key: "CORE-1", kind: "issue" },

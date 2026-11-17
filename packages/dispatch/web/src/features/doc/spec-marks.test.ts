@@ -100,6 +100,28 @@ test("every spec block whose text changed after a decision tied it is stale, eac
   expect(staleSpecBlocks({ ...decisions, entries: [] }, "CORE-1/spec")).toEqual([]);
 });
 
+test("an open and a declined ask mark nothing stale, and an answered one does", () => {
+  const ask = (id: string, state: string, to: string, declined = false): DecisionEntry => ({
+    ...entry(id, [link(to, 12)]),
+    answer_state: state,
+    declined,
+    kind: declined ? "declined" : "person",
+    node: { id, kind: "ask" },
+    question: `Question ${id}?`,
+    ref: `dispatch://CORE-1/ask/${id}`,
+    waiting_review: false,
+  });
+  const asks: IssueDecisions = {
+    ...decisions,
+    entries: [
+      ask("open-ask", "open", "p-open"),
+      ask("declined-ask", "resolved", "p-declined", true),
+      ask("answered-ask", "answered", "p-answered"),
+    ],
+  };
+  expect(staleSpecBlocks(asks, "CORE-1/spec")).toEqual(["p-answered"]);
+});
+
 test("a shaped node changed after the tie when its text's event is later than the tuple's", () => {
   expect(shapedNodeChanged(link("p", 11))).toBe(true);
   expect(shapedNodeChanged(link("p", 10))).toBe(false);

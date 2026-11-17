@@ -19,7 +19,7 @@ import { compareTimestamps } from "../../lib/timestamps";
 import type { ComposerOwner } from "../conversation/composer-model";
 import { rootOf } from "../conversation/conversation-model";
 import type { CarriedBlockIds } from "../conversation/send-request";
-import { issueDecisionsQuery } from "../doc/spec-marks";
+import { isDecisionEntry, issueDecisionsQuery } from "../doc/spec-marks";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import {
   type ConversationPinKind,
@@ -484,10 +484,10 @@ export function useMarginItems(
     () => sortedThreads.filter((thread) => placement.get(thread.key) ?? thread.resolved),
     [placement, sortedThreads]
   );
-  // The decisions that shaped the issue's spec, beside it alone: each entry of the Decisions read
-  // at every spec node its `shaped` tuples reach (a replaced decision shaped nothing the spec says
-  // now), in the spec's order. Read only once that spec is on screen, since the issue page keeps
-  // it mounted under the Conversation.
+  // The decisions that shaped the issue's spec, beside it alone: each decision of the Decisions
+  // read (isDecisionEntry: an open or a declined ask is none) at every spec node its `shaped`
+  // tuples reach (a replaced decision shaped nothing the spec says now), in the spec's order. Read
+  // only once that spec is on screen, since the issue page keeps it mounted under the Conversation.
   const showsDecisions =
     owner?.kind === "issue" && visibleArtifact?.primary === true && documentShown;
   const decisionsView = useQuery(issueDecisionsQuery(issueKey ?? "", showsDecisions));
@@ -495,7 +495,7 @@ export function useMarginItems(
   const decisions = useMemo<DecisionMarginItem[]>(() => {
     if (!showsDecisions) return [];
     const decisionItems = (decisionsView.data?.entries ?? []).flatMap((decision) => {
-      if (decision.replaced) return [];
+      if (decision.replaced || !isDecisionEntry(decision)) return [];
       // The spec nodes this entry shaped, each once: a node of the spec on screen, by its id.
       const nodes = new Map<string, string>();
       for (const link of decision.shaped ?? []) {
