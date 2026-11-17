@@ -330,12 +330,13 @@ const answerSkew = 10 * time.Second
 // claims record holds for the claim the daemon starts the reviewer under (reviewersClaim), in the
 // reviewer's first round as in every later one. It is the one predicate of the reviewer's own
 // review: it says who decides a round (DecidesRound), whose review is the reviewer's answer
-// (reviewersAnswer), and, where a session is recorded, whose review moves the commit the reviewer
-// read (record.PhaseRow.ReviewedHead). With no session recorded - a daemon whose claims predate
-// this, or a reviewer claim with no row - the login decides by itself, as it always has, since
-// there is nothing recorded to tell the sessions apart.
+// (reviewersAnswer), and whose review moves the commit the reviewer read
+// (record.PhaseRow.ReviewedHead). With no session recorded, no review is the reviewer's, since
+// nothing recorded says one is: the outbox makes the reviewer's claim with none, and the claim
+// holds none until the reviewer's agent registers, nor again after its session is forgotten until
+// the next one registers. A review-App review that comes then waits (RoundRefusal.Waits).
 func (e *Engine) byReviewer(review intake.PullRequestReview, reviewerSession string) bool {
-	return e.byReviewApp(review.Author) && (reviewerSession == "" || review.LegionSession() == reviewerSession)
+	return e.byReviewApp(review.Author) && reviewerSession != "" && review.LegionSession() == reviewerSession
 }
 
 // DecidesRound says whether review may decide a review round: it is the reviewer's own review-App
@@ -349,8 +350,10 @@ func (e *Engine) byReviewer(review intake.PullRequestReview, reviewerSession str
 // round as in every later one: it is set aside, not counted as a writer's - the daemon never asks
 // GitHub about the review App's own login (daemon's reviewerCanWrite) - or dropped as a
 // stranger's. It is the half of the whole judgement (RefusesRound) that answers for who wrote a
-// review, and a refusal it leaves stands at every head (RoundRefusal.AtEveryHead): an account's
-// standing and a session's claim are not things the record's next head changes.
+// review. A refusal it leaves stands at every head (RoundRefusal.AtEveryHead), since an account's
+// standing and a session's claim are not things the record's next head changes, save one: a
+// review-App review that comes while the reviewer's claim records no session waits
+// (RoundRefusal.Waits), since the session the claim records later says whose it is.
 func (e *Engine) DecidesRound(review intake.PullRequestReview, reviewerSession string) bool {
 	return e.byReviewer(review, reviewerSession) || review.AuthorCanWrite
 }
@@ -363,28 +366,39 @@ func (e *Engine) DecidesRound(review intake.PullRequestReview, reviewerSession s
 type RoundRefusal struct {
 	// Reason is the whole of why the review must not decide the round, "" when nothing refuses it.
 	Reason string
-	// AtEveryHead is whether the refusal stands whatever head the record comes to hold: who wrote
+	// AtEveryHead is whether the refusal stands whatever the record comes to hold: who wrote
 	// the review (DecidesRound), and a person's review read from GitHub's list, whose commit_id is
 	// GitHub's own and moves with the pull request. A review-App review refused for the head its
 	// footer names is refused at the head the record holds now and no further, since the head the
-	// record holds changes.
+	// record holds changes; so is one that waits (Waits), since the session the reviewer's claim
+	// records changes.
 	AtEveryHead bool
+	// Waits is whether the review App's review is refused only because the reviewer's claim
+	// records no session yet, so that nothing recorded says whether it is the reviewer's own. It
+	// is no decision the round lost, so the reviewer's row keeps nothing of it for the stuck
+	// notice (review), and it does not stand at every head: the next read of the pull request's
+	// reviews (daemon's reviewToApply) judges it again by the session recorded then.
+	Waits bool
 }
 
 // RefusesRound is the whole of why review, one that decides (intake.PullRequestReview.Decides),
 // must not decide pr's round, a RoundRefusal with no reason when nothing refuses it: who wrote it
 // (DecidesRound, with reviewerSession as ReviewerSession reads it), then the head it says it read
-// (refusesRound). Two places judge a review - this engine, for the review a webhook delivers, and
+// (refusesRound). A review-App review judged while reviewerSession is "" waits (RoundRefusal.Waits).
+// Two places judge a review - this engine, for the review a webhook delivers, and
 // the daemon's read of GitHub's list of a pull request's reviews (daemon's reviewToApply), which
 // applies only a review this would take - and both ask this one judgement, so neither judges by a
 // narrower rule than the other, and neither asks a second one to learn how long a refusal stands:
-// the answer carries that (RoundRefusal.AtEveryHead).
+// the answer carries that (RoundRefusal.AtEveryHead, RoundRefusal.Waits).
 func (e *Engine) RefusesRound(review intake.PullRequestReview, pr record.PullRequest, reviewerSession string) RoundRefusal {
 	if !e.DecidesRound(review, reviewerSession) {
-		if e.byReviewApp(review.Author) {
-			return RoundRefusal{Reason: "the review App submitted it from a session that is not the reviewer's", AtEveryHead: true}
+		switch {
+		case !e.byReviewApp(review.Author):
+			return RoundRefusal{Reason: "its author is neither the review App nor an account with write access to the repository", AtEveryHead: true}
+		case reviewerSession == "":
+			return RoundRefusal{Reason: "the reviewer's claim records no session, so the next read of the pull request's reviews judges it again", Waits: true}
 		}
-		return RoundRefusal{Reason: "its author is neither the review App nor an account with write access to the repository", AtEveryHead: true}
+		return RoundRefusal{Reason: "the review App submitted it from a session that is not the reviewer's", AtEveryHead: true}
 	}
 	return e.refusesRound(review, pr)
 }
@@ -427,9 +441,10 @@ func (e *Engine) refusesRound(review intake.PullRequestReview, pr record.PullReq
 // ReviewerSession is the session of issue's reviewer, the session a review-App review's Legion
 // footer must name to be the reviewer's own (byReviewer), read as review reads it
 // (reviewersClaim): "" when the issue has no record, the reviewer's claim has no row, or its
-// session is empty, in which case the login decides by itself. The daemon's read of a pull
-// request's reviews reads it before it judges one (RefusesRound), as review does, so both judge a
-// review-App review alike, in the reviewer's first round as in every later one.
+// session is empty, in which case no review-App review is the reviewer's, and each waits
+// (RoundRefusal.Waits). The daemon's read of a pull request's reviews reads it before it judges
+// one (RefusesRound), as review does, so both judge a review-App review alike, in the reviewer's
+// first round as in every later one.
 func (e *Engine) ReviewerSession(ctx context.Context, tx pgx.Tx, issue string) (string, error) {
 	recorded, err := e.store.Issue(ctx, tx, issue)
 	if err != nil || recorded == nil {
@@ -442,11 +457,11 @@ func (e *Engine) ReviewerSession(ctx context.Context, tx pgx.Tx, issue string) (
 // reviewersClaim is the claim the daemon starts issue's reviewer under (reviewerToken) and the
 // session the claims record holds for it (record.Store.ClaimSession), the session of that claim's
 // current launch: the one reading of who issue's reviewer is, for every judgement of a review-App
-// review (byReviewer). It finds the claim by that token, never by the claim the reviewer's row
 // names: the completion handler is the one writer of record.PhaseRow.Claim, and the reviewer
 // submits the review of its first round before it completes, so read from the row no session
-// would be recorded in round 1, and any review-App session's review would decide that round as
-// the reviewer's. The session is "" when the claim has no row or records none.
+// would be recorded in round 1, and no review-App review, the reviewer's own among them, could
+// decide that round. The session is "" when the claim has no row or records none: the outbox makes
+// the claim with none, and only the registration of the reviewer's agent writes one.
 func (e *Engine) reviewersClaim(ctx context.Context, tx pgx.Tx, issue record.Issue) (claim.Token, string, error) {
 	token, err := reviewerToken(issue)
 	if err != nil {
@@ -480,8 +495,8 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 		return intake.Result{}, err
 	}
 	// reviewerSession is the session of the reviewer's claim (reviewersClaim), "" when none is
-	// recorded, in which case byReviewer decides by the login alone. It is read only for a review
-	// the review App submitted: no other author's review ever reaches the compare.
+	// recorded, in which case a review-App review waits (RoundRefusal.Waits). It is read only for
+	// a review the review App submitted: no other author's review ever reaches the compare.
 	var reviewerClaim claim.Token
 	var reviewerSession string
 	if e.byReviewApp(fact.Author) {
@@ -506,7 +521,9 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	// the record holds now rather than at every head (RoundRefusal.AtEveryHead). It is kept on the
 	// reviewer's row below, since nothing else would say why the round has no decision. A refusal
 	// that stands at every head leaves none: a stranger's review is no decision the round lost,
-	// and the round is undecided the way one nobody reviewed is.
+	// and the round is undecided the way one nobody reviewed is. Nor does a review that waits for
+	// the reviewer's session (RoundRefusal.Waits): no rule of the round counts it yet, and the read
+	// that judges it again by the session recorded then either takes it or refuses it afresh.
 	refused := ""
 	if decides {
 		if refusal := e.RefusesRound(fact, *pr, reviewerSession); refusal.Reason != "" {
@@ -514,20 +531,19 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 				"footer_session", fact.LegionSession(), "reviewer_session", reviewerSession, "reviewer_claim", string(reviewerClaim),
 				"footer_head", fact.LegionHead(), "head", pr.HeadSHA, "read_from_list", fact.ReadFromList,
 				"body_truncated", fact.BodyTruncated}
-			if e.byReviewApp(fact.Author) {
+			switch {
+			case refusal.Waits:
+				e.warnOnCommit(ctx, "workflow: a review of the review App waits: "+refusal.Reason, args...)
+			case e.byReviewApp(fact.Author):
 				e.warnOnCommit(ctx, "workflow: a review decides nothing: "+refusal.Reason, args...)
-			} else {
+			default:
 				e.logOnCommit(ctx, "workflow: a review decides nothing: "+refusal.Reason, args...)
 			}
 			decides = false
-			if !refusal.AtEveryHead {
+			if !refusal.AtEveryHead && !refusal.Waits {
 				refused = refusal.Reason
 			}
 		}
-	}
-	if decides && reviewerSession == "" && e.byReviewApp(fact.Author) {
-		e.logOnCommit(ctx, "workflow: the reviewer's session is not recorded; the review App's login decides",
-			"issue", issue.Key, "pull_request", pr.Number, "reviewer_claim", string(reviewerClaim))
 	}
 	if !decides {
 		// The stuck notice of a round nothing decided is built from the record when the reviewer

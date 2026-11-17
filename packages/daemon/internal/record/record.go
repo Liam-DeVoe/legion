@@ -1730,9 +1730,11 @@ type Store interface {
 	// task reached no architect tells nothing and hands over instead (ReleaseKeptClaims).
 	ForgetKeptDecisions(ctx context.Context, tx pgx.Tx, tree string, kept KeptDecisions, row int64) error
 	// ClaimSession is the session claims records for token, "" and no error when the token holds
-	// no row. The workflow reads it for the reviewer's claim (PhaseRow.Claim) to tell the
-	// reviewer's own review from another review-App session's by the Legion footer each carries
-	// (PullRequestReview.LegionSession).
+	// no row. The workflow reads it for the claim the daemon starts the reviewer under (workflow's
+	// reviewerToken), in the reviewer's first round as in every later one, to tell the reviewer's
+	// own review from another review-App session's by the Legion footer each carries
+	// (PullRequestReview.LegionSession). The session is recorded there when the reviewer's agent
+	// registers; the claim the outbox makes holds none until then.
 	ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Token) (string, error)
 	// ClearGeneration drops the facts one generation of an issue owns: a merged or closed pull
 	// request, the last generation's reading of a still-open one (the next generation runs on the
