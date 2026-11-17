@@ -47,9 +47,9 @@ export function isFilter(preset: Preset): preset is Filter {
 
 /** The kinds each filter draws as rows of its own (R2). */
 const ROW_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
-  decisions: ["ask", "decision"],
+  decisions: ["ask", "decision", "reading"],
   plan: ["plan_task"],
-  spec: ["requirement"],
+  spec: ["requirement", "criterion"],
   verification: ["check", "result"],
 };
 
@@ -68,7 +68,7 @@ const CONTEXT_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
 const COUNTED_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
   decisions: ["ask", "decision"],
   plan: ["plan_task"],
-  spec: ["requirement"],
+  spec: ["requirement", "criterion"],
   verification: ["check"],
 };
 
@@ -100,6 +100,12 @@ export interface PresetView {
  *  them"), never the stored source: `**bold** text` is found by `bold text` and not by `**`. */
 function holds(node: TreeNode, wanted: string): boolean {
   return wanted === "" || nodeWords(node).toLowerCase().includes(wanted);
+}
+
+/** Whether `node` is a reading: an agent's account of what a decision or an answered question
+ *  means (R3). */
+function isReading(node: TreeNode): boolean {
+  return node.type === "reading";
 }
 
 /**
@@ -180,6 +186,11 @@ function filterView(
   // with its own rows under it, or, where it is no row, the rows of its branch lifted to where
   // it stood.
   const lift = (node: TreeNode): { readonly drawn: boolean; readonly rows: TreeNode[] } => {
+    // Decisions draws an agent decision's readings under it, and none of an answered question
+    // (R3): the question is lifted again without them, so this runs once for it.
+    if (filter === "decisions" && node.type === "ask" && node.children.some(isReading)) {
+      return lift({ ...node, children: node.children.filter((child) => !isReading(child)) });
+    }
     if (!everyPlacement && node.transcluded) return { drawn: false, rows: [] };
     const parts = node.children.map(lift);
     const own = named.has(node.id) || (rows.includes(node.type) && holds(node, wanted));

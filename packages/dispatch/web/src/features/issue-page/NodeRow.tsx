@@ -533,6 +533,9 @@ function toneOf(type: NodeType, author: AuthorKind): Tone {
       return "decision";
     case "plan_task":
       return "step";
+    case "reading":
+      return "agent";
+    case "criterion":
     case "requirement":
       return "statement";
     case "callout":
