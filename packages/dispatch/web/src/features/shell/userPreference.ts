@@ -9,7 +9,10 @@ import { whoAmIQuery } from "../../api/queries";
  *  ordered, how wide the reading pane is, and which bands they folded shut
  *  (`inbox.folded-groups`, one set per grouping). Its filters, sort, grouping and the switch
  *  between the Inbox and what they have dismissed out of it are in the address instead, so a
- *  link carries them. */
+ *  link carries them. The Issues tab keeps the views the person saved, each project's under its
+ *  key (`project.saved-views`, read by `readSavedViews` in `features/project/issues-views.ts`),
+ *  and whether Time per phase draws each phase's share or its hours (`project.phase-hours`:
+ *  `share` or `hours`). */
 export type UserPreference =
   | "inbox.folded-groups"
   | "inbox.pane-width"
@@ -20,6 +23,8 @@ export type UserPreference =
   | "project.board-lanes"
   | "project.issue-filters"
   | "project.issue-view"
+  | "project.phase-hours"
+  | "project.saved-views"
   | "search.recents"
   | "shell.margin"
   | "shell.margin-width"
