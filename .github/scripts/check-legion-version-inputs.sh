@@ -638,6 +638,21 @@ def decision_readers(path, doc):
             problem(f"{described(selector)} of {job_name} has the if: `{have}`, which reads a checked version step's "
                     f"decision, and {PLAN}'s DECISION_READERS names no such reader: a new step or job that reads the "
                     f"decision is an entry there, so that no edit of its if: can throw the decision away unseen", path)
+    # What each job that carries a checked decision needs, order aside.
+    for (workflow, job_name), want in sorted(plan.JOB_NEEDS.items()):
+        if workflow != path:
+            continue
+        job = jobs.get(job_name)
+        if not isinstance(job, dict):
+            problem(f"{path} has no job {job_name}, which {PLAN}'s JOB_NEEDS names as a job that carries a release "
+                    f"decision", path)
+            continue
+        needs = job.get("needs")
+        have = [needs] if isinstance(needs, str) else needs if isinstance(needs, list) else [] if needs is None else None
+        if have is None or sorted(have) != sorted(want):
+            problem(f"{job_name}'s needs: is {rendered(needs)}, where {PLAN}'s JOB_NEEDS names "
+                    f"{rendered(list(want))} for it, order aside: a need taken away lets the job run without the "
+                    f"decision it reads, and a need added on a job that skips on main skips it with no failure", path)
     # Per job that holds listed readers, in one pass:
     # - the steps a listed reader's if: reads, found by parsing it, are each listed in the same job
     #   or a checked version step, so that no edit of the step it reads (an `if: false` on pair,

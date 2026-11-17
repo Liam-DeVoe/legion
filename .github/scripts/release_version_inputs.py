@@ -109,6 +109,17 @@ DECISION = {
 }
 
 
+# What each job that carries a checked decision needs, order aside (a string need is a list of
+# one): a need taken away lets the job run without the decision it reads, or start before it, and
+# a need added on a job that skips on main skips the decision job with it.
+JOB_NEEDS = {
+    (RELEASE, "legion_build"): (),
+    (RELEASE, "publish"): ("claude_envoy_build", "legion_build", "pi_envoy_build", "pi_legion_build"),
+    (LISTENER, "release_build"): (),
+    (LISTENER, "release_publish"): ("build", "image_index", "release_build", "targets"),
+}
+
+
 class Reader(NamedTuple):
     """An if: that reads a decision, and what holds it: a step by its id:, else its name:, else its
     1-based position among its job's steps; position 0 is the job's own if:, which no job of the

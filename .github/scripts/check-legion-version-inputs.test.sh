@@ -423,6 +423,33 @@ check "exits 1 on a module that lists legion_pair without the step it reads" "$(
 check "names the step read and the reader" \
   "$(contains "$out" "the step with id legion_pair of publish reads steps.pair, which $plan_file's DECISION_READERS does not list for publish")"
 
+# What each job that carries a decision needs, order aside: the round-8 review's N5 mutations.
+needs_rule="where $plan_file's JOB_NEEDS names"
+echo "case: a decision job's needs: changed (N5a, N5b, N5c)"
+root=$(written needs-publish)
+replace "$root/.github/workflows/release.yaml" '"claude_envoy_build", "legion_build", ' '"claude_envoy_build", '
+run_check "$root"
+check "exits 1 on legion_build taken from publish's needs (N5a)" "$(is "$status" 1)"
+check "names the needs and the module's" \
+  "$(contains "$out" "publish's needs: is \`\[\"claude_envoy_build\", \"pi_envoy_build\", \"pi_legion_build\"\]\`, $needs_rule")"
+root=$(written needs-release-publish)
+replace "$root/.github/workflows/release-envoy-listener.yaml" '"image_index", "release_build", ' '"image_index", '
+run_check "$root"
+check "exits 1 on release_build taken from release_publish's needs (N5b)" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "release_publish's needs: is \`\[\"build\", \"image_index\", \"targets\"\]\`")"
+root=$(written needs-added)
+replace "$root/.github/workflows/release.yaml" $'    runs-on: ubuntu-24.04\n' $'    runs-on: ubuntu-24.04\n    needs: gate\n'
+printf '  gate:\n    runs-on: ubuntu-24.04\n    if: github.ref != %s\n    steps:\n      - run: "true"\n' "'refs/heads/main'" \
+  >> "$root/.github/workflows/release.yaml"
+run_check "$root"
+check "exits 1 on legion_build given a need that skips on main (N5c)" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "legion_build's needs: is \`gate\`, $needs_rule \`\[\]\` for it")"
+root=$(written needs-order)
+replace "$root/.github/workflows/release.yaml" '"claude_envoy_build", "legion_build", "pi_envoy_build", "pi_legion_build"' \
+  'pi_legion_build, legion_build, claude_envoy_build, pi_envoy_build'
+run_check "$root"
+check "passes publish's needs in another order" "$(is "$status" 0)"
+
 # The four decision jobs' own if: (position 0), which the fixtures render on each job: one `if:
 # false` there skips every reader of the job at once.
 echo "case: a decision job's own if: false"

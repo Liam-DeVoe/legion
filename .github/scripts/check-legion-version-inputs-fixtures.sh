@@ -41,18 +41,22 @@ elif kind == "outputs":
     spec = next(s for s in plan.VERSION_STEPS if s.job == name)
     print("\n".join(["    outputs:", *(f"      {k}: {json.dumps(v)}" for k, v in spec.outputs.items())]))
     sys.exit(0)
-elif kind == "job-if":
-    # The job's own if: when DECISION_READERS names one (position 0), as a line of the job.
+elif kind == "job-head":
+    # The job's own if: when DECISION_READERS names one (position 0), and its needs: when JOB_NEEDS
+    # names any, as lines of the job.
     workflow, job = name.split(":")
-    readers = plan.DECISION_READERS[({"release": plan.RELEASE, "listener": plan.LISTENER}[workflow], job)]
-    print("\n".join(f"    if: {json.dumps(r.if_)}" for r in readers if r.position == 0))
+    key = ({"release": plan.RELEASE, "listener": plan.LISTENER}[workflow], job)
+    lines = [f"    if: {json.dumps(r.if_)}" for r in plan.DECISION_READERS.get(key, ()) if r.position == 0 and r.if_]
+    if plan.JOB_NEEDS.get(key):
+        lines.append(f"    needs: {json.dumps(list(plan.JOB_NEEDS[key]))}")
+    print("\n".join(lines))
     sys.exit(0)
 elif kind == "readers":
     workflow, job = name.split(":")
     readers = plan.DECISION_READERS[({"release": plan.RELEASE, "listener": plan.LISTENER}[workflow], job)]
     # In the module's order, which is the job's: a reader named by position waits behind fillers
     # for its place, a reader named by id: or name: takes the next one. Position 0 is the job's
-    # own if:, which `step job-if` renders on the job.
+    # own if:, which `step job-head` renders on the job.
     out, at = [], int(sys.argv[3]) + 1
     for reader in (r for r in readers if r.position != 0):
         if reader.id is None and reader.name is None:
@@ -96,10 +100,10 @@ legion_readers=$(step readers release:legion_build 2)
 publish_readers=$(step readers release:publish 0)
 envoy_build_readers=$(step readers listener:release_build 2)
 envoy_publish_readers=$(step readers listener:release_publish 5)
-legion_job_if=$(step job-if release:legion_build)
-publish_job_if=$(step job-if release:publish)
-envoy_build_job_if=$(step job-if listener:release_build)
-envoy_publish_job_if=$(step job-if listener:release_publish)
+legion_job_head=$(step job-head release:legion_build)
+publish_job_head=$(step job-head release:publish)
+envoy_build_job_head=$(step job-head listener:release_build)
+envoy_publish_job_head=$(step job-head listener:release_publish)
 login_uses=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" python3 -c 'import release_version_inputs as p; print(p.LOGIN)')
 confirm_version='          VERSION: "${{ needs.release_build.outputs.version }}"'
 # The listener's, as release-envoy-listener.yaml writes them: the envoy module but its excluded
@@ -157,7 +161,7 @@ EOF
 jobs:
   release_build:
     runs-on: ubuntu-24.04
-$envoy_build_job_if
+$envoy_build_job_head
 $envoy_build_outputs
     steps:
 $checkout_step
@@ -165,7 +169,7 @@ $envoy_build_step
 $envoy_build_readers
   release_publish:
     runs-on: ubuntu-24.04
-$envoy_publish_job_if
+$envoy_publish_job_head
     steps:
 $checkout_sha_step
 $determine_step
@@ -188,7 +192,7 @@ $hand_args
 jobs:
   legion_build:
     runs-on: ubuntu-24.04
-$legion_job_if
+$legion_job_head
 $legion_outputs
     steps:
 $checkout_step
@@ -196,8 +200,7 @@ $legion_step
 $legion_readers
   publish:
     runs-on: ubuntu-24.04
-$publish_job_if
-    needs: [legion_build]
+$publish_job_head
     steps:
 $publish_readers
 EOF
