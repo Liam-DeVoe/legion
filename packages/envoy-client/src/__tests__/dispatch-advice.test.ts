@@ -11,6 +11,7 @@ import type {
   WriteSuggestion,
 } from "@legion/contracts";
 import { bearerCredential } from "../bearer";
+import { documentPlaysPlan } from "../dispatch-commands/document-targets";
 import type { ExecFn } from "../dispatch-cwd";
 import { executeDispatchTool, resetAdviceMemory } from "../dispatch-execute";
 
@@ -1351,13 +1352,15 @@ describe("a document write that superseded a person's approval", () => {
   // with no role is still a plan and names `dispatch plan-approve`, while a project document named
   // plan.md is a plain document: a person's approval of it comes back through a request, which
   // Dispatch then accepts, and `dispatch plan-approve`, which takes an issue alone, cannot reach
-  // it. Each document is answered as Dispatch answers it: no role key on either.
+  // it. Each document is answered as Dispatch answers it: a markdown document, with no role key on
+  // either.
   const roleLessPlan = {
     id: "artifact-43",
     issue_key: "DSP-42",
     project: "DSP",
     name: "plan.md",
     slug: "plan-md",
+    kind: "doc",
     primary: false,
   };
   const projectPlan = {
@@ -1366,8 +1369,19 @@ describe("a document write that superseded a person's approval", () => {
     project: "DSP",
     name: "plan.md",
     slug: "plan-md",
+    kind: "doc",
     primary: false,
   };
+  // The slug fallback is Dispatch's own rule (documentPlays, api/artifacts.go): it names a
+  // role-less issue row a plan by its slug only when that row is a markdown document, the row a
+  // rolling deploy leaves, and never a file uploaded as plan.md, whose bytes are not markdown.
+  test.each([
+    ["a role-less doc with the slug plan-md", true, { ...roleLessPlan, kind: "doc" }],
+    ["a role-less file with the slug plan-md", false, { ...roleLessPlan, kind: "file" }],
+  ])("documentPlaysPlan of %s is %p", (_which, plays, document) => {
+    expect(documentPlaysPlan(document)).toBe(plays);
+  });
+
   test.each([
     ["dispatch_artifact", "an issue's plan.md with no role", planUpload, roleLessPlan, true],
     ["dispatch_doc_edit", "an issue's plan.md with no role", planEdit, roleLessPlan, true],

@@ -1,11 +1,14 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -18,9 +21,13 @@ import (
 // it in `serves`, and a plan task when a `plan_task` block of that set does; the descendants are
 // read with refs.IssueDescendants, the server's one recursive `child_of` subtree walk. The
 // missing-plan-task gap is named only once the issue has a plan document, since the plan comes
-// after the spec's approval. Nothing is ever refused for a gap: three readers show it — the
-// route below for the Spec tab, `dispatch read --issue`, which prints each gap after
-// `Coverage: `, and an approval request's answer, which names the missing checks alone.
+// after the spec's approval. A requirement whose block's node state is proposed is a question
+// still open (dispatch://INFRA-1950/spec#b-r-proposed), so it raises neither gap here and the
+// approval request's answer names none for it; one at settled or live is counted as every
+// requirement is, and dispatch://INFRA-1253 gives overtaken its meaning. Nothing is ever refused
+// for a gap: three readers show it — the route below for the Spec tab, `dispatch read --issue`,
+// which prints each gap after `Coverage: `, and an approval request's answer, which names the
+// missing checks alone.
 
 // noRequirementsGap is the one gap line a spec that marks no requirement answers, in place of a
 // line per requirement. noCheckReason and noPlanTaskReason are what one requirement lacks, as
@@ -38,7 +45,8 @@ const (
 // no requirements, answers no requirements and the single gap line. A caller that sent
 // `Dispatch-Trees: 1` is given each requirement's whole content as its text_tree.
 func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
 	issueKey := r.PathValue("key")
@@ -47,7 +55,7 @@ func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	coverage, err := s.issueCoverage(r.Context(), s.deps.Store.Pool, issueKey, trees)
+	coverage, err := s.issueCoverage(r.Context(), s.deps.Store.Pool, who, issueKey, trees)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -56,20 +64,24 @@ func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, coverage)
 }
 
-// issueCoverage reads the issue's requirements and what serves each. The documents' blocks are
-// read from the block index (document_blocks and block_refs), which every accepted write leaves
-// in step with the document it wrote; the requirements' order and words come from the live spec.
-// trees is the reader of a request that answers the requirements' trees, nil for every other
-// caller: each requirement registers with it (requirementBlocksIn), in the row the answer
-// carries, the markdown typedBlocksIn reads the block's tree from, which is the rule GET
-// /api/v1/reference-targets reads the same block's tree by, and the caller resolves it. The rows
-// are filled in place, so each registered pointer is into the answer itself.
-func (s *server) issueCoverage(ctx context.Context, q queryer, issueKey string, trees *displayTreeReader) (model.IssueCoverage, error) {
+// issueCoverage reads the issue's requirements and what serves each, for who: an issue below it
+// who may not see serves nothing here (refs.IssueDescendants). The documents' blocks are read
+// from the block index (document_blocks and block_refs), which every accepted write leaves in
+// step with the document it wrote; the requirements' order and words come from the live spec,
+// and each one's node state from the store (requirementStates). trees is the reader of a
+// request that answers the requirements' trees, nil for every other caller: each requirement
+// registers with it (requirementBlocksIn), in the row the answer carries, the markdown
+// typedBlocksIn reads the block's tree from, which is the rule GET /api/v1/reference-targets
+// reads the same block's tree by, and the caller resolves it. The rows are filled in place, so
+// each registered pointer is into the answer itself.
+func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, issueKey string, trees *displayTreeReader) (model.IssueCoverage, error) {
 	coverage := model.IssueCoverage{Issue: issueKey, Requirements: []model.RequirementCoverage{}, Gaps: []string{}}
+	var specRefKey string
 	err := q.QueryRow(ctx, `
 		select coalesce((select a.id::text from artifacts a where a.issue_key = $1 and a.is_primary), ''),
+		       coalesce((select a.ref_key from artifacts a where a.issue_key = $1 and a.is_primary), ''),
 		       exists (select 1 from artifacts a where a.issue_key = $1 and `+aliasedPlanRole+`)
-	`, issueKey).Scan(&coverage.SpecArtifactID, &coverage.HasPlan)
+	`, issueKey).Scan(&coverage.SpecArtifactID, &specRefKey, &coverage.HasPlan)
 	if err != nil {
 		return model.IssueCoverage{}, fmt.Errorf("read the documents of %s: %w", issueKey, err)
 	}
@@ -85,7 +97,11 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, issueKey string, 
 		coverage.Gaps = []string{noRequirementsGap}
 		return coverage, nil
 	}
-	descendants, err := refs.IssueDescendants(ctx, q, issueKey)
+	states, err := requirementStates(ctx, q, who, specRefKey, requirements)
+	if err != nil {
+		return model.IssueCoverage{}, err
+	}
+	descendants, err := refs.IssueDescendants(ctx, q, who, issueKey)
 	if err != nil {
 		return model.IssueCoverage{}, err
 	}
@@ -100,12 +116,16 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, issueKey string, 
 		})
 		counts := served[requirement.BlockID]
 		requirement.Checks, requirement.PlanTasks = counts.checks, counts.planTasks
+		requirement.State = cmp.Or(states[requirement.BlockID], graphstore.StateLive)
 		requirement.Gaps = []string{}
-		if requirement.Checks == 0 {
-			requirement.Gaps = append(requirement.Gaps, noCheckReason)
-		}
-		if coverage.HasPlan && requirement.PlanTasks == 0 {
-			requirement.Gaps = append(requirement.Gaps, noPlanTaskReason)
+		// A proposed requirement is a question still open, never work left undone.
+		if requirement.State != graphstore.StateProposed {
+			if requirement.Checks == 0 {
+				requirement.Gaps = append(requirement.Gaps, noCheckReason)
+			}
+			if coverage.HasPlan && requirement.PlanTasks == 0 {
+				requirement.Gaps = append(requirement.Gaps, noPlanTaskReason)
+			}
 		}
 		for _, reason := range requirement.Gaps {
 			coverage.Gaps = append(coverage.Gaps, requirement.BlockID+" "+reason)
@@ -113,6 +133,48 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, issueKey string, 
 	}
 	coverage.Requirements = requirements
 	return coverage, nil
+}
+
+// requirementStatesQuery reads the node state of each requirement block whose node id is in $1
+// (`<ref_key>#<block id>`, kind block) for a reader ($2), in one statement: each block through the
+// block kind's predicate (refs.VisibleKind), with the state and the visibility the store holds of
+// it (refs.StoredNodeOf), null where the store holds no row of it.
+var requirementStatesQuery = `
+	select requirement.id, ` + refs.StoredNodeOf(`'`+refs.BlockNodeKind+`'`, `requirement.id`) + `
+	from unnest($1::text[]) as requirement(id)
+	where ` + refs.VisibleKind(refs.BlockNodeKind, `requirement.id`, `$2`)
+
+// requirementStates is the node state of each requirement of the spec whose ref_key is refKey,
+// by block id, for who, read in one statement (requirementStatesQuery). A requirement the store
+// holds no row of reads live, as every read of a node answers one (refs.StoredStateAndVisibility);
+// one the predicate hides from who answers no state, and the caller reads it live.
+func requirementStates(ctx context.Context, q queryer, who model.Actor, refKey string, requirements []model.RequirementCoverage) (map[string]string, error) {
+	ids := make([]string, len(requirements))
+	for index, requirement := range requirements {
+		ids[index] = refKey + "#" + requirement.BlockID
+	}
+	rows, err := q.Query(ctx, requirementStatesQuery, ids, refs.VisibilityArg(who))
+	if err != nil {
+		return nil, fmt.Errorf("read the node state of the requirements of %s: %w", refKey, err)
+	}
+	defer rows.Close()
+	states := make(map[string]string, len(requirements))
+	for rows.Next() {
+		var id string
+		var stored []string
+		if err := rows.Scan(&id, &stored); err != nil {
+			return nil, fmt.Errorf("read the node state of the requirements of %s: %w", refKey, err)
+		}
+		state, _, ok := refs.StoredStateAndVisibility(stored)
+		if !ok {
+			return nil, fmt.Errorf("the requirement %s holds a stored state and visibility of %d values", id, len(stored))
+		}
+		states[strings.TrimPrefix(id, refKey+"#")] = state
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the node state of the requirements of %s: %w", refKey, err)
+	}
+	return states, nil
 }
 
 // noCheckGap is the gap line a requirement with no check earns, written in one place: the
@@ -123,16 +185,18 @@ func noCheckGap(blockID string) string {
 }
 
 // missingCheckGaps is the gap lines an approval request's answer carries: one per requirement
-// with no check, and never a missing plan task, since the plan comes after the approval. A spec
-// that marks no requirements carries the one line that says so, as the route does, so the
-// approver is told that too; a spec every requirement of which has a check carries none.
+// with no check, and never a missing plan task, since the plan comes after the approval. A
+// requirement at proposed is a question still open and carries none, as the route's gaps carry
+// none for it. A spec that marks no requirements carries the one line that says so, as the route
+// does, so the approver is told that too; a spec every requirement of which has a check carries
+// none.
 func missingCheckGaps(coverage model.IssueCoverage) []string {
 	if len(coverage.Requirements) == 0 {
 		return []string{noRequirementsGap}
 	}
 	gaps := []string{}
 	for _, requirement := range coverage.Requirements {
-		if requirement.Checks == 0 {
+		if requirement.Checks == 0 && requirement.State != graphstore.StateProposed {
 			gaps = append(gaps, noCheckGap(requirement.BlockID))
 		}
 	}
@@ -210,8 +274,9 @@ func servingBlockCounts(ctx context.Context, q queryer, specArtifactID string, i
 }
 
 // approvalCoverage is the coverage an approval request's answer carries for the document id
-// names, and whether that coverage could not be read. The gaps are the issue's, when that
-// document is the issue's spec (isSpecDocument), and none for any other document.
+// names, read for who, the requester, and whether that coverage could not be read. The gaps are
+// the issue's, when that document is the issue's spec (isSpecDocument), and none for any other
+// document.
 //
 // It is read before the request opens its transaction. Reading it folds the issue's live spec,
 // which for a document no room holds is a cold read bounded by a minute (docs/read_cache.go),
@@ -224,7 +289,7 @@ func servingBlockCounts(ctx context.Context, q queryer, specArtifactID string, i
 // recorded as it was before the answer carried any coverage at all, and unread says the answer
 // could not count the gaps rather than that it found none. Reading the document itself is the
 // request's error, as it is inside the transaction.
-func (s *server) approvalCoverage(ctx context.Context, q queryer, id string) (gaps []string, unread bool, err error) {
+func (s *server) approvalCoverage(ctx context.Context, q queryer, who model.Actor, id string) (gaps []string, unread bool, err error) {
 	artifact, err := s.loadArtifact(ctx, q, id)
 	if err != nil {
 		return nil, false, err
@@ -232,7 +297,7 @@ func (s *server) approvalCoverage(ctx context.Context, q queryer, id string) (ga
 	if !isSpecDocument(artifact) {
 		return []string{}, false, nil
 	}
-	coverage, err := s.issueCoverage(ctx, q, *artifact.IssueKey, nil)
+	coverage, err := s.issueCoverage(ctx, q, who, *artifact.IssueKey, nil)
 	if err != nil {
 		slog.Warn("dispatch: read the coverage an approval request reports", "artifact", artifact.ID, "error", err)
 		return []string{}, true, nil

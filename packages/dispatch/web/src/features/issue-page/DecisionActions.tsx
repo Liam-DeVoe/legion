@@ -12,9 +12,9 @@ import {
 } from "../../theme/classes";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { anchorQuote } from "./decision-review";
+import { anchorQuote, type ChangeAnchor, changeAnchor } from "./decision-review";
 import { authorText, pageChrome } from "./page-structure";
-import { CONTROL_LABELS } from "./page-words";
+import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
 /** One control a row of the tree draws of its own: Keep and Change on a decision. */
 export type RowAction = "change" | "keep";
@@ -259,10 +259,17 @@ function ChangeComposer({
     label: () => `${CONTROL_LABELS.change_decision} ${decision.heading}`,
     // A comment on an issue's document is the issue's own write: the artifact route refuses it,
     // naming the issue route (`send-request.ts` follows the same rule for a thread's replies).
-    write: (input: { body: string; quote: string }, bounds) =>
+    write: (input: { anchor: ChangeAnchor; body: string }, bounds) =>
       api.createComment(
         issueKey,
-        { anchor: { artifact: documentId, quote: input.quote }, body: input.body },
+        {
+          anchor: {
+            artifact: documentId,
+            occurrence: input.anchor.occurrence,
+            quote: input.anchor.quote,
+          },
+          body: input.body,
+        },
         bounds
       ),
     // The change is a comment of the issue's, and the comments read is what tells the page a
@@ -276,11 +283,16 @@ function ChangeComposer({
     // A send Dispatch refused, or one the reader stopped, gives the words back to the draft: the
     // form keeps them while it is drawn, and a body that closed before the refusal, or closes
     // after it, opens again with the Change and its words. The mutation runs this after the form
-    // has gone too, as it runs `onSuccess`.
+    // has gone too, as it runs `onSuccess`. The form says so in the page's own words, never in
+    // the server's: a refusal's text names what the reader cannot act on, such as a quote that
+    // matches two places and the field that would say which (decision 92).
     onError: (_error, input) => {
       drafts?.set(decision.ref, input.body);
     },
   });
+  // Whether the send is reading the decisions document's text, which it does before the comment
+  // goes out: Send is off while it does, as it is while the comment is out.
+  const [reading, setReading] = useState(false);
   // The one place inside a row that takes the tab order, and only while it is open: this is a
   // form a reader is typing in, so Tab walks its field, Send change and Cancel as it does in
   // every other form of the app. At rest - no form open - the tree is still one tab stop (R9).
@@ -296,14 +308,40 @@ function ChangeComposer({
       className="flex min-w-0 flex-col gap-1"
       onSubmit={(event) => {
         event.preventDefault();
-        if (body.trim() === "") return;
+        if (body.trim() === "" || reading) return;
         // Send is disabled while the comment is out, and the form goes once it lands. The draft
         // goes while the send is out: a body that closes then comes back with Change closed, and
         // the shell's pending-writes indicator holds the send, so a second press cannot write the
         // change twice. A refusal gives the words back to the draft (`onError`).
         keepFocusOnRow(event.currentTarget);
         drafts?.delete(decision.ref);
-        send.mutate({ body, quote });
+        // Which of the quote's places in the decisions document is this decision's own, counted
+        // here, at the send, over the document's own reading, which the send reads once now:
+        // `changeAnchor` walks every decision above this one, which no render of a row pays for
+        // (decision 92). With no reading - the read failed - the anchor names no place: Dispatch
+        // takes it where the quote stands once, and refuses it where the quote stands more than
+        // once, which the form says in the page's words with the draft kept.
+        setReading(true);
+        void queryClient
+          .fetchQuery({
+            queryFn: () => api.getArtifactText(documentId),
+            queryKey: ["artifact", documentId, "text"],
+            staleTime: 0,
+          })
+          .then(
+            (text) => text.markdown_tree,
+            () => undefined
+          )
+          .then((tree) => {
+            setReading(false);
+            const anchor = changeAnchor(
+              decision,
+              queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
+                ?.decisions,
+              tree
+            );
+            send.mutate({ anchor: anchor ?? { quote }, body });
+          });
       }}
     >
       <blockquote
@@ -330,13 +368,13 @@ function ChangeComposer({
       />
       {send.error === null ? null : (
         <p className={`text-xs ${dangerText}`} role="alert" {...pageChrome}>
-          {send.error.message}
+          {ANSWER_LINES.change_not_sent}
         </p>
       )}
       <p className="flex min-w-0 flex-wrap items-baseline gap-2">
         <button
           className={`rounded border px-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
-          disabled={send.isPending || body.trim() === ""}
+          disabled={send.isPending || reading || body.trim() === ""}
           type="submit"
           {...pageChrome}
         >

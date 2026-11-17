@@ -1,4 +1,7 @@
+import { primarySpec, roleDocument } from "../../../api/issue-cache";
+import type { Artifact, IssueDetails } from "../../../api/types";
 import { parseNodeReference } from "../../refs/routes";
+import { documentOfNode } from "../issue-artifacts";
 import type { NodeChip, TreeNode } from "../issue-tree";
 import { BLOCK_ATTRIBUTE_LABELS } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
@@ -23,7 +26,10 @@ import { blockNodeId } from "../tree-drafts";
  * task this plan does not hold waits on nothing: its row says the target is gone or names an
  * address nothing answers to (`NodeRow.tsx`'s `Chip`), and the order is the plan's own.
  *
- * The module is pure: it holds no React, reads no model of its own and makes no request.
+ * The plan's own order is the order its tasks are written in (`writtenOrder`), and the view
+ * draws once the blocks of the documents it draws from are held (`planDocumentIds`): both are
+ * read off what the page already holds. The module is pure: it holds no React, reads no model of
+ * its own and makes no request.
  */
 
 /** One step of the plan: a task the order puts after every task in its `needs`. */
@@ -50,23 +56,30 @@ function documentOf(id: string): string {
 }
 
 /**
- * The ids of the nodes `task` needs, as this issue addresses them: one per `needs` pointer of
- * its block. The tree draws each as a chip that says it is a need (`tree-drafts.ts`'s
- * `placeBlocks`, `NodeChip.label`), which is what tells it from a chip for anything else the
- * task names - a document its words cite, a statement it is also under - so a chip naming a
- * block of another document is no need, whatever that block's id is.
+ * The ids of the nodes `task` needs, as this issue addresses them: one per task its block's
+ * `needs` pointers name, each once. The tree draws each pointer as a chip that says it is a need
+ * (`tree-drafts.ts`'s `placeBlocks`, `NodeChip.label`), which is what tells it from a chip for
+ * anything else the task names - a document its words cite, a statement it is also under - so a
+ * chip naming a block of another document is no need, whatever that block's id is.
  *
  * `needs` points at a plan task of the task's own document (`blocks.json`: `targets:
  * ["plan_task"]`, `scope: "document"`), so the block id the reference carries is looked up in
  * `task`'s own document. The reference's own document part is not read, because the issue's
  * primary document is spelled `spec` in a reference and by its slug in a node's id, and one
- * block id is unique inside one document alone.
+ * block id is unique inside one document alone. Nor is its pin: the server refuses a pointer
+ * named twice by its raw value alone (`pmdoc/schema.go`), so `…#b-t1@v1` and `…#b-t1` can stand
+ * in one `needs`, and they name one task, which the chart then names and joins by one curve
+ * once.
  */
 function neededIds(task: TreeNode): readonly string[] {
-  return task.chips.flatMap((chip) => {
-    const id = neededId(task, chip);
-    return id === undefined ? [] : [id];
-  });
+  return [
+    ...new Set(
+      task.chips.flatMap((chip) => {
+        const id = neededId(task, chip);
+        return id === undefined ? [] : [id];
+      })
+    ),
+  ];
 }
 
 /** The id of the node one chip of `task` names as a need (`neededIds`, `needsChip`), or
@@ -86,15 +99,75 @@ function readyFor(ready: number[], group: number): void {
 }
 
 /**
+ * The documents the plan's tasks are blocks of (`issue-artifacts.ts`'s `documentOfNode`, which
+ * reads a block node's id against the issue's artifacts by slug), each once, in the order of its
+ * first task in `tasks`: the documents whose block lists give the plan's own order
+ * (`writtenOrder`). A node that is no block of a document the issue holds names none.
+ */
+export function taskDocumentIds(
+  tasks: readonly TreeNode[],
+  artifacts: ReadonlyMap<string, Artifact>
+): readonly string[] {
+  return [
+    ...new Set(
+      tasks.flatMap((task) => {
+        const held = documentOfNode(task.id, artifacts);
+        return held === undefined ? [] : [held.artifact.id];
+      })
+    ),
+  ];
+}
+
+/**
+ * `tasks` in the order the plan is written in, which is the plan's own order: the order
+ * `planOrder` keeps where the `needs` leave two tasks free (dispatch://INFRA-3938 R2, the
+ * tester's F19). The Plan filter's view hands the tasks over grouped by the statement each one
+ * serves, which is the spec's order and not the plan's, so the view hands them to `planOrder`
+ * through this.
+ *
+ * `written` holds the block ids of each document `taskDocumentIds` names, by the document's id,
+ * in the order the document writes them, as the page's blocks read holds them (`useIssueTree.ts`
+ * reads them under the same key, so the view sends no request of its own); a document whose
+ * read is out holds none. The documents stand in `taskDocumentIds`' order, and a task the page
+ * holds no place for - its document unread or not the issue's, its block not in the list -
+ * keeps the place `tasks` gives it, after the rest.
+ */
+export function writtenOrder(
+  tasks: readonly TreeNode[],
+  artifacts: ReadonlyMap<string, Artifact>,
+  written: ReadonlyMap<string, readonly string[] | undefined>
+): readonly TreeNode[] {
+  const places = new Map<string, number>();
+  let place = 0;
+  for (const id of taskDocumentIds(tasks, artifacts)) {
+    for (const block of written.get(id) ?? []) {
+      places.set(`${id} ${block}`, place);
+      place += 1;
+    }
+  }
+  const placeOf = (task: TreeNode): number => {
+    const held = documentOfNode(task.id, artifacts);
+    const at = held === undefined ? undefined : places.get(`${held.artifact.id} ${held.blockId}`);
+    return at ?? Number.POSITIVE_INFINITY;
+  };
+  return tasks
+    .map((task, index) => ({ index, place: placeOf(task), task }))
+    .sort((one, other) =>
+      one.place === other.place ? one.index - other.index : one.place - other.place
+    )
+    .map((held) => held.task);
+}
+
+/**
  * `nodes` as the plan's order draws them: each a step of its own, or, for tasks that need each
  * other, one cycle holding them all. `nodes` are the rows the Plan filter draws with no words
- * filter on, in the plan's own order: the whole plan, since a words filter chooses which places
- * the view draws and not where they stand (dispatch://INFRA-3938 R2 and R4). A node that is no
- * plan task needs nothing and is needed by nothing, so it keeps the place the plan gave it; the
- * Plan view hands over none, since it keeps the address's node only where it is a task
- * (dispatch://INFRA-3938 R1, `slots/view-plan.tsx`). A task the filter drew under two
- * statements is one task here, at its first place: a plan holds each task once, and its second
- * statement is its "Also under" chip (the tester's F19: task 1 was drawn twice).
+ * filter on, in the plan's own order (`writtenOrder`): the whole plan, since a words filter
+ * chooses which places the view draws and not where they stand (dispatch://INFRA-3938 R2 and
+ * R4). A node that is no plan task needs nothing and is needed by nothing, so it keeps the place
+ * the plan gave it; the Plan view hands over none, since it keeps the address's node only where
+ * it is a task (dispatch://INFRA-3938 R1, `slots/view-plan.tsx`). A task the filter drew under
+ * two statements is one task here, at its first place: a plan holds each task once, and its
+ * second statement is its "Also under" chip (the tester's F19: task 1 was drawn twice).
  */
 export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
   const seen = new Set<string>();
@@ -244,8 +317,8 @@ export function planChart(entries: readonly PlanEntry[]): PlanChart {
 }
 
 /**
- * The chip of `task` that names `needed` as a need: the `needs` pointer the order read that edge
- * from (`neededId`), or undefined where no chip of `task` points at `needed`.
+ * The chip of `task` that names `needed` as a need: the first `needs` pointer of `task` that
+ * names it (`neededId`), or undefined where no chip of `task` points at `needed`.
  *
  * The chart names each need by this chip's own name, as part F's view gives it (decision 66 of
  * dispatch://INFRA-1196, dispatch://INFRA-3938 R3 and R4): the needed task's first line, and the
@@ -256,4 +329,33 @@ export function planChart(entries: readonly PlanEntry[]): PlanChart {
  */
 export function needsChip(task: TreeNode, needed: TreeNode): NodeChip | undefined {
   return task.chips.find((chip) => neededId(task, chip) === needed.id);
+}
+
+/**
+ * The documents the Plan view draws from, whose blocks it waits on before it draws
+ * (`slots/view-plan.tsx`): the spec, whose statements the tasks serve, and the plan, whose
+ * blocks are the tasks, each once and where the issue holds it. Each is the one the issue read
+ * names by its id (`primarySpec`, `roleDocument`), as the tree chooses the documents it reads
+ * (`useIssueTree.ts`'s `treeDocumentIds`), and never by the artifact's own `role`: the server
+ * names a plan.md that has no role as the issue's plan (`api/artifacts.go`'s `documentPlays`),
+ * so a reading by role would leave that plan out and the view would say the issue has no task
+ * while its tasks are still arriving (dispatch://INFRA-3938 R1). Being the tree's, the ids
+ * subscribe the view to no read the tree does not make: a document in the `plan` role that the
+ * issue does not name is read by neither (dispatch://INFRA-3938 R2).
+ */
+export function planDocumentIds(
+  issue: Pick<
+    IssueDetails,
+    | "artifacts"
+    | "decisions_artifact_id"
+    | "plan_artifact_id"
+    | "primary_artifact_id"
+    | "verification_artifact_id"
+  >
+): readonly string[] {
+  const ids = new Set<string>();
+  for (const document of [primarySpec(issue), roleDocument(issue, "plan")]) {
+    if (document !== undefined) ids.add(document.id);
+  }
+  return [...ids];
 }

@@ -129,7 +129,7 @@ export function shaped(ref: string): DecisionLink {
       changed_at: null,
       changed_by: null,
       id: ref,
-      kind: "requirement",
+      kind: "block",
       made_at: null,
       made_by: null,
       parent: null,

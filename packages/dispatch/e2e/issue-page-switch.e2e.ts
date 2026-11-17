@@ -118,7 +118,7 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   await expect(header).toHaveCount(1);
   await expect(row).toHaveCount(1);
   const atIssue = new URL(page.url()).pathname === `/issues/${issue.key}`;
-  const body = atIssue ? ` ${EMPTY_STATE_LINES.conversation}` : "";
+  const body = atIssue ? EMPTY_STATE_LINES.conversation : "";
   await expect
     .poll(
       () =>
@@ -134,7 +134,7 @@ async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
           "the new page draws text outside its header, its view row, the Contents pane and the Spec view",
       }
     )
-    .toBe(body.trim());
+    .toBe(body);
   const controls = "button, a, input, select, textarea";
   expect(
     await newPage

@@ -311,7 +311,10 @@ type inboxQuery struct {
 	Assignee string `query:"assignee"`
 }
 
-// myAnswersQuery is GET /api/v1/me/answers's query: the offset page it always answers.
+// myAnswersQuery is the offset page GET /api/v1/me/answers and
+// GET /api/v1/people/{login}/nodes each answer: the page, and nothing else. Neither route
+// takes a kind, a filter or a traversal from its caller, so this struct is the whole of what
+// either reads (answers.go's parseMyAnswersPage, which both parse their page with).
 type myAnswersQuery struct {
 	// Limit is the page size, 1 to 200, default 50.
 	Limit int `query:"limit"`
@@ -399,6 +402,20 @@ type relatedChecksQuery struct {
 	From string `query:"from"`
 	// To is the window's end, RFC3339, exclusive.
 	To string `query:"to"`
+}
+
+// nearCopyChecksQuery is GET /api/v1/near-copy-checks's query.
+type nearCopyChecksQuery struct {
+	// Project is the project whose rows are listed; the handler refuses a request without one.
+	Project string `query:"project"`
+	// From is the window's start, RFC3339.
+	From string `query:"from"`
+	// To is the window's end, RFC3339, exclusive.
+	To string `query:"to"`
+	// After is the id of the row the page starts after: the last page's next_after.
+	After string `query:"after"`
+	// Limit is the page size, 1 to 1000, default 1000.
+	Limit int `query:"limit"`
 }
 
 // sessionAnswersQuery is GET /api/v1/agents/{session_id}/answers's query.
@@ -495,8 +512,8 @@ type liveWritePauseQuery struct {
 // the richer one: writeAdvice holds every field documentWriteAdvice and suggestionsOnlyAdvice
 // hold, so a document write with an issue and one without differ by which of its fields are
 // present, not by which type describes them. And a route whose success answer is an object this
-// server does not model - a relay's bytes, a pre-rendered schema, an event stream, a file's
-// bytes - carries no Response and says why in Opaque.
+// server does not model - a relay's bytes, an event stream, a file's bytes - carries no Response
+// and says why in Opaque.
 //
 // A third: a row names the shape its handler writes, trees and all. A read that shows a stored
 // text answers a shaped read whose fields carry that text's tree (display_trees.go), and the row
@@ -513,13 +530,9 @@ type liveWritePauseQuery struct {
 // at all, which is why model.MyAnswersResponse, model.MyRepliesResponse and
 // model.SearchResponse stand as they are.
 var routeShapes = map[string]routeShape{
-	"GET /api/v1": {Status: http.StatusOK, Response: routeIndex{}},
-	"GET /api/v1/schema/blocks": {
-		Status:             http.StatusOK,
-		Opaque:             "the block schema is pre-rendered JSON bytes (pmdoc.SchemaJSON), written as they stand",
-		OpaqueContentTypes: []string{"application/json"},
-	},
-	"GET /api/v1/limits": {Status: http.StatusOK, Response: model.DispatchLimits{}},
+	"GET /api/v1":               {Status: http.StatusOK, Response: routeIndex{}},
+	"GET /api/v1/schema/blocks": {Status: http.StatusOK, Response: blockSchemaRead{}},
+	"GET /api/v1/limits":        {Status: http.StatusOK, Response: model.DispatchLimits{}},
 	"POST /api/v1/markdown/round-trip": {
 		Status: http.StatusOK, Response: markdownRoundTripResponse{}, Request: markdownRoundTripInput{},
 	},
@@ -680,7 +693,10 @@ var routeShapes = map[string]routeShape{
 		// An If-None-Match that matches the answer's ETag is answered 304 and no body.
 		Also: []routeAnswer{{Status: http.StatusNotModified}},
 	},
-	"GET /api/v1/block-links":                              {Status: http.StatusOK, Response: model.BlockLinks{}, Params: blockLinksQuery{}},
+	"GET /api/v1/block-links": {Status: http.StatusOK, Response: model.BlockLinks{}, Params: blockLinksQuery{}},
+	// The lens read of dispatch://INFRA-1950 (lens_read.go): the lenses on one node and the chains
+	// of triggered lenses they stand in, each lens whole with its findings and its risks.
+	"GET /api/v1/lenses":                                   {Status: http.StatusOK, Response: nodeLenses{}, Params: lensesQuery{}},
 	"GET /api/v1/issues/{key}/subscribers":                 {Status: http.StatusOK, Response: []subscriber{}},
 	"DELETE /api/v1/issues/{key}/subscribers/{session_id}": {Status: http.StatusNoContent},
 	"GET /api/v1/issues/{key}/artifacts":                   {Status: http.StatusOK, Response: []artifactRead{}},
@@ -712,9 +728,38 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/issues/{key}/design-gates": {
 		Status: http.StatusOK, Response: issueDesignGates{}, Request: issueDesignGatesInput{},
 	},
-	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
-	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
-	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	// The reasoning nodes of dispatch://INFRA-1950 under an issue (reasoning_routes.go). Each
+	// write answers the node it wrote, carrying its state and visibility, so an author reads
+	// `author` on the node reserved for her in the answer to her own write.
+	"POST /api/v1/issues/{key}/lenses": {
+		Status: http.StatusCreated, Response: lensInvoked{}, Request: lensInvocationInput{},
+	},
+	"POST /api/v1/issues/{key}/nodes/{id}/findings": {
+		Status: http.StatusCreated, Response: lensFinding{}, Request: lensFindingInput{},
+	},
+	"POST /api/v1/issues/{key}/risks": {
+		Status: http.StatusCreated, Response: riskWritten{}, Request: riskInput{},
+	},
+	"POST /api/v1/issues/{key}/constraints": {
+		Status: http.StatusCreated, Response: constraintRead{}, Request: constraintInput{},
+	},
+	"GET /api/v1/issues/{key}/constraints": {Status: http.StatusOK, Response: issueConstraints{}},
+	"POST /api/v1/issues/{key}/nodes/{id}/pointers": {
+		Status: http.StatusOK, Response: pointerWritten{}, Request: pointerInput{},
+	},
+	// The node state of dispatch://INFRA-1950 (node_state.go): one write of a node's state, the
+	// settle of a proposed node, whose body is an actor alone and may be empty, and the proposed
+	// nodes of an issue, each a graph node with its excerpt.
+	"POST /api/v1/issues/{key}/nodes/{id}/state": {
+		Status: http.StatusOK, Response: nodeStateWritten{}, Request: nodeStateInput{},
+	},
+	"POST /api/v1/issues/{key}/nodes/{id}/settle": {
+		Status: http.StatusOK, Response: nodeStateWritten{}, Request: actorInput{}, OptionalRequest: true,
+	},
+	"GET /api/v1/issues/{key}/proposed": {Status: http.StatusOK, Response: issueProposed{}},
+	"GET /api/v1/handoffs/{id}":         {Status: http.StatusOK, Response: model.Handoff{}},
+	"GET /api/v1/messages/{id}":         {Status: http.StatusOK, Response: messageRead{}},
+	"GET /api/v1/messages/{id}/blocks":  {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"POST /api/v1/messages/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.MessageDelivery{}, Request: createDeliveryInput{},
 	},
@@ -732,6 +777,7 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/inbox":                {Status: http.StatusOK, Response: []inboxAsk{}, Params: inboxQuery{}},
 	"GET /api/v1/me/answers":           {Status: http.StatusOK, Response: model.MyAnswersResponse{}, Params: myAnswersQuery{}},
+	"GET /api/v1/people/{login}/nodes": {Status: http.StatusOK, Response: personNodes{}, Params: myAnswersQuery{}},
 	"GET /api/v1/me/replies":           {Status: http.StatusOK, Response: model.MyRepliesResponse{}, Params: myRepliesQuery{}},
 	"PUT /api/v1/me/threads/{id}/read": {Status: http.StatusNoContent, Request: threadReadInput{}},
 	"POST /api/v1/me/inbox/read": {
@@ -748,6 +794,10 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/related-checks": {
 		Status: http.StatusOK, Response: model.RelatedChecksReport{}, Params: relatedChecksQuery{},
 	},
+	"GET /api/v1/near-copy-checks": {
+		Status: http.StatusOK, Response: model.NearCopyChecksPage{}, Params: nearCopyChecksQuery{},
+	},
+	"GET /api/v1/near-copy-checks/{id}": {Status: http.StatusOK, Response: model.NearCopyCheck{}},
 	"POST /api/v1/going/requests": {
 		Status: http.StatusCreated, Response: goingRequest{}, Request: createGoingRequestInput{},
 	},
