@@ -539,9 +539,10 @@ type planRatingCase struct {
 }
 
 // The daemon is the rule of a rating, and the contract's schema and the plugin's tool state it
-// again in TypeScript, where a reason is blank by JavaScript's trim: that keeps U+0085, which Go's
-// strings.TrimSpace strips, and strips U+FEFF, which Go keeps. So the cases a rule of the scale,
-// of the pair, of blank or of length can part on are a golden. Each is posted as its raw body to
+// again in TypeScript, where blank is a set written out by hand (goBlankPattern) because
+// JavaScript's trim is another set: it keeps U+0085, which Go's strings.TrimSpace strips, and
+// strips U+FEFF, which Go keeps. So the cases a rule of the scale, of the pair, of blank or of
+// length can part on are a golden. Each is posted as its raw body to
 // the completion that ends a retro, from a plugin at PlanRatingContract, and the route's answer is
 // the verdict Go writes (`-update`), never one typed here; `packages/contracts` and the plugin hold
 // their own verdicts to the file. An answer that is neither a 200 nor a 400 of the rating fails
