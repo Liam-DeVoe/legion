@@ -126,10 +126,10 @@ type Config struct {
 	Experiments      []config.Experiment
 	ExperimentSource func(uint64) (uint64, error)
 	// StepAgent is the daemon's read of the agent of a step at the moment the engine writes the
-	// step's end (endStep): the session its claim records and the model that
-	// answered it last in that session (supervise.Machine.LastAnswer), read from the claim's
-	// machine without waiting on a decision in flight. Nil reads nothing, so a record names no
-	// session and no model, which is the API-only daemon and every test that reads no agent.
+	// step's end (endStep): the session its claim records and the model that answered it last in
+	// that session (supervise.Machine.LastAnswer), read from the claim's machine without waiting
+	// on a decision in flight. Nil reads nothing, so a record names no session and no model,
+	// which is the API-only daemon and every test that reads no agent.
 	StepAgent func(claim.Token) StepAgent
 }
 
@@ -818,6 +818,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// handoff lands. Its completion is recorded on its own row and moves nothing (leftItsPhase),
 	// and the handoff it names is the report of the run of its step the move ended
 	// (reportEndedStep).
+	//
 	// reported is the phase this completion is of (phase.Of): the issue's own, or, for a role the
 	// issue has moved on without, the phase that role has left.
 	reported := phase.Of(fact.Role, issue.Phase)

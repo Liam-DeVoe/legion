@@ -1081,15 +1081,16 @@ type RoleHoldersPublish struct {
 func (RoleHoldersPublish) OutboxKind() OutboxKind { return OutboxKindRoleHoldersPublish }
 
 // StepRecord is one write of an issue's record of one step onto Dispatch (PUT
-// /api/v1/issues/{key}/steps/{id}): the start of the step, or its end. ID is the record's id, a
-// uuid the start and the end of one run of the step both compute, and the row's issue column is the
-// issue. Each other field is a field of the route's body under the same name.
+// /api/v1/issues/{key}/steps/{id}): the start of the step, its end, or the report alone of a
+// completion that landed after that end (workflow's reportEndedStep). ID is the record's id, a
+// uuid every write of one run of the step computes, and the row's issue column is the issue. Each
+// other field is a field of the route's body under the same name.
 //
-// Dispatch writes each field once and keeps every field a write leaves out, so the start and the
-// end merge in either order and a write that runs again changes nothing. Every write carries the
+// Dispatch writes each field once and keeps every field a write leaves out, so the writes of one
+// run merge in any order and a write that runs again changes nothing. Every write carries the
 // identity of the step (task, step, kind, role, type, agent and generation), the empty type of a
 // retro or a merge and the place 0 of either included, and each field a write may not know yet is
-// a pointer, nil for one the write leaves to the other. The route takes a text field sent as "" as
+// a pointer, nil for one the write leaves to another. The route takes a text field sent as "" as
 // left out, so for a text field the pointer only says what the write knows; for a time and for
 // ReturnedTo it is what tells "not known" apart from a value: a zero time would be a moment
 // Dispatch keeps for good, and ReturnedTo 0 is a return to the retro, whose place is 0.
