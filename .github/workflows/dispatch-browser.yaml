@@ -1080,8 +1080,9 @@ jobs:
     # the server build above warm the one, and the service pulls the other. So its step takes the
     # rule's floor, two minutes, until runs of it give a maximum; the connections read is one
     # `go run` from that same cache and takes no budget of its own. The job budget is the four
-    # step budgets, 12 min, plus the 135 s above and a minute for the read, rounded up: 15 min.
-    timeout-minutes: 15
+    # step budgets, 12 min, plus the 135 s above and a minute for the read: 915 s, 15 min 15 s,
+    # rounded up to 16 min.
+    timeout-minutes: 16
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)

@@ -2013,8 +2013,9 @@ one worker and `DATABASE_URL` set, the run uses that database as stack 0's and
 starts no Postgres, exactly as it always has.
 
 The provider's own tests, `e2e/__tests__/harness-postgres-image-port.test.ts`,
-`harness-postgres-image-mount.test.ts` and the image row of `harness-postgres-leftover.test.ts`,
-run in the visual job, with its image digest, before its browser step; the leftover file's
+`harness-postgres-image-mount.test.ts`, `harness-postgres-image-ready.test.ts` and the image row of
+`harness-postgres-leftover.test.ts`, run in the visual job, with its image digest, before its
+browser step; the leftover file's
 binaries row runs in the `chromium-alone` leg of the alone job, whose container has the binaries,
 and `second-global-setup.test.ts` runs in the multiprocess job, the one runner job with Chromium,
 Go and Docker together. A test that needs a Postgres skips on a run that gives it none and never

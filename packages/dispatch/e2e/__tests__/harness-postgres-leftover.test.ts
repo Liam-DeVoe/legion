@@ -55,6 +55,7 @@ import {
   type Owner,
   runDirectoryPrefix,
   stackOwner,
+  startOf,
 } from "../harness-postgres-marks";
 import { type ProviderVariable, requirePostgres, skipsWithoutPostgres } from "./postgres-provider";
 
@@ -103,12 +104,11 @@ const childMs = 180_000;
  *  wait gives up at 120 s, and an initdb under load comes before it. */
 const stackMs = 300_000;
 
-/** Field 22 of a `/proc/<pid>/stat`, the process's start in clock ticks since boot, or "" where
- *  the process is gone. */
-function startOf(pid: number): string {
+/** The start of the process `pid`, as `startOf` reads it from `/proc`, or "" where the process is
+ *  gone. */
+function startTimeOf(pid: number): string {
   try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[22 - 3] ?? "";
+    return startOf(readFileSync(`/proc/${pid}/stat`, "utf8"));
   } catch {
     return "";
   }
@@ -153,13 +153,13 @@ function spawn(script: string, env: Record<string, string | undefined>): Child {
       output.stderr += text;
     }),
   ]);
-  return { process: child, pid: child.pid, start: startOf(child.pid), output, drained };
+  return { process: child, pid: child.pid, start: startTimeOf(child.pid), output, drained };
 }
 
 /** SIGKILL to `child`, a process this file started, only while `/proc` still names it: the pid
  *  with the start read as it spawned. */
 function kill(child: Child): void {
-  if (child.start === "" || startOf(child.pid) !== child.start) return;
+  if (child.start === "" || startTimeOf(child.pid) !== child.start) return;
   child.process.kill("SIGKILL");
 }
 

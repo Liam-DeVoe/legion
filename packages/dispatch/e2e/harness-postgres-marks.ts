@@ -133,8 +133,9 @@ function statFields(stat: string): string[] {
   return stat.slice(stat.lastIndexOf(")") + 2).split(" ");
 }
 
-/** Field 22 of a `/proc/<pid>/stat`, the process's start in clock ticks since boot. */
-function startOf(stat: string): string {
+/** Field 22 of `stat`, the text of a `/proc/<pid>/stat`: the process's start in clock ticks since
+ *  boot. */
+export function startOf(stat: string): string {
   return statFields(stat)[22 - 3] ?? "";
 }
 
@@ -245,7 +246,7 @@ function ownerOf(value: unknown): Owner | null | undefined {
  *  `socketDirectory` gives one, and exactly one of a postmaster whose data directory is a stack's
  *  or the template's in that run directory, and a container name. Every path is absolute and
  *  plain. */
-export function markOf(text: string): Mark | undefined {
+function markOf(text: string): Mark | undefined {
   let value: unknown;
   try {
     value = JSON.parse(text);
@@ -322,9 +323,7 @@ function stillRuns(pid: number, start: string): boolean {
  *  before and after that check, is the same both times. A `postmaster.pid` that a postmaster
  *  killed hard left, whose pid another process has since, names no postmaster here. Throws where
  *  it cannot tell. */
-export function postmasterOf(
-  data: string
-): { readonly pid: number; readonly start: string } | undefined {
+function postmasterOf(data: string): { readonly pid: number; readonly start: string } | undefined {
   let pidFile: string;
   try {
     pidFile = readFileSync(join(data, "postmaster.pid"), "utf8");
@@ -402,9 +401,7 @@ async function removePostmaster(bin: string, data: string, uid: number): Promise
     const stop = await execFileAsync(
       join(bin, "pg_ctl"),
       ["-D", data, "-m", "immediate", "-w", "stop"],
-      {
-        timeout: pgCtlMs,
-      }
+      { timeout: pgCtlMs }
     ).then(
       () => undefined,
       (error: unknown) => error
