@@ -331,7 +331,8 @@ export function IssueHistory({
   // has put the focus elsewhere by then keeps it there. No such move scrolls Details, whose
   // reader keeps their place, so a control the page pushed out of view - under files it added
   // to a run above - takes the focus only when none is in view; and the entry the focus moved to
-  // is then the place Details holds as the entries above it change height (`holdPlaceAtFocus`).
+  // is then the place Details holds as the entries above it change height (`ViewportAnchor`
+  // records the place at every focus moved into its rows).
   const pressed = useRef<
     | {
         readonly before: ReadonlySet<HTMLElement>;
@@ -381,7 +382,6 @@ export function IssueHistory({
           lastBefore)
         : failure.current?.querySelector("button");
     (target ?? heading.current)?.focus({ preventScroll: true });
-    holdPlaceAtFocus(scroller.current);
   });
   // The history draws the log it holds whatever the last read's outcome: a read
   // that fails once it holds the log - a refetch after an event, a later open of Details, the
@@ -547,24 +547,6 @@ function scrollingAncestor(element: HTMLElement | null): HTMLElement | null {
     if (overflow === "auto" || overflow === "scroll") return node;
   }
   return null;
-}
-
-/**
- * Has the history's `ViewportAnchor` hold the reader's place at the entry the focus is in, once
- * this list has moved the focus there itself with no scroll. The anchor takes a place only from
- * what the reader does - the pointer moving over the rows, or a scroll of the box it moves that
- * it did not make itself (`ViewportAnchor.tsx`) - and a focus moved by code is neither, so it
- * held no entry, and a change of height outside any commit moved the focused control with it:
- * long agents' turns above Load older, drawn whole until they near the screen, are cut after
- * the page it read lands, a thousand pixels each, and took the control Load older had handed
- * the focus to up out of Details' view. A scroll event of that box is the anchor's one way to
- * take a place, and it takes the entry the focus is in, where it stands now; were the anchor's
- * own scroll of this commit still to raise its event, this one is read as that, and that one,
- * when it comes, takes the same entry. Where the document scrolls the list `box` is null: the
- * anchor keeps no place there, the browser's own scroll anchoring does, and nothing is sent.
- */
-function holdPlaceAtFocus(box: HTMLElement | null): void {
-  box?.dispatchEvent(new Event("scroll"));
 }
 
 /** The day the entry `item` names is in: a thread's turn, root or reply. */

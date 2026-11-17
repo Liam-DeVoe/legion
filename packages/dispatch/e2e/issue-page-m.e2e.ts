@@ -1306,8 +1306,9 @@ test("a control of Details that goes away under the focus hands it to a control 
 // view. Found by the tester on a running build of f589637b with a copy of a large real issue: the
 // second press of Load older, made as the focus reached it, left the focus on a turn's time link
 // 212 px above Details' view at 1440 px (two runs of four), 224 px above at 768 px and 280 px
-// above at 390 px; a second and a half between the focus and Enter left it in view. The history
-// now has the place keeper hold the entry the focus is in once it has moved the focus there.
+// above at 390 px; a second and a half between the focus and Enter left it in view. The place
+// keeper now records the reader's place at each focus that moves into the history, so it holds
+// the entry the hand-on puts the focus in.
 test("Load older pressed as the focus reaches it keeps the focus in view while the turns above it are cut", async ({
   browser,
 }) => {

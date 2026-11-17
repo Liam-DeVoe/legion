@@ -409,7 +409,7 @@ test("a Retry that fails twice never leaves the focus on the page, and gets it b
 /** Save, disabled while its write is out, and Pin above it, which reads Unpin once pressed: the
  *  write goes out, the reader presses Pin, where the keeper put the focus, by `press`, and the
  *  write lands. Returns where the focus is after each step. */
-async function pinPressedWhileSaving(press: () => Promise<void>): Promise<string[]> {
+async function pinPressedWhileSaving(press: () => Promise<unknown>): Promise<string[]> {
   const box = drawBox(true, { pinned: false, writing: false }, (state, set) => (
     <>
       <button data-top={420} onClick={() => set({ ...state, pinned: !state.pinned })} type="button">

@@ -1142,14 +1142,15 @@ test("Load older whose last page adds no control hands the focus to the control 
 /** How tall the box the history scrolls in is: Details' view. */
 const VIEW_HEIGHT = 600;
 
-// Load older hands the focus on with no scroll, and `ViewportAnchor` takes the reader's place
-// only from what the reader does - the pointer over the rows, or a scroll they made - so it held
+// Load older hands the focus on with no scroll, and `ViewportAnchor` took the reader's place
+// only from what the reader did - the pointer over the rows, or a scroll they made - so it held
 // no entry then: long agents' turns just above Load older, drawn whole until they near the
 // screen, are cut once the page has landed, by commits of their own, and the control the focus
-// was handed to went up with them out of Details' view. The hand-on has the anchor hold the
-// entry the focus is in, which it keeps in place as the entries above it change height. The
-// browser row "Load older pressed as the focus reaches it keeps the focus in view while the
-// turns above it are cut" (`e2e/issue-page-m.e2e.ts`) draws the real turns.
+// was handed to went up with them out of Details' view. The anchor now records the reader's
+// place at each focus that moves into it, so it holds the entry the hand-on put the focus in and
+// keeps it in place as the entries above it change height. The browser row "Load older pressed
+// as the focus reaches it keeps the focus in view while the turns above it are cut"
+// (`e2e/issue-page-m.e2e.ts`) draws the real turns.
 test("the entry Load older hands the focus to keeps its place in Details' view as the entries above it are cut", async () => {
   const firstPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 1));
   const olderPage = [claimAgo(10, 300), claimAgo(9, 301)];

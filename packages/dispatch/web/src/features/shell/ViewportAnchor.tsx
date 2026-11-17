@@ -146,7 +146,9 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  the control, and its own words above the control can change height, which moves the
    *  control and leaves the row's top where it was. `top` is then the row's top that puts the
    *  control back at its own (`contentResized` keeps the two together), so a commit, which
-   *  measures the row, moves the control back with it.
+   *  measures the row, moves the control back with it. A press of the reader's inside the root,
+   *  a key or the pointer, lets the control go (`readerPressed`): what the press opens in the
+   *  row opens below the row's top, which is what holds then.
    *
    *  A different `scrollTop` means the view moved without this component hearing of it, and a
    *  different `group` means the row was relocated rather than shifted. On either the top no
@@ -170,6 +172,11 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  for, so it must not be read as the reader looking somewhere new. */
   private pointerAt: { x: number; y: number } | null = null;
 
+  /** What the reader's last pointer press inside the root went down on, until the focus next
+   *  moves into the root. The focus a press gives the control it went down on is that press's
+   *  own (`focusMoved`), not a control to keep the place at. */
+  private pressedOn: Node | null = null;
+
   /** The box the host named, while it holds one: what this anchor reads its offset from and
    *  what it moves. Null where the rows scroll in the document, which is the window's own
    *  scroll and the browser's own anchoring. */
@@ -188,8 +195,8 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
   /** Records where the hand's row sits now as the place to keep it, with the box offset and the
    *  group that place belongs to, and, where a control inside the row holds the focus, that
    *  control and where it sits. Called where the view is the reader's own: the pointer moving
-   *  onto a row or off one, and a scroll they made. A host whose rows scroll in the document
-   *  keeps nothing. */
+   *  onto a row or off one, a scroll they made, and the focus moving into the root, whoever
+   *  moved it. A host whose rows scroll in the document keeps nothing. */
   private readonly rememberHeld = (): void => {
     const scroller = this.scrollerElement();
     const current = scroller === null ? null : this.interacted();
@@ -374,10 +381,42 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     if (this.handMoved(event)) this.rememberHeld();
   };
 
+  // The focus moving into the root is the place from then on, whoever moved it: the reader
+  // tabbing to a control, or a host handing the focus on by code with no scroll, which raises
+  // nothing else this anchor hears, so a later change of the row's height would take the
+  // control with it. The focus a pointer press gives the control it went down on is the press's
+  // own, the reader acting on the row (`readerPressed`), and the row's top is what holds then.
+  private readonly focusMoved = (event: FocusEvent): void => {
+    const pressed = this.pressedOn;
+    this.pressedOn = null;
+    this.rememberHeld();
+    if (pressed !== null && event.target instanceof Node && event.target.contains(pressed)) {
+      this.readerPressed();
+    }
+  };
+
+  // A key or the pointer pressed inside the root is the reader acting on their row, as "more"
+  // drawing the rest of a cut turn's words: what the press opens, opens below the row's top,
+  // which stays where it was. The focused control kept with the place is let go, so only a
+  // change the reader did not make, a cut or a read arriving, keeps a control's own place, until
+  // the focus next moves into the root. Heard as the event goes down to its target, so a
+  // control that stops its own event is pressed all the same.
+  private readonly readerPressed = (): void => {
+    if (this.held !== null) this.held.focus = null;
+  };
+
+  private readonly pointerPressed = (event: PointerEvent): void => {
+    this.readerPressed();
+    this.pressedOn = event.target instanceof Node ? event.target : null;
+  };
+
   private readonly setRoot = (node: HTMLElement | null): void => {
     if (this.root !== null) {
       this.root.removeEventListener("pointerover", this.pointerOver);
       this.root.removeEventListener("pointerout", this.pointerOut);
+      this.root.removeEventListener("focusin", this.focusMoved);
+      this.root.removeEventListener("keydown", this.readerPressed, true);
+      this.root.removeEventListener("pointerdown", this.pointerPressed, true);
     }
     this.contentSize?.disconnect();
     this.contentSize = null;
@@ -385,6 +424,9 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     if (node !== null) {
       node.addEventListener("pointerover", this.pointerOver);
       node.addEventListener("pointerout", this.pointerOut);
+      node.addEventListener("focusin", this.focusMoved);
+      node.addEventListener("keydown", this.readerPressed, true);
+      node.addEventListener("pointerdown", this.pointerPressed, true);
       // Not every environment the unit tests run in has one (happy-dom); there the hold is the
       // commit path alone, which is what those tests exercise.
       if (typeof ResizeObserver !== "undefined") {

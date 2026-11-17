@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
-// biome-ignore lint/style/noRestrictedImports: this file sends the pointer's own clientX/clientY and a pointerout's relatedTarget, neither of which user-event's hover and unhover can set, and a box's own scroll event, which user-event has no form for.
+// fireEvent also sends a box's own scroll event, which user-event has no form for.
+// biome-ignore lint/style/noRestrictedImports: this file sends the pointer's own clientX/clientY and a pointerout's relatedTarget, neither of which user-event's hover and unhover can set.
 import { fireEvent, render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, type ReactNode, type RefObject } from "react";
@@ -56,13 +57,14 @@ function List({
   );
 }
 
-// A fixed geometry: rows are ROW_HEIGHT tall unless a case gives one another height
-// (`heights`), stacked from `listTop` in DOM order, in a VIEWPORT_HEIGHT window that scrolls
-// through `window.scrollY` - or, where the list is rendered in a scroller, through that element's
-// `scrollTop`, the scroller itself filling the window and never moving. A row's control is
-// CONTROL_HEIGHT tall and stands at the row's foot. `listTop` starts at LIST_TOP; a test lowers
-// it to shrink content above the rows without moving what scrolls them, which is what a card
-// collapsing in a commit of its own does.
+// A fixed geometry: rows are ROW_HEIGHT tall, stacked from `listTop` in DOM order, in a
+// VIEWPORT_HEIGHT window that scrolls through `window.scrollY` - or, where the list is rendered
+// in a scroller, through that element's `scrollTop`, the scroller itself filling the window and
+// never moving. `listTop` starts at LIST_TOP; a test lowers it to shrink content above the rows
+// without moving what scrolls them, which is what a card collapsing in a commit of its own does.
+// A case may draw a row at another height (`heights`), which moves the rows below it, and a
+// row's control is CONTROL_HEIGHT tall and stands at the row's foot: `drawnApart` measures
+// both, and `rowAtDepth` finds a row of a list that holds other heights.
 const CONTROL_HEIGHT = 20;
 const rows = () => [...document.querySelectorAll<HTMLElement>("[data-row]")];
 const viewportTop = (id: string) =>
@@ -91,6 +93,46 @@ function rowOffset(row: Element): number {
   return offset;
 }
 
+/** The row whose span holds the point `depth` px below the list's top. */
+function rowAtDepth(depth: number): HTMLElement | null {
+  let top = 0;
+  for (const row of rows()) {
+    if (depth >= top && depth < top + heightOf(row)) return row;
+    top += heightOf(row);
+  }
+  return null;
+}
+
+/** The box of `element` where the fixed geometry does not draw it: a row's control, and, while
+ *  the case draws a row at another height, every row and the list. Null for the rest. */
+function drawnApart(element: Element): DOMRect | null {
+  if (element.hasAttribute("data-scroller")) return null;
+  const row = element.closest("[data-row]");
+  const control = row !== null && row !== element;
+  if (!control && Object.keys(heights).length === 0) return null;
+  let top = listTop - (scrollerRef.current?.scrollTop ?? window.scrollY);
+  let height = listHeight();
+  if (row !== null) {
+    top += rowOffset(row);
+    height = heightOf(row);
+  }
+  if (control) {
+    top += height - CONTROL_HEIGHT;
+    height = CONTROL_HEIGHT;
+  }
+  return {
+    bottom: top + height,
+    height,
+    left: contentLeft,
+    right: contentLeft + contentWidth,
+    toJSON: () => ({}),
+    top,
+    width: contentWidth,
+    x: contentLeft,
+    y: top,
+  };
+}
+
 function setScrollY(value: number): void {
   Object.defineProperty(window, "scrollY", { configurable: true, value, writable: true });
 }
@@ -115,24 +157,19 @@ beforeEach(() => {
   const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: Element
   ) {
+    const apart = drawnApart(this);
+    if (apart !== null) return apart;
+    const all = rows();
     // Whatever scrolls the rows carries them: the window, or the scroller when one is rendered.
     const offset = scrollerRef.current?.scrollTop ?? window.scrollY;
     const isScroller = this.hasAttribute("data-scroller");
-    const row = this.closest("[data-row]");
-    let top = listTop - offset;
-    let height: number;
-    if (isScroller) {
-      top = 0;
-      height = VIEWPORT_HEIGHT;
-    } else if (row === null) {
-      height = listHeight();
-    } else if (row === this) {
-      top += rowOffset(row);
-      height = heightOf(row);
-    } else {
-      top += rowOffset(row) + heightOf(row) - CONTROL_HEIGHT;
-      height = CONTROL_HEIGHT;
-    }
+    const isRow = this.hasAttribute("data-row");
+    const top = isScroller
+      ? 0
+      : isRow
+        ? listTop + all.indexOf(this as HTMLElement) * ROW_HEIGHT - offset
+        : listTop - offset;
+    const height = isScroller ? VIEWPORT_HEIGHT : isRow ? ROW_HEIGHT : all.length * ROW_HEIGHT;
     return {
       bottom: top + height,
       height,
@@ -147,12 +184,10 @@ beforeEach(() => {
   });
   const point = spyOn(document, "elementFromPoint").mockImplementation((_x, y) => {
     if (_x < 0 || _x > 100) return null;
-    let top = listTop - (scrollerRef.current?.scrollTop ?? window.scrollY);
-    for (const row of rows()) {
-      if (y >= top && y < top + heightOf(row)) return row;
-      top += heightOf(row);
-    }
-    return null;
+    const offset = scrollerRef.current?.scrollTop ?? window.scrollY;
+    if (Object.keys(heights).length > 0) return rowAtDepth(offset + y - listTop);
+    const index = Math.floor((offset + y - listTop) / ROW_HEIGHT);
+    return rows()[index] ?? null;
   });
   restoreSpies = [() => rect.mockRestore(), () => point.mockRestore()];
 });
@@ -744,6 +779,76 @@ test("a control the focus is moved to by code inside a row keeps its place when 
   } finally {
     view.unmount();
     globalThis.ResizeObserver = RealResizeObserver;
+  }
+});
+
+// A press of the reader's on a control in a long row is their own act on that row, as "more" at
+// the foot of a cut turn draws the rest of the turn's words between its head and itself: the row
+// opens below its head, which stays where the reader saw it, and the control moves down with what
+// the press drew. Keeping the focused control's own place there instead pushed the head up by all
+// of it, out of the view. Only a change the reader did not make keeps the control's own place.
+test("a key pressed on a focused control in a long row lets the row open below its head", async () => {
+  const user = userEvent.setup();
+  heights = { r3: 400 };
+  const box = drawInBox(ids(40));
+  try {
+    const focused = document.querySelector<HTMLElement>('[data-row="r3"] button');
+    if (focused === null) throw new Error("r3 button missing");
+    focused.focus();
+    // The reader scrolls to the row: r3 runs from 200 to 600 px down the content, and its control
+    // stands at its foot.
+    box.scroller.scrollTop = 100;
+    box.settle();
+    expect(viewportTop("r3")).toBe(100);
+    expect(controlTop("r3")).toBe(480);
+
+    // Enter on the control opens the row by 800 px above the control.
+    await user.keyboard("{Enter}");
+    heights = { r3: 1200 };
+    box.settle();
+    expect(viewportTop("r3")).toBe(100);
+    expect(controlTop("r3")).toBe(1280);
+  } finally {
+    box.unmount();
+  }
+});
+
+// The same press made with the pointer, whether it goes down on the control that holds the focus
+// or gives the control the focus: the focus a press gives is that press's own, and no place to
+// keep the control at.
+test("a pointer pressed on a control in a long row lets the row open below its head, the focus it gives included", async () => {
+  const user = userEvent.setup();
+  heights = { r3: 400 };
+  const box = drawInBox(ids(40));
+  try {
+    const control = document.querySelector<HTMLElement>('[data-row="r3"] button');
+    if (control === null) throw new Error("r3 button missing");
+    control.focus();
+    box.scroller.scrollTop = 100;
+    box.settle();
+    expect(viewportTop("r3")).toBe(100);
+    expect(controlTop("r3")).toBe(480);
+
+    // A press on the control that holds the focus opens the row by 800 px above the control.
+    await user.click(control);
+    heights = { r3: 1200 };
+    box.settle();
+    expect(viewportTop("r3")).toBe(100);
+    expect(controlTop("r3")).toBe(1280);
+
+    // The row closes and the focus leaves it; the next press gives the control the focus as it
+    // opens the row again.
+    heights = { r3: 400 };
+    box.settle();
+    control.blur();
+    await user.click(control);
+    expect(document.activeElement).toBe(control);
+    heights = { r3: 1200 };
+    box.settle();
+    expect(viewportTop("r3")).toBe(100);
+    expect(controlTop("r3")).toBe(1280);
+  } finally {
+    box.unmount();
   }
 });
 
