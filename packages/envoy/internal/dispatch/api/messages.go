@@ -153,11 +153,9 @@ func (s *server) recoveredMessage(ctx context.Context, point messageRecovery) (m
 			return model.Message{}, err
 		}
 	}
-	deliveries, err := s.loadMessageDeliveries(ctx, s.deps.Store.Pool, []string{message.ID})
-	if err != nil {
+	if err := s.hydrateWrittenMessage(ctx, s.deps.Store.Pool, &message); err != nil {
 		return model.Message{}, err
 	}
-	message.Deliveries = deliveries[message.ID]
 	return message, nil
 }
 
@@ -417,11 +415,9 @@ func (s *server) createStoredMessage(
 		attempt, err := s.deliverMessageResuming(sending, message, delivery, actor, &thread, 1)
 		switch {
 		case errors.Is(err, errAttemptNotPending):
-			deliveries, err := s.loadMessageDeliveries(sending, s.deps.Store.Pool, []string{message.ID})
-			if err != nil {
+			if err := s.hydrateWrittenMessage(sending, s.deps.Store.Pool, &message); err != nil {
 				return model.Message{}, nil, err
 			}
-			message.Deliveries = deliveries[message.ID]
 		case err != nil:
 			return model.Message{}, nil, err
 		default:

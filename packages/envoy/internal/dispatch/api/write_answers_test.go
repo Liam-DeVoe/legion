@@ -2,14 +2,18 @@ package api
 
 // The answer of each write to a comment or to an issue message lists the mentions and the
 // delivery attempts a read of that post lists right after it. Each write used to answer the post
-// as its row alone had it, with no mention and no attempt, where the read listed both.
+// as its row alone had it, with no mention and no attempt, where the read listed both. The write
+// reads them in its own transaction before its commit, so a read that fails takes the write back
+// with it, and the error the caller is answered is true.
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -61,23 +65,17 @@ func jsonFields(t *testing.T, what string, object []byte) map[string]json.RawMes
 	return fields
 }
 
-// compactJSON is value with no insignificant space, so two writers of one value compare equal.
-func compactJSON(t *testing.T, value json.RawMessage) string {
-	t.Helper()
-	var compact bytes.Buffer
-	if err := json.Compact(&compact, value); err != nil {
-		t.Fatalf("compact %s: %v", value, err)
-	}
-	return compact.String()
-}
-
 // requireAnswerListsTheRead fails t unless the answer of write lists, in each of fields, exactly
-// what the read lists in it.
+// what the read lists in it: the same bytes, since both are written by WriteJSON's one encoder.
 func requireAnswerListsTheRead(t *testing.T, write, read string, answer *httptest.ResponseRecorder, stored map[string]json.RawMessage, fields ...string) {
 	t.Helper()
 	answered := jsonFields(t, "the answer of "+write, answer.Body.Bytes())
 	for _, field := range fields {
-		if got, want := compactJSON(t, answered[field]), compactJSON(t, stored[field]); got != want {
+		got, listed := answered[field]
+		if !listed {
+			t.Fatalf("the answer of %s has no %s, want %s, what %s lists", write, field, stored[field], read)
+		}
+		if want := stored[field]; !bytes.Equal(got, want) {
 			t.Fatalf("the answer of %s lists %s %s, want %s, what %s lists", write, field, got, want, read)
 		}
 	}
@@ -206,4 +204,87 @@ func TestMessageCorrectionAnswersListTheDeliveriesAReadLists(t *testing.T) {
 
 	deleted := dispatchRequest(t, f.handler, http.MethodDelete, path, nil, "alice")
 	f.requireMessageAnswerListsTheRead(t, "DELETE "+path, message.ID, deleted)
+}
+
+// unreadableAttempt makes the post's one settled delivery attempt unreadable to Dispatch: it sets
+// the row's created_at to 'infinity', a timestamptz Postgres stores, compares and orders, which
+// pgx refuses to scan into the time.Time every read of an attempt decodes it into
+// (scanCommentDelivery, scanMessageDelivery: "cannot scan Infinity into *time.Time"). No
+// statement of an edit or a delete of a post scans a settled attempt of it - the delete's settle
+// returns the pending ones alone (settleDeletedPostDeliveries) - so the one read it fails is the
+// answer's, wherever that read runs: in the write's transaction, or on the pool after its commit.
+func (f writeAnswersFixture) unreadableAttempt(t *testing.T, attempts, owner, id string) {
+	t.Helper()
+	tag, err := f.database.Pool.Exec(context.Background(), `
+		update `+attempts+` set created_at = 'infinity' where `+owner+` = $1 and state <> 'pending'
+	`, id)
+	if err != nil {
+		t.Fatalf("make the attempt of %s unreadable: %v", id, err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Fatalf("made %d settled attempts of %s unreadable, want its one", tag.RowsAffected(), id)
+	}
+}
+
+// A correction whose answer cannot be read answers an error and leaves the post as it was: the
+// read of the attempts its answer lists runs in the correction's own transaction, before the
+// commit, so its failure rolls the write back. A correction that read them after its commit
+// answered 500 for a write that had landed, and a retried delete then met 409 POST_DELETED. The
+// post is read back from its row: a GET would read the same unreadable attempt and fail too.
+func TestACorrectionWhoseAnswerCannotBeReadDoesNotLand(t *testing.T) {
+	f := newWriteAnswersFixture(t)
+	issue := createInteractionIssue(t, f.handler, "TEST", "A correction whose answer cannot be read", "before")
+	const original = "Reviewers, read the spec."
+	type post struct {
+		route, rows, attempts, owner string
+		create                       func(t *testing.T) string
+	}
+	comment := post{
+		route: "/api/v1/comments/", rows: "comments", attempts: "comment_deliveries", owner: "comment_id",
+		create: func(t *testing.T) string {
+			return f.mentioningComment(t, issue.Key, map[string]any{"body": original})
+		},
+	}
+	message := post{
+		route: "/api/v1/messages/", rows: "messages", attempts: "message_deliveries", owner: "message_id",
+		create: func(t *testing.T) string {
+			return createIssueMessage(t, f.handler, issue.Key, map[string]any{
+				"body": original, "target": "role:reviewer", "delivery": "btw",
+			}, "alice").ID
+		},
+	}
+	edit := map[string]any{"body": "Reviewers, read the new spec."}
+	for _, test := range []struct {
+		name   string
+		post   post
+		method string
+		body   any
+	}{
+		{name: "comment delete", post: comment, method: http.MethodDelete},
+		{name: "comment edit", post: comment, method: http.MethodPatch, body: edit},
+		{name: "message delete", post: message, method: http.MethodDelete},
+		{name: "message edit", post: message, method: http.MethodPatch, body: edit},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			id := test.post.create(t)
+			f.unreadableAttempt(t, test.post.attempts, test.post.owner, id)
+			write := test.method + " " + test.post.route + id
+			answer := dispatchRequest(t, f.handler, test.method, test.post.route+id, test.body, "alice")
+			if answer.Code != http.StatusInternalServerError {
+				t.Fatalf("%s with its attempt unreadable: status=%d body=%s, want 500, the answer's read failing",
+					write, answer.Code, answer.Body.String())
+			}
+			var body string
+			var editedAt, deletedAt *time.Time
+			if err := f.database.Pool.QueryRow(context.Background(), `
+				select body, edited_at, deleted_at from `+test.post.rows+` where id = $1
+			`, id).Scan(&body, &editedAt, &deletedAt); err != nil {
+				t.Fatalf("read %s back after %s: %v", id, write, err)
+			}
+			if body != original || editedAt != nil || deletedAt != nil {
+				t.Fatalf("%s answered %d and landed: the row reads body %q, edited_at %v, deleted_at %v, want %q, never edited nor deleted",
+					write, answer.Code, body, editedAt, deletedAt, original)
+			}
+		})
+	}
 }

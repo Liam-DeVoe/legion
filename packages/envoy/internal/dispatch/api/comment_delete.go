@@ -136,15 +136,15 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	events = append(events, event)
+	comment, err = s.hydrateWrittenComment(r.Context(), tx, comment)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	s.publish(r.Context(), events...)
-	comment, err = s.hydrateWrittenComment(r.Context(), comment)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 	WriteJSON(w, http.StatusOK, comment)
 }
