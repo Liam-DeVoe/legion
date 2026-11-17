@@ -119,6 +119,13 @@ func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write wo
 	if !ok {
 		return
 	}
+	// A body refused for its shape is refused before the transaction and the issue's lock, as the
+	// package refuses a required field it lacks.
+	if rates && write.Rating == nil {
+		writeError(w, codeStepInput, http.StatusBadRequest,
+			"rating is required: the rating route writes a retro's rating, 1 to 5, with its rating_reason")
+		return
+	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -128,11 +135,6 @@ func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write wo
 	defer tx.Rollback(r.Context())
 	issue, project, ok := s.lockRecordedIssue(w, r, tx, key)
 	if !ok {
-		return
-	}
-	if rates && write.Rating == nil {
-		writeError(w, codeStepInput, http.StatusBadRequest,
-			"rating is required: the rating route writes a retro's rating, 1 to 5, with its rating_reason")
 		return
 	}
 	write.ID, write.Issue, write.Project = r.PathValue("id"), issue, &project
