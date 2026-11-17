@@ -866,10 +866,11 @@ const unmarkedReads = 16
 // delivery at the barrier has ended the wait. The list is taken only from the stream's leader,
 // and only once it has stored through the barrier (bus.ErrKeyListBehind), and the leader holds a
 // message on every key that held a record at the barrier, that record or a later one, so the list
-// names it, and the leader's read applies it before the read completes. The
-// list costs one STREAM.INFO per read that reaches its barrier, of one entry per key the bucket
-// holds a message on; the scan delivers every key's newest message, delete markers included, so
-// the leader reads only what the scan and the wait did not deliver.
+// names it, and the leader's read applies it before the read completes. A read that reaches its
+// barrier makes one key listing: one STREAM.INFO per page of 100,000 subjects, normally one page,
+// plus one more when it pages, of one entry per key the bucket holds a message on. The scan
+// delivers every key's newest message, delete markers included, so the leader reads only what the
+// scan and the wait did not deliver.
 //
 // At most unmarkedReads reads are in flight, each bounded by bus.RequestTimeout, as the list is,
 // and the first failure ends the rest. A read that may no longer complete, or a generation
