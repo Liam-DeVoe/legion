@@ -1014,6 +1014,218 @@ test("Blocks hands the focus of its Retry to its None when the read answers with
   }
 });
 
+// Blocks said a read that failed again in the same words on the same node, so a screen reader
+// said nothing of it. Each failure is drawn afresh (`errorUpdateCount`), here of a read that
+// failed on its first load and so holds no answer, while Retry stays the same button, holding
+// the focus of a reader who pressed it by keyboard.
+test("Blocks says a read that fails again in the same words again, while its Retry keeps the focus", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences")
+    .mockResolvedValue({
+      edges: [],
+      node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+    })
+    .mockRejectedValueOnce(new ApiError(500, { code: "INTERNAL", error: "read failed" }));
+  const retried = Promise.withResolvers<GraphReferences>();
+  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
+  const { unmount } = renderDetails(undefined, drawer);
+  const stopBlurring = blurWhenDisabled();
+  const blocksRow = () => within(detailsRow(PROPERTY_LABELS.blocks));
+
+  try {
+    const retry = await waitFor(() =>
+      blocksRow().getByRole("button", { name: CONTROL_LABELS.retry })
+    );
+    const failed = blocksRow().getByRole("alert");
+
+    getReferences.mockImplementationOnce(() => retried.promise);
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
+    await act(async () =>
+      retried.reject(new ApiError(500, { code: "INTERNAL", error: "read failed" }))
+    );
+    await waitFor(() =>
+      expect(retry, "Retry still reads busy after the read failed again").not.toHaveAttribute(
+        "aria-busy"
+      )
+    );
+
+    const failedAgain = blocksRow().getByRole("alert");
+    expect(failedAgain).toHaveTextContent("Could not read what this issue blocks.");
+    expect(
+      failedAgain,
+      "the second failure was not drawn afresh, so a screen reader would not say it"
+    ).not.toBe(failed);
+    expect(
+      blocksRow().getByRole("button", { name: CONTROL_LABELS.retry }),
+      "the line came back with another Retry"
+    ).toBe(retry);
+    expect(document.activeElement, "Retry lost the focus when the read failed again").toBe(retry);
+  } finally {
+    stopBlurring();
+    unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// While the Blocked by editor is open the row draws no control of its own, so as the titles the
+// Retry sent answer, the focus it held goes to the first issue the row waits on rather than to
+// the page.
+test("while the Blocked by editor is open, the titles' Retry hands its focus to the first issue the row waits on", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  const titles = spyOn(api, "getReferenceTargets").mockRejectedValueOnce(
+    new ApiError(500, { code: "INTERNAL", error: "read failed" })
+  );
+  const answered = Promise.withResolvers<ReferenceTargets>();
+  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
+  const { unmount } = renderDetails(undefined, drawer);
+  const blockedBy = () => within(detailsRow(PROPERTY_LABELS.blocked_by));
+
+  try {
+    const retry = await waitFor(() =>
+      blockedBy().getByRole("button", { name: CONTROL_LABELS.retry })
+    );
+    await user.click(blockedBy().getByRole("button", { name: blockedByControlName("CORE-1", 1) }));
+    await blockedBy().findByRole("textbox", { name: "Issues CORE-1 waits on" });
+
+    titles.mockImplementationOnce(() => answered.promise);
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(titles).toHaveBeenCalledTimes(2));
+    await act(async () => answered.resolve({ targets: [] }));
+    await waitFor(() =>
+      expect(
+        blockedBy().queryByRole("alert"),
+        "the titles answered, but Blocked by still says they failed"
+      ).toBeNull()
+    );
+    expect(
+      document.activeElement,
+      "the titles answered with the editor open, and the focus went elsewhere than the first issue the row waits on"
+    ).toBe(blockedBy().getByRole("link", { name: "CORE-3" }));
+  } finally {
+    unmount();
+    titles.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// A closed issue's Blocked by draws no control, so as the titles the Retry sent answer, the
+// focus it held goes to the first issue the row waits on rather than to the page.
+test("on a closed issue, the titles' Retry hands its focus to the first issue the row waits on", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({
+    ...issue,
+    blocked_by: ["CORE-3"],
+    closed_at: "2026-09-10T00:00:00Z",
+    status: "done",
+  });
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  const titles = spyOn(api, "getReferenceTargets").mockRejectedValueOnce(
+    new ApiError(500, { code: "INTERNAL", error: "read failed" })
+  );
+  const answered = Promise.withResolvers<ReferenceTargets>();
+  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
+  const { unmount } = renderDetails(undefined, drawer);
+  const blockedBy = () => within(detailsRow(PROPERTY_LABELS.blocked_by));
+
+  try {
+    const retry = await waitFor(() =>
+      blockedBy().getByRole("button", { name: CONTROL_LABELS.retry })
+    );
+    expect(
+      blockedBy().queryByRole("button", { name: blockedByControlName("CORE-1", 1) }),
+      "a closed issue's Blocked by draws its control"
+    ).toBeNull();
+
+    titles.mockImplementationOnce(() => answered.promise);
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(titles).toHaveBeenCalledTimes(2));
+    await act(async () => answered.resolve({ targets: [] }));
+    await waitFor(() =>
+      expect(
+        blockedBy().queryByRole("alert"),
+        "the titles answered, but Blocked by still says they failed"
+      ).toBeNull()
+    );
+    expect(
+      document.activeElement,
+      "the titles answered on a closed issue, and the focus fell to the page rather than to the first issue the row waits on"
+    ).toBe(blockedBy().getByRole("link", { name: "CORE-3" }));
+  } finally {
+    unmount();
+    titles.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// While the Blocked by editor is open, another session's write can leave the issue waiting on
+// nothing: the titles' failure goes with the list, and the row then draws no control and no
+// issue, so the focus the line's Retry held goes to the editor's box rather than to the page.
+test("while the Blocked by editor is open, the titles' Retry hands its focus to the editor's box once the issue waits on nothing", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  const titles = spyOn(api, "getReferenceTargets").mockRejectedValueOnce(
+    new ApiError(500, { code: "INTERNAL", error: "read failed" })
+  );
+  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
+  const { queryClient, unmount } = renderDetails(undefined, drawer);
+  const blockedBy = () => within(detailsRow(PROPERTY_LABELS.blocked_by));
+
+  try {
+    const retry = await waitFor(() =>
+      blockedBy().getByRole("button", { name: CONTROL_LABELS.retry })
+    );
+    await user.click(blockedBy().getByRole("button", { name: blockedByControlName("CORE-1", 1) }));
+    const box = await blockedBy().findByRole("textbox", { name: "Issues CORE-1 waits on" });
+    act(() => retry.focus());
+
+    const read = queryClient.getQueryData<IssueDetails>(issueQuery("CORE-1").queryKey);
+    if (read === undefined) throw new Error("Details reads no cached issue");
+    act(() => queryClient.setQueryData(issueQuery("CORE-1").queryKey, { ...read, blocked_by: [] }));
+    await waitFor(() =>
+      expect(
+        blockedBy().queryByRole("alert"),
+        "the issue waits on nothing, but Blocked by still says its titles failed"
+      ).toBeNull()
+    );
+    expect(
+      document.activeElement,
+      "the issue waits on nothing with the editor open, and the focus fell to the page rather than to the editor's box"
+    ).toBe(box);
+  } finally {
+    unmount();
+    titles.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
 // A folded list's Show all goes with its press, so the focus goes on to the first entry it
 // opened, the eleventh, rather than falling to the page: in Files and documents, and in Blocks.
 test("Show all gives the focus to the first entry it opens", async () => {

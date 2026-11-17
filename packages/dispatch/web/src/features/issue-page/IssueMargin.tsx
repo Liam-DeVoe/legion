@@ -235,16 +235,20 @@ export function IssueMarginPanel({
       : [{ key: edge.node.issue_key, title: edge.excerpt?.text ?? "" }]
   );
   // The line of a read that failed goes once the read answers, and the focus its Retry held goes
-  // on in the row rather than to the page: in Blocked by to the row's control, found by its name
-  // as the add menu finds it (`blockedByControlName`), or where the row draws none - on a closed
-  // issue, or while its editor is open - to the first issue the row waits on; in Blocks, which
-  // has no control, to the first issue the answer drew, or else to the None it says.
+  // on in the row rather than to the page. In Blocked by it goes to the row's control, found by
+  // its name as the add menu finds it (`blockedByControlName`); where the row draws none - on a
+  // closed issue, or while its editor is open - to the first issue the row waits on; and where
+  // it waits on none while the editor is open, as another session's write can leave it, to the
+  // editor's box. In Blocks, which has no control, it goes to the first issue the answer drew,
+  // or else to the None it says.
   const blockedByValue = useRef<HTMLDivElement>(null);
   const titlesRetryLeft = useFocusHandOff(
     () =>
       blockedByValue.current?.querySelector<HTMLElement>(
         `[aria-label="${CSS.escape(blockedByControlName(issue.key, blockers.length))}"]`
-      ) ?? blockedByValue.current?.querySelector<HTMLElement>("a[href]")
+      ) ??
+      blockedByValue.current?.querySelector<HTMLElement>("a[href]") ??
+      blockedByValue.current?.querySelector<HTMLElement>("#issue-blocked-by")
   );
   const blocksValue = useRef<HTMLDivElement>(null);
   const blocksNone = useRef<HTMLSpanElement>(null);
