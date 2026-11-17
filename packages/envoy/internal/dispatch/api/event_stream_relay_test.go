@@ -21,15 +21,15 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// secondProcessHandler mounts a second API stack on the database the first one is on, as the
-// second envoy-dispatch task of a deployment is: its own pool (storetest.SecondProcess), its own
-// broker, its own document service and its own event stream relay. The two share Postgres and
-// nothing else, which is the whole point -- an in-process fan-out cannot cross between them.
-func secondProcessHandler(t *testing.T, database *store.Store) http.Handler {
+// secondProcess mounts a second API stack on the database the first one is on, as the second
+// envoy-dispatch task of a deployment is: its own pool (storetest.SecondProcess), its own broker,
+// its own document service and its own event stream relay. The two share Postgres and nothing
+// else, which is the whole point -- an in-process fan-out cannot cross between them. It answers
+// the stack's handler and the server Register would mount, whose relay a test reads.
+func secondProcess(t *testing.T, database *store.Store) (http.Handler, *server) {
 	t.Helper()
 	second := storetest.SecondProcess(t, database)
 	broker := events.NewBroker()
@@ -51,8 +51,9 @@ func secondProcessHandler(t *testing.T, database *store.Store) http.Handler {
 		t.Fatalf("new API dependencies for the second process: %v", err)
 	}
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
-	return mux
+	served := register(mux, t.Context(), deps)
+	t.Cleanup(served.waitBackground)
+	return mux, served
 }
 
 // TestEventCommittedOnAnotherProcessReachesAnOpenEventFeed is what the live feed is for with two
@@ -63,7 +64,8 @@ func secondProcessHandler(t *testing.T, database *store.Store) http.Handler {
 func TestEventCommittedOnAnotherProcessReachesAnOpenEventFeed(t *testing.T) {
 	first, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, first, "TEST", "Issue", "A spec")
-	second := httptest.NewServer(secondProcessHandler(t, database))
+	handler, _ := secondProcess(t, database)
+	second := httptest.NewServer(handler)
 	t.Cleanup(second.Close)
 	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(second.URL, "http")+"/ws/live", withBearer("agent-token")).read()
 	subscribeEvents(t, client, "events", nil)
@@ -157,21 +159,6 @@ func relayPublished(relay *eventStreamRelay) int64 {
 		return 0
 	}
 	return relay.generation.cursor
-}
-
-// feedsAtTheRelay counts the events subscriptions whose feed is inside a relay's subscribe
-// (feedEvents calling eventStreamRelay.subscribe): waiting behind a generation whose start waits
-// on the horizon, or starting one itself. Such a subscribe records nothing and its socket is sent
-// nothing before events_start, so the goroutine's own stack is the one state that shows it. The
-// package's tests run one at a time, so every such goroutine is the running test's.
-func feedsAtTheRelay() int {
-	at := 0
-	for _, trace := range goroutinetest.Traces() {
-		if strings.Contains(trace, ".(*server).feedEvents(") && strings.Contains(trace, ".(*eventStreamRelay).subscribe(") {
-			at++
-		}
-	}
-	return at
 }
 
 // relayGapRereadsWhy is why a test holds a span while a gap in the event log stands open: the
@@ -368,7 +355,8 @@ func TestOutOfOrderCommitsOnAnotherProcessReachAnOpenSubscriptionInIDOrder(t *te
 	first, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, first, "TEST", "Issue", "A spec")
 	other := createInteractionIssue(t, first, "OTHER", "Other issue", "A spec")
-	second := httptest.NewServer(secondProcessHandler(t, database))
+	handler, _ := secondProcess(t, database)
+	second := httptest.NewServer(handler)
 	t.Cleanup(second.Close)
 	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(second.URL, "http")+"/ws/live", withBearer("agent-token")).read()
 	subscribeEvents(t, client, "events", nil)
@@ -533,13 +521,15 @@ func TestEventStreamRelayRecoversWhenTheEventLogIsReset(t *testing.T) {
 // head, above every new id, so its relay takes the new log's b for its cursor at once while a is
 // open, and a subscription made after that reset is never sent a when it commits, though it is sent
 // the event after it. With the horizon forgotten, the relay's new cursor waits for a to end. A
-// subscription made meanwhile finds the relay still on the old cursor, so it hands over only once
-// the relay has reset, and is sent a, which committed after it subscribed, below that new cursor.
+// subscription made meanwhile starts the relay's next generation, whose start reads the log with
+// a's id open below b's and then waits for a horizon a holds back (firstRelayCursor), and is sent
+// a, which committed after that read, below that new cursor.
 func TestEventLogResetClearsTheRelaysHorizon(t *testing.T) {
 	first, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, first, "TEST", "Issue", "A spec")
 	other := createInteractionIssue(t, first, "OTHER", "Other issue", "A spec")
-	second := httptest.NewServer(secondProcessHandler(t, database))
+	handler, processB := secondProcess(t, database)
+	second := httptest.NewServer(handler)
 	t.Cleanup(second.Close)
 	dial := func() *socketClient {
 		t.Helper()
@@ -579,14 +569,16 @@ func TestEventLogResetClearsTheRelaysHorizon(t *testing.T) {
 			t.Fatalf("frame = %+v, want the events subscription's end", frame)
 		}
 	}
-	// This subscription hands over only once the relay's reset, which waits for a, has run, so it
-	// subscribes first and a commits once its subscribe has reached the relay.
-	feeds := feedsAtTheRelay()
+	// This subscription starts B's relay again, and its start reads the log once, finding a's id
+	// open below b's, before it waits for the horizon a holds back (firstRelayCursor). An event that
+	// commits before that read counts as committed before the subscription began, so a commits
+	// once the start has read: the count of starts that have read the log is the one fact the
+	// start leaves of that read (server.relayStartReads).
+	reads := processB.relayStartReads.Load()
 	waiting := dial()
 	sendEventsSubscribe(t, waiting, "events", nil)
-	testwait.Until(t, "the subscription made while a is open to reach B's relay", func() (int, bool) {
-		at := feedsAtTheRelay()
-		return at, at > feeds
+	testwait.Eventually(t, "the start of B's relay for the subscription made while a is open to read the log", func() bool {
+		return processB.relayStartReads.Load() > reads
 	})
 	commitLow()
 	renameIssue(t, first, issue.Key, "Renamed after the reset")

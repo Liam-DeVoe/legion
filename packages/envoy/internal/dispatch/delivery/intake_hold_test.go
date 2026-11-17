@@ -732,30 +732,81 @@ func TestAMessagePushedToADrainingHolderPastItsHoldsLapseIsLeftToTheStandby(t *t
 }
 
 // A holder abandoned without a stop, as a SIGKILL leaves it -- its NATS connection gone and its hold
-// no longer renewed -- strands the messages it had been delivered. The standby takes the durable
-// over once the hold lapses and is redelivered every one of them at once: within the hold's 15 s
-// TTL, a 2 s bind interval and a margin, not after the ack wait.
+// no longer renewed -- strands the messages it had been delivered. The standby's first try for the
+// hold once that hold has lapsed takes the durable over, and the take-over redelivers every one of
+// them at once, not after the ack wait, which ackWaitPastTheRun keeps from ever coming.
+//
+// No real time decides it. The hold's liveness is its row on the database's clock (duty.Hold),
+// which no clock of the test reaches, and the row writes that clock's account itself. The holder's
+// hold runs on a fake the row never moves (heldDurable.holdClock), so the holder renews nothing,
+// and the row keeps its hold's row live, as those renewals would, past anything the run waits for;
+// then it ends it as the database's clock passing intakeHoldTTL after the last renewal does: its
+// expiry set to the database's now(), its holder and token kept, and no release notified. The
+// standby tries for the hold on a fake of its own, which the row moves one durableBindInterval at
+// a time: a try while the hold is live stands by, and the first try after the lapse takes the
+// durable over.
 func TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse(t *testing.T) {
 	ackWaitPastTheRun(t)
+	logs := captureLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
 	publisher := intakeTestClient(t)
 
-	holder := startIntakeProcess(t, pool, natsURL, func(int) bool { return true })
+	holder := startIntakeProcessWith(t, pool, natsURL, func(int) bool { return true }, func(p *intakeProcess) {
+		p.intake.holdClock = clocktest.New(time.Now())
+	})
+	// The holder's fetches hold its handlers until the test lets them go, which it does as it
+	// ends, before the holder's stop (registered after it, so run first): that stop then finds its
+	// handlers answered rather than waiting its budget out for them (intakeStopBudget).
+	t.Cleanup(holder.release)
 	awaitBoundDurable(t, publisher)
-	standby := startIntakeProcess(t, pool, natsURL, nil)
+	holdName := intakeHoldName(bus.DispatchDeliveryDurable)
+	if tag, err := pool.Exec(ctx, `update duty_holds set expires_at = now() + interval '1 day' where name = $1 and holder = $2`,
+		holdName, holder.intake.holder); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("keep the holder's hold live as its renewals would: %d rows, %v", tag.RowsAffected(), err)
+	}
+	tries := clocktest.New(time.Now())
+	standby := startIntakeProcessWith(t, pool, natsURL, nil, func(p *intakeProcess) { p.intake.holdClock = tries })
+	// The standby's first try, as it starts, finds the hold live and stands by.
+	waitFor(t, func() bool { return loggedMessage(logs(), heldElsewhere) }, func() string {
+		return fmt.Sprintf("the standby never stood by for the durable the holder holds (%q); the messages logged were %q",
+			heldElsewhere, loggedMessages(logs()))
+	})
 
 	stranded := []int{1, 2, 3, 4}
 	for _, number := range stranded {
 		publishMergedPullRequest(t, publisher, number)
 	}
 	awaitAckPending(t, publisher, len(stranded))
-
-	abandoned := time.Now()
 	holder.leases.cut.Store(true)
 	holder.client.Close()
 
+	// A try while the abandoned hold is still live stands by: the try has ended once the next one
+	// is armed, and then the hold still names the holder and the standby has handled nothing.
+	tries.Advance(durableBindInterval)
+	tries.AwaitArmed(t, "the standby's next try for the hold, armed once the try the row brought has ended", 1)
+	var named string
+	var live bool
+	if err := pool.QueryRow(ctx, "select holder::text, expires_at > now() from duty_holds where name = $1", holdName).Scan(&named, &live); err != nil {
+		t.Fatalf("read the durable's hold: %v", err)
+	}
+	if named != holder.intake.holder.String() || !live {
+		t.Fatalf("after the standby's try while the abandoned hold was live, the hold names %s, live = %t; want the holder's %s, live",
+			named, live, holder.intake.holder)
+	}
+	for _, number := range stranded {
+		if got := standby.fetches(number); got != 0 {
+			t.Fatalf("the standby handled pull request %d %d times while the abandoned hold was still live, want none: %s",
+				number, got, consumerState(publisher))
+		}
+	}
+
+	// The hold lapses, and the standby's next try takes the durable over.
+	if _, err := pool.Exec(ctx, `update duty_holds set expires_at = now() where name = $1`, holdName); err != nil {
+		t.Fatalf("lapse the abandoned hold on the database's clock: %v", err)
+	}
+	tries.Advance(durableBindInterval)
 	waitFor(t, func() bool {
 		for _, number := range stranded {
 			if standby.fetches(number) == 0 {
@@ -764,10 +815,9 @@ func TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse(t *testing
 		}
 		return true
 	}, func() string {
-		return fmt.Sprintf("the standby has not handled the abandoned holder's messages %v: standby %v; %s",
+		return fmt.Sprintf("the standby's try after the hold lapsed has not handled the abandoned holder's messages %v: standby %v; %s",
 			stranded, fetchesOf(standby, stranded), consumerState(publisher))
 	})
-	t.Logf("the standby handled the stranded messages %s after the holder was abandoned", time.Since(abandoned))
 }
 
 // A holder cut off from NATS and Postgres loses its hold, and the standby takes the durable over.

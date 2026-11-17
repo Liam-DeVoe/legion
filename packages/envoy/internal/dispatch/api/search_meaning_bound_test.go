@@ -165,11 +165,14 @@ func TestSearchReportsAMeaningStatementTheServerEnded(t *testing.T) {
 //
 // The check answers when the statement is ended rather than at the end of its three-second
 // meaning allowance, which is what tells the two apart: the statement was ended, not waited out.
-// The check runs on a clock that never moves, so its meaning deadline cannot pass: a
-// keywords-only answer can only be the statement's end, and a check that waited for that
-// deadline fails by name at the test binary's deadline. The text shares one word with the issue
-// and means the same thing, so the keyword stage has the item to fall back on and the meaning
-// stage has a reason to be running at all.
+// Both checks run on a clock that never moves, so the meaning deadline cannot pass: the healthy
+// check's meaning stage answers however long a loaded machine takes it, and a keywords-only answer
+// can only be the statement's end, and a check that waited for that deadline fails by name at the
+// test binary's deadline. The clock is the server's before its first check, because a check
+// answers while its other stage runs on and reads that clock (runRelatedCheck), so a clock swapped
+// in after the first check would be written under that stage's read. The text shares one word with
+// the issue and means the same thing, so the keyword stage has the item to fall back on and the
+// meaning stage has a reason to be running at all.
 func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing.T) {
 	const title, spec = "Nightly backups overrun their window", "The backup job runs past six in the morning."
 	const text = "Nightly snapshots finish late"
@@ -182,6 +185,7 @@ func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing
 	key := createSearchIssue(t, handler, "MBOUND", title, spec)
 	processAllPending(t, database, embedder)
 
+	srv.clock = clocktest.New(checkStart)
 	// The check searched by meaning on this server before the bound was shortened.
 	healthy := srv.relatedCheck(context.Background(), relatedInput{project: "MBOUND", text: text})
 	if healthy.Search != "meaning_and_keywords" || healthy.SearchNote != "" {
@@ -189,7 +193,6 @@ func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing
 	}
 
 	endMeaningStatementsAt(t, "1ms")
-	srv.clock = clocktest.New(checkStart)
 	suggestions := answeredBeforeTheBinaryDeadline(t, "the check", func() *model.Suggestions {
 		return srv.relatedCheck(context.Background(), relatedInput{project: "MBOUND", text: text})
 	})

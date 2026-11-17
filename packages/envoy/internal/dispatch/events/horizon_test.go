@@ -577,39 +577,56 @@ func TestHorizonSafeWaitsOutAnObservationInFlightBeforeTheCall(t *testing.T) {
 // Every reader of a process calls Safe; concurrent calls must share observations, since each one
 // costs a round trip and a transaction id. Callers that arrive while one is in flight wait it out
 // and share the next.
+//
+// The test holds each observation before it reaches the database (heldHorizonDB) and lets it go
+// only once every caller it is owed to has parked on it, which the run itself reports
+// (afterObservationParked): the first observation, which one call opens, holds while callers more
+// calls arrive and park on it; the next, which one of those runs once the first has ended, holds
+// while the other callers - 1 park on it. Safe never settles for an observation already in flight
+// when it is called, so the callers' share is that next one, and the calls run two observations in
+// all, whatever order the scheduler wakes the callers in once the first has ended: a caller still
+// asleep when the next observation ended would run one of its own, which is what a loaded machine
+// made of a test that let the next observation run free.
 func TestHorizonConcurrentSafeCallsShareAnObservation(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := testwait.Context(t)
-	counting := &countingHorizonDB{HorizonDB: database.Pool, entered: make(chan struct{}), release: make(chan struct{})}
-	horizon := NewHorizon(counting)
-
 	const callers = 8
-	// Every caller but the one running the observation parks on it, and the test waits for all
-	// of them to be parked before it lets that observation end: a caller still on its way would
-	// find no observation in flight and run one of its own, which is the very thing this test
-	// says must not happen. Waiting on the parking itself is what the run's own machinery
-	// reports; a sleep long enough on an idle machine is not long enough on a loaded one.
-	parked := make(chan struct{}, callers)
+	held := &heldHorizonDB{HorizonDB: database.Pool, entered: make(chan struct{}, 2*callers), release: make(chan struct{})}
+	horizon := NewHorizon(held)
+	parked := make(chan struct{}, 2*callers)
 	horizon.afterObservationParked = func() { parked <- struct{}{} }
-	errs := make(chan error, callers)
-	for range callers {
-		go func() {
-			_, err := horizon.Safe(ctx)
-			errs <- err
-		}()
+	safe := func(answered chan<- error) {
+		_, err := horizon.Safe(ctx)
+		answered <- err
 	}
-	<-counting.entered
+
+	opened := make(chan error, 1)
+	go safe(opened)
+	testwait.Receive(t, "the observation of the call that opens it to reach the database", held.entered)
+	answered := make(chan error, callers)
+	for range callers {
+		go safe(answered)
+	}
+	for range callers {
+		testwait.Receive(t, fmt.Sprintf("each of the %d Safe calls made while the first observation is in flight to park on it", callers), parked)
+	}
+	held.release <- struct{}{}
+	if err := testwait.Receive(t, "the call that opened the first observation to answer", opened); err != nil {
+		t.Fatalf("Safe that ran the first observation: %v", err)
+	}
+	testwait.Receive(t, "one of the callers to run the next observation once the first has ended", held.entered)
 	for range callers - 1 {
-		testwait.Receive(t, fmt.Sprintf("each of the %d concurrent Safe calls but one to park on the observation in flight", callers), parked)
+		testwait.Receive(t, fmt.Sprintf("each of the other %d callers to park on that next observation", callers-1), parked)
 	}
-	close(counting.release)
+	held.release <- struct{}{}
 	for range callers {
-		if err := <-errs; err != nil {
+		if err := testwait.Receive(t, "each concurrent Safe call to answer", answered); err != nil {
 			t.Fatalf("concurrent Safe: %v", err)
 		}
 	}
-	if observations := counting.batches.Load(); observations >= callers {
-		t.Fatalf("%d concurrent Safe calls ran %d observations, want fewer", callers, observations)
+	if observations := held.batches.Load(); observations != 2 {
+		t.Fatalf("one Safe call and %d made while its observation was in flight ran %d observations, want 2: the one call's, and one the %d shared",
+			callers, observations, callers)
 	}
 }
 
@@ -813,18 +830,24 @@ type scanRow func(dest ...any) error
 
 func (s scanRow) Scan(dest ...any) error { return s(dest...) }
 
-// countingHorizonDB counts observations and holds the first until release closes.
-type countingHorizonDB struct {
+// heldHorizonDB counts observations and holds each one before it reaches the database: it says so
+// on entered, then waits for one release of its own, or for the end of the call's context.
+type heldHorizonDB struct {
 	HorizonDB
 	batches atomic.Int32
 	entered chan struct{}
 	release chan struct{}
 }
 
-func (db *countingHorizonDB) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults {
-	if db.batches.Add(1) == 1 {
-		close(db.entered)
-		<-db.release
+func (db *heldHorizonDB) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults {
+	db.batches.Add(1)
+	select {
+	case db.entered <- struct{}{}:
+	case <-ctx.Done():
+	}
+	select {
+	case <-db.release:
+	case <-ctx.Done():
 	}
 	return db.HorizonDB.SendBatch(ctx, batch)
 }
