@@ -110,7 +110,7 @@ func TestARootThatRanIsToldOncePerParentThatItStaysItsOwnTree(t *testing.T) {
 func TestAReparentReadNamesR1sPathOnlyWhereItIsOpen(t *testing.T) {
 	const ran = "it ran as a tree of its own"
 	stays := "LEGION-500 is now a child of LEGION-208 in Dispatch, and it stays a tree of its own in Legion: " + ran +
-		", so the tree of LEGION-208 cannot take it in and its architect cannot release it."
+		", so the tree of LEGION-208 cannot take it in and no architect of that tree can release it."
 	today := stays + " It runs under its own architect, and its work reaches the tree of LEGION-208 only through that tree's own issues."
 	path := stays + " It runs under its own architect. LEGION-208 carries the legion label and marks requirement blocks in its primary document. " +
 		"A person approved version 7 of that document, which is its latest version. So the architect of LEGION-500 can write it as a view on LEGION-208. " +

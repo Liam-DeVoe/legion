@@ -38,10 +38,10 @@ func childCycleSentences(open []record.OpenChild) string {
 	return sentences.String()
 }
 
-// ChildrenFirstNotice is what the tree's architect is told when a parent's own first phase begins
-// to wait for its children: the parent, each open child with the Dispatch status that holds it,
-// what ends the wait, and each cycle among them. It is told once per issue and run of its tree —
-// the mark's key is the issue, its tree and that tree's root generation (admit's
+// ChildrenFirstNotice is what the architect that owns a parent is told when the parent's own first
+// phase begins to wait for its children: the parent, each open child with the Dispatch status that
+// holds it, what ends the wait, and each cycle among them. It is told once per issue and run of
+// its tree — the mark's key is the issue, its tree and that tree's root generation (admit's
 // tellChildrenFirst) — so a child filed later during one wait tells nobody again, while a
 // re-admitted tree, whose architect writes its spec anew, and a sub-parent handed over to a tree
 // of its own are told anew. It names no move of a child under another issue of the tree: an open
@@ -53,9 +53,10 @@ func ChildrenFirstNotice(wait record.ChildWait) record.Notice {
 		"Move a child to icebox "+parkRule+", and cite that reason in a comment on the child. "+
 		"A released child, a held one included, stays under %s, because this wait ends when that child leaves the workflow. "+
 		"Move out from under %s, to no parent, only a child you have not released and that should not run now, and never under another issue of this tree: an open child holds every phase start of the issue it stands under. "+
-		"After the move, ask the person on your tree's root (dispatch ask) when that child's work should run or stop: "+
-		"when they say to run it, move it back under %s and release it; when they say to stop it, close it, or move it to icebox under the rule when they say its work should wait, citing their answer. "+
-		"Hold the acceptance of the root until they answer.",
-		wait.Parent, openChildNames(wait.Open), wait.Parent, wait.Parent, wait.Parent, wait.Parent, wait.Parent)
+		"After the move, have the person on your tree's root asked when that child's work should run or stop: "+
+		"the root's architect asks with dispatch ask, and a child's architect sends the question to the architect above it. "+
+		"When they say to run it, move it back under %s and release it; when they say to stop it, close it, or move it to icebox under the rule when they say its work should wait, citing their answer. "+
+		"Until they answer, sign off neither %s nor any issue above it that you accept.",
+		wait.Parent, openChildNames(wait.Open), wait.Parent, wait.Parent, wait.Parent, wait.Parent, wait.Parent, wait.Parent)
 	return record.Notice{Kind: ChildrenFirstNoticeKind, Role: claim.RoleArchitect, Reason: reason + childCycleSentences(wait.Open)}
 }

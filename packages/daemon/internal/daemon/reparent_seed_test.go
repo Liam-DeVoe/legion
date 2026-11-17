@@ -56,7 +56,7 @@ func TestTheReparentSeedNamesR1sPathOnlyWhereTheParentOpensIt(t *testing.T) {
 	approved := func(version, latest int, by dispatch.Actor) dispatch.Approval {
 		return dispatch.Approval{IssueKey: reparentParent, State: "approved", Version: &version, LatestVersion: latest, By: by, At: approvedAt, Primary: true}
 	}
-	stays := fmt.Sprintf("%s is now a child of %s in Dispatch, and it stays a tree of its own in Legion: %s, so the tree of %s cannot take it in and its architect cannot release it.",
+	stays := fmt.Sprintf("%s is now a child of %s in Dispatch, and it stays a tree of its own in Legion: %s, so the tree of %s cannot take it in and no architect of that tree can release it.",
 		reparentedRoot, reparentParent, reparentRan, reparentParent)
 	today := stays + fmt.Sprintf(" It runs under its own architect, and its work reaches the tree of %s only through that tree's own issues.", reparentParent)
 	path := stays + fmt.Sprintf(" It runs under its own architect. %s carries the legion label and marks requirement blocks in its primary document. "+

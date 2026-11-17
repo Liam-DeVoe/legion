@@ -70,7 +70,7 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   on: the issues of its `blocked_by` links, or the open children that hold a parent, its first
   phase (children-first) or, once its phases started, its next start (`awaiting_children`). A
   link's wait ends when each blocker reaches `done` (a person's close, or the blocker's own
-  merge) or its link is taken off (by a person or the tree's architect), and a wait on children
+  merge) or its link is taken off (by a person or an architect of the tree), and a wait on children
   ends when the last open child leaves the workflow, a parent in `awaiting_children` then going
   back to the start it held by itself, so take nothing for them.
   Of the issues here, say of each whose `issues.<KEY>.waitingLine.kind` is `waiting_on_issue`
