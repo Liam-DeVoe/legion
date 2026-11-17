@@ -124,11 +124,11 @@ var storeWriteCallSites = []string{
 	"graphcensus/backfill.go#writeRoleBatch",
 	"graphcensus/backfill.go#writeSessionBatch",
 	// The backfill's passes over the project of every node: the nodes of the issues, documents,
-	// asks and messages that no live node marks, in one graphstore.Write per batch, after the
-	// owner rows a document's removal takes (lockObjectOwners) and under them, and the project
-	// of the comment and block nodes written before a node named one (graphstore.FillScopes),
-	// the block batch under the revision fence (lockBlockDocuments). graphcensus'
-	// TestTheBackfillGivesEveryRowItsNodeAndProject runs both.
+	// asks and messages that no live node marks, in one WriteUncaused and Caused at the sentinel
+	// per batch, after the owner rows a document's removal takes (lockObjectOwners) and under
+	// them, and the project of the comment and block nodes written before a node named one
+	// (graphstore.FillScopes), the block batch under the revision fence (lockBlockDocuments).
+	// graphcensus' TestTheBackfillGivesEveryRowItsNodeAndProject runs both.
 	"graphcensus/projects.go#writeObjectBatch",
 	"graphcensus/projects.go#writeScopeBatch",
 	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both

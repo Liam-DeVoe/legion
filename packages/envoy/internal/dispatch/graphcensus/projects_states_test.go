@@ -55,8 +55,15 @@ func TestARowWhoseNodeIsGoneIsNamedAndTheBackfillMakesItLive(t *testing.T) {
 		t.Errorf("ProjectComplete answers %v, want %v", incomplete, want)
 	}
 
-	if _, err := Backfill(ctx, database, &bytes.Buffer{}); err != nil {
+	report, err := Backfill(ctx, database, &bytes.Buffer{})
+	if err != nil {
 		t.Fatalf("run the backfill: %v", err)
+	}
+	// The node was there, gone: moving it live states its state and nothing else.
+	for _, done := range report.Kinds {
+		if done.Kind == graphstore.KindArtifact && (done.Nodes != 1 || done.Tuples != 1) {
+			t.Errorf("the backfill reports %+v for documents, want one node and the one state tuple it appended", done)
+		}
 	}
 	requireComplete(t, ctx, database, "after the backfill")
 	node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindArtifact, "GONE-1/notes-md")

@@ -84,6 +84,7 @@ require_env DISPATCH_URL PROJECT DATABASE_URL
 require_commands curl envoy-dispatch jq psql
 read_bearer
 
+# shellcheck disable=SC2031 # the DISPATCH_URL lib.sh's `cli` exports is its own subshell's; this one is the caller's
 readonly base="${DISPATCH_URL%/}"
 # The dashboard's origin, the scheme and host of DISPATCH_URL: a write the person's cookie
 # authenticates must name it (enforceCookieOrigin).
@@ -556,12 +557,13 @@ readonly planted_sql="select md5(concat_ws('|',
 # the versions of both documents and the approvals of the first, and the id and the payload of
 # every event holding the secret. Those are the rows a run that went ahead would delete or
 # rewrite.
-readonly unchanged_sql="select md5(concat_ws('|', $(whole graph_nodes), $(whole graph_tuples),
+unchanged_sql="select md5(concat_ws('|', $(whole graph_nodes), $(whole graph_tuples),
     $(whole comments), $(whole document_blocks), $(whole block_refs),
     $(whole artifact_versions "t.artifact_id in ('$document', '$other_document')"),
     $(whole artifact_reviews "t.artifact_id = '$document'"),
     (select md5(coalesce(string_agg(t.id || ':' || t.payload::text, ';' order by t.id), ''))
        from events t where t.payload::text like '%$secret%')))"
+readonly unchanged_sql
 
 # The reads E5 wants zero from, each stated once here and run on both sides of the erases: before
 # them each must find the rows that held the secret (E3), so after them each zero is an erase's

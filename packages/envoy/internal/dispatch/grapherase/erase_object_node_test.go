@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
 // An issue, a document, an ask and a message each hold their text in their own row: the issue's
@@ -107,6 +108,73 @@ func TestTheEraseRemovesAnOrphanedDocumentsNode(t *testing.T) {
 	// The issue's node, whose row stands, is untouched.
 	if held := readTypeNode(t, database, graphstore.KindIssue, seeded.issue); !held.row || held.erased != 0 {
 		t.Errorf("after the document's erase the store holds %+v of the issue's node, want it as seeded", held)
+	}
+}
+
+// A create of this build writes a document's node before its row, in one transaction, so it holds
+// the node's row from its node write until it commits the row. The erase reads whether the row
+// stands under its own lock of the node (lockOwnersThenNode, then read), so an erase that queues
+// behind such a create reads the row the create committed, and refuses. Here a build before this
+// one has removed a document, leaving its node live behind no row, and a create of this build
+// takes the address again: it has written the node and the row and not committed when the
+// confirmed erase starts, the erase queues behind it on the node, and the create commits. The
+// erase answers the refusal, and the node, its tuples and the row all stand, with no erasure
+// recorded and nothing for the project census to name.
+//
+// Its control is the row's check moved out of read to just before the node's `for update` in
+// lockOwnersThenNode: the erase then reads no row, queues, and erases the node the created row
+// stands behind, which the census reads as a row with no node.
+func TestTheErasesRowCheckUnderTheNodeLockRefusesTheCreateItWaitedFor(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seeded := seedObjectNodes(t, database)
+	if _, err := database.Pool.Exec(ctx, `delete from artifacts where ref_key = $1`, seeded.documentRef); err != nil {
+		t.Fatalf("remove the document's row as a build before this one does: %v", err)
+	}
+	before := readTypeNode(t, database, graphstore.KindArtifact, seeded.documentRef)
+	create := &lockstep.Hold{Name: "a create of " + seeded.documentRef + " that wrote its node and its row"}
+	lockstep.Begin(t, database, create)
+	if _, err := graphstore.WriteUncaused(ctx, create.Tx, []graphstore.Node{graphstore.ArtifactNode(
+		seeded.documentRef, "ERASE", "", model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC())}, nil); err != nil {
+		t.Fatalf("write the created document's node: %v", err)
+	}
+	if _, err := create.Tx.Exec(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
+		values ('ERASE-1', 'ERASE', 'notes-md', 'Notes made again', 'doc', '{"kind":"user","id":"alice"}')
+	`); err != nil {
+		t.Fatalf("write the created document's row: %v", err)
+	}
+	pid, erased := startErase(t, database, graphstore.KindArtifact, seeded.documentRef)
+	if early, done := storetest.WaitForQueuedBehind(t, create.Tx, pid, erased, lockstep.Wait); done {
+		t.Fatalf("the erase answered (%+v, %v) without waiting on the node the create holds, so this test proves nothing", early.erasure, early.err)
+	}
+	t.Logf("the erase waits behind %s at %q", create.Name, lockstep.WaitingStatement(t, database, pid))
+	if err := create.Tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the create: %v", err)
+	}
+	create.Release()
+	var answer eraseAnswer
+	select {
+	case answer = <-erased:
+	case <-time.After(lockstep.Wait):
+		t.Fatalf("the erase did not answer within %s of the create's commit", lockstep.Wait)
+	}
+	if answer.err == nil || !strings.Contains(answer.err.Error(), "refuses artifact:"+seeded.documentRef+": its row stands") {
+		t.Errorf("the erase queued behind the create answered %+v, %v; want the refusal while the row stands",
+			answer.erasure, answer.err)
+	}
+	if after := readTypeNode(t, database, graphstore.KindArtifact, seeded.documentRef); after != before {
+		t.Errorf("after the create and the erase the store holds %+v of the document's node, want %+v as the create left it", after, before)
+	}
+	if name := rowText(t, database, "artifacts", "name", "ref_key", seeded.documentRef); name != "Notes made again" {
+		t.Errorf("the created document's row reads %q, want the create's name", name)
+	}
+	incomplete, err := graphcensus.ProjectComplete(ctx, database.Pool)
+	if err != nil {
+		t.Fatalf("read the incomplete rows: %v", err)
+	}
+	if len(incomplete) != 0 {
+		t.Errorf("after the create and the erase the project census names %q, want nothing", incomplete)
 	}
 }
 

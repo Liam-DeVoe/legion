@@ -2,7 +2,11 @@ package graphcensus
 
 import (
 	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,12 +63,56 @@ func TestTheProjectCensusNamesALiveNodeWhoseRowIsGone(t *testing.T) {
 		t.Fatalf("read the incomplete nodes: %v", err)
 	}
 	want := []string{
-		"artifact ORPH-1/notes-md: orphaned",
-		"ask 33333333-3333-4333-8333-000000000001: orphaned",
-		"issue ORPH-1: orphaned",
-		"message 33333333-3333-4333-8333-000000000002: orphaned",
+		"artifact ORPH-1/notes-md: orphaned; remove it with: envoy-dispatch erase --node artifact:ORPH-1/notes-md",
+		"ask 33333333-3333-4333-8333-000000000001: orphaned; remove it with: envoy-dispatch erase --node ask:33333333-3333-4333-8333-000000000001",
+		"issue ORPH-1: orphaned; remove it with: envoy-dispatch erase --node issue:ORPH-1",
+		"message 33333333-3333-4333-8333-000000000002: orphaned; remove it with: envoy-dispatch erase --node message:33333333-3333-4333-8333-000000000002",
 	}
 	if !slices.Equal(incomplete, want) {
-		t.Errorf("ProjectComplete answers %v, want %v: the four live nodes no row stands behind, and not the gone one", incomplete, want)
+		t.Errorf("ProjectComplete answers %v, want %v: the four live nodes no row stands behind, each with the erase that removes it, and not the gone one", incomplete, want)
+	}
+}
+
+// An orphaned node's line ends with the command that removes it, as an operator pastes it into a
+// shell. A node whose address holds a character a shell reads specially is quoted: a
+// conversation's file is addressed by its session's id, which the session names, here one holding
+// a quote and a dollar sign. Run through sh with an envoy-dispatch on PATH that prints its
+// arguments, the printed line reaches the command as `erase`, `--node` and the node whole.
+//
+// Its control is the quoting taken out of eraseCommand: the shell then reads an unclosed quote and
+// runs nothing.
+func TestAnOrphanedNodesEraseCommandReachesTheEraseWhole(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	session := `it's$HOME`
+	ref := "agent/" + session + "/notes-md"
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		return graphstore.Write(ctx, tx, []graphstore.Node{
+			graphstore.ArtifactNode(ref, "", session, model.Actor{Kind: "session", ID: session}, time.Now().UTC()),
+		}, nil)
+	}); err != nil {
+		t.Fatalf("write the conversation file's node no row stands behind: %v", err)
+	}
+	incomplete, err := ProjectComplete(ctx, database.Pool)
+	if err != nil {
+		t.Fatalf("read the incomplete nodes: %v", err)
+	}
+	head := "artifact " + ref + ": orphaned; remove it with: "
+	if len(incomplete) != 1 || !strings.HasPrefix(incomplete[0], head) {
+		t.Fatalf("ProjectComplete answers %q, want one line starting %q", incomplete, head)
+	}
+	printed := strings.TrimPrefix(incomplete[0], head)
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "envoy-dispatch"), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\"\n"), 0o755); err != nil {
+		t.Fatalf("write the stand-in envoy-dispatch: %v", err)
+	}
+	command := exec.Command("sh", "-c", printed)
+	command.Env = append(command.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("sh -c %q: %v:\n%s", printed, err, output)
+	}
+	if got, want := strings.Split(strings.TrimSuffix(string(output), "\n"), "\n"), []string{"erase", "--node", "artifact:" + ref}; !slices.Equal(got, want) {
+		t.Errorf("sh -c %q passed envoy-dispatch %q, want %q", printed, got, want)
 	}
 }

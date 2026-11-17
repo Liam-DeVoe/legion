@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -265,10 +266,12 @@ func writeProjectCensus(w io.Writer, kinds []ProjectKindReport) {
 // ProjectComplete answers every project-owned row whose node is not complete, and every live node
 // of an orphan kind no row stands behind, as `<kind> <id>: <class>` (missing, gone, unscoped,
 // differs or orphaned), in one read: the rows and the nodes a read limited by a node's project
-// would answer wrongly. An empty answer is every row and every node of every kind complete.
+// would answer wrongly. An empty answer is every row and every node of every kind complete. An
+// orphaned node's line ends with the command that removes it, `; remove it with: ` and
+// eraseCommand's line, since no backfill reads a node no row stands behind.
 func ProjectComplete(ctx context.Context, q graphstore.Queryer) ([]string, error) {
 	rows, err := q.Query(ctx, scopedRowsSQL+classedRows+`
-		select kind || ' ' || id || ': ' || class
+		select kind, id, class
 		from classed
 		where class is not null
 		order by kind, id
@@ -276,17 +279,35 @@ func ProjectComplete(ctx context.Context, q graphstore.Queryer) ([]string, error
 	if err != nil {
 		return nil, fmt.Errorf("read the rows whose node names no project: %w", err)
 	}
-	defer rows.Close()
 	var incomplete []string
-	for rows.Next() {
-		var row string
-		if err := rows.Scan(&row); err != nil {
-			return nil, fmt.Errorf("read the rows whose node names no project: %w", err)
+	var kind, id, class string
+	if _, err := pgx.ForEachRow(rows, []any{&kind, &id, &class}, func() error {
+		line := kind + " " + id + ": " + class
+		if class == classOrphaned {
+			line += "; remove it with: " + eraseCommand(kind, id)
 		}
-		incomplete = append(incomplete, row)
+		incomplete = append(incomplete, line)
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the rows whose node names no project: %w", err)
 	}
-	return incomplete, rows.Err()
+	return incomplete, nil
 }
+
+// eraseCommand is the command line that erases the node kind:id (grapherase.Erase), written as a
+// POSIX shell reads it: the node bare where it holds only characters no shell treats specially,
+// and otherwise in single quotes, each quote in it closed, escaped and opened again. Run as
+// printed, it lists what the erase would remove and the digest its --confirm takes.
+func eraseCommand(kind, id string) string {
+	node := kind + ":" + id
+	if !shellBare.MatchString(node) {
+		node = "'" + strings.ReplaceAll(node, "'", `'\''`) + "'"
+	}
+	return "envoy-dispatch erase --node " + node
+}
+
+// shellBare is a word a POSIX shell passes through unquoted and unchanged.
+var shellBare = regexp.MustCompile(`^[A-Za-z0-9._/:@%+=,-]+$`)
 
 // objectKind is a kind the backfill writes a node for from its rows.
 type objectKind struct {
@@ -512,12 +533,14 @@ func derefText(value *string) string {
 	return *value
 }
 
-// writeObjectBatch writes one batch's nodes in one transaction (graphstore.Write), which takes
-// their rows in ascending (kind, id) and states each one's base attributes, and answers what it
-// wrote. A node a live writer wrote meanwhile is written again with nothing moved, and states
-// nothing; a gone node is moved live, which states its state alone; one in another project fails
-// the batch (graphstore.ErrProjectMoved), which is a difference for the census to report rather
-// than for this run to paper over.
+// writeObjectBatch writes one batch's nodes in one transaction, which takes their rows in ascending
+// (kind, id) and states each one's base attributes, and answers what it wrote. A node a live
+// writer wrote meanwhile is written again with nothing moved, and states nothing; a gone node is
+// moved live, which states its state alone; one in another project fails the batch
+// (graphstore.ErrProjectMoved), which is a difference for the census to report rather than for
+// this run to paper over. It writes through graphstore.WriteUncaused and Caused at the sentinel,
+// which is graphstore.Write with the facts it states in hand, so the report counts the tuples the
+// store appended.
 //
 // The batch was read before this transaction opened, and a removal may commit in between: a node
 // written live then would stand behind no row. So for a kind a writer deletes rows of
@@ -549,50 +572,26 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 		if err != nil {
 			return fmt.Errorf("read which rows of the batch stand: %w", err)
 		}
-		// The nodes the store holds of the batch already: each is gone, since the batch read the
-		// rows no live node marks, and the write states its state alone.
-		held, err := heldNodes(ctx, tx, kind.kind, ids)
-		if err != nil {
-			return fmt.Errorf("read the nodes the store holds of the batch: %w", err)
-		}
 		write := make([]graphstore.Node, 0, len(standing))
 		for _, node := range nodes {
-			if created, stands := standing[node.ID]; !stands || !created.Equal(node.MadeAt) {
-				continue
-			}
-			write = append(write, node)
-			if _, gone := held[node.ID]; gone {
-				written.Tuples++
-			} else {
-				written.Tuples += statedOf([]graphstore.Node{node})
+			if created, stands := standing[node.ID]; stands && created.Equal(node.MadeAt) {
+				write = append(write, node)
 			}
 		}
 		written.Rows, written.Nodes = int64(len(write)), int64(len(write))
 		if len(write) == 0 {
 			return nil
 		}
-		return graphstore.Write(ctx, tx, write, nil)
+		stated, err := graphstore.WriteUncaused(ctx, tx, write, nil)
+		if err != nil {
+			return err
+		}
+		written.Tuples = int64(len(stated.Tuples))
+		return graphstore.Caused(ctx, tx, stated, graphstore.NoEvent)
 	}); err != nil {
 		return KindBackfill{}, fmt.Errorf("write a batch of %s nodes: %w", kind.kind, err)
 	}
 	return written, nil
-}
-
-// heldNodes is the ids of the nodes of kind the store holds of ids.
-func heldNodes(ctx context.Context, tx pgx.Tx, kind string, ids []string) (map[string]struct{}, error) {
-	rows, err := tx.Query(ctx, `select id from graph_nodes where kind = $1 and id = any($2::text[])`, kind, ids)
-	if err != nil {
-		return nil, err
-	}
-	held := make(map[string]struct{}, len(ids))
-	var id string
-	if _, err := pgx.ForEachRow(rows, []any{&id}, func() error {
-		held[id] = struct{}{}
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return held, nil
 }
 
 // lockObjectOwners takes the owner row each row of ids stands under (objectKind.owners), each once
