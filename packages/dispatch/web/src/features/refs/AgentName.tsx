@@ -9,6 +9,7 @@ import { Fragment, type ReactNode, useMemo } from "react";
 import { generatePath, Link } from "react-router-dom";
 
 import type { Actor, AskResolution } from "../../api/types";
+import { type PageWords, usePageWords, useTooltips } from "../../components/tooltips";
 import {
   focusVisibleRing,
   inlineWarningText,
@@ -16,6 +17,9 @@ import {
   linkText,
   liveDotBg,
   offlineDotBorder,
+  pageInkText,
+  pageSegmentDoneBg,
+  pageStateText,
   stalledDotBorder,
   unknownDotBorder,
 } from "../../theme/classes";
@@ -27,13 +31,14 @@ import { relativeTimeLabel, Timestamp } from "./Timestamp";
 /**
  * How Dispatch shows an agent (a session), in one place: named by its current registry title
  * when the registry lists it, else by today's rule (the title stamped on the write, else
- * `session:<8>…`), with its running state from the registry and a link to its live
- * conversation. This module owns the SPA's use of the contracts naming functions; the reference
- * short form in `routes.ts` is the one other reader, and it does not show an agent. The root
- * `biome.json` bans importing them anywhere else in `web/src` (and `AGENT_LIVE_PATH` outside
- * `app.tsx`, which mounts the route), but not through a namespace import
- * (`import * as contracts from "@legion/contracts"`): the review audit in
- * `packages/dispatch/AGENTS.md` ("How an agent is shown") catches that member use.
+ * `session:<8>…`; inside `NoTooltips`, the new issue page's word for an agent nothing names),
+ * with its running state from the registry and a link to its live conversation. This module
+ * owns the SPA's use of the contracts naming functions; the reference short form in `routes.ts`
+ * is the one other reader, and it does not show an agent. The root `biome.json` bans importing
+ * them anywhere else in `web/src` (and `AGENT_LIVE_PATH` outside `app.tsx`, which mounts the
+ * route), but not through a namespace import (`import * as contracts from "@legion/contracts"`):
+ * the review audit in `packages/dispatch/AGENTS.md` ("How an agent is shown") catches that
+ * member use.
  */
 
 type SessionActor = Actor & { kind: "session" };
@@ -111,12 +116,23 @@ type AgentVariant =
 
 type AgentNameProps = AgentSubject &
   AgentVariant & {
+    /** Inside `NoTooltips`, names a person as the new issue page names an author
+     *  (`AgentText.author`): an act made through a session names the agent by what it is
+     *  (dispatch://INFRA-1196 R9, R22). A session is named as an author is in every form there,
+     *  with or without `author` (decision 107). Everywhere else it changes nothing. */
+    author?: boolean;
     className?: string;
     /** Inside a sentence: the link keeps its line box (`.dispatch-inline-link`, `styles.css`). */
     inline?: boolean;
   };
 
 const LINK_CLASS = `rounded outline-none focus-visible:ring-2 ${focusVisibleRing} ${linkText} ${linkHoverText}`;
+
+/** `LINK_CLASS` inside `NoTooltips`: the new issue page's link, in the ink with its underline,
+ *  since ink beside ink says link by the underline alone; the focus ring stays `main`'s, the
+ *  application's one focus indicator (dispatch://INFRA-3935 R6, decisions 56 and 58 of
+ *  dispatch://INFRA-1196/artifact/part-decisions-md). */
+const PAGE_LINK_CLASS = `rounded outline-none focus-visible:ring-2 ${focusVisibleRing} ${pageInkText} underline`;
 
 const MARK_CLASS = "mr-1 inline-block h-2 w-2 shrink-0 rounded-full align-middle";
 
@@ -128,6 +144,16 @@ const STATE_MARK_CLASS: Record<AgentState, string> = {
   running: `${MARK_CLASS} ${liveDotBg}`,
   unknown: `${MARK_CLASS} border border-dashed ${unknownDotBorder}`,
   unresponsive: `${MARK_CLASS} border-2 border-solid ${stalledDotBorder}`,
+};
+
+/** `STATE_MARK_CLASS` inside `NoTooltips`, in the new issue page's colours (R6, decision 56):
+ *  running is the passed green, unresponsive the waiting orange, and not running or unknown the
+ *  not-run grey, in the same shapes, which say the state without colour. */
+const PAGE_STATE_MARK_CLASS: Record<AgentState, string> = {
+  "not-running": `${MARK_CLASS} border-2 border-solid border-page-not-run`,
+  running: `${MARK_CLASS} ${pageSegmentDoneBg}`,
+  unknown: `${MARK_CLASS} border border-dashed border-page-not-run`,
+  unresponsive: `${MARK_CLASS} border-2 border-solid border-page-waiting`,
 };
 
 const STATE_LABEL: Record<AgentState, string> = {
@@ -155,16 +181,22 @@ function AgentStateMark({
   lastSeen: number | undefined;
   state: AgentState;
 }): ReactNode {
+  const tooltips = useTooltips();
   const seen =
     (state === "running" || state === "unresponsive") && lastSeen !== undefined
       ? relativeTimeLabel(new Date(lastSeen), Date.now())
       : undefined;
+  const reading = `${STATE_LABEL[state]}${seen === undefined ? "" : ` · seen ${seen}`}${STATE_NOTE[state]}`;
+  // Inside `NoTooltips` (`components/tooltips.tsx`) the whole reading - the state, how long ago
+  // a running or unresponsive session was seen, and what an unresponsive one's state means - is
+  // the mark's accessible name instead, so nothing is kept for a pointer alone; the shape says
+  // the state to everyone either way.
   return (
     <span
-      aria-label={STATE_LABEL[state]}
-      className={STATE_MARK_CLASS[state]}
+      aria-label={tooltips ? STATE_LABEL[state] : reading}
+      className={(tooltips ? STATE_MARK_CLASS : PAGE_STATE_MARK_CLASS)[state]}
       role="img"
-      title={`${STATE_LABEL[state]}${seen === undefined ? "" : ` · seen ${seen}`}${STATE_NOTE[state]}`}
+      title={tooltips ? reading : undefined}
     />
   );
 }
@@ -185,15 +217,24 @@ export function AgentUnresponsiveNote({
   lastSeen: number | undefined;
   state: AgentState;
 }): ReactNode {
+  const tooltips = useTooltips();
   if (state !== "unresponsive") {
     return null;
   }
   const seen = lastSeen === undefined ? undefined : new Date(lastSeen).toISOString();
   return (
     <span
-      className={`${className === undefined ? "" : `${className} `}shrink-0 text-xs ${inlineWarningText}`}
+      // Inside `NoTooltips` the words are the new issue page's warning, its waiting orange (R6),
+      // and the note narrows to its line rather than keep its width, since it holds the
+      // heartbeat's instant, a value that wraps there (decision 104 of
+      // dispatch://INFRA-1196/artifact/part-decisions-md).
+      className={`${className === undefined ? "" : `${className} `}${tooltips ? "shrink-0" : "min-w-0 max-w-full"} text-xs ${tooltips ? inlineWarningText : pageStateText.waiting}`}
       data-testid="agent-unresponsive"
-      title={`This session has missed its heartbeats${seen === undefined ? "" : ` since ${new Date(seen).toLocaleString()}`}. It has not ended: it keeps its roles and claims, and messages sent to it are stored until it answers.`}
+      title={
+        tooltips
+          ? `This session has missed its heartbeats${seen === undefined ? "" : ` since ${new Date(seen).toLocaleString()}`}. It has not ended: it keeps its roles and claims, and messages sent to it are stored until it answers.`
+          : undefined
+      }
     >
       Unresponsive
       {seen === undefined ? null : (
@@ -213,6 +254,7 @@ export function AgentUnresponsiveNote({
  * `<span data-agent-name data-agent-state>`: its state mark, its name, and its attribution.
  */
 export function AgentName(props: AgentNameProps): ReactNode {
+  const page = usePageWords();
   if (props.sessionId !== undefined) {
     return (
       <SessionAgentName
@@ -228,7 +270,8 @@ export function AgentName(props: AgentNameProps): ReactNode {
     // An act an agent made for its person is recorded as the person's, so the person's name
     // carries the agent beside it, by the one rule every reader of an act follows.
     const text = actor.kind === "user" ? actorActText(actor.id, actor.act) : actor.id;
-    const named = props.kind === "control" ? props.control(text) : text;
+    const name = page === null ? text : markedPersonName(actor, props.author === true, text, page);
+    const named = props.kind === "control" ? props.control(name) : name;
     return props.className === undefined ? named : <span className={props.className}>{named}</span>;
   }
   return (
@@ -252,23 +295,51 @@ function SessionAgentName({
   subject: SessionRef;
   variant: AgentVariant;
 }): ReactNode {
+  const tooltips = useTooltips();
+  const page = usePageWords();
   const registry = useAgentRegistry(true);
-  const { attribution, name, sessionId } = resolveAgent(subject, registry);
+  const resolved = resolveAgent(subject, registry);
+  const { attribution, sessionId } = resolved;
+  // Inside `NoTooltips` every form names a session as the page names an author, whether the
+  // host gave the session's actor or its bare id: by a title, else the page's word, and never by
+  // its short id, an address that names nobody (dispatch://INFRA-3935 R5, decision 107 of
+  // dispatch://INFRA-1196/artifact/part-decisions-md). `data-agent-name` keeps the full id.
+  const paged =
+    page === null
+      ? undefined
+      : sessionAuthor(
+          sessionId,
+          "actor" in subject ? subject.actor.origin?.session_title : subject.storedTitle,
+          registry,
+          page
+        );
+  const name = paged?.name ?? resolved.name;
+  // The page's word for an agent nothing names is the page's own, so inside `NoTooltips` it
+  // carries that mark and stands outside the mark of a name somebody was given
+  // (dispatch://INFRA-3935 R6).
+  const fallbackMark = paged?.unnamed === true ? page?.pageChrome : undefined;
+  const shownName = fallbackMark === undefined ? name : <span {...fallbackMark}>{name}</span>;
   const state = registry.state(sessionId);
+  const linkClass = tooltips ? LINK_CLASS : PAGE_LINK_CLASS;
   const to = generatePath(AGENT_LIVE_PATH, { sessionId: encodeURIComponent(sessionId) });
 
   let named: ReactNode;
   let liveLink: ReactNode = null;
   if (variant.kind === "control") {
-    named = variant.control(name);
+    named = variant.control(shownName);
     const openLabel = `Open live conversation with ${name}${attribution}`;
     liveLink = (
-      <Link aria-label={openLabel} className={`ml-1 px-1 ${LINK_CLASS}`} title={openLabel} to={to}>
+      <Link
+        aria-label={openLabel}
+        className={`ml-1 px-1 ${linkClass}`}
+        title={tooltips ? openLabel : undefined}
+        to={to}
+      >
         <span aria-hidden="true">↗</span>
       </Link>
     );
   } else if (variant.kind === "static") {
-    named = name;
+    named = shownName;
   } else {
     // No `aria-label`: the link is named by its visible name, and the attribution after it is
     // read once, as text. Inside a sentence it is underlined, as every other inline link of the
@@ -276,12 +347,12 @@ function SessionAgentName({
     // colour on its own would be the only thing marking it a link (axe's `link-in-text-block`).
     named = (
       <Link
-        className={inline ? `${LINK_CLASS} dispatch-inline-link underline` : LINK_CLASS}
+        className={inline ? `${linkClass} dispatch-inline-link underline` : linkClass}
         onClick={variant.onNavigate}
         replace={variant.replace === true}
         to={to}
       >
-        {name}
+        {shownName}
       </Link>
     );
   }
@@ -289,17 +360,25 @@ function SessionAgentName({
   // The name never widens its host: a flex item may shrink below its text (`min-w-0`), and a
   // long title with no space breaks mid-word; a host's `truncate` (nowrap) still ellipsizes.
   // The short form `session:<8>…` does not tell sessions apart (ids minted in the same minute
-  // share it), so an agent named by it carries its full id as its tooltip.
+  // share it), so an agent named by it carries its full id as its tooltip. Inside `NoTooltips`
+  // the name, and the person it acted for, are the names they were given, not words the new
+  // issue page declares, so the span carries that mark; where the page's word stands for an
+  // agent nothing names, only what follows it carries the mark.
   return (
     <span
       className={className === undefined ? AGENT_SPAN_CLASS : `${AGENT_SPAN_CLASS} ${className}`}
       data-agent-name={sessionId}
       data-agent-state={state}
-      title={name === shortSessionId(sessionId) ? sessionId : undefined}
+      title={tooltips && name === shortSessionId(sessionId) ? sessionId : undefined}
+      {...(fallbackMark === undefined ? page?.authorText : undefined)}
     >
       <AgentStateMark lastSeen={registry.lastSeen(sessionId)} state={state} />
       {named}
-      {attribution}
+      {fallbackMark === undefined || attribution === "" ? (
+        attribution
+      ) : (
+        <span {...page?.authorText}>{attribution}</span>
+      )}
       {liveLink}
     </span>
   );
@@ -317,6 +396,12 @@ function agentInitials(name: string): string {
 }
 
 export interface AgentText {
+  /** Who wrote a thing, as the new issue page names an author (dispatch://INFRA-1196 R9, R22).
+   *  Inside `NoTooltips`: a session by its registry title, else the title stamped on its write,
+   *  else the page's word for an agent nothing names, and never by its short id; a person by
+   *  their login, with an act made through a session named by what it is; and the page's words
+   *  for no actor. Everywhere else: an actor as `label` names it, and no actor as "". */
+  author(actor: Actor | undefined): string;
   /** The full label: name plus ` (for <owner>)` / ` (as ns/name)`. */
   label(actor: Actor): string;
   /** An `AgentPart` as text: a text part as is, an agent part by the rule `AgentParts` draws it
@@ -328,6 +413,77 @@ export interface AgentText {
   initials(actor: Actor): string;
 }
 
+/** A session as the new issue page names an author, and as every form of `AgentName` names a
+ *  session there: its registry title, else the title stamped on its write, else the page's word
+ *  for an agent nothing names (`unnamed`: a word of the page, not a name somebody gave). Unlike
+ *  `resolveAgent` it has no `session:<8>…` fallback: a reader looks to a name for who it is, and
+ *  a short id names nobody. */
+function sessionAuthor(
+  sessionId: string,
+  storedTitle: string | undefined,
+  registry: AgentRegistry,
+  words: PageWords
+): { readonly name: string; readonly unnamed: boolean } {
+  const title = registry.title(sessionId) ?? storedTitle?.trim();
+  return title === undefined || title === ""
+    ? { name: words.CONTROL_LABELS.unnamed_author, unnamed: true }
+    : { name: title, unnamed: false };
+}
+
+/** `AgentText.author` inside `NoTooltips`: a session as `sessionAuthor` names it, a person as
+ *  `personAuthor` does, and no actor by the page's words for an author nobody recorded. */
+function authorName(actor: Actor | undefined, registry: AgentRegistry, words: PageWords): string {
+  if (actor === undefined) return words.CONTROL_LABELS.unknown_author;
+  if (!isSessionActor(actor)) {
+    const { login, through } = personAuthor(actor, words);
+    return `${login}${through}`;
+  }
+  return sessionAuthor(actor.id, actor.origin?.session_title, registry, words).name;
+}
+
+/** A person, or Dispatch itself, as an author: by login, with the agent an act was made through
+ *  named by what it is rather than by its session's id (`actorActText` names the id). `through`
+ *  is what follows the login for an act made through a session, in the page's own words, and
+ *  empty for any other act. */
+function personAuthor(
+  actor: Actor,
+  words: PageWords
+): { readonly login: string; readonly through: string } {
+  const session = actor.act?.session;
+  return session === undefined || session === ""
+    ? { login: actorActText(actor.id, actor.act), through: "" }
+    : { login: actor.id, through: `, acting through ${words.AUTHOR_KIND_WORDS.agent}` };
+}
+
+/** A person's or Dispatch's name inside `NoTooltips`, with its marks (dispatch://INFRA-3935 R6):
+ *  the login is a name somebody was given, and what the page says after an author's login of
+ *  an act made through a session is the page's own. `text` is the name as `main` draws it. The
+ *  login is a value, so it breaks anywhere and never widens its host, as a session's name does
+ *  (`AGENT_SPAN_CLASS`, decision 104 of dispatch://INFRA-1196/artifact/part-decisions-md). */
+function markedPersonName(
+  actor: Actor,
+  author: boolean,
+  text: string,
+  words: PageWords
+): ReactNode {
+  if (!author) {
+    return (
+      <span className={AGENT_SPAN_CLASS} {...words.authorText}>
+        {text}
+      </span>
+    );
+  }
+  const { login, through } = personAuthor(actor, words);
+  return (
+    <>
+      <span className={AGENT_SPAN_CLASS} {...words.authorText}>
+        {login}
+      </span>
+      {through === "" ? null : <span {...words.pageChrome}>{through}</span>}
+    </>
+  );
+}
+
 /**
  * An agent's name as plain text, by the same rule `AgentName` renders, for the places that can
  * hold only a string: an `aria-label` or `title`, `document.title`, a confirmation dialog's
@@ -337,6 +493,7 @@ export interface AgentText {
  */
 export function useAgentText(): AgentText {
   const registry = useAgentRegistry(false);
+  const page = usePageWords();
   return useMemo(() => {
     const label = (ref: AgentRef) => {
       const { attribution, name } = resolveAgent(ref, registry);
@@ -347,13 +504,19 @@ export function useAgentText(): AgentText {
       return `${acted}${attribution}`;
     };
     return {
+      author: (actor: Actor | undefined) =>
+        page !== null
+          ? authorName(actor, registry, page)
+          : actor === undefined
+            ? ""
+            : label({ actor }),
       initials: (actor: Actor) => agentInitials(resolveAgent({ actor }, registry).name),
       label: (actor: Actor) => label({ actor }),
       part: (part: AgentPart) => (typeof part === "string" ? part : label(part)),
       sessionText: (sessionId: string, storedTitle: string | undefined) =>
         resolveAgent({ sessionId, storedTitle }, registry).name,
     };
-  }, [registry]);
+  }, [page, registry]);
 }
 
 /** The text before and after a resolution's actor. A withdrawal is the close of the ask's issue,

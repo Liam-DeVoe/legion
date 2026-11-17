@@ -3,9 +3,33 @@ import { type ReactNode, useId, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
 import { QueryError } from "../../components/QueryError";
-import { badgeLow, badgePrimary, textSecondaryOnSurface } from "../../theme/classes";
-import { badgeSelectBadge, badgeSelectOverlay, badgeSelectRailWrapper } from "./badge-select";
+import { usePageWords, useTooltips } from "../../components/tooltips";
+import {
+  badgeLow,
+  badgePrimary,
+  pageInkText,
+  pageLabelChip,
+  pageMutedText,
+  pagePaneBg,
+  pageQuietText,
+  textSecondaryOnSurface,
+} from "../../theme/classes";
+import {
+  badgeSelectBadge,
+  badgeSelectOverlay,
+  badgeSelectPageBadge,
+  badgeSelectPageRailWrapper,
+  badgeSelectRailWrapper,
+} from "./badge-select";
 import { useIssueRepo } from "./useIssueRepo";
+
+/** The name the repository picker answers to, in its words on every page: the property it sets
+ *  and the issue it is on, so a voice user saying what they read presses it (WCAG 2.5.3). The
+ *  new issue page's add menu reaches this picker by this name rather than drawing a second
+ *  one, so a word changed here changes both sides at once. */
+export function repoControlName(issueKey: string): string {
+  return `Repository of ${issueKey}`;
+}
 
 /**
  * The issue's repository in the details rail: `Repository:` and a badge naming the repository the
@@ -22,20 +46,33 @@ import { useIssueRepo } from "./useIssueRepo";
  * badge is hidden from assistive technology; the select's description names what it shows: the
  * repository, `, inherited or the project's default` when it is not the issue's own, or
  * `No repository`.
+ *
+ * Inside `NoTooltips` (`components/tooltips.tsx`, the new issue page) it says that page's words
+ * with their marks and carries no `title`, so the words "inherited or the project's default"
+ * are drawn beside the badge, where the `title` said them (dispatch://INFRA-1196 R19). There
+ * `inRow` draws it as the value of a row of Details, which draws the label: no `Repository:` of
+ * its own, a line that wraps, and None where no item shows.
  */
 export function RepoControl({
   disabled = false,
+  inRow = false,
   issueKey,
   project,
   repo,
   resolvedRepo,
 }: {
   disabled?: boolean;
+  /** Whether the control is the value of a row of the new issue page's Details. It acts inside
+   *  `NoTooltips` alone. */
+  inRow?: boolean;
   issueKey: string;
   project: string;
   repo: string | null;
   resolvedRepo: string | null;
 }): ReactNode {
+  const tooltips = useTooltips();
+  const page = usePageWords();
+  const inDetails = page !== null && inRow;
   const [wanted, setWanted] = useState(false);
   const mappings = useQuery({
     enabled: wanted || resolvedRepo === null,
@@ -60,7 +97,13 @@ export function RepoControl({
     />
   ) : null;
   if (resolvedRepo === null && !mappings.isError && (mappings.isPending || mapped.length === 0)) {
-    return null;
+    return page !== null && inRow ? (
+      // The prototype's `.none` is the bullet grey, which no page pair registers for words
+      // (2.5:1 on the paper); the page's quiet words take it (dispatch://INFRA-3935 R6).
+      <span className={pageQuietText} {...page.pageChrome}>
+        {page.CONTROL_LABELS.none}
+      </span>
+    ) : null;
   }
   // The issue's own repository stays selectable before the list loads, so the control never
   // shows a value its options lack.
@@ -72,24 +115,55 @@ export function RepoControl({
       : repo === null
         ? `${resolvedRepo}, inherited or the project's default`
         : resolvedRepo;
-  // Nothing resolved and no list to pick from: the failure is all there is to show.
+  // Inside `NoTooltips` each colour is one of the new issue page's (dispatch://INFRA-3935 R6,
+  // decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md): the issue's own repository
+  // is the page's label chip, one it inherits or none is the quiet words on the same ground; the
+  // line is the ink in a row of Details (the prototype's `.frow .fv`) and the muted grey
+  // elsewhere (its `#hdr-props`).
+  const badgeTone =
+    page === null
+      ? `${tone.bg} ${tone.text}`
+      : repo === null
+        ? `${pagePaneBg} ${pageQuietText}`
+        : pageLabelChip;
+  const lineText = page === null ? textSecondaryOnSurface : inDetails ? pageInkText : pageMutedText;
+  const shownDescription =
+    page === null ? (
+      description
+    ) : resolvedRepo === null ? (
+      page.CONTROL_LABELS.no_repository
+    ) : (
+      // The repository is the issue's value, and the words around it are the page's own.
+      <>
+        <span {...page.authorText}>{resolvedRepo}</span>
+        {repo === null ? `, ${page.CONTROL_LABELS.repository_inherited}` : null}
+      </>
+    );
+  // Nothing resolved and no list to pick from: the failure is all there is to show. Inside
+  // `NoTooltips` the repository is a value, so it keeps `max-w-full` and breaks anywhere, and
+  // neither its chip nor anything around it keeps its width: a 44-character name with no space
+  // ran 101 px past Details' row at 1440 px (dispatch://INFRA-3935 R4 and R6, decision 104 of
+  // dispatch://INFRA-1196/artifact/part-decisions-md).
   const picker =
     resolvedRepo === null && mappings.isError ? null : (
       <span
-        className={`${badgeSelectRailWrapper} ${disabled ? "opacity-50" : ""}`}
+        className={`${page === null ? badgeSelectRailWrapper : badgeSelectPageRailWrapper} ${disabled ? "opacity-50" : ""}`}
         title={
-          repo === null && resolvedRepo !== null ? "Inherited or the project's default" : undefined
+          tooltips && repo === null && resolvedRepo !== null
+            ? "Inherited or the project's default"
+            : undefined
         }
       >
         <span
           aria-hidden="true"
-          className={`${badgeSelectBadge} font-mono ${tone.bg} ${tone.text}`}
+          className={`${page === null ? badgeSelectBadge : badgeSelectPageBadge} font-mono ${badgeTone}`}
+          {...(resolvedRepo === null ? page?.pageChrome : page?.authorText)}
         >
-          {resolvedRepo ?? "No repository"}
+          {resolvedRepo ?? page?.CONTROL_LABELS.no_repository ?? "No repository"}
         </span>
         <select
           aria-describedby={descriptionId}
-          aria-label={`Repository of ${issueKey}`}
+          aria-label={repoControlName(issueKey)}
           className={badgeSelectOverlay}
           disabled={disabled}
           onFocus={want}
@@ -113,15 +187,29 @@ export function RepoControl({
             </option>
           ))}
         </select>
-        <span className="sr-only" id={descriptionId}>
-          {description}
+        <span className="sr-only" id={descriptionId} {...page?.pageChrome}>
+          {shownDescription}
         </span>
       </span>
     );
   return (
-    <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
-      <span className="font-medium">Repository:</span>
+    <div
+      className={`flex ${page === null ? "shrink-0" : "min-w-0 max-w-full flex-wrap"} items-center gap-2 text-sm ${lineText}`}
+    >
+      {inDetails ? null : (
+        <span className="font-medium" {...page?.pageChrome}>
+          {`${page?.PROPERTY_LABELS.repository ?? "Repository"}:`}
+        </span>
+      )}
       {picker}
+      {/* Inside `NoTooltips`, why the repository shown may not be the issue's own, in words
+          where the `title` said it. Hidden from assistive technology because the select's own
+          description says the same thing, and nothing is said twice. */}
+      {page === null || resolvedRepo === null || repo !== null ? null : (
+        <span aria-hidden="true" className="text-xs" {...page.pageChrome}>
+          {page.CONTROL_LABELS.repository_inherited}
+        </span>
+      )}
       {loadFailure}
       {write.failed ? (
         <QueryError
