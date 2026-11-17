@@ -31,6 +31,7 @@ import {
   createIssue,
   createMessage,
   getArtifact,
+  getArtifactText,
   getAsk,
   getIssue,
   getIssueCoverage,
@@ -89,6 +90,7 @@ import {
   branchMoreRows,
   bulletBoxes,
   caretInNode,
+  caretInRowBlock,
   childRow,
   childRows,
   childrenSection,
@@ -2803,8 +2805,12 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
 
 // The tester's finding: what a key says when it has nowhere to go - `w` on a row no decision
 // stands behind - is drawn at the row it was pressed on, once, and the reader's next move lets
-// it go.
-// SLOW(>=2s): a seeded thread loaded cold and one of its rows focused, for two keys pressed.
+// it go. At 390 px, where the tree is read one node at a time, Left on a child of the row the
+// tree is zoomed to asked to zoom to that row, which is the zoom already, and said nothing: it
+// says so at the row, and on the zoom's own row it zooms back out.
+// SLOW(>=2s): a seeded thread loaded cold and one of its rows focused, for two keys pressed, then
+// loaded again at a phone's size on a reply's address, waited on until the reply has the focus,
+// for four keys more and a zoom out waited on.
 test("a key with nowhere to go says so at its row, and the next move lets it go", async ({
   browser,
 }) => {
@@ -2833,6 +2839,39 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
       issuePage(page).locator("[data-row-report]"),
       "the report stays after the reader moved on"
     ).toHaveCount(0);
+
+    await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
+    await gotoIssue(page, `/issues/${seeded.key}/comments/${seeded.first}`);
+    await expect
+      .poll(() => focusedNodeId(page), { message: "the reply's address does not focus its row" })
+      .toBe(seeded.first);
+    const crumbs = issuePage(page).locator("[data-crumb]");
+    await expect(crumbs, "the reply's address does not zoom the tree to its thread").toHaveCount(1);
+    await page.keyboard.press("ArrowLeft");
+    await expect(
+      nodeRow(page, seeded.first).first().locator("[data-row-report]"),
+      "Left on a child of the row the tree is zoomed to says nothing at the row"
+    ).toHaveText(KEY_REPORTS.parent_zoomed);
+    expect(await focusedNodeId(page), "Left on a child of the zoom moved the focus").toBe(
+      seeded.first
+    );
+    // The zoom's own row, the thread's head: Left zooms out to the issue, and there Left on the
+    // head, a child of the issue, says the whole issue is drawn.
+    await page.keyboard.press("ArrowUp");
+    await expect.poll(() => focusedNodeId(page)).toBe(seeded.head);
+    await page.keyboard.press("ArrowLeft");
+    await expect(crumbs, "Left on the zoom's own row did not zoom out").toHaveCount(0);
+    await expect
+      .poll(() => focusedNodeId(page), { message: "zooming out took the focus off the head" })
+      .toBe(seeded.head);
+    await page.keyboard.press("ArrowLeft");
+    await expect(
+      nodeRow(page, seeded.head).first().locator("[data-row-report]"),
+      "Left on a child of the issue, with the whole issue drawn, says nothing at the row"
+    ).toHaveText(KEY_REPORTS.whole_tree);
+    expect(await focusedNodeId(page), "Left on a child of the issue moved the focus").toBe(
+      seeded.head
+    );
   });
 });
 
@@ -2840,10 +2879,12 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
 // the caret at the start of its words, in that document's one room: the row takes the page's one
 // editor of the document, so the room gets no second connection. A second reader who does the
 // same on their own page is in that room too, and the first one's row draws the second one's
-// caret. What is typed is stored. Escape gives the same row the focus, and a second Escape leaves
+// caret. What is typed is stored, and keys pressed before the caret has reached the statement
+// edit the statement or nothing. Escape gives the same row the focus, and a second Escape leaves
 // the outline. A comment's row holds no document's text, and the key says so at the row.
 // SLOW(>=2s): the whole issue seeded and loaded, a second reader's context loading it too, both
-// carets put in the spec's live room, and two reloads or more reading what was stored.
+// carets put in the spec's live room, two reloads or more reading what was stored, and Enter
+// pressed on a page slowed four times, with Delete pressed until the caret is in the statement.
 test("Enter puts the caret in a node, and Escape gives the row back", async ({ browser }) => {
   test.setTimeout(120_000);
   const { context, page, seeded } = await openTree(browser);
@@ -2920,6 +2961,50 @@ test("Enter puts the caret in a node, and Escape gives the row back", async ({ b
     await expect
       .poll(storedWords, { message: "the word typed in the row was not removed" })
       .not.toContain(typed.trim());
+
+    // Keys pressed the moment Enter is pressed edit the statement or nothing. The editor took the
+    // focus with its own selection still at the top of the document, and read the caret put in
+    // the statement only a task later: on a busy page that was 0.27 to 0.84 s, and ten Deletes
+    // pressed in it removed the spec's first heading. The page is slowed here as a busy page is,
+    // the CPU throttled four times, and Delete pressed at once and again, without waiting on
+    // anything, until the caret has stood in the statement for three presses.
+    const before = (await getArtifactText(seeded.specArtifactId)).markdown;
+    const words = requirementText(2);
+    const at = before.indexOf(words);
+    expect(at, "the stored spec does not hold the statement's words").toBeGreaterThan(-1);
+    const cpu = await context.newCDPSession(page);
+    await cpu.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+    try {
+      await page.keyboard.press("Enter");
+      const until = Date.now() + 30_000;
+      for (let inBlock = 0; inBlock < 3 && Date.now() < until; ) {
+        await page.keyboard.press("Delete");
+        if (await caretInRowBlock(page, requirementBlockId(2))) inBlock += 1;
+      }
+    } finally {
+      await cpu.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+      await cpu.detach();
+    }
+    const storedSpec = async () => (await getArtifactText(seeded.specArtifactId)).markdown;
+    await expect
+      .poll(storedSpec, { message: "no Delete pressed after Enter reached the statement" })
+      .not.toBe(before);
+    const after = await storedSpec();
+    const above = before.slice(0, at);
+    const below = before.slice(at + words.length);
+    expect(
+      after.slice(0, above.length),
+      "a key pressed after Enter edited above the statement"
+    ).toBe(above);
+    expect(after.slice(after.length - below.length), "a key edited below the statement").toBe(
+      below
+    );
+    const left = after.slice(above.length, after.length - below.length);
+    expect(
+      left.length < words.length && words.endsWith(left),
+      `the statement reads "${left}", not its own words with their first ones deleted`
+    ).toBe(true);
+    await page.keyboard.press("Escape");
 
     // A comment's row holds no document's text: Enter puts no caret, and the row says so.
     const comment = seeded.comments.threads[0] ?? "";

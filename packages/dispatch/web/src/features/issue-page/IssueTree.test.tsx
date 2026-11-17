@@ -2,7 +2,7 @@ import { afterEach, expect, jest, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { jump, realClock } from "../../__tests__/fake-clock";
@@ -1290,10 +1290,23 @@ test("the row's editor opens at the node's block, in a box that ends at the foot
   }
 });
 
+/** Blocks of the statement's document as its editor draws them, each by its `data-block-id` and
+ *  its words: by default the words above the statement (`r0`), then the statement (`r1`). */
+type StatementBlocks = readonly (readonly [id: string, words: string])[];
+
+const STATEMENT_BLOCKS: StatementBlocks = [
+  ["r0", "The words above the statement."],
+  ["r1", "A statement of the spec."],
+];
+
 /** A comment and then a statement of the spec, with Enter pressed on the statement's row, once
- *  the row's editor has drawn the words above the statement (`r0`) and the statement (`r1`), and
- *  Enter's caret is at the start of the statement. Answers the editor's editable. */
-async function editStatement(user: UserEvent): Promise<HTMLElement> {
+ *  the row's editor - `editor`, a plain editable unless given - has drawn `blocks`, and Enter's
+ *  caret is in the statement's block (`r1`). Answers the editor's editable. */
+async function editStatement(
+  user: UserEvent,
+  editor: ReactNode = <div contentEditable suppressContentEditableWarning />,
+  blocks: StatementBlocks = STATEMENT_BLOCKS
+): Promise<HTMLElement> {
   const spec: Artifact = { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" };
   const root = node({
     children: [
@@ -1303,10 +1316,7 @@ async function editStatement(user: UserEvent): Promise<HTMLElement> {
     id: KEY,
     type: "issue",
   });
-  const view = renderTree(root, {
-    artifacts: [spec],
-    editor: <div contentEditable suppressContentEditableWarning />,
-  });
+  const view = renderTree(root, { artifacts: [spec], editor });
   await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
   await user.keyboard("j");
   await waitFor(() => expect(focusedRow(view.container)).toBe("spec#b-r1"));
@@ -1319,7 +1329,7 @@ async function editStatement(user: UserEvent): Promise<HTMLElement> {
     expect(found, "the row took no editor").toBeTruthy();
   });
   const editable = found as HTMLElement;
-  await drawStatementBlocks(editable);
+  await drawStatementBlocks(editable, blocks);
   await waitFor(() =>
     expect(
       document.activeElement === editable && caretBlock() === "r1",
@@ -1329,14 +1339,14 @@ async function editStatement(user: UserEvent): Promise<HTMLElement> {
   return editable;
 }
 
-/** Draws the statement's document in the row's `editable`, as its editor does once it has read
- *  it: the words above the statement (`r0`), then the statement (`r1`). */
-function drawStatementBlocks(editable: HTMLElement): Promise<void> {
+/** Draws `blocks` of the statement's document in the row's `editable`, as its editor does once it
+ *  has read it. */
+function drawStatementBlocks(
+  editable: HTMLElement,
+  blocks: StatementBlocks = STATEMENT_BLOCKS
+): Promise<void> {
   return act(async () => {
-    for (const [id, words] of [
-      ["r0", "The words above the statement."],
-      ["r1", "A statement of the spec."],
-    ] as const) {
+    for (const [id, words] of blocks) {
       const block = document.createElement("p");
       block.dataset.blockId = id;
       block.textContent = words;
@@ -1345,9 +1355,12 @@ function drawStatementBlocks(editable: HTMLElement): Promise<void> {
   });
 }
 
-/** The block of the editor the caret is in, by its `data-block-id`. */
+/** The block of the editor the caret is in, by its `data-block-id`: the block of the text it is
+ *  in, or the block it is in itself where that block holds no text. */
 function caretBlock(): string | null | undefined {
-  return window.getSelection()?.anchorNode?.parentElement?.getAttribute("data-block-id");
+  const anchor = window.getSelection()?.anchorNode;
+  const element = anchor instanceof Element ? anchor : anchor?.parentElement;
+  return element?.closest("[data-block-id]")?.getAttribute("data-block-id");
 }
 
 /**
@@ -1367,17 +1380,333 @@ function wrapAgain(editable: HTMLElement): Promise<void> {
   });
 }
 
+/** An editor that reads its own selection as ProseMirror does: from the document's
+ *  `selectionchange`, while it holds the focus, and from nothing else. `own.block` is the block
+ *  of that selection, which is what a key the editor handles itself acts on. */
+function ReportReadingEditor({ own }: { own: { block?: string | null } }): ReactNode {
+  const editable = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const read = () => {
+      if (document.activeElement === editable.current) own.block = caretBlock();
+    };
+    document.addEventListener("selectionchange", read);
+    return () => document.removeEventListener("selectionchange", read);
+  }, [own]);
+  return <div contentEditable ref={editable} suppressContentEditableWarning />;
+}
+
+/** Drops the `selectionchange` happy-dom reports inside the call that moves the selection: a
+ *  browser reports a move a task after it, so no listener hears it in the task that made it. A
+ *  report dispatched apart from such a call is heard. Answers what restores happy-dom's own. */
+function dropSelectionReports(): () => void {
+  const selection = window.getSelection();
+  if (selection === null) throw new Error("happy-dom draws no selection");
+  let moving = false;
+  const move = (change: () => void) => {
+    moving = true;
+    try {
+      change();
+    } finally {
+      moving = false;
+    }
+  };
+  const collapse = selection.collapse.bind(selection);
+  const setBaseAndExtent = selection.setBaseAndExtent.bind(selection);
+  const spies = [
+    spyOn(selection, "collapse").mockImplementation((node, offset) =>
+      move(() => collapse(node, offset))
+    ),
+    spyOn(selection, "setBaseAndExtent").mockImplementation(
+      (anchor, anchorOffset, focus, focusOffset) =>
+        move(() => setBaseAndExtent(anchor, anchorOffset, focus, focusOffset))
+    ),
+  ];
+  const drop = (event: Event) => {
+    if (moving) event.stopImmediatePropagation();
+  };
+  document.addEventListener("selectionchange", drop, { capture: true });
+  return () => {
+    document.removeEventListener("selectionchange", drop, { capture: true });
+    for (const spy of spies) spy.mockRestore();
+  };
+}
+
+// The editor reads a caret put in it only once the browser reports the move - ProseMirror's
+// observer listens for the document's `selectionchange` - which a browser does a task later, and
+// until then a key the editor handles itself acts on the editor's own selection: measured in
+// Chromium on a busy page, the editor held the focus with its selection at the top of the
+// document for 0.27 to 0.84 s after Enter, and ten Deletes pressed then removed the spec's first
+// heading. The editor takes Enter's caret as its own in the task that puts it there. happy-dom
+// reports a move inside the call that makes it, so that report is dropped here, as no listener
+// hears a browser's in that task.
+test("the editor takes Enter's caret in a statement as its own in the task that puts it there", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const restore = dropSelectionReports();
+  const own: { block?: string | null } = {};
+  try {
+    await editStatement(user, <ReportReadingEditor own={own} />);
+    expect(own.block, "the editor's own selection is not in the statement's block").toBe("r1");
+  } finally {
+    restore();
+  }
+});
+
+// A statement whose block holds no text - an empty paragraph - has no text to put Enter's caret
+// in, and an editor given the focus with no caret put in it takes the next key wherever the
+// browser puts its own caret, outside the node's block. The caret goes in the block itself, which
+// the editor reads as a place in that block, in the task that puts it there.
+test("Enter on a statement whose block holds no text puts the caret in that block, as the editor's own", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const restore = dropSelectionReports();
+  const own: { block?: string | null } = {};
+  try {
+    await editStatement(user, <ReportReadingEditor own={own} />, [
+      ["r0", "The words above the statement."],
+      ["r1", ""],
+    ]);
+    expect(own.block, "the editor's own selection is not in the empty statement's block").toBe(
+      "r1"
+    );
+  } finally {
+    restore();
+  }
+});
+
+/** A comment, a statement of the spec and a second comment, with Enter pressed on the
+ *  statement's row and the frame after it run, while the row's editor - a plain editable - has
+ *  drawn none of the document yet. Answers the tree and that editable. */
+async function enterBeforeDrawn(user: UserEvent) {
+  const spec: Artifact = { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" };
+  const root = node({
+    children: [
+      node({ id: "comment-1", text: "The first words.", type: "comment" }),
+      node({ id: "spec#b-r1", text: "A statement of the spec.", type: "requirement" }),
+      node({ id: "comment-2", text: "The last words.", type: "comment" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const view = renderTree(root, {
+    artifacts: [spec],
+    editor: <div contentEditable suppressContentEditableWarning />,
+  });
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  await user.keyboard("j");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("spec#b-r1"));
+  await user.keyboard("{Enter}");
+  let found: HTMLElement | null | undefined;
+  await waitFor(() => {
+    found = rowsFor(view.container, "spec#b-r1")[0]?.querySelector<HTMLElement>(
+      '[contenteditable="true"]'
+    );
+    expect(found, "the row took no editor").toBeTruthy();
+  });
+  await nextFrame();
+  return { editable: found as HTMLElement, view };
+}
+
+// A key the reader presses after Enter and before the row's editor has drawn the document, which
+// takes the focus out of the row - `j` to the next row - is them moving on. The caret Enter put
+// in the statement once the editor had drawn it took the focus back from the row `j` moved to,
+// and the letters they typed next went into the statement, which is saved to the shared
+// document. The first look for the caret after that ends the editing instead, and the focus stays
+// on the row `j` moved it to.
+test("a key that takes the focus out of the row before its editor has drawn the document ends the editing, and the focus stays where the key put it", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await enterBeforeDrawn(user);
+  await user.keyboard("j");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
+  // The editor draws the document a frame later.
+  await nextFrame();
+  await drawStatementBlocks(editable);
+  await nextFrame();
+  expect(focusedRow(view.container), "the caret took the focus back from the row j moved to").toBe(
+    "comment-2"
+  );
+  expect(
+    document.activeElement?.closest('[contenteditable="true"]') ?? null,
+    "an editor holds the focus"
+  ).toBeNull();
+  expect(view.edited.at(-1), "the editing did not end").toBeUndefined();
+  expect(
+    rowsFor(view.container, "spec#b-r1")[0]?.querySelector('[contenteditable="true"]') ?? null,
+    "the statement's row still holds the editor"
+  ).toBeNull();
+});
+
+// A key that leaves the focus on the row - Delete pressed the moment Enter is, as the browser row
+// on a slowed page presses it - is one for the statement: the caret goes into the node's block
+// once the editor has drawn the document, all the same.
+test("a key that leaves the focus on the row before its editor has drawn the document still has the caret put in the node's block", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await enterBeforeDrawn(user);
+  await user.keyboard("{Delete}");
+  expect(focusedRow(view.container), "Delete moved the focus off the row").toBe("spec#b-r1");
+  // The editor draws the document a frame later.
+  await nextFrame();
+  await drawStatementBlocks(editable);
+  await waitFor(() =>
+    expect(
+      document.activeElement === editable && caretBlock() === "r1",
+      "a Delete pressed before the editor drew the document kept the caret out of the statement"
+    ).toBe(true)
+  );
+  expect(view.edited.at(-1), "the editing ended").toBe("artifact-spec");
+});
+
+// The editor draws the document's blocks once it has read it, and may draw others before the
+// node's. A caret put in it before it has drawn the node's block goes to the document's first
+// text, and the keys the reader presses next edit the top of the document, which is saved to the
+// shared document. No caret goes into the editor, and no focus, until it has drawn the node's
+// block: the focus stays on the row, where no key edits the document, and the caret goes into
+// the node's block once it is drawn.
+test("Enter puts no caret in the row's editor until it has drawn the node's own block, and then puts it there", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await enterBeforeDrawn(user);
+  const statement = rowsFor(view.container, "spec#b-r1")[0];
+  // The editor draws the words above the statement first.
+  await drawStatementBlocks(editable, [["r0", "The words above the statement."]]);
+  await nextFrame();
+  expect(
+    document.activeElement,
+    "the focus left the row before the editor drew the statement's block"
+  ).toBe(statement);
+  expect(
+    editable.contains(window.getSelection()?.anchorNode ?? null),
+    "a caret was put in the editor before it drew the statement's block"
+  ).toBe(false);
+  // And the statement a frame later.
+  await drawStatementBlocks(editable, [["r1", "A statement of the spec."]]);
+  await waitFor(() =>
+    expect(
+      document.activeElement === editable && caretBlock() === "r1",
+      "the caret did not go into the statement once the editor drew its block"
+    ).toBe(true)
+  );
+  expect(view.edited.at(-1), "the editing ended").toBe("artifact-spec");
+});
+
+// A press that takes the focus out of the outline before the row's editor has drawn the
+// document ends the editing (above). The tree lets go of a row as the focus leaves it, except
+// while that row is being edited, when the editor moving drops the focus, so the statement's row
+// kept its focused look, its open body and its facts in the panel, with the focus on the control
+// pressed. The editing ending with the focus out of the tree lets go of the row, as the focus
+// leaving it does.
+test("a press out of the outline before the row's editor has drawn the document lets go of the row as the editing ends", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await enterBeforeDrawn(user);
+  const { control } = controlOutside();
+  const statement = rowsFor(view.container, "spec#b-r1")[0];
+  if (statement === undefined) throw new Error("the statement's row is not drawn");
+  expect(
+    statement.querySelector("[data-node-body]"),
+    "the statement's row drew no body as it was edited"
+  ).not.toBeNull();
+  await user.click(control);
+  expect(document.activeElement, "the press did not focus the control").toBe(control);
+  // The editor draws the document a frame later.
+  await nextFrame();
+  await drawStatementBlocks(editable);
+  await waitFor(() => expect(view.edited.at(-1), "the editing did not end").toBeUndefined());
+  expect(document.activeElement, "the focus left the control pressed").toBe(control);
+  await waitFor(() =>
+    expect(
+      statement.querySelector("[data-node-body]"),
+      "the statement's row still draws its body"
+    ).toBeNull()
+  );
+  expect(
+    statement.querySelector("[data-node-card]")?.className,
+    "the statement's row still looks focused"
+  ).not.toContain(pageFocusedRow);
+  expect(view.focusedNode(), "the panel still holds the statement's facts").toBeUndefined();
+});
+
+// The same where the editor never draws the document at all after the press: nothing more is
+// drawn to look again, and the editing ended all the same, a task after the reader's act.
+test("a press out of the outline ends the editing of a row whose editor never draws the node's block", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { view } = await enterBeforeDrawn(user);
+  const { control } = controlOutside();
+  const statement = rowsFor(view.container, "spec#b-r1")[0];
+  if (statement === undefined) throw new Error("the statement's row is not drawn");
+  await user.click(control);
+  expect(document.activeElement, "the press did not focus the control").toBe(control);
+  await waitFor(() =>
+    expect(view.edited.at(-1), "the editing went on with nothing drawn to end it").toBeUndefined()
+  );
+  expect(document.activeElement, "the focus left the control pressed").toBe(control);
+  await waitFor(() =>
+    expect(
+      statement.querySelector("[data-node-body]"),
+      "the statement's row still draws its body"
+    ).toBeNull()
+  );
+});
+
+// A control inside the row is somewhere the reader moved to as well: `Shift+C` focuses a
+// change's own box, and `f` steps to the row's links and controls. The caret placed once the
+// editor drew took the focus from it, and the words written there went into the shared
+// document. The case stands the row's own Keep open for such a control: a key of the reader's,
+// then the focus on it.
+test("a key that takes the focus to a control inside the row before its editor draws ends the editing there", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await enterBeforeDrawn(user);
+  const statement = rowsFor(view.container, "spec#b-r1")[0];
+  const inner = statement?.querySelector<HTMLElement>("button");
+  if (inner === null || inner === undefined)
+    throw new Error("the statement's row draws no control");
+  await user.keyboard("{Shift}");
+  await act(async () => inner.focus());
+  expect(document.activeElement, "the control inside the row did not take the focus").toBe(inner);
+  await nextFrame();
+  await drawStatementBlocks(editable);
+  await waitFor(() => expect(view.edited.at(-1), "the editing did not end").toBeUndefined());
+  expect(document.activeElement, "the caret took the focus from the row's control").toBe(inner);
+});
+
+// Only an act of the reader's ends the page's own placing of the caret. A focus a script gives a
+// control out of the row before the row's editor has drawn the document is no reader moving on:
+// the editing goes on, and the caret goes into the node's block once the editor has drawn it.
+test("a focus a script moves out of the row before its editor has drawn the document leaves the editing on, and the caret goes into the node's block", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await enterBeforeDrawn(user);
+  const { control } = controlOutside();
+  await act(async () => control.focus());
+  expect(document.activeElement, "the script did not focus the control").toBe(control);
+  // The editor draws the document a frame later.
+  await nextFrame();
+  await drawStatementBlocks(editable);
+  await waitFor(() =>
+    expect(
+      document.activeElement === editable && caretBlock() === "r1",
+      "a focus a script moved before the editor drew the document kept the caret out of the statement"
+    ).toBe(true)
+  );
+  expect(view.edited.at(-1), "the editing ended").toBe("artifact-spec");
+});
+
 // Two things the editor does to the caret Enter put in a node before the reader has done
 // anything. It changes its plugins after it has drawn the document's text - Dispatch's block
 // views as it binds, its collaborators' cursors once the room has synced - and ProseMirror then
 // makes Milkdown's view again, which takes the editable out of the box it wraps it in and wraps
 // it in a new one: the focus falls to the page's body as the editable leaves the page (measured
-// in Chromium, 45 ms after Enter had put the caret in a statement). And it writes its own
-// selection back over a caret it has not read yet: measured in Chromium, the caret was in the
-// spec's summary 60 ms after it was put in a statement, and the words typed went there. Until
-// the reader acts the row puts the caret back in the node's block; from their first act the
-// caret is where the editor left it, and a focus the editor drops comes back at that caret,
-// not at the node's block (the next row).
+// in Chromium, 45 ms after Enter had put the caret in a statement). And it wrote its own
+// selection back over a caret it had not read yet: measured in Chromium, the caret was in the
+// spec's summary 60 ms after it was put in a statement, and the words typed went there. It reads
+// the caret in the task that puts it there now (the test above), and a caret moved out of the
+// block all the same goes back: until the reader acts the row puts the caret back in the node's
+// block; from their first act the caret is where the editor left it, and a focus the editor
+// drops comes back at that caret, not at the node's block (the next row).
 test("a caret the editor drops or moves goes back to the node's block until the reader acts", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -1449,6 +1778,130 @@ test("a focus the editor drops while the reader writes comes back at their caret
   expect(document.activeElement, "the focus a press took off the editor came back").toBe(
     document.body
   );
+});
+
+// The editor can redraw its text while the editable has no focus - the words the reader's caret
+// was in drawn anew - and the caret's points are gone then. The focus came back with no caret put
+// in the editor, and the next key went where the browser puts the caret in an editable it focuses
+// (in Chromium, the editable's start, outside the node's block). It comes back at the start of
+// the node's block instead, as the editor's own in the task that puts it there. The frames are
+// held, so the words are drawn anew before the frame that gives the focus back.
+test("a focus the editor drops after it redrew the words of the reader's caret comes back in the node's block, as the editor's own", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const restore = dropSelectionReports();
+  const own: { block?: string | null } = {};
+  try {
+    const editable = await editStatement(user, <ReportReadingEditor own={own} />);
+    const above = editable.querySelector<HTMLElement>('[data-block-id="r0"]');
+    const words = above?.firstChild;
+    if (above === null || words === null || words === undefined) {
+      throw new Error("the editor draws no r0");
+    }
+    // The reader presses a key and moves the caret into the words above, which the editor reads.
+    await user.keyboard("{Shift}");
+    await act(async () => {
+      window.getSelection()?.collapse(words, 5);
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    expect(own.block, "the editor did not read the reader's move").toBe("r0");
+    const frames = framesByHand();
+    try {
+      await wrapAgain(editable);
+      // The editor draws the words above anew while it has no focus.
+      await act(async () => {
+        above.textContent = "The words above the statement.";
+      });
+      await frames.run();
+    } finally {
+      frames.restore();
+    }
+    expect(document.activeElement, "the focus the editor dropped did not come back").toBe(editable);
+    expect(caretBlock(), "the caret came back outside the node's block").toBe("r1");
+    expect(own.block, "the editor's own selection is not in the node's block").toBe("r1");
+  } finally {
+    restore();
+  }
+});
+
+// Where the editor has redrawn the words of the reader's caret and taken the node's block out as
+// well, a focus it drops has no place in the node's text to come back at. An editable given the
+// focus with no caret put in it takes the next key where the browser puts its caret, and a caret
+// put at the editor's start edits the top of the document, so the focus stays where it fell. The
+// frames are held, so the editor redraws before the frame that would give the focus back.
+test("a focus the editor drops after it redrew the reader's caret and took the node's block out stays where it fell", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const editable = await editStatement(user);
+  const above = editable.querySelector<HTMLElement>('[data-block-id="r0"]');
+  const words = above?.firstChild;
+  if (above === null || words === null || words === undefined) {
+    throw new Error("the editor draws no r0");
+  }
+  // The reader presses a key and moves the caret into the words above.
+  await user.keyboard("{Shift}");
+  await act(async () => {
+    window.getSelection()?.collapse(words, 5);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  const frames = framesByHand();
+  try {
+    await wrapAgain(editable);
+    // The editor draws the words above anew, and the statement's block no more, while it has no
+    // focus.
+    await act(async () => {
+      above.textContent = "The words above the statement.";
+      editable.querySelector('[data-block-id="r1"]')?.remove();
+    });
+    await frames.run();
+  } finally {
+    frames.restore();
+  }
+  expect(
+    document.activeElement,
+    "the focus came back to an editor that no longer draws the node's block"
+  ).toBe(document.body);
+  expect(
+    editable.contains(window.getSelection()?.anchorNode ?? null),
+    "a caret was put in the editor outside the node's block"
+  ).toBe(false);
+});
+
+// The caret the focus comes back at is the editor's own in the task that puts it there, as
+// Enter's is (above): the editor writes its own selection back over a caret it has not read.
+// Here the reader's last move is one the editor never read - the editable dropped the focus
+// before the browser reported it - so a caret put back and not reported would leave the editor's
+// own selection in the statement, under the reader's caret in the words above.
+test("the caret a dropped focus comes back at is the editor's own in the task that puts it there", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const restore = dropSelectionReports();
+  const own: { block?: string | null } = {};
+  try {
+    const editable = await editStatement(user, <ReportReadingEditor own={own} />);
+    const words = editable.querySelector('[data-block-id="r0"]')?.firstChild;
+    if (words === null || words === undefined) throw new Error("the editor draws no r0");
+    // The reader presses a key and moves the caret into the words above, and the focus drops
+    // before the browser reports the move.
+    await user.keyboard("{Shift}");
+    await act(async () => {
+      window.getSelection()?.collapse(words, 5);
+    });
+    expect(own.block, "the editor read a move the browser had not reported").toBe("r1");
+    await wrapAgain(editable);
+    await waitFor(() =>
+      expect(document.activeElement, "the focus the editor dropped did not come back").toBe(
+        editable
+      )
+    );
+    expect(window.getSelection()?.anchorNode, "the caret came back elsewhere").toBe(words);
+    expect(window.getSelection()?.anchorOffset, "the caret came back elsewhere").toBe(5);
+    expect(own.block, "the editor's own selection is not the caret the focus came back at").toBe(
+      "r0"
+    );
+  } finally {
+    restore();
+  }
 });
 
 // Escape gives the row the focus at once, and again in the next frame, once the editor has left
@@ -1809,6 +2262,35 @@ test("Right on the row the tree is zoomed to moves to its first child, or says n
   await user.keyboard("{ArrowRight}");
   await waitFor(() => expect(rowReport(view.container)).toBe(KEY_REPORTS.nothing_under));
   expect(focusedRow(view.container)).toBe("comment-2");
+});
+
+// At 390 by 664 Left on a child of the row the tree is zoomed to asked to zoom to that row,
+// which is the zoom already: the focus stayed and nothing was said. It says so at the row - the
+// issue itself where the tree is zoomed to it, the zoom's own row above where it is zoomed to a
+// row - and on the zoom's own row Left zooms back out one level.
+test("Left on a child of the row the tree is zoomed to says the tree is zoomed to its parent", async () => {
+  setViewport(390);
+  const user = userEvent.setup();
+  const view = renderTree(twoCommentsTree());
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  await user.keyboard("{ArrowLeft}");
+  await waitFor(() => expect(rowReport(view.container)).toBe(KEY_REPORTS.whole_tree));
+  expect(focusedRow(view.container)).toBe("comment-1");
+
+  await user.keyboard(".");
+  await waitFor(() => expect(view.container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull());
+  await user.keyboard("{ArrowRight}");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1a"));
+  await user.keyboard("{ArrowLeft}");
+  await waitFor(() => expect(rowReport(view.container)).toBe(KEY_REPORTS.parent_zoomed));
+  expect(focusedRow(view.container)).toBe("comment-1a");
+  expect(view.container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull();
+
+  await user.keyboard("{ArrowUp}");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  await user.keyboard("{ArrowLeft}");
+  await waitFor(() => expect(view.container.querySelector("[data-crumb]")).toBeNull());
+  expect(rowReport(view.container)).toBeUndefined();
 });
 
 /** An issue whose outline holds a comment and then the group of its two children. */
@@ -2310,60 +2792,82 @@ test("the question the page opened on takes back a focus a redraw drops, and kee
 });
 
 // From the answer on, the question's row the opening unfolded the path to again is the row the
-// opening focused (`unfoldTo`), as the row its landing focused was before: a later read that
-// takes that row out of the page - here one that places the question's thread under a node
-// that has arrived since, which nothing opens - has the opening unfold the path to the question
-// again. Read as nobody's row, the focus the answer's unfolding gave the question ended the
-// opening in the same render, and the later read left the focus on the page.
+// opening focused (`unfoldTo`), as the row its landing focused was before. It is held on screen
+// as the page grows, as that row was until the answer took it out of the page, which ended its
+// hold. A later read that takes it out of the page - here one that places the question's thread
+// under a node that has arrived since, which nothing opens - has the opening unfold the path to
+// the question again. Read as nobody's row, the focus the answer's unfolding gave the question
+// ended the opening in the same render, and the later read left the focus on the page. happy-dom
+// lays nothing out, so the row's box is given, and the size observers watching the page are
+// called by hand.
 test("the question the opening unfolded again after its answer keeps the focus through a later read", async () => {
   setViewport(1440);
-  const thread = (open: boolean) =>
-    node({
-      children: [
-        node({ id: "ask-mine", question: open, text: "Yours?", type: "ask", waiting: open }),
-      ],
-      held: 1,
-      id: "comment-1",
-      text: "The first words.",
-      type: "comment",
-    });
-  const tree = renderPageTree(node({ children: [thread(true)], id: KEY, type: "issue" }));
-  const { container } = tree.view;
-  await waitFor(() => expect(focusedRow(container)).toBe("ask-mine"));
+  const sizes = sizesByHand();
+  const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});
+  try {
+    const thread = (open: boolean) =>
+      node({
+        children: [
+          node({ id: "ask-mine", question: open, text: "Yours?", type: "ask", waiting: open }),
+        ],
+        held: 1,
+        id: "comment-1",
+        text: "The first words.",
+        type: "comment",
+      });
+    const tree = renderPageTree(node({ children: [thread(true)], id: KEY, type: "issue" }));
+    const { container } = tree.view;
+    await waitFor(() => expect(focusedRow(container)).toBe("ask-mine"));
 
-  // The answer folds the thread the frontier alone opened, and the opening unfolds it again.
-  tree.redraw(node({ children: [thread(false)], id: KEY, type: "issue" }));
-  await nextFrame();
-  expect(focusedRow(container), "the answer moved the focus off the question").toBe("ask-mine");
-  const unfolded = rowsFor(container, "ask-mine")[0];
+    // The answer folds the thread the frontier alone opened, and the opening unfolds it again.
+    tree.redraw(node({ children: [thread(false)], id: KEY, type: "issue" }));
+    await nextFrame();
+    expect(focusedRow(container), "the answer moved the focus off the question").toBe("ask-mine");
+    const unfolded = rowsFor(container, "ask-mine")[0];
+    if (unfolded === undefined) throw new Error("the answer's unfolding drew no row for ask-mine");
+    // What landed above it put its 28 px row 400 px below the screen's foot.
+    spyOn(unfolded, "getBoundingClientRect").mockReturnValue(
+      new DOMRect(0, window.innerHeight + 400, 600, 28)
+    );
+    scrolled.mockClear();
+    await sizes.resized(document.body);
+    // Its foot is brought 8 px clear of the screen's (`identity-block.ts`'s `bringOnScreen`).
+    expect(
+      scrolled,
+      "the question's row the answer unfolded again was not held on screen"
+    ).toHaveBeenCalledWith({ top: 436 });
 
-  tree.redraw(
-    node({
-      children: [
-        node({
-          children: [thread(false)],
-          held: 2,
-          id: "comment-0",
-          text: "Older words.",
-          type: "comment",
-        }),
-      ],
-      id: KEY,
-      type: "issue",
-    })
-  );
-  await nextFrame();
-  expect(
-    rowsFor(container, "ask-mine"),
-    "the later read left the question folded away: the answer's unfolding ended the opening"
-  ).toHaveLength(1);
-  expect(rowsFor(container, "ask-mine")[0], "the later read kept the question's row").not.toBe(
-    unfolded
-  );
-  expect(
-    focusedRow(container),
-    "the later read left the focus off the question: the answer's unfolding ended the opening"
-  ).toBe("ask-mine");
+    tree.redraw(
+      node({
+        children: [
+          node({
+            children: [thread(false)],
+            held: 2,
+            id: "comment-0",
+            text: "Older words.",
+            type: "comment",
+          }),
+        ],
+        id: KEY,
+        type: "issue",
+      })
+    );
+    await nextFrame();
+    expect(
+      rowsFor(container, "ask-mine"),
+      "the later read left the question folded away: the answer's unfolding ended the opening"
+    ).toHaveLength(1);
+    expect(rowsFor(container, "ask-mine")[0], "the later read kept the question's row").not.toBe(
+      unfolded
+    );
+    expect(
+      focusedRow(container),
+      "the later read left the focus off the question: the answer's unfolding ended the opening"
+    ).toBe("ask-mine");
+  } finally {
+    sizes.restore();
+    scrolled.mockRestore();
+  }
 });
 
 // The opening unfolds the path to the question it opened on once for the row it focused there

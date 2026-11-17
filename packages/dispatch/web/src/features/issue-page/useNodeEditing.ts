@@ -4,7 +4,13 @@ import type { Artifact } from "../../api/types";
 import { focusOnDocument } from "../shell/roving";
 import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
-import { caretInBlock, caretOutOfBlock, holdEditorAtBlock } from "./node-caret";
+import {
+  caretInBlock,
+  caretOutOfBlock,
+  EDITOR_BOX_ATTRIBUTE,
+  holdEditorAtBlock,
+  selectInEditor,
+} from "./node-caret";
 import { KEY_REPORTS } from "./page-structure";
 
 /** One row the reader is editing in: the document its node's text lives in, the block of that
@@ -54,11 +60,16 @@ export function abortOnReaderAct(then?: () => void): AbortController {
  * The tree holds no editor of its own. The page draws the one editor of whichever document a
  * row is editing (`slots/body.tsx`, through `onEditing`), `document-stage.tsx` moves it onto the
  * row, and this places the caret in the node's own block of it and opens the editor's box at
- * that block, no taller than the window (`node-caret.ts`), the moment the row holds it: the page
- * mounts that editor in the commit after the row asked for it, and the editor draws the
- * document's text once it has read it. The editor's own redrawing can drop that caret before the
- * reader has done anything, and this puts it back until they have. From then on, a focus the
- * editor drops while the reader writes goes back to the caret they had. A node whose text no
+ * that block, no taller than the window (`node-caret.ts`), the moment the row holds it with that
+ * block drawn: the page mounts that editor in the commit after the row asked for it, and the
+ * editor draws the document's text once it has read it. No caret goes anywhere else in the
+ * document, where the keys would edit what the reader never chose. A reader whose act took the
+ * focus out of the row before then has moved on from it, and the editing ends with no caret
+ * placed; a key that left the focus on the row is one for the statement, and the caret goes in.
+ * The editor's own redrawing can drop that caret before the reader has done anything, and this
+ * puts it back until they have. From then on, a focus the editor drops while the reader writes
+ * goes back to the caret they had, or to the node's block where the editor has redrawn the text
+ * that caret was in, and stays where it fell where that block is gone too. A node whose text no
  * document of this issue holds has nothing to put a caret in, and the key says so.
  *
  * Escape leaves the caret for the row it came from. The editor calls `preventDefault` on the
@@ -128,11 +139,28 @@ export function useNodeEditing({
     const box = container.current;
     if (editingRow === undefined || box === null) return;
     // The row's stage is in its words (`NodeRow.tsx`), so the row as a whole is where the
-    // editor is looked for. It arrives over several commits, and is ready for the caret once it
-    // has drawn the document's text (`caretInBlock`), so the caret is placed the first time the
-    // row holds one that has, and the editor opened at the block then, and only then.
+    // editor is looked for. It arrives over several commits, and may draw the document's blocks
+    // over more than one frame once it has read the document, others before the node's, so the
+    // caret is placed the first time the row holds one that has drawn the node's block
+    // (`caretInBlock`), and the editor opened at the block then, and only then. Until then the
+    // focus stays on the row, where no key edits the document, and an editor that never draws
+    // the block gets no caret at all.
     //
-    // The row is watched on after that, until the reader's first act (`READER_ACTS`), for two
+    // Unless the reader has moved on from the row by then: an act of theirs (`READER_ACTS`)
+    // that took the focus off the row itself and its editor while the editor was still drawing -
+    // `j` to the next row, Tab out of the outline, a press elsewhere, or a control inside the row
+    // itself, as `Shift+C` focuses the change's own box and `f` the row's links. A caret placed
+    // after that took the focus back from where they had put it, and the letters they typed next
+    // went into the statement, which is saved to the shared document. So the first look for the
+    // caret after such an act places none and ends the editing, and no row takes the focus back,
+    // as the row does after Escape (`leaving`); where the act took the focus out of the tree as
+    // well, the tree lets go of the row as the editing ends (`IssueTree.tsx`'s
+    // `useReleaseFocus`). A key that leaves the focus on the row itself - Delete pressed the
+    // moment Enter is - is one for the statement, and the caret goes in all the same. So does a
+    // focus moved off the row by no act of theirs - a script focusing a control - since only
+    // their own act ends the page's placing of the focus.
+    //
+    // The row is watched on after the caret is placed, until the reader's first act, for two
     // things the editor does to the caret before the reader has done anything. It changes its
     // plugins after it has drawn the text - Dispatch's own block views as it binds
     // (`doc/editor.ts`'s `installTypedBlocks`), its collaborators' cursors once the room has
@@ -140,23 +168,34 @@ export function useNodeEditing({
     // again, Milkdown's among them, which takes the editable out of the box it wraps it in and
     // wraps it in a new one. The browser drops the focus to the page as the editable leaves it:
     // measured in Chromium, a `focusout` with no related target 45 ms after the caret was placed,
-    // and the focus on the page's body after. And the editor writes its own selection back over
-    // the caret while it has not read the caret yet (`caretOutOfBlock`). So while the reader has
-    // not acted, a focus fallen to nothing and a caret moved out of the node's block go back to
-    // the block; from their first act the focus and the caret are theirs.
+    // and the focus on the page's body after, with the caret moved out to where the editable
+    // stood. So while the reader has not acted, a focus fallen to nothing and a caret moved out
+    // of the node's block go back to the block, while the editor still draws it, which the
+    // editor takes as its own in the same task (`caretInBlock`); from their first act the focus
+    // and the caret are theirs.
     let settled: (() => void) | undefined;
+    // A look a task after the reader's act, before the caret is placed: the act may take the
+    // focus out of the row, which ends the editing, and no draw of the editor need follow it to
+    // look again - an editor that never draws the node's block draws nothing more.
+    let afterAct: number | undefined;
     const acts = abortOnReaderAct(() => {
       if (settled !== undefined) watch.disconnect();
+      else afterAct = window.setTimeout(changed, 0);
     });
     // Places the caret, or places it again where the focus has fallen to nothing or the caret
     // has left the block, and answers whether the row is done with: the caret placed and the
-    // reader acted since.
+    // reader acted since, or the reader took the focus out of the row before it was placed,
+    // which ends the editing.
     const place = (): boolean => {
       const row = box.querySelector<HTMLElement>(
         `[data-node-row][data-row-key="${CSS.escape(editingRow)}"]`
       );
       if (row === null) return false;
       if (settled === undefined) {
+        if (acts.signal.aborted && !holdsRowsFocus(row)) {
+          setEditing(undefined);
+          return true;
+        }
         if (!caretInBlock(row, editingBlock)) return false;
         settled = holdEditorAtBlock(row, editingBlock);
         // Only a selection moved after the caret was placed is the editor's doing.
@@ -181,6 +220,7 @@ export function useNodeEditing({
     });
     return () => {
       cancelAnimationFrame(frame);
+      window.clearTimeout(afterAct);
       acts.abort();
       watch.disconnect();
       settled?.();
@@ -196,11 +236,18 @@ export function useNodeEditing({
     // Milkdown's among them, which takes the editable out of the page and puts it back: the
     // focus falls to the page's body while the reader writes, and the keys they press next go
     // nowhere. So the editable losing the focus to nothing (a `focusout` naming no element)
-    // gets it back on the next frame, at the caret it held as it lost it, where it is still in
-    // the row and nothing else has taken the focus by then. The caret is kept as its points,
-    // since a range is moved out of a node the page takes out. A press is the reader's own:
-    // one on blank space takes the focus to nothing in the same task as its `pointerdown` and
-    // `mousedown`, and leaves it there. Escape focuses the row, so it takes nothing back either.
+    // gets it back on the next frame, at the caret it held as it lost it, which the editor takes
+    // as its own at once (`selectInEditor`), where it is still in the row and nothing else has
+    // taken the focus by then. The caret is kept as its points, since a range is moved out of a
+    // node the page takes out. The editor can redraw its text while it has no focus, and the
+    // points are gone then: the caret goes to the start of the node's block instead
+    // (`caretInBlock`), which the editor takes as its own at once too. An editable focused with
+    // no caret put in it takes the next key where the browser puts its caret - in Chromium, the
+    // editable's start, outside the node's block - so where that block is gone as well
+    // `caretInBlock` focuses nothing, and the focus stays where it fell. A press is the reader's
+    // own: one on blank space takes the focus to nothing in the same task as its `pointerdown`
+    // and `mousedown`, and leaves it there. Escape focuses the row, so it takes nothing back
+    // either.
     const rowSelector = `[data-node-row][data-row-key="${CSS.escape(editingRow)}"]`;
     const listening = new AbortController();
     const options = { capture: true, signal: listening.signal };
@@ -228,15 +275,18 @@ export function useNodeEditing({
       if (frame !== undefined) cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
         if (!focusOnDocument()) return;
-        if (box.querySelector(rowSelector)?.contains(editable) !== true) return;
-        editable.focus({ preventScroll: true });
+        const row = box.querySelector<HTMLElement>(rowSelector);
+        if (row === null || !row.contains(editable)) return;
         if (
           anchor !== null &&
           focus !== null &&
           pointIn(editable, anchor, anchorOffset) &&
           pointIn(editable, focus, focusOffset)
         ) {
-          window.getSelection()?.setBaseAndExtent(anchor, anchorOffset, focus, focusOffset);
+          editable.focus({ preventScroll: true });
+          selectInEditor(anchor, anchorOffset, focus, focusOffset);
+        } else {
+          caretInBlock(row, editingBlock);
         }
       });
     };
@@ -248,7 +298,7 @@ export function useNodeEditing({
       window.clearTimeout(pressEnding);
       if (frame !== undefined) cancelAnimationFrame(frame);
     };
-  }, [container, editingRow]);
+  }, [container, editingBlock, editingRow]);
 
   useEffect(() => {
     const box = container.current;
@@ -284,6 +334,15 @@ export function useNodeEditing({
   }, [container, editingRow]);
 
   return { edit, editing, stopEditing };
+}
+
+/** Whether the focus is still the edited row's: on the row itself, or inside the box its editor
+ *  is drawn in (`EDITOR_BOX_ATTRIBUTE`). A control inside the row - a change's own box, a link
+ *  `f` stepped to - is somewhere the reader moved to. */
+function holdsRowsFocus(row: HTMLElement): boolean {
+  const active = document.activeElement;
+  if (active === row) return true;
+  return row.querySelector(`[${EDITOR_BOX_ATTRIBUTE}]`)?.contains(active) === true;
 }
 
 /** Whether `offset` in `node` is still a place in `editable` a caret can be put: the editor can
