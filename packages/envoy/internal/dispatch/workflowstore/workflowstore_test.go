@@ -174,35 +174,38 @@ func TestAnEmptyReportStatesNone(t *testing.T) {
 	}
 }
 
-// An end whose start never arrived — a step that started under the release before, or whose
-// start row is still backing off — makes the node itself, with the start time the daemon holds.
-// The start that arrives after it keeps that start time, fills what the end did not carry, and
-// leaves the result.
+// An end whose start has not arrived — a start row still backing off in the daemon's outbox —
+// makes the node itself, with the moment its start wrote, which the daemon's end writes again
+// beside the session and the model it alone names (workflow's endStep). The start that arrives
+// after it carries what the daemon's start writes, the step's identity and that one moment
+// (workflow's startStep), so it changes nothing: the node keeps the end's moment, session and
+// result, and the log gains no tuple.
 func TestAnEndBeforeItsStartMakesTheNode(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	id := uuid.NewString()
 
 	end := endOf(implementer(id), ResultPassed, minute(5))
 	end.StartedAt = new(minute(0))
+	end.Session = new("s1")
+	end.Model = new("anthropic/claude-opus-5")
 	put(t, pool, end, minute(5))
 	if nodes := countNodes(t, pool, id); nodes != 1 {
 		t.Fatalf("the end wrote %d nodes, want the one it makes", nodes)
 	}
+	before := wholeLog(t, pool)
 
-	late := startOf(implementer(id), minute(1))
-	late.Session = new("s1")
-	put(t, pool, late, minute(6))
+	put(t, pool, startOf(implementer(id), minute(0)), minute(6))
 
+	if after := wholeLog(t, pool); !reflect.DeepEqual(after, before) {
+		t.Errorf("the late start moved the log from %d tuples to %d, want no tuple: the end carried every field it writes", len(before), len(after))
+	}
 	steps := issueSteps(t, pool, "LEG-1")
 	if len(steps) != 1 {
 		t.Fatalf("LEG-1 lists %d steps, want the one node both writes wrote: %+v", len(steps), steps)
 	}
 	step := steps[0]
-	if step.StartedAt == nil || !step.StartedAt.Equal(minute(0)) {
-		t.Errorf("started_at reads %v, want the end's %s: the late start does not move it", step.StartedAt, minute(0))
-	}
-	if step.Session != "s1" {
-		t.Errorf("session reads %q, want the late start's s1", step.Session)
+	if step.StartedAt == nil || !step.StartedAt.Equal(minute(0)) || step.Session != "s1" || step.Model != "anthropic/claude-opus-5" {
+		t.Errorf("the step reads started_at %v session %q model %q, want the end's %s, s1 and anthropic/claude-opus-5", step.StartedAt, step.Session, step.Model, minute(0))
 	}
 	if step.Result != ResultPassed || step.EndedAt == nil || !step.EndedAt.Equal(minute(5)) {
 		t.Errorf("the step reads result %q ended %v, want the end's passed at %s", step.Result, step.EndedAt, minute(5))
