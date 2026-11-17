@@ -287,8 +287,14 @@ func TestADefaultPlanTakesALaterOwnersPlanWhole(t *testing.T) {
 	if owner := putPlan(t, pool, ownersPlan, minute(1)); planText(owner) != planText(want) {
 		t.Fatalf("a later owner's write answers\n%s\nwant the owner's plan whole\n%s", planText(owner), planText(want))
 	}
+	// A default write after the owner's plan is at a lower version: it changes nothing and
+	// appends no tuple.
+	before := wholeLog(t, pool)
 	if again := putPlan(t, pool, defaultPlan(id, "LEG-1", 1), minute(2)); planText(again) != planText(want) {
 		t.Fatalf("the default plan written again answers\n%s\nwant the owner's\n%s", planText(again), planText(want))
+	}
+	if after := wholeLog(t, pool); len(after) != len(before) {
+		t.Fatalf("the default write after the owner's plan appended %d tuples, want none", len(after)-len(before))
 	}
 
 	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{})
