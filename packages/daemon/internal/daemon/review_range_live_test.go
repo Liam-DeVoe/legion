@@ -42,7 +42,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // lastReviewed is the part of a task that names the commit the reviewer's last deciding review read
@@ -175,10 +174,10 @@ func (r *reviewRangeLive) controlNoRecordNoCommit() {
 // the reviewing task naming the tester's handoff of round 1.
 func (r *reviewRangeLive) roundOne(issue *reviewRangeIssue) string {
 	issue.tester = r.claimant(claim.RoleTester, issue.key, "ses_"+issue.name+"_tester")
-	r.awaitTask(issue.tester, "Phase: testing.", "Resume the existing phase work.")
+	issue.tester.awaitPrompt("Phase: testing.", "Resume the existing phase work.")
 	test := r.pass(issue, 1)
 	issue.reviewer = r.claimant(claim.RoleReviewer, issue.key, "ses_"+issue.name+"_reviewer")
-	task := r.awaitTask(issue.reviewer, "Phase: reviewing.", handoffLine(issue.key, "test", test.version))
+	task := issue.reviewer.awaitPrompt("Phase: reviewing.", handoffLine(issue.key, "test", test.version)).Message
 	r.note("round 1: the reviewer's shim was prompted: %q", task)
 	return task
 }
@@ -203,7 +202,7 @@ func (r *reviewRangeLive) requestChanges(issue *reviewRangeIssue) {
 func (r *reviewRangeLive) roundTwo(issue *reviewRangeIssue) string {
 	t := r.t
 	implementer := r.claimant(claim.RoleImplementer, issue.key, "ses_"+issue.name+"_implementer")
-	r.awaitTask(implementer, "Phase: implementing.")
+	implementer.awaitPrompt("Phase: implementing.")
 	r.pulls.head(issue.key, issue.second)
 	r.publishPushOf(issue.key, issue.first, issue.second)
 	r.publishSynchronizeOf(issue.number, issue.key, issue.second, "main", "the pull request of "+issue.key, time.Now())
@@ -219,9 +218,9 @@ func (r *reviewRangeLive) roundTwo(issue *reviewRangeIssue) string {
 	implementer.endTurn()
 	r.waitPhase(issue.key, phase.Testing)
 	r.note("the implementer completed at %s naming %s; read back: %s is in testing", issue.second, implement.line, issue.key)
-	r.awaitTask(issue.tester, "Phase: testing.", handoffLine(issue.key, "implement", implement.version))
+	issue.tester.awaitPrompt("Phase: testing.", handoffLine(issue.key, "implement", implement.version))
 	test := r.pass(issue, 2)
-	task := r.awaitTask(issue.reviewer, "Phase: reviewing.", handoffLine(issue.key, "test", test.version))
+	task := issue.reviewer.awaitPrompt("Phase: reviewing.", handoffLine(issue.key, "test", test.version)).Message
 	r.note("round 2: the reviewer's shim was prompted: %q", task)
 	return task
 }
@@ -241,45 +240,6 @@ func (r *reviewRangeLive) pass(issue *reviewRangeIssue, round int) handoffWritte
 	r.waitPhase(issue.key, phase.Reviewing)
 	r.note("round %d: the tester passed naming %s; read back: %s is in reviewing", round, test.line, issue.key)
 	return test
-}
-
-// awaitTask waits for the prompt of c whose message holds each of want, which is the task of the
-// round a step reads, and returns it. A prompt before it that does not is noted and passed over,
-// so a check reads the task of its own round and no other message the daemon sent the claim. It
-// waits two minutes, or what is left of the test binary's deadline less a second when that is
-// sooner (testwait.Bounded), and its failure names the bound it waited.
-func (r *reviewRangeLive) awaitTask(c *handoffClaimant, want ...string) string {
-	r.t.Helper()
-	bound := testwait.Bounded(r.t, 2*time.Minute, time.Second)
-	deadline := time.After(bound)
-	for {
-		select {
-		case prompt := <-c.prompts:
-			if holdsAll(prompt.Message, want) {
-				return prompt.Message
-			}
-			r.note("%s was first prompted with another task: %q", c.token, prompt.Message)
-		case <-deadline:
-			r.t.Fatalf("%s was prompted with no task holding %q within %s", c.token, want, bound)
-			return ""
-		}
-	}
-}
-
-// holdsAll says whether text holds each of parts.
-func holdsAll(text string, parts []string) bool {
-	for _, part := range parts {
-		if !strings.Contains(text, part) {
-			return false
-		}
-	}
-	return true
-}
-
-// handoffLine is the part of a task that names the handoff of word on key at version (workflow's
-// task).
-func handoffLine(key, word string, version int) string {
-	return fmt.Sprintf("Handoff: %s version %d (dispatch handoff-read --issue %s --phase %s --version %d).", word, version, key, word, version)
 }
 
 // reviewedHead is phases.reviewed_head of key's reviewer, read from the daemon's own database.

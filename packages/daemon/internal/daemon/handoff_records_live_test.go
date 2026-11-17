@@ -454,7 +454,7 @@ func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 
 	reviewer := r.claimant(claim.RoleReviewer, r.a7, "ses_a7_reviewer")
 	task := reviewer.awaitPrompt()
-	want := fmt.Sprintf("Handoff: test version %d (dispatch handoff-read --issue %s --phase test --version %d).", rewritten.version, r.a7, rewritten.version)
+	want := handoffLine(r.a7, "test", rewritten.version)
 	if !strings.Contains(task.Message, want) {
 		t.Fatalf("the reviewer was prompted %q, want it to name %q", task.Message, want)
 	}
@@ -971,19 +971,44 @@ func (c *handoffClaimant) endTurn() {
 	}
 }
 
-// awaitPrompt waits for the next task the daemon prompts this claim with: two minutes, or what is
-// left of the test binary's deadline less a second when that is sooner (testwait.Bounded), and its
-// failure names the bound it waited.
-func (c *handoffClaimant) awaitPrompt() shimwire.Prompt {
+// awaitPrompt waits for the next task the daemon prompts this claim with whose message holds each
+// of want, and returns it. A prompt before it that does not is noted and passed over, so a caller
+// that names its round's task reads that task and no other message the daemon sent the claim; a
+// caller naming nothing takes the next prompt. It waits two minutes, or what is left of the test
+// binary's deadline less a second when that is sooner (testwait.Bounded), and its failure names
+// the bound it waited.
+func (c *handoffClaimant) awaitPrompt(want ...string) shimwire.Prompt {
 	c.r.t.Helper()
 	bound := testwait.Bounded(c.r.t, 2*time.Minute, time.Second)
-	select {
-	case prompt := <-c.prompts:
-		return prompt
-	case <-time.After(bound):
-		c.r.t.Fatalf("%s was prompted with no task within %s", c.token, bound)
-		return shimwire.Prompt{}
+	deadline := time.After(bound)
+	for {
+		select {
+		case prompt := <-c.prompts:
+			if holdsAll(prompt.Message, want) {
+				return prompt
+			}
+			c.r.note("%s was first prompted with another task: %q", c.token, prompt.Message)
+		case <-deadline:
+			c.r.t.Fatalf("%s was prompted with no task holding %q within %s", c.token, want, bound)
+			return shimwire.Prompt{}
+		}
 	}
+}
+
+// holdsAll says whether text holds each of parts.
+func holdsAll(text string, parts []string) bool {
+	for _, part := range parts {
+		if !strings.Contains(text, part) {
+			return false
+		}
+	}
+	return true
+}
+
+// handoffLine is the part of a task that names the handoff of word on key at version (workflow's
+// task).
+func handoffLine(key, word string, version int) string {
+	return fmt.Sprintf("Handoff: %s version %d (dispatch handoff-read --issue %s --phase %s --version %d).", word, version, key, word, version)
 }
 
 // complete posts a completion for this claim with a grant minted for it now, as the `legion`
