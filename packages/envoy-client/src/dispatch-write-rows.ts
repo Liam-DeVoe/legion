@@ -167,6 +167,24 @@ const uploadedDocument = {
 /** The person or session a review or a retraction names, as `actorText` reads it. */
 const actor = InboundActorSchema;
 
+/** The rows of the POSTs that store nothing, which the route table says of each
+ *  (`packages/envoy/internal/dispatch/api/routes_table.go`): Dispatch's parse and render of a
+ *  text (`POST /api/v1/markdown/round-trip`, "The route writes nothing and reads no row") and the
+ *  related-item check (`POST /api/v1/projects/{key}/related`, "writing nothing"). */
+const STORE_NOTHING = new WeakSet<z.ZodType>();
+
+/** `row`, marked as the row of a route that stores nothing (`rowStores`). */
+function storesNothing<Row extends z.ZodType>(row: Row): Row {
+  STORE_NOTHING.add(row);
+  return row;
+}
+
+/** Whether the route whose 2xx `row` reads stores what it is sent. A 2xx of one that stores
+ *  nothing and gives no answer made nothing, so it is no landing (`DispatchClient.#writtenRow`). */
+export function rowStores(row: z.ZodType): boolean {
+  return !STORE_NOTHING.has(row);
+}
+
 /** An issue as `issueUpdateCommand` reads the answer of its PATCH (`WRITE_ROWS.updateIssue`). */
 const updatedIssue = z.looseObject({
   key: issueFields.key,
@@ -198,8 +216,8 @@ export const WRITE_ROWS = {
     repo: issueFields.repo.optional(),
     advice: caughtAdvice,
   }),
-  markdownRoundTrip: z.looseObject({ markdown: z.string() }),
-  related: z.looseObject({ outcome: z.string() }),
+  markdownRoundTrip: storesNothing(z.looseObject({ markdown: z.string() })),
+  related: storesNothing(z.looseObject({ outcome: z.string() })),
   /** `issueUpdateCommand` reads the key and the status on every path, and each other member only
    *  where the call wrote it, so those are optional. */
   updateIssue: updatedIssue,

@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { routeAnswer } from "../../../packages/envoy-client/test/route-answers.ts";
 
 const check = join(import.meta.dir, "dispatch-keyed-comment.ts");
 const servers: Server<undefined>[] = [];
@@ -53,7 +54,7 @@ function standIn(options: {
 }): StandIn {
   const posts: StandIn["posts"] = [];
   const comments: StandIn["comments"] = [];
-  const answers = new Map<string, { id: string; body: string }>();
+  const answers = new Map<string, Record<string, unknown>>();
   const server = Bun.serve({
     async fetch(request) {
       const url = new URL(request.url);
@@ -80,8 +81,12 @@ function standIn(options: {
       const comment = { body: input.body, id: crypto.randomUUID() };
       comments.push(comment);
       posts.push({ key, made: true });
-      if (options.keyed && key !== null) answers.set(key, comment);
-      return Response.json(comment, {
+      const answer = routeAnswer("POST /api/v1/issues/{key}/comments", {
+        ...comment,
+        issue_key: "CORE-1",
+      });
+      if (options.keyed && key !== null) answers.set(key, answer);
+      return Response.json(answer, {
         headers: options.keyed && key !== null ? { "Idempotency-Key": key } : {},
         status: 201,
       });

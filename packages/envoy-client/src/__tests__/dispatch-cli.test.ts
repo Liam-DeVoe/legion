@@ -20,6 +20,7 @@ import {
 } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import type { Socket } from "bun";
+import { routeAnswer } from "../../test/route-answers";
 import { forgetBrokerClients } from "../broker-credential";
 import {
   cliRefusals,
@@ -32,7 +33,6 @@ import { ownIdentityDispatch } from "../dispatch-config";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { DispatchClient, forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
 import { forgetShownPictures } from "../dispatch-picture-tools";
-import { routeAnswer } from "./dispatch-route-answers";
 
 interface Recorded {
   readonly method: string;
@@ -2217,14 +2217,18 @@ describe("dispatch result --project, as a CI job writes it", () => {
    *  round starts later than `reserveMs` before `totalMs`. */
   const shortBound = (totalMs: number, reserveMs: number): ResultBound => ({ totalMs, reserveMs });
 
-  // Dispatch answers 201 only after it stored the result, so a body lost after that status line is
-  // a landing whose answer was lost: the job prints landed_without_answer, which its reporter reads
-  // as stored, and exits 0, whether the body is cut, stalls until the bound (B4 of the review of
-  // 2f29345b8d, its two rows) or comes whole and is not the JSON it says it is. The stand-in
-  // Dispatch is a raw socket, so the status line and the first bytes of the body surely reach the
-  // job before the connection closes or goes silent. The stall is ended by the command's own
-  // bound, a real timer as in the bound rows below, since that bound is what the row tests.
+  // Dispatch answers 201 only after it stored the result, and names the request's key back on it
+  // (`TestEveryKeyedAnswerNamesItsKey`), so a body lost after that status line is a landing whose
+  // answer was lost: the job prints landed_without_answer, which its reporter reads as stored, and
+  // exits 0, whether the body is cut, stalls until the bound (B4 of the review of 2f29345b8d, its
+  // two rows) or comes whole and is not the JSON it says it is. The stand-in Dispatch is a raw
+  // socket, so the status line and the first bytes of the body surely reach the job before the
+  // connection closes or goes silent. The stall is ended by the command's own bound, a real timer
+  // as in the bound rows below, since that bound is what the row tests.
   const bodyStart = '{"id":"00000000-0000-4000-8000-';
+  /** The `Idempotency-Key` a raw request carries, which a stand-in of Dispatch names back. */
+  const keyOf = (request: Buffer): string =>
+    /\r\nidempotency-key: *([^\r\n]*)/i.exec(request.toString("latin1"))?.[1]?.trim() ?? "";
   for (const [name, length, close] of [
     ["is cut", 400, true],
     ["stalls past the bound", 400, false],
@@ -2241,6 +2245,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
             posts += 1;
             socket.write(
               "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\n" +
+                `Idempotency-Key: ${keyOf(request)}\r\n` +
                 `Content-Length: ${length}\r\n\r\n${bodyStart}`
             );
             if (close) socket.end();
@@ -2273,8 +2278,14 @@ describe("dispatch result --project, as a CI job writes it", () => {
   }
 
   /** A stand-in Dispatch on a raw socket that answers every POST with `status`, `type` and the
-   *  whole of `body`, counting the posts. */
-  function answeringWhole(status: string, type: string, body: string) {
+   *  whole of `body`, naming back the request's key as Dispatch does (`this`), none, or another
+   *  request's (`other`), counting the posts. */
+  function answeringWhole(
+    status: string,
+    type: string,
+    body: string,
+    echo: "this" | "none" | "other" = "this"
+  ) {
     const seen = { posts: 0 };
     const server = Bun.listen({
       hostname: "127.0.0.1",
@@ -2283,8 +2294,13 @@ describe("dispatch result --project, as a CI job writes it", () => {
         data(socket, request) {
           if (!request.subarray(0, 5).toString("latin1").startsWith("POST ")) return;
           seen.posts += 1;
+          const key = keyOf(request);
+          const named =
+            echo === "none"
+              ? ""
+              : `Idempotency-Key: ${echo === "this" ? key : `${key}-another`}\r\n`;
           socket.write(
-            `HTTP/1.1 ${status}\r\nContent-Type: ${type}\r\n` +
+            `HTTP/1.1 ${status}\r\nContent-Type: ${type}\r\n${named}` +
               `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`
           );
           socket.end();
@@ -2386,6 +2402,137 @@ describe("dispatch result --project, as a CI job writes it", () => {
       }
     }, 30_000);
   }
+
+  // A Dispatch with no keyed layer, the build before it, names no key back on its 201, and its
+  // stored result is still the answer: printed whole, exit 0.
+  test("a 201 with the stored result that names no key back prints it and exits 0", async () => {
+    const { seen, server } = answeringWhole(
+      "201 Created",
+      "application/json",
+      JSON.stringify(stored),
+      "none"
+    );
+    try {
+      const ran = await spawnJob(record, {
+        ...jobEnvironment(),
+        DISPATCH_URL: `http://127.0.0.1:${server.port}`,
+      });
+      expect({ code: ran.code, stderr: ran.stderr, posts: seen.posts }).toEqual({
+        code: 0,
+        stderr: "",
+        posts: 1,
+      });
+      expect(JSON.parse(ran.stdout)).toEqual(stored);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
+  // A 2xx that is not Dispatch's answer to the write - it names no key back and gives no stored
+  // result, or names another request's key back - came from whatever answers in Dispatch's place
+  // (a proxy's page, a server that is not Dispatch), which may have passed the write on first:
+  // the job prints write_outcome_unknown and exits 1, never landed_without_answer, which its
+  // reporter reads as stored (B5 of the review of 355f8ada68). Each runs the command as its own
+  // process, as a job's step runs it.
+  for (const [name, status, type, body, echo, code] of [
+    [
+      "a 200 page that names no key back",
+      "200 OK",
+      "text/html",
+      "<html><body>OK</body></html>",
+      "none",
+      "HTTP_200",
+    ],
+    [
+      "a 200 with the stored result that names another request's key back",
+      "200 OK",
+      "application/json",
+      JSON.stringify(stored),
+      "other",
+      "HTTP_200",
+    ],
+    ["a 204 that names no key back", "204 No Content", "application/json", "", "none", "HTTP_204"],
+    [
+      "a 201 of JSON from a server that is no Dispatch",
+      "201 Created",
+      "application/json",
+      '{"ok":true}',
+      "none",
+      "HTTP_201",
+    ],
+  ] as const) {
+    test(`${name} prints write_outcome_unknown and exits 1`, async () => {
+      const { seen, server } = answeringWhole(status, type, body, echo);
+      try {
+        const ran = await spawnJob(record, {
+          ...jobEnvironment(),
+          DISPATCH_URL: `http://127.0.0.1:${server.port}`,
+        });
+        expect({ code: ran.code, stdout: ran.stdout, posts: seen.posts }).toEqual({
+          code: 1,
+          stdout: `${JSON.stringify({ write_outcome_unknown: code })}\n`,
+          posts: 1,
+        });
+      } finally {
+        server.stop(true);
+      }
+    }, 30_000);
+  }
+
+  // Dispatch's own 204 to the write would name the key back: a body that gives no stored result
+  // under it is the landing, as for its 201.
+  test("a 204 that names the key back prints landed_without_answer and exits 0", async () => {
+    const { seen, server } = answeringWhole("204 No Content", "application/json", "");
+    try {
+      const ran = await spawnJob(record, {
+        ...jobEnvironment(),
+        DISPATCH_URL: `http://127.0.0.1:${server.port}`,
+      });
+      expect({ code: ran.code, stdout: ran.stdout, posts: seen.posts }).toEqual({
+        code: 0,
+        stdout: `${JSON.stringify({ landed_without_answer: "ANSWER_LOST" })}\n`,
+        posts: 1,
+      });
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
+  // Dispatch never answers a write with a redirect; a proxy in front of it sends one to its
+  // sign-in page. The write follows none: the 302 is the answer, a refusal that names it with
+  // exit 1, and the page is never asked for, so its 200 is never read as the write's.
+  test("a 302 to a sign-in page is not followed, and is a refusal naming it", async () => {
+    const seen = { posts: 0, pages: 0 };
+    const proxy = Bun.serve({
+      port: 0,
+      fetch(request) {
+        if (request.method === "POST") {
+          seen.posts += 1;
+          return new Response(null, { status: 302, headers: { Location: "/login" } });
+        }
+        seen.pages += 1;
+        return new Response("<html><body>Sign in</body></html>", {
+          headers: { "Content-Type": "text/html" },
+        });
+      },
+    });
+    try {
+      const ran = await spawnJob(record, {
+        ...jobEnvironment(),
+        DISPATCH_URL: `http://127.0.0.1:${proxy.port}`,
+      });
+      expect({ code: ran.code, posts: seen.posts, pages: seen.pages }).toEqual({
+        code: 1,
+        posts: 1,
+        pages: 0,
+      });
+      expect(ran.stdout).toStartWith(
+        `HTTP_302: POST http://127.0.0.1:${proxy.port}/api/v1/projects/ACME/results answered 302`
+      );
+    } finally {
+      proxy.stop(true);
+    }
+  }, 30_000);
 
   // The broker's rate limit refuses a trade before any work, and a job of many checks meets it
   // with no fault of its own: the trade is asked again after the answer's Retry-After, and the
@@ -3349,12 +3496,12 @@ describe("dispatch result --project, as a CI job writes it", () => {
     }).toEqual({ characters: SPEC_CHECK_OBSERVED_MAX, first: true, last: true, note: true });
   });
 
-  // Dispatch answers the issue route's 201 only after it stored the result, so a 2xx whose body
-  // gives no row of that route (`WRITE_ROWS.recordCIJobResult`) is a landing whose answer was lost:
-  // the job prints landed_without_answer, which its reporter reads as stored, and exits 0, as the
-  // project form does. The control is the row above it: Dispatch's own answer prints as the stored
-  // result.
-  test("with the job's identity, a 2xx answer that gives no row prints landed_without_answer and exits 0", async () => {
+  // A 2xx answer that is not Dispatch's - it names no key back and gives no row of the issue route
+  // (`WRITE_ROWS.recordCIJobResult`) - came from a server that answers in Dispatch's place, which
+  // may have passed the write on first: the job prints write_outcome_unknown and exits 1, as for a
+  // write that heard nothing, never landed_without_answer. The control is the row above it:
+  // Dispatch's own answer prints as the stored result.
+  test("with the job's identity, a 2xx answer that is not Dispatch's prints write_outcome_unknown and exits 1", async () => {
     dispatchAnswer = () =>
       new Response("Welcome to Bun! To get started, return a Response object.", {
         status: 200,
@@ -3362,8 +3509,8 @@ describe("dispatch result --project, as a CI job writes it", () => {
       });
     const ran = await runJob(issueRecord, jobEnvironment());
     expect(ran).toEqual({
-      code: 0,
-      stdout: `${JSON.stringify({ landed_without_answer: "ANSWER_LOST" })}\n`,
+      code: 1,
+      stdout: `${JSON.stringify({ write_outcome_unknown: "HTTP_200" })}\n`,
       stderr: "",
     });
     expect(written.map((seen) => [seen.method, seen.path])).toEqual([

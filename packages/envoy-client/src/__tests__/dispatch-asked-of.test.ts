@@ -8,11 +8,11 @@ import {
   dispatchToolSpecs,
 } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { routeAnswer } from "../../test/route-answers";
 import { runDispatchCli } from "../dispatch-cli";
 import { commandFlags } from "../dispatch-command";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetKeyedLayerMemory } from "../dispatch-http";
-import { routeAnswer } from "./dispatch-route-answers";
 
 // Who an open ask waits on, from the command line and from the texts an agent reads. A person
 // hands an ask on through the web app or `PUT /api/v1/asks/{id}/asked-of`, both person-scoped, so
@@ -68,8 +68,10 @@ const server = Bun.serve({
     }
     if (pathname === "/api/v1/issues/DSP-1" && request.method === "PATCH") {
       const sent = (body ?? {}) as { assignee?: string | null };
+      // The PATCH answers the issue without the documents the read lists beside it.
+      const { artifacts: _documents, ...issue } = ISSUE;
       return Response.json(
-        routeAnswer("PATCH /api/v1/issues/{key}", { ...ISSUE, assignee: sent.assignee ?? null })
+        routeAnswer("PATCH /api/v1/issues/{key}", { ...issue, assignee: sent.assignee ?? null })
       );
     }
     return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });

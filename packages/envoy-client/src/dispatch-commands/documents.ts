@@ -14,7 +14,7 @@ import {
 } from "@legion/contracts";
 import { actorText } from "../actor-text";
 import { commandName } from "../dispatch-command";
-import { type DispatchClient, DispatchWriteLandedError } from "../dispatch-http";
+import { DispatchAnswerMissingError, type DispatchClient } from "../dispatch-http";
 import {
   dispatchChildRef,
   dispatchDocumentRef,
@@ -797,11 +797,10 @@ function storedTextProblem(given: string, stored: string, name: string): string 
  * which stores the file and asks this route nothing.
  */
 function storedTextCheckFailed(error: unknown, name: string): string {
-  // The round trip stores nothing, so a 2xx with no text in it says only that, and no advice to
-  // read back what the call made fits it. Any other failure is named as it reads, its own final
-  // period left to this sentence.
+  // The round trip stores nothing, so a 2xx with no text in it (`DispatchAnswerMissingError`) says
+  // only that. Any other failure is named as it reads, its own final period left to this sentence.
   const failed =
-    error instanceof DispatchWriteLandedError
+    error instanceof DispatchAnswerMissingError
       ? `answered without the text it would store (${error.code})`
       : `failed with ${messageFor(error).replace(/\.$/, "")}`;
   const failure = `Dispatch could not say how it would store this text, so nothing was uploaded: POST /api/v1/markdown/round-trip ${failed}.`;

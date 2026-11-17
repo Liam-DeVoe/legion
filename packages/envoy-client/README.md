@@ -668,12 +668,21 @@ as no attempt that may have reached Dispatch. A refusal carries its `Retry-After
 made whose answer is gone is a `DispatchWriteLandedError` (`code`, a `DispatchLandedCode`, and
 `status`): `409 KEY_COMMITTED`, a write that landed before its answer was lost, which Dispatch will
 not run again, a replayed 2xx (`Idempotency-Replayed: ?1`) reading `ANSWER_NOT_KEPT`, a first
-answer larger than Dispatch keeps (`answerNotKept`, shared with the page), or a write's 2xx whose
-body gives no row, the client's own `ANSWER_LOST` (`DISPATCH_ANSWER_LOST`), since Dispatch answers a
+answer larger than Dispatch keeps (`answerNotKept`, shared with the page), or a write's 2xx that
+names its key back and whose body gives no row, the client's own `ANSWER_LOST` (`DISPATCH_ANSWER_LOST`), since Dispatch answers a
 write's 2xx only after the write committed. Every `POST` and `PATCH` of the client reads its 2xx into
 the row its callers read (`dispatch-write-rows.ts`: those members, in the forms the route answers
-them), so a body cut or stalled past the deadline, one that is no JSON whatever its type says, an
-empty one and JSON that is not that row are each this landing. It is no refusal and no
+them), by the key the 2xx names back: Dispatch's keyed layer names the request's
+`Idempotency-Key` back on every answer it gives a keyed write. A 2xx that names it back is
+Dispatch's own, so a body cut or stalled past the deadline, one that is no JSON whatever its type
+says, an empty one and JSON that is not that row are each this landing. A 2xx that names no key
+back and gives the row is the answer of a Dispatch with no keyed layer. Every other 2xx (one that
+names another request's key back, or names none and gives no row: a proxy's page, a server that is
+not Dispatch) is no answer of Dispatch's, and the write's outcome is unknown, a
+`DispatchWriteUnsettledError`. No request of the client follows a redirect: Dispatch answers none
+with a 3xx, so a 3xx is a refusal of whatever answered in its place. The round trip and the related-item
+check store nothing, so a 2xx of either that is not its answer is a `DispatchAnswerMissingError`
+(`ANSWER_LOST`), which says nothing was made. A landing is no refusal and no
 `DispatchServiceError`, and it is never asked again. Its message is the one line the session
 reads: the method and URL were made, why the answer is gone, and to read what it made back with
 `dispatch read` or the matching list. The `dispatch` command exits 0 on one and records

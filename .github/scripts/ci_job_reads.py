@@ -2212,6 +2212,11 @@ GATES = [
         # and scripts/dispatch/ask-census.ts:10-15 import @legion/envoy-client/*, and the
         # scripts/dispatch typecheck holds seven broker-client sources in its own program.
         ("packages/envoy-client/test/fake-dispatch.ts", "scripts/e2e/lib/agent-replay.test.ts:4-7 imports it by path"),
+        ("packages/envoy-client/test/route-answers.ts", "scripts/dispatch/__tests__/moved-approval-production-check.test.ts:3 and "
+                                                        "scripts/e2e/lib/dispatch-keyed-comment.test.ts:5 import it by path"),
+        ("packages/contracts/schemas/dispatch-openapi.json", "scripts/dispatch/__tests__/moved-approval-production-check.test.ts:3 and "
+                                                             "scripts/e2e/lib/dispatch-keyed-comment.test.ts:5 import "
+                                                             "packages/envoy-client/test/route-answers.ts, whose lines 24-26 read it"),
         ("scripts/dispatch/**", f"{at('test', 'Lint the Dispatch census script')}, typecheck and test; "
                                 "scripts/priorities-seed.test.ts:3 imports __tests__/held-deadlines.ts"),
         ("scripts/github-apps/**", f"{at('test', 'Lint the GitHub App registration script')} and typecheck"),
@@ -2358,7 +2363,7 @@ GATES = [
         (f"{FIX}/dispatch-targeted-delivery.json", "packages/envoy-client/src/__tests__/delivery.test.ts:17-18, dispatch-text.test.ts:128-129"),
         (f"{FIX}/dispatch-public-url.json", "packages/envoy-client/src/__tests__/dispatch-config.test.ts:5"),
         (f"{FIX}/go-unicode-isspace.json", "packages/envoy-client/src/__tests__/dispatch-execute.test.ts:27"),
-        ("packages/contracts/schemas/dispatch-openapi.json", "packages/envoy-client/src/__tests__/dispatch-route-answers.ts:23-25 reads the OpenAPI document the server generates: dispatch-write-rows.test.ts drives every keyed write of the client against each 2xx answer it declares, and the other tests' stubs of a keyed write serve its route's answer through routeAnswer"),
+        ("packages/contracts/schemas/dispatch-openapi.json", "packages/envoy-client/test/route-answers.ts:24-26 reads the OpenAPI document the server generates: src/__tests__/dispatch-write-rows.test.ts drives every keyed write of the client against each 2xx answer it declares, and the other tests' stubs of a keyed write serve its route's answer through routeAnswer"),
         (f"{ENVOY}/internal/dispatch/api/testdata/**", "packages/envoy-client/src/__tests__/askgate-new-asks.test.ts:14-21 reads the Dispatch server's table of decision-block inserts, which packages/envoy/internal/dispatch/api's TestDocumentEditAdviceCountsTheAskBlocksTheEditAdded reads too"),
         ("skills/**", "packages/envoy-client/src/__tests__/dispatch-advice.test.ts:1288 reads skills/<skill>/SKILL.md for every skill a notice cites"),
         ("packages/*/AGENTS.md", "packages/envoy-client/src/__tests__/dispatch-asked-of.test.ts:377-385 reads every package's AGENTS.md, and its ALLOWED names lines of four of them, so rewording one of those lines fails that test"),
@@ -2398,6 +2403,8 @@ GATES = [
         # envoy-client's sources, and broker-client's with them, are the shared read below.
         ("packages/envoy-client/test/envoy-stack.ts", "packages/pi-envoy/extensions/envoy.test.ts:45-50 imports @legion/envoy-client/test/envoy-stack"),
         ("packages/envoy-client/test/fake-dispatch.ts", "packages/pi-envoy/extensions/askgate/decision-record.test.ts:9 imports @legion/envoy-client/test/fake-dispatch"),
+        ("packages/envoy-client/test/route-answers.ts", "packages/pi-envoy/extensions/envoy.test.ts:62 imports @legion/envoy-client/test/route-answers"),
+        ("packages/contracts/schemas/dispatch-openapi.json", "packages/pi-envoy/extensions/envoy.test.ts:62 imports @legion/envoy-client/test/route-answers, whose lines 24-26 read it"),
         ("packages/envoy-client/bin/dispatch.ts", "packages/pi-envoy/package.json:26 build and scripts/pi-plugin-prepack.sh:96 run build-dispatch-cli.sh, entry bin/dispatch.ts"),
         ("packages/envoy-client/scripts/build-dispatch-cli.sh", "packages/pi-envoy/package.json:26; scripts/pi-plugin-prepack.sh:96"),
         (CONTRACTS_SRC, f"{at('pi-envoy', 'Build contracts for pi-envoy')}; tsconfig paths @legion/contracts"),
