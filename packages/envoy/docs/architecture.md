@@ -300,8 +300,9 @@ the same context, since with the reconnect buffer off nats.go refuses every send
 Store work that did not answer, whatever it names, is
 `503 {"error":"envoy: the message bus did not answer: <reason>"}` with `Retry-After: 1`
 (`writeStoreError`, `cmd/listener/api.go`). The reason of a call whose context ended in that
-wait, or that the connection dropped under after it, says `bus: NATS is reconnecting`
-(`bus.ErrReconnecting`), and never nats.go's `nats: outbound buffer limit exceeded`. The store's
+wait, or had ended before the call started while NATS reconnects, or that the connection dropped
+under after the wait, says `bus: NATS is reconnecting` (`bus.ErrReconnecting`), and never
+nats.go's `nats: outbound buffer limit exceeded`. The store's
 own answers keep the answers they had: a refused key its 413 or 400, a held role its 409, and no
 key, an undecodable record or a lost compare-and-swap the status the route always gave it; an
 error a claim joins from several is one only when every part of it is. A write still waiting for

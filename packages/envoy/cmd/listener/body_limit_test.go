@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -488,6 +489,53 @@ func TestARequestBodyOverTheLimitIsRefused(t *testing.T) {
 			"outcome": "too_large", "status": float64(http.StatusRequestEntityTooLarge),
 		})
 	})
+}
+
+// failsAfter is a request body that reads as data and then fails, as a client that resets its
+// connection partway through its body does.
+type failsAfter struct {
+	data string
+	read bool
+}
+
+func (f *failsAfter) Read(p []byte) (int, error) {
+	if f.read {
+		return 0, errors.New("connection reset by peer")
+	}
+	f.read = true
+	return copy(p, f.data), nil
+}
+
+// A /v1 body is judged by what its decode met and what the read of its rest met, one of each:
+// either one past the limit is a 413 naming it, any other failure of either is a 400
+// "invalid json", and a body both read cleanly is served. Each case is sent with no
+// Content-Length, so the route learns the body's size only by reading it.
+func TestAV1BodyIsJudgedByItsDecodeAndTheReadOfItsRest(t *testing.T) {
+	overTheLimit := strings.Repeat(" ", v1BodyLimit)
+	for _, row := range []struct {
+		name    string
+		body    io.Reader
+		status  int
+		message string
+	}{
+		{name: "the decode and the rest read cleanly", body: strings.NewReader(`{"a":1}`), status: 0, message: ""},
+		{name: "the rest runs past the limit", body: strings.NewReader(`{"a":1}` + overTheLimit), status: http.StatusRequestEntityTooLarge, message: apiBodyTooLarge},
+		{name: "the rest fails to read", body: &failsAfter{data: `{"a":1}`}, status: http.StatusBadRequest, message: "invalid json"},
+		{name: "a syntax error, and the rest reads cleanly", body: strings.NewReader(`{"a":x} and more`), status: http.StatusBadRequest, message: "invalid json"},
+		{name: "a syntax error, and the rest runs past the limit", body: strings.NewReader(`x` + overTheLimit), status: http.StatusRequestEntityTooLarge, message: apiBodyTooLarge},
+		{name: "the decode runs past the limit", body: strings.NewReader(`"` + strings.Repeat("x", v1BodyLimit) + `"`), status: http.StatusRequestEntityTooLarge, message: apiBodyTooLarge},
+		{name: "an empty body", body: strings.NewReader(""), status: http.StatusBadRequest, message: "invalid json"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/v1/messages/send", row.body)
+			request.ContentLength = -1
+			var into any
+			status, message := readAPIBody(httptest.NewRecorder(), request, &into)
+			if status != row.status || message != row.message {
+				t.Fatalf("readAPIBody = %d %q, want %d %q", status, message, row.status, row.message)
+			}
+		})
+	}
 }
 
 // wantServed serves request and asserts the route served it as it serves any request: 200, with

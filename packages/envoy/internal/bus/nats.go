@@ -554,7 +554,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 // only a client it returns gets this far, so a caller holding a connection can find the client
 // that owns it (clientOwning) for as long as that client is a caller's to use.
 func (c *Client) install(nc *nats.Conn, ensure bool) error {
-	js, err := jetStreamOn(nc, nats.MaxWait(10*time.Second), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
+	js, err := JetStreamOn(nc, nats.MaxWait(10*time.Second), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
 	if err != nil {
 		return err
 	}
@@ -616,7 +616,7 @@ func (c *Client) ensureStream(js nats.JetStreamContext, defaultsAnUnsetCap bool)
 // request of the ensure is made under ctx, the run's context (requestsUnder), so one sent on a
 // connection that drops ends with it.
 func (c *Client) ensureStreamOn(ctx context.Context, conn *nats.Conn) error {
-	js, err := jetStreamOn(conn, nats.MaxWait(10*time.Second))
+	js, err := JetStreamOn(conn, nats.MaxWait(10*time.Second))
 	if err == nil {
 		err = c.ensureStreamReported(lookOnce(), conn, requestsUnder(ctx, js))
 	}
@@ -666,7 +666,7 @@ func (c *Client) untilStopped() (context.Context, context.CancelFunc) {
 // user cannot read them later either, so the client keeps deciding by what it holds, and reads no
 // more (subjectsRefused).
 func (c *Client) readDeployedSubjects(ctx context.Context, conn *nats.Conn, timeout time.Duration) bool {
-	js, err := jetStreamOn(conn, nats.MaxWait(timeout))
+	js, err := JetStreamOn(conn, nats.MaxWait(timeout))
 	if err == nil {
 		var subjects []string
 		if subjects, err = readStreamSubjects(requestsUnder(ctx, js)); err == nil {
@@ -1594,7 +1594,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		js, err := jetStreamOn(nc, nats.MaxWait(10*time.Second), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
+		js, err := JetStreamOn(nc, nats.MaxWait(10*time.Second), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
 		if err != nil {
 			nc.Close()
 			return err

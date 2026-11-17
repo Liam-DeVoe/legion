@@ -1265,9 +1265,11 @@ func TestListedConsumersAreKeptWhenARestartWouldChangeNothing(t *testing.T) {
 			t.Fatalf("the list holds no consumer for %s (%d listed)", id, len(listed))
 		}
 	}
+	// The start carries the floor it kept the consumer at, StartSeq-1, as every other start does,
+	// so the relay drops what it passed at or below that floor (cmd/listener relayPassedSet.prune).
 	start, ok, err := consumers.KeepListed(ctx, kept, []string{contracts.LegacyAgentSubject(kept)}, listed[kept])
-	if want := (SessionConsumerStart{StartSeq: written + 1, StreamID: streamIDOf(t, consumers)}); err != nil || !ok || start != want {
-		t.Fatalf("KeepListed of an acked consumer = %+v, %t, %v; want %+v kept", start, ok, err, want)
+	if want := (SessionConsumerStart{StartSeq: written + 1, StreamID: streamIDOf(t, consumers), AckFloor: written}); err != nil || !ok || start != want {
+		t.Fatalf("KeepListed of an acked consumer = %+v, %t, %v; want %+v kept, its AckFloor StartSeq-1", start, ok, err, want)
 	}
 	if _, ok, err := consumers.KeepListed(ctx, held, []string{contracts.LegacyAgentSubject(held)}, listed[held]); err != nil || ok {
 		t.Fatalf("KeepListed of a consumer with a message awaiting an ack = %t, %v; want it left to RestartAtFloor", ok, err)

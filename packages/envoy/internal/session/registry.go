@@ -255,11 +255,12 @@ type SessionRegistry struct {
 	// lastSeenRetention is WithLastSeenRetention's value; zero, as in a registry built from a
 	// struct literal, means one TTL (retention).
 	lastSeenRetention time.Duration
-	// js is the JetStream context the bucket was opened through, which the maximum age is written
-	// through (applyMaxAge), and maxAge is WithSessionMaxAge's value, zero when the deployment
-	// sets none and the bucket's own age stands. Both are fixed when the registry is opened, and
-	// a registry built from a struct literal, which only a test does, has neither and writes no
-	// age.
+	// conn and js are the connection and the JetStream context on it that the bucket was opened
+	// through, which the maximum age is written through (applyMaxAge), and maxAge is
+	// WithSessionMaxAge's value, zero when the deployment sets none and the bucket's own age
+	// stands. All three are fixed when the registry is opened, and a registry built from a struct
+	// literal, which only a test does, has none of them and writes no age.
+	conn   *nats.Conn
 	js     nats.JetStreamContext
 	maxAge time.Duration
 
@@ -425,7 +426,7 @@ func OpenSessionRegistry(conn *nats.Conn, options ...SessionRegistryOption) (*Se
 	// the age the bucket carries from here on. A bucket created by an older build at the 5-minute
 	// default is raised here, and a record then stands past the gone horizon instead of being
 	// dropped while its session is only unresponsive.
-	if _, err := bus.SetKeyValueMaxAge(js, bus.SessionBucket, opts.maxAge); err != nil {
+	if _, err := bus.SetKeyValueMaxAge(conn, js, bus.SessionBucket, opts.maxAge); err != nil {
 		return nil, err
 	}
 	// Expire against the bucket's real MaxAge, not the hardcoded default. If the
@@ -445,6 +446,7 @@ func OpenSessionRegistry(conn *nats.Conn, options ...SessionRegistryOption) (*Se
 		liveWindow:        opts.liveWindow,
 		goneHorizon:       opts.goneHorizon,
 		lastSeenRetention: opts.lastSeenRetention,
+		conn:              conn,
 		js:                js,
 		maxAge:            opts.maxAge,
 		ttl:               ttl,
@@ -702,7 +704,7 @@ func (r *SessionRegistry) EntryState(entry SessionEntry) State {
 // of the process.
 func (r *SessionRegistry) applyMaxAge() error {
 	if r.js != nil && r.maxAge > 0 {
-		written, err := bus.SetKeyValueMaxAge(r.js, bus.SessionBucket, r.maxAge)
+		written, err := bus.SetKeyValueMaxAge(r.conn, r.js, bus.SessionBucket, r.maxAge)
 		if err != nil {
 			return err
 		}

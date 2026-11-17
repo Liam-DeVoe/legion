@@ -95,7 +95,7 @@ func (kv KeyValue) GetFromLeader(ctx context.Context, key string) (nats.KeyValue
 	// through: building one sends nothing, and this read is the only caller, so it is built here
 	// rather than kept on the handle. Its read names a refusal while nats.go reconnects
 	// (namedRequests).
-	js, err := jetStreamOn(kv.streams.Conn())
+	js, err := JetStreamOn(kv.streams.Conn())
 	if err != nil {
 		return nil, named(err)
 	}

@@ -333,7 +333,10 @@ type SessionConsumerStart struct {
 	// floor, which is at or above StartSeq-1 unless the server lowered it after the stream lost
 	// data (ackFloor), and says nothing about where the consumer was created: a session that has
 	// acked for days is recreated from AckFloor+1 and not from StartSeq (the listener restores a
-	// consumer a delete took, sessionDelivery.deleteConsumer).
+	// consumer a delete took, sessionDelivery.deleteConsumer). A restart that keeps the consumer
+	// it found (RestartAtFloor's keepAtFloor, KeepListed) answers the sequence after that floor as
+	// StartSeq, so there too AckFloor is StartSeq-1. Every start a relay runs from carries it
+	// (cmd/listener relayPassedSet.prune).
 	AckFloor uint64
 }
 
@@ -851,11 +854,11 @@ func (s *SessionConsumers) ListSessionConsumers(ctx context.Context) (map[string
 // when that restart would send nothing: nothing it delivered awaits an ack, its filters and
 // settings are already what subjects reduce to, no restart left it a pending start, and its next
 // sequence (ackFloor plus one) is not past the sequence after the stream's last. It then returns
-// the start RestartAtFloor's keep returns (the sequence after the floor, the stream's identity and
-// the gap, from a stream read shared as streamState shares it) and true, with no API call of its
-// own. Otherwise it returns false and the caller restarts the consumer (RestartAtFloor), which
-// creates a consumer past the stream's end again at that next sequence, and create clamps that
-// start to the stream's first sequence.
+// the start RestartAtFloor's keep returns (the sequence after the floor, that floor as the
+// start's AckFloor, and the stream's identity and the gap, from a stream read shared as
+// streamState shares it) and true, with no API call of its own. Otherwise it returns false and
+// the caller restarts the consumer (RestartAtFloor), which creates a consumer past the stream's
+// end again at that next sequence, and create clamps that start to the stream's first sequence.
 //
 // The stream read begins after this call, and so after the list that read info, so it cannot trail
 // the consumer as listed: where keepAtFloor holds a consumer past its read's end to a second read,
@@ -887,7 +890,7 @@ func (s *SessionConsumers) KeepListed(ctx context.Context, sessionID string, sub
 	if startSeq > state.lastSeq+1 {
 		return SessionConsumerStart{}, false, nil
 	}
-	return SessionConsumerStart{StartSeq: startSeq, Gap: startSeq < state.firstSeq, StreamID: state.id}, true, nil
+	return SessionConsumerStart{StartSeq: startSeq, Gap: startSeq < state.firstSeq, StreamID: state.id, AckFloor: startSeq - 1}, true, nil
 }
 
 // StreamID returns the stream's identity, its StreamIDMetadataKey metadata, which a relay frame

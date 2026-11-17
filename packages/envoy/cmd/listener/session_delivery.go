@@ -62,29 +62,9 @@ const (
 // record, a deregistration or the sweep asks for, with the bucket read before it and the repair
 // after it (deleteConsumer). No client waits for the calls of a restart or a delete: a relay
 // restart and a sweep run on goroutines of their own, and a deregistration's delete runs after its
-// answer (deleteAfterAnswer). A route whose client waits for its consumer calls bounds them itself
-// (routeConsumerCallTimeout).
+// answer (deleteAfterAnswer). A route whose client waits for its consumer calls makes them within
+// its request's own budget (sendRequestBudget, which names those routes and those calls).
 const sessionConsumerCallTimeout = 5 * time.Second
-
-// routeConsumerCallTimeout bounds every consumer call a route makes before it answers, timed from
-// when the route takes the request. Three routes make such calls while their client waits:
-//   - POST /v1/interests/subscribe (subscribeHandler): the read of the stream's identity and the
-//     consumer's create or update on each pass (consumerFor), and the repair after the session's
-//     entry is written (confirmRegistered);
-//   - POST /v1/interests/unsubscribe: the consumer's filter update (refollow);
-//   - DELETE /v1/interests/<session_id> (adminInterestsHandler): the same filter update.
-//
-// DELETE /v1/sessions/<session_id> makes its consumer call after it answers (deleteAfterAnswer),
-// so this bound does not apply to it.
-//
-// The bound is seven tenths of the client's one attempt (contracts.ListenerCallTimeout,
-// LISTENER_CALL_TIMEOUT_MS): 3.5 s of 5 s, the share sendRequestBudget gives a route's store work.
-// The client reads no answer that comes after its attempt ends: it gives up and tries again. So a
-// route that waits out a slow or a reconnecting server and answers at 5 s answers nobody, and its
-// client reads its own timeout, not the reason. The rest of the attempt is for the store work
-// after the last consumer call, which ends within sendRequestBudget, and for the answer's trip to
-// the client. The bound comes from the client's attempt, so a change of that attempt moves it too.
-const routeConsumerCallTimeout = contracts.ListenerCallTimeout * 7 / 10
 
 // noGrantBackoff is how long, after a consumer call the server refused for want of a grant, every
 // registration that asks for a consumer is refused no_grant without a call to the server; the next
@@ -371,8 +351,8 @@ func (m *sessionDelivery) close() {
 // changes is the filter.
 //
 // ctx bounds the repair: it carries the registration's deadline and not its client's cancel
-// (registerPass), so the repair ends inside the registration's bound
-// (routeConsumerCallTimeout). The answer waits for it.
+// (registerPass), so the repair ends inside the registration's budget (sendRequestBudget). The
+// answer waits for it.
 func (m *sessionDelivery) confirmRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64) {
 	if m == nil || m.consumers == nil {
 		return
@@ -760,8 +740,8 @@ func versionPart(version string, i int) (int, bool) {
 // refusal decided before the lock was taken returns noUnlock. A refusal decided after the call
 // was sent says the filter may be on the consumer (deliveryRefusal.filtered).
 //
-// ctx bounds its calls: the route bounds every consumer call of one registration, from when it
-// takes the request, by routeConsumerCallTimeout (subscribeHandler).
+// ctx bounds its calls: the route bounds every consumer call of one registration, and its store
+// work, from when it takes the request, by sendRequestBudget (subscribeHandler).
 func (m *sessionDelivery) consumerFor(ctx context.Context, body subscribeBody, topics []string) (sessionDeliveryOutcome, *deliveryRefusal, func()) {
 	var delivery subscribeDelivery
 	if body.Delivery != nil {
@@ -973,8 +953,8 @@ func (m *sessionDelivery) granted() {
 // (deliveryRefusal.unanswered): the client reads the reconnect. envoy-client's retry removes the
 // same topics again and sets the filter; a caller whose retry finds the topics already gone, as
 // Dispatch's unsubscribeSession does, calls this route no more, and the filter waits for the
-// session's next registration. ctx bounds the write (routeConsumerCallTimeout, from when the
-// route took the request).
+// session's next registration. ctx bounds the write: it is the route's request context, bounded
+// by sendRequestBudget from when the route took the request.
 //
 // The topics are read from the bucket, not from the cache, and under the session's lock, as
 // register's consumer call is made under it: the lock orders this listener's own calls, so a

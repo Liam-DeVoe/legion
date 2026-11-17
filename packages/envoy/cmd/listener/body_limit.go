@@ -29,28 +29,26 @@ var apiBodyTooLarge = webhook.BodyTooLarge(apiBodyLimit)
 // answered 413 naming the limit, whatever it holds. A request whose Content-Length is past the
 // limit is refused before any of its body is read. Any other body is read through
 // http.MaxBytesReader, so no more than apiBodyLimit bytes of it are read and parsed. The decode
-// stops after the first JSON value, so the rest of the body is then read through the same limit
-// and dropped: a small value followed by more than the limit is refused as a body past it. The
-// decode also stops at the first syntax error, before the limit is reached, so a body that does
-// not decode is drained through the same limit too: one that runs past the limit is a body past
-// it, and any other is answered 400 "invalid json". The status is 0 when the body decoded.
+// stops at the end of the first JSON value or at the first syntax error, so the rest of the body
+// is then read through the same limit and dropped, whatever the decode answered: a small value
+// followed by more than the limit, and a body that does not decode and runs past the limit, are
+// both bodies past it. http.MaxBytesReader keeps its first error and answers it to every later
+// read, so a decode the limit stopped meets the limit again in that read. A body that did not
+// decode, or whose rest could not be read, and is not past the limit is answered 400
+// "invalid json"; an empty body is such a body. The status is 0 when the body decoded.
 func readAPIBody(w http.ResponseWriter, r *http.Request, into any) (status int, message string) {
 	if r.ContentLength > apiBodyLimit {
 		return http.StatusRequestEntityTooLarge, apiBodyTooLarge
 	}
 	body := http.MaxBytesReader(w, r.Body, apiBodyLimit)
-	err := json.NewDecoder(body).Decode(into)
-	if err == nil {
-		_, err = io.Copy(io.Discard, body)
-	}
+	decodeErr := json.NewDecoder(body).Decode(into)
+	_, drainErr := io.Copy(io.Discard, body)
 	var tooLarge *http.MaxBytesError
-	if err != nil && !errors.As(err, &tooLarge) {
-		if _, drained := io.Copy(io.Discard, body); !errors.As(drained, &tooLarge) {
-			return http.StatusBadRequest, "invalid json"
-		}
-	}
-	if tooLarge != nil {
+	switch {
+	case errors.As(decodeErr, &tooLarge), errors.As(drainErr, &tooLarge):
 		return http.StatusRequestEntityTooLarge, apiBodyTooLarge
+	case decodeErr != nil, drainErr != nil:
+		return http.StatusBadRequest, "invalid json"
 	}
 	return 0, ""
 }

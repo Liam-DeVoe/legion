@@ -97,7 +97,7 @@ func TestAJetStreamSendWhileNATSReconnectsFailsByName(t *testing.T) {
 			return err
 		}, want: named},
 		{what: "a bucket's age set through a context its caller handed it", send: func() error {
-			_, err := SetKeyValueMaxAge(handed, bucket, time.Hour)
+			_, err := SetKeyValueMaxAge(owner.Conn, handed, bucket, time.Hour)
 			return err
 		}, want: "set KV_" + bucket + " max age: " + named, refused: true},
 	} {
@@ -116,6 +116,75 @@ func TestAJetStreamSendWhileNATSReconnectsFailsByName(t *testing.T) {
 				t.Errorf("the send while NATS reconnects failed with %q, which no longer carries nats.go's refusal: %v", err, send.refusal)
 			}
 			t.Logf("nats.go's own error: %v", send.refusal)
+		})
+	}
+}
+
+// A bucket call whose caller's ctx had ended before the call started sends nothing. While NATS
+// reconnects, its error says why the bus did not answer: ErrReconnecting with ctx's error,
+// `bus: NATS is reconnecting: context deadline exceeded`, as for a ctx that ends in the call's
+// wait for the connection (Bounded). While the connection is up, the error is ctx's own. The
+// listener's routes answer such an error, and its session filter fence logs it
+// (cmd/listener/session_filter_fence.go): before the name, that line read
+// `context deadline exceeded` once in each outage and named no reconnect.
+func TestABucketCallWhoseContextEndedWhileNATSReconnectsFailsByName(t *testing.T) {
+	srv, uri := testnats.Start(t)
+	client, err := ConnectOwningStream([]string{uri})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	conn := client.Connection()
+	ends := []struct {
+		what string
+		ctx  func() (context.Context, context.CancelFunc)
+		err  error
+		want string
+	}{
+		{what: "a deadline that has passed", ctx: func() (context.Context, context.CancelFunc) {
+			return context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+		}, err: context.DeadlineExceeded, want: "bus: NATS is reconnecting: context deadline exceeded"},
+		{what: "a cancel", ctx: func() (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			return ctx, cancel
+		}, err: context.Canceled, want: "bus: NATS is reconnecting: context canceled"},
+	}
+	// bounded makes one bucket call under the ended ctx that ctx returns, and requires that the
+	// call never started.
+	bounded := func(t *testing.T, ctx func() (context.Context, context.CancelFunc)) error {
+		t.Helper()
+		ended, cancel := ctx()
+		defer cancel()
+		started := false
+		_, answered, err := Bounded(ended, conn, func() (struct{}, error) {
+			started = true
+			return struct{}{}, nil
+		})
+		if started || answered {
+			t.Fatalf("the call started (%t) or was answered (%t) under a ctx that had ended", started, answered)
+		}
+		return err
+	}
+
+	for _, end := range ends {
+		t.Run("connected, "+end.what, func(t *testing.T) {
+			if err := bounded(t, end.ctx); err != end.err {
+				t.Fatalf("the call while connected failed with %q (ErrReconnecting %t), want ctx's own error %q", err, errors.Is(err, ErrReconnecting), end.err)
+			}
+		})
+	}
+
+	srv.Stop(t)
+	testwait.WithinPolling(t, 15*time.Second, 50*time.Millisecond, "the connection to start reconnecting", conn.IsReconnecting)
+
+	for _, end := range ends {
+		t.Run("reconnecting, "+end.what, func(t *testing.T) {
+			err := bounded(t, end.ctx)
+			if !errors.Is(err, ErrReconnecting) || !errors.Is(err, end.err) || err.Error() != end.want {
+				t.Fatalf("the call while NATS reconnects failed with %q (ErrReconnecting %t, %v %t), want %q",
+					err, errors.Is(err, ErrReconnecting), end.err, errors.Is(err, end.err), end.want)
+			}
 		})
 	}
 }

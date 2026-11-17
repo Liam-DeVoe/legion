@@ -4194,14 +4194,18 @@ A read-only broker token carries no project either, but none of the three checks
   A bucket call that a caller bounds by its deadline (`bus.Bounded`, which every request route's store work goes through) waits for the reconnect in the same way before it starts, so a role claim made during a NATS restart lands once the server is back.
   A publish or a bucket call whose deadline ends in that wait fails with `bus.ErrReconnecting`, `bus: NATS is reconnecting: context deadline exceeded`, and is never sent, so it never lands after its caller has answered.
   A route answers it `503` with `Retry-After: 1`, under the bus-outage prefix `envoy: the message bus did not answer` (`writeBusUnavailable`).
-  A send that waits for no connection fails at once with `bus: NATS is reconnecting` (`bus.Reconnecting`): a bucket call with no deadline, a write of the CI store or the legion agent registry, a request through a JetStream context the bus builds or is handed (`bus.Client.JS`, which the listener's own reads and writes of its durable consumer go through, the stream's ensure and keeper, and the context `bus.EnsureKeyValue`, `bus.OpenKeyValue` or `bus.SetKeyValueMaxAge` is handed), a session consumer's pull request, and each ack, progress or nak of a message it pulled.
+  A bucket call whose deadline had already ended before it started fails the same way while NATS reconnects, and with the bare `context deadline exceeded` while the connection is up.
+  So a log line that carries that error names the reconnect, such as the session filter fence's `session consumer filter written and left unjudged`.
+  A send that waits for no connection fails at once with `bus: NATS is reconnecting` (`bus.Reconnecting`): a bucket call with no deadline, a write of the CI store or the legion agent registry, a request through a JetStream context the bus builds or is handed (`bus.Client.JS`, which the listener's own reads and writes of its durable consumer go through, the stream's ensure and keeper, the known-session store's lookup of its bucket, which the bus builds (`bus.JetStreamOn`), and the context `bus.EnsureKeyValue`, `bus.OpenKeyValue` or `bus.SetKeyValueMaxAge` is handed with its connection), a session consumer's pull request, and each ack, progress or nak of a message it pulled.
   So does a send the connection drops under after its wait.
-  A request through a context whose connection the bus knows, every one but the context `bus.SetKeyValueMaxAge` is handed, is named by that connection's state as well, whatever nats.go answers it with: nats.go refuses some requests before it sends anything, a KV bucket's lookup among them, with words of its own (`nats: key-value requires at least server version 2.6.2`).
+
+- A JetStream request during a NATS reconnect is named by its connection's state.
+  A request through a context the bus builds or is handed (the bullet above) is named so whatever nats.go answers it with: nats.go refuses some requests before it sends anything, a KV bucket's lookup among them, with words of its own (`nats: key-value requires at least server version 2.6.2`).
   A JetStream API request the bus builds itself waits for the connection within its caller's deadline, and is named by that connection's state in the same way (`bus.Client.requestConfirmed`).
   Every request of the session-consumer connection (`bus.SessionConsumers`) is such a request: a consumer's info, create, update and delete, the consumer list, the stream read and its stored-message reads.
   So is every stored-message read of the listener's own connection, such as a read of a kept role lane.
   Such a call fails with `bus: NATS is reconnecting: context deadline exceeded` when its deadline ends in the wait, and with `bus: NATS is reconnecting` when it fails while the connection is still not connected.
-  The routes whose client waits for a consumer call run it within 3.5 s of the request's arrival (`routeConsumerCallTimeout`, seven tenths of `contracts.ListenerCallTimeout`): `POST /v1/interests/subscribe`, `POST /v1/interests/unsubscribe` and `DELETE /v1/interests/<session_id>`.
+  The routes whose client waits for a consumer call run it within the same 3.5 s budget as their store work, from the request's arrival (`sendRequestBudget`, seven tenths of `contracts.ListenerCallTimeout`): `POST /v1/interests/subscribe`, `POST /v1/interests/unsubscribe` and `DELETE /v1/interests/<session_id>`.
   A consumer call of theirs that failed because NATS is reconnecting is answered the bus-outage `503` that names the reconnect, as their store work would be.
   No answer and no log line holds nats.go's own `nats: outbound buffer limit exceeded`, which said nothing of the reconnect.
   A subscription nats.go re-sent on the reconnected connection is kept as it is; one on a replaced connection is bound again.
@@ -5055,7 +5059,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   A write route (below the list).
   The row it rewrites also drops any stored topic reaching a private stream subject other than the session's own agent subject, as `/v1/interests/subscribe` says.
 
-- An unsubscribe of a session whose entry records consumer delivery sets the consumer's filter to the topics left before it answers (`sessionDelivery.refollow`), within `routeConsumerCallTimeout` of the request's arrival.
+- An unsubscribe of a session whose entry records consumer delivery sets the consumer's filter to the topics left before it answers (`sessionDelivery.refollow`), within the route's `sendRequestBudget` from the request's arrival, which its store work shares.
   A failure there is logged, and the plugin drops a frame no followed topic matches.
   A failure because NATS is reconnecting is answered the bus-outage `503` instead, after the record is written.
   envoy-client's retry removes the same topics again and sets the filter.
@@ -5162,7 +5166,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   A batch that fails after those checks answers `{"error":"…wrote <n> of <m> legion agents, then entries[<i>]: …","written":<n>}` with the failed entry's own status: a 503 with `Retry-After: 1` for a read or write the bucket did not answer, which the caller sends again (every write is idempotent); a 409 for a session another write claimed after the batch read it; a 400 or 413 for a key NATS refuses, as the single PUT answers it.
 
 The write routes - `POST /v1/interests/subscribe`, `POST /v1/interests/unsubscribe`, `POST /v1/roles/set`, `DELETE /v1/interests/<session_id>` and `DELETE /v1/sessions/<session_id>` - do every store read and write within one 3.5 s budget (`sendRequestBudget`) taken from the request's own context (`store.Registry.UpsertWithin`, `Remove`, `SetRoleWithPrevious`, `session.SessionRegistry.PutWithin` and `Delete`, each bucket call bounded by `bus.Bounded`), where a silent bus held them for the 10 s JetStream wait.
-The consumer calls a client waits for run within a bound of the same length taken from the same start (`routeConsumerCallTimeout`, "NATS reconnects indefinitely, in place").
+The consumer calls a client waits for run within the same budget, on the same context ("A JetStream request during a NATS reconnect").
 Store work that did not answer, whatever it names, is `503 {"error":"envoy: the message bus did not answer: <reason>"}` with `Retry-After: 1` (`writeStoreError`).
 While NATS reconnects, each bucket call waits for the connection within the budget, and the reason of a call whose budget ends first says `bus: NATS is reconnecting` (`bus.ErrReconnecting`).
 The store's own answers keep the answers they had:

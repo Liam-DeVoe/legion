@@ -170,11 +170,12 @@ func (c *interestMarkerCollector) pass(js nats.JetStreamContext, afterScan func(
 		c.refuse(slog.LevelDebug, "the bucket holds nothing below the floor", &pass)
 		return 0, nil
 	}
-	if err := bus.Reconnecting(js.PurgeStream(pass.read2.Name, &nats.StreamPurgeRequest{Sequence: pass.floor})); err != nil {
+	if err := js.PurgeStream(pass.read2.Name, &nats.StreamPurgeRequest{Sequence: pass.floor}); err != nil {
 		// A purge the server refuses -- a NATS user without STREAM.PURGE on this stream -- leaves
 		// every marker where it was and the listener serving. It says so once rather than every
-		// five minutes, since the grant does not change on its own. A purge sent while nats.go
-		// reconnects is named bus.ErrReconnecting (bus.Reconnecting).
+		// five minutes, since the grant does not change on its own. js is the client's own
+		// context (bus.Client.JS), so a purge sent while nats.go reconnects is already named
+		// bus.ErrReconnecting.
 		if !c.purgeRefused {
 			c.purgeRefused = true
 			c.logPass(slog.LevelWarn, "interest marker collection could not purge the bucket", &pass,

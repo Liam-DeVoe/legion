@@ -294,8 +294,12 @@ func OpenKnownSessions(conn *nats.Conn, options ...KnownSessionsOption) (*KnownS
 
 // knownJetStream is the JetStream context one attempt to open the bucket asks through: its
 // requests wait knownBucketOpenWait rather than the 10 seconds nats.go gives its own by default.
+// The bus builds it (bus.JetStreamOn), so a request it sends while nats.go reconnects conn fails
+// as bus.ErrReconnecting. Without that, nats.go answers the bucket's lookup then with words of its
+// own, `nats: key-value requires at least server version 2.6.2`, since a reconnecting connection
+// reports no server version, and the start's WARN and the repair would carry those words.
 func knownJetStream(conn *nats.Conn) (nats.JetStreamContext, error) {
-	return conn.JetStream(nats.MaxWait(knownBucketOpenWait))
+	return bus.JetStreamOn(conn, nats.MaxWait(knownBucketOpenWait))
 }
 
 // openKnownBucket makes one attempt to open the bucket on conn, creating it with the retention

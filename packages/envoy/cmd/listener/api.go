@@ -777,12 +777,24 @@ func deliveryModeVerdictFor(sessionID, title string, capabilities []string, adve
 // on within publishDeliveryWindow (confirmed.go). GET
 // /v1/sessions, GET /v1/registry/<session_id> and GET /v1/interests/<session_id> read within it as
 // well, and every route that writes does its store work within it: subscribe, unsubscribe, POST
-// /v1/roles/set, and DELETE of /v1/interests/<session_id> and /v1/sessions/<session_id>. The HTTP
-// client gives each attempt 5 s (packages/envoy-client/src/transport.ts) and this listener's HTTP
-// write timeout is 10 s (main.go), so answering inside 3.5 s leaves the rest for TLS, scheduling
-// and the body: a sender whose bus cannot be reached reads the 503 that names the reason, in time
-// to act on it, instead of the timeout it would otherwise retry blind.
-const sendRequestBudget = 3500 * time.Millisecond
+// /v1/roles/set, and DELETE of /v1/interests/<session_id> and /v1/sessions/<session_id>. Three of
+// those routes also make consumer calls their client waits for, under the same context, so their
+// store work and their consumer calls share the budget: subscribe (the read of the stream's
+// identity and the consumer's create or update on each pass, consumerFor, and the repair after
+// the session's entry is written, confirmRegistered), and unsubscribe and DELETE
+// /v1/interests/<session_id> (the consumer's filter update, refollow). DELETE
+// /v1/sessions/<session_id> makes its consumer call after it answers (deleteAfterAnswer).
+//
+// The budget is seven tenths of the client's one attempt (contracts.ListenerCallTimeout,
+// LISTENER_CALL_TIMEOUT_MS, the 5 s packages/envoy-client/src/transport.ts gives each attempt):
+// 3.5 s. The client reads no answer that comes after its attempt ends: it gives up and tries
+// again. So a route that waits out a slow or a reconnecting server and answers at 5 s answers
+// nobody, and its client reads its own timeout, not the reason. The rest of the attempt is for
+// TLS, scheduling, the body and the answer's trip to the client; this listener's HTTP write
+// timeout is 10 s (main.go). So a sender whose bus cannot be reached reads the 503 that names the
+// reason, in time to act on it, instead of the timeout it would otherwise retry blind. The budget
+// comes from the client's attempt, so a change of that attempt moves it too.
+const sendRequestBudget = contracts.ListenerCallTimeout * 7 / 10
 
 // sendSessionReadTimeout bounds the send route's read of the target session from the bucket, so a
 // bucket that does not answer still leaves most of sendRequestBudget (~2.5 s) to the sender stamp,
@@ -1875,9 +1887,9 @@ func interestRowFor(sessions *session.SessionRegistry, item store.Interest) inte
 // bus-unavailable 503 with Retry-After: 1 (a key NATS refuses is still the 413 or 400
 // writeBusUnavailable gives it). DELETE removes within the same budget, and answers store work that
 // did not answer with that 503 too (writeStoreError). removed, when not nil, is called after a
-// DELETE removed a session's interests, on a context that ends routeConsumerCallTimeout after the
-// route took the request, since it makes a consumer call the client waits for. An error it
-// returns, which says that call failed because NATS is reconnecting (refollow), is that 503 too.
+// DELETE removed a session's interests, on the same context, since it makes a consumer call the
+// client waits for. An error it returns, which says that call failed because NATS is reconnecting
+// (refollow), is that 503 too.
 //
 // A DELETE presenting a broker access token may remove only the interests of the session that
 // token names, and is refused 403 for any other (sessionNotBound). The GET and the list are not
@@ -1949,8 +1961,6 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 			}
 			ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 			defer cancel()
-			consumerCtx, cancelConsumer := context.WithTimeout(r.Context(), routeConsumerCallTimeout)
-			defer cancelConsumer()
 			// A deregistration answers no topic list, and this route's 204 carries no body
 			// to write one in, so the store's first answer is dropped here.
 			if _, err := registry.Remove(ctx, sessionID, nil, store.RoleReleaseAuthority{Force: true}); err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
@@ -1958,7 +1968,7 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 				return
 			}
 			if removed != nil {
-				if err := removed(consumerCtx, sessionID); err != nil {
+				if err := removed(ctx, sessionID); err != nil {
 					writeStoreError(ctx, w, err, http.StatusServiceUnavailable)
 					return
 				}
@@ -2821,10 +2831,10 @@ func (e *sessionEntryWriteError) Unwrap() error { return e.cause }
 // every exit, an exit added later included. A registration refused before any consumer call was
 // sent has set no filter and settles nothing (deliveryRefusal.filtered).
 //
-// ctx bounds the store work (sendRequestBudget) and registerCtx the consumer calls
-// (routeConsumerCallTimeout), both from when the route took the request.
+// ctx bounds the store work and the consumer calls alike (sendRequestBudget, from when the route
+// took the request).
 func (d *listenerDeps) registerSession(
-	ctx, registerCtx context.Context,
+	ctx context.Context,
 	machineID string,
 	body subscribeBody,
 	planned []string,
@@ -2889,7 +2899,7 @@ func (d *listenerDeps) registerSession(
 		if err != nil {
 			return registeredSession{}, nil, err
 		}
-		registered, answeredPass, refusal, err := d.registerPass(ctx, registerCtx, machineID, body, plan)
+		registered, answeredPass, refusal, err := d.registerPass(ctx, machineID, body, plan)
 		if refusal != nil {
 			filtered = filtered || refusal.filtered
 			if refusal.unanswered != nil {
@@ -2979,12 +2989,12 @@ func withoutCancel(ctx context.Context) (context.Context, context.CancelFunc) {
 // (sessionEntryWriteError). The gap is the loop's own: it reads the answer this pass gives and
 // sets the gap on the answer of the pass that answers (registerSession).
 func (d *listenerDeps) registerPass(
-	ctx, registerCtx context.Context,
+	ctx context.Context,
 	machineID string,
 	body subscribeBody,
 	plan store.InterestPlan,
 ) (registeredSession, bool, *deliveryRefusal, error) {
-	outcome, refusal, unlock := d.consumers.register(registerCtx, body, plan.Topics)
+	outcome, refusal, unlock := d.consumers.register(ctx, body, plan.Topics)
 	defer unlock()
 	if refusal != nil {
 		return registeredSession{}, false, refusal, nil
@@ -3034,10 +3044,9 @@ func (d *listenerDeps) registerPass(
 		// The write stands whatever the client does with the answer, so the consumer this
 		// entry promises is confirmed on a context the client's own cannot cancel, as the
 		// consumer delete of a deregistration is (sessionDelivery.deleteAfterAnswer). The
-		// context keeps the registration's deadline (routeConsumerCallTimeout), because
-		// the answer waits for the confirm, and an answer after the client's attempt reaches
-		// nobody.
-		confirmCtx, cancel := withoutCancel(registerCtx)
+		// context keeps the registration's deadline (sendRequestBudget), because the answer
+		// waits for the confirm, and an answer after the client's attempt reaches nobody.
+		confirmCtx, cancel := withoutCancel(ctx)
 		d.consumers.confirmRegistered(confirmCtx, d, body.SessionID, outcome.ackFloor)
 		cancel()
 	}
@@ -3050,9 +3059,9 @@ func (d *listenerDeps) registerPass(
 // (store.Registry.RenewRoleClaims) and the unwired-repository checks - runs within
 // sendRequestBudget of the request's own context, so a bus that does not answer is the
 // bus-unavailable 503 with Retry-After: 1 inside the caller's attempt (writeStoreError); a
-// refused key is still its 413 or 400. Its consumer calls run within
-// routeConsumerCallTimeout of the same start, and one that failed because NATS is
-// reconnecting is answered that same 503, naming the reconnect.
+// refused key is still its 413 or 400. Its consumer calls run on the same context, within the
+// same budget, and one that failed because NATS is reconnecting is answered that same 503,
+// naming the reconnect.
 //
 // The renewal is the one thing here that cannot fail the registration. It runs last, once the
 // records this route owns are written, and whatever it could not do is logged and passed over: a
@@ -3130,14 +3139,11 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 			writeJSONError(w, http.StatusBadRequest, "port is not supported: this listener delivers nothing to a session's port. Register with no port (port 0) and receive the session's messages from its own consumer (delivery.consumer).", "port")
 			return
 		}
+		// One budget, taken here, bounds this registration's store work and every one of its
+		// consumer calls: each pass's create or update and the repair after the entry
+		// (sendRequestBudget, which says why it is shorter than the client's attempt).
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
-		// The consumer calls have a bound of their own, taken here so that it covers every one
-		// of this registration: each pass's create or update and the repair after the entry
-		// (routeConsumerCallTimeout, which says why it is shorter than the client's
-		// attempt).
-		registerCtx, cancelRegister := context.WithTimeout(r.Context(), routeConsumerCallTimeout)
-		defer cancelRegister()
 		// One read and one merge decide this registration's topics, which are both the row it
 		// stores and the filter of the session's own consumer (store.Registry.PlanInterest). The
 		// claim of the controller role behind a project's notice lane
@@ -3164,7 +3170,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// loop below names each in its warning, after the private rule has had its say. The
 		// merge itself drops a private-subject topic from the plan (store.MergedTopics).
 		planned, uncaptured := d.consumers.splitUncapturedTopics(requested)
-		registered, refusal, err := d.registerSession(ctx, registerCtx, machineID, body, planned, logger)
+		registered, refusal, err := d.registerSession(ctx, machineID, body, planned, logger)
 		if refusal != nil {
 			logger.Warn("listener refused a registration it can give no session consumer",
 				slog.String("session_id", body.SessionID), slog.String("reason", refusal.Reason), slog.Int("status", refusal.status))
@@ -3396,12 +3402,10 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 		logger.Info("listener unsubscribe", slog.String("session_id", body.SessionID), slog.Any("topics", body.Topics))
 		// The removal runs within sendRequestBudget of the request's own context, as subscribe's
 		// write does, and store work that did not answer is the bus-unavailable 503. The
-		// consumer's filter update after it runs within routeConsumerCallTimeout of the same
-		// start, as a registration's consumer calls do, since the client waits for it too.
+		// consumer's filter update after it runs on the same context, as a registration's
+		// consumer calls do, since the client waits for it too.
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
-		consumerCtx, cancelConsumer := context.WithTimeout(r.Context(), routeConsumerCallTimeout)
-		defer cancelConsumer()
 		// The role claims released are the ones this process holds, never the whole session's:
 		// a session id names no process, and a second process that resumed this one's id hands
 		// back a role it does not hold. This route never forces a release; DELETE
@@ -3414,15 +3418,15 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 		// The session now follows what is left of its topics: its known-session record says so,
 		// so a publish stops counting it as a recipient of the ones just removed, and its
 		// consumer, when the relay serves it one, stops filtering on them. The record is written
-		// within this route's budget and before the consumer call, which has a budget of its own,
-		// so the record a publish counts its recipients by never waits on a consumer. A filter
-		// update that failed because NATS is reconnecting is answered as store work the bus did
-		// not answer, as a registration's consumer call is (refollow); the topics are out of the
-		// record already. envoy-client's retry removes them again and sets the filter; a caller
-		// whose retry finds them gone (Dispatch's unsubscribeSession) leaves the filter to the
+		// before the consumer call, so the record a publish counts its recipients by never waits
+		// on a consumer; the call then gets what is left of the budget. A filter update that
+		// failed because NATS is reconnecting is answered as store work the bus did not answer,
+		// as a registration's consumer call is (refollow); the topics are out of the record
+		// already. envoy-client's retry removes them again and sets the filter; a caller whose
+		// retry finds them gone (Dispatch's unsubscribeSession) leaves the filter to the
 		// session's next registration.
 		recordFollowedTopics(ctx, d, body.SessionID, logger)
-		if err := d.consumers.refollow(consumerCtx, d, body.SessionID); err != nil {
+		if err := d.consumers.refollow(ctx, d, body.SessionID); err != nil {
 			writeStoreError(ctx, w, err, http.StatusServiceUnavailable)
 			return
 		}
@@ -3449,8 +3453,8 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 	// A DELETE here removes every interest of a session, so its record is left naming none and a
 	// publish counts it for nothing, and its consumer is refollowed on what is left, as the
 	// unsubscribe route's are. Both run on the context adminInterestsHandler bounds by
-	// routeConsumerCallTimeout, and a refollow that failed because NATS is reconnecting is that
-	// route's 503.
+	// sendRequestBudget, and a refollow that failed because NATS is reconnecting is that route's
+	// 503.
 	v1.Handle("/v1/interests/", adminInterestsHandler(d.registry, d.sessions, func(ctx context.Context, sessionID string) error {
 		recordFollowedTopics(ctx, d, sessionID, logger)
 		return d.consumers.refollow(ctx, d, sessionID)

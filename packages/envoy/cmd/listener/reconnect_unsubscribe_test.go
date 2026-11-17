@@ -72,14 +72,14 @@ func TestAnUnsubscribeThroughANATSReconnectFailsByName(t *testing.T) {
 // An unsubscribe whose store work answers and whose consumer call meets a NATS reconnect fails by
 // name, and inside the client's own deadline, as a registration's consumer call does. The filter
 // update after the row is written (sessionDelivery.refollow) is the route's one consumer call, and
-// its client waits for it: it runs within routeConsumerCallTimeout of the request's arrival, and a
-// call that failed because NATS is reconnecting is the bus-unavailable 503 that names the
-// reconnect. The session-consumer connection alone goes through a proxy, which the test cuts
-// after the update read the row and before it sends the call, so the bucket keeps answering.
+// its client waits for it: it runs within sendRequestBudget of the request's arrival, as the
+// route's store work does, and a call that failed because NATS is reconnecting is the
+// bus-unavailable 503 that names the reconnect. The session-consumer connection alone goes
+// through a proxy, which the test cuts after the update read the row and before it sends the
+// call, so the bucket keeps answering.
 //
-// Before routeConsumerCallTimeout bounded it, the update waited out sessionConsumerCallTimeout
-// (5 s) from its own start and was only logged, and the route answered 200 after the client's
-// attempt.
+// Before the route's budget bounded it, the update waited out sessionConsumerCallTimeout (5 s)
+// from its own start and was only logged, and the route answered 200 after the client's attempt.
 func TestAnUnsubscribeWhoseConsumerCallMeetsANATSReconnectFailsByName(t *testing.T) {
 	const (
 		sessionID = "ses_unsubscribe_consumer_call"

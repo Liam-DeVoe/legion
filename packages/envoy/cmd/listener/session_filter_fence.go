@@ -44,7 +44,7 @@ const (
 	// of it, so nothing of this listener's sets a filter this loop leaves, and the session
 	// registers no more. Only the repair of a session's consumer answers it (repairRegistered),
 	// and that repair runs inside the budget of the act it follows (sessionConsumerCallTimeout
-	// after a delete, routeConsumerCallTimeout after a registration): a reaper pass
+	// after a delete, the route's sendRequestBudget after a registration): a reaper pass
 	// deletes the record before the consumer delete that the repair after a delete follows
 	// (deleteConsumer), and the record a registration wrote is gone to the repair after that
 	// registration only where such a delete ran after that write (confirmRegistered). The fence
@@ -77,12 +77,12 @@ const (
 // relay restart's own calls included: five passes are ten round trips to the server, and that
 // budget covers them at a quarter of a second each with the restart's beside them. A loop a
 // route's client waits for - the repair after a registration, and an unsubscribe's refollow -
-// runs inside that route's shorter bound (routeConsumerCallTimeout), which the repair shares with
-// the registration's other consumer calls. One writer racing a repair settles in two
-// passes, and five leaves room for the two listeners of a rolling deploy with an unsubscribe or a
-// role claim of the same session between them; a row still moving under five writes in a row is
-// written to continuously rather than raced once, which is what the line a loop out of passes
-// ends on names.
+// runs inside that route's shorter budget (sendRequestBudget), which the repair shares with the
+// registration's store work and its other consumer calls. One writer racing a repair settles in
+// two passes, and five leaves room for the two listeners of a rolling deploy with an unsubscribe
+// or a role claim of the same session between them; a row still moving under five writes in a
+// row is written to continuously rather than raced once, which is what the line a loop out of
+// passes ends on names.
 const filterFenceAttempts = 5
 
 // fenceFilterWrite makes a write of a session consumer's filter and lets no write built from an
@@ -296,9 +296,9 @@ const (
 // deadline ctx carries, which here covers the whole loop, as it covers a relay restart's
 // calls and the corrections after them; and the session's lock, which orders these writes against
 // the registrations', the relay's restart and the delete a reaper or a stop makes of the same
-// session. A route whose client waits for the write passes a ctx bounded by
-// routeConsumerCallTimeout (refollow); a registration this listener did not answer passes one
-// bounded by its store work (registerSession).
+// session. A route whose client waits for the write passes its request's ctx, bounded by
+// sendRequestBudget (refollow); a registration this listener did not answer passes one bounded
+// by the same budget, with the client's cancel dropped (registerSession).
 //
 // It returns the failure of its last pass when that pass could not write the filter because NATS
 // is reconnecting (bus.ErrReconnecting), and nil otherwise: every failure is logged where it is

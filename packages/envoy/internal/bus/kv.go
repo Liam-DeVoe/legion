@@ -421,14 +421,14 @@ func copiesBehind(info *nats.StreamInfo, replicas int) string {
 // own age standing (ParseSessionMaxAge), as it leaves one copy alone.
 // An age an answer never came for succeeds when the stream, read again, carries it, and one the
 // server refused as overlapping the bucket's own stream is sent again (updateStream). Its error
-// names the bucket's stream: `set KV_envoy_sessions max age: ...`. A request nats.go refuses while
-// it reconnects the connection names the reconnect (namedJetStream). The call is handed no
-// connection, so a context other than Client.JS's names nats.go's refusal alone.
-func SetKeyValueMaxAge(js nats.JetStreamContext, bucket string, maxAge time.Duration) (time.Duration, error) {
+// names the bucket's stream: `set KV_envoy_sessions max age: ...`. js sends on conn, and a
+// request made while nats.go reconnects conn fails as ErrReconnecting, whatever nats.go answers
+// it (namedJetStream).
+func SetKeyValueMaxAge(conn *nats.Conn, js nats.JetStreamContext, bucket string, maxAge time.Duration) (time.Duration, error) {
 	if maxAge <= 0 {
 		return 0, nil
 	}
-	js = namedJetStream(nil, js)
+	js = namedJetStream(conn, js)
 	stream := "KV_" + bucket
 	info, err := js.StreamInfo(stream)
 	if err != nil {
@@ -848,34 +848,35 @@ func (kv KeyValue) Status() (nats.KeyValueStatus, error) {
 // buffer off refuses every send at once, call waits for the connection within ctx
 // (awaitConnected). A ctx that ends in that wait starts no call: answered is false, and err is
 // ErrReconnecting with ctx's error, `bus: NATS is reconnecting: context deadline exceeded`, so the
-// caller's answer says why the bus did not answer. ctx is read again once the wait ends, before the
-// call starts, so a call never starts after its caller's ctx has ended. A connection that drops
-// again after the wait refuses the call itself, which a KeyValue call names ErrReconnecting
-// (kvAnswer).
+// caller's answer says why the bus did not answer. ctx is read before the wait and again once the
+// wait ends, before the call starts, so a call never starts after its caller's ctx has ended. A
+// ctx found ended there starts no call either, and its err is the same ErrReconnecting while
+// nats.go reconnects conn, and ctx's bare error while conn can take a send (endedUnsent). A
+// connection that drops again after the wait refuses the call itself, which a KeyValue call names
+// ErrReconnecting (kvAnswer).
 //
 // Once call has started, answered is false when ctx ended first, and err is then ctx's error; the
 // abandoned call runs on to its own end and its answer is dropped. So a write or a delete that was
 // sent may still land after the caller has answered (each caller says why that is safe), and one
-// still waiting for the connection when ctx ended was never sent and never lands. A ctx that has
-// already ended starts no call, and a ctx that can never end (context.Background, which a caller
-// with no request behind it passes) is simply call, in this goroutine, with no wait: there is no
-// deadline to wait within, so a call on a reconnecting connection fails at once as
-// ErrReconnecting. A background loop is not such a caller: the role claim reaper passes its own
-// loop's ctx, which the listener's shutdown ends under a pass in flight or a wait
-// (store.StartRoleClaimReaper).
+// still waiting for the connection when ctx ended was never sent and never lands. A ctx that can
+// never end (context.Background, which a caller with no request behind it passes) is simply call,
+// in this goroutine, with no wait: there is no deadline to wait within, so a call on a
+// reconnecting connection fails at once as ErrReconnecting. A background loop is not such a
+// caller: the role claim reaper passes its own loop's ctx, which the listener's shutdown ends
+// under a pass in flight or a wait (store.StartRoleClaimReaper).
 func Bounded[T any](ctx context.Context, conn *nats.Conn, call func() (T, error)) (value T, answered bool, err error) {
 	if ctx.Done() == nil {
 		value, err = call()
 		return value, true, err
 	}
-	if err := ctx.Err(); err != nil {
-		return value, false, err
+	if ctx.Err() != nil {
+		return value, false, endedUnsent(ctx, conn)
 	}
 	if err := awaitConnected(ctx, conn); err != nil {
 		return value, false, err
 	}
-	if err := ctx.Err(); err != nil {
-		return value, false, err
+	if ctx.Err() != nil {
+		return value, false, endedUnsent(ctx, conn)
 	}
 	type answer struct {
 		value T

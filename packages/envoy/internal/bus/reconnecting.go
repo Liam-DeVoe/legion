@@ -15,9 +15,10 @@ import (
 //
 // Two errors wrap it. A send that waited for the connection (ensureConnWithContext for a publish
 // or a request, Bounded for a bucket call a caller bounds by its deadline) and whose ctx ended
-// first is `bus: NATS is reconnecting: context deadline exceeded`, which wraps ctx's error too.
-// A send that did not wait, or that the connection dropped under after its wait, is
-// `bus: NATS is reconnecting` (Reconnecting).
+// first is `bus: NATS is reconnecting: context deadline exceeded`, which wraps ctx's error too. So
+// is a bucket call whose ctx ended before it started while nats.go reconnects the connection
+// (Bounded, endedUnsent). A send that did not wait, or that the connection dropped under after its
+// wait, is `bus: NATS is reconnecting` (Reconnecting).
 var ErrReconnecting = errors.New("NATS is reconnecting")
 
 // reconnectingSend is a send nats.go refused while it connects or reconnects the connection:
@@ -41,10 +42,12 @@ func (e reconnectingSend) Unwrap() []error { return []error{ErrReconnecting, e.r
 // This package calls it once for each kind of send it makes, at the one place that kind is sent:
 //   - a JetStream request through a legacy JetStream context (namedRequests), which also names
 //     any error a request returns while the connection reconnects, and which wraps every such
-//     context the package builds (jetStreamOn) and every one a caller hands it (namedJetStream):
-//     the client's own, which Client.JS hands its callers, the stream ensure's, the subject
-//     read's, the leader read of a key (KeyValue.GetFromLeader), and the contexts EnsureKeyValue,
-//     OpenKeyValue and SetKeyValueMaxAge are handed;
+//     context the package builds and every one a caller builds through it (JetStreamOn), and
+//     every one a caller hands it (namedJetStream): the client's own, which Client.JS hands its
+//     callers, the stream ensure's, the subject read's, the leader read of a key
+//     (KeyValue.GetFromLeader), the known-session store's lookup of its bucket
+//     (internal/session), and the contexts EnsureKeyValue, OpenKeyValue and SetKeyValueMaxAge are
+//     handed;
 //   - a JetStream API request this package builds itself (Client.requestConfirmed), which also
 //     names any error a request returns while the connection reconnects (namedOn): every request
 //     SessionConsumers sends - a consumer's info, create, update and delete, the consumer list
@@ -81,17 +84,18 @@ func Reconnecting(err error) error {
 // context names it again. Every other method is the context's own: a publish names its own error
 // (Client.refused, window.unsent), and ConsumerNames answers no error.
 //
-// conn is the connection the context sends on, whose state named reads. It is nil only for a
-// context a caller handed without its connection (SetKeyValueMaxAge), whose requests are named
-// for nats.go's refusal alone (namedOn).
+// conn is the connection the context sends on, whose state named reads.
 type namedRequests struct {
 	nats.JetStreamContext
 	conn *nats.Conn
 }
 
-// jetStreamOn is conn's legacy JetStream context, built with opts, with its requests named
-// (namedRequests). Every legacy JetStream context this package builds is built here.
-func jetStreamOn(conn *nats.Conn, opts ...nats.JSOpt) (nats.JetStreamContext, error) {
+// JetStreamOn is conn's legacy JetStream context, built with opts, with its requests named
+// (namedRequests). Every legacy JetStream context this package builds is built here. A caller
+// outside the package that sends a request through a context of its own builds the context here
+// too, so the request's error names a reconnect as every other does: the known-session store's
+// lookup of its bucket (internal/session openKnownBucket).
+func JetStreamOn(conn *nats.Conn, opts ...nats.JSOpt) (nats.JetStreamContext, error) {
 	js, err := conn.JetStream(opts...)
 	if err != nil {
 		return nil, err
@@ -100,8 +104,8 @@ func jetStreamOn(conn *nats.Conn, opts ...nats.JSOpt) (nats.JetStreamContext, er
 }
 
 // namedJetStream is js, a context a caller handed this package, with its requests named
-// (namedRequests); conn is the connection js sends on, or nil when the caller handed none. A
-// context that names them already, such as Client.JS's, is returned as it is.
+// (namedRequests); conn is the connection js sends on. A context that names them already, such as
+// Client.JS's, is returned as it is.
 func namedJetStream(conn *nats.Conn, js nats.JetStreamContext) nats.JetStreamContext {
 	if _, named := js.(namedRequests); named {
 		return js
@@ -122,7 +126,14 @@ func (j namedRequests) named(err error) error { return namedOn(j.conn, err) }
 // waits for a reply that never comes, and answers its caller's deadline. The error nats.go gave
 // stays in the chain (reconnectingSend), so a caller that reads it still finds it. An error that
 // is ErrReconnecting already is returned as it is, such as a wait for the connection that ended
-// first (reconnectWaitEnded). A nil conn names nats.go's refusal alone.
+// first (reconnectWaitEnded).
+//
+// A nil conn names nats.go's refusal alone and reads no state: connecting would panic on it. The
+// one caller that can pass one is streamRead.wait, which passes its client's connection
+// (Client.Connection). A client the constructors return holds a connection from the constructor
+// on (install), and a replacement of a closed one installs another in its place
+// (ensureConnWithContext), so only a Client built as a struct literal, as a test builds one,
+// holds none. Every legacy context's conn is the connection it was built on or handed with.
 //
 // It is the one rule every place that names a request's error follows: a legacy JetStream context
 // (namedRequests), a request this package builds itself (Client.requestConfirmed), and a call
@@ -201,6 +212,18 @@ func (j namedRequests) Subscribe(subject string, handler nats.MsgHandler, opts .
 // ended first. It wraps ErrReconnecting and ctx's error.
 func reconnectWaitEnded(ctx context.Context) error {
 	return fmt.Errorf("bus: %w: %w", ErrReconnecting, ctx.Err())
+}
+
+// endedUnsent is the error of a send on conn that was not sent because ctx had ended before it
+// started: while nats.go connects or reconnects conn, the error of a wait for the connection that
+// ctx ended (reconnectWaitEnded), since the send could not have gone then either and its caller
+// is told why; and ctx's own error otherwise. A nil conn is no connection to wait for, and gives
+// ctx's own error.
+func endedUnsent(ctx context.Context, conn *nats.Conn) error {
+	if conn != nil && connecting(conn) {
+		return reconnectWaitEnded(ctx)
+	}
+	return ctx.Err()
 }
 
 // awaitConnected returns once conn can take a send. A nil conn, a connected one, a draining one
