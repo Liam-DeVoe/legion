@@ -27,8 +27,8 @@
 #     and the actor ses_step_agent is refused 403 STEP_WRITER and leaves no record; control: the
 #     same body with the daemon's own credential and the actor legion-daemon:<PROJECT> is taken.
 #
-# Run it from a checkout on a Linux host with go, bun (after `bun install` at the checkout's
-# root), awk and python3, as
+# Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
+# to start without them), bun (after `bun install` at the checkout's root), awk and python3, as
 #   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     bash scripts/e2e/step-records.sh
 # LEGION_TEST_PG_DSN is required and names the PostgreSQL the daemon migrates and runs on; the

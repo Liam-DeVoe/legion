@@ -278,7 +278,7 @@ func newStepRecordsRigWith(t *testing.T, proof liveProof, dispatch *scratchDispa
 
 // walkTitles is the title of each issue of a run, in order. Dispatch refuses a new issue whose
 // title is a near copy of an open one's (POSSIBLE_DUPLICATE), so no two share a word that counts.
-var walkTitles = []string{"One issue walks to done", "A second change rates its plan", "Third piece merges after its retro"}
+var walkTitles = []string{"One issue walks to done", "A second change rates its plan", "Third piece merges after its retro", "Fourth job refused unrated"}
 
 // on moves the walk's steps to issue key of the run.
 func (r *stepRecordsRig) on(key string) {
