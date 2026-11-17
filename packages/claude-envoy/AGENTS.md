@@ -101,10 +101,11 @@ and the role claim holds that topic, not the follow.
 When no topic is left to send, `unfollow` sends no unsubscribe.
 When the unsubscribe fails, `unfollow` does not throw,
 and the heartbeat's interest reconciliation removes the topics from the entry.
-As pi-envoy's `envoy_unsubscribe` does, the tool returns `removed`, `kept`,
+The tool returns `removed`, `kept`,
 and `registrationError` when the unsubscribe failed.
 pi-envoy keeps a subject that another plugin opened while the session holds its role.
-Nothing in this server opens such a subject, so `kept` is always empty here.
+Nothing in this server opens such a subject, so `kept` is always empty here,
+and this server sends it all the same, where pi-envoy leaves an empty `kept` out of its answer.
 
 `runEnvoyChannelServer` dials NATS with the shared options of
 `@legion/envoy-client/nats-connection` (`natsConnectionOptions`): a ping every 10 s and the

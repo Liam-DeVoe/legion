@@ -240,6 +240,10 @@ func TestTwoPodsSIGKILLMidFrameKeepsTheSessionsOrderWithin15s(t *testing.T) {
 		t.Fatalf("%s never sent %s a frame", a.instance, blocked)
 	}
 	killed := a.kill(t)
+	// The standby takes the lease over a lease TTL after the kill, and its relay restarts the
+	// consumer at its ack floor, which deletes the consumer holding that frame and creates it
+	// again; the killed pod changes the consumer no more.
+	awaitSessionConsumerStored(t, publisher.client.Conn, blocked)
 	stop := publisher.every(200*time.Millisecond, blocked)
 	time.Sleep(3 * time.Second) // publish for a while after the kill
 	stop()
@@ -587,6 +591,9 @@ func mpGracefulStopsInTurn(t *testing.T, binary, uri string, serving *mpNATSSess
 			t.Fatalf("%s never sent %s a frame", stopping.instance, sessionID)
 		}
 		time.Sleep(time.Second) // healthy's messages queue behind the frame in hand
+		// The stop hands the frame back unanswered, and the next pod's relay restarts the consumer
+		// at its ack floor, which deletes the consumer holding it and creates it again.
+		awaitSessionConsumerStored(t, publisher.client.Conn, sessionID)
 		stopping.Terminate(t)
 		stopping.WaitExit(t, "SIGTERM")
 		mpWaitActive(t, next, mpGracefulBound)

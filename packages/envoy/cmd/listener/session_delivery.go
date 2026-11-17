@@ -337,6 +337,15 @@ func (m *sessionDelivery) close() {
 // consumer, and it holds the start of a create as it does for the delete's repair; a consumer the
 // stream holds keeps its own position whatever start the call names, so what a repair of it
 // changes is the filter.
+//
+// One gap is left open on purpose: nats-server v2.15.1 can refuse the create of a one-copy
+// consumer that a same-name consumer's delete just preceded, its flusher renaming a late
+// o.dat.tmp over the new consumer's state file (code 500, err_code 10012). Neither this repair
+// nor repairRegistered retries that create: the session was already answered 200, and its relay
+// waits for the consumer until the session's next heartbeat registers it again, at most 90 s.
+// dispatch://INFRA-4015 owns the server race and its other outcome, a create that succeeds with
+// the old consumer's state, and its child dispatch://INFRA-4230 gives each creation a fresh
+// consumer name, which removes the same-name create.
 func (m *sessionDelivery) confirmRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64) {
 	if m == nil || m.consumers == nil {
 		return
@@ -378,6 +387,9 @@ const (
 // or not whatever this call did, and the session's next registration repairs the consumer again.
 // The line names the session, which is what an operator reading a pause in its delivery has to go
 // on.
+//
+// On a create the server refuses with err_code 10012 (the race confirmRegistered's doc names),
+// nothing here retries: the session waits for its next heartbeat, at most 90 s.
 func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64, after string) {
 	fenceFilterWrite(ctx, m.logger, d.registry, sessionID, after, func() (uint64, filterWriteOutcome) {
 		if m.beforeRepairPlan != nil {
