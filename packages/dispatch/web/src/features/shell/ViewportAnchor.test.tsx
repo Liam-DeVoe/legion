@@ -690,6 +690,63 @@ test("a box pulled back past the room below the row keeps the row where the pull
   }
 });
 
+// A control that the focus is moved to inside a row, by code and with no scroll, as a page's
+// hand-on or Details' focus keeper moves it, is the reader's place from then on: a later change of
+// that row's height keeps the control where it was. The anchor records a focused control only when
+// the reader scrolls or moves the pointer, so a focus moved by code alone is not kept, and a cut
+// of the row then moves the control with it. Found by the tester on a running build of 685fbb25
+// with a copy of a large real issue: Load older pressed as the focus reached it put the focus on a
+// turn's Reply at 270 px. The history raises a scroll event to have that place kept, but in that
+// commit the anchor's own scroll had moved the box from 29,643 back to 30,372 px, the last
+// frame's offset, so the anchor took the history's event for its own and no browser scroll event
+// followed; the turn's cut from 510 to 190 px left the Reply at -50 px, above the view, in three
+// runs of ten at 1440 px.
+test("a control the focus is moved to by code inside a row keeps its place when that row is cut", () => {
+  const RealResizeObserver = globalThis.ResizeObserver;
+  const observers: ResizeObserverCallback[] = [];
+  globalThis.ResizeObserver = class {
+    constructor(callback: ResizeObserverCallback) {
+      observers.push(callback);
+    }
+    disconnect() {}
+    observe() {}
+    unobserve() {}
+  } as unknown as typeof ResizeObserver;
+  const resized = () => {
+    for (const callback of observers) callback([], undefined as unknown as ResizeObserver);
+  };
+  // r20 is a long turn: from 1,050 to 2,050 px down the content, its control at its foot.
+  heights = { r20: 1000 };
+  const view = render(<List rows={ids(30)} scroller={scrollerRef} />);
+  try {
+    const scroller = scrollerRef.current;
+    if (scroller === null) throw new Error("scroller missing");
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: VIEWPORT_HEIGHT });
+    Object.defineProperty(scroller, "scrollHeight", {
+      configurable: true,
+      get: () => listTop + listHeight(),
+    });
+    // The reader's view: r20's head above it, its control at 400 px.
+    scroller.scrollTop = 1630;
+    fireEvent.scroll(scroller);
+    const control = document.querySelector<HTMLElement>('[data-row="r20"] button');
+    if (control === null) throw new Error("r20 button missing");
+    // The focus is moved to r20's control by code, with no scroll.
+    control.focus({ preventScroll: true });
+    expect(document.activeElement).toBe(control);
+    const held = controlTop("r20");
+    expect(held).toBe(400);
+
+    // r20 is cut to 190 px in a commit of its own, which the anchor sees as its root resized.
+    heights = { r20: 190 };
+    resized();
+    expect(controlTop("r20")).toBe(held);
+  } finally {
+    view.unmount();
+    globalThis.ResizeObserver = RealResizeObserver;
+  }
+});
+
 test("the centre anchor stays inside a horizontally scrolled table's visible box", () => {
   contentLeft = -800;
   contentWidth = 2000;

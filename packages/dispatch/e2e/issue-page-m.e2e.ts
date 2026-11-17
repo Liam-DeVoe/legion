@@ -1533,6 +1533,68 @@ test("a control at the foot of a long turn keeps the focus in view when the turn
   }
 });
 
+// A turn cut to six lines opens in place: "more · N words" draws the rest under the lines the
+// reader has read, and the turn's head stays where it was. "more" stands at the foot of the
+// words, so a place keeper that keeps the focused control's own place keeps "more" where it was
+// and pushes the turn's head up by everything the press drew, out of the view, and the reader
+// meets the end of the turn first. Found by the tester on a running build of 685fbb25 with a copy
+// of a large real issue, at 1440 px: with the focus on a turn's "more · 426 words" and a scroll
+// of the reader's, Enter left "less" at 678 px and moved the turn's head from 534 px to -1,271 px.
+test("more pressed by keyboard opens a turn's words in place, its head where it was", async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "A long turn to open" });
+  const paragraph = "the agents read the history and wrote what they found ".repeat(6);
+  const long = await createMessage(
+    issue.key,
+    { body: Array.from({ length: 12 }, (_, part) => `Part ${part}: ${paragraph}`).join("\n\n") },
+    attentionSession
+  );
+  // Newer turns above it, so the history scrolls and the long turn starts below the first screen.
+  for (let index = 0; index < 15; index += 1) {
+    await createMessage(issue.key, { body: `Newer turn ${index}` }, attentionSession);
+  }
+
+  const context = await reader(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await gotoIssue(page, `/issues/${issue.key}/activity`);
+    const turn = historyItem(page, long.id);
+    const more = turn.locator("[data-node-more]");
+    // A turn is cut once it shows: the reader scrolls to it first.
+    await turn.scrollIntoViewIfNeeded();
+    await expect(more, "the long turn is not cut, so the row proves nothing").toContainText(
+      CONTROL_LABELS.read_more
+    );
+    // The reader moves the focus to "more" and scrolls the history a little, the pointer on it.
+    await more.focus();
+    const view = await historyViewport(page);
+    const panel = await historyPanel(page).boundingBox();
+    await page.mouse.move((panel?.x ?? 0) + 40, (view.top + view.bottom) / 2);
+    await page.mouse.wheel(0, 40);
+    await nextFrames(page);
+    await page.waitForTimeout(300);
+    const before = Math.round((await turn.boundingBox())?.y ?? 0);
+    expect(
+      before >= view.top,
+      `the turn's head is above Details' view (${before} px) before the press, so the row proves nothing`
+    ).toBe(true);
+    await page.keyboard.press("Enter");
+    await expect(more).toContainText(CONTROL_LABELS.read_less);
+    await page.waitForTimeout(1_000);
+    await nextFrames(page);
+    const after = Math.round((await turn.boundingBox())?.y ?? 0);
+    expect(
+      Math.abs(after - before),
+      `"more" opened the turn's words upward: its head moved from ${before} px to ${after} px (Details' view ${Math.round(view.top)} to ${Math.round(view.bottom)})`
+    ).toBeLessThanOrEqual(1);
+  } finally {
+    await context.close();
+  }
+});
+
 // The read mark draws one line in the history, "New since you last read", where the mark falls
 // among its entries (`history-model.ts`): a mark that moves back adds that line under the
 // entries the reader has not read, above the reader's place, so the reader's own entry has to
