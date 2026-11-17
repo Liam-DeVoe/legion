@@ -725,7 +725,7 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/v1/asks/{id}/rewrite": {
+  "/api/v1/asks/{id}/rewrites": {
     parameters: {
       query?: never;
       header?: never;
@@ -735,7 +735,7 @@ export interface paths {
     get?: never;
     put?: never;
     /** @description Rewrite an open question for its reader (INFRA-3231's R7): answers 202 at once with {ask_id, started, rewrite} and rewrites in the background. rewrite is {state, by, at, original, reason?} as every ask read carries it: rewriting while the rewrite runs. One rewrite of an ask runs at a time: a request while one runs starts none (started false) and gets that run's result. The rewrite reads Dispatch's record and, where the session that asked it is running or unresponsive and its host advertises btw, its answer to one side question Dispatch sends it as a message on its own conversation, waited for at most 60 s. A rewrite that changes an option's label, their number or order, the choice, a short first line, a `Ref: ` line, a picture line, a link or a decision block's option line is not applied, nor one written over a wording the asking agent changed meanwhile; the ask then stays as it was, and ask.rewrite_failed carries why. An applied rewrite keeps each option's id, and is a quiet ask.edited from Dispatch holding the old wording, who asked, and whether the agent's answer was read; ask.rewriting, ask.edited and ask.rewrite_failed reach no session as a card. Each request is recorded rewrite_requested. A question that is not open is 409 ASK_NOT_OPEN, an approval request 409 ASK_KIND_FIXED; it needs the person scope, and with no model group for Rewrite and Define (DISPATCH_REWRITE_DEFINE_MODEL_*) it is 503 REWRITE_NO_MODEL. */
-    post: operations["postApiV1AsksByIdRewrite"];
+    post: operations["postApiV1AsksByIdRewrites"];
     delete?: never;
     options?: never;
     head?: never;
@@ -1358,7 +1358,7 @@ export interface paths {
     patch: operations["patchApiV1HeldById"];
     trace?: never;
   };
-  "/api/v1/held/{id}/post": {
+  "/api/v1/held/{id}/state": {
     parameters: {
       query?: never;
       header?: never;
@@ -1366,9 +1366,9 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    put?: never;
-    /** @description Post a held text as written {reason}, over what the reviewer found: reason (required, 400 HELD_POST_INPUT when blank) says why the text is right for its reader, and is recorded with the outcome posted_as_written. The text posts through its kind's own create path before the answer, which is the held text as it then stands. Only the session that wrote it posts it, 403 HELD_NOT_WRITER for any other caller, and only while it is in review or awaits its writer: a text whose post is decided is 409 HELD_TEXT_DECIDED. */
-    post: operations["postApiV1HeldByIdPost"];
+    /** @description Post a held text as written, over what the reviewer found {state, reason}: state is posted, the one state a writer moves its held text to (400 HELD_STATE_INPUT for any other), and reason (required, 400 HELD_POST_INPUT when blank) says why the text is right for its reader, and is recorded with the outcome posted_as_written. The text posts through its kind's own create path before the answer, which is the held text as it then stands. Only the session that wrote it posts it, 403 HELD_NOT_WRITER for any other caller, and only while it is in review or awaits its writer: a text whose post is decided is 409 HELD_TEXT_DECIDED, but for the request that decided it sent again, with the same reason, which writes nothing and answers the held text as it then stands. */
+    put: operations["putApiV1HeldByIdState"];
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -2090,7 +2090,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's own definitions (POST /api/v1/definitions), the newest first, at most 200; no other person's. It needs the person scope. */
+    /** @description The caller's own definitions (POST /api/v1/definitions), one page of them, the newest first: {items, total, limit, offset}, items ?limit= definitions (1 to 200, default 50) from ?offset=, and total how many the caller has; no other person's. A limit or an offset out of its bounds is 400 INVALID_QUERY. It needs the person scope. */
     get: operations["getApiV1MeDefinitions"];
     put?: never;
     post?: never;
@@ -2726,7 +2726,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The words one person asked about (INFRA-3231's R8): {reader, words}, each word {word, times, last} once, as the person last wrote it, however its case differs, with how many of their records name it and when they last asked, the most recently asked first, at most 200. A record is a text of theirs in which the records job found them asking what a word means, saying they cannot understand a text or complaining about its words, or a Define use. ?before= (RFC 3339) keeps the records written before it alone; any other value is 400 INVALID_QUERY. Any agent's token reads any reader's words, and a person signed in at a browser their own: another person's are 403 READER_WORDS_FORBIDDEN. */
+    /** @description The words one person asked about (INFRA-3231's R8), one page of them: {items, total, limit, offset}, items ?limit= words (1 to 200, default 50) from ?offset=, the most recently asked first, and total how many words the person asked about. Each word is {word, times, last}, listed once as the person last wrote it, however its case differs, with how many of their records name it and when they last asked. A record is a text of theirs in which the records job found them asking what a word means, saying they cannot understand a text or complaining about its words, or a Define use. ?before= (RFC 3339) keeps the records written before it alone; any other value, and a limit or an offset out of its bounds, is 400 INVALID_QUERY. Any agent's token reads any reader's words, and a person signed in at a browser their own: another person's are 403 READER_WORDS_FORBIDDEN. */
     get: operations["getApiV1ReadersByLoginWords"];
     put?: never;
     post?: never;
@@ -2804,7 +2804,7 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/v1/reviewer/draft": {
+  "/api/v1/reviewer-drafts": {
     parameters: {
       query?: never;
       header?: never;
@@ -2814,7 +2814,7 @@ export interface paths {
     get?: never;
     put?: never;
     /** @description The reviewer's review of a draft {kind, text, title?, options?, multiple?, issue?, reader?}, which writes nothing: kind is ask, issue, comment, message, document or decision_block (400 REVIEWER_DRAFT_INPUT for any other, or a blank text); text an ask's question, an issue's spec or any other kind's body; issue the issue the draft would be on, whose record it reads; reader the person it is for, else the issue's assignee or its project's default. Answers {reader, findings, dropped?, rewrite, not_applied?, calls}: findings each {rule_set, quote, why, fix}, dropped each finding the review left out because its quote is not in the text, as {rule_set, quote} with the quote as the model wrote it, rewrite {title?, body, options?, multiple?} or null, not_applied why the rewrite would not post, and calls each model call {purpose, deployment, attempts?, served, fault?}, attempts being its tries where it asked again after a reply that was not the object its schema names, served being the model id the provider says answered. It answers whenever the reviewer's model group is set, whatever DISPATCH_REVIEWER_<KIND> say; with none set it is 503 REVIEWER_NO_MODEL, and a model call that gives no answer is 502 REVIEWER_MODEL_FAILED. */
-    post: operations["postApiV1ReviewerDraft"];
+    post: operations["postApiV1ReviewerDrafts"];
     delete?: never;
     options?: never;
     head?: never;
@@ -3136,7 +3136,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The counts of the texts agents and people write (INFRA-3231's R8) for the UTC days ?first= to ?last=, both YYYY-MM-DD and both counted (default: last today, first the 13 days before it; at most 366 days): {first, last, days, rows}. days lists each day of the range, {day, total, outcomes, routes}: the writing check's and the reviewer's decisions counted by outcome and by "<method> <route>". rows lists each day, project and person that has a count, {day, project, person, word_questions, texts, texts_unread, asks_answered, asks_replied_before_answer, rewrite_uses, define_uses, reviewer_held, reviewer_rewrote, reviewer_passed, reviewer_posted_unreviewed, posted_over_finding}: the texts the person wrote that the records job read, those in which they ask what a word means, say they cannot understand a text or complain about its words, and those still waiting for the job's model; the asks they answered and those of them a person commented on in the ask's thread before the answer; their Rewrite and Define uses; the texts written to them that the reviewer held, rewrote, passed and posted unreviewed; and the texts written to them that posted over a finding. project is "" for a text on no project or one whose project was not recorded, and person "" for a person the record does not name. A day that is not YYYY-MM-DD, a first after last and a longer range are 400 INVALID_QUERY. The decisions are kept 90 days. Any signed-in caller reads it. */
+    /** @description The counts of the texts agents and people write (INFRA-3231's R8) for the UTC days ?first= to ?last=, both YYYY-MM-DD and both counted (default: last today, first the 13 days before it; at most 366 days): {first, last, days, items, total, limit, offset}. days lists each day of the range, {day, total, outcomes, routes}: the writing check's and the reviewer's decisions counted by outcome and by "<method> <route>". items is one page of the rows of each day, project and person that has a count, in day, project and person order: ?limit= rows (1 to 200, default 50) from ?offset=, and total counts every row. A row is {day, project, person, word_questions, texts, texts_unread, asks_answered, asks_replied_before_answer, rewrite_uses, define_uses, reviewer_held, reviewer_rewrote, reviewer_passed, reviewer_posted_unreviewed, posted_over_finding}: the texts the person wrote that the records job read, those in which they ask what a word means, say they cannot understand a text or complain about its words, and those still waiting for the job's model; the asks they answered and those of them a person commented on in the ask's thread before the answer; their Rewrite and Define uses; the texts written to them that the reviewer held, rewrote, passed and posted unreviewed; and the texts written to them that posted over a finding. project is "" for a text on no project or one whose project was not recorded, and person "" for a person the record does not name. A day that is not YYYY-MM-DD, a first after last, a longer range, and a limit or an offset out of its bounds are 400 INVALID_QUERY. The decisions are kept 90 days. Any signed-in caller reads it. */
     get: operations["getApiV1WritingCheckCounts"];
     put?: never;
     post?: never;
@@ -4472,6 +4472,12 @@ export interface components {
       meaning: string;
       words: string;
     };
+    DefinitionsPage: {
+      items: components["schemas"]["Definition"][] | null;
+      limit: number;
+      offset: number;
+      total: number;
+    };
     DeliveryComponent: {
       parent: null | string;
       title: string;
@@ -5103,10 +5109,6 @@ export interface components {
       description?: string;
       label: string;
     };
-    HeldPostInput: {
-      actor?: components["schemas"]["Actor"] | null;
-      reason: string;
-    };
     HeldRead: {
       /** Format: date-time */
       deadline: null | string;
@@ -5137,6 +5139,12 @@ export interface components {
       deadline: null | string;
       state: string;
       waits_on?: string;
+    };
+    HeldStateInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      reason: string;
+      /** @enum {string} */
+      state: "posted";
     };
     HoldPersistenceInput: {
       duration: string;
@@ -6058,8 +6066,10 @@ export interface components {
       word: string;
     };
     ReaderWordsResponse: {
-      reader: string;
-      words: components["schemas"]["ReaderWord"][] | null;
+      items: components["schemas"]["ReaderWord"][] | null;
+      limit: number;
+      offset: number;
+      total: number;
     };
     RebuildArtifactInput: {
       markdown?: null | string;
@@ -6645,8 +6655,11 @@ export interface components {
     WritingCheckCounts: {
       days: components["schemas"]["WritingCheckDay"][] | null;
       first: string;
+      items: components["schemas"]["WritingCheckRow"][] | null;
       last: string;
-      rows: components["schemas"]["WritingCheckRow"][] | null;
+      limit: number;
+      offset: number;
+      total: number;
     };
     WritingCheckDay: {
       day: string;
@@ -8692,7 +8705,7 @@ export interface operations {
       };
     };
   };
-  postApiV1AsksByIdRewrite: {
+  postApiV1AsksByIdRewrites: {
     parameters: {
       query?: {
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
@@ -10198,7 +10211,7 @@ export interface operations {
       };
     };
   };
-  postApiV1HeldByIdPost: {
+  putApiV1HeldByIdState: {
     parameters: {
       query?: {
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
@@ -10212,7 +10225,7 @@ export interface operations {
     };
     requestBody: {
       content: {
-        "application/json": components["schemas"]["HeldPostInput"];
+        "application/json": components["schemas"]["HeldStateInput"];
       };
     };
     responses: {
@@ -12270,6 +12283,8 @@ export interface operations {
   getApiV1MeDefinitions: {
     parameters: {
       query?: {
+        limit?: number;
+        offset?: number;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -12285,7 +12300,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Definition"][];
+          "application/json": components["schemas"]["DefinitionsPage"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -13921,6 +13936,8 @@ export interface operations {
     parameters: {
       query?: {
         before?: string;
+        limit?: number;
+        offset?: number;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -14096,7 +14113,7 @@ export interface operations {
       };
     };
   };
-  postApiV1ReviewerDraft: {
+  postApiV1ReviewerDrafts: {
     parameters: {
       query?: {
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
@@ -14818,6 +14835,8 @@ export interface operations {
       query?: {
         first?: string;
         last?: string;
+        limit?: number;
+        offset?: number;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -15017,6 +15036,7 @@ export type Definition = components["schemas"]["Definition"];
 export type DefinitionAgent = components["schemas"]["DefinitionAgent"];
 export type DefinitionAnswerRead = components["schemas"]["DefinitionAnswerRead"];
 export type DefinitionMeaning = components["schemas"]["DefinitionMeaning"];
+export type DefinitionsPage = components["schemas"]["DefinitionsPage"];
 export type DeliveryComponent = components["schemas"]["DeliveryComponent"];
 export type DeliveryDailyPoint = components["schemas"]["DeliveryDailyPoint"];
 export type DeliveryDeployFlagCounts = components["schemas"]["DeliveryDeployFlagCounts"];
@@ -15091,9 +15111,9 @@ export type HandoffSummary = components["schemas"]["HandoffSummary"];
 export type HeldDeferred = components["schemas"]["HeldDeferred"];
 export type HeldEditInput = components["schemas"]["HeldEditInput"];
 export type HeldOption = components["schemas"]["HeldOption"];
-export type HeldPostInput = components["schemas"]["HeldPostInput"];
 export type HeldRead = components["schemas"]["HeldRead"];
 export type HeldState = components["schemas"]["HeldState"];
+export type HeldStateInput = components["schemas"]["HeldStateInput"];
 export type HoldPersistenceInput = components["schemas"]["HoldPersistenceInput"];
 export type InboxDismissRequest = components["schemas"]["InboxDismissRequest"];
 export type InboxDismissResponse = components["schemas"]["InboxDismissResponse"];

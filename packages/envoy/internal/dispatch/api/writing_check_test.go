@@ -735,14 +735,14 @@ func TestTheWritingCheckCountsAndStateRoutes(t *testing.T) {
 		t.Errorf("today = %+v", day)
 	}
 	overFinding := 0
-	for _, row := range counts.Rows {
+	for _, row := range counts.Items {
 		if row.Day != today {
 			t.Errorf("a row of another day: %+v", row)
 		}
 		overFinding += row.PostedOverFinding
 	}
 	if overFinding != 1 {
-		t.Errorf("rows = %+v, want the one write with findings counted as posted over a finding", counts.Rows)
+		t.Errorf("rows = %+v, want the one write with findings counted as posted over a finding", counts.Items)
 	}
 	if response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/writing-check/counts", nil, "alice"); response.Code != http.StatusOK {
 		t.Errorf("no query: %d %s", response.Code, response.Body.String())
@@ -780,6 +780,61 @@ func TestTheWritingCheckCountsAndStateRoutes(t *testing.T) {
 	}
 	if !slices.Contains(off.RulesLeftOut, writingCheckRuleLeftOut{badRule, "the server's configuration turns it off"}) {
 		t.Errorf("state with %s off names no reason for it: %+v", badRule, off.RulesLeftOut)
+	}
+}
+
+// GET /api/v1/writing-check/counts pages the rows of each day, project and person in that order:
+// limit of them from offset, total counting every row, a page past the last one empty with the
+// total still counted, the day's counts whole on every page, and a limit or an offset out of its
+// bounds 400 INVALID_QUERY.
+func TestTheWritingCheckCountsPageTheirRows(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	for _, reader := range []string{"carol", "alice", "bob"} {
+		if err := database.InsertWritingCheckEvent(ctx, store.WritingCheckEvent{
+			Route: "/api/v1/issues/{key}/comments", Method: "POST", ActorKind: "session", ActorID: "s-agent",
+			Outcome: "held", Reader: reader, Project: "WCK",
+		}); err != nil {
+			t.Fatalf("record %s's held text: %v", reader, err)
+		}
+	}
+	const day = "2026-01-05"
+	if _, err := database.Pool.Exec(ctx, `update writing_check_events set created_at = $1`, time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("date the rows: %v", err)
+	}
+	page := func(query string) store.WritingCheckCounts {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/writing-check/counts?first="+day+"&last="+day+"&"+query, nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("counts ?%s: %d %s", query, response.Code, response.Body.String())
+		}
+		counts := decodeBody[store.WritingCheckCounts](t, response)
+		if len(counts.Days) != 1 || counts.Days[0].Total != 3 {
+			t.Errorf("counts ?%s: days %+v, want the one day with its three decisions", query, counts.Days)
+		}
+		return counts
+	}
+	people := func(counts store.WritingCheckCounts) []string {
+		var listed []string
+		for _, row := range counts.Items {
+			listed = append(listed, row.Person)
+		}
+		return listed
+	}
+	if first := page("limit=2"); !slices.Equal(people(first), []string{"alice", "bob"}) || first.Total != 3 || first.Limit != 2 || first.Offset != 0 {
+		t.Errorf("the first page = %v total %d limit %d offset %d, want alice and bob of 3 at limit 2 offset 0", people(first), first.Total, first.Limit, first.Offset)
+	}
+	if second := page("limit=2&offset=2"); !slices.Equal(people(second), []string{"carol"}) || second.Total != 3 || second.Offset != 2 {
+		t.Errorf("the second page = %v total %d offset %d, want carol of 3 at offset 2", people(second), second.Total, second.Offset)
+	}
+	if past := page("offset=3"); len(past.Items) != 0 || past.Total != 3 || past.Limit != listDefaultLimit || past.Offset != 3 {
+		t.Errorf("a page past the last = %+v, want no row, total 3, limit %d and offset 3", past, listDefaultLimit)
+	}
+	for _, query := range []string{"limit=0", "limit=201", "offset=-1"} {
+		if response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/writing-check/counts?first="+day+"&last="+day+"&"+query, nil, "alice"); response.Code != http.StatusBadRequest ||
+			!strings.Contains(response.Body.String(), "INVALID_QUERY") {
+			t.Errorf("?%s: %d %s, want 400 INVALID_QUERY", query, response.Code, response.Body.String())
+		}
 	}
 }
 

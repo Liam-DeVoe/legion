@@ -105,7 +105,7 @@ func TestAHeldTextIsInNoPersonsReadUntilItPosts(t *testing.T) {
 	socket.quiet(t, time.Second, "alice's live socket while the texts are held")
 
 	for _, id := range []string{issue.ID, comment.ID, ask.ID, message.ID} {
-		posted := rig.asWriter(http.MethodPost, "/api/v1/held/"+id+"/post", map[string]any{"reason": "The reader asked for it as written."})
+		posted := rig.asWriter(http.MethodPut, "/api/v1/held/"+id+"/state", map[string]any{"state": "posted", "reason": "The reader asked for it as written."})
 		if posted.Code != http.StatusOK {
 			t.Fatalf("the writer's post of %s: %d %s", id, posted.Code, posted.Body.String())
 		}

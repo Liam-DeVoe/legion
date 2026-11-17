@@ -43,8 +43,8 @@ import type {
   Handoff,
   HandoffSummary,
   HeldEditInput,
-  HeldPostInput,
   HeldRead,
+  HeldStateInput,
   InboxRow,
   Issue,
   IssueCheckResults,
@@ -1047,9 +1047,10 @@ export class DispatchClient {
     return this.#json("PATCH", ["api", "v1", "held", id], input);
   }
 
-  /** `POST /api/v1/held/{id}/post`: the writer posts its held text as written, with its reason. */
-  async postHeld(id: string, input: HeldPostInput): Promise<HeldRead> {
-    return this.#json("POST", ["api", "v1", "held", id, "post"], input);
+  /** `PUT /api/v1/held/{id}/state {state: "posted"}`: the writer posts its held text as written,
+   *  with its reason. The same call again, once the text posted so, answers it as it stands. */
+  async postHeld(id: string, input: Omit<HeldStateInput, "state">): Promise<HeldRead> {
+    return this.#json("PUT", ["api", "v1", "held", id, "state"], { ...input, state: "posted" });
   }
 
   async listProjectArtifacts(project: string, unlinked = false): Promise<Artifact[]> {

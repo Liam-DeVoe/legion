@@ -244,7 +244,7 @@ func TestTheRecordsVerdictsWordsAndCounts(t *testing.T) {
 		{Route: "/api/v1/issues/{key}/comments", Method: "POST", ActorKind: "session", ActorID: "s-agent", Outcome: "held", Reader: "alice", Project: "WCK"},
 		{Route: "/api/v1/issues/{key}/comments", Method: "POST", ActorKind: "session", ActorID: "s-agent", Outcome: "posted_as_written", Reader: "alice", Project: "WCK"},
 		{Route: "/api/v1/issues/{key}/comments", Method: "POST", ActorKind: "session", ActorID: "s-agent", Outcome: "reviewed_after", Reader: "alice", Project: "WCK"},
-		{Route: "/api/v1/asks/{id}/rewrite", Method: "POST", ActorKind: "user", ActorID: "alice", Outcome: "rewrite_requested", Reader: "alice", Project: "WCK"},
+		{Route: "/api/v1/asks/{id}/rewrites", Method: "POST", ActorKind: "user", ActorID: "alice", Outcome: "rewrite_requested", Reader: "alice", Project: "WCK"},
 	} {
 		if err := store.InsertWritingCheckEvent(ctx, event); err != nil {
 			t.Fatalf("record %s: %v", event.Outcome, err)
@@ -253,7 +253,7 @@ func TestTheRecordsVerdictsWordsAndCounts(t *testing.T) {
 	if _, err := store.Pool.Exec(ctx, `update writing_check_events set created_at = $1`, day); err != nil {
 		t.Fatalf("date the reviewer's rows: %v", err)
 	}
-	counts, err := store.CountWritingCheck(ctx, day, day.Add(48*time.Hour))
+	counts, err := store.CountWritingCheck(ctx, day, day.Add(48*time.Hour), 50, 0)
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
@@ -265,7 +265,28 @@ func TestTheRecordsVerdictsWordsAndCounts(t *testing.T) {
 		{Day: "2026-10-20", Project: "WCK", Person: "alice", DefineUses: 1, RewriteUses: 1, ReviewerHeld: 1, PostedOverFinding: 1},
 		{Day: "2026-10-22", Project: "", Person: "alice", WordQuestions: 1, Texts: 1},
 	}
-	if !slices.Equal(counts.Rows, want) {
-		t.Errorf("rows = %+v\nwant %+v", counts.Rows, want)
+	if !slices.Equal(counts.Items, want) || counts.Total != len(want) || counts.Limit != 50 || counts.Offset != 0 {
+		t.Errorf("rows = %+v total %d limit %d offset %d\nwant %+v of %d at limit 50 offset 0", counts.Items, counts.Total, counts.Limit, counts.Offset, want, len(want))
+	}
+	paged, err := store.CountWritingCheck(ctx, day, day.Add(48*time.Hour), 1, 1)
+	if err != nil {
+		t.Fatalf("count a page: %v", err)
+	}
+	if !slices.Equal(paged.Items, want[1:2]) || paged.Total != len(want) || len(paged.Days) != 3 {
+		t.Errorf("the second page of one = %+v total %d days %d, want %+v of %d and the three days", paged.Items, paged.Total, len(paged.Days), want[1:2], len(want))
+	}
+	past, err := store.CountWritingCheck(ctx, day, day.Add(48*time.Hour), 50, len(want))
+	if err != nil {
+		t.Fatalf("count past the last row: %v", err)
+	}
+	if len(past.Items) != 0 || past.Total != len(want) {
+		t.Errorf("a page past the last row = %+v total %d, want none of %d", past.Items, past.Total, len(want))
+	}
+	words, total, err := store.ReaderWordsPage(ctx, "alice", time.Time{}, 1, 1)
+	if err != nil || total != 3 || len(words) != 1 || words[0].Word != "store" {
+		t.Errorf("alice's second word of one = %+v total %d err %v, want store of 3", words, total, err)
+	}
+	if words, total, err := store.ReaderWordsPage(ctx, "alice", time.Time{}, 50, 3); err != nil || total != 3 || len(words) != 0 {
+		t.Errorf("alice's words past the last = %+v total %d err %v, want none of 3", words, total, err)
 	}
 }

@@ -1,3 +1,4 @@
+import type { WritingCheckRow } from "@legion/contracts";
 import { setLiveSessions, setSessionState } from "./agents";
 import {
   createProjectDocument,
@@ -322,18 +323,27 @@ test("a definition is its reader's alone, counted as her Define use, and its wor
   }
 
   // Alice's own definitions route lists both; bob's lists neither.
-  const mine = (await listMyDefinitions({ login: "alice" })).map((definition) => definition.id);
-  expect(mine.sort()).toEqual([...ids].sort());
-  expect(await listMyDefinitions({ login: "bob" })).toHaveLength(0);
+  const mine = await listMyDefinitions({}, { login: "alice" });
+  expect((mine.items ?? []).map((definition) => definition.id).sort()).toEqual([...ids].sort());
+  expect(mine.total).toBe(ids.length);
+  expect((await listMyDefinitions({}, { login: "bob" })).items ?? []).toHaveLength(0);
 
   // R8: each Define use is alice's question about those words, counted on the day, project and
-  // person, and her words route lists the words.
+  // person, and her words route lists the words. The day's rows of every project and person
+  // come a page at a time, so every page is read.
   const day = new Date().toISOString().slice(0, 10);
-  const counts = await getWritingCheckCounts({ first: day, last: day });
-  const row = (counts.rows ?? []).find(
+  const rows: WritingCheckRow[] = [];
+  for (let offset = 0; ; ) {
+    const counts = await getWritingCheckCounts({ first: day, last: day, limit: 200, offset });
+    const page = counts.items ?? [];
+    rows.push(...page);
+    offset += page.length;
+    if (page.length === 0 || offset >= counts.total) break;
+  }
+  const row = rows.find(
     (candidate) => candidate.project === PROJECT && candidate.person === "alice"
   );
   expect(row?.define_uses).toBe(2);
-  const words = ((await getReaderWords("alice")).words ?? []).map((entry) => entry.word);
+  const words = ((await getReaderWords("alice")).items ?? []).map((entry) => entry.word);
   expect(words).toEqual(expect.arrayContaining([WORDS, "cold start"]));
 });

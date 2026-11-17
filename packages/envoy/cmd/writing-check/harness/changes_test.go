@@ -162,7 +162,7 @@ func newFakeDispatch(t *testing.T, drafts ...draftAnswer) *fakeDispatch {
 		f.mu.Unlock()
 		write(w, http.StatusOK, map[string]string{"reader": "reader@example.com", "text": "RULES: say the fact."})
 	})
-	mux.HandleFunc("POST /api/v1/reviewer/draft", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/v1/reviewer-drafts", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.draftIn = append(f.draftIn, read(r))
@@ -181,7 +181,7 @@ func newFakeDispatch(t *testing.T, drafts ...draftAnswer) *fakeDispatch {
 		f.asks++
 		write(w, http.StatusCreated, map[string]string{"id": "ask-" + strconv.Itoa(f.asks)})
 	})
-	mux.HandleFunc("POST /api/v1/asks/{id}/rewrite", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/v1/asks/{id}/rewrites", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.headers = append(f.headers, r.Header.Get("Dispatch-Test-Model"))
@@ -237,7 +237,12 @@ func newFakeDispatch(t *testing.T, drafts ...draftAnswer) *fakeDispatch {
 		write(w, http.StatusOK, map[string]string{"id": r.PathValue("id")})
 	})
 	mux.HandleFunc("GET /api/v1/readers/{login}/words", func(w http.ResponseWriter, r *http.Request) {
-		write(w, http.StatusOK, map[string]any{"reader": r.PathValue("login"), "words": []map[string]string{{"word": "zork"}}})
+		// The harness reads one page of as many words as the reviewer's own record holds.
+		if limit := r.URL.Query().Get("limit"); limit != strconv.Itoa(readerWordsShown) {
+			write(w, http.StatusBadRequest, map[string]string{"code": "INVALID_QUERY", "error": "the harness asked for limit=" + limit})
+			return
+		}
+		write(w, http.StatusOK, map[string]any{"items": []map[string]string{{"word": "zork"}}, "total": 1, "limit": readerWordsShown, "offset": 0})
 	})
 	mux.HandleFunc("GET /v1/sessions", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()

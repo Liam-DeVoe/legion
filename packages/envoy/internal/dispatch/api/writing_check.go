@@ -381,9 +381,9 @@ const (
 )
 
 // getWritingCheckCounts is GET /api/v1/writing-check/counts: R8's counts of the UTC days ?first=
-// to ?last=, both YYYY-MM-DD and both included (store.CountWritingCheck). last is today where it
-// is absent, and first the 13 days before last. Any signed-in caller reads it (Decision 14 of
-// INFRA-3231's plan).
+// to ?last=, both YYYY-MM-DD and both included, with one page of its rows (store.CountWritingCheck,
+// list_page.go). last is today where it is absent, and first the 13 days before last. Any
+// signed-in caller reads it (Decision 14 of INFRA-3231's plan).
 func (s *server) getWritingCheckCounts(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -418,7 +418,12 @@ func (s *server) getWritingCheckCounts(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf("the range from first to last holds at most %d days", writingCheckCountsMostDays))
 		return
 	}
-	counts, err := s.deps.Store.CountWritingCheck(r.Context(), first, last)
+	page, err := parseListPage(query)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	counts, err := s.deps.Store.CountWritingCheck(r.Context(), first, last, page.limit, page.offset)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

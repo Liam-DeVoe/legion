@@ -383,16 +383,26 @@ func TestTheReviewerHoldsAnAgentsCommentUntilItsWriterPostsIt(t *testing.T) {
 	if response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/held/"+answer.ID, nil, "alice"); response.Code != http.StatusForbidden {
 		t.Fatalf("alice's read of the held text: %d, want 403", response.Code)
 	}
-	if response := rig.asSession("s-other", http.MethodPost, "/api/v1/held/"+answer.ID+"/post", map[string]any{"reason": "mine"}); response.Code != http.StatusForbidden {
+	if response := rig.asSession("s-other", http.MethodPut, "/api/v1/held/"+answer.ID+"/state", map[string]any{"state": "posted", "reason": "mine"}); response.Code != http.StatusForbidden {
 		t.Fatalf("another session's post: %d %s, want 403", response.Code, response.Body.String())
 	}
-	if response := rig.asWriter(http.MethodPost, "/api/v1/held/"+answer.ID+"/post", map[string]any{"reason": " "}); response.Code != http.StatusBadRequest {
+	if response := rig.asWriter(http.MethodPut, "/api/v1/held/"+answer.ID+"/state", map[string]any{"state": "posted", "reason": " "}); response.Code != http.StatusBadRequest {
 		t.Fatalf("a post with no reason: %d, want 400", response.Code)
 	}
 	reason := "The reader asked for the status line as written."
-	posted := rig.asWriter(http.MethodPost, "/api/v1/held/"+answer.ID+"/post", map[string]any{"reason": reason})
+	posted := rig.asWriter(http.MethodPut, "/api/v1/held/"+answer.ID+"/state", map[string]any{"state": "posted", "reason": reason})
 	if posted.Code != http.StatusOK || decodeBody[heldRead](t, posted).State != heldPosted {
 		t.Fatalf("the writer's post: %d %s", posted.Code, posted.Body.String())
+	}
+	// The same PUT again writes nothing and answers the held text as it stands; a PUT with another
+	// reason is a second decision, which the first already made.
+	again := rig.asWriter(http.MethodPut, "/api/v1/held/"+answer.ID+"/state", map[string]any{"state": "posted", "reason": reason})
+	if again.Code != http.StatusOK || decodeBody[heldRead](t, again).State != heldPosted {
+		t.Fatalf("the writer's post sent again: %d %s, want 200 and the posted text", again.Code, again.Body.String())
+	}
+	if other := rig.asWriter(http.MethodPut, "/api/v1/held/"+answer.ID+"/state", map[string]any{"state": "posted", "reason": "Another reason."}); other.Code != http.StatusConflict ||
+		!strings.Contains(other.Body.String(), "HELD_TEXT_DECIDED") {
+		t.Fatalf("a post with another reason once it posted: %d %s, want 409 HELD_TEXT_DECIDED", other.Code, other.Body.String())
 	}
 	if !slices.Contains(rig.commentIDs(), answer.ID) {
 		t.Fatal("alice does not read the comment once its writer posted it")
@@ -405,6 +415,32 @@ func TestTheReviewerHoldsAnAgentsCommentUntilItsWriterPostsIt(t *testing.T) {
 	}
 	if outcomes := rig.outcomes(); !slices.Equal(outcomes, []string{reviewHeld, reviewPostedAsWritten}) {
 		t.Fatalf("outcomes = %v", outcomes)
+	}
+}
+
+// PUT /api/v1/held/{id}/state moves a held text to posted alone: any other state, or none, is 400
+// HELD_STATE_INPUT naming posted, and the text stays held for its writer.
+func TestTheHeldStateRouteRefusesAnotherState(t *testing.T) {
+	rig := newReviewRig(t, holdComments(), nil)
+	answer := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/comments", map[string]any{
+		"body": "Status\nWe spin up the node. " + vacuousPhrase,
+	}), "the agent's comment")
+	rig.waitHeld(answer.ID, heldAwaitingWriter)
+	for _, body := range []map[string]any{
+		{"state": "reviewing", "reason": "As written."},
+		{"state": "failed", "reason": "As written."},
+		{"state": "Posted", "reason": "As written."},
+		{"reason": "As written."},
+	} {
+		response := rig.asWriter(http.MethodPut, "/api/v1/held/"+answer.ID+"/state", body)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"HELD_STATE_INPUT"`) ||
+			!strings.Contains(response.Body.String(), "state must be "+heldStatePosted) {
+			t.Errorf("a move to %v: %d %s, want 400 HELD_STATE_INPUT naming %s", body["state"], response.Code, response.Body.String(), heldStatePosted)
+		}
+	}
+	rig.waitHeld(answer.ID, heldAwaitingWriter)
+	if outcomes := rig.outcomes(); !slices.Equal(outcomes, []string{reviewHeld}) {
+		t.Fatalf("outcomes = %v, want the hold alone", outcomes)
 	}
 }
 
@@ -624,7 +660,7 @@ func TestAWriteNamingAHeldIssueRunsAfterItPosts(t *testing.T) {
 	if count := countRows(t, rig.database, `select count(*) from issues where key = $1 or parent_key = $1`, parent.ID); count != 0 {
 		t.Fatalf("%d issues exist before the parent posts", count)
 	}
-	if response := rig.asWriter(http.MethodPost, "/api/v1/held/"+parent.ID+"/post", map[string]any{"reason": "As written."}); response.Code != http.StatusOK {
+	if response := rig.asWriter(http.MethodPut, "/api/v1/held/"+parent.ID+"/state", map[string]any{"state": "posted", "reason": "As written."}); response.Code != http.StatusOK {
 		t.Fatalf("the parent's post: %d %s", response.Code, response.Body.String())
 	}
 	childPosted := rig.waitHeld(child.ID, heldPosted)
@@ -950,7 +986,7 @@ func TestAHeldTextNotPostedIsToldToItsWriter(t *testing.T) {
 		t.Fatalf("the comment waits on %q, want %s", comment.Held.WaitsOn, ask.ID)
 	}
 	rig.closeRigIssue()
-	if posted := rig.asWriter(http.MethodPost, "/api/v1/held/"+ask.ID+"/post", map[string]any{"reason": "As written."}); posted.Code != http.StatusOK {
+	if posted := rig.asWriter(http.MethodPut, "/api/v1/held/"+ask.ID+"/state", map[string]any{"state": "posted", "reason": "As written."}); posted.Code != http.StatusOK {
 		t.Fatalf("the writer's post: %d %s", posted.Code, posted.Body.String())
 	}
 	if failed := rig.waitHeld(ask.ID, heldFailed); !strings.Contains(failed.detail, "ISSUE_CLOSED") || !strings.HasSuffix(failed.detail, "; its writer was told") {
@@ -1005,7 +1041,7 @@ func TestAHeldIssueThatBecameANearCopyPostsAndTellsItsWriter(t *testing.T) {
 	rig.waitHeld(other.ID, heldAwaitingWriter)
 	copied := requireCreatedIssue(t, createIssueRequest(t, rig.handler, map[string]any{"project": "RVW", "title": title, "spec": spec}))
 	for _, id := range []string{held.ID, other.ID} {
-		if posted := rig.asWriter(http.MethodPost, "/api/v1/held/"+id+"/post", map[string]any{"reason": "As written."}); posted.Code != http.StatusOK {
+		if posted := rig.asWriter(http.MethodPut, "/api/v1/held/"+id+"/state", map[string]any{"state": "posted", "reason": "As written."}); posted.Code != http.StatusOK {
 			t.Fatalf("the writer's post of %s: %d %s", id, posted.Code, posted.Body.String())
 		}
 		rig.waitHeld(id, heldPosted)
@@ -1041,7 +1077,7 @@ func TestTheReviewerDraftRouteAnswersAndWritesNothing(t *testing.T) {
 		return countRows(t, rig.database, `select (select count(*) from held_texts) + (select count(*) from writing_check_events) + (select count(*) from comments)`)
 	}
 	before := counts()
-	response := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/reviewer/draft", map[string]any{
+	response := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/reviewer-drafts", map[string]any{
 		"kind": "comment", "text": "Status\n" + vacuousPhrase, "issue": rig.issue,
 	}, "alice")
 	if response.Code != http.StatusOK {
@@ -1056,7 +1092,7 @@ func TestTheReviewerDraftRouteAnswersAndWritesNothing(t *testing.T) {
 		t.Fatalf("the draft route wrote %d rows", after-before)
 	}
 	off := newRegisteredTestHandlerWithoutReviewer(t)
-	if response := dispatchRequest(t, off, http.MethodPost, "/api/v1/reviewer/draft", map[string]any{"kind": "comment", "text": "x"}, "alice"); response.Code != http.StatusServiceUnavailable {
+	if response := dispatchRequest(t, off, http.MethodPost, "/api/v1/reviewer-drafts", map[string]any{"kind": "comment", "text": "x"}, "alice"); response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("the draft route with no reviewer's model: %d, want 503", response.Code)
 	}
 }
@@ -1077,7 +1113,7 @@ func TestTheDraftRouteAnswersEachDroppedFindingWithItsQuote(t *testing.T) {
 		t.Fatal(err)
 	}
 	rig := newReviewRig(t, ReviewerConfig{}, modeltest.New(t, modeltest.Rule{Match: isReview, Reply: modeltest.Reply{Text: string(reply)}}))
-	response := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/reviewer/draft", map[string]any{
+	response := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/reviewer-drafts", map[string]any{
 		"kind": "comment", "text": "Status\n" + vacuousPhrase, "issue": rig.issue,
 	}, "alice")
 	if response.Code != http.StatusOK {
@@ -1098,7 +1134,7 @@ func TestTheDraftRouteWeighsTheRewriteOfAnAsksOptions(t *testing.T) {
 	rig := newReviewRig(t, ReviewerConfig{}, optionCaseStandIn(t, cases))
 	for _, c := range cases {
 		t.Run(c.marker, func(t *testing.T) {
-			response := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/reviewer/draft", map[string]any{
+			response := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/reviewer-drafts", map[string]any{
 				"kind": "ask", "text": optionCaseQuestion(c.marker), "options": writtenOptions, "issue": rig.issue,
 			}, "alice")
 			if response.Code != http.StatusOK {
@@ -1189,7 +1225,7 @@ func TestTheReviewerHoldsAnAgentsReplyToAPersonsMessage(t *testing.T) {
 	if count := countRows(t, rig.database, `select count(*) from messages where in_reply_to = $1`, message); count != 0 {
 		t.Fatalf("%d replies exist while the reply is held", count)
 	}
-	if response := rig.asWriter(http.MethodPost, "/api/v1/held/"+reply.ID+"/post", map[string]any{"reason": "As written."}); response.Code != http.StatusOK {
+	if response := rig.asWriter(http.MethodPut, "/api/v1/held/"+reply.ID+"/state", map[string]any{"state": "posted", "reason": "As written."}); response.Code != http.StatusOK {
 		t.Fatalf("the writer's post: %d %s", response.Code, response.Body.String())
 	}
 	rig.waitHeld(reply.ID, heldPosted)

@@ -10,5 +10,7 @@ body: |-
   that person's question about those words.
   The routes are `POST /api/v1/definitions {ask_id? | document?, words}`,
   `GET /api/v1/definitions/{id}` and `GET /api/v1/me/definitions`, and each needs the `person`
-  scope. Define needs the model group `DISPATCH_REWRITE_DEFINE_MODEL_*`: without it the route
-  answers `503 DEFINE_NO_MODEL`.
+  scope. `GET /api/v1/me/definitions` answers one page of the person's definitions, the newest
+  first, as `{items, total, limit, offset}`: `limit` is 1 to 200, 50 when the request names none.
+  Define needs the model group `DISPATCH_REWRITE_DEFINE_MODEL_*`: without it the route answers
+  `503 DEFINE_NO_MODEL`.

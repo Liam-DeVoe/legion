@@ -69,7 +69,7 @@ func TestTheTestModelHeaderPicksAVariantByItsWholeName(t *testing.T) {
 		{"", modeltest.Anthropic, "stand-in-reviewer", nil},
 	} {
 		before := len(stand.Requests())
-		request := httptest.NewRequest(http.MethodPost, "/api/v1/reviewer/draft", strings.NewReader(`{"kind":"comment","text":"Status\nThe change lands today."}`))
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/reviewer-drafts", strings.NewReader(`{"kind":"comment","text":"Status\nThe change lands today."}`))
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("Authorization", "Bearer agent-token")
 		if c.header != "" {
@@ -78,7 +78,7 @@ func TestTheTestModelHeaderPicksAVariantByItsWholeName(t *testing.T) {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
 		if response.Code != http.StatusOK {
-			t.Fatalf("%s %q: POST /api/v1/reviewer/draft answered %d %s, want 200", api.TestModelHeader, c.header, response.Code, response.Body.String())
+			t.Fatalf("%s %q: POST /api/v1/reviewer-drafts answered %d %s, want 200", api.TestModelHeader, c.header, response.Code, response.Body.String())
 		}
 		calls := stand.Requests()[before:]
 		if len(calls) != 1 {

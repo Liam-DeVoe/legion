@@ -106,10 +106,10 @@ func TestTheTestModelHeaderNamesTheModelUnderTheTestHooks(t *testing.T) {
 	rig := newTestModelRig(t, true)
 	draft := map[string]any{"kind": "comment", "text": "Status\n" + vacuousPhrase}
 	group := wantModels(t, rig, 0, func() *httptest.ResponseRecorder {
-		return dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/reviewer/draft", draft, "alice")
+		return dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/reviewer-drafts", draft, "alice")
 	}, http.StatusOK, "chat reviewer", "chat reviewer")
 	chosen := wantModels(t, rig, group.seen, func() *httptest.ResponseRecorder {
-		return testModelRequest(t, rig.handler, http.MethodPost, "/api/v1/reviewer/draft", draft, "alice", testModelName)
+		return testModelRequest(t, rig.handler, http.MethodPost, "/api/v1/reviewer-drafts", draft, "alice", testModelName)
 	}, http.StatusOK, "anthropic "+testModelName, "anthropic "+testModelName)
 	answer := decodeBody[reviewerDraftAnswer](t, chosen.response)
 	if len(answer.Calls) != 2 || answer.Calls[0].Deployment != testModelName || answer.Calls[1].Deployment != testModelName ||
@@ -117,7 +117,7 @@ func TestTheTestModelHeaderNamesTheModelUnderTheTestHooks(t *testing.T) {
 		t.Errorf("the draft's calls = %+v, want the detector's and the review's, each at the test model with its tokens", answer.Calls)
 	}
 	refused := wantModels(t, rig, chosen.seen, func() *httptest.ResponseRecorder {
-		return testModelRequest(t, rig.handler, http.MethodPost, "/api/v1/reviewer/draft", draft, "alice", "not-listed")
+		return testModelRequest(t, rig.handler, http.MethodPost, "/api/v1/reviewer-drafts", draft, "alice", "not-listed")
 	}, http.StatusBadRequest)
 	wantCode(t, refused.response, "TEST_MODEL_REFUSED")
 
@@ -128,7 +128,7 @@ func TestTheTestModelHeaderNamesTheModelUnderTheTestHooks(t *testing.T) {
 		t.Errorf("the definition's calls = %+v, want the test model's", read.Calls)
 	}
 
-	if response := testModelRequest(t, rig.handler, http.MethodPost, "/api/v1/asks/"+rig.ask+"/rewrite", nil, "alice", testModelName); response.Code != http.StatusAccepted {
+	if response := testModelRequest(t, rig.handler, http.MethodPost, "/api/v1/asks/"+rig.ask+"/rewrites", nil, "alice", testModelName); response.Code != http.StatusAccepted {
 		t.Fatalf("alice's Rewrite naming the test model: %d %s", response.Code, response.Body.String())
 	}
 	var calls []reviewerCall
@@ -166,9 +166,9 @@ func TestTheTestModelHeaderIsRefusedWithoutTheTestHooks(t *testing.T) {
 		target string
 		body   any
 	}{
-		{"/api/v1/reviewer/draft", map[string]any{"kind": "comment", "text": "Status\n" + vacuousPhrase}},
+		{"/api/v1/reviewer-drafts", map[string]any{"kind": "comment", "text": "Status\n" + vacuousPhrase}},
 		{"/api/v1/definitions", map[string]any{"ask_id": rig.ask, "words": []string{"store"}}},
-		{"/api/v1/asks/" + rig.ask + "/rewrite", nil},
+		{"/api/v1/asks/" + rig.ask + "/rewrites", nil},
 	} {
 		refused := wantModels(t, rig, 0, func() *httptest.ResponseRecorder {
 			return testModelRequest(t, rig.handler, http.MethodPost, route.target, route.body, "alice", testModelName)
@@ -177,7 +177,7 @@ func TestTheTestModelHeaderIsRefusedWithoutTheTestHooks(t *testing.T) {
 	}
 	// The negative control: the same draft with no header is answered by the group's model.
 	wantModels(t, rig, 0, func() *httptest.ResponseRecorder {
-		return dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/reviewer/draft", map[string]any{"kind": "comment", "text": "Status\n" + vacuousPhrase}, "alice")
+		return dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/reviewer-drafts", map[string]any{"kind": "comment", "text": "Status\n" + vacuousPhrase}, "alice")
 	}, http.StatusOK, "chat reviewer", "chat reviewer")
 }
 

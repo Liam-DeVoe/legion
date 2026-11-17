@@ -21,7 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
 
-// ask_rewrite.go serves POST /api/v1/asks/{id}/rewrite, a person's Rewrite of an open question
+// ask_rewrite.go serves POST /api/v1/asks/{id}/rewrites, a person's Rewrite of an open question
 // (INFRA-3231's R7 and Decision 23, INFRA-3552's R1 to R3). The route answers at once and the
 // rewrite runs in the background:
 //
@@ -45,7 +45,7 @@ import (
 // no session gets them as a card, and the browser's live socket carries them.
 
 // rewriteRequestedRoute is the route a Rewrite request's writing_check_events row names.
-const rewriteRequestedRoute = "/api/v1/asks/{id}/rewrite"
+const rewriteRequestedRoute = "/api/v1/asks/{id}/rewrites"
 
 // writingCheckRewriteRequested is the outcome of a person's Rewrite request (store migration
 // 20261113165433_writing_check_events_reader admits it): one row per request, whatever came of
@@ -55,7 +55,7 @@ const writingCheckRewriteRequested = "rewrite_requested"
 // sideQuestionPoll is how often a run looks for the asking session's answer to its side question.
 const sideQuestionPoll = 250 * time.Millisecond
 
-// askRewriteAnswer is what POST /api/v1/asks/{id}/rewrite answers: the ask, whether this request
+// askRewriteAnswer is what POST /api/v1/asks/{id}/rewrites answers: the ask, whether this request
 // started a rewrite or found one running, and the ask's rewrite as a read now carries it.
 type askRewriteAnswer struct {
 	AskID   string            `json:"ask_id"`
@@ -73,7 +73,7 @@ type askRewriteRun struct {
 	model      reviewer.Model
 }
 
-// rewriteAsk is POST /api/v1/asks/{id}/rewrite. Every request for an ask that exists is recorded,
+// rewriteAsk is POST /api/v1/asks/{id}/rewrites. Every request for an ask that exists is recorded,
 // whatever came of it, once its transaction has ended.
 func (s *server) rewriteAsk(w http.ResponseWriter, r *http.Request) {
 	person, ok := s.actingPerson(w, r)

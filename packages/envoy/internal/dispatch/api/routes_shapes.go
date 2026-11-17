@@ -493,17 +493,34 @@ type liveWritePauseQuery struct {
 	Wait string `query:"wait"`
 }
 
-// writingCheckCountsQuery is GET /api/v1/writing-check/counts's query.
+// writingCheckCountsQuery is GET /api/v1/writing-check/counts's query: the range and the page of
+// its rows.
 type writingCheckCountsQuery struct {
 	// First and Last are the range's first and last UTC days, YYYY-MM-DD, both counted.
 	First string `query:"first"`
 	Last  string `query:"last"`
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
 }
 
 // readerWordsQuery is GET /api/v1/readers/{login}/words's query.
 type readerWordsQuery struct {
 	// Before, an RFC 3339 time, keeps the words of the records written before it alone.
 	Before string `query:"before"`
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
+}
+
+// myDefinitionsQuery is GET /api/v1/me/definitions's query: the page.
+type myDefinitionsQuery struct {
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
 }
 
 // --- the shapes ------------------------------------------------------------------------------
@@ -870,16 +887,16 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/held/{id}":       {Status: http.StatusOK, Response: heldRead{}},
 	"PATCH /api/v1/held/{id}":     {Status: http.StatusOK, Response: heldRead{}, Request: heldEditInput{}},
-	"POST /api/v1/held/{id}/post": {Status: http.StatusOK, Response: heldRead{}, Request: heldPostInput{}},
-	"POST /api/v1/reviewer/draft": {
+	"PUT /api/v1/held/{id}/state": {Status: http.StatusOK, Response: heldRead{}, Request: heldStateInput{}},
+	"POST /api/v1/reviewer-drafts": {
 		Status: http.StatusOK, Response: reviewerDraftAnswer{}, Request: reviewerDraftInput{},
 	},
-	"POST /api/v1/asks/{id}/rewrite": {Status: http.StatusAccepted, Response: askRewriteAnswer{}},
+	"POST /api/v1/asks/{id}/rewrites": {Status: http.StatusAccepted, Response: askRewriteAnswer{}},
 	"POST /api/v1/definitions": {
 		Status: http.StatusCreated, Response: definitionRead{}, Request: defineInput{},
 	},
 	"GET /api/v1/definitions/{id}":                           {Status: http.StatusOK, Response: definitionRead{}},
-	"GET /api/v1/me/definitions":                             {Status: http.StatusOK, Response: []definitionRead{}},
+	"GET /api/v1/me/definitions":                             {Status: http.StatusOK, Response: definitionsPage{}, Params: myDefinitionsQuery{}},
 	"GET /api/v1/artifacts/{id}/events":                      {Status: http.StatusOK, Response: []model.Event{}, Params: eventListQuery{}},
 	"GET /api/v1/artifacts/{id}/references":                  {Status: http.StatusOK, Response: model.ArtifactReferences{}},
 	"GET /api/v1/artifacts/{id}/subscribers":                 {Status: http.StatusOK, Response: []subscriber{}},

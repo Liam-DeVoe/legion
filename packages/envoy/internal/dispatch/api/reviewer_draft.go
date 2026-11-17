@@ -9,12 +9,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 )
 
-// reviewer_draft.go serves POST /api/v1/reviewer/draft (INFRA-3231's R5, Decision 12 of its
+// reviewer_draft.go serves POST /api/v1/reviewer-drafts (INFRA-3231's R5, Decision 12 of its
 // plan): the reviewer's review of a draft, which writes nothing. It answers whenever the
 // reviewer's model group is set, whatever DISPATCH_REVIEWER_<KIND> say, since it holds and posts
 // nothing.
 
-// reviewerDraftInput is POST /api/v1/reviewer/draft's body: the draft's kind and its wording, and
+// reviewerDraftInput is POST /api/v1/reviewer-drafts's body: the draft's kind and its wording, and
 // where it would stand, the issue it would be on and the person who would read it.
 type reviewerDraftInput struct {
 	// Kind is ask, issue, comment, message, document or decision_block.
@@ -91,7 +91,7 @@ var reviewerDraftKinds = []reviewer.Kind{
 	reviewer.KindDecisionBlock,
 }
 
-// reviewDraft is POST /api/v1/reviewer/draft.
+// reviewDraft is POST /api/v1/reviewer-drafts.
 func (s *server) reviewDraft(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

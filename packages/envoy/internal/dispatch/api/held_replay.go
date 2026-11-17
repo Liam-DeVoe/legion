@@ -342,7 +342,7 @@ var heldTargetSelf = map[string]string{
 	"POST /api/v1/messages/{id}/deliveries/{attempt}/accept": "accepts a delivery attempt: a held message has none",
 	"POST /api/v1/messages/{id}/deliveries":                  "sends a message again: a held message was never sent, and posts with its first attempt",
 	"POST /api/v1/comments/{id}/deliveries":                  "sends a comment's mention again: a held comment was never sent, and posts with its first attempts",
-	"POST /api/v1/asks/{id}/rewrite":                         "a person's Rewrite of a question they read: a held ask is in no person's read until it posts, and its id names no ask row, so the Rewrite answers 404",
+	"POST /api/v1/asks/{id}/rewrites":                        "a person's Rewrite of a question they read: a held ask is in no person's read until it posts, and its id names no ask row, so the Rewrite answers 404",
 }
 
 // awaitHeldTarget holds route's write when the text its path names is a held text that has not

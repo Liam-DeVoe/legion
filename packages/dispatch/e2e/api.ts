@@ -800,10 +800,10 @@ export function getAsk(id: string, options: ApiOptions = {}) {
   return get("/api/v1/asks/{id}", { params: { id } }, options);
 }
 
-/** `POST /api/v1/asks/{id}/rewrite`: a person's Rewrite of an open question (INFRA-3231's R7),
+/** `POST /api/v1/asks/{id}/rewrites`: a person's Rewrite of an open question (INFRA-3231's R7),
  *  answered at once while the rewrite runs in the background. */
 export function rewriteAsk(id: string, options: ApiOptions = {}) {
-  return post("/api/v1/asks/{id}/rewrite", { params: { id } }, options);
+  return post("/api/v1/asks/{id}/rewrites", { params: { id } }, options);
 }
 
 /** `PUT /api/v1/asks/{id}/asked-of`: hands the open question to `askedOf`, as the caller. */
@@ -823,13 +823,18 @@ export function getHeld(id: string, options: ApiOptions = {}) {
   return get("/api/v1/held/{id}", { params: { id } }, { as: "agent", ...options });
 }
 
-/** `GET /api/v1/me/definitions`: the caller's own definitions, newest first; no other person's. */
-export function listMyDefinitions(options: ApiOptions = {}) {
-  return get("/api/v1/me/definitions", {}, options);
+/** `GET /api/v1/me/definitions`: one page of the caller's own definitions, newest first
+ *  (`{items, total, limit, offset}`); no other person's. */
+export function listMyDefinitions(
+  query: Query<"/api/v1/me/definitions", "get"> = {},
+  options: ApiOptions = {}
+) {
+  return get("/api/v1/me/definitions", { query }, options);
 }
 
-/** `GET /api/v1/writing-check/counts` (INFRA-3231's R8): each day's counts of each project and
- *  person, for the UTC days `first` to `last`, the last 14 by default. */
+/** `GET /api/v1/writing-check/counts` (INFRA-3231's R8): each day's counts, and one page of the
+ *  counts of each day, project and person (`items`, `total`, `limit`, `offset`), for the UTC days
+ *  `first` to `last`, the last 14 by default. */
 export function getWritingCheckCounts(
   query: Query<"/api/v1/writing-check/counts", "get"> = {},
   options: ApiOptions = {}
@@ -837,10 +842,14 @@ export function getWritingCheckCounts(
   return get("/api/v1/writing-check/counts", { query }, options);
 }
 
-/** `GET /api/v1/readers/{login}/words`: the words `login` asked about, a Define use among them,
- *  each once with how many records name it. A person reads their own alone. */
-export function getReaderWords(login: string, options: ApiOptions = {}) {
-  return get("/api/v1/readers/{login}/words", { params: { login } }, { login, ...options });
+/** `GET /api/v1/readers/{login}/words`: one page of the words `login` asked about, a Define use
+ *  among them, each once with how many records name it. A person reads their own alone. */
+export function getReaderWords(
+  login: string,
+  query: Query<"/api/v1/readers/{login}/words", "get"> = {},
+  options: ApiOptions = {}
+) {
+  return get("/api/v1/readers/{login}/words", { params: { login }, query }, { login, ...options });
 }
 
 /** `GET /api/v1/events/log`: the whole event log by id, oldest first, the events after `after`. */

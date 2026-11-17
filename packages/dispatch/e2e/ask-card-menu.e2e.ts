@@ -382,7 +382,7 @@ test("an approval request's chevron opens Ask back, Hand this question to and De
     const page = await alice.newPage();
     const rewrites: string[] = [];
     page.on("request", (request) => {
-      if (request.url().endsWith(`/api/v1/asks/${id}/rewrite`)) rewrites.push(request.url());
+      if (request.url().endsWith(`/api/v1/asks/${id}/rewrites`)) rewrites.push(request.url());
     });
     await page.goto("/");
     const card = inboxRow(page, id).locator(`[data-ask-card="${id}"]`);

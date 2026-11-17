@@ -173,7 +173,7 @@ func (rig *rewriteRig) ask(question string, options ...map[string]string) string
 // rewrite is alice's Rewrite of the ask id, which must answer 202.
 func (rig *rewriteRig) rewrite(id string) askRewriteAnswer {
 	rig.t.Helper()
-	response := dispatchRequest(rig.t, rig.handler, http.MethodPost, "/api/v1/asks/"+id+"/rewrite", nil, "alice")
+	response := dispatchRequest(rig.t, rig.handler, http.MethodPost, "/api/v1/asks/"+id+"/rewrites", nil, "alice")
 	if response.Code != http.StatusAccepted {
 		rig.t.Fatalf("alice's Rewrite of %s: %d %s", id, response.Code, response.Body.String())
 	}
@@ -663,13 +663,13 @@ func TestARewriteIsNotAppliedOverTheAgentsEdit(t *testing.T) {
 func TestARewriteRefusesWhatItDoesNotRewrite(t *testing.T) {
 	rig := newRewriteRig(t, []string{"steer"})
 	id := rig.ask(rewriteQuestion)
-	if response := agentRequest(t, rig.handler, http.MethodPost, "/api/v1/asks/"+id+"/rewrite", map[string]any{}, "agent-token"); response.Code != http.StatusForbidden {
+	if response := agentRequest(t, rig.handler, http.MethodPost, "/api/v1/asks/"+id+"/rewrites", map[string]any{}, "agent-token"); response.Code != http.StatusForbidden {
 		t.Fatalf("an agent's Rewrite: %d %s, want 403", response.Code, response.Body.String())
 	}
 	if response := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/asks/"+id+"/answer", map[string]any{"selected": []string{"Ship it"}}, "alice"); response.Code != http.StatusOK {
 		t.Fatalf("alice's answer: %d %s", response.Code, response.Body.String())
 	}
-	if response := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/asks/"+id+"/rewrite", nil, "alice"); response.Code != http.StatusConflict ||
+	if response := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/asks/"+id+"/rewrites", nil, "alice"); response.Code != http.StatusConflict ||
 		!strings.Contains(response.Body.String(), "ASK_NOT_OPEN") {
 		t.Fatalf("a Rewrite of an answered ask: %d %s, want 409 ASK_NOT_OPEN", response.Code, response.Body.String())
 	}
@@ -761,15 +761,60 @@ func TestTheDefinitionsRoutesServeNoOtherPerson(t *testing.T) {
 		t.Fatalf("bob's read of alice's definition: %d %s, want 404", response.Code, response.Body.String())
 	}
 	if response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/me/definitions", nil, "bob"); response.Code != http.StatusOK ||
-		len(decodeBody[[]definitionRead](t, response)) != 0 {
+		len(decodeBody[definitionsPage](t, response).Items) != 0 {
 		t.Fatalf("bob's definitions: %d %s, want none", response.Code, response.Body.String())
 	}
 	mine := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/me/definitions", nil, "alice")
-	if list := decodeBody[[]definitionRead](t, mine); len(list) != 1 || list[0].ID != defined.ID {
+	if list := decodeBody[definitionsPage](t, mine); len(list.Items) != 1 || list.Items[0].ID != defined.ID || list.Total != 1 {
 		t.Fatalf("alice's definitions = %+v, want hers", list)
 	}
 	if response := agentRequest(t, rig.handler, http.MethodGet, "/api/v1/me/definitions", nil, "agent-token"); response.Code != http.StatusForbidden {
 		t.Fatalf("an agent's read of the definitions: %d, want 403", response.Code)
+	}
+}
+
+// GET /api/v1/me/definitions pages the caller's definitions, the newest first: limit of them from
+// offset, total counting every one, a page past the last one empty with the total still counted,
+// and a limit or an offset out of its bounds 400 INVALID_QUERY.
+func TestTheCallersDefinitionsArePaged(t *testing.T) {
+	rig := newRewriteRig(t, []string{"btw"})
+	var document string
+	if err := rig.database.Pool.QueryRow(context.Background(), `select id::text from artifacts where issue_key = $1 and is_primary`, rig.issue).Scan(&document); err != nil {
+		t.Fatal(err)
+	}
+	var newestFirst []string
+	for _, words := range []string{"store", "node", "lane"} {
+		newestFirst = append([]string{rig.define("alice", map[string]any{"document": document, "words": []string{words}}).ID}, newestFirst...)
+	}
+	page := func(query string) definitionsPage {
+		t.Helper()
+		response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/me/definitions?"+query, nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("alice's definitions ?%s: %d %s", query, response.Code, response.Body.String())
+		}
+		return decodeBody[definitionsPage](t, response)
+	}
+	ids := func(p definitionsPage) []string {
+		var listed []string
+		for _, read := range p.Items {
+			listed = append(listed, read.ID)
+		}
+		return listed
+	}
+	if first := page("limit=2"); !slices.Equal(ids(first), newestFirst[:2]) || first.Total != 3 || first.Limit != 2 || first.Offset != 0 {
+		t.Errorf("the first page = %v total %d limit %d offset %d, want %v of 3 at limit 2 offset 0", ids(first), first.Total, first.Limit, first.Offset, newestFirst[:2])
+	}
+	if second := page("limit=2&offset=2"); !slices.Equal(ids(second), newestFirst[2:]) || second.Total != 3 || second.Offset != 2 {
+		t.Errorf("the second page = %v total %d offset %d, want %v of 3 at offset 2", ids(second), second.Total, second.Offset, newestFirst[2:])
+	}
+	if past := page("offset=5"); len(past.Items) != 0 || past.Total != 3 || past.Limit != listDefaultLimit || past.Offset != 5 {
+		t.Errorf("a page past the last = %+v, want no item, total 3, limit %d and offset 5", past, listDefaultLimit)
+	}
+	for _, query := range []string{"limit=0", "limit=201", "offset=-1", "limit=two"} {
+		if response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/me/definitions?"+query, nil, "alice"); response.Code != http.StatusBadRequest ||
+			!strings.Contains(response.Body.String(), "INVALID_QUERY") {
+			t.Errorf("?%s: %d %s, want 400 INVALID_QUERY", query, response.Code, response.Body.String())
+		}
 	}
 }
 

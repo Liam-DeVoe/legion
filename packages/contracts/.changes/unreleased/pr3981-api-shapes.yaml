@@ -1,9 +1,9 @@
 kind: Added
 body: |-
-  New Dispatch API types: `HeldRead`, `HeldEditInput`, `HeldPostInput` and `HeldDeferred` for a
-  held text; `ReviewerDraftInput` and `ReviewerDraftAnswer`; `AskRewriteAnswer`, `DefineInput` and
-  `Definition`; `ReaderWordsResponse`; `WritingCheckState` and `WritingCheckCounts`; and
-  `WritingRulesSettings`, `WritingRulesInput` and `WritingRulesResponse`.
+  New Dispatch API types: `HeldRead`, `HeldEditInput`, `HeldStateInput` and `HeldDeferred` for a
+  held text; `ReviewerDraftInput` and `ReviewerDraftAnswer`; `AskRewriteAnswer`, `DefineInput`,
+  `Definition` and `DefinitionsPage`; `ReaderWordsResponse`; `WritingCheckState` and
+  `WritingCheckCounts`; and `WritingRulesSettings`, `WritingRulesInput` and `WritingRulesResponse`.
   The reads of an ask, a comment, a message and an issue gain an optional `rewrite`
   (`TextRewriteSchema`: `state`, `by`, `at`, `original` and `reason?`). The `ask.edited` of a
   rewrite carries `rewrite` too, and `DispatchEvent` gains the quiet `ask.reviewed`,

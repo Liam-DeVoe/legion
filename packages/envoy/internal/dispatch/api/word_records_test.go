@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -181,7 +182,7 @@ func (rig *recordsRig) counts(first, last string) store.WritingCheckCounts {
 
 // row is the counts' row of day, project and person, zero where there is none.
 func row(counts store.WritingCheckCounts, day, project, person string) store.WritingCheckRow {
-	for _, r := range counts.Rows {
+	for _, r := range counts.Items {
 		if r.Day == day && r.Project == project && r.Person == person {
 			return r
 		}
@@ -197,7 +198,7 @@ func (rig *recordsRig) words(login string) []string {
 		rig.t.Fatalf("%s's words: %d %s", login, response.Code, response.Body.String())
 	}
 	var words []string
-	for _, word := range decodeBody[readerWordsResponse](rig.t, response).Words {
+	for _, word := range decodeBody[readerWordsResponse](rig.t, response).Items {
 		words = append(words, word.Word)
 	}
 	return words
@@ -258,7 +259,7 @@ func TestWordRecordsRecordAQuestionAndNeverDelayAPersonsWrite(t *testing.T) {
 		t.Errorf("alice's words to an agent's token = %v, want [store]", words)
 	}
 	if response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/readers/Alice/words", nil, "alice"); response.Code != http.StatusOK ||
-		len(decodeBody[readerWordsResponse](t, response).Words) != 1 {
+		len(decodeBody[readerWordsResponse](t, response).Items) != 1 {
 		t.Errorf("alice's own words: %d %s", response.Code, response.Body.String())
 	}
 	if response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/readers/alice/words", nil, "bob"); response.Code != http.StatusForbidden ||
@@ -430,5 +431,54 @@ func TestWordRecordsBackfillTheEventLogFromItsFirstDay(t *testing.T) {
 	}
 	if words := rig.words("carol@example.com"); !slices.Equal(words, []string{"lane"}) {
 		t.Errorf("carol's words = %v, want [lane]", words)
+	}
+}
+
+// GET /api/v1/readers/{login}/words pages the reader's words, the most recently asked first:
+// limit of them from offset, total counting every word, a page past the last one empty with the
+// total still counted, and a limit or an offset out of its bounds 400 INVALID_QUERY.
+func TestTheReaderWordsArePaged(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	asked := time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)
+	for i, word := range []string{"store", "node", "lane"} {
+		if err := database.RecordDefineUse(ctx, store.DefineUse{
+			DefinitionID: fmt.Sprintf("paged-%d", i), Person: "alice", Words: []string{word}, At: asked.Add(time.Duration(i) * time.Hour),
+		}); err != nil {
+			t.Fatalf("record alice's Define of %s: %v", word, err)
+		}
+	}
+	page := func(query string) readerWordsResponse {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/readers/alice/words?"+query, nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("alice's words ?%s: %d %s", query, response.Code, response.Body.String())
+		}
+		return decodeBody[readerWordsResponse](t, response)
+	}
+	words := func(answer readerWordsResponse) []string {
+		var listed []string
+		for _, word := range answer.Items {
+			listed = append(listed, word.Word)
+		}
+		return listed
+	}
+	if first := page("limit=2"); !slices.Equal(words(first), []string{"lane", "node"}) || first.Total != 3 || first.Limit != 2 || first.Offset != 0 {
+		t.Errorf("the first page = %v total %d limit %d offset %d, want lane and node of 3 at limit 2 offset 0", words(first), first.Total, first.Limit, first.Offset)
+	}
+	if second := page("limit=2&offset=2"); !slices.Equal(words(second), []string{"store"}) || second.Total != 3 || second.Offset != 2 {
+		t.Errorf("the second page = %v total %d offset %d, want store of 3 at offset 2", words(second), second.Total, second.Offset)
+	}
+	if past := page("offset=3"); len(past.Items) != 0 || past.Total != 3 || past.Limit != listDefaultLimit || past.Offset != 3 {
+		t.Errorf("a page past the last = %+v, want no word, total 3, limit %d and offset 3", past, listDefaultLimit)
+	}
+	if before := page("before=" + asked.Add(90*time.Minute).Format(time.RFC3339)); !slices.Equal(words(before), []string{"node", "store"}) || before.Total != 2 {
+		t.Errorf("the words before the last Define = %v total %d, want node and store of 2", words(before), before.Total)
+	}
+	for _, query := range []string{"limit=0", "limit=201", "offset=-1"} {
+		if response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/readers/alice/words?"+query, nil, "alice"); response.Code != http.StatusBadRequest ||
+			!strings.Contains(response.Body.String(), "INVALID_QUERY") {
+			t.Errorf("?%s: %d %s, want 400 INVALID_QUERY", query, response.Code, response.Body.String())
+		}
 	}
 }

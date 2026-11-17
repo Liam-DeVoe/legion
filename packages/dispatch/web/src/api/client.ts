@@ -1279,7 +1279,7 @@ export class DispatchApiClient {
     return this.post("/api/v1/asks/{id}/decline", { id }, input, bounds);
   }
 
-  /** `POST /api/v1/asks/{id}/rewrite`: rewrite an open question so its reader can answer it
+  /** `POST /api/v1/asks/{id}/rewrites`: rewrite an open question so its reader can answer it
    *  without the asking agent's conversation (INFRA-3231's R7). It answers at once, with the
    *  rewrite running (`rewrite.state` `rewriting`), and rewrites in the background: the rewrite
    *  ends with the ask's quiet `ask.edited`, or with `ask.rewrite_failed` and its reason, both of
@@ -1289,7 +1289,7 @@ export class DispatchApiClient {
    *  `409 ASK_NOT_OPEN`. The route's one success is its `202`, which `Answer` (a `200` or a
    *  `201`) does not name, so this write names what it is answered with. */
   rewriteAsk(id: string, bounds: WriteBounds): Promise<AskRewriteAnswer> {
-    const { method, path } = writeRequest("post", "/api/v1/asks/{id}/rewrite", { id });
+    const { method, path } = writeRequest("post", "/api/v1/asks/{id}/rewrites", { id });
     return this.send<AskRewriteAnswer>({ method, path }, bounds);
   }
 

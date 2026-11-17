@@ -221,8 +221,8 @@ var proseRegistry = map[reflect.Type]map[string]proseMark{
 	reflect.TypeFor[wire.MachineLookupRequest]():       {"code": markSecret},
 	reflect.TypeFor[writingRulesInput]():               {"route": markConfig, "body": markPending},
 
-	// The reviewer's own routes (INFRA-3231's R5): a held text's edit and post, which the reviewer
-	// reads itself, and a draft, which is stored nowhere.
+	// The reviewer's own routes (INFRA-3231's R5): a held text's edit and its move to posted,
+	// which the reviewer reads itself, and a draft, which is stored nowhere.
 	reflect.TypeFor[heldEditInput](): {
 		"question": markHeldEdit, "title": markHeldEdit, "spec": markHeldEdit, "body": markHeldEdit,
 	},
@@ -231,7 +231,7 @@ var proseRegistry = map[reflect.Type]map[string]proseMark{
 		"label":       {why: "an option of a held ask's edit or of a draft, which the reviewer reads and no person reads"},
 		"description": {why: "an option of a held ask's edit or of a draft, which the reviewer reads and no person reads"},
 	},
-	reflect.TypeFor[heldPostInput](): {"reason": markHeldReason},
+	reflect.TypeFor[heldStateInput](): {"state": markEnum, "reason": markHeldReason},
 	reflect.TypeFor[reviewerDraftInput](): {
 		"kind": markEnum, "text": markDraft, "title": markDraft, "issue": markIdentifier, "reader": markPerson,
 	},

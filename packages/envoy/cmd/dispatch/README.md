@@ -3357,9 +3357,9 @@ It is built whenever the reviewer's model group (`DISPATCH_REVIEWER_MODEL_*`) is
 
 - Every decision is a row of `writing_check_events` with its reader and project: `held`, `passed`, `edited`, `posted_as_written`, `rewrite_posted`, `posted_unreviewed`, `reviewed_after`.
 
-The routes: `GET /api/v1/held/{id}` reads a held text (any agent's token; a person at a browser is `403 HELD_FORBIDDEN`); `PATCH /api/v1/held/{id}` edits it, which the reviewer reads again; `POST /api/v1/held/{id}/post {reason}` posts it as written; only its writer session edits or posts it (`403 HELD_NOT_WRITER`).
+The routes: `GET /api/v1/held/{id}` reads a held text (any agent's token; a person at a browser is `403 HELD_FORBIDDEN`); `PATCH /api/v1/held/{id}` edits it, which the reviewer reads again; `PUT /api/v1/held/{id}/state {state: "posted", reason}` posts it as written; only its writer session edits or posts it (`403 HELD_NOT_WRITER`).
 The `dispatch` command's `held`, `held-edit` and `held-post` call them.
-`POST /api/v1/reviewer/draft {kind, text, title?, options?, multiple?, issue?, reader?}` answers the reviewer's findings, the rule set and quote of each finding it dropped, its rewrite and each model call's deployment, tries and served model, and writes nothing.
+`POST /api/v1/reviewer-drafts {kind, text, title?, options?, multiple?, issue?, reader?}` answers the reviewer's findings, the rule set and quote of each finding it dropped, its rewrite and each model call's deployment, tries and served model, and writes nothing.
 The leased sweep (lease `reviewer-sweep`, every 10 seconds, Background loops above) reviews again a text a stopped process left in review, and acts on a writer that did not act in time or has gone.
 
 ### Rewrite and Define
@@ -3368,7 +3368,7 @@ A person's Rewrite of an open question and Define of words they selected (INFRA-
 Both are on whenever that group is set, because a person chooses to use them; with it unset their routes answer `503` (`REWRITE_NO_MODEL`, `DEFINE_NO_MODEL`).
 Every route needs the `person` scope.
 
-- `POST /api/v1/asks/{id}/rewrite` answers `202 {ask_id, started, rewrite}` at once and rewrites in the background.
+- `POST /api/v1/asks/{id}/rewrites` answers `202 {ask_id, started, rewrite}` at once and rewrites in the background.
   One rewrite of an ask runs at a time (`ask_rewrites`): a request while one runs starts none (`started: false`) and gets that run's result.
   When a session opened the ask, and Envoy reads it running or unresponsive with a host that advertises `btw`, Dispatch first sends it one side question as its own system actor (`dispatch-reviewer`): a message to that session, on its own conversation and not on the issue, whose text names the ask by its address; the run waits at most 60 seconds for the reply, which stays in that message's thread.
   A rewrite that breaks what a rewrite keeps (`reviewer.Preserve`: most of the text's words, no tag of the record's own markup that the text lacks, no long run of the record's words, each typed block's `:::` line, the options' labels, number and order, the choice, a short first line, a `Ref: ` line, a picture line, a link, a decision block's option line) is not applied, and neither is one of a question its agent changed, answered or closed meanwhile.
@@ -3391,7 +3391,7 @@ Every route needs the `person` scope.
   Words in a document of an issue or a project get the record's definition alone.
   A definition changes nothing in the record and appends no event; each one is the person's question about those words in the word records (`store.RecordDefineUse`, source `define`).
 
-- `GET /api/v1/definitions/{id}` reads one of the caller's own definitions, and `GET /api/v1/me/definitions` lists them, the newest first, at most 200; another person's is `404 DEFINITION_NOT_FOUND`.
+- `GET /api/v1/definitions/{id}` reads one of the caller's own definitions, and `GET /api/v1/me/definitions` lists them, the newest first, one page at a time (`{items, total, limit, offset}`, `limit` 1 to 200, default 50); another person's is `404 DEFINITION_NOT_FOUND`.
 
 Every read of an ask, a comment, a message and an issue (`GET /api/v1/issues/{key}`) carries `rewrite {state, by, at, original, reason?}` where a rewrite touched it: `rewriting`, `rewritten` or `failed`, `by` `person` or `reviewer`, and `original` the wording before it in the kind's fields.
 An ask's comes from its newest `ask.edited` that is a rewrite, from the reviewer's held rewrite it posted, or from a person's Rewrite that runs or failed after the wording was last written; a comment's, a message's and an issue's from the `held_texts` row of a text the reviewer held and posted rewritten.
@@ -3438,7 +3438,7 @@ It runs while `DISPATCH_WORD_RECORDS` is `on` and its model group (`DISPATCH_WOR
 
 - A Define use is a word question of its own (`store.RecordDefineUse`).
 
-`GET /api/v1/readers/{login}/words` answers `{reader, words}`: each word the reader asked about once, `{word, times, last}`, the most recently asked first; `?before=` (RFC 3339) keeps the records written before it.
+`GET /api/v1/readers/{login}/words` answers one page of the words the reader asked about, `{items, total, limit, offset}` (`limit` 1 to 200, default 50): each word once, `{word, times, last}`, the most recently asked first; `?before=` (RFC 3339) keeps the records written before it.
 Any agent's token reads any reader's words, because the reviewer and the written rules read them, and a person at a browser their own; another person's are `403 READER_WORDS_FORBIDDEN`.
 
 A day's word questions, by person:
@@ -3507,7 +3507,7 @@ The browser suite starts `packages/dispatch/e2e/fake-model.ts` and hands its URL
 ### The test models
 
 `DISPATCH_TEST_MODELS`, read only under `DISPATCH_TEST_HOOKS=1`, lists the models a test request may name in its `Dispatch-Test-Model` header: `name=kind,…`, kind `azure` or `anthropic`.
-A draft review (`POST /api/v1/reviewer/draft`), a person's Rewrite of an ask and a person's Define that name one call it, the detector's reader included, in place of the reviewer's or Rewrite and Define's group, with that group's bounds.
+A draft review (`POST /api/v1/reviewer-drafts`), a person's Rewrite of an ask and a person's Define that name one call it, the detector's reader included, in place of the reviewer's or Rewrite and Define's group, with that group's bounds.
 This is how `writing-check harness` measures each change with each candidate model against one server.
 The models of a kind are read as one model group of that kind, `DISPATCH_TEST_MODELS_AZURE_*` (`_ENDPOINT`, `_API_VERSION`, `_SCOPE`, `_TOKENS_PER_MINUTE`, with the shared Azure sign-in) or `DISPATCH_TEST_MODELS_ANTHROPIC_*` (`_ENDPOINT`, `_KEY_FILE`, `_TOKENS_PER_MINUTE`), each model's name, or its id where the name holds an effort, being the deployment its requests name; beside `DISPATCH_TEST_MODEL_URL` they call the stand-in and take only `_TOKENS_PER_MINUTE`.
 A name may also be `<id>:<effort>`, such as `Kimi-K3.1-Pro:off`: that test model calls deployment `<id>` and asks it for that reasoning effort, one of `off`, `minimal`, `low`, `medium` and `high`, the words agentloop takes; any other effort refuses the boot, naming it.
@@ -3575,11 +3575,11 @@ A daily sweep deletes the rows older than 90 days (Background loops, above).
 
 `GET /api/v1/writing-check` answers the check as this process runs it:
 `enabled`, the `rules` it applies, `rules_left_out` with each reason, the `detector` (`on` and why not), the reader's `model` (endpoint host, deployment, api version, tokens per minute, never a credential), `reader_calls` since the process started, and `bundle_model_id`.
-`GET /api/v1/writing-check/counts?first=YYYY-MM-DD&last=YYYY-MM-DD` counts the UTC days `first` to `last`, both counted, at most 366 (default: the 14 days to today), for any signed-in caller, and answers `{first, last, days, rows}`:
+`GET /api/v1/writing-check/counts?first=YYYY-MM-DD&last=YYYY-MM-DD` counts the UTC days `first` to `last`, both counted, at most 366 (default: the 14 days to today), for any signed-in caller, and answers `{first, last, days, items, total, limit, offset}`:
 
 - `days`: each day of the range, `{day, total, outcomes, routes}`, the rows of `writing_check_events` counted by outcome and by route.
 
-- `rows`: each day, project and person with a count.
+- `items`: one page of the rows of each day, project and person with a count, in that order: `limit` rows (1 to 200, default 50) from `offset`, and `total` counts every row.
   From `word_questions` (The word records, above): `word_questions`, `texts` (every text of the person the job read), `texts_unread` (still waiting for its model) and `define_uses`.
   From the event log: `asks_answered`, the asks the person answered, and `asks_replied_before_answer`, those of them a person commented on in the ask's thread before the answer.
   From `writing_check_events`, each row given to its `reader` and `project`: `rewrite_uses` (`rewrite_requested`), `reviewer_held`, `reviewer_rewrote` (`rewrite_posted`), `reviewer_passed`, `reviewer_posted_unreviewed`, and `posted_over_finding` (`findings`, `posted_as_written`, and `reviewed_after` with findings).
@@ -4177,12 +4177,12 @@ Each item below names a path with its method and identity, then its purpose.
   A route that is no such write, a missing body, or a body that is not the JSON of a write to that route is `400 INVALID_BODY`.
   Its body may hold 1 KiB more than a JSON route's 1 MiB, so every write it can name fits inside it; past that it is `413 REQUEST_TOO_LARGE`.
 
-- `/api/v1/held/{id}` (GET, PATCH; cookie, trusted header, or bearer) and `/api/v1/held/{id}/post` (POST; cookie, trusted header, or bearer)
+- `/api/v1/held/{id}` (GET, PATCH; cookie, trusted header, or bearer) and `/api/v1/held/{id}/state` (PUT; cookie, trusted header, or bearer)
 
-  A text the reviewer holds (The reviewer, above): GET reads it (any agent's token; a person at a browser is `403 HELD_FORBIDDEN`), PATCH edits its wording, which the reviewer reads again, and POST `{reason}` posts it as written, recording the reason.
+  A text the reviewer holds (The reviewer, above): GET reads it (any agent's token; a person at a browser is `403 HELD_FORBIDDEN`), PATCH edits its wording, which the reviewer reads again, and PUT `{state: "posted", reason}` posts it as written, recording the reason; any other `state` is `400 HELD_STATE_INPUT`, and the same PUT again once it posted answers the held text as it stands.
   Only its writer session edits or posts it (`403 HELD_NOT_WRITER`), and only while it is in review or awaits its writer (`409 HELD_TEXT_DECIDED`); an id no held text has is `404 HELD_NOT_FOUND`.
 
-- `/api/v1/reviewer/draft` (POST; cookie, trusted header, or bearer)
+- `/api/v1/reviewer-drafts` (POST; cookie, trusted header, or bearer)
 
   The reviewer's review of a draft, `{kind, text, title?, options?, multiple?, issue?, reader?}`: answers `{reader, findings, dropped?, rewrite, not_applied?, calls}`, `dropped` being each finding the review dropped as `{rule_set, quote}`, each call naming the deployment its request named and the model the provider served, and writes nothing.
   With no reviewer's model group set it is `503 REVIEWER_NO_MODEL`; a model call that gives no answer is `502 REVIEWER_MODEL_FAILED`.

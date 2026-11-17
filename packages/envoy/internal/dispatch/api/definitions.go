@@ -33,8 +33,9 @@ import (
 //     the side question's wait from the definition's time. Words in a document of an issue or a
 //     project get the record's definition alone.
 //   - GET /api/v1/definitions/{id} reads one of the caller's own definitions, the agent's answer
-//     with it once it came; GET /api/v1/me/definitions lists the caller's own. No person reads
-//     another's: a definition is kept for the person who asked for it.
+//     with it once it came; GET /api/v1/me/definitions lists the caller's own, one page of them
+//     (list_page.go). No person reads another's: a definition is kept for the person who asked
+//     for it.
 //
 // A definition changes nothing in the record: it appends no event on the issue or the document,
 // whose events any signed-in caller reads. Each Define use is that person's question about those
@@ -103,6 +104,15 @@ type definitionRead struct {
 	Agent       definitionAgent       `json:"agent"`
 	Calls       []reviewerCall        `json:"calls"`
 	CreatedAt   time.Time             `json:"created_at"`
+}
+
+// definitionsPage is GET /api/v1/me/definitions's answer: one page of the caller's definitions,
+// the newest first, and how many they have.
+type definitionsPage struct {
+	Items  []definitionRead `json:"items"`
+	Total  int              `json:"total"`
+	Limit  int              `json:"limit"`
+	Offset int              `json:"offset"`
 }
 
 // definitionAnswerRead is what POST /api/v1/messages/{id}/reply answers a session's answer to a
@@ -412,16 +422,19 @@ const definitionColumns = `id::text, person, ask_id::text, artifact_id::text, ve
 	coalesce(failure, ''), calls, coalesce(writer, ''), coalesce(agent_question, ''), coalesce(agent_answer, ''),
 	agent_answered_at, created_at, created_at + $2::interval, created_at + $2::interval > now()`
 
-func scanDefinition(row pgx.Row) (definitionRead, error) {
+// scanDefinition reads one row of definitionColumns, and into after each column the select names
+// past them.
+func scanDefinition(row pgx.Row, after ...any) (definitionRead, error) {
 	var (
 		read               definitionRead
 		definitions, calls []byte
 		until              time.Time
 		open               bool
 	)
-	if err := row.Scan(&read.ID, &read.Person, &read.AskID, &read.ArtifactID, &read.Version, &read.Words, &read.Inputs,
+	columns := []any{&read.ID, &read.Person, &read.AskID, &read.ArtifactID, &read.Version, &read.Words, &read.Inputs,
 		&definitions, &read.Failure, &calls, &read.Agent.Session, &read.Agent.Question, &read.Agent.Answer,
-		&read.Agent.AnsweredAt, &read.CreatedAt, &until, &open); err != nil {
+		&read.Agent.AnsweredAt, &read.CreatedAt, &until, &open}
+	if err := row.Scan(append(columns, after...)...); err != nil {
 		return definitionRead{}, err
 	}
 	if err := json.Unmarshal(definitions, &read.Definitions); err != nil {
@@ -477,39 +490,52 @@ func (s *server) getDefinition(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, read)
 }
 
-// myDefinitionsLimit is the most definitions GET /api/v1/me/definitions answers: the newest.
-const myDefinitionsLimit = 200
-
-// listMyDefinitions is GET /api/v1/me/definitions: the caller's own definitions, the newest first.
+// listMyDefinitions is GET /api/v1/me/definitions: one page of the caller's own definitions, the
+// newest first, and how many they have.
 func (s *server) listMyDefinitions(w http.ResponseWriter, r *http.Request) {
 	person, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
+	page, err := parseListPage(r.URL.Query())
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	ctx := r.Context()
+	// The count over every definition rides on each row of the page, so the page and its total
+	// are one reading. A page past the last definition holds no row to carry it, and is counted
+	// on its own.
 	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select `+definitionColumns+` from definitions where person = $1
-		order by created_at desc, id desc limit $3`,
-		person.ID, intervalOf(s.deps.RewriteDefine.sideQuestionWait()), myDefinitionsLimit)
+		select `+definitionColumns+`, count(*) over () from definitions where person = $1
+		order by created_at desc, id desc limit $3 offset $4`,
+		person.ID, intervalOf(s.deps.RewriteDefine.sideQuestionWait()), page.limit, page.offset)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	defer rows.Close()
-	reads := []definitionRead{}
+	answer := definitionsPage{Items: []definitionRead{}, Limit: page.limit, Offset: page.offset}
 	for rows.Next() {
-		read, err := scanDefinition(rows)
+		read, err := scanDefinition(rows, &answer.Total)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		reads = append(reads, read)
+		answer.Items = append(answer.Items, read)
 	}
 	if err := rows.Err(); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, reads)
+	if len(answer.Items) == 0 && page.offset > 0 {
+		if err := s.deps.Store.Pool.QueryRow(ctx, `select count(*) from definitions where person = $1`,
+			person.ID).Scan(&answer.Total); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	WriteJSON(w, http.StatusOK, answer)
 }
 
 // answerDefinitionFrame takes a reply to a definition's side question (createDefinition), which

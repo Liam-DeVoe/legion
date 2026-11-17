@@ -93,7 +93,7 @@ func TestMigrationGivesTheWritingCheckEventsAReaderAndTheNoReaderOutcome(t *test
 	if err := store.Pool.QueryRow(ctx, `select now()`).Scan(&today); err != nil {
 		t.Fatalf("read the database's clock: %v", err)
 	}
-	counts, err := store.CountWritingCheck(ctx, today.UTC(), today.UTC())
+	counts, err := store.CountWritingCheck(ctx, today.UTC(), today.UTC(), 50, 0)
 	if err != nil {
 		t.Fatalf("count the day: %v", err)
 	}

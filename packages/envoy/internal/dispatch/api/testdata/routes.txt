@@ -40,7 +40,7 @@ GET /api/v1/asks/{id}/followers any
 DELETE /api/v1/asks/{id}/followers/{session_id} any
 PUT /api/v1/asks/{id}/followers/{session_id} any
 POST /api/v1/asks/{id}/resolve any
-POST /api/v1/asks/{id}/rewrite any
+POST /api/v1/asks/{id}/rewrites any
 GET /api/v1/block-links any
 GET /api/v1/broadcasts any
 POST /api/v1/broadcasts any
@@ -81,7 +81,7 @@ GET /api/v1/going/requests/{id}/stream any
 GET /api/v1/handoffs/{id} any
 GET /api/v1/held/{id} any
 PATCH /api/v1/held/{id} any
-POST /api/v1/held/{id}/post any
+PUT /api/v1/held/{id}/state any
 GET /api/v1/inbox any
 GET /api/v1/issues any
 POST /api/v1/issues any
@@ -181,7 +181,7 @@ GET /api/v1/references any
 GET /api/v1/references/questions any
 GET /api/v1/related-checks any
 POST /api/v1/results/{id}/retract any
-POST /api/v1/reviewer/draft any
+POST /api/v1/reviewer-drafts any
 GET /api/v1/schema/blocks public
 GET /api/v1/search any
 GET /api/v1/search/coverage any

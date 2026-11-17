@@ -17,11 +17,13 @@ import (
 // codeReaderWordsForbidden refuses a person who reads another person's words.
 const codeReaderWordsForbidden = "READER_WORDS_FORBIDDEN"
 
-// readerWordsResponse is GET /api/v1/readers/{login}/words: the reader's login, as Dispatch
-// stores it, and their words, the most recently asked first.
+// readerWordsResponse is GET /api/v1/readers/{login}/words: one page of the reader's words, the
+// most recently asked first, and how many words they asked about.
 type readerWordsResponse struct {
-	Reader string             `json:"reader"`
-	Words  []store.ReaderWord `json:"words"`
+	Items  []store.ReaderWord `json:"items"`
+	Total  int                `json:"total"`
+	Limit  int                `json:"limit"`
+	Offset int                `json:"offset"`
 }
 
 // getReaderWords is GET /api/v1/readers/{login}/words. It serves any agent's token, because the
@@ -40,17 +42,23 @@ func (s *server) getReaderWords(w http.ResponseWriter, r *http.Request) {
 		writeError(w, codeReaderWordsForbidden, http.StatusForbidden, "a person reads their own recorded words alone; an agent's token reads any reader's")
 		return
 	}
+	query := r.URL.Query()
 	var before time.Time
-	if raw := strings.TrimSpace(r.URL.Query().Get("before")); raw != "" {
+	if raw := strings.TrimSpace(query.Get("before")); raw != "" {
 		if before, err = time.Parse(time.RFC3339, raw); err != nil {
 			writeError(w, "INVALID_QUERY", http.StatusBadRequest, "before must be an RFC 3339 time")
 			return
 		}
 	}
-	words, err := s.deps.Store.ReaderWords(r.Context(), login, before)
+	page, err := parseListPage(query)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, readerWordsResponse{Reader: login, Words: words})
+	words, total, err := s.deps.Store.ReaderWordsPage(r.Context(), login, before, page.limit, page.offset)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, readerWordsResponse{Items: words, Total: total, Limit: page.limit, Offset: page.offset})
 }

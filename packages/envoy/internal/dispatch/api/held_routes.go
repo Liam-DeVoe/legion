@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -16,8 +18,9 @@ import (
 
 // held_routes.go serves a held text's own routes (INFRA-3231's R5, Decision 6 of its plan):
 // GET /api/v1/held/{id} reads it, PATCH /api/v1/held/{id} edits it, which the reviewer reads
-// again, and POST /api/v1/held/{id}/post posts it as written with the writer's reason. Any agent's
-// token reads a held text and no person does; only its writer session edits or posts it.
+// again, and PUT /api/v1/held/{id}/state {state: posted} posts it as written with the writer's
+// reason. Any agent's token reads a held text and no person does; only its writer session edits
+// or posts it.
 
 // wordingOf is text's wording as a read gives it (model.TextWording): an ask's question, its
 // options and its choice, an issue's title and spec, and a comment's or a message's body. A held
@@ -208,9 +211,14 @@ type heldEditInput struct {
 	Actor    *model.Actor  `json:"actor"`
 }
 
-// heldPostInput is POST /api/v1/held/{id}/post's body: why the text is right for its reader as
-// written.
-type heldPostInput struct {
+// heldStatePosted is the one state PUT /api/v1/held/{id}/state moves a held text to: posted as
+// its writer wrote it.
+const heldStatePosted = "posted"
+
+// heldStateInput is PUT /api/v1/held/{id}/state's body: the state the writer moves its held text
+// to, posted, and why the text is right for its reader as written.
+type heldStateInput struct {
+	State  string       `json:"state" required:"true" enum:"posted"`
 	Reason string       `json:"reason" required:"true"`
 	Actor  *model.Actor `json:"actor"`
 }
@@ -455,17 +463,24 @@ func editedRequest(write reviewedWrite, input heldEditInput) (any, error) {
 	return nil, refuse("this held text takes no edit")
 }
 
-// postHeldAsWritten is POST /api/v1/held/{id}/post: the writer posts its held text as written,
-// over the reviewer's findings, with the reason it gives, which is recorded posted_as_written.
-// The text posts before the answer, which reads it as it then stands.
-func (s *server) postHeldAsWritten(w http.ResponseWriter, r *http.Request) {
-	var input heldPostInput
+// putHeldState is PUT /api/v1/held/{id}/state {state: posted}: the writer posts its held text as
+// written, over the reviewer's findings, with the reason it gives, which is recorded
+// posted_as_written. The text posts before the answer, which reads it as it then stands. A repeat
+// of the same request, once that post is decided, writes nothing and answers the held text as it
+// then stands, as a PUT does.
+func (s *server) putHeldState(w http.ResponseWriter, r *http.Request) {
+	var input heldStateInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
+		return
+	}
+	if input.State != heldStatePosted {
+		writeError(w, "HELD_STATE_INPUT", http.StatusBadRequest,
+			fmt.Sprintf("state must be %s: a writer moves its held text to posted alone", heldStatePosted))
 		return
 	}
 	reason := strings.TrimSpace(input.Reason)
@@ -482,6 +497,10 @@ func (s *server) postHeldAsWritten(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(ctx)
 	row, err := s.takeHeldForWriter(ctx, tx, r.PathValue("id"), actor)
 	if err != nil {
+		if repeat, ok := s.repeatedHeldPost(ctx, tx, r.PathValue("id"), actor, reason, err); ok {
+			WriteJSON(w, http.StatusOK, repeat.read())
+			return
+		}
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -505,6 +524,22 @@ func (s *server) postHeldAsWritten(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, posted.read())
+}
+
+// repeatedHeldPost reads held text id in tx, the request's own transaction, once
+// takeHeldForWriter refused it decided (refused), and answers it where the refused request
+// repeats the writer's post that decided it: the same writer posting it as written with the same
+// reason. Every other refusal stands.
+func (s *server) repeatedHeldPost(ctx context.Context, tx queryer, id string, actor model.Actor, reason string, refused error) (heldRow, bool) {
+	var decided *apiError
+	if !errors.As(refused, &decided) || decided.code != "HELD_TEXT_DECIDED" {
+		return heldRow{}, false
+	}
+	row, err := s.loadHeld(ctx, tx, id, false)
+	if err != nil || !row.isWriter(actor) || row.outcome != reviewPostedAsWritten || row.reason != reason {
+		return heldRow{}, false
+	}
+	return row, true
 }
 
 // answerHeldFrame takes a reply to the frame Dispatch sent a held text's writer

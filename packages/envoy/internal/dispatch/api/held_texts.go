@@ -771,12 +771,11 @@ func (s *server) postReady() {
 // posted. A post the create path refuses fails the held text with the refusal, and its writer is
 // told (failHeld); any other failure leaves it for the sweep to post again.
 //
-// A keyed route reaches it, since POST /api/v1/held/{id}/post posts before it answers, so each of
-// its writes commits in a transaction of the shared pool, as every write a keyed route reaches
-// does (keyed_write_guard_test.go). ctx is the post context (postContext), which carries no
-// request's Idempotency-Key, so those transactions take no commit step: the post is the held
-// text's own work, which the reviewer's sweep makes when no request does, and never a write of
-// the request that set it off.
+// Each of its writes commits in a transaction of the shared pool. ctx is the post context
+// (postContext), which carries no request's Idempotency-Key, so those transactions take no commit
+// step: the post is the held text's own work, which the reviewer's sweep makes when no request
+// does, and never a write of the request that set it off, PUT /api/v1/held/{id}/state's among
+// them.
 func (s *server) postHeld(ctx context.Context, id string) bool {
 	row, err := s.claimHeldPost(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {

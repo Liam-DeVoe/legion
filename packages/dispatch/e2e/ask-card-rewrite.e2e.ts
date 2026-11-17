@@ -64,7 +64,7 @@ async function pressRewrite(page: Page, hand: Hand, askId: string): Promise<void
   const answered = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
-      new URL(response.url()).pathname === `/api/v1/asks/${askId}/rewrite`
+      new URL(response.url()).pathname === `/api/v1/asks/${askId}/rewrites`
   );
   await page.keyboard.press("r");
   const response = await answered;

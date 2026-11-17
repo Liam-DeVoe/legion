@@ -283,35 +283,57 @@ type ReaderWord struct {
 // readerWordsLimit is the most words ReaderWords answers, the ones asked about last.
 const readerWordsLimit = 200
 
+// readerWordsAsked is each word of login's ($1) word questions, Define uses included, written
+// before $2 where it is not null, with when it was written.
+const readerWordsAsked = `
+	with asked as (
+		select btrim(word) as word, q.written_at
+		from word_questions q, unnest(q.words) as word
+		where q.person = $1 and q.state = 'done' and q.about_words
+			and ($2::timestamptz is null or q.written_at < $2) and btrim(word) <> ''
+	)`
+
 // ReaderWords answers the words the person login asked about in their word questions, Define uses
 // included, written before before where it is not zero: each word once, however its case differs
-// between records, the most recently asked first.
+// between records, the most recently asked first, readerWordsLimit of them at most.
 func (s *Store) ReaderWords(ctx context.Context, login string, before time.Time) ([]ReaderWord, error) {
+	words, _, err := s.ReaderWordsPage(ctx, login, before, readerWordsLimit, 0)
+	return words, err
+}
+
+// ReaderWordsPage is one page of ReaderWords's list, limit words from offset, and total, how many
+// words the list holds.
+func (s *Store) ReaderWordsPage(ctx context.Context, login string, before time.Time, limit, offset int) (words []ReaderWord, total int, err error) {
 	var until *time.Time
 	if !before.IsZero() {
 		until = &before
 	}
-	rows, err := s.Pool.Query(ctx, `
-		with asked as (
-			select btrim(word) as word, q.written_at
-			from word_questions q, unnest(q.words) as word
-			where q.person = $1 and q.state = 'done' and q.about_words
-				and ($2::timestamptz is null or q.written_at < $2) and btrim(word) <> ''
-		)
-		select (array_agg(word order by written_at desc))[1], count(*)::int, max(written_at)
+	// The count over every word rides on each word of the page, so the page and its total are one
+	// reading. A page past the last word holds no word to carry it, and is counted on its own.
+	rows, err := s.Pool.Query(ctx, readerWordsAsked+`
+		select (array_agg(word order by written_at desc))[1], count(*)::int, max(written_at), count(*) over ()::int
 		from asked group by lower(word)
-		order by max(written_at) desc, 1 limit $3`, login, until, readerWordsLimit)
+		order by max(written_at) desc, 1 limit $3 offset $4`, login, until, limit, offset)
 	if err != nil {
-		return nil, fmt.Errorf("read the words %s asked about: %w", login, err)
+		return nil, 0, fmt.Errorf("read the words %s asked about: %w", login, err)
 	}
 	defer rows.Close()
-	words := []ReaderWord{}
+	words = []ReaderWord{}
 	for rows.Next() {
 		var word ReaderWord
-		if err := rows.Scan(&word.Word, &word.Times, &word.Last); err != nil {
-			return nil, fmt.Errorf("read the words %s asked about: %w", login, err)
+		if err := rows.Scan(&word.Word, &word.Times, &word.Last, &total); err != nil {
+			return nil, 0, fmt.Errorf("read the words %s asked about: %w", login, err)
 		}
 		words = append(words, word)
 	}
-	return words, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("read the words %s asked about: %w", login, err)
+	}
+	if len(words) == 0 && offset > 0 {
+		if err := s.Pool.QueryRow(ctx, readerWordsAsked+`
+			select count(distinct lower(word))::int from asked`, login, until).Scan(&total); err != nil {
+			return nil, 0, fmt.Errorf("count the words %s asked about: %w", login, err)
+		}
+	}
+	return words, total, nil
 }

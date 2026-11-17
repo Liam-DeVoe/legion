@@ -117,7 +117,7 @@ func TestADecisionBlockHeldShowsInItsDocumentAndIsOutOfTheInboxUntilReviewed(t *
 	if body := rig.waitFrame(askID); !strings.Contains(body, "out of its reader's Inbox") || !strings.Contains(body, "dispatch held-post "+askID) {
 		t.Fatalf("the held block's frame reads %q", body)
 	}
-	posted := rig.asWriter(http.MethodPost, "/api/v1/held/"+askID+"/post", map[string]any{"reason": "The reader asked for the question as written."})
+	posted := rig.asWriter(http.MethodPut, "/api/v1/held/"+askID+"/state", map[string]any{"state": "posted", "reason": "The reader asked for the question as written."})
 	if posted.Code != http.StatusOK {
 		t.Fatalf("the writer's post: %d %s", posted.Code, posted.Body.String())
 	}

@@ -85,13 +85,17 @@ func (s *Store) SweepWritingCheckEvents(ctx context.Context) (int64, error) {
 }
 
 // WritingCheckCounts is R8's counts of the UTC days First to Last, both YYYY-MM-DD: Days, each day
-// of writing_check_events counted by outcome and by route, every day of the range listed; and Rows,
-// the counts of each day, project and person that has any.
+// of writing_check_events counted by outcome and by route, every day of the range listed; and one
+// page of the counts of each day, project and person that has any: Items, Limit of them from
+// Offset, and Total, how many there are.
 type WritingCheckCounts struct {
-	First string            `json:"first"`
-	Last  string            `json:"last"`
-	Days  []WritingCheckDay `json:"days"`
-	Rows  []WritingCheckRow `json:"rows"`
+	First  string            `json:"first"`
+	Last   string            `json:"last"`
+	Days   []WritingCheckDay `json:"days"`
+	Items  []WritingCheckRow `json:"items"`
+	Total  int               `json:"total"`
+	Limit  int               `json:"limit"`
+	Offset int               `json:"offset"`
 }
 
 // WritingCheckDay is one UTC day of writing_check_events, counted two ways: by outcome and by route
@@ -135,7 +139,8 @@ type WritingCheckRow struct {
 // countWritingCheckRows is WritingCheckRow's counts, each from the rows of its own source over the
 // days $1 to $2 (dates) and the times $3 to $4 (their first midnight and the midnight after the
 // last), summed by day, project and person. An ask answered and an ask commented on are a person's
-// own act: an actor of kind user with no session acting for them, as a record's person is.
+// own act: an actor of kind user with no session acting for them, as a record's person is. It
+// orders nothing: CountWritingCheck pages it in day, project and person order.
 const countWritingCheckRows = `
 select day::text, project, person,
 	sum(word_questions)::int, sum(texts)::int, sum(texts_unread)::int, sum(asks_answered)::int,
@@ -187,16 +192,19 @@ from (
 			'findings', 'posted_as_written') or (outcome = 'reviewed_after' and cardinality(rules) > 0))
 	group by 1, 2, 3
 ) counted
-group by 1, 2, 3
-order by 1, 2, 3`
+group by 1, 2, 3`
 
 // CountWritingCheck counts the UTC calendar days first to last, both included: from first's
-// midnight to the midnight after last.
-func (s *Store) CountWritingCheck(ctx context.Context, first, last time.Time) (WritingCheckCounts, error) {
+// midnight to the midnight after last. Its Items are limit of the rows from offset, in day,
+// project and person order.
+func (s *Store) CountWritingCheck(ctx context.Context, first, last time.Time, limit, offset int) (WritingCheckCounts, error) {
 	from := time.Date(first.Year(), first.Month(), first.Day(), 0, 0, 0, 0, time.UTC)
 	through := time.Date(last.Year(), last.Month(), last.Day(), 0, 0, 0, 0, time.UTC)
 	until := through.AddDate(0, 0, 1)
-	counts := WritingCheckCounts{First: from.Format(time.DateOnly), Last: through.Format(time.DateOnly), Rows: []WritingCheckRow{}}
+	counts := WritingCheckCounts{
+		First: from.Format(time.DateOnly), Last: through.Format(time.DateOnly), Items: []WritingCheckRow{},
+		Limit: limit, Offset: offset,
+	}
 	byDay := map[string]*WritingCheckDay{}
 	for day := from; day.Before(until); day = day.AddDate(0, 0, 1) {
 		counts.Days = append(counts.Days, WritingCheckDay{Day: day.Format(time.DateOnly), Outcomes: map[string]int{}, Routes: map[string]int{}})
@@ -230,7 +238,10 @@ func (s *Store) CountWritingCheck(ctx context.Context, first, last time.Time) (W
 	if err := rows.Err(); err != nil {
 		return WritingCheckCounts{}, fmt.Errorf("count writing check events: %w", err)
 	}
-	rows, err = s.Pool.Query(ctx, countWritingCheckRows, from, through, from, until)
+	// The count over every row rides on each row of the page, so the page and its total are one
+	// reading. A page past the last row holds no row to carry it, and is counted on its own.
+	rows, err = s.Pool.Query(ctx, `select *, count(*) over ()::int from (`+countWritingCheckRows+`) listed
+		order by 1, 2, 3 limit $5 offset $6`, from, through, from, until, limit, offset)
 	if err != nil {
 		return WritingCheckCounts{}, fmt.Errorf("count the records: %w", err)
 	}
@@ -239,13 +250,20 @@ func (s *Store) CountWritingCheck(ctx context.Context, first, last time.Time) (W
 		var row WritingCheckRow
 		if err := rows.Scan(&row.Day, &row.Project, &row.Person, &row.WordQuestions, &row.Texts, &row.TextsUnread,
 			&row.AsksAnswered, &row.AsksRepliedBeforeAnswer, &row.RewriteUses, &row.DefineUses, &row.ReviewerHeld,
-			&row.ReviewerRewrote, &row.ReviewerPassed, &row.ReviewerPostedUnreviewed, &row.PostedOverFinding); err != nil {
+			&row.ReviewerRewrote, &row.ReviewerPassed, &row.ReviewerPostedUnreviewed, &row.PostedOverFinding,
+			&counts.Total); err != nil {
 			return WritingCheckCounts{}, fmt.Errorf("count the records: %w", err)
 		}
-		counts.Rows = append(counts.Rows, row)
+		counts.Items = append(counts.Items, row)
 	}
 	if err := rows.Err(); err != nil {
 		return WritingCheckCounts{}, fmt.Errorf("count the records: %w", err)
+	}
+	if len(counts.Items) == 0 && offset > 0 {
+		if err := s.Pool.QueryRow(ctx, `select count(*)::int from (`+countWritingCheckRows+`) listed`,
+			from, through, from, until).Scan(&counts.Total); err != nil {
+			return WritingCheckCounts{}, fmt.Errorf("count the records: %w", err)
+		}
 	}
 	return counts, nil
 }

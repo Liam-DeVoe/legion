@@ -625,7 +625,7 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     return response({
       id: UUID,
       kind: "comment",
-      state: rest === "post" ? "posted" : method === "PATCH" ? "reviewing" : "awaiting_writer",
+      state: rest === "state" ? "posted" : method === "PATCH" ? "reviewing" : "awaiting_writer",
       route: `POST /api/v1/issues/{key}/comments`,
       writer: SESSION,
       reader: "alice@example.com",

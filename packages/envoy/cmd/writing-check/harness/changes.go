@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -409,7 +410,7 @@ type wording struct {
 	Multiple bool              `json:"multiple,omitempty"`
 }
 
-// draftAnswer is what POST /api/v1/reviewer/draft answers.
+// draftAnswer is what POST /api/v1/reviewer-drafts answers.
 type draftAnswer struct {
 	Reader     string                    `json:"reader"`
 	Findings   []reviewer.Finding        `json:"findings"`
@@ -470,7 +471,7 @@ func (r *changeRun) draft(ctx context.Context, t *textRun, change, detail string
 	}
 	for attempt := 0; ; attempt++ {
 		started := time.Now()
-		err = r.local.call(ctx, actor{person: t.loaded.Reader}, http.MethodPost, "/api/v1/reviewer/draft", body, r.testModel(), &answer)
+		err = r.local.call(ctx, actor{person: t.loaded.Reader}, http.MethodPost, "/api/v1/reviewer-drafts", body, r.testModel(), &answer)
 		seconds := time.Since(started).Seconds()
 		t.out.WaitSeconds += seconds
 		if err == nil {
@@ -700,7 +701,7 @@ func (r *changeRun) answerSideQuestion(ctx context.Context, t *textRun, askID st
 }
 
 // rewriteStep is change 5. An ask on an issue is rewritten by the local Dispatch's Rewrite
-// (POST /api/v1/asks/{id}/rewrite), which sends the writer one side question when the writer is
+// (POST /api/v1/asks/{id}/rewrites), which sends the writer one side question when the writer is
 // running (the case has a session) and reads its answer; any other text by the component's
 // Rewrite, after the same side question, which the writer answers when it is running.
 func (r *changeRun) rewriteStep(ctx context.Context, t *textRun) error {
@@ -782,7 +783,7 @@ func (r *changeRun) rewriteAsk(ctx context.Context, t *textRun, id string) error
 		}()
 	}
 	started := time.Now()
-	err := r.local.call(ctx, actor{person: t.loaded.Reader}, http.MethodPost, "/api/v1/asks/"+id+"/rewrite", nil, r.testModel(), nil)
+	err := r.local.call(ctx, actor{person: t.loaded.Reader}, http.MethodPost, "/api/v1/asks/"+id+"/rewrites", nil, r.testModel(), nil)
 	var read askRead
 	for err == nil {
 		if err = r.local.call(ctx, actor{person: t.loaded.Reader}, http.MethodGet, "/api/v1/asks/"+id, nil, nil, &read); err != nil {
@@ -1033,10 +1034,16 @@ func (r *changeRun) component(ctx context.Context, t *textRun, call func(reviewe
 	}
 }
 
+// readerWordsShown is how many of the reader's words recordOf asks the local Dispatch for: the 200
+// most recently asked, as many as Dispatch's own record of a text holds for the reviewer
+// (store.ReaderWords) and the most one page of the route answers.
+const readerWordsShown = 200
+
 // recordOf is Dispatch's record of the text as the component reads it, filled from the case as the
 // dataset stored it (reviewer.Record): the text as it stands, its thread, the issue, its primary
 // and decisions documents, the writer's texts, and the words the reader asked about before, which
-// the local Dispatch holds (GET /api/v1/readers/{login}/words).
+// the local Dispatch holds (GET /api/v1/readers/{login}/words): the page of as many words as the
+// reviewer reads in Dispatch's own record (readerWordsShown).
 func (r *changeRun) recordOf(ctx context.Context, t *textRun) (reviewer.Record, error) {
 	c := t.c
 	text := reviewer.Text{Kind: t.kind, Body: t.text}
@@ -1069,14 +1076,15 @@ func (r *changeRun) recordOf(ctx context.Context, t *textRun) (reviewer.Record, 
 	}
 	if record.Reader != "" {
 		var words struct {
-			Words []struct {
+			Items []struct {
 				Word string `json:"word"`
-			} `json:"words"`
+			} `json:"items"`
 		}
-		if err := r.local.call(ctx, actor{session: t.writer}, http.MethodGet, "/api/v1/readers/"+url.PathEscape(record.Reader)+"/words", nil, nil, &words); err != nil {
+		path := "/api/v1/readers/" + url.PathEscape(record.Reader) + "/words?limit=" + strconv.Itoa(readerWordsShown)
+		if err := r.local.call(ctx, actor{session: t.writer}, http.MethodGet, path, nil, nil, &words); err != nil {
 			return reviewer.Record{}, fmt.Errorf("the reader's words: %w", err)
 		}
-		for _, w := range words.Words {
+		for _, w := range words.Items {
 			record.ReaderWords = append(record.ReaderWords, w.Word)
 		}
 	}
