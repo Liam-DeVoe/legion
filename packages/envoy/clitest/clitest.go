@@ -167,6 +167,13 @@ type Case struct {
 
 // runTimeout bounds one run of the binary or of a shell: a run still going after it is killed and
 // reported, so a binary that waits on a server or on its input fails rather than holding the test.
+// It is the harness's own report of a command that never exits, which
+// TestConformanceFailsOnAHangingCommand tests, not a wait for a fact, so it is a guard of its own,
+// at least twice the slowest correct run on the machines that run this package (docs/testing.md).
+// Of the 1,075 runs a pass of this package's tests makes, the slowest took 412 ms beside 8 busy
+// loops on 2 CPUs and 1,598 ms beside 32 (five passes each, builds Jobs legion-load-run-j5qsg and
+// legion-load-run-8qmbb, 2026-11-17, at 86fbd5e07d). CI's envoy-go job ran the whole package in
+// 15.9 s to 16.5 s, 15 s of it the hanging row's, in four merge-group runs of 2026-11-17.
 var runTimeout = time.Minute
 
 const (

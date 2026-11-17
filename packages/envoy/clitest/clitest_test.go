@@ -550,7 +550,9 @@ func TestConformanceChild(t *testing.T) {
 	case "case-with-a-flag":
 		c.Commands = append(c.Commands, []string{"-v"})
 	case hangingHelp:
-		// Long enough that every run but the hanging one ends well inside it on a loaded machine.
+		// The guard of this child's runs: at least twice the slowest correct run, 1,598 ms beside
+		// 32 busy loops on 2 CPUs (runTimeout's comment has the readings), so every run but the
+		// hanging one ends inside it, and the hanging one costs the row 15 s rather than a minute.
 		before := runTimeout
 		runTimeout = 15 * time.Second
 		t.Cleanup(func() { runTimeout = before })
