@@ -309,61 +309,6 @@ export function IssueTableStatus({
   );
 }
 
-/** The search box of a table of any row type, named and prompted by its host: this table's
- *  `Search issues`, and the priorities pages' (`priorities/priority-table-controls.tsx`). */
-export function TableSearch<Row>({
-  label,
-  placeholder,
-  table,
-}: {
-  label: string;
-  placeholder: string;
-  table: Table<Row>;
-}): ReactNode {
-  return (
-    <input
-      aria-label={label}
-      className={`w-full min-w-0 flex-none rounded-lg border px-3 py-1.5 text-sm sm:w-auto sm:min-w-64 sm:flex-1 ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
-      onChange={(event) => {
-        table.setGlobalFilter(event.target.value);
-      }}
-      placeholder={placeholder}
-      type="search"
-      value={table.getState().globalFilter}
-      maxLength={SEARCH_QUERY_MAX}
-    />
-  );
-}
-
-/** The Group by select of a table of any row type: Nothing, or one of its groupable columns by
- *  its header; a pick opens every group. */
-export function GroupBySelect<Row>({ table }: { table: Table<Row> }): ReactNode {
-  const { grouping } = table.getState();
-  return (
-    <label className={`flex items-center gap-2 text-sm ${textSecondaryOnCanvas}`}>
-      Group by
-      <select
-        className={`rounded-lg border px-2 py-1.5 ${borderDefault} ${surfaceBg}`}
-        onChange={(event) => {
-          table.setGrouping(event.target.value ? [event.target.value] : []);
-          table.setExpanded(true);
-        }}
-        value={grouping[0] ?? ""}
-      >
-        <option value="">Nothing</option>
-        {table
-          .getAllLeafColumns()
-          .filter((column) => column.getCanGroup())
-          .map((column) => (
-            <option key={column.id} value={column.id}>
-              {String(column.columnDef.header)}
-            </option>
-          ))}
-      </select>
-    </label>
-  );
-}
-
 export function IssueTableToolbar({
   table,
   unclaimedUnchecked,
@@ -374,16 +319,45 @@ export function IssueTableToolbar({
 }): ReactNode {
   const flags = useIssueFilters();
   const [, setParams] = useSearchParams();
-  const { globalFilter: search, columnFilters: filters } = table.getState();
+  const { globalFilter: search, columnFilters: filters, grouping } = table.getState();
+  const setSearch = table.setGlobalFilter;
+  const setGrouping = table.setGrouping;
+  const setExpanded = table.setExpanded;
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
-        <TableSearch
-          label="Search issues"
+        <input
+          aria-label="Search issues"
+          className={`w-full min-w-0 flex-none rounded-lg border px-3 py-1.5 text-sm sm:w-auto sm:min-w-64 sm:flex-1 ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
+          onChange={(event) => {
+            setSearch(event.target.value);
+          }}
           placeholder="Search issues: key, title, epic, assignee, author, labels"
-          table={table}
+          type="search"
+          value={search}
+          maxLength={SEARCH_QUERY_MAX}
         />
-        <GroupBySelect table={table} />
+        <label className={`flex items-center gap-2 text-sm ${textSecondaryOnCanvas}`}>
+          Group by
+          <select
+            className={`rounded-lg border px-2 py-1.5 ${borderDefault} ${surfaceBg}`}
+            onChange={(event) => {
+              setGrouping(event.target.value ? [event.target.value] : []);
+              setExpanded(true);
+            }}
+            value={grouping[0] ?? ""}
+          >
+            <option value="">Nothing</option>
+            {table
+              .getAllLeafColumns()
+              .filter((column) => column.getCanGroup())
+              .map((column) => (
+                <option key={column.id} value={column.id}>
+                  {String(column.columnDef.header)}
+                </option>
+              ))}
+          </select>
+        </label>
         <ColumnsMenu columns={table.getAllLeafColumns()} />
         <IssueFlagChips />
         {filters.length > 0 || search !== "" || flags.needsYou || flags.unread ? (
