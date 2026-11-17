@@ -13,7 +13,7 @@ import type {
 import { wordsOf } from "../refs/tree-fragment";
 import { anchorQuote, changeAnchor, decisionChangeComments } from "./decision-review";
 import { buildIssueTree, type DocumentBlocks, type TreeNode } from "./issue-tree";
-import { treeContext } from "./tree-drafts";
+import { blockNodeId, treeContext } from "./tree-drafts";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 import { waitingOnReader } from "./waiting";
 
@@ -631,6 +631,31 @@ test("the count and the tree agree on a decision node's Change the comments read
       ),
     ]).toEqual([0, []]);
   }
+});
+
+// Two documents of an issue may share a block id. A person's comment on the statement r1 is no
+// Change of a decision whose own block id is r1 too: the read's walk puts a parent before its
+// children, and it puts this comment after the statement and before the decision, so the comment
+// hangs under the statement, as the outline draws it, and the decision still waits on the
+// reader, in the count as in the tree.
+test("a comment on a statement is no Change of a decision of another document with the same block id", () => {
+  const row = waitingDecision("r1", ["r1"]);
+  const read: IssueDecisions = { decisions: [row], document: null, open_questions: [] };
+  const remark: Comment = { ...change, anchor: null, id: "c-on-statement" };
+  const tree = answerOf([statement, commentNode(remark, "r1"), decisionNode(row, 0)]);
+  expect([
+    waitingOnReader(issue, "alice", read, isStatement, [remark], tree).decisions,
+    waitingIn(
+      buildIssueTree({
+        comments: [remark],
+        coverage,
+        decisions: read,
+        issue,
+        tree,
+        viewer: "alice",
+      })
+    ),
+  ]).toEqual([1, [blockNodeId("decisions-md", "r1")]]);
 });
 
 /** An intro of the decisions document that holds none of the quotes below. */
