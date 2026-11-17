@@ -41,7 +41,7 @@ The daemon's own `internal/fixtureenv`, the guard that keeps its git and jj off 
 
 `packages/daemon/internal/textcheck`'s `TestTheDaemonKeepsNoCopyOfAnEnvoyTestHelper` fails a copy, naming the daemon file and the Envoy file.
 It reads each Go file as its code lines, without comments, blank lines and the package clause, and counts two files a copy when four fifths or more of the code lines of the smaller one are lines of the other and the smaller one has 8 code lines or more.
-It compares every Go file of `packages/daemon` with every Go file of an Envoy test-helper package: a directory under `packages/envoy`, `infra` included, whose package name begins or ends with `test`, or whose non-test files import `testing`.
+It compares every Go file of `packages/daemon` with every Go file of an Envoy test-helper package: a directory under `packages/envoy`, `infra` included, whose package name begins or ends with `test`, or whose non-test files import `testing`. Neither side's `testdata` is read.
 A copy of a file of any other Envoy package is out of its reach.
 
 

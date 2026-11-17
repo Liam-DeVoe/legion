@@ -38,6 +38,7 @@ const (
 // rewritten, or whose package was renamed, still counts. An Envoy test-helper package is a
 // directory under packages/envoy, infra included, whose package name begins or ends with "test",
 // or whose non-test files import "testing"; every Go file of it is compared, its tests included.
+// Neither side reads testdata (walkGo).
 func TestTheDaemonKeepsNoCopyOfAnEnvoyTestHelper(t *testing.T) {
 	daemon, envoy := "../..", "../../../envoy"
 	helpers := envoyTestHelperFiles(t, envoy)
@@ -204,7 +205,9 @@ func testHelperPackage(t *testing.T, directory string, relatives []string) bool 
 }
 
 // walkGo calls visit with every Go file under root and its path from root, written with forward
-// slashes, leaving out node_modules, vendor and hidden directories.
+// slashes, leaving out node_modules, vendor, testdata and hidden directories: none of them holds
+// code either module's tests import, and a fixture under testdata may be Go that does not parse on
+// purpose.
 func walkGo(t *testing.T, root string, visit func(path, relative string)) {
 	t.Helper()
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
@@ -212,7 +215,8 @@ func walkGo(t *testing.T, root string, visit func(path, relative string)) {
 			return err
 		}
 		if entry.IsDir() {
-			if name := entry.Name(); name == "node_modules" || name == "vendor" || (strings.HasPrefix(name, ".") && path != root) {
+			if name := entry.Name(); name == "node_modules" || name == "vendor" || name == "testdata" ||
+				(strings.HasPrefix(name, ".") && path != root) {
 				return filepath.SkipDir
 			}
 			return nil
