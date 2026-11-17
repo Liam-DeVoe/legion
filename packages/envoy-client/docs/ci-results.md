@@ -23,11 +23,15 @@ failed at its end, and a test log of any size still writes its result. A NUL, wh
 cannot store, goes as U+FFFD, and so does each byte of a file that is not UTF-8. It prints the
 stored result as JSON and exits 0. A write that landed with its answer lost prints
 `{"landed_without_answer":"<code>"}` and exits 0: the result is stored, and that includes a 201
-whose body gives no stored result (cut, stalled, no JSON, empty, or JSON of another shape:
-`ANSWER_LOST`). A write that reached
-Dispatch with no answer that says whether it stored the result (`writeOutcomeUnknown`) prints
-`{"write_outcome_unknown":"<code>"}`, the code of its last failure such as `ECONNRESET`, and exits
-1: the result may be stored, and a second run is safe, because Dispatch keeps each result. A call
+that names the request's key back, as Dispatch's does, whose body gives no stored result (cut,
+stalled, no JSON, empty, or JSON of another shape: `ANSWER_LOST`). A 2xx that names another
+request's key back, or names none and gives no stored result (a proxy's page, a server that is not
+Dispatch), is not Dispatch's answer, and prints `write_outcome_unknown`. A redirect is not
+followed: it is a refusal of whatever answered in Dispatch's place, and exits 1. A write that
+reached Dispatch with no answer that says whether it stored the result (`writeOutcomeUnknown`)
+prints `{"write_outcome_unknown":"<code>"}`, the code of its last failure such as `ECONNRESET` or
+`HTTP_200`, and exits 1: the result may be stored, and a second run is safe, because Dispatch keeps
+each result. A call
 that the broker's rate limit (429), a broker that cannot answer the trade (a 5xx, or no answer
 within the trade's own 30 s) or Dispatch's check
 of the job's token (`429 BROKER_TOKEN_RATE_LIMITED`, `503 BROKER_UNAVAILABLE`, `tokenNotChecked`)

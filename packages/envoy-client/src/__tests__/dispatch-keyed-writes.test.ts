@@ -8,6 +8,7 @@ import {
   IDEMPOTENCY_KEY_PATTERN,
   IDEMPOTENCY_KEY_REUSED,
 } from "@legion/contracts";
+import { routeAnswer } from "../../test/route-answers";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
@@ -21,7 +22,6 @@ import {
   KEYED_LAYER_MEMORY_MS,
   writeOutcomeUnknown,
 } from "../dispatch-http";
-import { routeAnswer } from "./dispatch-route-answers";
 
 // Every write the `dispatch` command makes (a POST or a PATCH) carries one `Idempotency-Key` for
 // that call, and asks Dispatch again under it while an attempt gets no definitive answer, so a

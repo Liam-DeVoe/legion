@@ -189,6 +189,28 @@ test("a security token service that refuses is an error naming it, its status an
   expect(iam.posted).toHaveLength(0);
 });
 
+// fetch sends a 307's body on to the origin its Location names, and the body to the security
+// token service is this machine's external credential, so the pool follows no redirect: the 307
+// is the service's refusal, and the other origin is asked nothing.
+test("a security token service that redirects is a refusal, and the credential never leaves for the other origin", async () => {
+  const elsewhere = stubService(federating);
+  const sts = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () =>
+      new Response(null, { status: 307, headers: { Location: `${elsewhere.url}/v1/token` } }),
+  });
+  stops.push(() => sts.stop(true));
+  const iam = stubService(minting);
+  const url = `http://127.0.0.1:${sts.port}`;
+  const refusal = await refusalOf(async () => (await poolAt(url, iam.url)).read());
+  expect(refusal?.message).toBe(
+    `trade this machine's credential at the security token service ${url}/v1/token: HTTP 307: `
+  );
+  expect(elsewhere.posted).toHaveLength(0);
+  expect(iam.posted).toHaveLength(0);
+});
+
 test("a security token service that answers no access_token is an error naming it", async () => {
   const sts = stubService(() => ({ body: { token_type: "Bearer", expires_in: 3600 } }));
   const iam = stubService(minting);

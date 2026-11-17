@@ -1,10 +1,11 @@
 // The answers Dispatch's routes declare, read from the OpenAPI document the server generates
 // (`packages/contracts/schemas/dispatch-openapi.json`, which `envoy-dispatch openapi --check`
 // keeps equal to the Go route table). `instance` writes the least or the most answer a schema
-// admits, which `dispatch-write-rows.test.ts` drives every keyed write with. `routeAnswer` is the
-// answer a test's fake Dispatch serves for a keyed write: its route's least answer with the members
-// the test names, held to the route's schema, so a stub answers what Dispatch can answer and fails
-// the test that serves it on the commit that changes the route's answer.
+// admits, which `src/__tests__/dispatch-write-rows.test.ts` drives every keyed write with.
+// `routeAnswer` is the answer a test's fake Dispatch serves for a keyed write: its route's least
+// answer with the members the test names, held to the route's schema, so a stub answers what
+// Dispatch can answer and fails the test that serves it on the commit that changes the route's
+// answer. The other packages' tests take it as `@legion/envoy-client/test/route-answers`.
 import { readFileSync } from "node:fs";
 import { Ajv2020 } from "ajv/dist/2020";
 
@@ -21,7 +22,7 @@ interface OpenApiDocument {
 }
 
 const document = JSON.parse(
-  readFileSync(new URL("../../../contracts/schemas/dispatch-openapi.json", import.meta.url), "utf8")
+  readFileSync(new URL("../../contracts/schemas/dispatch-openapi.json", import.meta.url), "utf8")
 ) as OpenApiDocument;
 
 // The schema is reached by a JSON pointer into the document, as `stub-recordings.test.ts` of
@@ -162,6 +163,40 @@ export function onRoute(template: string, path: string): boolean {
   );
 }
 
+/**
+ * The route a request of `method` to `path` (its pathname) is on, as the document writes it
+ * (`"POST /api/v1/issues/{key}/asks"`), or undefined where the document holds none. Where two
+ * templates match, the one with more literal segments is the route, as the server's mux picks it.
+ */
+export function routeOf(method: string, path: string): string | undefined {
+  const literal = (template: string) =>
+    template.split("/").filter((segment) => !segment.startsWith("{")).length;
+  const templates = Object.entries(document.paths)
+    .filter(
+      ([template, operations]) => onRoute(template, path) && method.toLowerCase() in operations
+    )
+    .map(([template]) => template)
+    .sort((a, b) => literal(b) - literal(a));
+  return templates[0] === undefined ? undefined : `${method.toUpperCase()} ${templates[0]}`;
+}
+
+/**
+ * The status and the body a stand-in of Dispatch answers a keyed write of `method` to `path` with,
+ * where it has no answer of its own for that write: the route's first declared 2xx and its least
+ * answer (`routeAnswer`), so the write reads its row as it reads Dispatch's. Undefined where the
+ * document holds no such route.
+ */
+export function leastAnswerFor(
+  method: string,
+  path: string
+): { readonly status: number; readonly body: unknown } | undefined {
+  const route = routeOf(method, path);
+  if (route === undefined) return undefined;
+  const first = answersOf(route)[0];
+  if (first === undefined) return undefined;
+  return { status: first.status, body: routeAnswer(route, {}, first.status) };
+}
+
 /** Each way `body` is not an answer `route` declares for `status`, as Ajv words it; none for an
  *  answer it declares. */
 export function answerErrors(route: string, status: number, body: unknown): string[] {
@@ -210,11 +245,45 @@ function laidOver(raw: Schema, members: unknown): unknown {
   return out;
 }
 
+/** The first member `value` holds, at any depth, that `raw` does not declare, as a dotted path; or
+ *  undefined. An object schema that names no properties, or takes others (`additionalProperties`),
+ *  declares every member, and each item of a list is read against the list's items. */
+function undeclaredMember(raw: Schema, value: unknown, at: string): string | undefined {
+  const parts = objectParts(raw);
+  if (Array.isArray(value)) {
+    const items = parts.find((part) => part.items !== undefined)?.items as Schema | undefined;
+    if (items === undefined) return undefined;
+    for (const [index, item] of value.entries()) {
+      const found = undeclaredMember(items, item, `${at}.${index}`);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  if (typeof value !== "object" || value === null) return undefined;
+  const open = parts.some(
+    (part) =>
+      part.properties === undefined ||
+      (part.additionalProperties !== undefined && part.additionalProperties !== false)
+  );
+  if (open) return undefined;
+  for (const [name, member] of Object.entries(value)) {
+    const path = at === "" ? name : `${at}.${name}`;
+    const declared = parts
+      .map((part) => (part.properties as Record<string, Schema> | undefined)?.[name])
+      .find((schema) => schema !== undefined);
+    if (declared === undefined) return path;
+    const found = undeclaredMember(declared, member, path);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
 /**
  * The answer of `route` that a test's fake Dispatch serves for a keyed write: the least answer the
  * route declares for `status` (its one 2xx when it declares one), with `members` laid over it. It
- * throws when the result is not an answer the route declares, naming each way it is not, so a stub
- * cannot hold an answer Dispatch cannot give.
+ * throws when a member is one the route does not declare (no object schema of the document is
+ * closed, so the schema check alone would pass it), and when the result is not an answer the
+ * route declares, naming each way it is not, so a stub cannot hold an answer Dispatch cannot give.
  */
 export function routeAnswer<T = Record<string, unknown>>(
   route: string,
@@ -228,7 +297,12 @@ export function routeAnswer<T = Record<string, unknown>>(
       `${route} declares the 2xx statuses ${statuses.join(", ")}: name the one served`
     );
   }
-  const answer = laidOver(answerSchema(route, declared), members);
+  const schema = answerSchema(route, declared);
+  const stray = undeclaredMember(schema, members, "");
+  if (stray !== undefined) {
+    throw new Error(`a stub's answer to ${route} names ${stray}, which the route does not declare`);
+  }
+  const answer = laidOver(schema, members);
   const errors = answerErrors(route, declared, answer);
   if (errors.length > 0) {
     throw new Error(

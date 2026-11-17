@@ -7,6 +7,7 @@ import {
   type Sleep,
   sleep,
 } from "@legion/contracts";
+import { routeAnswer } from "../../test/route-answers";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
@@ -15,7 +16,6 @@ import {
   DispatchNoRouteError,
   type SearchOptions,
 } from "../dispatch-http";
-import { routeAnswer } from "./dispatch-route-answers";
 import { fakeSearchResponse } from "./fake-search-response";
 
 interface RecordedRequest {
@@ -1926,6 +1926,49 @@ describe("a broker token Dispatch says is not live", () => {
       await expect(call(client)).rejects.toThrow(refusal.message);
       expect(stales).toHaveLength(1);
       expect(requests).toHaveLength(1);
+    }
+  });
+});
+
+// fetch sends a DPoP proof on to another origin a redirect names (it drops `Authorization` alone),
+// and Dispatch answers no API route with a redirect, so no request of the client follows one: the
+// 302 is the answer, a refusal naming it, and the origin it names is asked nothing.
+describe("a redirect to another origin", () => {
+  test("a read is not followed there, so its credential's proof never leaves", async () => {
+    const elsewhere: string[] = [];
+    const other = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(request) {
+        elsewhere.push(`${request.method} ${request.headers.get("DPoP") ?? "no proof"}`);
+        return jsonResponse({ key: "DSP-1", title: "Elsewhere", status: "todo" });
+      },
+    });
+    const dispatch = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: () =>
+        new Response(null, {
+          status: 302,
+          headers: { Location: `http://127.0.0.1:${other.port}/api/v1/issues/DSP-1` },
+        }),
+    });
+    const credential: RequestCredential = {
+      ...bearerCredential("secret"),
+      headers: async () => ({ Authorization: "DPoP secret", DPoP: "PROOF" }),
+    };
+    try {
+      const client = new DispatchClient(`http://127.0.0.1:${dispatch.port}`, credential, fetch);
+      const refusal = await client.getIssue("DSP-1").then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      expect(refusal).toBeInstanceOf(DispatchGatewayError);
+      expect((refusal as DispatchGatewayError).status).toBe(302);
+      expect(elsewhere).toEqual([]);
+    } finally {
+      dispatch.stop(true);
+      other.stop(true);
     }
   });
 });

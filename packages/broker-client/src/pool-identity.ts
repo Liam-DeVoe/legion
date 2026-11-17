@@ -141,8 +141,12 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
     const signals = [AbortSignal.timeout(POOL_TIMEOUT_MS), signal].filter(
       (one) => one !== undefined
     );
+    // No redirect is followed: fetch sends a 307's or 308's body on to the origin it names, and
+    // the body to the security token service is this machine's external credential. A 3xx is
+    // then the service's refusal, named by its status.
     const answer = await fetch(endpoint, {
       method: "POST",
+      redirect: "manual",
       headers: {
         "Content-Type": "application/json",
         ...(bearer === "" ? {} : { Authorization: `Bearer ${bearer}` }),

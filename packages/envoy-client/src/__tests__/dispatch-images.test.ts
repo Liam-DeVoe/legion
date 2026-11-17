@@ -4,6 +4,7 @@ import { truncateSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { DISPATCH_BLOCK_UNITS, DISPATCH_EVENT_BODY_MAX } from "@legion/contracts/dispatch-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { routeAnswer } from "../../test/route-answers";
 import { bearerCredential } from "../bearer";
 import { type DispatchToolResult, executeDispatchTool } from "../dispatch-execute";
 import { DISPATCH_WRITE_RETRY, DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
@@ -15,7 +16,6 @@ import {
 } from "../dispatch-picture-tools";
 import { pictureAddresses } from "../dispatch-pictures";
 import { ToolInputError } from "../tool-input-errors";
-import { routeAnswer } from "./dispatch-route-answers";
 
 const config = {
   enabled: true,

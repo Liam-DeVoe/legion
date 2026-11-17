@@ -1663,7 +1663,12 @@ jobs:
               - 'packages/daemon/internal/runtime/sandbox/testdata/golden/root.json'
               - 'packages/daemon/internal/runtime/sandbox/testdata/golden/root-operator-route.json'
               - 'packages/envoy-client/test/fake-dispatch.ts'
+              - 'packages/envoy-client/test/route-answers.ts'
               - 'scripts/dispatch/**'
+              # scripts/dispatch/__tests__/moved-approval-production-check.test.ts:3 and
+              # scripts/e2e/lib/dispatch-keyed-comment.test.ts:5 serve each write's answer through
+              # envoy-client's routeAnswer, which reads the OpenAPI document.
+              - 'packages/contracts/schemas/dispatch-openapi.json'
               - 'scripts/github-apps/**'
               - 'scripts/sessions/**'
               # The approval-eval statistics: its lint, typecheck and test steps read it.
@@ -2174,6 +2179,9 @@ jobs:
               - 'packages/test-fixtures/src/**'
               # extensions/envoy.test.ts:172-173.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
+              # extensions/envoy.test.ts:62 serves each write's answer through test/route-answers,
+              # which reads the OpenAPI document.
+              - 'packages/contracts/schemas/dispatch-openapi.json'
               - 'skills/**'
               - 'packages/daemon/internal/prompts/**'
               # Its pack runs the shared prepack, which writes dist/THIRD_PARTY_NOTICES, and
@@ -3292,7 +3300,7 @@ jobs:
               # an edit of the list alone must start both jobs, or the side it disagrees with
               # stays green.
               - 'packages/contracts/fixtures/go-unicode-isspace.json'
-              # src/__tests__/dispatch-route-answers.ts:23-25 reads the OpenAPI document: every
+              # test/route-answers.ts:24-26 reads the OpenAPI document: every
               # keyed write of the client is driven against each 2xx answer it declares, and each
               # test's stub of a keyed write serves its route's answer.
               - 'packages/contracts/schemas/dispatch-openapi.json'

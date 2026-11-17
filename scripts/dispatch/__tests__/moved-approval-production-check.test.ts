@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { bearerCredential } from "../../../packages/envoy-client/src/bearer.ts";
+import { routeAnswer } from "../../../packages/envoy-client/test/route-answers.ts";
 import {
   type DispatchWrites,
   type ExpectedMove,
@@ -180,7 +181,7 @@ function closingServer(sent: string[]) {
       sent.push(`${request.method} ${pathname}`);
       return pathname.endsWith("/messages")
         ? Response.json({ error: { code: "REFUSED", message: "no" } }, { status: 422 })
-        : Response.json({ status: "done" });
+        : Response.json(routeAnswer("PATCH /api/v1/issues/{key}", { key: KEY, status: "done" }));
     },
   });
 }
@@ -243,7 +244,9 @@ describe("the session the check's writes act as", () => {
       port: 0,
       async fetch(request) {
         bodies.push(await request.json());
-        return Response.json({ status: "in_progress" });
+        return Response.json(
+          routeAnswer("PATCH /api/v1/issues/{key}", { key: KEY, status: "in_progress" })
+        );
       },
     });
     const before = process.env.DISPATCH_SESSION_ID;

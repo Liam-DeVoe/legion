@@ -1927,6 +1927,49 @@ describe("EnvoyClient", () => {
   }, 5_000);
 });
 
+// fetch sends a DPoP proof on to another origin a redirect names (it drops `Authorization` alone),
+// and the listener answers no route with a redirect, so no call follows one: the origin it names
+// is asked nothing.
+describe("a listener answer that redirects to another origin", () => {
+  test("is not followed, so the credential's proof never leaves", async () => {
+    const elsewhere: string[] = [];
+    const other = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(request) {
+        elsewhere.push(`${request.method} ${request.headers.get("DPoP") ?? "no proof"}`);
+        return Response.json({ role: "reviewer", session_id: "ses_other" });
+      },
+    });
+    const listener = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: () =>
+        new Response(null, {
+          status: 302,
+          headers: { Location: `http://127.0.0.1:${other.port}/v1/roles/reviewer` },
+        }),
+    });
+    const credential: RequestCredential = {
+      ...bearerCredential("listener-token"),
+      headers: async () => ({ Authorization: "DPoP listener-token", DPoP: "PROOF" }),
+    };
+    try {
+      const client = createEnvoyClient({
+        baseUrl: `http://127.0.0.1:${listener.port}/`,
+        fetch,
+        credential,
+        retry: false,
+      });
+      await client.getRole("reviewer").catch((error: unknown) => error);
+      expect(elsewhere).toEqual([]);
+    } finally {
+      listener.stop(true);
+      other.stop(true);
+    }
+  });
+});
+
 describe("newClientInstanceID", () => {
   test("mints 128 random bits as 32 lower-case hex characters", () => {
     expect(newClientInstanceID()).toMatch(/^[0-9a-f]{32}$/);

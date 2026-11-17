@@ -921,8 +921,11 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       // in the credential's own words (a pending registration names its session).
       if (unminted !== undefined && deadline.aborted) return { unanswered: unminted };
       for (const [name, value] of Object.entries(presented ?? {})) headers.set(name, value);
+      // No call follows a redirect: fetch sends the credential's DPoP proof and the body on to the
+      // origin a redirect names, and the listener answers no route with a 3xx.
       response = await config.fetch(url, {
         ...init,
+        redirect: "manual",
         headers,
         signal: deadline,
       });
