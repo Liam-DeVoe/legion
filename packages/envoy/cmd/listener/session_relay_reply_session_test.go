@@ -129,7 +129,7 @@ func requireStillPending(t *testing.T, consumers *bus.SessionConsumers, sessionI
 // On main the listener gave every frame a token from one counter shared by every session behind its
 // reply inbox (_INBOX.<inbox>.1, .2, ...) and the session grant let a session publish to every
 // _INBOX. subject, so s1's done on s2's token acknowledged s2's frame, which was then never
-// delivered: measured on nats-server 2.15.1 with three servers (dispatch://INFRA-4186), and by
+// delivered: measured on nats-server 2.15.1 with three servers, and by
 // this row's first form at main, which failed with s2's consumer at 0 pending and its ack floor on
 // the frame, and s2 receiving nothing after its new epoch.
 func TestAnotherSessionsDoneMovesNoFrameAndTheSessionIsStillDeliveredIt(t *testing.T) {

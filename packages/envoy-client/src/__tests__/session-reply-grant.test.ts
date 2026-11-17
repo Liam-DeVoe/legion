@@ -36,7 +36,7 @@ async function waitFor(holds: () => boolean, within: number, what: string): Prom
 // The shared consumer delivery is the one place both plugins answer the listener's relay frames
 // and connection probe (pi-envoy's and claude-envoy's `publish` is `connection.publish(reply, …)`).
 // Here it runs on a real nats.js connection authenticated as a session user whose grant is the
-// one the NATS auth service gives a session (natsgrant.Session, dispatch://INFRA-4186): publish
+// one the NATS auth service gives a session (natsgrant.Session): publish
 // its replies under `_INBOX.*.<session id>.>` alone. Every answer to a frame or probe asked on a
 // reply subject naming the session reaches the requester; the same answers on the shapes the
 // listener asked on before - its reply inbox and a counter, and a plain inbox for the probe - are
