@@ -50,7 +50,7 @@ import (
 // What bounds the number is the database's connections rather than the runner's cores. A test
 // holds a handful of the sixteen its store's pool allows (storetest's testPoolSize), beside the
 // admin pools the clone and the drop of each test's own database run on: each pgtemplate harness
-// opens one pool of eight connections (pgtemplate.openAdmin, pgtemplate.go:211), and this binary
+// opens one pool of eight connections (pgtemplate.openAdmin, pgtemplate.go:213), and this binary
 // installs two, Dispatch's and the broker's (TestMain below, brokerstoretest.MainWith), so up to
 // sixteen admin connections. At PostgreSQL's default max_connections of 100, sixteen tests at
 // once reached that limit - a test opening a database of its own was refused "sorry, too many

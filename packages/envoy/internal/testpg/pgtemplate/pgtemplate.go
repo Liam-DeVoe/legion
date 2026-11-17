@@ -10,8 +10,8 @@
 // never dropped: the test processes of one run start minutes apart, and a process that dropped it
 // would take it from the ones still cloning. A set that gains, loses or edits a migration is a
 // template of its own, so a stale one is never cloned - it is only left on the server. Every
-// Postgres service of the jobs .github/workflows/ci.yaml runs, each declared in that job's own
-// .github/workflows/ci-job-<job>.yaml, is a container deleted with the job; a server that outlives
+// Postgres service a .github/workflows/ci-job-<job>.yaml declares, each a job
+// .github/workflows/ci.yaml runs, is a container deleted with the job; a server that outlives
 // a run, the one packages/envoy/scripts/dev-postgres.sh runs, keeps one template per migration set
 // a run there has tested, which `drop database` by hand reclaims (docs/testing.md).
 //
@@ -22,8 +22,8 @@
 // runs 43654965125 and 43657875798). A file copy writes a few hundred bytes of log, 446 in each of
 // those runs; Postgres forces a checkpoint before and after the copy, and the drop at the end of
 // the test forces one more. What makes that affordable is the server rather than any machinery
-// here: every Postgres service of the jobs .github/workflows/ci.yaml runs, each declared in that
-// job's own .github/workflows/ci-job-<job>.yaml, runs with fsync, full_page_writes and
+// here: every Postgres service a .github/workflows/ci-job-<job>.yaml declares, each a job that
+// .github/workflows/ci.yaml runs, runs with fsync, full_page_writes and
 // synchronous_commit off, where a forced checkpoint writes nothing durable (dispatch://INFRA-1075).
 //
 // The harness changes no Postgres setting: fsync, full_page_writes and max_wal_size belong to the

@@ -367,7 +367,7 @@ psql "$DISPATCH_TEST_DATABASE_URL" -tAc \
 
 ## A test Postgres's five settings
 
-Every Postgres service of the jobs `.github/workflows/ci.yaml` runs, each declared in that job's own `.github/workflows/ci-job-<job>.yaml`, starts with the same five settings, as the server's own command line, so no step has to restart it (`jobs.<job_id>.services.<service_id>.command`):
+Every Postgres service a `.github/workflows/ci-job-<job>.yaml` declares, each a job `.github/workflows/ci.yaml` runs, starts with the same five settings, as the server's own command line, so no step has to restart it (`jobs.<job_id>.services.<service_id>.command`):
 
 ```sh
 postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off \
@@ -405,7 +405,7 @@ Two of this repository's learnings are about these settings, and this is what ea
 `docs/solutions/database-issues/an-index-only-scan-test-depends-on-the-visibility-map-and-asynchronous-commit-leaves-it-empty-pr2376.md` found that a plan test asserting an `Index Only Scan` is also asserting that the table's pages are marked all-visible:
 the planner costs that scan by `relallvisible/relpages`, so a table whose visibility map is empty is read by a bitmap heap scan over the same index, and the test fails as if the index or the query were wrong.
 That half holds, and so does its first move, which is to read `select relallvisible, relpages from pg_class where relname = '<table>'` before changing the index or the query.
-Its prescription does not hold: it drew from that one failure the rule that such a test is run with `synchronous_commit = on` and that a test Postgres never takes its speed from turning off durable commit, and every Postgres service of the jobs `.github/workflows/ci.yaml` runs now runs with the three off.
+Its prescription does not hold: it drew from that one failure the rule that such a test is run with `synchronous_commit = on` and that a test Postgres never takes its speed from turning off durable commit, and every Postgres service a `.github/workflows/ci-job-<job>.yaml` declares now runs with the three off.
 What replaced it is that the test states the planner input it is making a claim about rather than taking it from a vacuum:
 `packages/envoy/internal/dispatch/sessionanswers/sessionanswers_test.go` calls `pg_restore_relation_stats(…, 'relallvisible', c.relpages)` inside the transaction its two `EXPLAIN`s run in, and that transaction is rolled back when the test ends, so the harness hands the database on as it found it.
 The cause recorded there is wider than the learning's inference, too:
@@ -415,7 +415,7 @@ a page is marked all-visible only once every transaction on the whole server is 
 Its finding is that a load recipe's dependency settings are part of the recipe:
 `TestTwoAnnouncersAtOnceAnnounceAndPublishOnce` (`packages/envoy/internal/dispatch/startup/started_test.go`) races a losing pass against the winner's announcing transaction, and against a Postgres with `fsync`, `full_page_writes` and `synchronous_commit` off the pre-fix binary passed 30 of 30 runs, while the same loop against the same server with its durability on failed 17 of 30.
 What has changed is where that fast server is:
-it is every Postgres service of the jobs `.github/workflows/ci.yaml` runs and the throwaway one above, so a reproduction loop run on the shape of server this repository tests on is a recipe that cannot reach a commit window, and a race of that kind is reproduced against a server with its durability left on.
+it is every Postgres service a `.github/workflows/ci-job-<job>.yaml` declares and the throwaway one above, so a reproduction loop run on the shape of server this repository tests on is a recipe that cannot reach a commit window, and a race of that kind is reproduced against a server with its durability left on.
 Read it the other way too: a race of that kind the lane does report is one that survived these settings.
 
 ## A test that calls `t.Parallel()`
@@ -427,10 +427,10 @@ It still runs beside the tests of every other package binary on the same machine
 
 A test stays serial when any of these is true of it:
 
-- Its assertion is a wall-clock window or limit the test itself writes and states as its subject: an answer within a second, a quiet window of 500 ms, a give-up close to a deadline.
+- Its assertion is a wall-clock window or limit the test itself writes and states as its subject: an answer within a second, or a give-up close to a deadline.
   Parallel tests' load stretches the time it measures, so it would fail for the machine's load rather than for a defect.
   It keeps its bound and stays serial: a bound widened to a give-up wait can no longer fail for the defect the test exists for.
-  A window a shared helper of the package owns, and that stands for the product's own interval rather than for this test's claim — `noException`'s 250 ms in `cmd/listener`, the frame waits of its `expectFrames`, and the absence windows `internal/dispatch/docs` takes from `roomWait(t)` — is not such an assertion, and a test whose only clock reading is one of those runs parallel: 33 such tests do, and each has passed in both runs of every measurement pair this change has taken (runs 43793235477 and 43797411630, 43810293311 and 43814304800, 43882061650 and 43882413752).
+  A quiet window, an assertion that nothing arrives within a span, is the one case where that reason does not hold: load stretches only the span a broken product has to show itself in, so a quiet window can lose its reach under load but cannot fail a correct product. So the rule leaves it to judgment, and this change judged each one: some tests are serial for their quiet window, and their `// Serial:` lines say so (the role-keep hour rows of `cmd/listener/role_keep_hour_test.go`, whose windows outlast a sweep the product schedules, among them), while 33 quiet windows stand in tests it made parallel, among them tests whose claim is that absence (`TestPublishRouteSendsNothingToASenderHoldingTheRole`'s 300 ms in `cmd/listener/confirmed_test.go`); each of those tests passed in both runs of every measurement pair this change has taken (runs 43793235477 and 43797411630, 43810293311 and 43814304800, 43882061650 and 43882413752).
 
 - It reads the whole process: a dump of every goroutine (`runtime.Stack(buf, true)`), a goroutine count or `runtime.ReadMemStats`, which count a parallel test's goroutines and allocations as its own.
 

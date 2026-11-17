@@ -5125,7 +5125,7 @@ jobs:
   # Delivery, the Dispatch store, the bus, the listener, the registry store, the session cache and
   # kvwatch share this runner. The Dispatch store's tests (store_test.go:30-32) and delivery's
   # (internal/dispatch/delivery/intake_test.go:46-49, through storetest.Open,
-  # storetest.go:61-64) read DISPATCH_TEST_DATABASE_URL and skip without it, and
+  # storetest.go:63-66) read DISPATCH_TEST_DATABASE_URL and skip without it, and
   # cmd/listener/dispatch_resolution_test.go:182 gets its database through internal/testpg, so
   # the job carries the lane's Postgres service; the registry store itself is the NATS KV view
   # and needs none.

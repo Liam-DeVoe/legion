@@ -67,7 +67,7 @@ jobs:
     # Load-bearing, not boilerplate: this package's TestMain is storetest.Main
     # (internal/dispatch/docs/persistence_test.go:31-32), and storetest.Open skips every test that
     # opens the store when DISPATCH_TEST_DATABASE_URL is unset
-    # (internal/dispatch/store/storetest/storetest.go:60-63). A skip is a pass, so without the
+    # (internal/dispatch/store/storetest/storetest.go:63-66). A skip is a pass, so without the
     # service this job would be green having run almost nothing.
     env:
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
