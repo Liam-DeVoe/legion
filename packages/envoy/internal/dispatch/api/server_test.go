@@ -482,7 +482,10 @@ func assertUnchanged(t *testing.T, request string, before, after map[string]stri
 // awaitBackgroundWrites waits for every write srv's earlier requests left running past their
 // answers: the term-statistics refresh a related-item check starts for a project with no statistics
 // yet (ensureSearchTermStats), which commits search_term_stats and search_term_totals rows when it
-// finishes, and every detached run (srv.detached), such as a related_checks record's retry.
+// finishes; every detached run (srv.detached), such as a related_checks record's retry; and every
+// comment mention the mention sender holds (mentionSender.held), whose send writes the comment's
+// deliveries, watermarks and events. A comment enqueues its mentions before it answers
+// (createComment), so once the request has answered, an empty held set is a settled sender.
 func awaitBackgroundWrites(t *testing.T, srv *server) {
 	t.Helper()
 	rows, err := srv.deps.Store.Pool.Query(context.Background(), `select key from projects`)
@@ -505,6 +508,16 @@ func awaitBackgroundWrites(t *testing.T, srv *server) {
 	case <-idle:
 	case <-time.After(30 * time.Second):
 		t.Fatal("the server's detached work did not end")
+	}
+	held := func() int {
+		srv.mentions.mu.Lock()
+		defer srv.mentions.mu.Unlock()
+		return len(srv.mentions.held)
+	}
+	for deadline := time.Now().Add(30 * time.Second); held() > 0; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the mention sender still holds %d sends after 30s", held())
+		}
 	}
 }
 
