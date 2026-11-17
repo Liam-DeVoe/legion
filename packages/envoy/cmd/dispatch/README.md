@@ -164,6 +164,7 @@ Every project has an owner, and a boot over a project with none refuses to serve
 `DISPATCH_PRIVATE_PROJECTS` names, comma-separated, the projects this deployment has provisioned as private: their namespaces, stores and grants exist (agent-infra's `legion.PrivateProjects`).
 Only these projects can be made private, and an entry that is not a project key, the old value `1` included, refuses startup; unset or empty, no project can be made private, as before the setting existed.
 An owner's switch of a project to private (`PATCH /api/v1/projects/{key}/access`) is refused `409 PRIVATE_PROJECTS_OFF` with no list, `409 PRIVATE_PROJECT_NOT_PROVISIONED` for a project the list does not name, `409 PRIVATE_PROJECTS_INCOMPLETE` until that project's rows all have their nodes and both `envoy-dispatch backfill-session-projects` and `envoy-dispatch scrub-access-events` have run, naming the command, and `409 PRIVATE_PROJECTS_UNAVAILABLE` while the hub does not take the project's key in its `envoy_private_projects` bucket.
+This build has no writer of that bucket (`cmd/dispatch` leaves `api.Deps.BusProjects` nil), so a switch that passes every other check is always `409 PRIVATE_PROJECTS_UNAVAILABLE`: no project can be made private through the server until a build carries the writer.
 A switch to public is never refused by any of them.
 Nothing here stops the boot, because a boot that exits would stop every project:
 a project the database holds private that the list does not name stays private, refuses every change of its visibility but its owner's switch to public, and is named by an ERROR line at boot and at every maintenance pass, while `/healthz` answers the fixed reason `degraded: ["private_project_unprovisioned"]`, naming no project, and leaves `ok` and the status as they are (Making a project public without the server, below);
@@ -2634,7 +2635,7 @@ envoy-dispatch project-visibility <KEY> public
 ```
 
 It reads `DATABASE_URL` and makes the change in one transaction that appends `project.access_changed`, written by the actor `{"kind": "system", "id": "envoy-dispatch project-visibility"}` (`access.SetVisibility`).
-It makes a project public only, so it makes no bus call: the private-projects record's writer deletes the project's key at the server's start pass, or within a minute on a running server, and until then the project's messages stay withheld, never shown.
+It makes a project public only, so it makes no bus call, and this build has no writer of the hub's private-projects record (`envoy_private_projects`), so no key of the project was written there for anything to remove.
 It exits 0 once the change commits;
 2 for a key no project holds, for any value but `public`, and for arguments that are not exactly a key and `public`, writing nothing;
 and 1 when the database cannot be opened or written.
@@ -4141,9 +4142,10 @@ Each item below names a path with its method and identity, then its purpose.
   A target project the caller cannot see is answered as an unknown project (`404 NOT_FOUND`).
   A mapping of a project the caller cannot see is neither moved nor named:
   a PUT over it answers the lane refusal's hidden form, which names the lane alone, and a DELETE answers `204` and removes nothing.
-  A PUT into a private project writes that project's key in the hub's `envoy_private_projects` bucket through its own transaction, as its last step before the commit, and is `409 PRIVATE_PROJECTS_UNAVAILABLE`, with nothing changed, while the hub does not take it.
+  A PUT into a private project writes that project's key in the hub's `envoy_private_projects` bucket through its own transaction, as its last step before the commit, and is `409 PRIVATE_PROJECTS_UNAVAILABLE`, with nothing changed, while the hub does not take it;
+  this build has no writer of that bucket, so every PUT into a private project is that `409`.
   The route adds names to the key and never removes one:
-  a move out of the project, a DELETE and a `renamed_to` change leave the old name there until the bucket's writer rewrites the key from the committed rows, the closed direction.
+  a move out of the project, a DELETE and a `renamed_to` change leave the old name there, the closed direction, for the bucket's writer to rewrite from the committed rows once a build carries it.
   The boot seed of `DISPATCH_REPO_PROJECTS` leaves out an entry either refusal would refuse, logs it at ERROR naming the lane or the bucket, and goes on to the next entry and the boot.
   `AGENTS.md` gives the rules and the `settings.repo_project.updated` events.
 

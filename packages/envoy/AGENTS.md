@@ -2715,6 +2715,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `409 PRIVATE_PROJECTS_INCOMPLETE`, naming the command that repairs it, while a row of the project has no node naming its project (`graphcensus.ProjectCompleteFor`) or `session_projects_filled` or `access_events_scrubbed` holds no row (`privateProjectIncomplete`);
   `409 REPOSITORY_LANE_SHARED` for a repository of the project that shares a GitHub subject lane with another project's (`refuseSharedLane`);
   and, as the transaction's last statement, `Deps.BusProjects.EnsurePrivate` through the route's own transaction, which writes the project's key in the hub's `envoy_private_projects` bucket, so a hub that refuses it, or no bus at all, is `409 PRIVATE_PROJECTS_UNAVAILABLE` with nothing changed (`ensurePrivate`).
+  This build has no such writer: `cmd/dispatch` leaves `BusProjects` nil, so a switch that passes every refusal before it is `409 PRIVATE_PROJECTS_UNAVAILABLE`, and no project can be made private through the route until a build carries the writer.
   A switch to public meets only the owner check, and the route makes no bus call for it.
   A project the database holds private that the list does not name stays private, and every change of its visibility but its owner's switch to public is refused;
   nothing about it refuses the boot: `reportPrivateProjects` logs an ERROR line naming it and both repairs at boot, `api.RunMaintenanceSweep` logs it every pass, and `/healthz` answers the fixed reason `degraded: ["private_project_unprovisioned"]`, naming no key and counting none, and leaves `ok` as it is.
@@ -2799,7 +2800,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   two public projects may share one.
   A mapping of a project the caller cannot see is neither moved, removed nor named (`refuseHiddenMapping`), so `REPO_PROJECT_IN_USE` names only a project the caller sees.
   A write whose target project is private then calls `Deps.BusProjects.EnsurePrivate` through its own transaction as its last statement, which puts the project's key in the hub's `envoy_private_projects` bucket.
-  It adds names and never removes one, and no route calls it after a commit, so a name a move, a `DELETE` or a `renamed_to` change left on the key stays until the bus writer's own pass rewrites the key from the committed rows.
+  It adds names and never removes one, and no route calls it after a commit, so a name a move, a `DELETE` or a `renamed_to` change left on the key is the bus writer's to remove, by rewriting the key from the committed rows.
+  This build has no bus writer (`BusProjects` is nil), so every such write into a private project is `409 PRIVATE_PROJECTS_UNAVAILABLE`.
 
 - A closed issue (`closed_at` set) still takes its conversation: a new comment - issue-level, a thread reply, a reply on an ask, one anchored to a quote of one of its documents, and that thread's replies - and a new message, from a person or an agent, with their deliveries, retries and the mentioned or targeted agent's reply.
   A reply still reopens a resolved root there, as it does on an open issue.
