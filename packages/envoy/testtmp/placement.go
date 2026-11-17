@@ -28,9 +28,9 @@ import (
 //
 // exceptions are the paths under root, written from it, that it leaves unread, with the reason
 // each places a temporary directory itself on purpose. It logs every one it skips, so a run says
-// what it did not read and nothing is left out quietly. Each module's test calls it with its own
-// root and its own exceptions: packages/envoy's in this package, packages/daemon's in its
-// internal/textcheck.
+// what it did not read and nothing is left out quietly. Each module's internal/textcheck calls it
+// with its own root and its own exceptions, so the text-check job, whose filter selects every
+// file each walk reads, runs both.
 func CheckPlacements(t testing.TB, root string, exceptions map[string]string) {
 	t.Helper()
 	offences := placements(t, root, exceptions)

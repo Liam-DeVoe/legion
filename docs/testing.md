@@ -189,9 +189,9 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   measures what `longest` would come to there; only when that passes 107 bytes, or `TMPDIR` holds
   no directory at all, does it fall back to `/tmp`, and it says so with `t.Logf` when it does.
   `testtmp.CheckPlacements` fails a new `os.TempDir()`, or a new `os.MkdirTemp` whose first
-  argument is a string literal naming a directory, anywhere in a module's tests: the test of
-  `packages/envoy/testtmp` runs it over that module and `packages/daemon/internal/textcheck`'s
-  over the daemon's. It reads no other shape: a directory named by a variable or a constant, or an
+  argument is a string literal naming a directory, anywhere in a module's tests: each module's
+  `internal/textcheck` runs it over that module, `packages/envoy`'s with `infra` included, in the
+  text-check job. It reads no other shape: a directory named by a variable or a constant, or an
   `os.CreateTemp`, is left to review.
 - Two kinds of site keep a directory of their own on purpose.
   `packages/daemon/internal/shim/socketpath_test.go`'s `roleTempDir` builds a deliberately long
