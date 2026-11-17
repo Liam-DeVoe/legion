@@ -21,7 +21,7 @@ import type { IssueField } from "./IssueFieldForms";
 import { useMarginDrawer } from "./margin-slot";
 import { PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
-import { usableControl } from "./usable-control";
+import { USABLE_CONTROL_ATTRIBUTES, usableControl } from "./usable-control";
 
 /**
  * The one control that reaches a property this issue has no value for, in Details. Every
@@ -50,19 +50,23 @@ import { usableControl } from "./usable-control";
  * CORE-1", that render's commit renamed it "Add a label to CORE-1", and nothing drew the menu
  * again. So it is read after each commit of the menu, and again on each change that can draw,
  * rename or remove a control an entry reaches, or change whether it takes a press, which a
- * `MutationObserver` over the panel and the header reports: most such changes are a commit of
- * the control's own component alone, which draws the menu no further time. Read after the
- * menu's own commits only, Add went when it opened the priorities' form, which replaces "Add a
+ * `MutationObserver` over Details and the header reports: most such changes are a commit of the
+ * control's own component alone, which draws the menu no further time. Read after the menu's
+ * own commits only, Add went when it opened the priorities' form, which replaces "Add a
  * priority to CORE-1", and stayed gone once Cancel drew that control again in a commit of
  * `IssuePriorityLine` alone; the repository's select and the components' picker, each drawn
  * once its own read answers, were never seen either (the review of 5906c38b).
  */
 export function IssueAddMenu({
+  drawerBox,
   isClosed,
   issue,
   onOpenField,
   panel,
 }: {
+  /** The Details drawer's `aside` the panel is placed in (`slots/details.tsx`), or `null` while
+   *  the panel is in none. */
+  drawerBox: HTMLElement | null;
   isClosed: boolean;
   issue: IssueDetails;
   onOpenField: (field: IssueField) => void;
@@ -118,8 +122,9 @@ export function IssueAddMenu({
 
   const fields = emptyFields(issue);
   // The fields of the latest commit, which `read` reads: which entries the issue lists and the
-  // names their controls have both follow the issue, and the observer that calls `read` is set
-  // up once, so `read` takes them from here rather than from the render it was made in.
+  // names their controls have both follow the issue, and the observer that calls `read` is not
+  // set up again on each render, so `read` takes them from here rather than from the render it
+  // was made in.
   const committed = useRef(fields);
   const read = useCallback(() => {
     const found = committed.current
@@ -137,8 +142,12 @@ export function IssueAddMenu({
   // hidden by another component's own commit draws the menu no further time: a refused save of
   // the priorities gives their control back in a commit of `IssuePriorityLine` alone. Every
   // control an entry reaches is under the panel or the header (the assignee's), so those two are
-  // watched, for each attribute `usableControl` reads - `class` and `style` for what
-  // `checkVisibility()` reads.
+  // watched, for each attribute `usableControl` reads. `usableControl` also reads every element
+  // from a control of Details up to Details' own `aside`, and the `aside` itself, which is hidden
+  // while Details is closed; an element between them can be hidden too, as the phone's sheet hides
+  // the box that holds the panel while a margin thread is open (`features/margin/MarginSheet.tsx`).
+  // So where an `aside` holds the panel (`drawerBox`), the whole `aside` is watched in the panel's
+  // place.
   useLayoutEffect(() => {
     committed.current = fields;
     read();
@@ -149,11 +158,15 @@ export function IssueAddMenu({
     const watch = () => {
       header = document.querySelector(ISSUE_HEADER);
       watching.disconnect();
-      for (const root of [panel.current, header]) {
+      for (const root of [drawerBox ?? panel.current, header]) {
         if (root !== null) watching.observe(root, WATCHED);
       }
     };
+    // The panel is drawn before any `aside` holds it, and can be moved to another: the watch
+    // starts again for each `drawerBox`, and the page is read once it is on, so a change made
+    // before it started is not missed.
     watch();
+    read();
     // The header can be drawn after Details, or drawn again as another element, and only an
     // element drawn can be watched: so the body is watched for drawn and removed elements alone,
     // and the header is watched again, and the page read, whenever the one found has changed.
@@ -168,7 +181,7 @@ export function IssueAddMenu({
       watching.disconnect();
       arriving.disconnect();
     };
-  }, [panel, read]);
+  }, [drawerBox, panel, read]);
   // The entries of this render's fields the page was last read to reach. A field that got a
   // value in this render is gone from them at once; one that lost it joins once the commit is read.
   const entries = fields.filter((field) => reachable.includes(field.label));
@@ -343,19 +356,10 @@ interface AddableField {
 /** The issue page's header, which draws the assignee's control. */
 const ISSUE_HEADER = "[data-issue-header]";
 
-/** What Add watches under the panel and the header: each element drawn or removed, and each
+/** What Add watches under Details and the header: each element drawn or removed, and each
  *  attribute that names a control or that `usableControl` reads. */
 const WATCHED: MutationObserverInit = {
-  attributeFilter: [
-    "aria-label",
-    "disabled",
-    "aria-disabled",
-    "hidden",
-    "inert",
-    "aria-hidden",
-    "class",
-    "style",
-  ],
+  attributeFilter: ["aria-label", ...USABLE_CONTROL_ATTRIBUTES],
   attributes: true,
   childList: true,
   subtree: true,
@@ -363,10 +367,10 @@ const WATCHED: MutationObserverInit = {
 
 /** The control named `name`, anywhere on the page, while it takes a press (`usableControl`),
  *  else `null`: the one lookup both an entry's listing and its press read, so Add lists an entry
- *  exactly while a press on it opens its control. The press opens Details first wherever the
- *  control is in the closed drawer (`opensDetails`). The fields the panel draws are edited by
- *  their own controls; this is how the add menu reaches one instead of drawing it twice. */
+ *  exactly while a press on it opens its control. A control in the closed drawer still takes a
+ *  press, and the press opens Details first. The fields the panel draws are edited by their own
+ *  controls; this is how the add menu reaches one instead of drawing it twice. */
 function controlNamed(name: string): HTMLElement | null {
   const control = document.querySelector<HTMLElement>(`[aria-label="${CSS.escape(name)}"]`);
-  return usableControl(control, { opensDetails: true }) ? control : null;
+  return usableControl(control) ? control : null;
 }

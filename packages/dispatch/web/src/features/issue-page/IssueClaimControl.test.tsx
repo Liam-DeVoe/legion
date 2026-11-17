@@ -1,20 +1,21 @@
 import { expect, spyOn, test } from "bun:test";
 import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
+import { issueQuery } from "../../api/queries";
 import type { Agent, ClaimHolderLiveness, Issue, IssueClaim, IssueDetails } from "../../api/types";
 import { dangerText, pageFailedText, pageHeaderControl } from "../../theme/classes";
 import { stateForIssue } from "../issue/pins";
 import { MarginProvider } from "../margin/margin-context";
 import { IssueClaimControl } from "./IssueClaimControl";
 import { NoTooltips } from "./NoTooltips";
-import { CONTROL_LABELS } from "./page-words";
+import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
 const claim: IssueClaim = {
@@ -53,8 +54,15 @@ const base: Issue = {
   updated_at: "2026-09-24T06:00:00Z",
 };
 
-/** The claim's row of Details, over the page's own writes, as `IssueMargin.tsx` draws it. */
-function ClaimRow({ issue }: { issue: IssueDetails }): ReactNode {
+/** The claim's row of Details, over the page's own writes, as `IssueMargin.tsx` draws it: on the
+ *  cached issue, as the details slot reads it, so a release that lands is what the row draws
+ *  next. */
+function ClaimRow({ issueKey }: { issueKey: string }): ReactNode {
+  const issue = useQuery({ ...issueQuery(issueKey), enabled: false }).data;
+  return issue === undefined ? null : <ClaimWrites issue={issue} />;
+}
+
+function ClaimWrites({ issue }: { issue: IssueDetails }): ReactNode {
   const writes = useIssueHeaderWrites(issue, stateForIssue(undefined, issue.key));
   return <IssueClaimControl issue={issue} writes={writes} />;
 }
@@ -72,7 +80,7 @@ function claimRow(
   issue: Issue,
   liveness: ClaimHolderLiveness = {},
   { tooltips = false }: { tooltips?: boolean } = {}
-): { unmount: () => void; user: UserEvent } {
+): { client: QueryClient; unmount: () => void; user: UserEvent } {
   const details: IssueDetails = {
     route_status: null,
     route_holder: null,
@@ -90,6 +98,7 @@ function claimRow(
     referenced_by_count: 0,
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(issueQuery(details.key).queryKey, details);
   const wrapper = ({ children }: { children: ReactNode }) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
@@ -98,8 +107,9 @@ function claimRow(
     </MemoryRouter>
   );
   const user = userEvent.setup();
-  const view = render(<ClaimRow issue={details} />, { wrapper });
+  const view = render(<ClaimRow issueKey={details.key} />, { wrapper });
   return {
+    client,
     unmount: () => view.unmount(),
     user,
   };
@@ -242,6 +252,203 @@ test("a failed release is said in the page's colours, with Retry", async () => {
     await view.user.click(retry);
     await waitFor(() => expect(release).toHaveBeenCalledTimes(2));
   } finally {
+    view.unmount();
+    release.mockRestore();
+    agents.mockRestore();
+    subscribers.mockRestore();
+  }
+});
+
+/** Moves the focus to the page's body whenever the element that holds it turns disabled, as
+ *  Chromium does and happy-dom does not, until the function it returns is called. A copy of
+ *  `IssueMargin.test.tsx`'s, since a test file that imports another runs that file's cases too. */
+function blurWhenDisabled(): () => void {
+  const watching = new MutationObserver(() => {
+    const focused = document.activeElement;
+    if (!(focused instanceof HTMLElement) || !focused.hasAttribute("disabled")) return;
+    // happy-dom's `blur()` does nothing on a disabled element, so the attribute comes off for the
+    // blur alone and goes back at once.
+    const value = focused.getAttribute("disabled") ?? "";
+    focused.removeAttribute("disabled");
+    focused.blur();
+    focused.setAttribute("disabled", value);
+  });
+  watching.observe(document, { attributeFilter: ["disabled"], attributes: true, subtree: true });
+  return () => watching.disconnect();
+}
+
+// Release turned disabled while its release was out, which lost the focus of a reader who
+// pressed it by keyboard, since Chromium moves the focus of a control that turns disabled to the
+// page's body (`blurWhenDisabled` does that here). Release stays enabled and is marked busy, as
+// the page's controls are while they save, and a press while the release is out sends nothing.
+test("Release keeps the focus while its release is out, reads busy, and a second press sends none", async () => {
+  const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  const agents = spyOn(api, "listAgents").mockResolvedValue([
+    running("session-one", "Implementer"),
+  ]);
+  const released = Promise.withResolvers<Issue>();
+  const release = spyOn(api, "releaseIssueClaim").mockImplementation(() => released.promise);
+  const view = claimRow({ ...base, claim });
+  const stopBlurring = blurWhenDisabled();
+  try {
+    const button = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
+    act(() => button.focus());
+    await view.user.keyboard("{Enter}");
+    await waitFor(() => expect(release).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(button, "Release does not say the release is out").toHaveTextContent(
+        ANSWER_LINES.saving_release
+      )
+    );
+    expect(document.activeElement, "Release lost the focus while its release is out").toBe(button);
+    expect(button, "Release is not marked busy while its release is out").toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
+    await view.user.keyboard("{Enter}");
+    expect(
+      release,
+      "a press of Release while its release is out sent another"
+    ).toHaveBeenCalledTimes(1);
+
+    await act(async () => released.resolve({ ...base, claim: null }));
+    expect(await screen.findByText(CONTROL_LABELS.none)).toBeDefined();
+  } finally {
+    stopBlurring();
+    view.unmount();
+    release.mockRestore();
+    agents.mockRestore();
+    subscribers.mockRestore();
+  }
+});
+
+// The failure's line was drawn only while the release stood failed, so a press of its Retry took
+// the line, and the Retry with it, away while the release it sent again was out: the focus of a
+// reader who pressed Retry by keyboard went to the page's body, and stayed there when that
+// release failed again and the line came back. The line stays, with its Retry holding the focus,
+// until the release is answered; a second failure is drawn afresh, so a screen reader says it
+// again; and once the release lands and the row reads None, the focus goes to that None rather
+// than to the page.
+test("the failed release's Retry keeps the focus while the release is out and fails again, and hands it to None once the release lands", async () => {
+  const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  const agents = spyOn(api, "listAgents").mockResolvedValue([
+    running("session-one", "Implementer"),
+  ]);
+  const release = spyOn(api, "releaseIssueClaim").mockRejectedValueOnce(new Error("network error"));
+  const view = claimRow({ ...base, claim });
+  const stopBlurring = blurWhenDisabled();
+  const retryOfRelease = () => screen.queryByRole("button", { name: CONTROL_LABELS.retry });
+  const releaseControl = () => screen.getByRole("button", { name: "Release the claim on CORE-1" });
+  try {
+    await view.user.click(
+      await screen.findByRole("button", { name: "Release the claim on CORE-1" })
+    );
+    const failed = await screen.findByRole("alert");
+    const retry = retryOfRelease();
+    if (retry === null) throw new Error("the failed release offers no Retry");
+
+    const retried = Promise.withResolvers<Issue>();
+    release.mockImplementationOnce(() => retried.promise);
+    act(() => retry.focus());
+    await view.user.keyboard("{Enter}");
+    await waitFor(() => expect(release).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(releaseControl()).toHaveTextContent(ANSWER_LINES.saving_release));
+    expect(
+      retryOfRelease(),
+      "the line and its Retry went while the release they sent again is out"
+    ).toBe(retry);
+    expect(
+      document.activeElement,
+      "Retry lost the focus while the release it sent again is out"
+    ).toBe(retry);
+    expect(
+      retry,
+      "Retry does not read busy while the release it sent again is out"
+    ).toHaveAttribute("aria-busy", "true");
+    await view.user.keyboard("{Enter}");
+    expect(release, "a press of Retry while its release is out sent another").toHaveBeenCalledTimes(
+      2
+    );
+
+    await act(async () => retried.reject(new Error("network error again")));
+    await waitFor(() => expect(releaseControl()).toHaveTextContent(CONTROL_LABELS.release_claim));
+    const failedAgain = screen.getByRole("alert");
+    expect(failedAgain).toHaveTextContent("Could not release this claim.");
+    expect(
+      failedAgain,
+      "the second failure was not drawn afresh, so a screen reader would not say it"
+    ).not.toBe(failed);
+    expect(retryOfRelease(), "the line came back with another Retry").toBe(retry);
+    expect(document.activeElement, "Retry lost the focus when the release failed again").toBe(
+      retry
+    );
+    expect(retry, "Retry still reads busy after the release failed again").not.toHaveAttribute(
+      "aria-busy"
+    );
+
+    const landed = Promise.withResolvers<Issue>();
+    release.mockImplementationOnce(() => landed.promise);
+    await view.user.keyboard("{Enter}");
+    await waitFor(() => expect(release).toHaveBeenCalledTimes(3));
+    await act(async () => landed.resolve({ ...base, claim: null }));
+    const none = await screen.findByText(CONTROL_LABELS.none);
+    expect(
+      document.activeElement,
+      "the release landed, and the focus fell to the page rather than to the row's None"
+    ).toBe(none);
+  } finally {
+    stopBlurring();
+    view.unmount();
+    release.mockRestore();
+    agents.mockRestore();
+    subscribers.mockRestore();
+  }
+});
+
+// A release that lands with no answer to give (Dispatch answers its key `KEY_COMMITTED`) takes
+// the failure's line away while the row still draws the claim, until the issue is read again: the
+// focus Retry held goes to Release beside it, and from there to the row's None once the read
+// says nobody holds the issue, rather than to the page either time.
+test("a release that lands with no answer hands Retry's focus to Release, and Release's to None once the claim is read gone", async () => {
+  const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  const agents = spyOn(api, "listAgents").mockResolvedValue([
+    running("session-one", "Implementer"),
+  ]);
+  const release = spyOn(api, "releaseIssueClaim").mockRejectedValueOnce(new Error("network error"));
+  const view = claimRow({ ...base, claim });
+  const stopBlurring = blurWhenDisabled();
+  try {
+    const control = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
+    await view.user.click(control);
+    await screen.findByRole("alert");
+    const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
+
+    release.mockRejectedValueOnce(
+      new ApiError(409, { code: "KEY_COMMITTED", error: "already made" })
+    );
+    act(() => retry.focus());
+    await view.user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("alert"),
+        "the line is still drawn after the release landed"
+      ).toBeNull()
+    );
+    expect(
+      document.activeElement,
+      "the release landed with no answer, and the focus fell to the page rather than to Release"
+    ).toBe(control);
+
+    const read = view.client.getQueryData<IssueDetails>(issueQuery("CORE-1").queryKey);
+    if (read === undefined) throw new Error("the row reads no cached issue");
+    act(() => view.client.setQueryData(issueQuery("CORE-1").queryKey, { ...read, claim: null }));
+    const none = await screen.findByText(CONTROL_LABELS.none);
+    expect(
+      document.activeElement,
+      "the claim was read gone, and the focus fell to the page rather than to the row's None"
+    ).toBe(none);
+  } finally {
+    stopBlurring();
     view.unmount();
     release.mockRestore();
     agents.mockRestore();

@@ -23,10 +23,12 @@ import type {
   GraphReferences,
   Issue,
   IssueDetails,
+  ReferenceTargets,
   RepoProject,
   UserState,
 } from "../../api/types";
 import { linkText, pageInkText } from "../../theme/classes";
+import { assigneeControlName } from "../issue/AssigneeControl";
 import { componentsControlName } from "../issue/IssueComponentsLine";
 import { labelsControlName } from "../issue/IssueLabels";
 import { conversationItemId, pinnedItemMarker, stateForIssue } from "../issue/pins";
@@ -728,6 +730,293 @@ test("Details' Blocks says nothing while its read is out, and None once it answe
   }
 });
 
+/** Moves the focus to the page's body whenever the element that holds it turns disabled, as
+ *  Chromium does and happy-dom does not, until the function it returns is called. */
+function blurWhenDisabled(): () => void {
+  const watching = new MutationObserver(() => {
+    const focused = document.activeElement;
+    if (!(focused instanceof HTMLElement) || !focused.hasAttribute("disabled")) return;
+    // happy-dom's `blur()` does nothing on a disabled element, so the attribute comes off for the
+    // blur alone and goes back at once.
+    const value = focused.getAttribute("disabled") ?? "";
+    focused.removeAttribute("disabled");
+    focused.blur();
+    focused.setAttribute("disabled", value);
+  });
+  watching.observe(document, { attributeFilter: ["disabled"], attributes: true, subtree: true });
+  return () => watching.disconnect();
+}
+
+// A Retry that turned disabled while the read it sent again was out lost the focus of a reader
+// who pressed it by keyboard, since Chromium moves the focus of a control that turns disabled to
+// the page's body (`blurWhenDisabled` does that here). Retry stays enabled and reads busy, and a
+// press while its read is out joins that read and sends nothing (`retryRead`). The titles
+// answered once before they failed, because a refetch of a read that holds an answer otherwise
+// ends the request that is out and sends another.
+test("Retry keeps the focus while the read it sent again is out, and a second press sends none", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  const titles = spyOn(api, "getReferenceTargets").mockResolvedValueOnce({ targets: [] });
+  const retried = Promise.withResolvers<ReferenceTargets>();
+  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
+  const { queryClient, unmount } = renderDetails(undefined, drawer);
+  const stopBlurring = blurWhenDisabled();
+  const retryOfTitles = () =>
+    within(detailsRow(PROPERTY_LABELS.blocked_by)).queryByRole("button", {
+      name: CONTROL_LABELS.retry,
+    });
+
+  try {
+    await screen.findByRole("link", { name: "CORE-3" });
+    await waitFor(() => expect(titles).toHaveBeenCalledTimes(1));
+    titles.mockRejectedValueOnce(new ApiError(500, { code: "INTERNAL", error: "read failed" }));
+    await act(() => queryClient.refetchQueries({ queryKey: ["reference-targets"] }));
+    await waitFor(() => expect(retryOfTitles(), "Blocked by offers no Retry").not.toBeNull());
+    const retry = retryOfTitles();
+    if (retry === null) throw new Error("Blocked by offers no Retry");
+
+    titles.mockImplementation(() => retried.promise);
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    expect(titles, "Retry did not read the titles again").toHaveBeenCalledTimes(3);
+    expect(document.activeElement, "Retry lost the focus while the read it sent again is out").toBe(
+      retry
+    );
+    await waitFor(() =>
+      expect(retry, "Retry does not read busy while the read it sent again is out").toHaveAttribute(
+        "aria-busy",
+        "true"
+      )
+    );
+    expect(retry, "Retry turned disabled while the read it sent again is out").toBeEnabled();
+    expect(document.activeElement, "Retry lost the focus once it read busy").toBe(retry);
+    await user.keyboard("{Enter}");
+    expect(titles, "a press of Retry while its read is out sent another").toHaveBeenCalledTimes(3);
+
+    await act(async () => retried.resolve({ targets: [] }));
+    await waitFor(() =>
+      expect(retryOfTitles(), "the titles answered, but Blocked by still offers Retry").toBeNull()
+    );
+  } finally {
+    stopBlurring();
+    unmount();
+    titles.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// A read that failed again was said on the same node in the same words, so a screen reader said
+// nothing of it. Each failure is drawn afresh (`errorUpdateCount`), while Retry stays the same
+// button, holding the focus of a reader who pressed it by keyboard.
+test("a read that fails again in the same words is said again, while Retry keeps the focus", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  const titles = spyOn(api, "getReferenceTargets").mockResolvedValueOnce({ targets: [] });
+  const retried = Promise.withResolvers<ReferenceTargets>();
+  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
+  const { queryClient, unmount } = renderDetails(undefined, drawer);
+  const stopBlurring = blurWhenDisabled();
+  const blockedBy = () => within(detailsRow(PROPERTY_LABELS.blocked_by));
+
+  try {
+    await screen.findByRole("link", { name: "CORE-3" });
+    await waitFor(() => expect(titles).toHaveBeenCalledTimes(1));
+    titles.mockRejectedValueOnce(new ApiError(500, { code: "INTERNAL", error: "read failed" }));
+    await act(() => queryClient.refetchQueries({ queryKey: ["reference-targets"] }));
+    const failed = await blockedBy().findByRole("alert");
+    const retry = blockedBy().getByRole("button", { name: CONTROL_LABELS.retry });
+
+    titles.mockImplementationOnce(() => retried.promise);
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
+    await act(async () =>
+      retried.reject(new ApiError(500, { code: "INTERNAL", error: "read failed" }))
+    );
+    await waitFor(() =>
+      expect(retry, "Retry still reads busy after the read failed again").not.toHaveAttribute(
+        "aria-busy"
+      )
+    );
+
+    const failedAgain = blockedBy().getByRole("alert");
+    expect(failedAgain).toHaveTextContent("Could not read the titles of these issues.");
+    expect(
+      failedAgain,
+      "the second failure was not drawn afresh, so a screen reader would not say it"
+    ).not.toBe(failed);
+    expect(
+      blockedBy().getByRole("button", { name: CONTROL_LABELS.retry }),
+      "the line came back with another Retry"
+    ).toBe(retry);
+    expect(document.activeElement, "Retry lost the focus when the read failed again").toBe(retry);
+  } finally {
+    stopBlurring();
+    unmount();
+    titles.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// A read that failed on its first load holds no answer, and a fetch of such a read clears its
+// failure, so the press of its Retry took the line, and the Retry with it, away while the read it
+// sent was out: the focus of a reader who pressed Retry by keyboard went to the page's body. The
+// line stays, its Retry busy and holding the focus, until the read answers, and the focus then
+// goes on in the row rather than to the page: in Blocked by to the row's control, and in Blocks,
+// which has no control, to the first issue the answer drew.
+test("a read that failed on its first load keeps its Retry, with the focus, while the read is out, and hands the focus on in its row once it answers", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const titles = spyOn(api, "getReferenceTargets").mockRejectedValueOnce(
+    new ApiError(500, { code: "INTERNAL", error: "read failed" })
+  );
+  const getReferences = spyOn(api, "getReferences").mockRejectedValueOnce(
+    new ApiError(500, { code: "INTERNAL", error: "read failed" })
+  );
+  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
+  const { unmount } = renderDetails(undefined, drawer);
+  const stopBlurring = blurWhenDisabled();
+  const blockedBy = () => within(detailsRow(PROPERTY_LABELS.blocked_by));
+  const blocksRow = () => within(detailsRow(PROPERTY_LABELS.blocks));
+
+  try {
+    const titlesRetry = await waitFor(() =>
+      blockedBy().getByRole("button", { name: CONTROL_LABELS.retry })
+    );
+    const titlesHeld = Promise.withResolvers<ReferenceTargets>();
+    titles.mockImplementationOnce(() => titlesHeld.promise);
+    act(() => titlesRetry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(titles).toHaveBeenCalledTimes(2));
+    await waitFor(() => {
+      expect(
+        titlesRetry,
+        "the line and its Retry went while the titles Retry read again are out"
+      ).toBeInTheDocument();
+      expect(
+        titlesRetry,
+        "Retry does not read busy while the titles it read again are out"
+      ).toHaveAttribute("aria-busy", "true");
+    });
+    expect(
+      document.activeElement,
+      "Retry lost the focus while the titles it read again are out"
+    ).toBe(titlesRetry);
+    await act(async () => titlesHeld.resolve({ targets: [] }));
+    await waitFor(() =>
+      expect(
+        blockedBy().queryByRole("alert"),
+        "the titles answered, but Blocked by still says they failed"
+      ).toBeNull()
+    );
+    expect(
+      document.activeElement,
+      "the titles answered, and the focus fell to the page rather than to the row's control"
+    ).toBe(blockedBy().getByRole("button", { name: blockedByControlName("CORE-1", 1) }));
+
+    const blocksRetry = await blocksRow().findByRole("button", { name: CONTROL_LABELS.retry });
+    const blocksHeld = Promise.withResolvers<GraphReferences>();
+    getReferences.mockImplementationOnce(() => blocksHeld.promise);
+    act(() => blocksRetry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(getReferences).toHaveBeenCalledTimes(2));
+    await waitFor(() => {
+      expect(
+        blocksRetry,
+        "the line and its Retry went while the read Retry sent again is out"
+      ).toBeInTheDocument();
+      expect(
+        blocksRetry,
+        "Retry does not read busy while the read it sent again is out"
+      ).toHaveAttribute("aria-busy", "true");
+    });
+    expect(document.activeElement, "Retry lost the focus while the read it sent again is out").toBe(
+      blocksRetry
+    );
+    await act(async () =>
+      blocksHeld.resolve({
+        edges: [
+          {
+            created_at: "2026-10-26T00:00:00Z",
+            direction: "in",
+            excerpt: { text: "Ship the release" },
+            kind: "blocked_by",
+            node: graphNode({
+              id: "CORE-5",
+              issue_key: "CORE-5",
+              kind: "issue",
+              ref: buildDispatchReference({ key: "CORE-5", kind: "issue" }),
+            }),
+            source_seq: 4,
+          },
+        ],
+        node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+      })
+    );
+    const waiting = await blocksRow().findByRole("link", { name: "CORE-5" });
+    expect(
+      document.activeElement,
+      "Blocks answered, and the focus fell to the page rather than to the first issue it drew"
+    ).toBe(waiting);
+  } finally {
+    stopBlurring();
+    unmount();
+    getReferences.mockRestore();
+    titles.mockRestore();
+    restore();
+  }
+});
+
+// Blocks has no control of its own, so where the read its Retry sent answers with nothing
+// waiting on the issue, the focus Retry held goes to the None the row says then.
+test("Blocks hands the focus of its Retry to its None when the read answers with none", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences")
+    .mockResolvedValue({
+      edges: [],
+      node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+    })
+    .mockRejectedValueOnce(new ApiError(500, { code: "INTERNAL", error: "read failed" }));
+  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
+  const { unmount } = renderDetails(undefined, drawer);
+  const blocksRow = () => within(detailsRow(PROPERTY_LABELS.blocks));
+
+  try {
+    const retry = await waitFor(() =>
+      blocksRow().getByRole("button", { name: CONTROL_LABELS.retry })
+    );
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    const none = await blocksRow().findByText(CONTROL_LABELS.none);
+    expect(
+      document.activeElement,
+      "Blocks answered with none, and the focus fell to the page rather than to its None"
+    ).toBe(none);
+  } finally {
+    unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
 // A folded list's Show all goes with its press, so the focus goes on to the first entry it
 // opened, the eleventh, rather than falling to the page: in Files and documents, and in Blocks.
 test("Show all gives the focus to the first entry it opens", async () => {
@@ -913,17 +1202,20 @@ test("the add menu opened by the keyboard takes the focus, walks by the arrows a
   }
 });
 
+/** No priority is live: the read the Advances row makes, answered empty. */
+const noLivePriorities = {
+  empty: "No priority is live now, so the list is empty.",
+  priorities: [],
+  priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+  work_under_no_priority: { by_project: {}, count: 0, issues: [] },
+};
+
 // The add control lists what has no value yet, so where nothing can be added - a closed issue,
 // or one with a value for every property the menu lists - it is not drawn at all.
 test("the add control is not drawn on a closed issue, nor when every property has a value", async () => {
   const { getIssue, restore } = stubIssueApi();
   // The Advances row reads the priorities, to name the one the issue advances.
-  const priorities = spyOn(api, "listPriorities").mockResolvedValue({
-    empty: "No priority is live now, so the list is empty.",
-    priorities: [],
-    priority_work_parked: { by_priority: {}, count: 0, issues: [] },
-    work_under_no_priority: { by_project: {}, count: 0, issues: [] },
-  });
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
   getIssue.mockResolvedValue({ ...issue, closed_at: "2026-09-10T00:00:00Z", status: "done" });
   let view = renderDetails();
 
@@ -977,12 +1269,7 @@ test("removing the last label draws Add, whose Labels the row's control now answ
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
-  const priorities = spyOn(api, "listPriorities").mockResolvedValue({
-    empty: "No priority is live now, so the list is empty.",
-    priorities: [],
-    priority_work_parked: { by_priority: {}, count: 0, issues: [] },
-    work_under_no_priority: { by_project: {}, count: 0, issues: [] },
-  });
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
   const full: IssueDetails = {
     ...issue,
     advances: [{ id: "PRI-7", inherited: false }],
@@ -1052,12 +1339,7 @@ test("removing the last label draws Add, whose Labels the row's control now answ
 test("Add is drawn again after the Advances form it opened is cancelled", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
-  const priorities = spyOn(api, "listPriorities").mockResolvedValue({
-    empty: "No priority is live now, so the list is empty.",
-    priorities: [],
-    priority_work_parked: { by_priority: {}, count: 0, issues: [] },
-    work_under_no_priority: { by_project: {}, count: 0, issues: [] },
-  });
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
   getIssue.mockResolvedValue({
     ...issue,
     advances: [],
@@ -1099,6 +1381,14 @@ test("Add is drawn again after the Advances form it opened is cancelled", async 
     restore();
   }
 });
+
+/** Add's own control, found whether or not it is drawn on the screen, and never the priority
+ *  form's own Add button: only Add's control opens a menu. */
+function addMenuControl(): Element | null {
+  return document.querySelector(
+    `[aria-haspopup="menu"][aria-label="${CSS.escape(CONTROL_LABELS.add)}"]`
+  );
+}
 
 // A press on an entry of Add opens that property's control. While the priorities' save is out,
 // "Add a priority to CORE-1" is drawn disabled (`IssuePriorityLine`'s `busy`), so a press on
@@ -1164,7 +1454,7 @@ test("Add lists no entry whose control is disabled, and lists it again once it i
     const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
     await waitFor(() => expect(control).toBeDisabled());
     expect(
-      document.querySelector('[aria-haspopup="menu"][aria-label="Add"]'),
+      addMenuControl(),
       "Add lists Advances while its control is disabled, so a press on it opens nothing"
     ).toBeNull();
     await act(async () =>
@@ -1175,7 +1465,7 @@ test("Add lists no entry whose control is disabled, and lists it again once it i
     );
     await waitFor(() =>
       expect(
-        document.querySelector('[aria-haspopup="menu"][aria-label="Add"]'),
+        addMenuControl(),
         "Advances has no value and its control is enabled again, but Details draws no Add"
       ).not.toBeNull()
     );
@@ -1213,8 +1503,9 @@ function setAttributeUntil(element: Element, name: string, value: string): () =>
   return () => element.removeAttribute(name);
 }
 
-/** Each way a control stops taking a press (`usableControl`), set on "Add a priority to CORE-1"
- *  or on the element around it, with what undoes it. */
+/** Each way a control Add reaches stops taking a press (`usableControl`), or stops being found by
+ *  the name Add looks for, set on "Add a priority to CORE-1" or on the element around it, with
+ *  what undoes it. */
 const refusals = [
   ["disabled", (control: HTMLElement) => setAttributeUntil(control, "disabled", "")],
   [
@@ -1242,6 +1533,36 @@ const refusals = [
     },
   ],
   [
+    "under an element of visibility: hidden",
+    (_control: HTMLElement, around: HTMLElement) => {
+      around.style.visibility = "hidden";
+      return () => around.style.removeProperty("visibility");
+    },
+  ],
+  [
+    "under an element whose class the stylesheet draws as nothing",
+    (_control: HTMLElement, around: HTMLElement) => {
+      const sheet = document.createElement("style");
+      sheet.textContent = ".drawn-as-nothing { display: none; }";
+      document.head.append(sheet);
+      around.classList.add("drawn-as-nothing");
+      return () => {
+        around.classList.remove("drawn-as-nothing");
+        sheet.remove();
+      };
+    },
+  ],
+  [
+    // Another component's own commit renames its control in place, which draws Add no further
+    // time: Add finds the control again only by watching its name.
+    "renamed in place",
+    (control: HTMLElement) => {
+      const name = control.getAttribute("aria-label") ?? "";
+      control.setAttribute("aria-label", `${name}, renamed`);
+      return () => control.setAttribute("aria-label", name);
+    },
+  ],
+  [
     "removed from the page",
     (control: HTMLElement) => {
       const parent = control.parentNode;
@@ -1256,18 +1577,14 @@ const refusals = [
 
 // Add lists an entry only while its control takes a press (`usableControl`), whatever stops it
 // taking one - on the control or on an element around it - and lists it again once that is
-// undone, in a change no component of Add's draws. Each row is one rule of `usableControl`.
+// undone, in a change no component of Add's draws. Each row is one rule of `usableControl`, or
+// the name Add finds the control by, and each is a change Add's watch must see.
 test.each(
   refusals
 )("Add lists no entry whose control is %s, and lists it again once it is not", async (_name, refuse) => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
-  const priorities = spyOn(api, "listPriorities").mockResolvedValue({
-    empty: "No priority is live now, so the list is empty.",
-    priorities: [],
-    priority_work_parked: { by_priority: {}, count: 0, issues: [] },
-    work_under_no_priority: { by_project: {}, count: 0, issues: [] },
-  });
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
   getIssue.mockResolvedValue(advancesOnly);
   const view = renderDetails();
   try {
@@ -1284,15 +1601,12 @@ test.each(
       undo = refuse(control, screen.getByTestId("issue-advances"));
     });
     await waitFor(() =>
-      expect(
-        document.querySelector('[aria-haspopup="menu"][aria-label="Add"]'),
-        "Add lists Advances while its control takes no press"
-      ).toBeNull()
+      expect(addMenuControl(), "Add lists Advances while its control takes no press").toBeNull()
     );
     await act(async () => undo());
     await waitFor(() =>
       expect(
-        document.querySelector('[aria-haspopup="menu"][aria-label="Add"]'),
+        addMenuControl(),
         "Advances' control takes a press again, but Details draws no Add"
       ).not.toBeNull()
     );
@@ -1309,17 +1623,14 @@ test.each(
 test("with no checkVisibility, Add still lists a control that takes a press", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
-  const priorities = spyOn(api, "listPriorities").mockResolvedValue({
-    empty: "No priority is live now, so the list is empty.",
-    priorities: [],
-    priority_work_parked: { by_priority: {}, count: 0, issues: [] },
-    work_under_no_priority: { by_project: {}, count: 0, issues: [] },
-  });
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
   getIssue.mockResolvedValue(advancesOnly);
   const checkVisibility = Object.getOwnPropertyDescriptor(Element.prototype, "checkVisibility");
-  Reflect.deleteProperty(Element.prototype, "checkVisibility");
-  const view = renderDetails();
+  // Unmounts what the case drew, once it has drawn it.
+  let unmount = () => {};
   try {
+    Reflect.deleteProperty(Element.prototype, "checkVisibility");
+    unmount = renderDetails().unmount;
     expect(checkVisibility, "the DOM has no checkVisibility of its own to take away").toBeDefined();
     expect(typeof document.body.checkVisibility).toBe("undefined");
     await screen.findByRole("link", { name: "CORE-3" });
@@ -1333,10 +1644,160 @@ test("with no checkVisibility, Add still lists a control that takes a press", as
       "with no checkVisibility, a control that is not on the page takes a press"
     ).toBe(false);
   } finally {
-    view.unmount();
+    unmount();
     if (checkVisibility !== undefined) {
       Object.defineProperty(Element.prototype, "checkVisibility", checkVisibility);
     }
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+/** Details as the shell's drawer draws it: the details slot, whose panel the drawer's `aside`
+ *  holds under a box of the sheet's own (`MarginSheet.tsx`'s `SheetBody`, which the phone's
+ *  sheet hides while a margin thread is open), the box found by the test id `sheet-body`. */
+function renderDetailsDrawer(details: IssueDetails) {
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
+  });
+  return render(
+    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+      <QueryClientProvider client={queryClient}>
+        <MarginProvider>
+          <MarginSlotProvider drawsSlot>
+            <DetailsSlot issue={details} route={{ key: "CORE-1", kind: "issue" }} />
+            <aside {...{ [DETAILS_ATTRIBUTE]: "" }}>
+              <div data-testid="sheet-body">
+                <MarginBody />
+              </div>
+            </aside>
+          </MarginSlotProvider>
+        </MarginProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+// The phone's sheet hides the box that holds the panel while a margin thread is open
+// (`MarginSheet.tsx`'s `SheetBody`). That box is between the panel and Details' `aside`, where
+// `usableControl` reads every element, so a control of Details takes no press while it is
+// hidden: Add lists no entry then, and lists it again once the box is shown. Neither change is a
+// commit of Add's or a change inside the panel, so Add sees them only by watching the whole
+// `aside`; watching the panel alone, a read made while the box was hidden left Add gone.
+test("Add lists no entry while the box between the panel and Details' aside is hidden, and lists it again once it is shown", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
+  const view = renderDetailsDrawer(advancesOnly);
+  try {
+    await screen.findByRole("link", { name: "CORE-3" });
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
+    expect(
+      screen.getAllByRole("menuitem").map((entry) => entry.textContent),
+      "Add lists other than Advances"
+    ).toEqual([PROPERTY_LABELS.advances]);
+    await user.keyboard("{Escape}");
+    const box = screen.getByTestId("sheet-body");
+    expect(
+      box.contains(addMenuControl()) && box.closest(`aside[${DETAILS_ATTRIBUTE}]`) !== null,
+      "Add is not under the box in Details' aside"
+    ).toBe(true);
+    await act(async () => box.setAttribute("hidden", ""));
+    await waitFor(() =>
+      expect(
+        addMenuControl(),
+        "Add lists Advances while the box that holds the panel is hidden"
+      ).toBeNull()
+    );
+    await act(async () => box.removeAttribute("hidden"));
+    await waitFor(() =>
+      expect(
+        addMenuControl(),
+        "the box that holds the panel is shown again, but Details draws no Add"
+      ).not.toBeNull()
+    );
+  } finally {
+    view.unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+// Details closed - its `aside` hidden (`Margin.tsx`), which a browser draws as `display: none`
+// and happy-dom draws as nothing at all, so the case sets that style too - is no refusal
+// (`usableControl`): Details opens on what Add listed while it was closed, so that is what Add
+// lists once Details is open, and no read on opening has to put an entry back.
+test("Add lists the same entries while Details is closed as once it is open again", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
+  const view = renderDetailsDrawer(advancesOnly);
+  // Add's entries, read whether or not Details is drawn.
+  const listed = () =>
+    screen.queryAllByRole("menuitem", { hidden: true }).map((entry) => entry.textContent);
+  try {
+    await screen.findByRole("link", { name: "CORE-3" });
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
+    expect(listed(), "Add lists other than Advances").toEqual([PROPERTY_LABELS.advances]);
+    const details = addMenuControl()?.closest<HTMLElement>(`aside[${DETAILS_ATTRIBUTE}]`);
+    if (details == null) throw new Error("Add is not in Details' aside");
+    await act(async () => {
+      details.setAttribute("hidden", "");
+      details.style.display = "none";
+    });
+    expect(listed(), "Add lists other entries while Details is closed").toEqual([
+      PROPERTY_LABELS.advances,
+    ]);
+    await act(async () => {
+      details.removeAttribute("hidden");
+      details.style.removeProperty("display");
+    });
+    expect(listed(), "Add lists other entries once Details is open again").toEqual([
+      PROPERTY_LABELS.advances,
+    ]);
+  } finally {
+    view.unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+// The assignee's control is the header's, and the header can be drawn after Details. Add then
+// finds no header to watch, so it watches the body for one drawn later, and lists Assignee once
+// a header that draws the assignee's control is on the page, though that is no commit of Add's.
+test("Add lists Assignee once a header drawn after it draws the assignee's control", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
+  // A value for every property Add lists but the assignee.
+  getIssue.mockResolvedValue({
+    ...advancesOnly,
+    advances: [{ id: "PRI-7", inherited: false }],
+    assignee: null,
+  });
+  const header = document.createElement("div");
+  header.setAttribute("data-issue-header", "");
+  const assignee = document.createElement("button");
+  assignee.type = "button";
+  assignee.setAttribute("aria-label", assigneeControlName("CORE-1"));
+  header.append(assignee);
+  const view = renderDetails();
+  try {
+    await screen.findByRole("link", { name: "CORE-3" });
+    await waitFor(() => expect(priorities).toHaveBeenCalled());
+    expect(
+      addMenuControl(),
+      "Add is drawn before any header draws the assignee's control, which its one entry reaches"
+    ).toBeNull();
+    await act(async () => document.body.append(header));
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
+    expect(
+      screen.getAllByRole("menuitem").map((entry) => entry.textContent),
+      "Add lists other than Assignee once the header draws the assignee's control"
+    ).toEqual([PROPERTY_LABELS.assignee]);
+  } finally {
+    header.remove();
+    view.unmount();
     priorities.mockRestore();
     restore();
   }
@@ -1349,12 +1810,7 @@ test("with no checkVisibility, Add still lists a control that takes a press", as
 test("Add is drawn once the repository's control draws its select", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
-  const priorities = spyOn(api, "listPriorities").mockResolvedValue({
-    empty: "No priority is live now, so the list is empty.",
-    priorities: [],
-    priority_work_parked: { by_priority: {}, count: 0, issues: [] },
-    work_under_no_priority: { by_project: {}, count: 0, issues: [] },
-  });
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
   // Open, Details reads what waits on the issue.
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue({
@@ -1870,8 +2326,9 @@ test("while the labels are saving, the key l is off, and on again once the save 
 
 // `l` opens Details at the Labels row before it presses the labels' control
 // (`useOpenDetailsAt`), so Details being closed - its drawer's `aside` hidden, and the control
-// under it not drawn - leaves `l` on (`usableControl`'s `opensDetails`), while an element inside
-// the drawer that hides the row or takes it out of reach still turns it off.
+// under it not drawn - leaves `l` on (`usableControl`, which reads a closed Details as no
+// refusal), while an element inside the drawer that hides the row or takes it out of reach
+// still turns it off.
 test("with Details closed, l is on for the labels control, and off while its row inside Details is hidden or inert", async () => {
   const { restore } = stubIssueApi();
   const queryClient = new QueryClient({
@@ -2180,6 +2637,105 @@ test("a route Dispatch refuses is said in the Messages go to row with Dispatch's
       ).not.toBeInTheDocument()
     );
   } finally {
+    unmount();
+    restore();
+  }
+});
+
+// The refusal's line was drawn only while the route's save stood refused, so a press of its Retry
+// took the line, and the Retry with it, away while the save it sent again was out: the focus of a
+// reader who pressed Retry by keyboard went to the page's body, and stayed there when Dispatch
+// refused the route again and the line came back. The line stays, with its Retry holding the
+// focus, until the save is answered; a second refusal is drawn afresh with Dispatch's new reason;
+// and once the route lands and the line goes, the focus goes to the row's own control rather than
+// to the page.
+test("the refused route's Retry keeps the focus while the save is out and refused again, and hands it to the row's control once the route lands", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const route = "role:legion-controller-core";
+  patchIssue.mockImplementationOnce(() =>
+    Promise.reject(new ApiError(400, { code: "ROUTE_INVALID", error: "invalid route" }))
+  );
+  const { unmount } = renderDetails();
+  const stopBlurring = blurWhenDisabled();
+  const retryOfRoute = () =>
+    within(rowAt("route")).queryByRole("button", { name: CONTROL_LABELS.retry });
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
+    await user.click(await screen.findByLabelText(PROPERTY_LABELS.route));
+    await user.paste(route);
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_route }));
+    await waitFor(() =>
+      expect(within(rowAt("route")).queryByRole("alert")?.textContent).toBe("invalid route")
+    );
+    const refused = within(rowAt("route")).getByRole("alert");
+    const retry = retryOfRoute();
+    if (retry === null) throw new Error("the refused route offers no Retry");
+
+    const retried = Promise.withResolvers<Issue>();
+    patchIssue.mockImplementationOnce(() => retried.promise);
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    expect(
+      retryOfRoute(),
+      "the line and its Retry went while the route they sent again is out"
+    ).toBe(retry);
+    expect(
+      document.activeElement,
+      "Retry lost the focus while the route it sent again is out"
+    ).toBe(retry);
+    await waitFor(() =>
+      expect(
+        retry,
+        "Retry does not read busy while the route it sent again is out"
+      ).toHaveAttribute("aria-busy", "true")
+    );
+    expect(document.activeElement, "Retry lost the focus once it read busy").toBe(retry);
+    await user.keyboard("{Enter}");
+    expect(patchIssue, "a press of Retry while its save is out sent another").toHaveBeenCalledTimes(
+      2
+    );
+
+    const reason = "no session holds role:legion-controller-core";
+    await act(async () =>
+      retried.reject(new ApiError(400, { code: "ROUTE_INVALID", error: reason }))
+    );
+    await waitFor(() =>
+      expect(
+        within(rowAt("route")).queryByRole("alert")?.textContent,
+        "the row does not say why Dispatch refused the route again"
+      ).toBe(reason)
+    );
+    expect(
+      within(rowAt("route")).getByRole("alert"),
+      "the second refusal was not drawn afresh, so a screen reader would not say it"
+    ).not.toBe(refused);
+    expect(retryOfRoute(), "the line came back with another Retry").toBe(retry);
+    expect(
+      document.activeElement,
+      "Retry lost the focus when Dispatch refused the route again"
+    ).toBe(retry);
+    expect(
+      retry,
+      "Retry still reads busy after Dispatch refused the route again"
+    ).not.toHaveAttribute("aria-busy");
+
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(3));
+    await waitFor(() =>
+      expect(
+        within(rowAt("route")).queryByRole("alert"),
+        "the refusal is still said after the route landed"
+      ).not.toBeInTheDocument()
+    );
+    expect(
+      document.activeElement,
+      "the route landed, and the focus fell to the page rather than to the row's control"
+    ).toBe(within(rowAt("route")).getByRole("button", { name: `Messages default to ${route}` }));
+  } finally {
+    stopBlurring();
     unmount();
     restore();
   }

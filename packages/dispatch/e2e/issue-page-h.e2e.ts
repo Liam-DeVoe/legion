@@ -908,18 +908,22 @@ test("each control in Details saves and reads back", async ({ browser }) => {
       CONTROL_LABELS.set_parent
     );
     await addControl(page).click();
-    // The assignee is listed where the header draws its control, which the menu presses: the
-    // header is read once it is drawn.
+    // Add lists Assignee only where the header draws the assignee's control, which the menu
+    // presses, and only while TWO has no assignee: an issue someone is assigned to has a value for
+    // it, and Add lists no property that has one. The header is read once it is drawn.
+    const twoStored = await getIssue(two);
     await expect(
-      issuePage(page).getByRole("heading", { level: 1, name: (await getIssue(two)).title })
+      issuePage(page).getByRole("heading", { level: 1, name: twoStored.title })
     ).toBeVisible();
-    const headerAssignee = await page.locator(`[aria-label="Assignee of ${two}"]`).count();
+    const listsAssignee =
+      (await page.locator(`[aria-label="Assignee of ${two}"]`).count()) > 0 &&
+      twoStored.assignee === null;
     await expect(
       openMenu(page).getByRole("menuitem"),
       "the Add menu lists other than TWO's empty fields, in `IssueAddMenu`'s order"
     ).toHaveText([
       PROPERTY_LABELS.parent,
-      ...(headerAssignee > 0 ? [PROPERTY_LABELS.assignee] : []),
+      ...(listsAssignee ? [PROPERTY_LABELS.assignee] : []),
       PROPERTY_LABELS.labels,
       PROPERTY_LABELS.route,
       PROPERTY_LABELS.blocked_by,
