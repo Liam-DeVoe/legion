@@ -114,9 +114,10 @@ func TestTheRequestJudgesTheTextThatThePageShows(t *testing.T) {
 }
 
 // The red team's inputs of a form inside a longer word, through the approval request route: a
-// colour, the scope of a package and an SSH address open, and the number of a pull request, a
-// handle and an email address alone are still refused, also with a letter of another script in
-// them. A bare id names a record, and the refusal says so.
+// colour, the scope of a package, an SSH address and a person's name joined to a digit open, and
+// the number of a pull request, a handle, an email address and a person's name alone are still
+// refused, also with a letter of another script in them. A bare id names a record, and the
+// refusal says so.
 func TestTheRequestReadsEachFormOfANameAsAWholeWord(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	requireFormRows(t, tree, []formRow{
@@ -136,6 +137,10 @@ func TestTheRequestReadsEachFormOfANameAsAWholeWord(t *testing.T) {
 			want: []string{"statement accent-handle person"}},
 		{name: "the control: an email address and then a colon", spec: formRequirement("mail-colon", "Dispatch mails one person: ada@example.com: she approves each change."),
 			want: []string{"statement mail-colon person"}},
+		{name: "a name of a person joined to a digit", spec: formRequirement("name-digit", "Dispatch asks Ada Lovelace2 about each change."),
+			reads: specform.KindStatement},
+		{name: "the control: a name of a person", spec: formRequirement("name", "Dispatch asks Ada Lovelace about each change."),
+			want: []string{"statement name person"}},
 	})
 	const id = "12345678-1234-1234-1234-123456789abc"
 	issue := createFormIssue(t, tree.handler, tree.root, "A bare id", "# Spec\n\n"+formRequirement("id", "Dispatch stores the value `"+id+"`."))

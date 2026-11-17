@@ -60,12 +60,27 @@ var steRules = map[string]string{
 // wordClass is the one class of a character of a word, as the content of a bracket expression: a
 // letter, a mark, a decimal digit or connector punctuation such as "_", of any script, which are
 // Unicode's characters of a word. Each form of a name is built on it (newWordForm), its boundaries
-// and the parts of it that are words, so a form and its boundaries read one alphabet.
+// and the parts of it that are words, and so is each word of a person's name and of an approved
+// name (nameWord), so the rules read one alphabet.
 const wordClass = `\p{L}\p{M}\p{Nd}\p{Pc}`
 
 // otherWordNotions are the notions of a word of the regular expressions themselves, which read
-// ASCII only. No form holds one (newWordForm).
+// ASCII only. No regular expression of this file holds one (wordRegexp).
 var otherWordNotions = []string{`\w`, `\W`, `\b`, `\B`, `[:word:]`}
+
+// wordRegexp is the regular expression expr, which holds no notion of a word of its own
+// (otherWordNotions), so it reads a word only as wordClass does: wordRegexp panics on one.
+func wordRegexp(expr string) *regexp.Regexp {
+	for _, notion := range otherWordNotions {
+		if strings.Contains(expr, notion) {
+			panic(fmt.Sprintf("specform: %q holds %s, a notion of a word other than wordClass", expr, notion))
+		}
+	}
+	return regexp.MustCompile(expr)
+}
+
+// nameWord is a word of a person's name and of an approved name (personNames, peopleNames).
+var nameWord = wordRegexp(`[` + wordClass + `]+`)
 
 // The forms of a name that the reference rules read, each a whole word (newWordForm), so "#12abcd"
 // is a colour, "@types/node" a package and "xACME-12" no key. A part of a form that the rule of its
@@ -112,24 +127,16 @@ type wordForm struct {
 // when the character before it is the start of the line, or no character of a word (wordClass) and
 // none of left, and what follows it is the end of the line, or no character of a word and no match
 // of right. left is the content of a bracket expression of the characters that continue the form
-// on its left, and right a regular expression of what continues it on its right. None of the three
-// holds a notion of a word of its own (otherWordNotions), so no form can read a word otherwise than
-// wordClass does: newWordForm panics on one.
+// on its left, and right a regular expression of what continues it on its right. Both regular
+// expressions are wordRegexp's, so none of the three holds a notion of a word of its own.
 func newWordForm(form, left, right string) wordForm {
-	for _, part := range []string{form, left, right} {
-		for _, notion := range otherWordNotions {
-			if strings.Contains(part, notion) {
-				panic(fmt.Sprintf("specform: %q holds %s, a notion of a word other than wordClass", part, notion))
-			}
-		}
-	}
 	continues := `^[` + wordClass + `]`
 	if right != "" {
 		continues = `^(?:[` + wordClass + `]|` + right + `)`
 	}
 	return wordForm{
-		pattern:   regexp.MustCompile(`(?:^|[^` + wordClass + left + `])(` + form + `)`),
-		continues: regexp.MustCompile(continues),
+		pattern:   wordRegexp(`(?:^|[^` + wordClass + left + `])(` + form + `)`),
+		continues: wordRegexp(continues),
 	}
 }
 
@@ -335,14 +342,14 @@ func referenceAt(line string, offset int) string {
 
 // peopleNames is the name of each signed-in person: the parts of the local part of the person's
 // email, split at ".", "_" or "-", that hold at least three letters, in order and in lower case.
-// A part that is a word of a name that a person approved, one of the context's system names or a
-// term of the approved list, is no part of a name: such a word is a noun of the system. A name
-// that the judged text writes itself, a component's or a term's, is no such name, so it cannot
-// hide a person. One part alone is no name.
+// A part that is a word (nameWord) of a name that a person approved, one of the context's system
+// names or a term of the approved list, is no part of a name: such a word is a noun of the
+// system. A name that the judged text writes itself, a component's or a term's, is no such name,
+// so it cannot hide a person. One part alone is no name.
 func peopleNames(c Context, in Input) [][]string {
 	system := map[string]bool{}
 	addWords := func(name string) {
-		for _, word := range strings.FieldsFunc(name, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }) {
+		for _, word := range nameWord.FindAllString(name, -1) {
 			system[strings.ToLower(word)] = true
 		}
 	}
@@ -375,9 +382,9 @@ func peopleNames(c Context, in Input) [][]string {
 }
 
 // personNames is each person line names, in the order of the line: an email address, an
-// @handle, and the name of one signed-in person (peopleNames), its parts in order as words that
-// only white space parts, each with a capital first letter as a name is written. A reference
-// holds none.
+// @handle, and the name of one signed-in person (peopleNames), its parts in order as whole words
+// (nameWord) that only white space parts, each with a capital first letter as a name is written.
+// A reference holds none.
 func personNames(people [][]string, line string, inReference func(int) bool) []string {
 	var found []span
 	for _, each := range email.find(line) {
@@ -391,17 +398,8 @@ func personNames(people [][]string, line string, inReference func(int) bool) []s
 		}
 	}
 	var words []span
-	inWord := false
-	for index, r := range line {
-		if !unicode.IsLetter(r) {
-			inWord = false
-			continue
-		}
-		if !inWord {
-			words = append(words, span{start: index})
-			inWord = true
-		}
-		words[len(words)-1].end = index + utf8.RuneLen(r)
+	for _, each := range nameWord.FindAllStringIndex(line, -1) {
+		words = append(words, span{start: each[0], end: each[1]})
 	}
 	writes := func(at int, name []string) bool {
 		for index, part := range name {
