@@ -769,11 +769,13 @@ export function IssueTree({
                 onOpenDeeper={openDeeper}
                 onOvertaken={toggleOvertaken}
                 onPin={pin}
-                // A line of overtaken nodes takes the stop as a row does, and, as a move to a row
-                // does, the reader going on from what a key reported there.
+                // A line of overtaken nodes takes the stop as a row does, and lets go of the row
+                // the focus left, as the focus leaving the tree does (`leave`): its body, its
+                // focused look, its acts, which no key reaches from the line, and what a key
+                // reported there. The line focuses no node: Details goes on drawing what it drew.
                 onStop={(row) => {
+                  leave();
                   setStop(row);
-                  setReport(undefined);
                 }}
                 // A branch opens where it is at every width (R16): below 1024 px the outline draws
                 // one level under the node it is read from, so an opened branch deeper than that is

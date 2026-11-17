@@ -12,13 +12,14 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { writeRequest } from "../../../api/client";
 import { primarySpec } from "../../../api/issue-cache";
 import { issueCoverageQuery } from "../../../api/queries";
+import { refreshQueries } from "../../../api/query-refresh";
 import type { IssueDetails } from "../../../api/types";
 import { type IssueRoute, parseIssuePath, parseNodeReference } from "../../refs/routes";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
 import { type AddressTarget, issueAddress, pathToTarget, presetPath } from "../issue-address";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { CONTROL_LABELS } from "../page-words";
-import { issueTreeQuery } from "../tree-read/tree-read";
+import { dropViews, issueTreeKey, issueTreeQuery } from "../tree-read/tree-read";
 import { withLine } from "./node-states";
 
 /**
@@ -81,20 +82,29 @@ export function useSettleIssue(): string | undefined {
  * is made again under its key, so the write stays out while it is tried again.
  *
  * A landing - a 200, or `null` for `409 KEY_COMMITTED` - tells `landed` first, so the act puts
- * the focus on its row before anything is read again, then reads the coverage again, and the
- * write stays out until it is answered. The coverage read is under `["issue", key]`, so its
- * invalidation is what `subscribeTreeFreshness` hears, which the page's `ViewReadProvider`
- * holds: it reads the tree again, drops the view reads held for the load and reads the open view
- * again. The tree is not invalidated here as well, since that would read it twice. A refusal
- * reads nothing again.
+ * the focus on its row before anything is read again. It then reads the tree again as the page
+ * does on an event of the issue (`refreshQueries`, which waits for a read already out rather than
+ * cutting it off), drops the view reads held for the load (`dropViews`), so the open view is read
+ * again, and reads the coverage again; the write stays out until that read is answered. The tree
+ * and the views are those of the issue the tree is drawn for (`SettleIssueProvider`), else of
+ * `key`: a node whose own address names another issue settles under that issue, whose coverage
+ * is the one read again. The tree is read here, not left to `subscribeTreeFreshness`, which hears
+ * an invalidation of the coverage: a coverage read already marked stale - a read of it failed, or
+ * a refresh still owes one - raises none, and another issue's coverage is no query of the page's.
+ * Where it does hear one, it reads the tree once more, which the refresh scheduler starts after
+ * this read has landed, and drops the views again, which starts the open view's read over. A
+ * refusal reads nothing again.
  */
 export function useSettle(key: string, reference: string, landed: () => void) {
   const queryClient = useQueryClient();
+  const drawn = useSettleIssue() ?? key;
   return useKeyedWrite({
     inline: true,
     label: () => CONTROL_LABELS.settle,
     onSuccess: () => {
       landed();
+      refreshQueries(queryClient, [{ exact: true, queryKey: issueTreeKey(drawn) }]);
+      dropViews(queryClient, drawn);
       return queryClient.invalidateQueries({
         exact: true,
         queryKey: issueCoverageQuery(key).queryKey,

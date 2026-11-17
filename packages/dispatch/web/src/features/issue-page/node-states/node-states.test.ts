@@ -16,6 +16,7 @@ import {
 import { api, type WriteRequest } from "../../../api/client";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type { CheckBlock, IssueCheckResults, IssueDetails } from "../../../api/types";
+import { pageFocusedRow } from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { parseIssuePath } from "../../refs/routes";
@@ -583,6 +584,47 @@ test("the overtaken line is the tree's tab stop once the reader is on it", async
     await waitFor(() => expect(document.activeElement).toBe(line));
     await waitFor(() => expect(line).toHaveAttribute("tabindex", "0"));
     expect(rowOf(view.container, "comment-1")).toHaveAttribute("tabindex", "-1");
+  } finally {
+    view.unmount();
+  }
+});
+
+// The focus going from a row to the line lets go of the row it left, as the focus leaving the
+// tree does: its focused look and its acts, Settle among them for a proposed row, which no key
+// reaches from the line. The line looks focused instead.
+test("the row the reader leaves for the overtaken line no longer looks focused", async () => {
+  readWide();
+  const user = userEvent.setup();
+  const R7 = "spec#b-r7";
+  const view = renderTree(
+    stamped(
+      node(KEY, "issue", [
+        node(R7, "requirement", [], { reference: `dispatch://${KEY}/${R7}` }),
+        node("comment-2", "comment"),
+      ]),
+      { [R7]: { life: "proposed" }, "comment-2": { life: "overtaken" } }
+    )
+  );
+  const left = () => rowOf(view.container, R7);
+  try {
+    await waitFor(() => expect(focusedRow(view.container)).toBe(R7));
+    expect(left()?.querySelector("[data-node-card]")?.className).toContain(pageFocusedRow);
+    expect(left()?.querySelector('[data-row-act="settle"]')).not.toBeNull();
+    const line = theLine(view.container);
+    expect(line.className).not.toContain(pageFocusedRow);
+
+    await user.keyboard("j");
+    await waitFor(() => expect(document.activeElement).toBe(line));
+    await waitFor(() =>
+      expect(
+        left()?.querySelector("[data-node-card]")?.className,
+        "the row left for the line still looks focused"
+      ).not.toContain(pageFocusedRow)
+    );
+    expect(left()?.querySelector("[data-row-acts]"), "the row left kept its acts").toBeNull();
+    expect(line.className, "the line holds the focus with no focused look").toContain(
+      pageFocusedRow
+    );
   } finally {
     view.unmount();
   }

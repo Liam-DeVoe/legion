@@ -97,8 +97,9 @@ interface DrawnRow {
   readonly unmount: () => void;
 }
 
-/** The focused proposed row, its settle answered by `answer` at each attempt. */
-function drawRow(answer: (attempt: number) => Promise<unknown>): DrawnRow {
+/** The focused proposed row, its settle answered by `answer` at each attempt, and the first
+ *  `failedCoverage` reads of the coverage failing. */
+function drawRow(answer: (attempt: number) => Promise<unknown>, failedCoverage = 0): DrawnRow {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -116,8 +117,11 @@ function drawRow(answer: (attempt: number) => Promise<unknown>): DrawnRow {
     read(query?.view ?? "tree");
     return treeAnswer();
   });
+  let coverageReads = 0;
   const coverage = spyOn(api, "getIssueCoverage").mockImplementation(async () => {
     read("coverage");
+    coverageReads += 1;
+    if (coverageReads <= failedCoverage) throw new ApiError(503, { error: "unavailable" });
     return { requirements: [] } as never;
   });
   const sent: WriteRequest[] = [];
@@ -233,6 +237,46 @@ test("a 200 drops the held views and reads the open one again", async () => {
     expect(drawn.onRowAtRead, "a read went out before the focus was on the row").not.toContain(
       false
     );
+    expect(document.activeElement).toBe(drawn.row());
+    await waitFor(() => expect(drawn.settle().textContent).toBe(CONTROL_LABELS.settle));
+    expect(drawn.sentence()).toBeNull();
+  } finally {
+    drawn.unmount();
+  }
+});
+
+// A coverage read already marked stale - a read of it failed, or a refresh still owes one -
+// raises nothing the tree read's subscription hears when it is invalidated again, so the 200
+// reads the tree again and drops the held views of its own.
+test("a 200 reads the tree again while the coverage read is marked stale", async () => {
+  const user = userEvent.setup();
+  const landing = Promise.withResolvers<unknown>();
+  const drawn = drawRow(() => landing.promise, 1);
+  const coverage = issueCoverageQuery(KEY).queryKey;
+  // What was read once the settle landed: the first read is the coverage's that failed.
+  const landed = () => drawn.reads.slice(1);
+  try {
+    await act(async () => {
+      await drawn.client.refetchQueries({ exact: true, queryKey: coverage });
+    });
+    expect(drawn.reads).toEqual(["coverage"]);
+    expect(drawn.client.getQueryState(coverage)?.isInvalidated).toBe(true);
+    act(() => drawn.elsewhere().focus());
+    await user.click(drawn.settle());
+    await waitFor(() => expect(drawn.sent).toHaveLength(1));
+    expect(drawn.reads).toEqual(["coverage"]);
+    await act(async () => landing.resolve(settled()));
+    await waitFor(() => expect(landed()).toContain("coverage"));
+    await waitFor(() =>
+      expect(landed(), "the tree was not read again after the 200").toContain("tree")
+    );
+    await waitFor(() => expect(landed()).toContain("verification"));
+    expect(landed(), "the view nobody reads now was read again").not.toContain("spec");
+    expect(drawn.client.getQueryData(HELD_VIEW), "the held view stayed").toBeUndefined();
+    expect(
+      drawn.onRowAtRead.slice(1),
+      "a read went out before the focus was on the row"
+    ).not.toContain(false);
     expect(document.activeElement).toBe(drawn.row());
     await waitFor(() => expect(drawn.settle().textContent).toBe(CONTROL_LABELS.settle));
     expect(drawn.sentence()).toBeNull();

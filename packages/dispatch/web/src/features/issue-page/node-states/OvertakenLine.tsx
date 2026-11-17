@@ -1,6 +1,11 @@
-import type { CSSProperties, KeyboardEvent, ReactNode } from "react";
+import { type CSSProperties, type KeyboardEvent, type ReactNode, useState } from "react";
 
-import { pageGuideLineBg, pageMutedText, pageQuietText } from "../../../theme/classes";
+import {
+  pageFocusedRow,
+  pageGuideLineBg,
+  pageMutedText,
+  pageQuietText,
+} from "../../../theme/classes";
 import { pageChrome } from "../page-structure";
 import { CONTROL_LABELS } from "../page-words";
 import type { OvertakenRow } from "../tree-fold";
@@ -16,8 +21,10 @@ import type { OvertakenRow } from "../tree-fold";
  * every fold opens it: the reader does. A press opens or closes it in place, and so do the keys
  * `useTreeKeymap.ts` binds on it (Enter, and the arrows). It stands for no node, so its focus
  * focuses none: Details goes on drawing what it drew, as it does for a deeper branch's line.
- * Its focus makes it the tree's one tab stop, as a row's does (`onStop`), so a key pressed on
- * it that answers in words, which no row holds the focus to draw, is drawn at it (`report`).
+ * Its focus makes it the tree's one tab stop, as a row's does (`onStop`), so a key pressed on it
+ * that answers in words, which no row holds the focus to draw, is drawn at it (`report`); and the
+ * row the focus left lets go of its body, its focused look and its acts. While the line holds the
+ * focus it looks as a focused row does (`pageFocusedRow`), in place of the browser's outline.
  */
 export function OvertakenLine({
   onOvertaken,
@@ -28,8 +35,9 @@ export function OvertakenLine({
 }: {
   /** Opens or closes the line, by the id of the node whose overtaken children it folds. */
   onOvertaken?: (id: string, open: boolean) => void;
-  /** Makes the line the tree's one tab stop, which its focus does and nothing else: it opens
-   *  no row's body and focuses no node (`IssueTree.tsx`'s `stop`). */
+  /** Makes the line the tree's one tab stop and lets go of the row the focus left, which its
+   *  focus does and nothing else: it opens no row's body and focuses no node (`IssueTree.tsx`'s
+   *  `stop`). */
   onStop?: () => void;
   /** What a key pressed on the line answers, where it answers in words: drawn at the line,
    *  last, as a row draws it (`NodeRow`'s `report`). */
@@ -39,15 +47,21 @@ export function OvertakenLine({
   tabStop: boolean;
 }): ReactNode {
   const depth = row.level - 1;
+  // Whether the line holds the focus, which draws it with a focused row's look.
+  const [focused, setFocused] = useState(false);
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: the tree's keymap opens and closes it from the keyboard (`useTreeKeymap.ts`'s Enter and arrows), as it moves through every row.
     <div
       aria-expanded={row.open}
       aria-level={row.level}
-      className={`relative flex min-w-0 cursor-pointer flex-col pl-[calc(var(--row-depth)*23px+26px)] text-xs leading-7 max-[761px]:pl-[calc(var(--row-depth)*17px+22px)] ${pageQuietText}`}
+      className={`relative flex min-w-0 cursor-pointer flex-col pl-[calc(var(--row-depth)*23px+26px)] text-xs leading-7 outline-none max-[761px]:pl-[calc(var(--row-depth)*17px+22px)] ${pageQuietText} ${focused ? pageFocusedRow : ""}`}
       data-overtaken-line=""
+      onBlur={() => setFocused(false)}
       onClick={() => onOvertaken?.(row.of.id, !row.open)}
-      onFocus={() => onStop?.()}
+      onFocus={() => {
+        setFocused(true);
+        onStop?.();
+      }}
       role="treeitem"
       style={{ "--row-depth": depth } as CSSProperties}
       tabIndex={tabStop ? 0 : -1}
