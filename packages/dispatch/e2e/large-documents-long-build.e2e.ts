@@ -22,7 +22,7 @@
 //
 // The other files of this family, and what each holds, are listed once, at the head of
 // `large-documents-rows.ts`, which holds what they share.
-import { type Browser, expect, type Page, test } from "@playwright/test";
+import { type Browser, expect, type Page, type TestInfo, test } from "@playwright/test";
 
 import { getArtifactText } from "./api";
 import { documentEditor, documentTransport } from "./editor";
@@ -73,24 +73,27 @@ import { asUser } from "./users";
 // seeding plus 90 s in, or plus 40 s and 75 s: 124 s, and the other two rows' 91.1 s and the
 // step's 7 s bring the leg to 222 s of its 240, so it ends with its report.
 //
-// The second and third rows share `firstBlockTimeoutMs` and `buildTimeoutMs`. The first block
-// came at up to 11.1 s from the navigation (`iphone`, run 43421318396; 10.7 s in `chromium`,
-// run 42686241170; 10.4 s on this pod), and the editor opened up to 14.3 s after it on CI
-// (`iphone`, run 42682941869). This pod is slower: the third row's builds took up to 30.2 s
-// (`chromium`), and the second row's editor opened 42.3 s from the navigation in one run, which
-// is longer than its build alone. 30 s is near three times the slowest first block; 60 s is
-// about twice the slowest build and one and a half times that whole span from the navigation.
+// The second and third rows' waits on the page are bounded on its progress (the paragraphs
+// below this one's say how), and in the phone's leg each is also given the most it is waited
+// for: `firstBlockTimeoutMs`, `buildTimeoutMs` and, for the third row, the two after them. The
+// first block came at up to 11.1 s from the navigation (`iphone`, run 43421318396; 10.7 s in
+// `chromium`, run 42686241170; 10.4 s on this pod), and the editor opened up to 14.3 s after it
+// on CI (`iphone`, run 42682941869). This pod is slower: the third row's builds took up to
+// 30.2 s (`chromium`), and the second row's editor opened 42.3 s from the navigation in one run,
+// which is longer than its build alone. 30 s is near three times the slowest first block; 60 s
+// is about twice the slowest build and one and a half times that whole span from the
+// navigation.
 // In the phone's leg the second row starts with 124.4 s of the 233 left and fails at about 10 s
 // of seeding plus 11.1 s and 60 s, 81.1 s; the third starts with 85.1 s left and fails its first
 // build at 6.7 s of seeding plus 11.1 s and 60 s, 77.8 s.
 //
-// The third row's second build has a bound of its own, because 60 s does not fit after
-// everything ahead of it: its first block is reached at 6.7 + 20.9 + 22.5 = 50.1 s at the most
-// (seeding, the first build whole, and the draw whole and released), and 85.1 s less that
-// leaves 35 s. `theDrawnBuildTimeoutMs` is 30 s, which ends that path at 80.1 s, 5 s inside. That
-// build took 2.2 to 10.6 s on CI four workers wide (runs 42628596511 to 43421318396) and 12.2
-// to 23.4 s on this pod, so 30 s is near three times CI's slowest and 1.3 times this pod's: the
-// room the leg leaves it, and no more.
+// In the phone's leg the third row's second build has a bound of its own, because 60 s does not
+// fit after everything ahead of it: its first block is reached at 6.7 + 20.9 + 22.5 = 50.1 s at
+// the most (seeding, the first build whole, and the draw whole and released), and 85.1 s less
+// that leaves 35 s. `theDrawnBuildTimeoutMs` is 30 s, which ends that path at 80.1 s, 5 s
+// inside. That build took 2.2 to 10.6 s on CI four workers wide (runs 42628596511 to
+// 43421318396) and 12.2 to 23.4 s on this pod, so 30 s is near three times CI's slowest and 1.3
+// times this pod's: the room the leg leaves it, and no more.
 //
 // The rows' other waits are sized the same way: the first row's draw, at 3.9 s on this pod,
 // `theDrawWithinMs`; the second row's word in the open editor, which the page had already shown
@@ -101,9 +104,39 @@ import { asUser } from "./users";
 // is then given (`owedWorkFinishesWithinMs`, `large-documents-rows.ts`) - and
 // 6.7 + 20.9 + 45 = 72.6 s of the third's 85.1.
 //
-// In the `chromium` shard leg a row fails an attempt at 92 s at the most (the third row's second
-// build, 6.7 + 22.6 + 32.5 + 30), so both attempts add at most 133 s to its worker, against the
-// 314 s that leg's rows took in run 43421318396: 447 s of its 540.
+// Every wait of the second and third rows on the page goes on for as long as the page keeps
+// moving, rather than for a time a quiet machine earned (`whileThePageMoves`). Beside a loaded
+// machine the clock is the wrong shape: at 897ae8da, in a `chromium` row on two CPUs beside the
+// full lane's shard 3 of 4 with three workers and no retry, the third row's build over one
+// screenful was still not open 60 s after its first block, and beside the same load at adcb2968
+// its first block once had not come 30 s after the navigation (dispatch://INFRA-341, R16). What
+// tells a page that stopped from a slow one is whether it is still taking steps of what is
+// waited for - the steps of its opening before the first block, the build's batches before the
+// editor opens, its own draw before the whole document is drawn (`watchThePageMove`) - so a row
+// fails by the stall's name once `thePageStallsAfterMs` passes with none (`theDrawStallsAfterMs`
+// for the draw), and waits for a page that keeps taking them. Measured on that same shape at
+// adcb2968, 50 runs of the third row and 25 of the second, the longest this side went without
+// a step was 7,591 ms before a first block (the second row's, between the server's first frame
+// and the first batch: the document's state applied and the editor bound), 5,485 ms inside a
+// build (6,123 ms in an earlier 25 runs, whose batches were counted the same way), and
+// 13,721 ms inside the third row's draw of the whole document. 30 s is 3.9 times the longest
+// before a first block and 4.9 times the longest inside a build, 45 s is 3.3 times the longest
+// inside the draw, and a page that stopped fails that long after its last step.
+//
+// How long a page that keeps moving is waited for is the room its leg leaves the row. In the
+// phone's leg that is the bounds above, because that leg's 240 s step was derived from them and
+// it runs alone on a machine of its own. In a `chromium` shard leg it is one deadline over the
+// row, `theShardsRowWithinMs`, 420 s from the row's start, which every one of its waits on the
+// page shares (`theRoomTheLegLeaves`): one attempt of the third row ends by 420 s at the most,
+// and of the second by 480 s, with the 60 s its open editor's two checks are given after
+// (`theirWordStaysWithinMs`, `owedWorkFinishesWithinMs`) - 60 s inside the 540 s of the shard
+// job's browser step. A stall fails an attempt far sooner: the second row at 10 + 11.1 + 14.3 +
+// 30 = 65.4 s at the most (its build stalling at the end of the longest such build CI
+// measured), and the third at 6.7 + 22.6 + 32.5 + 45 = 106.8 s (its draw stalling at the end of
+// the longest such draw), so both attempts add at most 163 s to its worker, against the 314 s
+// that leg's rows took in run 43421318396: 477 s of its 540. A row whose page keeps moving for
+// the whole deadline has no retry left in that step; a page that slow is the one case the leg
+// cannot run twice.
 
 /** How long the first row waits for the editor's first block, from the navigation. */
 const theWindowsFirstBlockTimeoutMs = 90_000;
@@ -114,29 +147,262 @@ const theWindowsBuildTimeoutMs = 75_000;
 /** How long the first row waits for the document's own draw to be on the page. */
 const theDrawWithinMs = 30_000;
 
-/** How long the second and third rows wait for the editor's first block, counted from the
- *  navigation, or from the release where the socket was held. */
+/** The most the second and third rows wait, in the phone's leg, for the editor's first block
+ *  while the page keeps opening its document, counted from the navigation, or from the release
+ *  where the socket was held. */
 const firstBlockTimeoutMs = 30_000;
 
-/** How long the second and third rows wait for the editor to open once its first block is in,
- *  which is the end of its build; the third row's build over the whole drawn document waits
- *  `theDrawnBuildTimeoutMs` instead, and the second row's wait for its word to land in the
- *  editor shares this one's deadline rather than adding one of its own. */
+/** The most the second and third rows wait, in the phone's leg, for the editor to open once its
+ *  first block is in while its build keeps landing batches, which is the end of its build: in
+ *  the second row its wait for its word to land in the editor shares this one's deadline rather
+ *  than adding one of its own, and in the third row it is its build over one screenful's. */
 const buildTimeoutMs = 60_000;
 
-/** How long the third row waits for the editor to open over the whole drawn document. */
+/** The most the third row waits, in the phone's leg, for the editor to open over the whole
+ *  drawn document while its build keeps landing batches. */
 const theDrawnBuildTimeoutMs = 30_000;
+
+/** The most the third row waits, in the phone's leg, for the page's own draw to hold the whole
+ *  document while it keeps drawing. */
+const theWholeDrawWithinMs = 45_000;
+
+/** How long the second and third rows let the page go without a step of what they are waiting
+ *  on before they fail the row on the stall, by that name: a step of its opening while they
+ *  wait for the first block, and a batch of the build while they wait for the editor to open
+ *  (`whileThePageMoves`). */
+const thePageStallsAfterMs = 30_000;
+
+/** The same for the third row's wait for the page's own draw to hold the whole document, which
+ *  goes longer between its steps than an opening or a build does (the file's head gives both
+ *  readings). */
+const theDrawStallsAfterMs = 45_000;
+
+/** The most the second and third rows wait, in a `chromium` shard leg, for everything they wait
+ *  on the page for while it keeps moving: one deadline over the row, counted from its start,
+ *  which every one of those waits shares. */
+const theShardsRowWithinMs = 420_000;
 
 /** How long the second row waits for the open editor to hold the other person's word. */
 const theirWordStaysWithinMs = 30_000;
-
-/** How long the third row waits for the page's own draw to hold the whole document. */
-const theWholeDrawWithinMs = 45_000;
 
 /** How long the row below holds the socket after the document's own draw is on the screen.
  *  Well past the moment the page's own end is reached - the draw is a screenful and a few
  *  steps of 100 ms exhaust it - so a window that closed there closed inside this wait. */
 const heldAfterTheDrawMs = 20_000;
+
+/**
+ * The most a wait of the second or third row may take while the page keeps moving: in the
+ * phone's leg the bound the caller names, which that leg's step was derived from, and in a
+ * shard leg whatever is left of the row's one deadline, `theShardsRowWithinMs` from the moment
+ * this is called. Call it at the row's start.
+ */
+function theRoomTheLegLeaves(testInfo: TestInfo): (phonesLegMs: number) => number {
+  if (testInfo.project.name === "iphone-long-build-alone") {
+    return (phonesLegMs) => phonesLegMs;
+  }
+  const endsBy = Date.now() + theShardsRowWithinMs;
+  return () => Math.max(0, endsBy - Date.now());
+}
+
+declare global {
+  interface Window {
+    /** What the page says each time it takes a step of opening its document, drawing it or
+     *  building its editor, with how many top-level blocks the editor holds after a batch
+     *  (`watchThePageMove`). */
+    __thePageMoved?: (step: string, blocks: number) => void;
+  }
+}
+
+/** One step the page said it took, as this side heard it: `Date.now()` here, and what it was. */
+interface HeardStep {
+  readonly at: number;
+  readonly step: string;
+}
+
+/** What this side has heard of a page opening its document and building its editor: every step
+ *  it said, oldest first, and how many top-level blocks the editor held after its last batch. */
+interface ThePageMoving {
+  readonly steps: HeardStep[];
+  blocks: number;
+}
+
+/**
+ * Has the page say each step it takes on its way to an open editor, and answers what it says.
+ *
+ * The steps are what a document's opening is made of, each said in the task it happened in: a
+ * file of the page's own arriving - a script, a stylesheet, an image - and the document's text
+ * read answering, as the browser files each `resource` entry when its response ends; anything
+ * going into the page's own draw of the document, its blocks and the diagrams drawn in them;
+ * the document's socket made, opened, and the first frame the server sends on it; the editor's
+ * root constructed; and each batch of the editor's build, with the count it leaves. A batch
+ * puts the next run of the document's top-level blocks into the editor in a task of its own
+ * (`@legion/proof-editor`'s `progressive-build.ts`), so the editor's element gains children
+ * once per batch and in no other way while it builds; a mutation that leaves the count where it
+ * was - the adoption's redraw of the same blocks - is no batch. A read the page makes for
+ * anything else - its panels, a count that refreshes - is no step, and nor is a later frame on
+ * the socket, so a page whose document has stopped opening falls quiet however busy the rest of
+ * it is. Each step is said through a binding, which goes out of the page in the task that says
+ * it rather than waiting for the page to answer a question: from a build's first batch to its
+ * last the page answers nothing the run asks it (the comment above this file's first row).
+ *
+ * Install before the navigation, and after `documentTransport` where the row holds the socket:
+ * from that call Playwright's own WebSocket stands where the page's stood (`routeWebSocket`),
+ * and a recorder put in front of the page's before it records none of the socket's steps.
+ */
+async function watchThePageMove(page: Page): Promise<ThePageMoving> {
+  const moving: ThePageMoving = { blocks: 0, steps: [] };
+  await page.exposeFunction("__thePageMoved", (step: string, blocks: number) => {
+    moving.steps.push({ at: Date.now(), step });
+    if (step === "batch") {
+      moving.blocks = blocks;
+    }
+  });
+  await page.addInitScript(() => {
+    const say = (step: string, blocks = 0): void => {
+      window.__thePageMoved?.(step, blocks);
+    };
+    const theTextRead = /^\/api\/v1\/(issues\/[^/]+\/artifacts\/[^/]+|artifacts\/[^/]+)\/text$/u;
+    const reads = ["beacon", "fetch", "xmlhttprequest"];
+    new PerformanceObserver((entries) => {
+      for (const entry of entries.getEntries() as PerformanceResourceTiming[]) {
+        const path = new URL(entry.name).pathname;
+        if (!reads.includes(entry.initiatorType)) {
+          say(`${entry.initiatorType} ${path.slice(path.lastIndexOf("/") + 1)}`);
+        } else if (theTextRead.test(path)) {
+          say("text read");
+        }
+      }
+    }).observe({ buffered: true, type: "resource" });
+    window.WebSocket = new Proxy(window.WebSocket, {
+      construct(made, args: [string | URL, (string | string[])?], asked) {
+        const socket = Reflect.construct(made, args, asked) as WebSocket;
+        if (String(args[0]).includes("/ws/doc/")) {
+          say("socket made");
+          socket.addEventListener("open", () => say("socket open"));
+          // The first frame alone: it is the server's answer with the document, and what comes
+          // after it on an open socket - the readers' awareness, renewed every few seconds -
+          // would keep a page that has stopped opening looking busy.
+          socket.addEventListener("message", () => say("first frame"), { once: true });
+        }
+        return socket;
+      },
+    });
+    let built = 0;
+    let rooted = false;
+    new MutationObserver((records) => {
+      let drew = false;
+      for (const { addedNodes, target } of records) {
+        if (addedNodes.length === 0 || !(target instanceof HTMLElement)) {
+          continue;
+        }
+        if (target.classList.contains("ProseMirror") && target.closest(".proof-editor") !== null) {
+          if (target.childElementCount !== built) {
+            built = target.childElementCount;
+            say("batch", built);
+          }
+        } else if (target.closest('[aria-label="Document text"]') !== null) {
+          drew = true;
+        } else if (
+          !rooted &&
+          [...addedNodes].some(
+            (node) =>
+              node instanceof HTMLElement &&
+              (node.classList.contains("proof-editor") || node.querySelector(".proof-editor"))
+          )
+        ) {
+          rooted = true;
+          say("editor root");
+        }
+      }
+      if (drew) {
+        say("draw");
+      }
+    }).observe(document, { childList: true, subtree: true });
+  });
+  return moving;
+}
+
+/**
+ * Waits for `reaching` for as long as the page keeps taking steps `counts` accepts, and answers
+ * what it reached, with the longest this side went without such a step and the step that gap
+ * came after.
+ *
+ * The bound is on the page's progress, not on the clock alone: the row fails by the stall's own
+ * name once `stalledAfterMs` has passed since the last such step - or since the wait began,
+ * before any. `reaching` carries the most the leg the row runs in leaves the wait however
+ * steadily the page moves (`theRoomTheLegLeaves`), with its own message for running out, which
+ * this adds the page's last step to.
+ */
+async function whileThePageMoves<T>(
+  reaching: Promise<T>,
+  moving: ThePageMoving,
+  counts: (step: string) => boolean,
+  { stalledAfterMs, stopped, what }: { stalledAfterMs: number; stopped: string; what: string }
+): Promise<{ longestQuiet: string; reached: T }> {
+  const began = Date.now();
+  const heard = (): HeardStep[] =>
+    moving.steps.filter(({ at, step }) => at >= began && counts(step));
+  const theLast = (): string => {
+    const last = heard().at(-1);
+    return last === undefined
+      ? `no ${what} since the wait began`
+      : `the last ${last.step}, ${Date.now() - last.at} ms before`;
+  };
+  const stalled = Promise.withResolvers<never>();
+  const look = (): void => {
+    const quietMs = Date.now() - (heard().at(-1)?.at ?? began);
+    if (quietMs < stalledAfterMs) {
+      timer = setTimeout(look, stalledAfterMs - quietMs);
+      return;
+    }
+    stalled.reject(
+      new Error(
+        `${stopped}: no ${what} for ${quietMs} ms (the page is stalled at ${stalledAfterMs} ` +
+          `ms), ${Date.now() - began} ms into the wait, ${theLast()}, with ${moving.blocks} ` +
+          "top-level blocks in the editor"
+      )
+    );
+  };
+  let timer = setTimeout(look, stalledAfterMs);
+  try {
+    const reached = await Promise.race([
+      reaching.catch((error: unknown) => {
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)}, while the page was still ` +
+            `moving: ${theLast()}, with ${moving.blocks} top-level blocks in the editor`
+        );
+      }),
+      stalled.promise,
+    ]);
+    const steps = [{ at: began, step: "the wait's start" }, ...heard()];
+    const gaps = steps.map((step, index) => ({
+      after: step.step,
+      ms: (steps[index + 1]?.at ?? Date.now()) - step.at,
+    }));
+    const longest = gaps.reduce((most, gap) => (gap.ms > most.ms ? gap : most));
+    return { longestQuiet: `${longest.ms} ms after ${longest.after}`, reached };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** What each of the three waits on the page counts, how long it lets the page go without one,
+ *  and what it calls the stall it fails by. */
+const theOpeningStopped = {
+  stalledAfterMs: thePageStallsAfterMs,
+  stopped: "the page stopped opening its document before the editor's first block",
+  what: "step of its opening",
+};
+const theBuildStalled = {
+  stalledAfterMs: thePageStallsAfterMs,
+  stopped: "the editor's build stalled",
+  what: "batch of its blocks",
+};
+const theDrawStopped = {
+  stalledAfterMs: theDrawStallsAfterMs,
+  stopped: "the page stopped drawing the document before it was whole",
+  what: "step of its own draw",
+};
 
 // What the two measuring rows of `large-documents-measured.e2e.ts` read their longest task
 // over has to cover the build, and the page is
@@ -302,8 +568,9 @@ async function whenTheirWordLands(
 // or more laying out the same document before it could send one.
 test(`another person's edit reaches ${documentNames.large} while its editor is built @phone`, async ({
   browser,
-}) => {
+}, testInfo) => {
   test.setTimeout(900_000);
+  const within = theRoomTheLegLeaves(testInfo);
   const { artifactId, path } = await seedDocument("specs-large.md", largeDocument);
   const title = documentTitle(documentDiagrams.large);
   const word = "Pangolin.";
@@ -325,6 +592,7 @@ test(`another person's edit reaches ${documentNames.large} while its editor is b
     const page = await alice.newPage();
     await throttleTheCpu(page);
     const reached = await watchTheDocument(page);
+    const moving = await watchThePageMove(page);
     const theirWord = await whenTheirWordLands(page, word);
     await page.goto(path, { waitUntil: "commit" });
 
@@ -332,21 +600,34 @@ test(`another person's edit reaches ${documentNames.large} while its editor is b
     // already built, the moment she has that batch: it is in her Yjs document as the insert
     // returns, and the only thing between it and her editor is the socket message that carries
     // it.
-    await reached.firstBlock(firstBlockTimeoutMs);
+    const first = await whileThePageMoves(
+      reached.firstBlock(within(firstBlockTimeoutMs)),
+      moving,
+      () => true,
+      theOpeningStopped
+    );
     writer.write(word);
 
     // The end of her build, and her page's word on where his landed, inside one deadline: the
     // frame that records the word is an animation frame of her page, and it can come after the
     // moment this row hears her editor is open - always, for a word that lands only once the
     // build is over, which is the failure this row is about.
-    const endBy = Date.now() + buildTimeoutMs;
-    const openedMs = await reached.editorOpened(endBy - Date.now());
+    const buildWithinMs = within(buildTimeoutMs);
+    const endBy = Date.now() + buildWithinMs;
+    const opened = await whileThePageMoves(
+      reached.editorOpened(buildWithinMs),
+      moving,
+      (step) => step === "batch",
+      theBuildStalled
+    );
     const landed = await theirWord(endBy - Date.now());
     const whole = await blocksBuilt(page);
     console.log(
       `R11 their edit during the build · the word reached the editor with ` +
         `${landed.blocks} of ${whole} blocks built, build ` +
-        `${landed.open ? "over" : "running"}, editor open at ${Math.round(openedMs)} ms.`
+        `${landed.open ? "over" : "running"}, editor open at ${Math.round(opened.reached)} ms; ` +
+        `longest quiet before the first block ${first.longestQuiet}, in the build ` +
+        `${opened.longestQuiet}.`
     );
 
     expect(landed.blocks).toBeGreaterThan(0);
@@ -396,7 +677,9 @@ test(`another person's edit reaches ${documentNames.large} while its editor is b
  *  on this pod. Measured at 1.6 to 2.2 times over the runs this row was written against. */
 const theSameRangeTimes = 3;
 
-/** How long one editor's build took, on the page's own clock. */
+/** How long one editor's build took, on the page's own clock, and how long this side went
+ *  without a step of what each wait counted: the readings `thePageStallsAfterMs` is sized from,
+ *  printed by the row so each run adds to them. */
 interface TheBuildsTime {
   /** When the reader first had a block of the editor's own in the viewport, which is its
    *  first batch. */
@@ -405,6 +688,14 @@ interface TheBuildsTime {
   readonly openedMs: number;
   /** The build itself: the time between the two. */
   readonly buildMs: number;
+  /** The longest gap between steps of the page's own draw, over the wait for it to be whole;
+   *  `undefined` for a build whose socket is not held, which waits for no draw. */
+  readonly drawQuiet: string | undefined;
+  /** The longest gap between steps of the page's opening, over the wait for the first block. */
+  readonly openingQuiet: string;
+  /** The longest gap between batches, over the wait for the editor to open, the last batch's
+   *  way to that opening included. */
+  readonly buildQuiet: string;
 }
 
 /**
@@ -414,12 +705,17 @@ interface TheBuildsTime {
  * many of the document's top-level blocks, so the build runs over a page already holding the
  * whole document; without it the build runs over the screenful the draw has drawn by then,
  * which is what a reader whose socket answers at once gets. Both numbers are announcements
- * the page makes, so neither is a reading this side takes.
+ * the page makes, so neither is a reading this side takes. Each wait goes on while the page
+ * keeps moving (`whileThePageMoves`), for what `within` leaves it at the most
+ * (`theRoomTheLegLeaves`).
  */
 async function theBuildsTime(
   browser: Browser,
   path: string,
-  { overTheWholeDraw }: { overTheWholeDraw?: number } = {}
+  {
+    overTheWholeDraw,
+    within,
+  }: { overTheWholeDraw?: number; within: (phonesLegMs: number) => number }
 ): Promise<TheBuildsTime> {
   const alice = await asUser(browser, "alice");
   try {
@@ -427,6 +723,7 @@ async function theBuildsTime(
     const reached = await watchTheDocument(page);
     const transport =
       overTheWholeDraw === undefined ? undefined : await documentTransport(page, { holding: true });
+    const moving = await watchThePageMove(page);
     // The rate is the build's, and both builds are read under it. The page that holds its
     // socket is throttled once its draw is whole and before that socket is let through, so the
     // draw this arranges - and the poll that waits for it - is not paid at the build's rate;
@@ -437,22 +734,46 @@ async function theBuildsTime(
       await throttleTheCpu(page);
     }
     await page.goto(path, { waitUntil: "commit" });
+    let drawQuiet: string | undefined;
     if (transport !== undefined) {
-      await expect
-        .poll(() => page.locator(drawnBlocks).count(), {
-          intervals: [1_000],
-          message: "the page never drew the whole document, so no build ran over one",
-          timeout: theWholeDrawWithinMs,
-        })
-        .toBeGreaterThanOrEqual(overTheWholeDraw ?? 0);
+      const drawn = await whileThePageMoves(
+        expect
+          .poll(() => page.locator(drawnBlocks).count(), {
+            intervals: [1_000],
+            message: "the page never drew the whole document, so no build ran over one",
+            timeout: within(theWholeDrawWithinMs),
+          })
+          .toBeGreaterThanOrEqual(overTheWholeDraw ?? 0),
+        moving,
+        (step) => step === "draw",
+        theDrawStopped
+      );
+      drawQuiet = drawn.longestQuiet;
       await throttleTheCpu(page);
       await transport.release();
     }
-    const firstBlock = await reached.firstBlock(firstBlockTimeoutMs);
-    const openedMs = await reached.editorOpened(
-      overTheWholeDraw === undefined ? buildTimeoutMs : theDrawnBuildTimeoutMs
+    const first = await whileThePageMoves(
+      reached.firstBlock(within(firstBlockTimeoutMs)),
+      moving,
+      () => true,
+      theOpeningStopped
     );
-    return { buildMs: openedMs - firstBlock.at, firstBlockMs: firstBlock.at, openedMs };
+    const opened = await whileThePageMoves(
+      reached.editorOpened(
+        within(overTheWholeDraw === undefined ? buildTimeoutMs : theDrawnBuildTimeoutMs)
+      ),
+      moving,
+      (step) => step === "batch",
+      theBuildStalled
+    );
+    return {
+      buildMs: opened.reached - first.reached.at,
+      buildQuiet: opened.longestQuiet,
+      drawQuiet,
+      firstBlockMs: first.reached.at,
+      openedMs: opened.reached,
+      openingQuiet: first.longestQuiet,
+    };
   } finally {
     await alice.close();
   }
@@ -460,23 +781,27 @@ async function theBuildsTime(
 
 test(`${documentNames.large}'s editor builds over the whole drawn document in the time it takes over one screenful @phone`, async ({
   browser,
-}) => {
+}, testInfo) => {
   test.setTimeout(1_800_000);
+  const within = theRoomTheLegLeaves(testInfo);
   const { artifactId, path } = await seedDocument("specs-large.md", largeDocument);
   const whole = await topLevelBlocks(artifactId);
   expect(whole).toBeGreaterThan(900);
 
   // One screenful first, because that is the build the two measuring rows are held to: a pod
   // that has grown slower since would show it there before it showed it in the ratio.
-  const screenful = await theBuildsTime(browser, path);
-  const drawn = await theBuildsTime(browser, path, { overTheWholeDraw: whole });
+  const screenful = await theBuildsTime(browser, path, { within });
+  const drawn = await theBuildsTime(browser, path, { overTheWholeDraw: whole, within });
   console.log(
     `R11 build time · over one screenful ${Math.round(screenful.buildMs)} ms ` +
       `(first block ${Math.round(screenful.firstBlockMs)} ms, editor open ` +
       `${Math.round(screenful.openedMs)} ms); over the whole drawn document ` +
       `(${whole} blocks) ${Math.round(drawn.buildMs)} ms (first block ` +
       `${Math.round(drawn.firstBlockMs)} ms, editor open ${Math.round(drawn.openedMs)} ms); ` +
-      `${(drawn.buildMs / screenful.buildMs).toFixed(2)} times, against ${theSameRangeTimes}.`
+      `${(drawn.buildMs / screenful.buildMs).toFixed(2)} times, against ${theSameRangeTimes}. ` +
+      `Longest quiet, over one screenful: opening ${screenful.openingQuiet}, build ` +
+      `${screenful.buildQuiet}; over the whole drawn document: draw ${drawn.drawQuiet}, ` +
+      `opening ${drawn.openingQuiet}, build ${drawn.buildQuiet}.`
   );
 
   expect(screenful.buildMs).toBeGreaterThan(0);
