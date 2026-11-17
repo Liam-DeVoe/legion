@@ -1,4 +1,9 @@
-import type { ColumnOrderState, ColumnSizingState, VisibilityState } from "@tanstack/react-table";
+import type {
+  ColumnOrderState,
+  ColumnSizingState,
+  SortingState,
+  VisibilityState,
+} from "@tanstack/react-table";
 import {
   type Dispatch,
   type RefObject,
@@ -11,6 +16,12 @@ import {
   useState,
 } from "react";
 import { readLayout, type StoredColumns, writeLayout } from "./table-storage";
+
+/** How much wider a header is while the table is sorted by its column: the sort mark `DataTable`
+ *  draws after the label, ▲ or ▼ at `text-xs`, which Chromium draws 9.23 px wide (measured on
+ *  every sorted header of every table, builds Job infra-3221-t16c-measure-rp2nn), rounded up to
+ *  a whole pixel. A sorted column's minimum takes it on (`LayoutColumns.sortedMinimums`). */
+export const SORT_MARK_WIDTH = 10;
 
 /** The columns a table pins at its left edge while it scrolls sideways, and how they fit the
  *  box it is drawn in. */
@@ -27,11 +38,11 @@ export interface LayoutPins {
     readonly keepDragged?: boolean;
   };
   /** In a narrower box, a phone's: these columns, left to right, within `share` of it. Each
-   *  column of `widths` is drawn at that width whatever the reader dragged. Where `flexible` is
-   *  one of these columns, it takes what the others leave, between `flexibleMin` and its own
-   *  width. Where it is not, it scrolls with the table and takes all that these columns leave of
-   *  `share`, down to `flexibleMin`, whatever its own width: drawn right after them, it fills the
-   *  rest of the row. */
+   *  column of `widths` is drawn at that width whatever the reader dragged and whatever the
+   *  table is sorted by. Where `flexible` is one of these columns, it takes what the others
+   *  leave, between `flexibleMin` and its own width. Where it is not, it scrolls with the table
+   *  and takes all that these columns leave of `share`, down to `flexibleMin`, whatever its own
+   *  width: drawn right after them, it fills the rest of the row. */
   readonly phone: {
     readonly columns: readonly string[];
     readonly share: number;
@@ -51,8 +62,15 @@ export interface LayoutColumns extends StoredColumns {
   /** Each column's width before the reader drags it. A column it does not name is drawn at its
    *  definition's `size`, and counts as no width where the pins are fitted. */
   readonly sizes?: Readonly<Partial<Record<string, number>>>;
-  /** The narrowest each column is drawn at, whatever width the reader stored or dragged. */
+  /** The narrowest each column is drawn at, whatever width the reader stored or dragged: its
+   *  header whole with its filter button, or what its cell holds. */
   readonly minimums?: Readonly<Partial<Record<string, number>>>;
+  /** The narrowest each column is drawn at while the table is sorted by it, when its header
+   *  also draws the sort mark: its header whole with that mark, or what its cell holds. A column
+   *  this does not name takes its minimum and the mark's width (`SORT_MARK_WIDTH`) while it is
+   *  sorted, so a caller names here each column whose minimum already holds the mark, at that
+   *  minimum. A column the table is not sorted by keeps its minimum. */
+  readonly sortedMinimums?: Readonly<Partial<Record<string, number>>>;
   /** The columns pinned at the left. A table without it pins nothing. */
   readonly pins?: LayoutPins;
 }
@@ -70,6 +88,11 @@ export interface TableLayoutModel {
    *  elsewhere, and a column may still be dropped onto one. `useTableLayout` fixes none; a
    *  caller whose order holds a column in place names it. */
   readonly fixedColumns?: readonly string[];
+  /** Each column's minimum while the table keeps its present sort: the caller's minimum, and
+   *  for a column the table is sorted by, the one that holds its header with the sort mark
+   *  (`LayoutColumns.sortedMinimums`). A caller that fits the columns to the box itself gives
+   *  way down to these. */
+  readonly minimums: Readonly<Partial<Record<string, number>>>;
   readonly order: ColumnOrderState;
   readonly pagerRef: RefObject<HTMLDivElement | null>;
   /** The widths the window allows and the columns pinned at its left. */
@@ -98,6 +121,9 @@ export function reorder(current: readonly string[], dragged: string, before: str
  * in the window. The widths, order and visibility are the reader's, saved under `layoutKey` —
  * the whole key, which the caller names and this prefixes nothing to — for the `columns` the
  * table has; the box and the pinned columns follow the window, by the rules `columns` gives.
+ * `sorting` is the table's sort, the one it hands `useDataTable`: every column it names draws
+ * its header's sort mark, so each of them is drawn no narrower than its sorted minimum, and
+ * every other column keeps its own.
  *
  * Measuring reads layout, so it happens only when something that changes the answer happens: a
  * `ResizeObserver` over the box and over everything drawn above it — which covers the rows the
@@ -106,7 +132,11 @@ export function reorder(current: readonly string[], dragged: string, before: str
  * height is what this sets. A scroll does none of these, and the virtualizer commits on every
  * visible range, so measuring there would be a reflow per scrolled row.
  */
-export function useTableLayout(layoutKey: string, columns: LayoutColumns): TableLayoutModel {
+export function useTableLayout(
+  layoutKey: string,
+  columns: LayoutColumns,
+  sorting: SortingState
+): TableLayoutModel {
   const saved = useMemo(() => readLayout(layoutKey, columns), [layoutKey, columns]);
   const [sizing, setSizing] = useState<ColumnSizingState>(saved.sizing);
   const [order, setOrder] = useState<ColumnOrderState>(saved.order);
@@ -132,8 +162,24 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     writeLayout(layoutKey, { sizing, order, visibility });
   }, [layoutKey, sizing, order, visibility]);
 
+  // Each column's minimum, and for every column the table is sorted by, the one that holds its
+  // header with the sort mark: the caller's sorted minimum, else its minimum and the mark. Keyed
+  // by the sorted ids, which a caller's new array of the same sort leaves as they were.
+  const sortedIds = sorting.map(({ id }) => id).join(",");
+  const minimums = useMemo(() => {
+    const { minimums: own = {}, sortedMinimums = {} } = columns;
+    if (sortedIds === "") return own;
+    const raised = { ...own };
+    for (const id of sortedIds.split(",")) {
+      const least = own[id];
+      if (least !== undefined)
+        raised[id] = Math.max(least, sortedMinimums[id] ?? least + SORT_MARK_WIDTH);
+    }
+    return raised;
+  }, [columns, sortedIds]);
+
   const responsive = useMemo(() => {
-    const { ids, minimums = {}, pins, sizes = {} } = columns;
+    const { ids, pins, sizes = {} } = columns;
     // Each column at the reader's width, else its starting width, never below its minimum; a
     // column with neither keeps the width its definition gives it.
     const widths: ColumnSizingState = Object.fromEntries(
@@ -175,7 +221,7 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     // At readable minimums, unpin from the right rather than cover the viewport.
     while (pinned.length > 1 && covered(pinned) > budget) pinned.pop();
     return { sizing: widths, pinned };
-  }, [boxWidth, columns, sizing]);
+  }, [boxWidth, columns, minimums, sizing]);
 
   const measure = useCallback(() => {
     const box = scrollRef.current;
@@ -226,6 +272,7 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     attachBox,
     boxHeight,
     boxWidth,
+    minimums,
     order,
     pagerRef,
     responsive,

@@ -24,6 +24,7 @@ import type {
   LegionBoardResponse,
   LegionSetting,
 } from "../../api/types";
+import { SORT_MARK_WIDTH } from "../../components/table-layout";
 import { readLayout } from "../../components/table-storage";
 import * as routeReach from "../issue/RouteReach";
 import { readSelectedIssues } from "../search/bar-scope";
@@ -1081,10 +1082,10 @@ function headerCells(name: string): string[] {
 }
 
 /** The header cells of an issue table another page draws (the work under a priority), drawn
- *  with the scroll box `width` pixels wide. */
-async function headerLayout(width: number): Promise<string[]> {
+ *  with the scroll box `width` pixels wide, at the address's `search`. */
+async function headerLayout(width: number, search = ""): Promise<string[]> {
   boxWide(width);
-  table([issue("CORE-1", { advances: [{ id: "ship-it", inherited: false }] })], "", undefined, {
+  table([issue("CORE-1", { advances: [{ id: "ship-it", inherited: false }] })], search, undefined, {
     listing: { advances: "ship-it" },
     stateKey: "w",
   });
@@ -1138,12 +1139,34 @@ test("an embedded table narrows Title and unpins from the right in a 700 px box"
 test("an embedded table pins Select, Key and Title on a 390 px phone", async () => {
   expect(await headerLayout(390)).toEqual([
     "- 44px 0px",
-    "Key 88px 44px",
-    "Title 199.5px 132px",
+    "Key 100px 44px",
+    "Title 187.5px 144px",
     "Priority 140px -",
     "Queue 124px -",
     ...UNPINNED_REST,
   ]);
+});
+
+// dispatch://INFRA-3221/comment/141bbad2-b75e-4bb4-b0a7-b5b1af541a3c, with R13's leave to widen a
+// width that cuts its header: on a phone the embedded tables' Key holds its header whole, sorted
+// by it and not. Measured in Chromium (builds Job infra-3221-t16c-accept-2784l): its sort button
+// is a 44 px touch target, which holds Key with its mark (38 px), its filter button 44 px, and the
+// cell's padding 12 px below `md`; 88 px left the filter 12 px past the cell.
+test("on a phone an embedded table's Key holds its header whole, sorted by it and not", async () => {
+  const needs = 44 + 44 + 12;
+  const unsorted = await headerLayout(390);
+  expect(widthOf(unsorted, "Key")).toBeGreaterThanOrEqual(needs);
+  expect(unsorted).toContain("Key 100px 44px");
+  for (const restore of restores.splice(0)) restore();
+
+  const sorted = await headerLayout(390, "?w.sort=key");
+  const table = screen.getByRole("table", { name: "Priority issues table" });
+  expect(within(table).getByRole("columnheader", { name: /^Key/ })).toHaveAttribute(
+    "aria-sort",
+    "ascending"
+  );
+  expect(widthOf(sorted, "Key")).toBeGreaterThanOrEqual(needs);
+  expect(sorted).toContain("Key 100px 44px");
 });
 
 // A width the reader dragged on a desktop is the width the header is drawn at, and a stored one
@@ -1175,14 +1198,55 @@ test("an embedded table narrows a Title the reader widened to keep its pins with
   ]);
 });
 
+// dispatch://INFRA-3221/comment/141bbad2-b75e-4bb4-b0a7-b5b1af541a3c: today's minimums of the
+// priority pages' tables hold each header with its sort mark (Open asks' 148 px its 83 px label
+// and mark, measured), so a sort by Open asks widens it not at all.
+test("an embedded table's Open asks is 148 px sorted by it and not", async () => {
+  expect(await headerLayout(1400)).toContain("Open asks 148px -");
+  for (const restore of restores.splice(0)) restore();
+  expect(await headerLayout(1400, "?w.sort=asks")).toContain("Open asks 148px -");
+});
+
 /** The header cells of the Issues tab's Open, in a project with no daemon, drawn with the
- *  scroll box `width` pixels wide. */
-async function openHeaderLayout(width: number): Promise<string[]> {
+ *  scroll box `width` pixels wide, at the address's `search`. */
+async function openHeaderLayout(width: number, search = ""): Promise<string[]> {
   boxWide(width);
-  table([issue("CORE-1")]);
+  table([issue("CORE-1")], search);
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   return headerCells("Project issues table");
 }
+
+/** The width the Issues tab draws the header `name` at, in px. */
+const widthOf = (cells: readonly string[], name: string): number =>
+  Number.parseFloat(
+    cells
+      .find((cell) => cell.startsWith(`${name} `))
+      ?.split(" ")
+      .at(-2) ?? ""
+  );
+
+// dispatch://INFRA-3221/comment/141bbad2-b75e-4bb4-b0a7-b5b1af541a3c: in a 1000 px box every
+// column of Open is at its minimum. Open asks' 140 px holds its header and its 44 px filter
+// button, and while Open is sorted by it the sort mark too, at least 148 px (its 83 px label with
+// the mark, measured). A sort by another column gives the mark's width back, and Created by,
+// whose minimum already holds its own mark, keeps it.
+test("on the Issues tab Open asks is 140 px, and takes its sort mark on only while sorted by it", async () => {
+  const user = userEvent.setup();
+  expect(widthOf(await openHeaderLayout(1000), "Open asks")).toBe(140);
+  for (const restore of restores.splice(0)) restore();
+
+  const sorted = await openHeaderLayout(1000, "?sort=asks");
+  expect(widthOf(sorted, "Open asks")).toBeGreaterThanOrEqual(148);
+  expect(widthOf(sorted, "Open asks")).toBe(140 + SORT_MARK_WIDTH);
+  const author = widthOf(sorted, "Created by");
+
+  const tableNamed = screen.getByRole("table", { name: "Project issues table" });
+  await user.click(within(tableNamed).getByRole("button", { name: /^Created by/ }));
+  await waitFor(() => expect(routeSearch()).toContain("sort=author"));
+  const resorted = headerCells("Project issues table");
+  expect(widthOf(resorted, "Open asks")).toBe(140);
+  expect(widthOf(resorted, "Created by")).toBe(author);
+});
 
 // k12 (R10): on the Issues tab a Title the reader widened by 300 px is drawn at its stored width.
 // With it the pins would cover 980 px of a 1400 px box, past their 840, so Title scrolls with the

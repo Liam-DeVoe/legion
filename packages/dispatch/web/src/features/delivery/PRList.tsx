@@ -500,7 +500,7 @@ export function PRList({
   // The list's own keys are answered while the list is drawn and nowhere else, so the List
   // view's arrows do not reach a reader on the Timeline.
   useKeymapScope("delivery");
-  const layout = useTableLayout(PR_LAYOUT_KEY, PR_LAYOUT_COLUMNS);
+  const layout = useTableLayout(PR_LAYOUT_KEY, PR_LAYOUT_COLUMNS, sorting);
   const [openFilter, setOpenFilter] = useState<string>();
   const rows = useMemo(
     () => buildPRListRows(prs, allRepos, sessionGroups),

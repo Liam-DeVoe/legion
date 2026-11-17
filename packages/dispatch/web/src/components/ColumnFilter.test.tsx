@@ -95,7 +95,7 @@ function Tickets({ address }: { address: string }): ReactNode {
     });
   });
   const [openFilter, setOpenFilter] = useState<string>();
-  const layout = useTableLayout("tickets", LAYOUT);
+  const layout = useTableLayout("tickets", LAYOUT, []);
   const model = useDataTable<Ticket>({
     columns: COLUMNS,
     getRowId: (row) => row.id,

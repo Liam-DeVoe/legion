@@ -238,7 +238,7 @@ function Columns({
   sorting?: SortingState;
   tab?: { hasLegion: boolean } | null;
 }): ReactNode {
-  const layout = useTableLayout("columns-test", layoutColumns);
+  const layout = useTableLayout("columns-test", layoutColumns, sorting);
   const columns = useIssueTableColumns(
     undefined,
     false,

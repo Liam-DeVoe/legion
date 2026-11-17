@@ -95,7 +95,7 @@ export function PrioritiesTable({
   const { params, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
     useTableAddress(VIEW_ADDRESS);
   const update = useAddressUpdate();
-  const layout = useTableLayout(LAYOUT_KEY, PRIORITY_LAYOUT);
+  const layout = useTableLayout(LAYOUT_KEY, PRIORITY_LAYOUT, view.sorting);
   const { attachAbove, boxWidth } = layout;
   const [openId, setOpenId] = useState<string>();
   const [dragging, setDragging] = useState<string>();

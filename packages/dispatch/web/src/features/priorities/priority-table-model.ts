@@ -17,7 +17,13 @@ export interface TableColumn<Row> {
    *  control and the group-by, which read it as text. */
   readonly header: string;
   readonly size: number;
+  /** The narrowest the column is drawn at: its header whole with its filter button, or what its
+   *  cell holds. While the table is sorted by the column it is drawn wider by the sort mark
+   *  (`SORT_MARK_WIDTH`), unless `markInMin` says the minimum holds the mark already. */
   readonly min: number;
+  /** Its minimum holds its header with the sort mark as well, so the column is drawn no wider
+   *  while the table is sorted by it. */
+  readonly markInMin?: true;
   /** Kept at the left edge while the table scrolls sideways. */
   readonly pinned?: boolean;
   readonly sortable?: boolean;
@@ -117,9 +123,10 @@ export function headingOf<Row>(
 }
 
 /** The layout rules `useTableLayout` takes for these columns: each at its own width, never
- *  below its minimum, with the pinned ones kept at the left edge and the first of them that
- *  may narrow giving up width so the rest fit. `rowAttribute` is the attribute the table's
- *  rows carry, which the box measures its first rows by. */
+ *  below its minimum, nor, while the table is sorted by it, below one that holds its sort mark
+ *  too, with the pinned ones kept at the left edge and the first of them that may narrow giving
+ *  up width so the rest fit. `rowAttribute` is the attribute the table's rows carry, which the
+ *  box measures its first rows by. */
 export function tableLayout<Row>(
   columns: readonly TableColumn<Row>[],
   flexible: string,
@@ -132,6 +139,9 @@ export function tableLayout<Row>(
     rowAttribute,
     sizes: Object.fromEntries(columns.map((column) => [column.id, column.size])),
     minimums,
+    sortedMinimums: Object.fromEntries(
+      columns.flatMap((column) => (column.markInMin ? [[column.id, column.min]] : []))
+    ),
     pins: {
       wide: { columns: pinned, share: 0.6 },
       phone: {

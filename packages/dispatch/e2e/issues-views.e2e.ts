@@ -275,6 +275,107 @@ function sortButton(table: Locator, label: string): Locator {
   return header(table, label).getByRole("button", { name: sortName(label) });
 }
 
+/** How a header cell holds what it draws, as `headerFit` reads it. */
+interface HeaderFit {
+  /** Whether its sort button cuts its label or its sort mark. */
+  readonly cut: boolean;
+  /** The sort mark it draws, or the empty text. */
+  readonly mark: string;
+  /** Which of the sort button, the mark and the filter button reach past the cell's edges. */
+  readonly outside: readonly string[];
+}
+
+/** How the header cell `cell` holds its sort button, its sort mark and its filter button. */
+function headerFit(cell: Locator): Promise<HeaderFit> {
+  return cell.evaluate((node, filterControl) => {
+    const own = node.getBoundingClientRect();
+    const button = node.querySelector("button");
+    const parts = {
+      button,
+      mark: button?.lastElementChild ?? null,
+      filter: node.querySelector(`[data-control="${filterControl}"]`),
+    };
+    return {
+      cut: button === null || button.scrollWidth > button.clientWidth,
+      mark: (parts.mark?.textContent ?? "").trim(),
+      outside: Object.entries(parts).flatMap(([name, part]) => {
+        const drawn = part?.getBoundingClientRect();
+        return drawn === undefined || drawn.left < own.left - 0.5 || drawn.right > own.right + 0.5
+          ? [name]
+          : [];
+      }),
+    };
+  }, CONTROL.columnFilter);
+}
+
+/** A sorting header of a scroll box as `boxHeaders` reads it. */
+interface DrawnHeader {
+  readonly cut: boolean;
+  readonly label: string;
+  readonly left: number;
+  readonly right: number;
+}
+
+/** A table's scroll box as `boxHeaders` reads it. */
+interface BoxRead {
+  readonly box: { readonly left: number; readonly right: number };
+  readonly clientWidth: number;
+  readonly headers: readonly DrawnHeader[];
+  readonly scrollWidth: number;
+}
+
+/** The scroll box `box` as its table draws it: the box's own edges, its widths, and each sorting
+ *  header's label, edges and whether its sort button cuts it. */
+function boxHeaders(box: Locator): Promise<BoxRead> {
+  return box.evaluate((node) => {
+    const own = node.getBoundingClientRect();
+    return {
+      box: { left: own.left, right: own.left + node.clientWidth },
+      clientWidth: node.clientWidth,
+      headers: [...node.querySelectorAll("thead th")].flatMap((cell) => {
+        const button = cell.querySelector("button");
+        if (button === null) return [];
+        const rect = cell.getBoundingClientRect();
+        return [
+          {
+            cut: button.scrollWidth > button.clientWidth,
+            label: (button.textContent ?? "").replace(/[▲▼]/g, "").trim(),
+            left: rect.left,
+            right: rect.right,
+          },
+        ];
+      }),
+      scrollWidth: node.scrollWidth,
+    };
+  });
+}
+
+/** Each header of `labels` lies whole inside the box `read` measured, before it scrolls. */
+function expectInBox(read: BoxRead, labels: readonly string[], where: string): void {
+  for (const label of labels) {
+    const drawn = read.headers.find((one) => one.label === label);
+    expect(drawn, `${where}: no ${label} header`).toBeDefined();
+    expect(drawn?.left ?? 0, `${where}: ${label} starts outside the box`).toBeGreaterThanOrEqual(
+      read.box.left - 0.5
+    );
+    expect(drawn?.right ?? 0, `${where}: ${label} ends outside the box`).toBeLessThanOrEqual(
+      read.box.right + 0.5
+    );
+  }
+}
+
+/** The Open asks header of `table`, sorted by it with a press on its sort button, lies whole
+ *  inside its cell with its sort mark
+ *  (dispatch://INFRA-3221/comment/141bbad2-b75e-4bb4-b0a7-b5b1af541a3c). */
+async function expectSortedAsksWhole(page: Page, table: Locator, where: string): Promise<void> {
+  await sortButton(table, "Open asks").click();
+  await expect.poll(() => new URL(page.url()).searchParams.get("sort")).toMatch(/^-?asks$/);
+  const fit = await headerFit(header(table, "Open asks"));
+  expect(fit.mark, `${where}: the sorted Open asks header draws no sort mark`).toMatch(/^[▲▼]$/);
+  expect(fit.cut, `${where}: the sorted Open asks header cuts its label or its mark`).toBe(false);
+  expect(fit.outside, `${where}: parts of the sorted Open asks header leave its cell`).toEqual([]);
+}
+
 /** Every drawn row's cells by the header label, as text, with whether each cell holds a Time
  *  per phase bar. */
 function readCells(table: Locator): Promise<Record<string, Record<string, string>>> {
@@ -523,6 +624,8 @@ test("Open and Done are the two tabs, every older view address opens Open, and e
   }
 });
 
+// SLOW(>=2s): both views read at 1440 px and scrolled to their right edge, then Open sorted by
+// Open asks and given its own sort back.
 test("at 1440 by 900 with the sidebar open both of ACME's views scroll sideways under Select, Priority, Key and Title, and no header is cut", async ({
   browser,
 }) => {
@@ -541,42 +644,13 @@ test("at 1440 by 900 with the sidebar open both of ACME's views scroll sideways 
       await expect(page.getByRole("tablist", { name: "Views" })).toBeVisible();
       await expect(page.getByRole("navigation", { name: "Navigation" })).toBeVisible();
       await expect(table.locator("tbody tr[data-issue-row]").first()).toBeVisible();
-      const read = await box.evaluate((node) => {
-        const own = node.getBoundingClientRect();
-        return {
-          box: { left: own.left, right: own.left + node.clientWidth },
-          clientWidth: node.clientWidth,
-          headers: [...node.querySelectorAll("thead th")].flatMap((cell) => {
-            const button = cell.querySelector("button");
-            if (button === null) return [];
-            const rect = cell.getBoundingClientRect();
-            return [
-              {
-                cut: button.scrollWidth > button.clientWidth,
-                label: (button.textContent ?? "").replace(/[▲▼]/g, "").trim(),
-                left: rect.left,
-                right: rect.right,
-              },
-            ];
-          }),
-          scrollWidth: node.scrollWidth,
-        };
-      });
+      const read = await boxHeaders(box);
       expect(read.scrollWidth, `${view}: the table does not scroll sideways`).toBeGreaterThan(
         read.clientWidth
       );
       for (const drawn of read.headers)
         expect(drawn.cut, `${view}: ${drawn.label} is cut`).toBe(false);
-      for (const label of first) {
-        const drawn = read.headers.find((one) => one.label === label);
-        expect(drawn, `${view}: no ${label} header`).toBeDefined();
-        expect(drawn?.left ?? 0, `${view}: ${label} starts outside the box`).toBeGreaterThanOrEqual(
-          read.box.left - 0.5
-        );
-        expect(drawn?.right ?? 0, `${view}: ${label} ends outside the box`).toBeLessThanOrEqual(
-          read.box.right + 0.5
-        );
-      }
+      expectInBox(read, first, view);
       const pinned = async () =>
         table
           .locator("thead th")
@@ -595,14 +669,29 @@ test("at 1440 by 900 with the sidebar open both of ACME's views scroll sideways 
       await expect.poll(() => box.evaluate((node) => node.scrollLeft)).toBeGreaterThan(0);
       expect(await pinned(), `${view}: Select, Priority, Key and Title moved`).toEqual(before);
     }
+
+    // Sorted by Open asks, its header takes its sort mark on whole; in Open's own sort again,
+    // after a press on the tab, Created by and Open asks still stand whole on the first screen.
+    await page.goto(`/projects/${ACME}/issues?view=open`);
+    await expect(table.locator("tbody tr[data-issue-row]").first()).toBeVisible();
+    await expectSortedAsksWhole(page, table, "open at 1440");
+    await page.getByRole("tab", { name: /^Open/ }).click();
+    await expect.poll(() => new URL(page.url()).searchParams.has("sort")).toBe(false);
+    await box.evaluate((node) => {
+      node.scrollLeft = 0;
+    });
+    const own = await boxHeaders(box);
+    for (const drawn of own.headers)
+      expect(drawn.cut, `open in its own sort: ${drawn.label} is cut`).toBe(false);
+    expectInBox(own, ["Created by", "Open asks"], "open in its own sort");
   } finally {
     await context.close();
     await daemon.close();
   }
 });
 
-// SLOW(>=2s): a narrowing, Clear filters and a sort change read at two widths, each a page load.
-test("Done's header and Open's first row stay where they are through a narrowing, Clear filters and a sort change, at 1280 and 390", async ({
+// SLOW(>=2s): a narrowing, Clear filters and two sort changes read at two widths, each a page load.
+test("Done's header and Open's first row stay where they are through a narrowing, Clear filters and a sort change, and a sorted Open asks header is whole, at 1280 and 390", async ({
   browser,
 }) => {
   test.setTimeout(150_000);
@@ -676,6 +765,8 @@ test("Done's header and Open's first row stay where they are through a narrowing
       await expect(page.getByRole("tab", { name: /^Open/ })).toHaveAccessibleName(
         tabName("Open", open.length)
       );
+      // Sorted by Open asks, its header lies whole inside its cell with its sort mark.
+      await expectSortedAsksWhole(page, table, where);
     }
   } finally {
     await context.close();
@@ -1288,11 +1379,13 @@ test("each measure header's tooltip gives its method and the sort hint, on hover
   browser,
 }) => {
   test.setTimeout(150_000);
-  const daemon = await seedAcme();
+  // A failed read of the daemon first, and every board frame after the first held: neither the
+  // sampler's own failed read nor a frame moves the table under the pointer while it rests.
   const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  const daemon = await seedMeasuredAcme(page);
   try {
     const holder = await seedLongClaim("ACME-3", true);
-    const page = await context.newPage();
     await page.setViewportSize({ height: 1000, width: 1440 });
     await page.goto(`/projects/${ACME}/issues?cols=${EVERY_COL}`);
     await expect(page.getByRole("tablist", { name: "Views" })).toBeVisible();

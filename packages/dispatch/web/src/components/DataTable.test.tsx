@@ -23,7 +23,7 @@ import {
   useDataTable,
 } from "./DataTable";
 import type { PagerOptions } from "./Pager";
-import { type LayoutColumns, useTableLayout } from "./table-layout";
+import { type LayoutColumns, SORT_MARK_WIDTH, useTableLayout } from "./table-layout";
 
 /** A row that is not an issue: the core knows nothing of what its rows are. */
 interface Deploy {
@@ -191,7 +191,7 @@ function Deploys({
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize });
   const [openFilter, setOpenFilter] = useState<string>();
   const [rolledBack, setRolledBack] = useState<ReadonlySet<string>>(new Set());
-  const layout = { ...useTableLayout(layoutKey, layoutColumns), fixedColumns };
+  const layout = { ...useTableLayout(layoutKey, layoutColumns, sorting), fixedColumns };
   const state = { columnFilters, globalFilter, grouping, pagination, sorting };
   const model = useDataTable<Deploy>({
     columns,
@@ -937,6 +937,45 @@ test("the column the caller names takes what the box has over the other columns'
   expect(widths(plain)).toEqual(["150px", "150px", "150px", "150px", "150px"]);
 });
 
+// dispatch://INFRA-3221/comment/141bbad2-b75e-4bb4-b0a7-b5b1af541a3c, on every table the core
+// draws: a column's minimum holds its header with its filter button, and while the table is
+// sorted by the column its sort mark too. Only a sorted column grows, by the mark, and only while
+// it is sorted, a second sort's column too; one whose caller names a sorted minimum that holds
+// the mark already does not.
+test("a sorted column at its minimum grows by the sort mark, and gives it back once the sort moves", async () => {
+  const user = userEvent.setup();
+  const atMinimums: LayoutColumns = {
+    ids: LAYOUT_COLUMNS.ids,
+    minimums: { deploy: 100, minutes: 100, region: 100, service: 150, state: 100 },
+    rowAttribute: "data-deploy-row",
+    sizes: { deploy: 100, minutes: 100, region: 100, service: 150, state: 100 },
+    sortedMinimums: { region: 100 },
+  };
+  draw(<Deploys layoutColumns={atMinimums} layoutKey="marks" />, 1400);
+  const table = await screen.findByRole("table", { name: "Deploys marks" });
+  const widths = () =>
+    within(table)
+      .getAllByRole("columnheader")
+      .map((header) => header.style.width);
+  const sort = (name: string) =>
+    within(table).getByRole("button", { name: new RegExp(`^${name}`) });
+  const marked = `${100 + SORT_MARK_WIDTH}px`;
+  expect(widths()).toEqual(["100px", "150px", "100px", "100px", "100px"]);
+
+  await user.click(sort("Minutes"));
+  expect(widths()).toEqual(["100px", "150px", "100px", marked, "100px"]);
+  await user.click(sort("State"));
+  expect(widths()).toEqual(["100px", "150px", marked, "100px", "100px"]);
+  // A second sort draws its mark too.
+  await user.keyboard("{Shift>}");
+  await user.click(sort("Minutes"));
+  await user.keyboard("{/Shift}");
+  expect(widths()).toEqual(["100px", "150px", marked, marked, "100px"]);
+  // Region's minimum holds its mark already, as its caller says.
+  await user.click(sort("Region"));
+  expect(widths()).toEqual(["100px", "150px", "100px", "100px", "100px"]);
+});
+
 // The caller that asked for it: the project List's Start next, which sits in a last cell with no
 // header of its own, and the priorities page's row actions.
 test("a trailing action cell is drawn after the columns, under a head cell of its width", async () => {
@@ -1118,7 +1157,7 @@ function Priorities({ layoutKey = "priorities" }: { layoutKey?: string }): React
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
   const [globalFilter, setGlobalFilter] = useState("");
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 25 });
-  const layout = useTableLayout(layoutKey, PRIORITY_LAYOUT);
+  const layout = useTableLayout(layoutKey, PRIORITY_LAYOUT, sorting);
   const state = { columnFilters, globalFilter, grouping, pagination, sorting };
   const model = useDataTable<Priority>({
     columns: PRIORITY_COLUMNS,

@@ -204,9 +204,13 @@ export interface ColumnSpec {
   readonly size: number;
   /** How narrow a drag or a narrow window may take it below 1280 px, where every button is a
    *  44 px touch target: the whole header label, its sort mark and its 44 px filter button with
-   *  the cell's padding. From 1280 px the filter button is 32 px, and a filtered column's
-   *  minimum is 12 px less (`columnMinimums`), unless its cell sets it (`cellMin`). */
+   *  the cell's padding, the mark left out where `markOutsideMin` says so. From 1280 px the
+   *  filter button is 32 px, and a filtered column's minimum is 12 px less (`columnMinimums`),
+   *  unless its cell sets it (`cellMin`). */
   readonly min: number;
+  /** Its minimum holds its header and filter button without the sort mark, so the column is
+   *  drawn wider by the mark (`SORT_MARK_WIDTH`) only while the table is sorted by it. */
+  readonly markOutsideMin?: true;
   /** Its minimum is what its cell holds, not its header, so it is the same at any width: a key
    *  with its unread dot, two lines of a title, a status chip or a claim chip whole. */
   readonly cellMin?: true;
@@ -515,10 +519,13 @@ export const COLUMNS: readonly ColumnSpec[] = [
   },
   {
     // Whether the issue has an open ask, not how many: the address keeps `any` and `none`, and a
-    // link of the count the filter picked before keeps its rows (`readAsksPick`).
+    // link of the count the filter picked before keeps its rows (`readAsksPick`). Its minimum
+    // leaves the sort mark out, so Open's first screen at 1440 px holds it and Created by whole in
+    // the view's own sort; sorted by it, it is 150 px, and 138 px from 1280 px.
     id: "asks",
     size: 152,
     min: 140,
+    markOutsideMin: true,
     filter: {
       kind: "picks",
       values: (item) => [asksPick(item.issue.open_asks)],
@@ -689,6 +696,17 @@ const WIDE_MINIMUMS = minimumsFor(false);
  *  1280 px (`touch`), 32 px filter buttons from 1280 px. Looked up by a column id, so a lookup
  *  can miss: a column the registry gives no such width. */
 export const columnMinimums = (touch: boolean) => (touch ? TOUCH_MINIMUMS : WIDE_MINIMUMS);
+/** The registry's sorted minimums with the buttons `minimums` has: each column's own minimum,
+ *  which holds its header with the sort mark, and none for a column whose minimum leaves the
+ *  mark out (`markOutsideMin`), which the layout widens by the mark while it is sorted. */
+const sortedMinimumsOf = (
+  minimums: Readonly<Partial<Record<string, number>>>
+): Readonly<Partial<Record<string, number>>> =>
+  Object.fromEntries(
+    COLUMNS.flatMap((column) => (column.markOutsideMin ? [] : [[column.id, minimums[column.id]]]))
+  );
+const TOUCH_SORTED_MINIMUMS = sortedMinimumsOf(TOUCH_MINIMUMS);
+const WIDE_SORTED_MINIMUMS = sortedMinimumsOf(WIDE_MINIMUMS);
 const COMPACT_COLUMN_MIN: Readonly<Partial<Record<string, number>>> = Object.fromEntries(
   COLUMNS.flatMap((column) =>
     column.compactMin === undefined ? [] : [[column.id, column.compactMin]]
@@ -708,15 +726,21 @@ interface EmbeddedWidth {
 
 /**
  * The registry columns an issue table another page draws has (the priority pages'), at today's
- * widths: those tables keep today's columns and look. They also offer Closed, with its date
- * range filter, hidden until the reader shows it. The Legion columns read a project's daemon
- * board, so they are the Issues tab's alone.
+ * widths: those tables keep today's columns and look, but for a width that cut its header, which
+ * widens to hold it (R13): Key's on a phone. They also offer Closed, with its date range filter,
+ * hidden until the reader shows it. The Legion columns read a project's daemon board, so they are
+ * the Issues tab's alone.
  */
 const EMBEDDED_WIDTHS: Readonly<Partial<Record<ColumnId, EmbeddedWidth>>> = {
   select: { size: 44, min: 44 },
   priority: { size: 140, min: 140 },
   queue: { size: 96, min: 124 },
-  key: { size: 104, min: 108, phone: 88 },
+  // On a phone its header whole, sorted by it or not: its sort button, a 44 px touch target
+  // that holds Key and the mark (38 px), its 44 px filter button and the cell's 12 px padding
+  // (measured, builds Job infra-3221-t16c-accept-2784l, where 88 px spilled the filter 12 px
+  // past the cell). A phone-wide box in a window 1280 px wide or wider, with 32 px filter
+  // buttons, needs 90 px sorted.
+  key: { size: 104, min: 108, phone: 100 },
   title: { size: 380, min: 116, phone: 120 },
   status: { size: 128, min: 132 },
   assignee: { size: 180, min: 148 },
@@ -737,6 +761,12 @@ export const embeddedPhoneMin = (id: string): number => {
   const width = EMBEDDED_WIDTHS[id as ColumnId];
   return width?.phone ?? width?.min ?? 0;
 };
+/** Today's minimums of a table another page draws. Each holds its header with the sort mark as
+ *  well (measured: Open asks' 148 px holds its 83 px label and mark), so each is its column's
+ *  sorted minimum too, and no column there grows while the table is sorted by it. */
+const EMBEDDED_MINIMUMS: Readonly<Partial<Record<string, number>>> = Object.fromEntries(
+  EMBEDDED_IDS.map((id) => [id, EMBEDDED_WIDTHS[id]?.min])
+);
 
 /**
  * The layout of an issue table another page draws, for `useTableLayout`: today's columns at
@@ -754,7 +784,8 @@ export const ISSUE_TABLE_COLUMNS: LayoutColumns = {
   rowAttribute: ISSUE_ROW_ATTRIBUTE,
   hiddenByDefault: { updated: false, closed: false } satisfies Partial<Record<ColumnId, boolean>>,
   sizes: Object.fromEntries(EMBEDDED_IDS.map((id) => [id, EMBEDDED_WIDTHS[id]?.size])),
-  minimums: Object.fromEntries(EMBEDDED_IDS.map((id) => [id, EMBEDDED_WIDTHS[id]?.min])),
+  minimums: EMBEDDED_MINIMUMS,
+  sortedMinimums: EMBEDDED_MINIMUMS,
   pins: {
     wide: { columns: COLUMNS.filter((column) => column.pinned).map(({ id }) => id), share: 0.6 },
     phone: {
@@ -774,13 +805,15 @@ const viewLayouts = new Map<string, LayoutColumns>();
  * `shown` (`shownColumns` in `issues-views.ts`) first in that order, which is the order a view
  * draws until the reader drags a column, and every other column hidden until the reader shows
  * it. Each column starts at the registry's width and never goes below its minimum with the
- * buttons in use (`touch`, `columnMinimums`). The pinned columns the view shows (Select,
- * Priority, Key and Title) stay within 60% of a box 640 px wide or wider, Title narrowing first
- * until the reader drags its width (R10): a Title the reader dragged is drawn at that width, and
- * scrolls with the table where it would take the pins past their share. On a phone Select and
- * Key stay pinned, and Title, which `IssuesTable` draws right after them, fills the rest of the
- * box down to its phone minimum. Held per set of columns and button size, since the stored
- * layout is read again whenever the rules' identity changes.
+ * buttons in use (`touch`, `columnMinimums`), nor, while the view is sorted by it, below the one
+ * that holds its sort mark too: the same minimum for every column but Open asks, which takes
+ * the mark on top (`markOutsideMin`). The pinned columns the view shows (Select, Priority, Key
+ * and Title) stay within 60% of a box 640 px wide or wider, Title narrowing first until the
+ * reader drags its width (R10): a Title the reader dragged is drawn at that width, and scrolls
+ * with the table where it would take the pins past their share. On a phone Select and Key stay
+ * pinned, and Title, which `IssuesTable` draws right after them, fills the rest of the box down
+ * to its phone minimum. Held per set of columns and button size, since the stored layout is
+ * read again whenever the rules' identity changes.
  */
 export function viewLayoutColumns(shown: readonly string[], touch: boolean): LayoutColumns {
   const name = `${shown.join(",")}|${touch}`;
@@ -802,6 +835,7 @@ export function viewLayoutColumns(shown: readonly string[], touch: boolean): Lay
     ),
     sizes: Object.fromEntries(COLUMNS.map((column) => [column.id, column.size])),
     minimums: columnMinimums(touch),
+    sortedMinimums: touch ? TOUCH_SORTED_MINIMUMS : WIDE_SORTED_MINIMUMS,
     pins: {
       wide: {
         columns: COLUMNS.filter((column) => column.pinned && visible.has(column.id)).map(

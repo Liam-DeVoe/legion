@@ -955,7 +955,9 @@ test("Time per phase keeps a minimum that holds its label, its Share and Hours c
   expect(columnMinimums(true).phase_hours).toBe(268 + 16);
   expect(columnMinimums(false).phase_hours).toBe(256 + 16);
   // A phone has 44 px buttons too, and no narrower minimum of its own for this header.
-  expect(phoneMin("phase_hours")).toBe(columnMinimums(true).phase_hours);
+  const touchMinimum = columnMinimums(true).phase_hours;
+  if (touchMinimum === undefined) throw new Error("Time per phase has no minimum");
+  expect(phoneMin("phase_hours")).toBe(touchMinimum);
 });
 
 test("a view's widths give way at Title first, down to 240 px, then at the other columns", () => {

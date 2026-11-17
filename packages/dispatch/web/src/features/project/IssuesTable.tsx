@@ -88,7 +88,6 @@ import {
 import {
   ALL_ROWS,
   clearPicked,
-  columnMinimums,
   compareGroups,
   facetCounts,
   fitViewWidths,
@@ -449,7 +448,8 @@ function ListingTable({
   // for the priorities page and the priority's own page alike, and not once per priority.
   const layout = useTableLayout(
     tableStorageKey(ownLayout?.key ?? ("project" in listing ? listing.project : SCOPED_LAYOUT_KEY)),
-    columnsLayout
+    columnsLayout,
+    address.view.sorting
   );
   return (
     <IssueTableBody
@@ -595,7 +595,7 @@ function IssuesTabTable({ name, tab }: { name: string; tab: IssuesTabPlace }): R
   const { params } = address;
   const { base, hasLegion } = tab;
   // Below 1280 px every button is a 44 px touch target, and each column's minimum holds its
-  // header with that filter button.
+  // header with that filter button, and its sort mark too while the view is sorted by it.
   const touch = useMediaQuery(COMPACT_VIEWPORT_QUERY);
   const cols = readCols(params);
   const rules = viewLayoutColumns(shownColumns(params, base, hasLegion), touch);
@@ -608,7 +608,11 @@ function IssuesTabTable({ name, tab }: { name: string; tab: IssuesTabPlace }): R
     () => ({ ...rules, hiddenByDefault: ownRules.hiddenByDefault }),
     [rules, ownRules]
   );
-  const stored = useTableLayout(viewLayoutKey(tableStorageKey(tab.project), base.id), storedRules);
+  const stored = useTableLayout(
+    viewLayoutKey(tableStorageKey(tab.project), base.id),
+    storedRules,
+    address.view.sorting
+  );
   const shown = cols === undefined ? undefined : new Set(["select", ...cols]);
   // No board-fed column shows in a project with no daemon, whatever a reader stored while one
   // ran, and Queue only once the reader shows it.
@@ -653,7 +657,7 @@ function IssuesTabTable({ name, tab }: { name: string; tab: IssuesTabPlace }): R
             sizing: fitViewWidths(
               drawn.filter((id) => visibility[id] !== false),
               stored.responsive.sizing,
-              columnMinimums(touch),
+              stored.minimums,
               stored.boxWidth,
               ACTION_WIDTH
             ),

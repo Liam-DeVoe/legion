@@ -6,6 +6,7 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { api } from "../../api/client";
 import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
+import { SORT_MARK_WIDTH } from "../../components/table-layout";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
 import { PrioritiesPage } from "./PrioritiesPage";
@@ -830,6 +831,35 @@ test("the priorities table stacks its title's header in a box under 640 px", asy
       .getByRole("columnheader", { name: /^Owner/ })
       .querySelector("span")
   ).not.toHaveClass("flex-col");
+});
+
+// dispatch://INFRA-3221/comment/141bbad2-b75e-4bb4-b0a7-b5b1af541a3c: Order's minimum holds its
+// header whole, its label and its filter button, and while the table is sorted by it, as the
+// table opens, its sort mark too. Measured in Chromium (builds Job infra-3221-t16c-measure-rp2nn):
+// the label is 43 px, in a 44 px button below 1280 px, and 52 px with the mark; the filter button
+// is 44 px there, the gap between them 4 px and the cell's padding 16 px.
+test("the priorities table draws its Order header whole, sorted by it and not", async () => {
+  const user = userEvent.setup();
+  // On `Element.prototype`, which owns the method (see above).
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return new DOMRect(0, 0, this.dataset.testid?.endsWith("-scroll") ? 1400 : 100, 40);
+  });
+  restores.push(() => rect.mockRestore());
+  page(FIFTEEN);
+  const table = await screen.findByRole("table", { name: "Priorities table" });
+  const header = (name: RegExp) => within(table).getByRole("columnheader", { name });
+  const order = () => Number.parseFloat(header(/^Order/).style.width);
+  expect(header(/^Order/)).toHaveAttribute("aria-sort", "ascending");
+  expect(order()).toBeGreaterThanOrEqual(52 + 4 + 44 + 16);
+  expect(order()).toBe(108 + SORT_MARK_WIDTH);
+
+  await user.click(within(table).getByRole("button", { name: /^Priority/ }));
+  await waitFor(() => expect(header(/^Priority/)).toHaveAttribute("aria-sort", "ascending"));
+  expect(header(/^Order/)).not.toHaveAttribute("aria-sort");
+  expect(order()).toBeGreaterThanOrEqual(44 + 4 + 44 + 16);
+  expect(order()).toBe(108);
 });
 
 // INFRA-3135's review round 1, R10: the priorities table registered `x`, "Select or deselect the

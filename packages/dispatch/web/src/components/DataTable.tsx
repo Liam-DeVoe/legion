@@ -559,6 +559,9 @@ function TableHeaderCell<TData>({
               type="button"
             >
               {flexRender(column.columnDef.header, header.getContext())}
+              {/* The mark of every column the table is sorted by, no wider than
+                  `SORT_MARK_WIDTH`, which the layout adds to that column's minimum while the
+                  sort holds (`useTableLayout`). */}
               <span className={textMutedOnCanvas}>
                 {{ asc: "▲", desc: "▼" }[column.getIsSorted() as string] ?? ""}
               </span>

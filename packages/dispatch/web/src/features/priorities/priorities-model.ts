@@ -91,20 +91,28 @@ export function matchesPrioritySearch(item: PriorityItem, search: string): boole
 export const ownerOf = (item: PriorityItem): string =>
   item.priority.owner.trim() === "" ? "No owner" : item.priority.owner.trim();
 
-/** The four count columns are alike: a number, filtered by picking the numbers the rows hold,
- *  which is how a reader asks for the priorities with nothing active. */
-const COUNT_WIDTH = { size: 132, min: 132 };
-
-/** Every column of the priorities table, left to right: the order and the title stay pinned at
- *  the left edge while the counts scroll. A column keeps the id the address and a stored layout
- *  have always named it by, whatever its header reads. */
+/**
+ * Every column of the priorities table, left to right: the order and the title stay pinned at
+ * the left edge while the counts scroll. A column keeps the id the address and a stored layout
+ * have always named it by, whatever its header reads. The four count columns are alike: a
+ * number, filtered by picking the numbers the rows hold, which is how a reader asks for the
+ * priorities with nothing active.
+ *
+ * Each column is at least as wide as its header whole: its label and its filter button, at their
+ * widest below 1280 px, where each is a 44 px touch target, with the gap between them and the
+ * cell's padding, 64 px over the label. Measured in Chromium (builds Job
+ * infra-3221-t16c-measure-rp2nn): Order's label is 43 px in a 44 px button, Triage, Todo's 86,
+ * Closed, 7 days' 102 and Newest event's 97. While the table is sorted by a column, the layout
+ * adds the sort mark (`SORT_MARK_WIDTH`), except where `markInMin` says the minimum holds it.
+ */
 export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
-  { id: "order", header: "Order", size: 88, min: 88, pinned: true, text: (item) => item.order },
+  { id: "order", header: "Order", size: 108, min: 108, pinned: true, text: (item) => item.order },
   {
     id: "title",
     header: "Priority",
     size: 420,
     min: 180,
+    markInMin: true,
     pinned: true,
     text: (item) => `${item.priority.title} ${item.priority.description}`,
   },
@@ -113,11 +121,25 @@ export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
     header: "Owner",
     size: 200,
     min: 160,
+    markInMin: true,
     values: (item) => [ownerOf(item)],
     group: ownerOf,
   },
-  { id: "in-flight", header: "Active", ...COUNT_WIDTH, values: (i) => [String(i.inFlight)] },
-  { id: "waiting", header: "Triage, Todo", ...COUNT_WIDTH, values: (i) => [String(i.waiting)] },
+  {
+    id: "in-flight",
+    header: "Active",
+    size: 132,
+    min: 132,
+    markInMin: true,
+    values: (i) => [String(i.inFlight)],
+  },
+  {
+    id: "waiting",
+    header: "Triage, Todo",
+    size: 152,
+    min: 152,
+    values: (i) => [String(i.waiting)],
+  },
   {
     id: "parked",
     header: "Backlog, icebox",
@@ -125,12 +147,18 @@ export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
     min: 180,
     values: (item) => [String(item.parked)],
   },
-  { id: "closed", header: "Closed, 7 days", ...COUNT_WIDTH, values: (i) => [String(i.closed)] },
+  {
+    id: "closed",
+    header: "Closed, 7 days",
+    size: 168,
+    min: 168,
+    values: (i) => [String(i.closed)],
+  },
   {
     id: "newest",
     header: "Newest event",
-    size: 160,
-    min: 160,
+    size: 164,
+    min: 164,
     values: (item) => [newestBucket(item.newest)],
     group: (item) => newestBucket(item.newest),
     order: AGES,
