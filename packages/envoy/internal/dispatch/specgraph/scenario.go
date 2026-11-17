@@ -116,7 +116,7 @@ const (
 //     a check that the object of a commit does not name has a tie that is not known at that commit,
 //     and so has each check at a commit that the file does not name. A result at one commit counts
 //     at another only when the check's tie is known at both commits and no path that changed
-//     between them is covered by the tie at either commit;
+//     between them reaches the tie at either commit (changeBetween);
 //   - results.json, [{"check","check_version","kind","outcome","commit","deploy","graph_tx","job",
 //     "leg","attempt","at","seq","fault_author","test_authors","test_commit"}]: check_version
 //     names an approved version of the check, whose Digest the result carries; kind is run or

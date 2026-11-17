@@ -73,19 +73,30 @@ type CitationInput struct {
 //     the test as a pass or a failure: a job that did not run, left no report, skipped the test,
 //     does not hold it, could not run it or replayed it from go test's cache did not run it. The
 //     code did not change only when the check's tie is known at the commit and at the base commit
-//     and no path of Changed is in either, the rule by which a result carries from one commit to
-//     another (R8): a result carries from the base only while no file that its test read there
-//     changed, so a file that the change deleted or moved, which the tie at the commit no longer
-//     holds, counts by the base's tie. So it changed when the tie at the commit is not known (R8:
-//     "A check whose tie to its code is unknown runs on each push to the branch"), when AllChanged
-//     says that the commit has no base commit, when a path of Changed is in the tie at either end
-//     (the first in sorted order named), and when the tie at the base is not known, also while
-//     Changed is empty.
+//     and no path of Changed reaches either (changeBetween), the rule by which a result carries
+//     from one commit to another (R8): a result carries from the base only while no file that its
+//     test read there changed, so a file that the change deleted or moved, which the tie at the
+//     commit no longer holds, counts by the base's tie. A path reaches a tie that covers it or that
+//     holds a path under it, since git names a submodule that moved by its one path, the gitlink.
+//     So it changed when the tie at the commit is not known (R8: "A check whose tie to its code is
+//     unknown runs on each push to the branch"), when AllChanged says that the commit has no base
+//     commit, when a path of Changed reaches the tie at either end (the first in sorted order
+//     named), and when the tie at the base is not known, also while Changed is empty.
+//
+// A report is the account of the process under test (ReadGoTestJSON), so this rule stands against
+// a test that is missing, skipped, filtered out or replayed from go test's cache, and not against
+// test code that forges the lines of the testing package: a test that prints the marker byte and
+// the run and pass lines of another test makes that test read as run, and that test can be one that
+// go test did not run (TestCitationsStatedLimitAForgedRun). What stands against a test that proves
+// nothing is its failing example (R9: "An agent that did not write the test writes the fault", and
+// "The check reads true only when its test, as it is now, failed on that fault") and the review of
+// each change to the code of its test (R25: "A change to the code of a test that runs a check is a
+// change to that check").
 //
 // Deriving a tie can run the repository's own tools, so Citations asks for the tie at the commit
 // only for a check whose test did not run, and for the tie at the base only when, besides, the tie
-// at the commit is known and covers no path of Changed: a tie at the commit that is not known, or
-// that covers a changed path, decides alone, so the answer is the one of asking for both first.
+// at the commit is known and no path of Changed reaches it: a tie at the commit that is not known,
+// or that a changed path reaches, decides alone, so the answer is the one of asking for both first.
 func Citations(t Tree, in CitationInput) CitationFaults {
 	var faults CitationFaults
 	for _, c := range t.Checks {
@@ -132,43 +143,39 @@ func (in CitationInput) cite(c Check) (rule, detail string) {
 }
 
 // changeCause is why the code that check c runs counts as changed, or "" when it did not change:
-// the carry rule of checkJudge.carries (R8), with the cause named and the first covered path.
+// the carry rule (changeBetween, R8), with the cause named. The tie at this commit decides alone
+// when it finds a change, so the tie at the base is asked for only when it finds none.
 func (in CitationInput) changeCause(c Check) string {
 	tie := Tie{Why: "no tie at this commit was given"}
 	if in.Tie != nil {
 		tie = in.Tie(c)
 	}
+	changed := func() ([]string, bool) { return in.Changed, !in.AllChanged }
+	change := changeBetween(changed, tie)
+	if change.kind == noChange {
+		base := Tie{Why: "no tie at the base commit was given"}
+		if in.BaseTie != nil {
+			base = in.BaseTie(c)
+		}
+		change = changeBetween(changed, tie, base)
+	}
 	switch {
-	case !tie.Known:
-		return fmt.Sprintf("its tie is unknown (%s)", tie.Why)
-	case in.AllChanged:
+	case change.kind == tieUnknown && change.tie == 0:
+		return fmt.Sprintf("its tie is unknown (%s)", change.why)
+	case change.kind == tieUnknown:
+		return fmt.Sprintf("its tie at the base commit is unknown (%s)", change.why)
+	case change.kind == pathsUnknown:
 		return "no base commit"
-	}
-	if path := in.firstCovered(tie); path != "" {
-		return path + " changed"
-	}
-	base := Tie{Why: "no tie at the base commit was given"}
-	if in.BaseTie != nil {
-		base = in.BaseTie(c)
-	}
-	if !base.Known {
-		return fmt.Sprintf("its tie at the base commit is unknown (%s)", base.Why)
-	}
-	if path := in.firstCovered(base); path != "" {
-		return path + " changed (the tie at the base commit holds it)"
+	case change.kind == pathCovered && change.under != "" && change.tie == 0:
+		return fmt.Sprintf("%s changed (the tie holds %s, a path under it)", change.path, change.under)
+	case change.kind == pathCovered && change.under != "":
+		return fmt.Sprintf("%s changed (the tie at the base commit holds %s, a path under it)", change.path, change.under)
+	case change.kind == pathCovered && change.tie == 0:
+		return change.path + " changed"
+	case change.kind == pathCovered:
+		return change.path + " changed (the tie at the base commit holds it)"
 	}
 	return ""
-}
-
-// firstCovered is the first path of Changed, in sorted order, that tie covers, or "".
-func (in CitationInput) firstCovered(tie Tie) string {
-	first := ""
-	for _, path := range in.Changed {
-		if tie.Covers(path) && (first == "" || path < first) {
-			first = path
-		}
-	}
-	return first
 }
 
 // notRun is the job of test, with the first leg in sorted order whose report does not show test

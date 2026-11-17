@@ -54,9 +54,10 @@ const outcomeCached = "cached"
 // so such a test can fail when it runs. The reader reads that line whole, though go test's
 // converter writes a line of more than 1,024 bytes, as the summary line of a long import path, in
 // two or more output events (ReadGoTestJSON). The line has no marker, so a test that prints its
-// own package's cached summary line reads as replayed from the cache, which reads as not run: the
-// event of a test's name does not tell the two apart, since go's own summary line can come in such
-// an event too, after a TestMain that prints a run line.
+// own package's cached summary line makes each run of its package in that go test run read as
+// replayed from the cache, which reads as not run: the event of a test's name does not tell the
+// two apart, since go's own summary line can come in such an event too, after a TestMain that
+// prints a run line.
 //
 // In the two forms of report that ReadGoTestJSON reads, what a test prints with no marker decides
 // no outcome, go test's kill line and its end lines included. A test's pass stays when a goroutine
@@ -260,18 +261,22 @@ func (r *run) output() string {
 // The reader reads exactly those two forms of report: only in them does the marker separate go
 // test's own lines from what a test prints. A report of another form, as of a test binary run with
 // -test.v=true or the text of go test -v through go tool test2json, lets a test write an end line
-// with no marker, and the reader cannot see which form made a report. A report of go test -json -v
-// is a form that the reader cannot read: go then runs the binary with -test.v=true and writes no
-// end event for a test that prints with no line feed, and the test reads as not run. In CI, the
-// job's own go test -json command, with no -v, makes the report that the reporter reads.
+// with no marker. go test -json -v makes such a report: -json gives the test binary
+// -test.v=test2json, and the -v after it gives -test.v=true, which wins. So in a report of go test
+// -json -v a test can print its own end line and read as passed, and a test that prints with no
+// line feed gets no end event and reads as not run (TestStatedLimitsOfTheReader). The reader
+// cannot refuse such a report by its content: of a package of passing tests with no subtest and no
+// error line, its events are those of go test -json. So a step that makes a report for CI runs go
+// test -json with no -v.
 //
 // The report is the test binary's own account, and the reader trusts its order: a report that
 // someone changed or put in another order can give a run the wrong outcome. In those two forms, a
 // line that a test prints with no marker is output, whatever it says. But the reader cannot tell a
-// line that the binary prints with the marker, or before its first test, from the testing
-// package's own, so the binary can still print a whole run, of a test that does not exist or of one
-// that does, and a test that prints a run line of its own name with the marker gives two entries,
-// each could_not_run.
+// line that the binary prints with the marker, the byte 0x16, which an honest test never prints and
+// a test that forges the lines of the testing package can, or before its first test, from the
+// testing package's own, so the binary can still print a whole run, of a test that does not exist
+// or of one that does, and a test that prints a run line of its own name with the marker gives two
+// entries, each could_not_run.
 // And in a report of go test -json, a test that prints, with the marker, go test's end line of its
 // own name, or of another test of its package that is running, can still give that test an outcome
 // when that test then does not end by itself: for its own name, the kind of that line, pass, fail

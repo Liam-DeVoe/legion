@@ -24,7 +24,7 @@
 //	  a check of production or of the graph is judged only at a deploy, and one of the graph reads
 //	  unknown there when no result read the subject's graph_tx; <dir>/ties.json holds each check's tie
 //	  by commit, and a result at one commit counts at another only when the check's tie is known at
-//	  both and no path that changed between them is covered by the tie at either)
+//	  both and no path that changed between them reaches the tie at either)
 //	spec-check citations --dir <dir> --repo <root> --workflow <file> (--changed <file> | --all-changed)
 //	    --reports <dir> --needs <file> [--ties <file>...] [--json <file>] [--allow-empty]
 //	spec-check changed --repo <root> --base <commit> [--head <commit>]
@@ -155,8 +155,8 @@
 // names one subject, so the reader refuses graph_tx on a branch, a commit, branch, deploy or
 // graph_tx of no letter and no digit, and a result that names two of commit, deploy and graph_tx.
 // ties.json holds the tie of each check at each commit, and a result at one commit counts at another
-// only when the check's tie is known at both commits and no path that changed between them is
-// covered by the tie at either commit; the reader refuses a commit of ties.json of no letter and no
+// only when the check's tie is known at both commits and no path that changed between them reaches
+// the tie at either commit; the reader refuses a commit of ties.json of no letter and no
 // digit, as it refuses such a commit of a subject, and names the form that ties.json needs when a
 // value in it is of another type, such as ties by check alone.
 //
@@ -174,10 +174,14 @@
 // a push that changes only docs is cited with no run of that test: the result that counts is then
 // the one at that base commit, and the check's state reads unknown when no result stands there.
 // --all-changed says that there is no base commit. A result carries from the base only while the
-// check's tie is known at the commit and at the base and holds no path of the list, so a file that
+// check's tie is known at the commit and at the base and holds no path of the list and no path
+// under one, since git names a submodule that moved by its one path, the gitlink, so a file that
 // the change deleted, or moved out of the tie, counts, and a tie that is not known at either end
-// counts as a change also when no path changed. --reports holds one directory per report artifact
-// of the run, spec-report--<job> or spec-report--<job>--<leg>, each with the go test -json
+// counts as a change also when no path changed. A report is the account of the process under test,
+// so a test that prints the testing package's marked run and pass lines of another test makes that
+// test read as run, and a report of go test -json -v lets a test print its own end line: a step that
+// makes a report for CI runs go test -json with no -v. --reports holds one directory per report
+// artifact of the run, spec-report--<job> or spec-report--<job>--<leg>, each with the go test -json
 // report.jsonl; --needs holds toJSON(needs) of the spec-citations job, the result of each job it
 // waits for. The tie of a check whose test did not run, the one check whose tie the rules read, is
 // at the commit what <root>'s .github/scripts/go-test-reads.sh says its test reads (GoTies), and at
@@ -254,7 +258,7 @@ const usage = `usage: spec-check tree --dir <dir> [--allow-empty] [--retired <fi
          a check of production or of the graph is judged only at a deploy, and one of the graph reads
          unknown there when no result read the subject's graph_tx; <dir>/ties.json holds each check's tie
          by commit, and a result at one commit counts at another only when the check's tie is known at
-         both and no path that changed between them is covered by the tie at either)
+         both and no path that changed between them reaches the tie at either)
        spec-check citations --dir <dir> --repo <root> --workflow <file> (--changed <file> | --all-changed)
            --reports <dir> --needs <file> [--ties <file>...] [--json <file>] [--allow-empty]
        spec-check changed --repo <root> --base <commit> [--head <commit>]`

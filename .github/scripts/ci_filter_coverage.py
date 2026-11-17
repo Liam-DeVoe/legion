@@ -289,6 +289,24 @@ FIELDS = ("Dir,ImportPath,ForTest,Standard,GoFiles,CgoFiles,TestGoFiles,XTestGoF
           "TestEmbedPatterns,XTestEmbedPatterns,Error")
 
 
+@dataclass(frozen=True, kw_only=True)
+class Listing:
+    """One `go list` of Session.listing, by what decides its answer: the run's directory,
+    packages, tags, mode, -race, environment and overlay, and whether it lists the packages with
+    their dependencies (`-deps`, and `-test` for a test or vet run) or alone. Session.listings holds
+    each answer under its Listing, so a reader of them reads each part by its name, and a Listing
+    is made by naming each part."""
+
+    workdir: str
+    pkgs: tuple
+    tags: str
+    mode: str
+    race: bool
+    env: tuple
+    overlay: tuple
+    deps: bool
+
+
 @dataclass
 class Session:
     """The go commands' environment and results. GOPROXY=off over an empty module cache: no
@@ -299,6 +317,7 @@ class Session:
 
     problems: list[Annotation] = field(default_factory=list)
     cache: dict = field(default_factory=dict)
+    listings: dict[Listing, list] = field(default_factory=dict)
     toolchains: dict = field(default_factory=dict)
     tmp: str = ""
 
@@ -343,13 +362,14 @@ class Session:
     def overlay_args(self, run_: Run) -> list:
         if not run_.overlay:
             return []
-        path = Path(self.tmp) / f"overlay-{len(self.cache)}.json"
+        path = Path(self.tmp) / f"overlay-{len(self.listings)}.json"
         path.write_text(json.dumps({"Replace": {str(REPO / a): str(REPO / b) for a, b in run_.overlay}}))
         return ["-overlay", str(path)]
 
     def listing(self, run_: Run, deps: bool) -> list:
-        key = ("list", run_.workdir, run_.pkgs, run_.tags, run_.mode, run_.race, run_.env, run_.overlay, deps)
-        if key not in self.cache:
+        key = Listing(workdir=run_.workdir, pkgs=run_.pkgs, tags=run_.tags, mode=run_.mode, race=run_.race,
+                      env=run_.env, overlay=run_.overlay, deps=deps)
+        if key not in self.listings:
             args = ["list", "-e", f"-json={FIELDS}"]
             if deps:
                 args.append("-deps")
@@ -360,8 +380,8 @@ class Session:
             if run_.race:
                 args.append("-race")
             args += self.overlay_args(run_)
-            self.cache[key] = decode_stream(self.go(run_, args + list(run_.pkgs)))
-        return self.cache[key]
+            self.listings[key] = decode_stream(self.go(run_, args + list(run_.pkgs)))
+        return self.listings[key]
 
     def module_files(self, run_: Run) -> list:
         """go.work, go.work.sum and each bound module's go.mod and go.sum, or the one module's."""
@@ -687,22 +707,19 @@ def test_reads(workdir: str, pkgs: list, env: dict) -> tuple:
     # `-deps` listing the closure made, the go commands its RULES rows start included;
     # `<dir>/testdata/**` of each package a test run names; and the directory under the literal
     # part of each wildcard embed pattern, whole, of the packages whose patterns closure() reads.
-    # Session.listing keeps each listing under the key ("list", workdir, pkgs, tags, mode, race,
-    # env, overlay, deps).
-    for key, listed in session.cache.items():
-        if key[0] != "list":
-            continue
-        mode, deps = key[4], key[8]
+    # Each listing is read by the parts of its Listing that decide this: its mode and whether it
+    # lists dependencies.
+    for listing, listed in session.listings.items():
         for pkg in listed:
             d = rel(pkg["Dir"]) if pkg.get("Dir") and not pkg.get("Standard") else None
             if d is None:
                 continue
-            if deps:
+            if listing.deps:
                 if (REPO / d).is_dir():
                     reads.append(Read(f"{d}/*", f"{why} (the package directory, whole)"))
                 embeds = pkg.get("EmbedPatterns") or []
-            elif mode in ("test", "vet"):
-                if mode == "test":
+            elif listing.mode in ("test", "vet"):
+                if listing.mode == "test":
                     reads.append(Read(f"{d}/testdata/**", f"{why} (the testdata of a package it tests, whole)"))
                 embeds = (pkg.get("TestEmbedPatterns") or []) + (pkg.get("XTestEmbedPatterns") or [])
             else:

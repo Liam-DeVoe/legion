@@ -106,7 +106,8 @@ func TestAKilledTestCouldNotRun(t *testing.T) {
 // is then killed (killsibling): in both forms of report, where go tool test2json writes a fail
 // event at its exit for the test it named last. That event is also the end of the package, which
 // go tool test2json names so, so the sibling that passed reads no run in that form
-// (TestAReportWithNoEndOfItsPackageHoldsNoRun).
+// (TestAReportWithNoEndOfItsPackageHoldsNoRun). A test that prints its own pass line and then ends
+// its process with status 1 could not run (forgedpass).
 func TestWhatATestPrintsDecidesNoOutcome(t *testing.T) {
 	t.Parallel()
 	readReports(t, []reportRow{
@@ -126,6 +127,7 @@ func TestWhatATestPrintsDecidesNoOutcome(t *testing.T) {
 		{"killprinted.jsonl", []string{acme + "killprinted TestPrintsAPassLineOfItselfThenSleeps could_not_run"}},
 		{"t2j-killprinted.jsonl", []string{acme + "killprinted TestPrintsAPassLineOfItselfThenSleeps could_not_run"}},
 		{"killprintedfail.jsonl", []string{acme + "killprintedfail TestPrintsAFailLineOfItselfThenSleeps could_not_run"}},
+		{"forgedpass.jsonl", []string{acme + "forgedpass TestPrintsAPassLineOfItselfThenExits could_not_run"}},
 		{"t2j-killprintedfail.jsonl", []string{acme + "killprintedfail TestPrintsAFailLineOfItselfThenSleeps could_not_run"}},
 		{"killsibling.jsonl", []string{acme + "killsibling TestSleeps could_not_run", acme + "killsibling TestPrinter pass"}},
 		{"t2j-killsibling.jsonl", []string{acme + "killsibling TestSleeps could_not_run", acme + "killsibling TestPrinter could_not_run"}},
@@ -201,16 +203,19 @@ func TestAPassStaysWhenThePackageFailsAfterIt(t *testing.T) {
 //     go test -v through go tool test2json, a test prints its own pass line with no marker and is
 //     then killed, and it reads pass (piped-killprinted). Under go test -json the same test could
 //     not run (killprinted, in TestWhatATestPrintsDecidesNoOutcome);
-//   - "A report of go test -json -v is a form that the reader cannot read: go then writes no end
-//     event for a test that prints with no line feed, and the test reads as not run":
-//     TestPrintsNoLineFeedThenPasses passes and reads could_not_run (verbose-splitlines). Under go
-//     test -json the same test reads pass (splitlines, in
+//   - "So in a report of go test -json -v a test can print its own end line and read as passed,
+//     and a test that prints with no line feed gets no end event and reads as not run": a test
+//     prints its own pass line with no marker and then ends its process with status 1, and it reads
+//     pass (verbose-forgedpass); under go test -json it could not run (forgedpass, in
+//     TestWhatATestPrintsDecidesNoOutcome). TestPrintsNoLineFeedThenPasses passes and reads
+//     could_not_run (verbose-splitlines); under go test -json it reads pass (splitlines, in
 //     TestALineThatGoTestWritesInTwoEventsIsReadWhole).
 func TestStatedLimitsOfTheReader(t *testing.T) {
 	t.Parallel()
 	readReports(t, []reportRow{
 		{"killsiblingpass.jsonl", []string{acme + "killsiblingpass TestSleeps pass", acme + "killsiblingpass TestPrinter pass"}},
 		{"piped-killprinted.jsonl", []string{acme + "killprinted TestPrintsAPassLineOfItselfThenSleeps pass"}},
+		{"verbose-forgedpass.jsonl", []string{acme + "forgedpass TestPrintsAPassLineOfItselfThenExits pass"}},
 		{"verbose-splitlines.jsonl", []string{acme + "splitlines TestPrintsNoLineFeedThenPasses could_not_run",
 			acme + "splitlines TestLong" + strings.Repeat("X", 1178) + " pass"}},
 	})

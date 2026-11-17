@@ -760,6 +760,111 @@ func TestCitationsFromTheMergeBase(t *testing.T) {
 	expect(t, g.cite(t, binary, workflow, push1), cited(dir))
 }
 
+// R8, R48: a submodule is one path of its superproject, the gitlink, and git names that path alone
+// when the submodule moves to another commit, so changed prints "sub" and no path under it, while
+// a tie names the files that the test reads under it, as "sub/*". A changed path counts for a tie
+// that holds a path under it, so the move ends the carry of a check whose tie reaches below the
+// submodule. The superproject is a copy of testdata/citations/repo with a real submodule, sub, whose
+// answer.txt changes between the base and the head; --ties gives one tie at both. The control is a
+// tie that holds no path under sub: the move changes no code that the check runs, and the skipped
+// test is cited.
+func TestCitationsSeesAChangedSubmodule(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	workflow := fixture(t, "citations", "workflow.yaml")
+	r := newCitationRun()
+	r.reports["spec-report--go-checks"] = goReport("skip")
+	f := r.write(t)
+	source := filepath.Join(f.root, "sub-source")
+	if err := os.Mkdir(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, source, "init", "-q")
+	writeFile(t, filepath.Join(source, "answer.txt"), []byte("42\n"))
+	commitAll(t, source, "", "the answer")
+	// git clones a submodule from a local path only when the file protocol is allowed.
+	gitIn(t, f.repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", source, "sub")
+	base := commitAll(t, f.repo, f.head, "add the submodule")
+	sub := filepath.Join(f.repo, "sub")
+	writeFile(t, filepath.Join(sub, "answer.txt"), []byte("0\n"))
+	commitAll(t, sub, gitIn(t, sub, "rev-parse", "HEAD"), "another answer")
+	head := commitAll(t, f.repo, base, "move the submodule")
+	if entry := gitIn(t, f.repo, "ls-tree", head, "sub"); !strings.HasPrefix(entry, "160000 commit ") {
+		t.Fatalf("sub at the head is %q; want a gitlink", entry)
+	}
+	list := runBinaryIn(t, binary, "", gitEnv, "changed", "--repo", f.repo, "--base", base)
+	expect(t, list, result{stdout: "base " + base + "\nsub\n", stderr: "spec-check: " + f.repo + ": 1 path changed from " + base + " to HEAD\n"})
+	writeFile(t, f.changed, []byte(list.stdout))
+	for _, row := range []struct{ name, tie, detail string }{
+		{"a tie that holds the files of the submodule", `["a/*","fixtures/a.json","sub/*"]`,
+			"test-not-run: sub changed (the tie holds sub/*, a path under it), and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"},
+		{"control: a tie that holds no path under the submodule", `["a/*","fixtures/a.json"]`, ""},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			ties := filepath.Join(t.TempDir(), "ties.json")
+			writeFile(t, ties, []byte(`{"`+head+`":{"`+citedCheck+`":`+row.tie+`},"`+base+`":{"`+citedCheck+`":`+row.tie+`}}`))
+			want := cited(f.dir)
+			if row.detail != "" {
+				want = refused(f.dir, row.detail)
+			}
+			expect(t, runBinaryIn(t, binary, "", gitEnv, "citations", "--dir", f.dir, "--repo", f.repo, "--workflow", workflow,
+				"--changed", f.changed, "--reports", f.reports, "--needs", f.needs, "--ties", ties), want)
+		})
+	}
+}
+
+// A stated limit of R48, pinned so that a change of it is seen: a report is the account of the
+// process under test, and go's own converter writes the run and pass events of a test for the
+// lines that the test binary prints with the testing package's marker byte, 0x16. So a test that
+// prints the marked run and pass lines of another test makes that test read as run, though go test
+// did not run it, and the check of that test is cited. The report is a real one, made here by
+// `go test -json -count=1 -run '^TestPrinter$' ./a` over a copy of testdata/citations/repo with a
+// test TestPrinter added, which prints TestA's two lines when PRINT_TESTA is yes; the -run pattern
+// leaves TestA out. The control is the same run with TestPrinter quiet: the report does not hold
+// TestA, and the check is refused.
+func TestCitationsStatedLimitAForgedRun(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	workflow := fixture(t, "citations", "workflow.yaml")
+	const printer = "package a\n\nimport (\n\t\"fmt\"\n\t\"os\"\n\t\"testing\"\n)\n\n" +
+		"// TestPrinter prints the marked run and pass lines of TestA when PRINT_TESTA is yes.\n" +
+		"func TestPrinter(t *testing.T) {\n\tif os.Getenv(\"PRINT_TESTA\") == \"yes\" {\n" +
+		"\t\tfmt.Print(\"\\x16=== RUN   TestA\\n\\x16--- PASS: TestA (0.00s)\\n\")\n\t}\n}\n"
+	for _, row := range []struct{ name, print, detail string }{
+		{"stated limit: a test that prints the marked run and pass lines of TestA makes TestA read as run", "yes", ""},
+		{"control: the test prints nothing, and the report does not hold TestA", "no",
+			"test-not-run: no base commit, and go-checks did not run example.com/citations/a TestA (its report does not hold it)"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			r := newCitationRun()
+			r.allChanged = true
+			f := r.write(t)
+			writeFile(t, filepath.Join(f.repo, "a", "printer_test.go"), []byte(printer))
+			cmd := exec.Command("go", "test", "-json", "-count=1", "-run", "^TestPrinter$", "./a")
+			cmd.Dir = f.repo
+			cmd.Env = append(cmd.Environ(), "GOWORK=off", "GOFLAGS=", "PRINT_TESTA="+row.print)
+			var stderr strings.Builder
+			cmd.Stderr = &stderr
+			report, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("go test -json: %v\n%s%s", err, report, stderr.String())
+			}
+			const pass = `"Action":"pass","Package":"example.com/citations/a","Test":"TestA"`
+			if forged := strings.Contains(string(report), pass); forged != (row.print == "yes") {
+				t.Fatalf("the report holds the pass event of TestA: %t; want %t\n%s", forged, row.print == "yes", report)
+			}
+			writeFile(t, filepath.Join(f.reports, "spec-report--go-checks", "report.jsonl"), report)
+			want := cited(f.dir)
+			if row.detail != "" {
+				want = refused(f.dir, row.detail)
+			}
+			expect(t, runBinary(t, binary, "", r.args(f, workflow)...), want)
+		})
+	}
+}
+
 // Without --ties, citations derives a tie only for a check whose test did not run: a run where
 // each test ran starts no go-test-reads.sh and makes no checkout of the base. The script of the
 // fixture writes a line to a file of the test each time it runs, at the head and at the base. The

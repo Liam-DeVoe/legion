@@ -3163,14 +3163,15 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - `specgraph.ReadGoTestJSON` reads a `go test -json` report, or the report that `go tool test2json` writes for a test binary run with `-test.v=test2json`, and `specgraph.MatchTests` matches a check's selector to its one test.
   The reader reads exactly those two forms, because only in them does the marker separate go test's own lines from what a test prints;
   a report of another form, as of a test binary run with `-test.v=true` or the text of `go test -v` through `go tool test2json`, lets a test write an end line with no marker, and the reader cannot see which form made a report.
-  A report of `go test -json -v` is a form that the reader cannot read: go then writes no end event for a test that prints with no line feed, and the test reads as not run (`TestStatedLimitsOfTheReader`).
-  In CI, the job's own `go test -json` command, with no `-v`, makes the report that the reporter reads.
+  `go test -json -v` makes such a report: `-json` gives the test binary `-test.v=test2json`, and the `-v` after it gives `-test.v=true`, which wins, so a test can print its own end line and read as passed, and a test that prints with no line feed gets no end event and reads as not run (`TestStatedLimitsOfTheReader`).
+  The reader cannot refuse such a report by its content: of a package of passing tests with no subtest and no error line, its events are those of `go test -json`.
+  So a step that makes a report for CI runs `go test -json` with no `-v`.
   The outcome of a run of a test is its one end event of its own (`pass`, `fail` or `skip`), which counts only after go test's own end line of its kind for the test, a frame of the run (`OutputType` `frame`) such as `--- PASS: <name> (0.00s)`;
   in the two forms, what a test prints with no marker decides no outcome, go test's kill line and its end lines included.
   A run reads `could_not_run`, and never a pass or a failure, when it has no end event (go test killed it at its `-timeout`, or its process ended inside it, by `os.Exit` with a status that is not 0 or by a fatal error of the runtime), when its end has no end line before it (the end event that `go tool test2json` writes at its exit for the test it named last), when it has two or more end events (a result line that a test printed with the testing package's marker byte), and when it overlaps another run of its name in its package (two parallel tests of one name in `p` and `p_test`, or a test that prints a marked run line of its own name, whose two entries both read `could_not_run`).
   A test's pass stays when a goroutine that outlives the test fails the package later.
   The report is the test binary's own account, and the reader trusts its order, so a report that someone changed or put in another order can give a run the wrong outcome;
-  a line that the binary prints with the marker, or before its first test, can still make a whole run, and a test that prints, with the marker, an end line of its own name, or of another test of its package that is running, can still give that test an outcome when that test then does not end by itself.
+  a line that the binary prints with the marker, the byte 0x16, which an honest test never prints and a test that forges the lines of the testing package can, or before its first test, can still make a whole run, and a test that prints, with the marker, an end line of its own name, or of another test of its package that is running, can still give that test an outcome when that test then does not end by itself.
   Under `go test -json`, for its own name the kind of its line when go test kills it or its process ends with a status that is not 0, and for another test, a parallel test that prints the pass line of a running test that go test then kills gives that test `pass`;
   a report of `go tool test2json` whose binary stops inside a test holds no end of its package, so there such a line gives no outcome.
   A run's output is the output events that the converter gave it, which can hold a parallel sibling's line or go test's kill trace, whole up to 64 KiB, and a longer one keeps its first 4 KiB and its last 60 KiB with one line between them that says how many bytes are cut; the reader reads each line before it cuts.
@@ -3179,7 +3180,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - What `specgraph.ReadGoTestJSON` gives as no run at the commit of its report, though the test's events are there:
   each run of a package whose result go test replayed from its test cache reads `cached`, whatever its end event, since the test did not run at the commit of the report: go test prints the package's summary line as `ok`, the import path and `(cached)`, tab-separated, and replays the run's events as they were (`TestARunThatGoTestReplaysFromItsCacheIsCached`).
-  A test that prints its own package's cached summary line reads as replayed from the cache (`TestAPrintedCachedLineMarksOnlyItsOwnPackage`): the line has no marker, and the event of a test's name does not tell the two apart, since go's own summary line can come in such an event too, after a `TestMain` that prints a run line.
+  A test that prints its own package's cached summary line makes each run of its package in that go test run read as replayed from the cache (`TestAPrintedCachedLineMarksOnlyItsOwnPackage`): the line has no marker, and the event of a test's name does not tell the two apart, since go's own summary line can come in such an event too, after a `TestMain` that prints a run line (`cached-mainline.jsonl` in `TestARunThatGoTestReplaysFromItsCacheIsCached`).
   The reader reads the summary line, and each end line, whole: it joins the output events of a package in their order, and a line ends at its line feed, never at the end of an event, since the converter writes a line of more than 1,024 bytes, as the summary line of a long import path, in two or more events;
   the converter also ends a line with no line feed where a frame starts after a test's output, and so does the reader (`TestALineThatGoTestWritesInTwoEventsIsReadWhole`).
   A run reads `could_not_run` when the report holds no end of its package after the run's start, the package's own `pass`, `fail` or `skip` event with no `Test`, which the converter writes last for the package:
@@ -3305,8 +3306,9 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - The derivation that `state` prints (`specgraph.Derive` and `specgraph.CheckStates`) holds the rules of the states, and its own rules for a tree that the rules of `tree` refuse, since the pilot calls it with no reader.
   A statement follows its own checks that read the subject, the state of each statement under it and the state of each statement that supports it, at each level (R1: "A statement is true when the statements under it, the statements that support it, and its own checks are true"): one of them not met, not met; else one unknown, unknown; else met.
   So a failing check of a supporter of a statement under it, or of a supporter of a supporter, makes it not met, while a wait on it still reads its own checks alone (R29).
-  A result at one commit counts at another only when the check's tie is known at both commits and no path that changed between them is covered by the tie at either commit (R8: "A result at one commit also counts at another commit when no code that the check runs changed between the two"; R18: "At each commit, Dispatch derives four ties"):
+  A result at one commit counts at another only when the check's tie is known at both commits and no path that changed between them reaches the tie at either commit (R8: "A result at one commit also counts at another commit when no code that the check runs changed between the two"; R18: "At each commit, Dispatch derives four ties"):
   so a file that the test read at the result's commit and that the subject's commit deleted ends the carry, and a check with no tie at one of the two commits counts only its results at the subject's commit.
+  A path reaches a tie that covers it or that holds a path under it, since git names a submodule that moved by its one path, the gitlink; `citations` judges by the same function (`changeBetween`, `TestBothCallersOfTheCarryRuleDecideAlike`).
   It reads a check whose text names no failing example as `unknown (no_failing_example)`.
   A failing example of no letter and no digit is none, by the one test that `Validate` uses for it (`hasWord`), so the derivation and `tree` never read one text two ways.
   It reads a program check as `unknown (fault_by_test_author)` when the record of its failing example names no author of the fault, no author of the test, or the author of the fault among the authors of the test (R9: "An agent that did not write the test writes the fault").
@@ -3335,9 +3337,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `job-not-in-workflow` and `job-not-awaited` (the check's job is not a job of `--workflow`, or the job `spec-citations` there does not need it, so it cannot read its report),
   and `test-not-run`: code that the test reads changed and a leg of its job did not run the test as a pass or a failure.
   A result that go test replayed from its test cache (the outcome `cached` of `specgraph.ReadGoTestJSON`) is no run at the commit.
-  Stated limits, each a refusal of an honest run: a report of `go test -json -v` is a form that the reader cannot read, so a test that prints with no line feed reads as not run;
-  a test that prints its own package's cached summary line reads as replayed from the cache;
-  and a report that holds a real run and a cached replay of one test reads as not run, while the job runs one `go test -json -count=1` for each package, so its report holds one run (`TestCitations`).
+  Its stated limits are the next item.
   `--reports` holds one directory per report artifact of the run, `spec-report--<job>` or `spec-report--<job>--<leg>`, each with the go test -json `report.jsonl`;
   a directory that does not exist holds no report, and an artifact of a job that `spec-citations` does not need is a warning and passed over.
   `--needs` holds `toJSON(needs)` of `spec-citations`, exactly the jobs it needs, each with its result; a job ran when its result is `success` or `failure`.
@@ -3348,8 +3348,17 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A spec file that does not parse, an input it cannot read, and a `--needs` that does not name exactly the jobs `spec-citations` needs are exit 2 and write no `--json` file.
   `TestCitationsCommand` runs the built binary on each fixture of `specgraph`'s `TestCitations` over a copy of `testdata/citations/repo`.
 
+- Stated limits of `cmd/spec-check citations`, each pinned by a row:
+  a report of `go test -json -v` lets a test print its own end line and read as passed, and a test that prints with no line feed reads as not run (`TestStatedLimitsOfTheReader`);
+  a test that prints its own package's cached summary line makes each run of its package read as not run (`TestAPrintedCachedLineMarksOnlyItsOwnPackage`);
+  and a report that holds a real run and a cached replay of one test reads as not run, while the job runs one `go test -json -count=1` for each package, so its report holds one run (`TestCitations`).
+  A report is the account of the process under test, so the rule stands against a test that is missing, skipped, filtered out or replayed from the cache, and not against test code that forges the lines of the testing package:
+  a test that prints the marker byte 0x16 and the run and pass lines of another test makes that test read as run, though go test did not run it (`TestCitationsStatedLimitAForgedRun`).
+  What stands against a test that proves nothing is its failing example (R9: "An agent that did not write the test writes the fault", and "The check reads true only when its test, as it is now, failed on that fault") and the review of each change to the code of its test (R25: "A change to the code of a test that runs a check is a change to that check").
+
 - What `cmd/spec-check citations` counts as a change of a check's code (R8: a result at one commit counts at another "when no code that the check runs changed between the two"):
   a path of `--changed` that the check's tie at the commit or its tie at the base commit covers, so a file that the change deleted, or moved out of the tie, counts;
+  a path under which either tie holds a path, since git names a submodule that moved by its one path, the gitlink, and so it can name a directory that became a file or a link to a directory, while a tie names the files under it (`TestCitationsSeesAChangedSubmodule`);
   a tie at the commit that is not known (R8: such a check runs on each push), and a tie at the base that is not known, also when `--changed` holds no path, since a result carries from the base only while the check's tie is known at both commits;
   or `--all-changed`, for a commit with no base commit.
   `--changed` is what `spec-check changed` prints: its first line, `base <commit>`, names the commit where each result that the commit carries stands, and the paths after it changed since that commit.
@@ -3357,7 +3366,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   So after a rebase onto a default branch whose commits changed a test's code, a push that changes only docs is cited with no run of that test, since the merge base holds those commits: the result that counts is then the one at that base commit, and the check's state reads unknown when no result stands there.
   The tie at the commit is what `<root>`'s `.github/scripts/go-test-reads.sh` says `go test <package>` reads (`specgraph.GoTies`): the closure that `check-ci-filters.sh` holds each filter to, with `ci_job_reads.py`'s RULES, and the package's `testdata` and the directory of each wildcard embed pattern, whole, as patterns that no file that exists decides.
   Each tie is derived only for a check whose test did not run (`TestCitationsDerivesATieOnlyForATestThatDidNotRun`).
-  The tie at the base is what the base's own script says, in a checkout of the base commit into a new temporary directory (`git read-tree` and `git checkout-index`, which change nothing of the clone), made only when, besides, the tie at the commit covers no changed path, and removed when the command ends (`TestCitationsReadsTheTieAtTheBaseCommit`);
+  The tie at the base is what the base's own script says, in a checkout of the base commit into a new temporary directory (`git read-tree` and `git checkout-index`, which change nothing of the clone), made only when, besides, no changed path reaches the tie at the commit, and removed when the command ends (`TestCitationsReadsTheTieAtTheBaseCommit`);
   a base that is the commit itself has the tie at the commit, with no checkout.
   A symbolic link in a tie whose target is outside it is the same case as a test that reads a file outside its package: the tie holds what the rows of `ci_job_reads.py` record, and a row for the target names it.
   `--ties`, which may be given more than once, names a file of ties by commit, `{"<commit>":{"<check>":["<path or pattern>",…]}}` (`specgraph.ReadCommitTies`), each commit by its full object name;
@@ -3366,6 +3375,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - `spec-check changed --repo <root> --base <commit> [--head <commit>]` prints the list that `citations --changed` reads: the line `base <commit>`, with the full object name of the base, then the paths whose content differs between the two commits' trees (`specgraph.GitHistory`, `git diff --no-renames`, so a move gives both paths), sorted, one a line on stdout, with `spec-check: <root>: <n> paths changed from <base> to <head>` on stderr;
   `--head` is `HEAD` when not given.
+  A submodule that moved to another commit gives one path, its gitlink, as git names it, and no path under it (`TestCitationsSeesAChangedSubmodule`).
   The base line and the paths are the data of a file and do not pass through `runnerlog.Say`, so a path that holds a line break, and a commit that git cannot read, are exit 2 with one line naming them.
   `TestChanged` runs the built binary over a scratch git repository.
 

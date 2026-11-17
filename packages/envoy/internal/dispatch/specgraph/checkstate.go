@@ -103,8 +103,8 @@ const (
 //     Results that pass the other tests and are all older than that approval: unknown,
 //     statement_changed.
 //  4. The runs that count at S. For a code check, a run at S.Commit, or at another commit A when
-//     C's tie is known at A and at S.Commit and no path that changed between them is covered by the
-//     tie at either commit (R8; R18: "At each commit, Dispatch derives four ties"), every such
+//     C's tie is known at A and at S.Commit and no path that changed between them reaches the tie
+//     at either commit (R8; R18: "At each commit, Dispatch derives four ties"), every such
 //     commit, and with a tie that is not known at one of the two only runs at S.Commit. For a
 //     production check, the runs under S.Deploy; for a graph check, the runs at S.GraphTx, and none
 //     when S names no transaction (R7: "A result counts only for the procedure that ran it and for
@@ -441,10 +441,8 @@ func (j *checkJudge) countingFaults(c Check, faults []Result) []Result {
 }
 
 // carries is whether a result at commit counts at the subject's commit for the check id (R8): the
-// two are one commit, or the check's tie is known at both commits and no path that differs between
-// their trees is covered by the tie at either commit, since a tie is a fact of a commit (R18: "At
-// each commit, Dispatch derives four ties"), and a file that the test read at one commit and that
-// the other deleted or added changed the code that the check runs.
+// two are one commit, or the carry rule (changeBetween) finds no change between them, with the
+// paths that differ between their trees read from History once for each commit.
 func (j *checkJudge) carries(check, commit string) bool {
 	switch {
 	case commit == "":
@@ -452,16 +450,17 @@ func (j *checkJudge) carries(check, commit string) bool {
 	case commit == j.in.Subject.Commit:
 		return true
 	}
-	from, to := j.in.Ties[commit][check], j.in.Ties[j.in.Subject.Commit][check]
-	if !from.Known || !to.Known || j.in.History == nil {
-		return false
-	}
-	changed, read := j.changed[commit]
-	if !read {
-		changed.paths, changed.ok = j.in.History.Changed(commit, j.in.Subject.Commit)
-		j.changed[commit] = changed
-	}
-	return changed.ok && !slices.ContainsFunc(changed.paths, func(path string) bool { return from.Covers(path) || to.Covers(path) })
+	return changeBetween(func() ([]string, bool) {
+		if j.in.History == nil {
+			return nil, false
+		}
+		changed, read := j.changed[commit]
+		if !read {
+			changed.paths, changed.ok = j.in.History.Changed(commit, j.in.Subject.Commit)
+			j.changed[commit] = changed
+		}
+		return changed.paths, changed.ok
+	}, j.in.Ties[j.in.Subject.Commit][check], j.in.Ties[commit][check]).kind == noChange
 }
 
 // jobEnded is whether a run of job, in any leg, ended at the subject's commit.

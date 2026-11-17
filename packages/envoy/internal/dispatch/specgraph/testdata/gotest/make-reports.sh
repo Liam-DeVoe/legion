@@ -14,7 +14,7 @@
 #     holds no marker, so the reader's stated limit applies to it.
 #   - verbose-<name>.jsonl, for each package the list verbose names: `go test -json -v -trimpath
 #     -count=1` of the package. go runs the binary with -test.v=true then, not test2json, so this is
-#     a form that the reader cannot read, and its stated limit applies to it.
+#     a form in which a test can write its own end line, and the reader's stated limit applies to it.
 #   - go1.26-subprint.jsonl: `go test -json -trimpath -count=1` of the package subprint with Go
 #     1.26.11, in a scratch module of its own whose go.mod says go 1.26. Its converter marks no line
 #     as a frame, which is the report the reader refuses.
@@ -25,7 +25,7 @@ set -euo pipefail
 version=go1.27.3
 t2j=(exitkill killfirst killprinted killprintedfail killsame killsibling killsiblingpass killstack ownlines subprint)
 piped=(killprinted)
-verbose=(splitlines)
+verbose=(splitlines forgedpass)
 here=$(cd "$(dirname "$0")" && pwd)
 module=$(mktemp -d)
 binaries=$(mktemp -d)
