@@ -75,8 +75,7 @@ export interface Draft {
   answer?: NodeAnswer;
   chips: NodeChip[];
   /** What the coverage read counts for a requirement it holds (`tree-read/tree-nodes.ts`);
-   *  absent on every other draft, a `requirement` no coverage row holds among them, which is how
-   *  the review list tells a statement from a block (`addDecisions`). */
+   *  absent on every other draft, a `requirement` no coverage row holds among them. */
   counts?: NodeCounts;
   /** What the node's body draws under its text (`check-facts.ts`). */
   facts: NodeFact[];

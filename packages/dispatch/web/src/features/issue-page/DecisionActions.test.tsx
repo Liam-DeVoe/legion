@@ -341,7 +341,9 @@ test("Change anchors to the node's document and quotes its first paragraph", asy
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
     await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
     await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
-    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(createComment, "the Change was never sent").toHaveBeenCalledTimes(1)
+    );
     expect(createComment.mock.calls[0]?.slice(0, 2)).toEqual([
       KEY,
       { anchor: { artifact: document_.id, quote: "One tree, five presets" }, body: "Say where." },
@@ -373,7 +375,7 @@ test("Keep posts the node's document, block id and sum", async () => {
   const { client, unmount } = renderActions([ONE], SPEC_DOCUMENT);
   try {
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.keep_decision }));
-    await waitFor(() => expect(keep).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(keep, "the Keep was never sent").toHaveBeenCalledTimes(1));
     expect(
       keep.mock.calls[0]?.slice(0, 3),
       "the Keep named something other than the node's own document, block and sum"

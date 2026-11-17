@@ -172,9 +172,8 @@ test("a check that has not passed is open and a passed one is not", () => {
   ]);
 });
 
-// A decision sits under the question it settles the day the model holds that edge
-// (`tree-drafts.ts`'s `addDecisions`); wherever it is drawn, what opens the path to it is its
-// waiting for the reader's review.
+// A decision sits where the tree read parents it; wherever it is drawn, what opens the path to it
+// is its waiting for the reader's review.
 test("a decision waiting for the reader's review is open and a settled one is not", () => {
   const rows = treeRows(
     node("CORE-1", "issue", [

@@ -880,14 +880,25 @@ test("an invalidated issue read resets the decisions view", async () => {
       client.setQueryData(viewKey(KEY, "decisions"), decisionsView);
       await Promise.resolve();
     });
-    await waitFor(() => expect(view.result.current.views?.decisions).toBe(decisionsView));
+    await waitFor(() =>
+      expect(view.result.current.views?.decisions, "the issue node holds no decisions view").toBe(
+        decisionsView
+      )
+    );
     expect(api.getIssueTree).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       await client.invalidateQueries({ exact: true, queryKey: ["issue", KEY] });
     });
-    await waitFor(() => expect(api.getIssueTree).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(view.result.current.views?.decisions).toBeUndefined());
+    await waitFor(() =>
+      expect(api.getIssueTree, "the event read the tree no second time").toHaveBeenCalledTimes(2)
+    );
+    await waitFor(() =>
+      expect(
+        view.result.current.views?.decisions,
+        "the event left the decisions view held"
+      ).toBeUndefined()
+    );
     expect(client.getQueryData(viewKey(KEY, "decisions"))).toBeUndefined();
     // The tree was read again, and the decisions view was not: the hook sends no view read, and
     // no decisions read is made.
