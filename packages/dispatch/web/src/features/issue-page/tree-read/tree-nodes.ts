@@ -20,13 +20,7 @@ import { checkFacts, resultFacts } from "../check-facts";
 import { decisionNodeChanges, decisionNodes, inReviewList } from "../decision-review";
 import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree";
 import { lensChips, lensDrafts } from "../lenses/lens-drafts";
-import {
-  blockAttributeLabel,
-  coverageGapKind,
-  type DecisionState,
-  type GapKind,
-  type NodeType,
-} from "../page-words";
+import { blockAttributeLabel, coverageGapKind, type GapKind, type NodeType } from "../page-words";
 import {
   addDocumentChips,
   answerOf,
@@ -35,6 +29,8 @@ import {
   blockNodeId,
   checkStanding,
   type Draft,
+  decisionState,
+  markKeptAndUnsure,
   namedCommit,
   plainWords,
   type TreeContext,
@@ -417,7 +413,7 @@ function draftResult(
 /**
  * A decision node, with the review state the read answers on it as the decisions read answers it
  * for a decision (`model.Decision`'s members, dispatch://INFRA-1253 R8): its state in the page's
- * words (`reviewState`), who kept it, whether it was replaced and whether its agent was unsure,
+ * words (`decisionState`), who kept it, whether it was replaced and whether its agent was unsure,
  * and its `shaped` tuples as chips, each stale where the decision changed after it named that
  * node. Its time is its words' last change, the decisions read's `changed_at` as F draws it, and
  * its links are that read's, where it holds a row for the decision; the read answers both on the
@@ -449,12 +445,9 @@ function draftDecision(
     stale: stale.has(context.nodeIdOf(chip.ref) ?? chip.ref),
   }));
   const changed = context.changes.has(node.id);
-  draft.state = reviewState(node, changed);
-  if (node.kept != null && node.waiting_review !== true) {
-    draft.keptBy = { id: node.kept.kept_by, kind: "user" };
-  }
+  draft.state = decisionState(node, changed);
+  markKeptAndUnsure(draft, node);
   draft.replaced = node.replaced === true;
-  if (node.unsure === true) draft.unsure = true;
   draft.waiting =
     context.viewer !== undefined &&
     inReviewList(
@@ -722,16 +715,6 @@ function namesAny(node: TreeAnswerNode, kind: string, context: TreeDraftContext)
   return typeof value === "string" ? value.trim() !== "" : Array.isArray(value) && value.length > 0;
 }
 
-/** How a decision node stands with the reader, in the states the page draws: F's
- *  `decisionState`, read from the review state the read answers on the node rather than from
- *  the decisions read's row. */
-function reviewState(node: TreeAnswerNode, changed: boolean): DecisionState | undefined {
-  if (node.replaced === true) return "replaced";
-  if (changed) return "change_requested";
-  if (node.waiting_review === true) return "waiting_review";
-  return node.kept == null ? undefined : "kept";
-}
-
 /** Whether the read marks `node` as another issue's. */
 function isForeign(node: TreeAnswerNode, key: string): boolean {
   return node.issue !== undefined && node.issue !== key;
@@ -839,8 +822,9 @@ export function askNodeIds(
 }
 
 /** A block as the blocks read answers one, with the words the tree read answers beside it, so a
- *  reader of the blocks read reads a block of the tree read with no change. */
-interface TreeBlock extends ArtifactBlock {
+ *  reader of the blocks read reads a block of the tree read with no change, and a reader of the
+ *  words finds them here (dispatch://INFRA-4062 R5). */
+export interface TreeBlock extends ArtifactBlock {
   readonly text: string;
   readonly text_tree?: DisplayTree;
 }
@@ -956,7 +940,7 @@ export function blocksOfRole(
   answer: TreeAnswer | undefined,
   role: TreeFilter,
   issue: IssueDetails
-): ArtifactBlock[] | undefined {
+): TreeBlock[] | undefined {
   if (answer === undefined) return undefined;
   const hung = hungUnder(answer);
   const documentId = roleDocumentId(answer, role, issue);
@@ -973,4 +957,23 @@ export function blocksOfRole(
   return answer.nodes.flatMap((node, place) =>
     node.issue === undefined && kinds.includes(node.supertag) ? [blockOf(node, place, hung)] : []
   );
+}
+
+/**
+ * The pages of one read as one answer: every page's nodes and tuples in the order the pages
+ * came, so the walk's order holds across them, and what describes the issue rather than a page
+ * (`converted`, `tree`, `view_of`, `documents`) from the first. The answer has no next page.
+ * One page is its own answer, which is every issue the page size was set above. Here rather than
+ * beside the read (`tree-read.ts`' `readTree`), so the e2e helpers, which load this module and
+ * not that one, merge the pages the page received by the same rule.
+ */
+export function mergeTreePages(pages: readonly [TreeAnswer, ...TreeAnswer[]]): TreeAnswer {
+  const [first] = pages;
+  if (pages.length === 1) return first;
+  return {
+    ...first,
+    cursor: null,
+    nodes: pages.flatMap((page) => page.nodes),
+    tuples: pages.flatMap((page) => page.tuples),
+  };
 }

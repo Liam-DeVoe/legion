@@ -32,7 +32,7 @@ export function ViewVerificationSlot({ issue, route }: SlotProps): ReactNode {
   const results = useQuery(issueResultsQuery(issue.key));
   const checks = useMemo(() => results.data?.checks ?? [], [results.data]);
   // The Verification document's blocks, from the tree read: a check learns the statements it serves
-  // from its block's `serves` pointer, which only that read carries (`tree-drafts.ts`). Drawn
+  // from its `serves` tuples, which only that read carries (`tree-nodes.ts`' `draftServing`). Drawn
   // before it answers, every check would stand at the table's foot as one that serves no
   // statement, every statement would read Unknown, and R9's line would call the issue's own
   // checks "elsewhere" (part V's R1 and R9). The results read answers the checks of one

@@ -3,11 +3,33 @@ import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import type { IssueTreeAnswer } from "../web/src/api/client";
 import type { IssueDecisions } from "../web/src/api/types";
-import { decisionNodes } from "../web/src/features/issue-page/decision-review";
-import { CONTROL_LABELS, GAP_LINES, type Preset } from "../web/src/features/issue-page/page-words";
-import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { CONTROL_LABELS, GAP_LINES } from "../web/src/features/issue-page/page-words";
+import type { Filter } from "../web/src/features/issue-page/presets";
+import {
+  mergeTreePages,
+  type TreeIdReads,
+  treeIdOf,
+} from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { parseNodeReference } from "../web/src/features/refs/routes";
 import { nextFrames } from "./frames";
+import {
+  seedConversationState,
+  seedDecisionsFilter,
+  seedNoChildren,
+  seedNoSummary,
+  seedPlanOrder,
+  seedReplyNesting,
+  seedRequestBaseline,
+  seedReviewList,
+  seedSpineCases,
+  seedTwiceTheNodes,
+  seedUnbrokenChildTitle,
+  seedUnbrokenWords,
+  seedWholeIssue,
+  seedWholeIssueAdvancing,
+} from "./issue-layout-seed";
 import { blockNode, focusThePage, nodeRows, rowBody } from "./issue-page-g";
+import { issueHeader } from "./issue-page-p";
 import { type ApiRequest, type ApiRequests, expectLoadSettled } from "./traffic";
 
 /**
@@ -21,8 +43,8 @@ import { type ApiRequest, type ApiRequests, expectLoadSettled } from "./traffic"
  * bodies, one more for each row once the focus is on it:
  *
  * - `id` is `data-node-id`, `rowKey` is `data-row-key` (null on a view's row, which draws none),
- *   `level` is `aria-level`, and `parentRowKey` is the `data-row-key` of the nearest row before
- *   it one level up, as G's `parentOfRow` finds the row a row sits under.
+ *   and `level` is `aria-level`; the row a row sits under is the nearest row before it one level
+ *   up (`parentIndex`), as G's `parentOfRow` finds it.
  * - `words` are `[data-node-words]` without their trail (`[data-node-trail]`: the chips, the gap
  *   words and a count), a child's facts and any control; a folded row's one line,
  *   `[data-node-first-line]`, where it draws no words.
@@ -148,7 +170,6 @@ export interface RowReading {
   readonly id: string | null;
   readonly kind: RowKind;
   readonly level: number | null;
-  readonly parentRowKey: string | null;
   readonly rowKey: string | null;
   readonly state: RowState | null;
   readonly time: string | null;
@@ -174,10 +195,6 @@ interface PageRead {
   /** The place of the one row to read with its body, or null to read every row and no body. */
   readonly focused: number | null;
 }
-
-/** How long a row has to take the focus and draw its body: the suite's own expect timeout
- *  (`e2e/playwright.config.ts`), which a reader run outside the test runner does not inherit. */
-const FOCUS_MS = 15_000;
 
 /** The sentence a body says each gap in, by the gap's kind. */
 const GAP_LINE_OF: Readonly<Partial<Record<string, string>>> = GAP_LINES;
@@ -214,10 +231,8 @@ async function focusedBody(page: Page, index: number, row: PageRow): Promise<Pag
   const where = `row ${index} (${row.id ?? "no id"})`;
   const target = nodeRows(page).nth(index);
   await target.focus();
-  await expect(target, `${where} never took the focus`).toBeFocused({ timeout: FOCUS_MS });
-  await expect(rowBody(target), `${where} drew no body with the focus`).toHaveCount(1, {
-    timeout: FOCUS_MS,
-  });
+  await expect(target, `${where} never took the focus`).toBeFocused();
+  await expect(rowBody(target), `${where} drew no body with the focus`).toHaveCount(1);
   const [focused] = await page.evaluate(readPageRows, {
     alsoUnder: CONTROL_LABELS.also_under,
     focused: index,
@@ -292,14 +307,6 @@ function readPageRows({ alsoUnder, focused }: PageRead): PageRow[] {
     const level = Number(row.getAttribute("aria-level") ?? "");
     return Number.isInteger(level) && level > 0 ? level : null;
   });
-  const parentRowKey = (index: number): string | null => {
-    const level = levels[index] ?? null;
-    if (level === null) return null;
-    for (let before = index - 1; before >= 0; before -= 1) {
-      if (levels[before] === level - 1) return rows[before]?.getAttribute("data-row-key") ?? null;
-    }
-    return null;
-  };
   const bodyOf = (row: Element): PageBody | null => {
     const body = row.querySelector("[data-node-body]");
     if (body === null) return null;
@@ -378,7 +385,6 @@ function readPageRows({ alsoUnder, focused }: PageRead): PageRow[] {
         type: row.getAttribute("data-node-type"),
       },
       level: levels[index] ?? null,
-      parentRowKey: parentRowKey(index),
       rowKey: row.getAttribute("data-row-key"),
       state: token === null && word === null && unsure === null ? null : { token, unsure, word },
       time: text(margin?.querySelector("[data-node-time]")),
@@ -411,10 +417,7 @@ const ID_SHAPE = /^\S+$/;
  * (the seeds of `e2e/issue-layout-seed.ts` return the documents' ids and not their slugs). An id
  * no document holds a block of gets names no row draws, which name nothing.
  */
-export function seedKeys(
-  seeded: object,
-  slugs: readonly string[] = []
-): ReadonlyMap<string, string> {
+export function seedKeys(seeded: object, slugs: readonly string[]): ReadonlyMap<string, string> {
   const found: { readonly id: string; readonly listed: boolean; readonly path: string }[] = [];
   const walk = (value: unknown, path: string, listed: boolean): void => {
     if (typeof value === "string") {
@@ -482,8 +485,8 @@ export interface KeyedRow {
  * under the same parent row; a row at the top has an empty parent key, so its path starts with
  * `/`. A node drawn under two parents (a check that serves two requirements) is two rows with one
  * key, so a row is named by its key and its parent's key together. The parent is the nearest row
- * before it one level up, as `parentRowKey` is read, so a view's rows, which draw no
- * `data-row-key`, are named the same way.
+ * before it one level up (`parentIndex`), so a view's rows, which draw no `data-row-key`, are
+ * named the same way.
  *
  * What a row reads that names a node by its id is written with the node's key in its place,
  * `{<key>}`: each chip's and other parent's address, the tag (a child's is its key) and a child's
@@ -574,8 +577,35 @@ function timeSourceOf(reading: RowReading, key: string): TimeSource | null {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The fixture the rows compare with, and the recorder's steady reading.
+// The seeds and the fixture the rows compare with, and the steady reading both read by.
 // ---------------------------------------------------------------------------------------------
+
+/** What every seed returns: the key of the issue the page opens. */
+export interface SeededIssue {
+  readonly key: string;
+}
+
+/** A seed, by the name the fixture records it under. */
+export type NamedSeed = readonly [string, () => Promise<SeededIssue>];
+
+/** The 14 seeds of `e2e/issue-layout-seed.ts`, in the order that file writes them: what the
+ *  recorder records, and what the rows read. */
+export const SEEDS: readonly NamedSeed[] = Object.entries({
+  seedWholeIssue,
+  seedWholeIssueAdvancing,
+  seedSpineCases,
+  seedNoChildren,
+  seedNoSummary,
+  seedReplyNesting,
+  seedUnbrokenWords,
+  seedUnbrokenChildTitle,
+  seedRequestBaseline,
+  seedTwiceTheNodes,
+  seedConversationState,
+  seedDecisionsFilter,
+  seedReviewList,
+  seedPlanOrder,
+} satisfies Readonly<Record<string, () => Promise<SeededIssue>>>);
 
 /** One filter of a seed in the fixture: the keys of the rows it drew, and its control's count. */
 export interface FilterFixture {
@@ -596,7 +626,8 @@ interface RowsFixture {
   readonly seeds: Readonly<Partial<Record<string, SeedFixture>>>;
 }
 
-const FIXTURE_FILE = new URL("./fixtures/issue-page-t-rows.json", import.meta.url);
+/** The fixture `e2e/tools/issue-page-t-record.ts` writes and the rows read. */
+export const FIXTURE_FILE = new URL("./fixtures/issue-page-t-rows.json", import.meta.url);
 
 let rowsFixture: RowsFixture | undefined;
 
@@ -608,6 +639,20 @@ export function fixtureSeed(seed: string): SeedFixture {
   const recorded = rowsFixture.seeds[seed];
   if (recorded === undefined) throw new Error(`the fixture records no seed named ${seed}`);
   return recorded;
+}
+
+/** `value` with every object's fields in sorted order at every depth, so the bytes of the fixture
+ *  do not depend on the order a reader or a seed wrote its fields in, and two readings compare by
+ *  what they hold. A list keeps its order, which is the page's. */
+export function sortedFields(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortedFields);
+  if (typeof value !== "object" || value === null) return value;
+  const fields: Readonly<Record<string, unknown>> = { ...value };
+  return Object.fromEntries(
+    Object.keys(fields)
+      .sort()
+      .map((field) => [field, sortedFields(fields[field])])
+  );
 }
 
 /** How many readings `steadily` takes before it gives up on the page settling. */
@@ -641,8 +686,8 @@ export async function steadily<T>(
 // What the page received of the tree read and its views, and what a load or a press sent.
 // ---------------------------------------------------------------------------------------------
 
-/** One of the four filters, by the `view` its read of the tree sends. */
-export type TreeView = Exclude<Preset, "conversation">;
+/** One of the four filters, by the `view` its read of the tree sends (`presets.ts`' `Filter`). */
+export type TreeView = Filter;
 
 /** The tree read's path, whatever issue it reads. */
 const TREE_PATH = /^\/api\/v1\/issues\/[^/]+\/tree$/;
@@ -706,25 +751,10 @@ function newestRead(received: readonly ReceivedPage[]): IssueTreeAnswer | undefi
   for (let at = reads.length - 1; at >= 0; at -= 1) {
     const [first, ...rest] = reads[at] ?? [];
     if (first !== undefined && (rest[rest.length - 1] ?? first).cursor === null) {
-      return mergedPages(first, rest);
+      return mergeTreePages([first, ...rest]);
     }
   }
   return undefined;
-}
-
-/** The pages of one read as one answer, as `tree-read/tree-read.ts`' `mergeTreePages` merges
- *  them: every page's nodes and tuples in the order the pages came, and what describes the issue
- *  rather than a page from the first. That module is not imported here: it reaches the document
- *  editor's code, whose JSON a spec loaded under Node cannot import. */
-function mergedPages(first: IssueTreeAnswer, rest: readonly IssueTreeAnswer[]): IssueTreeAnswer {
-  if (rest.length === 0) return first;
-  const pages = [first, ...rest];
-  return {
-    ...first,
-    cursor: null,
-    nodes: pages.flatMap((one) => one.nodes),
-    tuples: pages.flatMap((one) => one.tuples),
-  };
 }
 
 /** The tree read the page receives with no view, every page of its newest read merged. Start it
@@ -828,6 +858,23 @@ export function treeReads(
   }).length;
 }
 
+/** Every request of `requests` that is no page of a read of issue `key`'s view `view`, as its
+ *  method and path: what a press sent beside its view's own read. */
+export function besideViewRead(
+  requests: readonly ApiRequest[],
+  key: string,
+  view: TreeView
+): string[] {
+  return requests.flatMap((request) => {
+    const url = new URL(request.path, "http://requests.invalid");
+    const own =
+      request.method === "GET" &&
+      url.pathname === treePath(key) &&
+      url.searchParams.get("view") === view;
+    return own ? [] : [`${request.method} ${request.path}`];
+  });
+}
+
 /** The reads of a document's blocks (`GET /api/v1/artifacts/{id}/blocks`) `requests` hold, by
  *  path. */
 export function blocksReads(requests: readonly ApiRequest[]): string[] {
@@ -903,17 +950,28 @@ export function decisionTimes(
 }
 
 /** Whether the seed's decisions are nodes of the tree read `answer`: it holds a decision node of
- *  this issue, and every decision the decisions read answers is one (`decisionNodes`), where a
- *  section of `decisions.md` is none. */
+ *  this issue, and every decision the decisions read answers is one - a decision node of this
+ *  issue whose id is the decision's `block_id`, in the document the decision's `ref` names where
+ *  the node names its document - where a section of `decisions.md` is none. The check is this
+ *  file's own, so the page's matching of decisions to nodes can move under it. */
 export function decisionsAreNodes(
   answer: IssueTreeAnswer,
   read: DecisionsRead | undefined
 ): boolean {
-  const own = answer.nodes.some((node) => node.supertag === "decision" && node.issue === undefined);
-  if (!own || read === undefined) return false;
+  const own = new Map(
+    answer.nodes.flatMap((node) =>
+      node.supertag === "decision" && node.issue === undefined ? [[node.id, node] as const] : []
+    )
+  );
+  if (own.size === 0 || read === undefined) return false;
   if (read.kind === "view") return true;
-  const decisions = read.answer.decisions ?? [];
-  return decisionNodes(decisions, answer).size === decisions.length;
+  return (read.answer.decisions ?? []).every((decision) => {
+    const node = own.get(decision.block_id);
+    if (node === undefined) return false;
+    if (node.document === undefined) return true;
+    const route = parseNodeReference(decision.ref);
+    return route?.kind === "artifact" && route.slug === node.document.slug;
+  });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1033,9 +1091,7 @@ export async function footLineGate(page: Page): Promise<Gate> {
 /** The status control of the header part P draws (`header[data-issue-header]`), the one place the
  *  new page draws the issue's own status: the outline draws no row for the issue. */
 export function headerStatus(page: Page): Locator {
-  return page
-    .locator("[data-issue-page] header[data-issue-header]")
-    .getByRole("combobox", { exact: true, name: "Status" });
+  return issueHeader(page).getByRole("combobox", { exact: true, name: "Status" });
 }
 
 /** One node a filter draws: a row, or a check's result inside its row (part V's Verification). */

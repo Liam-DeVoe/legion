@@ -17,18 +17,16 @@ import { decisionChanges, decisionNodeChanges } from "../decision-review";
 import {
   assemble,
   buildIssueTree,
-  drawnLine,
-  firstLineOf,
   type IssueTreeReads,
   lineWords,
   nodeWords,
   type TreeNode,
+  treeWordsOf,
 } from "../issue-tree";
-import { blockNodeId, treeContext } from "../tree-drafts";
+import { blockNodeId } from "../tree-drafts";
 import {
   blocksOfRole,
   type TreeDraftMark,
-  type TreeWords,
   treeDraftMarks,
   treeDraftsFrom,
   treeIdOf,
@@ -190,18 +188,10 @@ function tuple(kind: string, from: string, to: string): TreeTuple {
   return { from, kind, to };
 }
 
-/** What `buildIssueTree` hands `treeDraftsFrom`: F's reading of the reads' names, with F's word
- *  rules, the chip's line among them (`chipLine`, `drawnLine(firstLineOf(…))` of the first block
- *  of a reading). */
-function naming(reads: IssueTreeReads): TreeWords {
-  const chipLine = (tree: DisplayTree): string =>
-    drawnLine(firstLineOf(lineWords({ text: "", tree })));
-  return { ...treeContext(reads, chipLine), chipLine, lineWords };
-}
-
-/** The drafts `tree` holds, and the tree `assemble` builds from them. */
+/** The drafts `tree` holds, read by what `buildIssueTree` reads them by (`treeWordsOf`), and the
+ *  tree `assemble` builds from them. */
 function drawn(tree: TreeAnswer, reads: IssueTreeReads = { issue: issueDetails() }) {
-  const context = naming(reads);
+  const context = treeWordsOf(reads);
   const drafts = treeDraftsFrom(tree, reads, context);
   return { drafts, root: assemble(reads.issue, [...drafts.values()], context.chipOf) };
 }
@@ -478,7 +468,7 @@ test("a tuple between two nodes becomes F's chip and placement", () => {
 // (`reads.tree`) still holds every node whole - a lens, a risk under it and the catalogue's
 // constraint among them, each with its state and its visibility - for the parts that draw them.
 test("a node of a kind the page does not draw reaches reads.tree and draws no row", () => {
-  const reads: IssueTreeReads & { readonly tree: TreeAnswer } = {
+  const reads: IssueTreeReads = {
     issue: issueDetails(),
     tree: answer(
       [
@@ -498,14 +488,6 @@ test("a node of a kind the page does not draw reaches reads.tree and draws no ro
     []
   );
   expect(reads.tree).toEqual(held);
-  expect(reads.tree.nodes.map((one) => [one.id, one.supertag, one.state, one.visibility])).toEqual(
-    expect.arrayContaining([
-      ["other-1", UNDRAWN, "overtaken", "author"],
-      ["lens-1", "lens", "live", "author"],
-      ["risk-1", "risk", "proposed", "project"],
-      ["constraint-1", "constraint", "live", "project"],
-    ])
-  );
 });
 
 // R1 (plan's map, `id`): a typed block of this issue keeps F's `<slug>#b-<id>` from its
@@ -884,10 +866,11 @@ test("the cursor's pages are read in turn and the tree is built once", async () 
     const query = issueTreeQuery(KEY);
     const reading = client.fetchQuery(query);
     await asked.promise;
-    expect(read.mock.calls).toEqual([
+    expect(read.mock.calls.map(([key, page]) => [key, page])).toEqual([
       [KEY, {}],
       [KEY, { cursor: "page-2" }],
     ]);
+    expect(read.mock.calls.every(([, , init]) => init?.signal instanceof AbortSignal)).toBe(true);
     expect(client.getQueryData(query.queryKey)).toBeUndefined();
 
     later.resolve(second);
@@ -900,6 +883,36 @@ test("the cursor's pages are read in turn and the tree is built once", async () 
       blockNodeId("plan-md", "t1"),
       "c2",
     ]);
+  } finally {
+    read.mockRestore();
+  }
+});
+
+// INFRA-1196 decision 181: the tree read honours TanStack's abort signal, so a read given up - a
+// reset, the last observer gone - asks for no next page, and a walk of many pages stops there.
+test("a read given up asks for no next page", async () => {
+  const first: TreeAnswer = {
+    ...answer([block("r1", "requirement", KEY, SPEC, 0)]),
+    cursor: "page-2",
+  };
+  const out = Promise.withResolvers<TreeAnswer>();
+  const read = spyOn(api, "getIssueTree").mockImplementation(async (_key, page) =>
+    page?.cursor === undefined ? out.promise : answer([])
+  );
+  try {
+    const client = new QueryClient();
+    const query = issueTreeQuery(KEY);
+    const reading = client.fetchQuery(query).catch(() => undefined);
+    await client.cancelQueries({ queryKey: query.queryKey });
+    await reading;
+    out.resolve(first);
+    // The walk goes on in a promise TanStack no longer hands out, so the case waits for the turn
+    // of the event loop after it: every step of the walk up to its next request is a microtask.
+    const turn = Promise.withResolvers<void>();
+    setTimeout(turn.resolve, 0);
+    await turn.promise;
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(client.getQueryData(query.queryKey)).toBeUndefined();
   } finally {
     read.mockRestore();
   }
