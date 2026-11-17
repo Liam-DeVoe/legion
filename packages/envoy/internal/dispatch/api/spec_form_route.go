@@ -73,6 +73,7 @@ func (s *server) getArtifactSpecForm(w http.ResponseWriter, r *http.Request) {
 		Findings:        document.findings,
 		FindingsTotal:   len(document.findings),
 		Terms:           []specFormTerm{},
+		Unread:          document.unread,
 		RefusesApproval: document.inScope() && len(document.findings) > 0,
 	})
 }
