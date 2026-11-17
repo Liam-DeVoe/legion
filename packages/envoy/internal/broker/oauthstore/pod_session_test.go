@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+	"github.com/sjawhar/envoy/internal/testpool"
 )
 
 // TestAWriteWithoutAThumbprintKeepsTheBinding: a registration bound to a role's key stays bound
@@ -213,7 +214,7 @@ func newStoreDefaulting(t *testing.T, isolation string) (*oauthstore.Store, *pgx
 	if err != nil {
 		t.Fatalf("set the test database's default_transaction_isolation to %s: %v", isolation, err)
 	}
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := testpool.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open pool: %v", err)
 	}
