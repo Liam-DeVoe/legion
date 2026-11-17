@@ -1,0 +1,574 @@
+import type { Page } from "@playwright/test";
+
+import { presetPath } from "../web/src/features/issue-page/issue-address";
+import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
+import {
+  CONTROL_LABELS,
+  GLYPH_TOKENS,
+  issueStatusWord,
+  NODE_STATE_WORDS,
+  NODE_TYPE_NAMES,
+} from "../web/src/features/issue-page/page-words";
+import { getAsk, getIssue, listComments } from "./api";
+import { nextFrames } from "./frames";
+import {
+  DESKTOP,
+  type DrawnRow,
+  drawnRows,
+  expectRowGroups,
+  expectRowLayouts,
+  expectSeedDrawn,
+  focusRow,
+  focusThePage,
+  nodeRow,
+  nodeRows,
+  ONE_LINE_WORDS,
+  openIssue,
+  PHONE,
+  PLANNER_TITLE,
+  parentOfRow,
+  phase,
+  READER,
+  type RowSeed,
+  rowAct,
+  rowBody,
+  rowGroups,
+  rowLayouts,
+  rowMore,
+  rowOf,
+  rowWords,
+  seedRows,
+} from "./issue-page-g";
+import { expect, test } from "./test";
+import { expectLoadSettled, watchApiRequests } from "./traffic";
+
+/**
+ * Part G of dispatch://INFRA-1196, "A node's row" (dispatch://INFRA-3947): one node of an issue
+ * drawn as one row of the approved design, in the new page's body, which draws the
+ * conversation's rows with every branch unfolded until part I's outline replaces them. Each row
+ * is one `check` block of dispatch://INFRA-3947/artifact/verification-md,
+ * named by its `-g` string, and reads the page through `e2e/issue-page-g.ts`; every row unfolds
+ * each folded branch before it reads, so it holds on part I's outline too.
+ *
+ * The rows are on the real stack: the page draws what the server stored and indexed - a
+ * document's blocks, the decisions read, the batched names - and the new page is the reader's
+ * own preference (`withIssuePage`).
+ */
+
+/** An address, the short form of one, or a slug, which no chip, author or tag draws (R4). */
+function addressesOf(seeded: RowSeed): RegExp {
+  return new RegExp(`dispatch://|${seeded.key} \\S+( block)?$|-md\\b|session:`, "u");
+}
+
+/** An author as a row's group draws it: the name and the `data-glyph` token of its shape. */
+interface DrawnAuthor {
+  readonly author: string;
+  readonly shape: string;
+}
+
+/** The kinds of node the model holds no author for, whose rows draw none (R3, R5). */
+const AUTHORLESS: readonly string[] = [
+  "check",
+  "child_issue",
+  "decision",
+  "plan_task",
+  "requirement",
+];
+
+/** Each row that draws an author other than the one `stored` gives its node, or that draws one
+ *  where its kind has none. A row of neither, which the seed gave no known author, is left out. */
+function authorOffences(
+  rows: readonly DrawnRow[],
+  stored: ReadonlyMap<string, DrawnAuthor>
+): string[] {
+  return rows.flatMap((row) => {
+    const want =
+      stored.get(row.id ?? "") ?? (AUTHORLESS.includes(row.type ?? "") ? null : undefined);
+    if (want === undefined) return [];
+    const drawn = row.author === null ? null : { author: row.author, shape: row.authorShape };
+    return JSON.stringify(drawn) === JSON.stringify(want)
+      ? []
+      : [`the ${row.type} ${row.id} draws ${JSON.stringify(drawn)}, not ${JSON.stringify(want)}`];
+  });
+}
+
+/** How many rendering frames the page's writer goes on looking for its field in after a Reply or
+ *  an Answer (`DRAWING_FRAMES` in `outline-writer.tsx`: ten after the first), and one more. */
+const WRITER_FRAMES = 12;
+
+/** Waits out those frames, two at a time. */
+async function writerFramesPass(page: Page): Promise<void> {
+  for (let passed = 0; passed < WRITER_FRAMES; passed += 2) await nextFrames(page);
+}
+
+// c-row-layout: every row at both widths, read off the page's own layout (R1, R4, R5, R8).
+// SLOW(>=2s): a seeded issue of every kind of node, loaded at two widths with each load waited
+// out to a 1.5 s quiet window, a third load read row by row, and a picture opened.
+test("a node draws its kind at the right of its row and every node starts at one left edge @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  await phase(browser, seedRows, async (page, seeded) => {
+    for (const size of [DESKTOP, PHONE]) {
+      await page.setViewportSize(size);
+      const settling = watchApiRequests(page);
+      await openIssue(page, seeded.key);
+      await expectLoadSettled(settling);
+      const where = `the conversation at ${size.width} px`;
+      if (size.width === PHONE.width) {
+        // Part I's load puts the focus on the first question that waits on the reader, in the
+        // outline's order, and holds its row on screen (its R8): the seed holds two such.
+        const waiting = [seeded.waitingLong, seeded.openQuestion];
+        const first = (await drawnRows(page)).find((row) => waiting.includes(row.id ?? ""));
+        expect(first, `${where} draws no question that waits on the reader`).toBeDefined();
+        const question = first?.id ?? "";
+        await expect(
+          nodeRow(page, question).first(),
+          `${where} does not focus that question at load`
+        ).toBeFocused();
+        // A waiting question's words are drawn whole and the focused row draws its body, so the
+        // row of the seed's 160 words is taller than the screen, which holds it from its top.
+        await expect
+          .poll(
+            async () => {
+              const top = rowOf(await drawnRows(page), question)?.box?.y ?? -1;
+              return top >= 0 && top < size.height;
+            },
+            { message: `${where} holds the top of that question's row off screen` }
+          )
+          .toBe(true);
+      }
+      await expectSeedDrawn(page, seeded);
+      await expect
+        .poll(() => nodeRows(page).count(), { message: `${where} draws no row` })
+        .toBeGreaterThan(0);
+      expectRowLayouts(await rowLayouts(page), where, true, size.width);
+      expectRowGroups(await rowGroups(page), where, size.width, addressesOf(seeded));
+      // R17 of the root, F17: the rows name what their words cite from the one batched read.
+      expect(
+        settling.requests
+          .map((request) => request.path)
+          .filter(
+            (path) =>
+              path.includes(`/issues/${seeded.child}/summary`) || path.includes("/issues/UTF-16")
+          ),
+        `${where}: a row reads a target of its own for a reference its words cite`
+      ).toEqual([]);
+    }
+
+    await page.setViewportSize(DESKTOP);
+    await openIssue(page, seeded.key);
+    await expectSeedDrawn(page, seeded);
+    const rows = await drawnRows(page);
+    // No row for the issue, which the header names (R8).
+    expect(
+      rows.filter((row) => row.type === "issue"),
+      "the body draws the issue's own row"
+    ).toEqual([]);
+    // A one-line statement with no state is 29 px tall at 1440 px (R1).
+    const oneLine = (await rowLayouts(page)).find(
+      (row) => row.id === `${seeded.slugs.spec}#b-r-one`
+    );
+    expect(
+      oneLine?.height ?? 1e6,
+      "the one-line statement is taller than 29 px"
+    ).toBeLessThanOrEqual(29);
+
+    // A child: its status, what blocks it and who holds it, and no author (R5).
+    const child = nodeRow(page, seeded.child).first();
+    const facts = child.locator("[data-child-facts]");
+    await expect(facts).toContainText(issueStatusWord((await getIssue(seeded.child)).status));
+    await expect(facts).toContainText(seeded.blocker);
+    await expect(facts).toContainText(PROPERTY_LABELS.blocked_by);
+    await expect(facts.locator("a", { hasText: seeded.blocker })).toHaveCount(1);
+    await expect(
+      facts.locator("[data-child-holder]"),
+      "the child's holder is drawn in a link"
+    ).not.toContainText("session:");
+    await expect(
+      facts.locator("[data-child-holder] a"),
+      "the child's holder is a link"
+    ).toHaveCount(0);
+    await expect(child.locator("[data-node-margin] [data-node-author]")).toHaveCount(0);
+
+    // `r-cites`: the document it cites by the page's word, the child it cites by its key, among
+    // its bold words and its two paragraphs (R4, F14).
+    const cites = nodeRow(page, `${seeded.slugs.spec}#b-r-cites`).first();
+    await expect(cites.locator("a[data-row-chip]").first()).toHaveText(NODE_TYPE_NAMES.document);
+    await expect(rowWords(cites)).not.toContainText("notes.md");
+    await expect(cites.locator(`a[data-row-reference="dispatch://${seeded.child}"]`)).toHaveText(
+      new RegExp(`^${seeded.child}\\b`, "u")
+    );
+    await expect(rowWords(cites).locator("strong")).toHaveCount(1);
+    await expect(rowWords(cites).locator("p")).toHaveCount(2);
+
+    // `r-ties`: its words cite r-one's block by its address, which they draw as a chip in place
+    // naming r-one by its first words, with no source line, no mark and no address (R4).
+    const ties = rowWords(nodeRow(page, `${seeded.slugs.spec}#b-r-ties`).first());
+    await expect(ties.locator("a[data-row-chip]")).toHaveCount(1);
+    await expect(ties.locator("a[data-row-chip]")).toHaveText(ONE_LINE_WORDS);
+    for (const source of [":::", "**", "dispatch://"]) {
+      await expect(ties, `r-ties' words draw "${source}"`).not.toContainText(source);
+    }
+
+    // The needs chip names its target by its first words, with no mark of markdown (F18).
+    const needs = nodeRow(page, `${seeded.slugs.plan}#b-t2`).first().locator("[data-node-chip]");
+    await expect(needs, "t2 draws other than its one needs chip").toHaveCount(1);
+    await expect(needs.locator("[data-chip-name]")).toHaveText(/^1\. Stand/u);
+    await expect(needs, "the needs chip draws a mark of markdown").not.toHaveText(/[*\\]/u);
+
+    // The decision that quotes a typed block draws none of its source, and its reference is a
+    // chip in place, which names r-one by its first words (F20).
+    const raw = rowOf(rows, seeded.raw);
+    expect(raw?.text ?? ":::", "the decision draws a typed block's source").not.toContain(":::");
+    expect(raw?.text ?? "dispatch://", "the decision draws an address").not.toContain(
+      "dispatch://"
+    );
+    const rawChip = rowWords(nodeRow(page, seeded.raw).first()).locator("a[data-row-chip]");
+    await expect(rawChip).toHaveCount(1);
+    await expect(rawChip).toHaveText(ONE_LINE_WORDS);
+
+    // A chip in a node's words names its target in plain words, as the chip at the end of the
+    // words does: the unsure decision cites t1, whose words are bold and open on "1\." (R4, F18).
+    const cited = rowWords(nodeRow(page, seeded.unsure).first()).locator("a[data-row-chip]");
+    await expect(cited).toHaveCount(1);
+    await expect(cited).toHaveText(/^1\. Stand/u);
+    await expect(cited, "a chip in a decision's words draws a mark of markdown").not.toHaveText(
+      /[*\\]/u
+    );
+
+    // An agent's link and a word that only looks like a key (R4).
+    const linked = nodeRow(page, seeded.linked).first();
+    await expect(linked.locator("a", { hasText: "UTF-16" })).toHaveCount(0);
+    await expect(rowWords(linked)).toContainText("in UTF-16.");
+
+    // A picture is 84 px tall, and a press opens it whole (R4).
+    const picture = nodeRow(page, seeded.pictured).first().locator("[data-node-words] img");
+    await expect(picture).toBeVisible();
+    expect(
+      Math.round((await picture.boundingBox())?.height ?? 0),
+      "the picture is not 84 px tall"
+    ).toBe(84);
+    await picture.click();
+    await expect(
+      page.locator("dialog[open] img"),
+      "a press does not open the picture whole"
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
+
+    // A fold control folds its branch to one line with its count, and a second press unfolds it.
+    // The row is named by its node's id: a locator that filters on `aria-expanded` would move to
+    // the next unfolded row once this one folds.
+    const unfolded = await nodeRows(page)
+      .filter({ has: page.locator(':scope[aria-expanded="true"]') })
+      .first()
+      .getAttribute("data-node-id");
+    expect(unfolded, "no row holds an unfolded branch").not.toBeNull();
+    const parent = nodeRow(page, unfolded ?? "").first();
+    await parent.locator("button[data-node-bullet]").click();
+    await expect(parent).toHaveAttribute("aria-expanded", "false");
+    await expect(parent.locator("[data-node-count]")).toHaveCount(1);
+    // The press takes no focus, so the folded row draws its one line and not its words whole.
+    await expect(
+      parent.locator("[data-node-first-line]"),
+      "the folded branch is not drawn on one line"
+    ).toHaveCount(1);
+    await parent.locator("button[data-node-bullet]").click();
+    await expect(parent).toHaveAttribute("aria-expanded", "true");
+
+    // At 390 px a focused comment's Reply is under 44 px (R1).
+    await page.setViewportSize(PHONE);
+    const comment = await focusRow(page, seeded.comment);
+    expect((await rowAct(comment, "reply").boundingBox())?.height ?? 1e6).toBeLessThan(44);
+  });
+});
+
+/** How far the focused row's top stands below the bottom of the band that stays at the top of
+ *  the screen above the rows, in CSS pixels: the view row at 390 px, the sticky box that holds
+ *  the view controls (`[data-filter-row]`), as part D's padding row finds it. Undefined while no
+ *  row holds the focus or nothing above the rows stays. */
+async function focusedRowBelowWhatStays(page: Page): Promise<number | undefined> {
+  return page.evaluate(() => {
+    const row = document.activeElement?.closest("[data-node-row]");
+    let band = document.querySelector("[data-filter-row]");
+    while (band !== null && getComputedStyle(band).position !== "sticky") {
+      band = band.parentElement;
+    }
+    if (row == null || band === null) return undefined;
+    return row.getBoundingClientRect().top - band.getBoundingClientRect().bottom;
+  });
+}
+
+// Decision 113: a focused row stands below everything that stays at the top of the screen. At
+// 390 px the view row stays there; `t s` puts the focus on the outline's first row, which the
+// chord shows and the row places (`useRowOnScreen`), so that row's top is below the view row's
+// bottom once the page has settled. The page starts scrolled to its foot, so the row the chord
+// focuses is above the screen. The chord's own placement (part D's `showPart`) reads the page's
+// scroll padding as well, so this row guards the two together.
+// SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, then a
+// chord and its settling frames waited out.
+test("after t s at 390 px the focused row stands below the view row that stays at the top", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedRows, async (page, seeded) => {
+    await page.setViewportSize(PHONE);
+    await openIssue(page, seeded.key);
+    await expectSeedDrawn(page, seeded);
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await focusThePage(page);
+    await page.keyboard.press("t");
+    await page.keyboard.press("s");
+    await expect(page, "t s did not open Spec").toHaveURL(
+      new RegExp(`${presetPath(seeded.key, "spec")}$`)
+    );
+    await expect(page.locator("[data-node-row]:focus"), "t s focused no row").toHaveCount(1);
+    // The chord keeps what it showed on screen for 20 frames (`useIssueKeymap.ts`); the reading
+    // is of the page after them.
+    for (let frames = 0; frames < 15; frames += 1) await nextFrames(page);
+    const below = await focusedRowBelowWhatStays(page);
+    expect(below, "nothing above the rows stays at the top at 390 px").toBeDefined();
+    expect(
+      below ?? -1,
+      "the focused row's top lies under the view row that stays at the top"
+    ).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// c-cut: ruling 1 on R2 at 1440 px.
+// SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, then
+// ten presses and focus moves, each waited on until the row redraws.
+test("an agent message and an answered question are cut at six lines, and the words of the reader and a waiting question are whole", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedRows, async (page, seeded) => {
+    await openIssue(page, seeded.key);
+    await expectSeedDrawn(page, seeded);
+    const agent = nodeRow(page, seeded.longMessage).first();
+    const cut = (await rowLayouts(page)).find((row) => row.id === seeded.longMessage);
+    expect(cut?.more ?? "", "the agent's long message draws no more").toMatch(
+      /^more · [\d,]+ words$/u
+    );
+    expect(
+      Number(/([\d,]+)/u.exec(cut?.more ?? "")?.[1]?.replace(",", "")),
+      "the cut holds back 20 words or fewer"
+    ).toBeGreaterThan(20);
+    expect((await rowWords(agent).boundingBox())?.height ?? 1e6).toBeLessThanOrEqual(6 * 24 + 12);
+    await rowMore(agent).click();
+    // They stay whole once the focus has been on the message and has left it.
+    await focusRow(page, seeded.longMessage);
+    await focusRow(page, seeded.comment);
+    await expect
+      .poll(async () => (await rowLayouts(page)).find((row) => row.id === seeded.longMessage))
+      .toMatchObject({ more: CONTROL_LABELS.read_less, wordsHidden: 0 });
+
+    const layouts = await rowLayouts(page);
+    expect(
+      layouts.find((row) => row.id === seeded.longComment),
+      "the reader's own long comment is cut"
+    ).toMatchObject({
+      more: null,
+      own: true,
+      wordsHidden: 0,
+    });
+    await expect(nodeRow(page, seeded.answered).first().locator("[data-answer-text]")).toHaveText(
+      seeded.answerWords,
+      { useInnerText: true }
+    );
+    expect(
+      await nodeRow(page, seeded.answered)
+        .first()
+        .locator("[data-answer-text]")
+        .evaluate((text) => text.scrollHeight - text.clientHeight),
+      "the reader's answer hides a word"
+    ).toBeLessThanOrEqual(1);
+    expect((await getAsk(seeded.waitingLong)).ask.waiting_on_person).toBe(READER);
+    expect(
+      layouts.find((row) => row.id === seeded.waitingLong),
+      "the waiting question is cut"
+    ).toMatchObject({
+      more: null,
+      wordsHidden: 0,
+    });
+    expect(layouts.find((row) => row.id === seeded.answeredLong)?.more ?? "").toMatch(/^more · /u);
+
+    // Focused, the answered question is whole, with no more, on the focused card.
+    const answered = await focusRow(page, seeded.answeredLong);
+    await expect(rowMore(answered)).toHaveCount(0);
+    expect(
+      await rowWords(answered).evaluate((words) => words.scrollHeight - words.clientHeight),
+      "the focused answered question hides a word"
+    ).toBeLessThanOrEqual(1);
+    await expect(answered.locator("[data-node-card]").first()).toHaveCSS(
+      "background-color",
+      "rgb(250, 250, 249)"
+    );
+
+    // A statement with no author says so in its body, not on its row (R3).
+    const statement = await focusRow(page, `${seeded.slugs.spec}#b-r-one`);
+    await expect(rowBody(statement).locator("[data-node-author]")).toHaveText(
+      CONTROL_LABELS.unknown_author
+    );
+    await expect(statement.locator("[data-node-margin] [data-node-author]")).toHaveCount(0);
+
+    // Keep open keeps a body when the focus moves on; a second press lets it close (R6).
+    await rowBody(statement).getByRole("button", { name: CONTROL_LABELS.keep_open }).click();
+    await focusRow(page, seeded.comment);
+    await expect(rowBody(statement)).toHaveCount(1);
+    await focusRow(page, `${seeded.slugs.spec}#b-r-one`);
+    await rowBody(statement).getByRole("button", { name: CONTROL_LABELS.let_close }).click();
+    await focusRow(page, seeded.comment);
+    await expect(rowBody(statement)).toHaveCount(0);
+
+    // No element of a row carries a `title` (R6).
+    expect(await nodeRows(page).locator("[title]").count()).toBe(0);
+  });
+});
+
+// c-author: R3 at 1440 px with every branch unfolded, and at 390 px.
+// SLOW(>=2s): a seeded issue of every kind of node, loaded and read at two widths with its rows
+// and their names waited for each time, then two rows focused.
+test("an author is drawn by name and shape, and an agent's decision by its uncertainty @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedRows, async (page, seeded) => {
+    const reader = { author: READER, shape: GLYPH_TOKENS.authors.person };
+    const plannerAuthor = { author: "Planner", shape: GLYPH_TOKENS.authors.agent };
+    const stored = new Map<string, DrawnAuthor>([
+      [seeded.comment, reader],
+      [seeded.longComment, reader],
+      [seeded.pictured, reader],
+      [seeded.change, reader],
+      ...seeded.replies.map((reply): [string, DrawnAuthor] => [reply, reader]),
+      [seeded.linked, plannerAuthor],
+      [seeded.longMessage, plannerAuthor],
+      [seeded.answered, plannerAuthor],
+      [seeded.answeredLong, plannerAuthor],
+      [seeded.waitingLong, plannerAuthor],
+      [seeded.openQuestion, plannerAuthor],
+      [seeded.result, { author: CONTROL_LABELS.unnamed_author, shape: GLYPH_TOKENS.authors.agent }],
+    ]);
+    for (const size of [DESKTOP, PHONE]) {
+      await page.setViewportSize(size);
+      await openIssue(page, seeded.key);
+      await expectSeedDrawn(page, seeded);
+      // A person by their login and an agent by its role's word, or by the page's word for one
+      // that names none, each by its kind's shape: people share one, agents another. A node the
+      // model holds no author for draws none.
+      await expect
+        .poll(async () => authorOffences(await drawnRows(page), stored), {
+          message: "a row draws its author other than by the stored actor's name and kind",
+        })
+        .toEqual([]);
+      const rows = await drawnRows(page);
+      const where = `at ${size.width} px`;
+      for (const row of rows) {
+        expect(row.author ?? "", `the ${row.type} ${row.id} ${where} draws an id`).not.toMatch(
+          /session:|019a1c0a/u
+        );
+      }
+      // The answer is word for word, with no "Unsure"; only the seeded decision says it.
+      expect(
+        rowOf(rows, seeded.answered)?.answerText,
+        `the answer ${where} is not drawn word for word`
+      ).toBe(seeded.answerWords);
+      expect(rowOf(rows, seeded.answered)?.unsure ?? null).toBeNull();
+      expect(rows.filter((row) => row.unsure !== null).map((row) => row.id)).toEqual([
+        seeded.unsure,
+      ]);
+      expect(rowOf(rows, seeded.unsure)?.unsure).toBe(CONTROL_LABELS.unsure);
+    }
+    await page.setViewportSize(DESKTOP);
+    // The planner's open row gives its whole title; a node with no author says so in a third
+    // shape.
+    const planner = await focusRow(page, seeded.linked);
+    await expect(rowBody(planner).locator("[data-node-author-title]")).toHaveText(PLANNER_TITLE);
+    const statement = await focusRow(page, `${seeded.slugs.spec}#b-r-one`);
+    const unknown = await rowBody(statement)
+      .locator("[data-node-author] svg[data-glyph]")
+      .getAttribute("data-glyph");
+    const rows = await drawnRows(page);
+    expect(
+      new Set([
+        rowOf(rows, seeded.comment)?.authorShape,
+        rowOf(rows, seeded.linked)?.authorShape,
+        unknown,
+      ]).size,
+      "a person, an agent and an author nobody recorded do not each have a shape of their own"
+    ).toBe(3);
+  });
+});
+
+// c-writer: R7 and R10 at 1440 px.
+// SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, then
+// six rows focused, two presses waited out for the writer's frames, and a read of the API.
+test("a row's Reply and Answer set the page's writer, and a decision asked to change draws it", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedRows, async (page, seeded) => {
+    await openIssue(page, seeded.key);
+    await expectSeedDrawn(page, seeded);
+    const writes = watchApiRequests(page);
+
+    const comment = await focusRow(page, seeded.comment);
+    await expect(rowAct(comment, "reply"), "the focused comment draws no Reply").toHaveCount(1);
+    await expect(rowAct(comment, "answer")).toHaveCount(0);
+    await rowAct(comment, "reply").click();
+    await writerFramesPass(page);
+    await expect(comment).toBeFocused();
+
+    const question = await focusRow(page, seeded.openQuestion);
+    await expect(rowAct(question, "answer")).toHaveCount(1);
+    await expect(rowAct(question, "reply")).toHaveCount(1);
+    const option = question.locator('[data-pick-option="1024 px"]');
+    await option.click();
+    await expect(option).toHaveAttribute("aria-pressed", "true");
+    await expect(option).toContainText("●");
+    await expect(question.locator('[data-pick-option="1280 px"]')).toContainText("○");
+    await rowAct(question, "answer").click();
+    await writerFramesPass(page);
+    await expect(question).toBeFocused();
+
+    // A statement and a check take no reply in today's model, so they draw no act.
+    for (const id of [`${seeded.slugs.spec}#b-r-one`, `${seeded.slugs.verification}#b-c1`]) {
+      const typed = await focusRow(page, id);
+      await expect(typed.locator("[data-row-act]")).toHaveCount(0);
+    }
+
+    // The decision that shaped a statement waits for review: Keep and Change.
+    const shaping = await focusRow(page, seeded.shaping);
+    await expect(shaping.locator("button[data-row-action]")).toHaveCount(2);
+
+    // The decision a person asked to change says so, holds the change under it, and draws no
+    // Keep and no Change (R10, F6).
+    const changed = rowOf(await drawnRows(page), seeded.changed);
+    expect(changed).toMatchObject({
+      state: "change_requested",
+      stateWord: NODE_STATE_WORDS.decision.change_requested,
+    });
+    expect(
+      (await listComments(seeded.key)).some((one) => one.id === seeded.change),
+      "the server holds no comment for the change"
+    ).toBe(true);
+    expect(
+      await parentOfRow(page, seeded.change),
+      "the change is not drawn under its decision"
+    ).toBe(seeded.changed);
+    const outlined = await focusRow(page, seeded.changed);
+    await expect(outlined.locator("button[data-row-action]")).toHaveCount(0);
+
+    // Nothing was sent: no box exists until part L draws it. A thread's read mark is the page's
+    // own record of what the reader read (`outline-thread-read.tsx`), and no write of theirs.
+    expect(
+      writes.requests.filter(
+        (request) =>
+          ["PATCH", "POST", "PUT"].includes(request.method) &&
+          !request.path.includes("/me/threads/")
+      ),
+      "a press on a row's act wrote something"
+    ).toEqual([]);
+  });
+});
