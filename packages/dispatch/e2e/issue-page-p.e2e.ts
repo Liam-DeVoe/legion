@@ -1893,3 +1893,161 @@ test("a keyboard pick of the status keeps the focus on the status while it saves
     expect(writes.length, "no status was written").toBeGreaterThan(0);
   });
 });
+
+/** A Tab's walk through one part of the page, read where the page stands now (`tabWalk`). */
+interface TabWalk {
+  /** Each control of the part that a Tab reaches - drawn, not disabled, a `tabIndex` of 0 or
+   *  more - in document order: its name, its computed `scroll-margin-top` and its top on the
+   *  screen. */
+  readonly controls: readonly {
+    readonly margin: string;
+    readonly name: string;
+    readonly top: number;
+  }[];
+  /** Which of them holds the focus, or -1 where none does. */
+  readonly focused: number;
+  /** How far the page has scrolled. */
+  readonly scrolled: number;
+}
+
+/** `TabWalk` of the element `part` selects. With `focusNext`, it first focuses the control a Tab
+ *  reaches next after the part's last one, in document order, without scrolling the page
+ *  (`preventScroll`): where a focus that comes back into the part from below starts. */
+function tabWalk(page: Page, part: string, focusNext = false): Promise<TabWalk> {
+  return page.evaluate(
+    ({ focusNext, part }) => {
+      const scope = document.querySelector(part);
+      if (scope === null) throw new Error(`the page draws no ${part}`);
+      const reached = [...document.querySelectorAll<HTMLElement>("*")].filter(
+        (element) =>
+          element.tabIndex >= 0 && !element.matches(":disabled") && element.checkVisibility()
+      );
+      const inside = reached.filter((element) => scope.contains(element));
+      const name = (element: Element) => {
+        const words = element.getAttribute("aria-label") ?? (element.textContent ?? "").trim();
+        return `${element.tagName.toLowerCase()} "${words}"`;
+      };
+      if (focusNext) {
+        const last = inside.at(-1);
+        const after = last === undefined ? undefined : reached[reached.indexOf(last) + 1];
+        if (after === undefined) throw new Error(`no control follows the last one of ${part}`);
+        after.focus({ preventScroll: true });
+        if (document.activeElement !== after) throw new Error(`${name(after)} took no focus`);
+      }
+      return {
+        controls: inside.map((element) => ({
+          margin: getComputedStyle(element).scrollMarginTop,
+          name: name(element),
+          top: element.getBoundingClientRect().top,
+        })),
+        focused: inside.indexOf(document.activeElement as HTMLElement),
+        scrolled: window.scrollY,
+      };
+    },
+    { focusNext, part }
+  );
+}
+
+// Decision 113 of dispatch://INFRA-1196/artifact/part-decisions-md, amended: a focus that enters
+// the header from below moves no page. The page keeps the band at its top clear of what a focus
+// brings into view (`scroll-padding-top` in `web/src/styles.css`), so without a top scroll margin
+// of minus that band a focus on a header control lying in it scrolls the page up, and a control
+// of what stays does not move with it. At 1440 px the identity block is stuck: Shift+Tab from the
+// properties line under it walks back through every control of the block to its first and the
+// page does not move, each control of the block takes minus the padding, and each control of the
+// properties line takes none, so a focus there under the block still scrolls it out from under
+// it. At 390 px the whole header scrolls away and the padding is the view row's height: Shift+Tab
+// from below onto the header's last control, while that control lies 10 px below the top of the
+// window, does not move the page, and each control of the header takes minus the padding. On the
+// phone it reads 390 px.
+test("a focus that enters the header from below moves no page @phone", async ({ browser }) => {
+  test.setTimeout(150_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    const widths =
+      test.info().project.name === "iphone" ? [IPHONE_13.width] : [DESKTOP.width, IPHONE_13.width];
+    const header = "[data-issue-page] header[data-issue-header]";
+    const block = `${header} [data-identity-block]`;
+    const line = `${header} [data-testid="issue-state-actions"]`;
+    for (const width of widths) {
+      // A short window, and a page made taller than it, so the page scrolls.
+      await page.setViewportSize({ height: 420, width });
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectHeaderDrawn(page);
+      await page.evaluate(() => {
+        const page = document.querySelector("[data-issue-page]");
+        if (page instanceof HTMLElement) page.style.minHeight = "2000px";
+        window.scrollTo(0, 0);
+      });
+
+      if (width > 760) {
+        await page.evaluate(() => window.scrollTo(0, 320));
+        await expect
+          .poll(async () => (await stickyReading(page))?.condensed, {
+            message: `the band is not stuck once scrolled at ${width} px`,
+          })
+          .toBe(true);
+        const published = (await stickyReading(page))?.published ?? 0;
+        const from = await tabWalk(page, block, true);
+        expect(from.controls.length, `the band holds no control at ${width} px`).toBeGreaterThan(0);
+        for (let at = from.controls.length - 1; at >= 0; at -= 1) {
+          const name = from.controls[at]?.name;
+          await page.keyboard.press("Shift+Tab");
+          await framesDrawn(page, 2);
+          const walk = await tabWalk(page, block);
+          expect(walk.focused, `Shift+Tab did not reach the band's ${name} at ${width} px`).toBe(
+            at
+          );
+          expect(
+            walk.scrolled,
+            `Shift+Tab onto the band's ${name} moved the page at ${width} px`
+          ).toBe(from.scrolled);
+        }
+        expect(
+          from.controls.map(({ margin, name }) => `${name}: ${margin}`),
+          `a control of the band takes no top scroll margin of minus the padding at ${width} px`
+        ).toEqual(from.controls.map(({ name }) => `${name}: -${published}px`));
+        const properties = (await tabWalk(page, line)).controls;
+        expect(
+          properties.length,
+          `the properties line holds no control at ${width} px`
+        ).toBeGreaterThan(0);
+        expect(
+          properties.map(({ margin, name }) => `${name}: ${margin}`),
+          `a control of the properties line takes a top scroll margin at ${width} px`
+        ).toEqual(properties.map(({ name }) => `${name}: 0px`));
+      } else {
+        const top = await tabWalk(page, header);
+        const last = top.controls.at(-1);
+        if (last === undefined) throw new Error(`the header holds no control at ${width} px`);
+        const to = Math.round(top.scrolled + last.top - 10);
+        await page.evaluate((to) => window.scrollTo(0, to), to);
+        await expect
+          .poll(() => page.evaluate(() => window.scrollY), {
+            message: `the page did not scroll the header's ${last.name} to the top at ${width} px`,
+          })
+          .toBeCloseTo(to, 0);
+        const published = (await stickyReading(page))?.published ?? 0;
+        expect(
+          published,
+          `the padding at ${width} px does not reach the header's ${last.name} 10 px below the top`
+        ).toBeGreaterThan(10);
+        const from = await tabWalk(page, header, true);
+        await page.keyboard.press("Shift+Tab");
+        await framesDrawn(page, 2);
+        const walk = await tabWalk(page, header);
+        expect(
+          walk.focused,
+          `Shift+Tab did not reach the header's ${last.name} at ${width} px`
+        ).toBe(from.controls.length - 1);
+        expect(
+          walk.scrolled,
+          `Shift+Tab onto the header's ${last.name} moved the page at ${width} px`
+        ).toBe(from.scrolled);
+        expect(
+          from.controls.map(({ margin, name }) => `${name}: ${margin}`),
+          `a control of the header takes no top scroll margin of minus the padding at ${width} px`
+        ).toEqual(from.controls.map(({ name }) => `${name}: -${published}px`));
+      }
+    }
+  });
+});
