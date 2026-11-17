@@ -195,22 +195,37 @@ const SOURCE_LINE = /^[ \t]*:{3,}(?:[a-z_][^\n]*)?[ \t]*$\n?/gmu;
 /** A text's words with each reference it cites unnamed while a line is cut from them, and the
  *  names put in after the cut (`referenceStandIns`). */
 export interface ReferenceStandIns {
-  /** A line cut from words `standIn` gave, with each reference in it named. */
+  /** A line cut from words `standIn` gave, with each reference in it named and each private-use
+   *  character its author wrote drawn as written. */
   readonly named: (line: string) => string;
   /** `text` as the words a line is cut from: its typed blocks' source lines left out, and each
-   *  reference it cites stood in for by its token. */
+   *  reference it cites and each private-use character it holds stood in for by its token. */
   readonly standIn: (text: string) => string;
 }
 
-/** The first character a reference's token is made of: the Basic Multilingual Plane's
- *  private-use characters, U+E000 to U+F8FF, which are no space, letter, digit or mark. */
+/** The first character a token is made of: the Basic Multilingual Plane's private-use
+ *  characters, U+E000 to U+F8FF, which are no space, letter, digit or mark. */
 const STAND_IN = 0xe000;
 
-/** How many references one holder stands in for, one private-use character each. */
+/** How many tokens one holder makes, one private-use character each: one for each reference it
+ *  stands in for, and one for each private-use character its texts hold of their own. */
 const STAND_INS = 0xf8ff - STAND_IN + 1;
 
-/** One reference's token: a run of one private-use character. */
-const TOKEN = /([\ue000-\uf8ff])\1*/gu;
+/** One private-use character, which an author may write of their own: an icon pasted from a
+ *  terminal or an icon font. */
+const PRIVATE_USE = /[\ue000-\uf8ff]/gu;
+
+/** One token in a line `named` is given: a run of one private-use character, with the ellipsis a
+ *  cut drew right after it where that ellipsis ends the line. */
+const TOKEN = /(([\ue000-\uf8ff])\2*)(…$)?/gu;
+
+/** How a name ends that a line draws no ellipsis after: with an ellipsis of its own, or with the
+ *  mark of a sentence's end, after which `drawnLine` draws none. */
+const NAME_END = /[….!?]$/u;
+
+/** What a private-use character the author wrote is drawn as where its holder has no token left
+ *  for it: U+FFFD, the replacement character. */
+const NO_TOKEN = "\ufffd";
 
 /**
  * How the page draws a plain line that cites references (reading (b) of dispatch://INFRA-3939's
@@ -232,37 +247,77 @@ const TOKEN = /([\ue000-\uf8ff])\1*/gu;
  * draws of it, so the drawn line keeps to R1's limit. A limit that falls inside a token, which
  * only a token run into the words before it with no space can make, draws the whole name. One
  * holder may stand in for the references of several texts whose lines are read together, as a
- * summary's runs are; past the 6,400 references the private-use characters hold, a reference
- * is named in its place. A private-use character of the text itself is no word a reader reads.
+ * summary's runs are; past the 6,400 tokens the private-use characters make, a reference is
+ * named in its place, with each private-use character of its name stood in for as the author's
+ * own are, so `named` reads none of them as a token.
+ *
+ * A private-use character the author wrote is stood in for as a reference is, by a token whose
+ * name is that character, so `named` draws it as written and never as a reference's name. The
+ * name is one character long, as the character is, so the line's length and its cuts are the
+ * text's own. Every use of one character in the holder's texts takes the same token, and a run
+ * of that token draws the character as many times as the run is long. Where the holder has no
+ * token left for a character it has not met before, the character is drawn as U+FFFD, the
+ * replacement character, since drawn as written it would be read as a token.
+ *
+ * A cut's ellipsis is decided on the line before the names go in (`drawnLine`), and a line cut
+ * right after a reference ends in its token, not in its name's own last character. So `named`
+ * decides again on an ellipsis that ends the line right after a token: where the name ends with
+ * an ellipsis of its own ("R2. Every address…", which `chipWords` cut) or with a sentence's
+ * mark, the line draws no ellipsis after it. An ellipsis anywhere else stays as written.
+ *
  * A line no cut is made in is `named(standIn(text))`.
  */
 export function referenceStandIns(
   nameOf: (reference: string) => string | undefined
 ): ReferenceStandIns {
   const names: string[] = [];
+  // The token each private-use character the author wrote is stood in for by, one per character.
+  const owned = new Map<string, string>();
+  // The holder's next token, one private-use character, which `named` draws as `name`.
+  const tokenOf = (name: string): string => {
+    const token = String.fromCharCode(STAND_IN + names.length);
+    names.push(name);
+    return token;
+  };
+  // `words` with each private-use character the author wrote stood in for by its token.
+  const ownStandIns = (words: string): string =>
+    words.replace(PRIVATE_USE, (character) => {
+      let token = owned.get(character);
+      if (token === undefined && names.length < STAND_INS) {
+        token = tokenOf(character);
+        owned.set(character, token);
+      }
+      return token ?? NO_TOKEN;
+    });
   return {
     named: (line) =>
       names.length === 0
         ? line
-        : line.replace(TOKEN, (token) => names[token.charCodeAt(0) - STAND_IN] ?? token),
+        : line.replace(TOKEN, (whole: string, token: string, character: string, cut?: string) => {
+            const name = names[character.charCodeAt(0) - STAND_IN];
+            if (name === undefined) return whole;
+            // A reference's token stands in a line once, whole or cut inside it, and draws its
+            // whole name once; an author's character's token is one character long, and a run
+            // of it draws the character as many times as the run is long.
+            const drawn = name.repeat(Math.ceil(token.length / name.length));
+            return cut === undefined || NAME_END.test(name) ? drawn : `${drawn}${cut}`;
+          }),
     standIn: (text) => {
       const words = text.includes(":::") ? text.replace(SOURCE_LINE, "") : text;
       let held = "";
       let at = 0;
       for (const one of rowReferences(words, [])) {
+        // The author's words before the reference are stood in for first, so the holder's tokens
+        // are taken in the order the text holds them.
+        held += ownStandIns(words.slice(at, one.start));
         const name =
           one.route.kind === "issue"
             ? one.route.key
             : (nameOf(one.reference) ?? documentWord(one.route) ?? NODE_TYPE_NAMES.document);
-        const stood = names.length < STAND_INS;
-        const token = stood
-          ? String.fromCharCode(STAND_IN + names.length).repeat(name.length)
-          : name;
-        if (stood) names.push(name);
-        held += `${words.slice(at, one.start)}${token}`;
+        held += names.length < STAND_INS ? tokenOf(name).repeat(name.length) : ownStandIns(name);
         at = one.end;
       }
-      return `${held}${words.slice(at)}`;
+      return `${held}${ownStandIns(words.slice(at))}`;
     },
   };
 }
