@@ -14,6 +14,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -29,9 +30,35 @@ func connectNATS(t testing.TB) (*natsgo.Conn, func()) {
 	return conn, conn.Close
 }
 
+// testStoreClock is the clock of a store whose test does not test the store's own waits: the real
+// clock, except that a wait it arms (update's RecordWait) ends only when testwait.Context(t) ends.
+// RecordWait bounds a webhook delivery in production. A test that records to set up what it
+// tests does not measure it, and the time a KV call takes there is the machine's. A test of the
+// waits themselves passes its own WithClock, which replaces this one.
+type testStoreClock struct {
+	clock.Clock
+	t testing.TB
+}
+
+func (c testStoreClock) WithTimeout(ctx context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+	return c.untilTheTestEnds(ctx)
+}
+
+func (c testStoreClock) WithDeadline(ctx context.Context, _ time.Time) (context.Context, context.CancelFunc) {
+	return c.untilTheTestEnds(ctx)
+}
+
+func (c testStoreClock) untilTheTestEnds(ctx context.Context) (context.Context, context.CancelFunc) {
+	if deadline, bounded := testwait.Context(c.t).Deadline(); bounded {
+		return context.WithDeadline(ctx, deadline)
+	}
+	return context.WithCancel(ctx)
+}
+
 func openStore(t testing.TB, conn *natsgo.Conn, opts ...Option) *Store {
 	t.Helper()
-	st, err := Open(conn, logging.New("test"), append([]Option{WithReplicas(1), WithTTL(time.Hour)}, opts...)...)
+	defaults := []Option{WithReplicas(1), WithTTL(time.Hour), WithClock(testStoreClock{Clock: clock.Real(), t: t})}
+	st, err := Open(conn, logging.New("test"), append(defaults, opts...)...)
 	if err != nil {
 		t.Fatalf("open cistore: %v", err)
 	}
