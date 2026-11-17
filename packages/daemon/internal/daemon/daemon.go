@@ -626,7 +626,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 			err = nil
 			listener.Close()
 		case err == nil:
-			log.Info("legion daemon started",
+			log.Info(supervise.DaemonStartedLine,
 				"project", cfg.Project,
 				"address", listener.Addr().String(),
 				"workerStream", s.stream.Addr(),

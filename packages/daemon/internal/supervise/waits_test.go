@@ -401,7 +401,9 @@ func TestChargeResetByATurnStartAndATurnEndNotByATake(t *testing.T) {
 // A daemon stopped for longer than a bound and started again charges nobody for the time it was
 // down: each wait's clock starts again at the worker's first act after the start, here the shim's
 // reconnect hello, and nobody is charged until one whole bound has passed after it — in the first
-// wait and in the second.
+// wait and in the second. In the first wait the seen report the started daemon holds is the
+// store's, so that bound's end writes the value again and charges nobody (decision 20); the
+// charge comes one bound after the worker reports the new revision seen.
 func TestChargeNoneAfterADaemonRestartUntilABoundAfterTheReconnectHello(t *testing.T) {
 	t.Run("the first wait", func(t *testing.T) {
 		h := waitsHarness(t)
@@ -418,6 +420,9 @@ func TestChargeNoneAfterADaemonRestartUntilABoundAfterTheReconnectHello(t *testi
 		h.advance(takeBound - time.Second)
 		h.wantCharges()
 		h.advance(time.Second)
+		h.wantCharges()
+		h.seen()
+		h.advance(takeBound)
 
 		h.wantCharges(WaitTake)
 	})
@@ -443,8 +448,11 @@ func TestChargeNoneAfterADaemonRestartUntilABoundAfterTheReconnectHello(t *testi
 }
 
 // A worker that makes no act after a daemon's start but its shim's reconnect hello is charged one
-// bound after that hello, in each wait, and its third charge retires it: the clock's restart
-// spares the daemon's outage, and nothing more.
+// bound after that hello in the second wait, and its third charge retires it: the clock's restart
+// spares the daemon's outage, and nothing more. In the first wait the seen report the started
+// daemon holds is the store's, so the first bound after the hello writes the value again and
+// charges nobody (decision 20); a worker that then reports the new revision seen and takes
+// nothing is charged one bound after that report, and its third charge retires it.
 func TestSilentWorkerAfterItsReconnectIsChargedOneBoundAfterItAndRetiredAtTheThird(t *testing.T) {
 	t.Run("the first wait", func(t *testing.T) {
 		h := waitsHarness(t)
@@ -456,6 +464,9 @@ func TestSilentWorkerAfterItsReconnectIsChargedOneBoundAfterItAndRetiredAtTheThi
 
 		h.outage(3 * takeBound)
 		h.connect()
+		h.advance(takeBound)
+		h.wantCharges()
+		h.seen()
 		for charge := 1; charge < testLimits().PromptFailures; charge++ {
 			h.advance(takeBound)
 			h.wantBudgets(Budgets{PromptFailures: charge})
@@ -612,4 +623,68 @@ func TestChargeNoneForATakeWhoseAcceptTheStoreRefused(t *testing.T) {
 	if !accepted {
 		t.Fatalf("no take of task %d was accepted within the second bound after the store refused the first take's write", asked.Number)
 	}
+}
+
+// A daemon started again while a claim's latest revision is stored seen and not asked holds a seen
+// report no worker made to it: a take of that revision may have failed on its first store write
+// under the daemon that stopped, and that process's worker asks once per revision. The first
+// expiry of the first wait after the start writes the value again, under the same number at a
+// newer revision, and charges nobody (decision 20 of dispatch://INFRA-2811). A worker that then
+// reports the new revision seen and does not take it is charged one bound after that report; one
+// that reports nothing more holds a value nobody reported seeing, which charges nobody, is written
+// again once per bound and is listed unseen.
+func TestChargeNoneAtTheFirstExpiryForASeenReportReadFromTheStore(t *testing.T) {
+	restarted := func(t *testing.T) (*harness, TaskValue) {
+		t.Helper()
+		h := waitsHarness(t)
+		h.manualTakes()
+		h.reach(StateReady)
+		h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+		stored := h.seen()
+		h.restart()
+		h.connect()
+		h.advance(takeBound)
+
+		h.wantCharges()
+		h.wantBudgets(Budgets{})
+		written := h.values.written()
+		rewritten := written[len(written)-1]
+		if len(written) != 2 || rewritten.Number != stored.Number || rewritten.Revision <= stored.Revision {
+			t.Fatalf("the values written are %+v, want task %d written again at a newer revision than %d at the first expiry",
+				written, stored.Number, stored.Revision)
+		}
+		if listed := h.m.UnseenTaskValue(); listed != nil {
+			t.Fatalf("the claim is listed unseen as %+v at the rewrite, want no listing before a bound passes over the new revision", listed)
+		}
+		return h, rewritten
+	}
+	t.Run("a worker that reports the new revision seen is charged one bound after that report", func(t *testing.T) {
+		h, rewritten := restarted(t)
+		h.advance(time.Minute)
+		if seen := h.seen(); seen != rewritten {
+			t.Fatalf("the worker saw %+v, want the rewrite %+v", seen, rewritten)
+		}
+		h.advance(takeBound - time.Second)
+		h.wantCharges()
+		h.advance(time.Second)
+
+		h.wantCharges(WaitTake)
+	})
+	t.Run("a worker that reports nothing more is charged by nobody, written again once per bound and listed unseen", func(t *testing.T) {
+		h, rewritten := restarted(t)
+		for bound := 1; bound <= 2; bound++ {
+			h.advance(takeBound)
+			written := h.values.written()
+			if last := written[len(written)-1]; len(written) != 2+bound || last.Number != rewritten.Number {
+				t.Fatalf("after bound %d the values written are %+v, want task %d written %d times", bound, written, rewritten.Number, 2+bound)
+			}
+			listed := h.m.UnseenTaskValue()
+			if listed == nil || listed.Task != rewritten.Number || !listed.WrittenAt.Equal(h.clock.Now()) {
+				t.Fatalf("after bound %d the claim is listed %+v, want it unseen with task %d written at %s", bound, listed, rewritten.Number, h.clock.Now())
+			}
+		}
+
+		h.wantCharges()
+		h.wantBudgets(Budgets{})
+	})
 }

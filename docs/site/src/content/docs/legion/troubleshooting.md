@@ -1286,16 +1286,19 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   `supervise: claim failed`, `supervise: the agent reported its exit`, `supervise: the process
   speaks another plugin contract; relaunching it onto the current plugin`, or `supervise: the
   update round is over for this claim`, each of which says what became of the turn instead.
-- **`supervise: a task value was written`**, **`supervise: a take was answered`**, **`supervise: a
-  task was taken back`**, **`supervise: a task was finished`** and **`supervise: a task value was
-  deleted`** at Info are a task's way through its claim: each write of the claim's value, with the
-  `task` number, its `origin`, whether the claim had `finished` the last task written to it in its
-  `session`, the bucket's `epoch` and `revision`, and the `cause` (`queued`, `hold-ended`,
-  `retake`, `take-failed`, `unseen`, `repair`, `boot`); each answer to the worker's take, with its
-  `outcome` (`accepted`, `refused` with the `hold` that refused it, or `dropped`); each take-back
-  with its `cause`; and each finish with what finished it (`by=report` or `by=end-frame`).
-  [Task delivery cost](/legion/legion/task-delivery-cost/) reads all of them but the delete for a
-  window of the log.
+- **`supervise: a task value was written`**, **`supervise: a task value was reported seen`**,
+  **`supervise: a take was answered`**, **`supervise: a task was taken back`**, **`supervise: a
+  task was finished`** and **`supervise: a task value was deleted`** at Info are a task's way
+  through its claim: each write of the claim's value, with the `task` number, its `origin`,
+  whether the claim had `finished` the last task written to it in its `session`, the bucket's
+  `epoch` and `revision`, and the `cause` (`queued`, `hold-ended`, `retake`, `take-failed`,
+  `unseen`, `repair`, `boot`); each report of the worker that it saw a newer `revision` of the
+  `task`; each answer to the worker's take, with its `outcome` (`accepted`, `refused` with the
+  `hold` that refused it, or `dropped`); each take-back with its `cause`; and each finish with
+  what finished it (`by=report` or `by=end-frame`). [Task delivery
+  cost](/legion/legion/task-delivery-cost/) reads all of them for a window of the log, with the
+  warning below, `supervise: process died`, `supervise: an agent registered` and `legion daemon
+  started`.
 - **`supervise: a take could not be decided or recorded; it is refused at its revision, and the
   value is written again under its number once the task is free to take`** at Warn, with the
   `task`, the `revision` the worker asked at and the `error`, is a take the daemon could not
@@ -1323,6 +1326,12 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   never said hello within the registration deadline. The daemon takes its task back under its
   number and relaunches it, charging a launch failure; a claim whose launches run out fails with
   the cause word `never_reconnected`.
+- **`supervise: the first bound passed over a revision whose seen report this daemon read from the
+  store; it is written again under its number, and nobody is charged`** at Info follows a daemon
+  start: the worker reported that revision seen to the daemon before, which may have failed to
+  record that worker's take of it, and the worker asks only once at each revision. The daemon
+  writes the value again, as `supervise: a task value was written` with `cause=unseen`, and
+  charges the worker only one bound after it reports the new revision seen.
 - **`supervise: the task value could not be written; it is written again at the claim's next
   chance`** at Warn means the task bucket did not take a write, usually NATS unreachable, or a
   daemon grant without the key writes (`$KV.legion_tasks.>`), which the boot does not check: the

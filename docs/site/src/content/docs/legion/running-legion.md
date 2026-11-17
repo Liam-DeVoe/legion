@@ -698,8 +698,10 @@ What each part is for:
   nobody reported seeing charges nobody, since what failed is the relay: the daemon writes it
   again once per first bound and `legion state` names the claim ([Observe](#observe)). A turn's
   start or end resets the count and a take does not, so a worker that takes and never starts a
-  turn is still retired at the limit. Time the daemon was not serving counts toward neither bound.
-  Each is a positive whole number of seconds; any other value is refused by name.
+  turn is still retired at the limit. Time the daemon was not serving counts toward neither bound,
+  and a seen report a started daemon read from its database charges nobody at the first bound: the
+  daemon writes the value again, and charges the worker one bound after it reports the new
+  revision seen. Each is a positive whole number of seconds; any other value is refused by name.
 - **`worker_wakes_per_minute`** (8) and **`worker_wake_burst`** (1) pace the wakes the daemon
   causes: the role processes it starts, and the tasks and notices it queues to wake a session that
   already runs. Each wake has its session read its whole context again, which the provider charges

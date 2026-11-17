@@ -28,7 +28,9 @@ import (
 // stands charges nobody: a hold that arises while a wait is armed disarms it, and its end arms
 // it again from there (armWaits). The timers are memory only, as every timer is: a machine a
 // daemon start built arms them again from the record at the worker's first act after that start
-// (Machine.awaitsAct), so the time the daemon was not serving counts toward neither bound.
+// (Machine.awaitsAct), so the time the daemon was not serving counts toward neither bound. And a
+// seen report such a machine read from the store, which no worker made to it, charges nobody at
+// the first bound: the value is written again instead (Machine.seenFromStore, takeBoundOver).
 
 // The waits a charge names (chargePrompt): the wait attribute of its line, and the word the why of
 // each of R5's two begins with.
@@ -171,6 +173,14 @@ func (m *Machine) secondWaitNow() (time.Time, bool) {
 // unless what a take would meet now refuses or drops it (takeable): a hold that stands charges
 // nobody, and is waited out (armWaits arms the bound again from this decision), and a task the
 // record no longer owes is dropped here, as a take would drop it.
+//
+// A seen report this daemon read from the store, and never received itself, charges nobody
+// either (decision 20 of dispatch://INFRA-2811): a take of that revision may have failed on its
+// first store write under the daemon that stopped, and that process's worker asks once per
+// revision, so it will not ask at it again. The value is written again under its number instead,
+// as for a value nobody reported seeing, and the mark goes with the write (seenFromStore,
+// putValue): a worker that then reports the new revision seen and leaves it untaken is charged one
+// bound after that report, and one that reports nothing holds a value nobody reported seeing.
 func takeBoundOver(m *Machine, ctx context.Context, _ Event) error {
 	armedFor := m.firstFor
 	m.firstFor = firstWait{}
@@ -193,6 +203,10 @@ func takeBoundOver(m *Machine, ctx context.Context, _ Event) error {
 		m.log.Info("supervise: the first bound passed while a hold stands over the task; the worker is not charged",
 			"task", p.Number, "hold", hold)
 		return nil
+	case m.seenFromStore:
+		m.log.Info("supervise: the first bound passed over a revision whose seen report this daemon read from the store; it is written again under its number, and nobody is charged",
+			"task", p.Number, "epoch", now.epoch, "revision", now.revision, "bound", m.deps.Timeouts.Take)
+		return m.writeValue(ctx, TaskValueUnseen)
 	}
 	return m.chargePrompt(ctx, WaitTake, fmt.Sprintf("%s: the worker reported seeing task %d at revision %d and asked no take of it within %s",
 		WaitTake, p.Number, now.revision, m.deps.Timeouts.Take))

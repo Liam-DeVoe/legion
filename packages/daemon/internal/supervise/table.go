@@ -1680,7 +1680,8 @@ func spawn(m *Machine, ctx context.Context, ev Event) error {
 //
 // The process that registers reads its value afresh (CurrentTask) and has asked nothing at any
 // revision of it, so the take the record kept is the process before it's: it goes
-// (Claim.TaskTakeState), and the new process asks at the revision it reads.
+// (Claim.TaskTakeState), and the new process asks at the revision it reads. The registration is
+// logged (agentRegisteredLine), as the agent of a new process.
 func register(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
 	m.claim.Session, m.claim.SessionFile = r.Session, r.SessionFile
@@ -1691,6 +1692,7 @@ func register(m *Machine, ctx context.Context, ev Event) error {
 	}
 	m.claim.TaskTakeState = ""
 	m.claim.State = StateRegistered
+	m.log.Info(agentRegisteredLine, "generation", m.claim.Generation, "session", r.Session)
 	m.disarm(TimerBoot)
 	m.armRegistration()
 	if err := m.persist(ctx); err != nil {

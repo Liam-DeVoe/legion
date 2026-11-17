@@ -20,12 +20,17 @@ import (
 // (turnlog_test.go).
 const (
 	writtenLine       = "supervise: a task value was written"
+	seenLiteral       = "supervise: a task value was reported seen"
 	deletedLine       = "supervise: a task value was deleted"
 	answeredLine      = "supervise: a take was answered"
+	undecidedLiteral  = "supervise: a take could not be decided or recorded; it is refused at its revision, and the value is written again under its number once the task is free to take"
 	takenBackLiteral  = "supervise: a task was taken back"
 	finishedLine      = "supervise: a task was finished"
 	promptFailed      = "supervise: prompt failure"
 	retiredAfterLimit = "supervise: retired after prompt failures"
+	diedLiteral       = "supervise: process died"
+	registeredLiteral = "supervise: an agent registered"
+	startedLiteral    = "legion daemon started"
 )
 
 // wantAttr fails the test unless r carries key with the value want, compared as the text handler
@@ -181,7 +186,6 @@ func TestTaskValueLogOfTheSilenceRepairNamesOriginSilence(t *testing.T) {
 // gives its worker a newer revision to ask at names the cause it is, take-failed, and not a hold's
 // end, since no hold refused it.
 func TestTaskValueLogOfATakeTheDaemonFailedToDecideNamesTakeFailed(t *testing.T) {
-	const undecidedLine = "supervise: a take could not be decided or recorded; it is refused at its revision, and the value is written again under its number once the task is free to take"
 	failing := true
 	h := waitsHarness(t, func(d *Deps) {
 		d.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) {
@@ -201,7 +205,7 @@ func TestTaskValueLogOfATakeTheDaemonFailedToDecideNamesTakeFailed(t *testing.T)
 	if answers := h.records.of(answeredLine); len(answers) != 0 {
 		t.Fatalf("logged %d answers to the take, want none: the worker was answered the failure", len(answers))
 	}
-	failed := h.records.of(undecidedLine)
+	failed := h.records.of(undecidedLiteral)
 	if len(failed) != 1 || failed[0].level != slog.LevelWarn {
 		t.Fatalf("logged %+v, want the undecided take named once at WARN", failed)
 	}
@@ -219,26 +223,69 @@ func TestTaskValueLogOfATakeTheDaemonFailedToDecideNamesTakeFailed(t *testing.T)
 	wantAttr(t, writes[1], "cause", TaskValueTakeFailed)
 }
 
+// The cause of a value write at a hold's end is the latest event's that left one. A take the
+// daemon failed to decide, sent again by a worker that never had the failure's answer and accepted
+// then, and taken back at the second bound, is written again as the retake it is, not as the
+// failed take before it.
+func TestTaskValueLogOfARetakeAfterAFailedTakeNamesRetake(t *testing.T) {
+	failing := true
+	h := waitsHarness(t, func(d *Deps) {
+		d.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) {
+			if failing {
+				return false, errBoom
+			}
+			return true, nil
+		}
+	})
+	h.manualTakes()
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", Phase: phase.Implementing, Generation: 7})
+	asked := h.seen()
+	if answer, err := h.takeValue(asked); answer.Outcome != "" || err == nil {
+		t.Fatalf("take while the phase read fails = %+v, %v; want no answer and the read's failure", answer, err)
+	}
+	failing = false
+	if answer, err := h.takeValue(asked); answer.Outcome != TakeOutcomeAccepted || err != nil {
+		t.Fatalf("the same take sent again = %+v, %v; want it accepted", answer, err)
+	}
+
+	h.advance(turnStartBound)
+
+	writes := h.records.of(writtenLine)
+	if len(writes) != 2 {
+		t.Fatalf("logged %d value writes, want the queue's and the one after the second bound's take-back", len(writes))
+	}
+	wantAttr(t, writes[1], "task", slog.Uint64Value(asked.Number).String())
+	wantAttr(t, writes[1], "cause", TaskValueRetake)
+}
+
 // The messages an operator, the production check and the cost reading search for are the ones the
 // machine writes, word for word, and a reword of any of them fails here before it silences every
-// search: the constants are pinned to the words, and one walk of a claim writes each of them under
-// those words.
+// search: the constants are pinned to the words, and walks of a claim write each of them under
+// those words — but the undecided take's, which its own test walks
+// (TestTaskValueLogOfATakeTheDaemonFailedToDecideNamesTakeFailed), and the daemon's start, which
+// internal/daemon writes. The cost reading reads every one of them.
 func TestTurnLogPinnedMessagesAreUnchanged(t *testing.T) {
 	for constant, words := range map[string]string{
-		turnStartedLine:   startedLine,
-		turnEndedLine:     endedLine,
-		valueWrittenLine:  writtenLine,
-		valueDeletedLine:  deletedLine,
-		takeAnsweredLine:  answeredLine,
-		takenBackLine:     takenBackLiteral,
-		taskFinishedLine:  finishedLine,
-		promptFailureLine: promptFailed,
-		promptRetiredLine: retiredAfterLimit,
+		turnStartedLine:     startedLine,
+		turnEndedLine:       endedLine,
+		valueWrittenLine:    writtenLine,
+		taskSeenLine:        seenLiteral,
+		valueDeletedLine:    deletedLine,
+		takeAnsweredLine:    answeredLine,
+		takeUndecidedLine:   undecidedLiteral,
+		takenBackLine:       takenBackLiteral,
+		taskFinishedLine:    finishedLine,
+		promptFailureLine:   promptFailed,
+		promptRetiredLine:   retiredAfterLimit,
+		processDiedLine:     diedLiteral,
+		agentRegisteredLine: registeredLiteral,
+		DaemonStartedLine:   startedLiteral,
 	} {
 		if constant != words {
 			t.Errorf("the pinned message %q reads %q", words, constant)
 		}
-		if !costedLines[words] {
+		if !costedLines[words] && words != startedLiteral {
 			t.Errorf("the cost reading does not read %q", words)
 		}
 	}
@@ -252,10 +299,21 @@ func TestTurnLogPinnedMessagesAreUnchanged(t *testing.T) {
 	for range testLimits().PromptFailures {
 		h.advance(turnStartBound)
 	}
-	for _, words := range []string{startedLine, endedLine, writtenLine, deletedLine, answeredLine, takenBackLiteral,
-		finishedLine, promptFailed, retiredAfterLimit} {
-		if len(h.records.of(words)) == 0 {
-			t.Errorf("the walk wrote no %q", words)
+	dies := waitsHarness(t)
+	dies.reach(StateReady)
+	dies.observe(runtime.Gone)
+	for _, walked := range []struct {
+		h     *harness
+		lines []string
+	}{
+		{h, []string{startedLine, endedLine, writtenLine, seenLiteral, deletedLine, answeredLine, takenBackLiteral,
+			finishedLine, promptFailed, retiredAfterLimit, registeredLiteral}},
+		{dies, []string{diedLiteral}},
+	} {
+		for _, words := range walked.lines {
+			if len(walked.h.records.of(words)) == 0 {
+				t.Errorf("the walk wrote no %q", words)
+			}
 		}
 	}
 	// The turn-outcome report writes the end message too, with a sequence of its own, which the

@@ -1282,17 +1282,20 @@ type Machine struct {
 	// — and clears the mark. A turn's end with no start seen clears it too (blindTurnEnded): that
 	// start was lost and will not come. letGo clears it with the process, and it is memory only.
 	reportedAhead uint64
-	// retaken is the number of the task taken back in this process for a reason that keeps the
-	// process — a provider error's turn, a compaction, the second wait (takeBack) — until the
-	// value of it is written again: that write is logged as a retake (offerPending) rather than as
-	// a hold's end, and any write clears it (putValue). letGo clears it with the process, and it
-	// is memory only: a restart's own writes are its boot's (valueRead).
-	retaken uint64
-	// failedTake is the number of the pending task a take of which this process failed to decide
-	// or record (undecided), until the value of it is written again: that write is logged as
-	// such (TaskValueTakeFailed, offerPending) rather than as a hold's end. It is kept, cleared
-	// and lost as retaken is.
-	failedTake uint64
+	// rewrite is the pending task whose value the next write at a hold's end (offerPending) logs
+	// under a cause of its own, and that cause: TaskValueRetake for a task taken back in this
+	// process for a reason that keeps the process — a provider error's turn, a compaction, the
+	// second wait (takeBack) — and TaskValueTakeFailed for one a take of which this process failed
+	// to decide or record (undecided). The latest of the two decides, and any write of the value
+	// clears it (putValue). letGo clears it with the process, and it is memory only: a restart's
+	// own writes are its boot's (valueRead), and its write after a failed take is a hold's end.
+	rewrite valueRewrite
+	// seenFromStore is whether the seen report the claim records is the one the store held when
+	// this machine was built, which no worker made to this process: a restored claim holds it
+	// until a report that moves the seen revision (taskSeen) or a write of the value (putValue).
+	// The first wait's bound over such a revision writes the value again rather than charging
+	// (takeBoundOver). It is memory only: a daemon that starts next reads the store's report again.
+	seenFromStore bool
 	// cutTurnOf is the delivery id of the pending task the decision that lets the claim's process
 	// go takes back from its turn (interrupted), and "" while no decision has taken one back from
 	// it. interrupted sets it where it takes back a take whose turn was running. The take-back
@@ -1493,7 +1496,9 @@ type armed struct {
 //
 // R5's two waits are armed from the record, but not here: a machine built at a daemon's start
 // arms them at the worker's next act (awaitsAct, armWaits), so the time the daemon was not
-// serving counts toward neither bound.
+// serving counts toward neither bound. A seen report the claim was built holding is the store's,
+// not one this daemon received (seenFromStore), so the first wait's first bound over it writes
+// the value again rather than charging (takeBoundOver).
 func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 	if err := deps.check(); err != nil {
 		return nil, err
@@ -1502,13 +1507,14 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		deps.Log = slog.Default()
 	}
 	m := &Machine{
-		ctx:       ctx,
-		deps:      deps,
-		log:       deps.Log.With("claim", string(c.Token)),
-		claim:     copyClaim(c),
-		timers:    map[TimerKind]armed{},
-		stale:     map[string]bool{},
-		awaitsAct: true,
+		ctx:           ctx,
+		deps:          deps,
+		log:           deps.Log.With("claim", string(c.Token)),
+		claim:         copyClaim(c),
+		timers:        map[TimerKind]armed{},
+		stale:         map[string]bool{},
+		awaitsAct:     true,
+		seenFromStore: c.TaskSeenEpoch != "" || c.TaskSeenRevision != 0,
 	}
 	m.idle = sync.NewCond(&m.mu)
 	switch c.State {
@@ -2098,6 +2104,22 @@ const turnStartedLine = "supervise: a turn started"
 // is over. It is pinned for the same reason, and is not to be reworded or extended at its call
 // site either — an operator counts the two against each other.
 const turnEndedLine = "supervise: a turn ended"
+
+// processDiedLine is a death of the claim's process (died), at Warn, with its incarnation and
+// what the runtime observed; agentRegisteredLine is the registration of the agent a new process
+// runs (register), at Info, with the claim's generation and the session. Both are pinned for the
+// reason the turn lines are: operators and the e2e checks search for the death by its words, and
+// the cost reading stops R5's first-wait clock at a death and starts it again at the next
+// registration (ReadTaskCost).
+const (
+	processDiedLine     = "supervise: process died"
+	agentRegisteredLine = "supervise: an agent registered"
+)
+
+// DaemonStartedLine is the daemon's boot line, which internal/daemon writes once the daemon has
+// started (with no claim: the start is every claim's). It is pinned here, beside the lines it is
+// read with, because the cost reading stops every claim's first-wait clock at it (ReadTaskCost).
+const DaemonStartedLine = "legion daemon started"
 
 // logTurn writes one of the two turn lines at Info, with the claim's generation and, where the
 // turn is a task's, that task's number (task). The claim is already an attribute of the
@@ -2795,7 +2817,7 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 // two apart. The one other place the stop is sent is the suspension that lands over a process a
 // report found gone, for a death no judgement here reached (suspendOverADeadProcess).
 func (m *Machine) died(ctx context.Context, observation runtime.Observation) error {
-	m.log.Warn("supervise: process died", "incarnation", m.claim.Locator.Incarnation, "observed", string(observation.Kind),
+	m.log.Warn(processDiedLine, "incarnation", m.claim.Locator.Incarnation, "observed", string(observation.Kind),
 		"detail", observation.Detail, "chargedBefore", m.claim.DeathCharged)
 	m.claim.LastDeathCause = deathCause(observation)
 	ended := endDied(m.claim.LastDeathCause)
@@ -3078,7 +3100,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.askFirst = false
 	m.held = nil
 	m.staleRelaunch = nil
-	m.turnsTask, m.reportedAhead, m.retaken, m.failedTake = 0, 0, 0, 0
+	m.turnsTask, m.reportedAhead, m.rewrite = 0, 0, valueRewrite{}
 	m.cutTurnOf = ""
 	m.compacting, m.lostCompaction = nil, nil
 	m.processGone, m.goneOutOfMemory, m.goneCause, m.claim.DeathCharged = false, false, "", false

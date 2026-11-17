@@ -117,32 +117,47 @@ So each figure that names a task names its claim too.
   A worker can send a take again when it did not get the answer.
   The daemon answers that take again, with `repeat` set to `true`, and the command does not count it.
 
-- `numbers owed that no take reached within the first bound` counts each time that the daemon owed a worker a task and no take of the task came within the first bound, `worker_take_timeout_seconds`.
-  Below it, one line gives each such task with its claim: when the daemon owed the task, when the bound passed, and what came after.
+- `numbers owed that no take reached within the first bound` counts each time that the daemon owed a worker a task and the worker did not take the task within the first bound, `worker_take_timeout_seconds`, of the daemon's first wait.
+  Below it, one line gives each such task with its claim: when the clock of the task last started, when the bound passed, and what came after.
   This is a stranded task, which the design of task delivery forbids.
+  The third verdict fails for each of these tasks too.
   The production check of task delivery, check c9, reads this figure as **zero**.
 
-  - The daemon owes a task from the time that it writes the task, and again from each take-back of the task.
-    A new write of a task that the daemon owes already does not start the count again.
+  - The daemon owes a task from the time that it writes the task, unless a take of the task that the daemon accepted still stands.
+    The daemon stops owing the task when it accepts a take of the task, when it answers a take `dropped`, when the task finishes, when its value is deleted, and when the daemon writes a newer task to the claim.
 
-  - A take reached the task when the worker asked for the task and the daemon answered, whether it accepted the take, refused it because of a hold, or dropped the task.
-    After a refusal, the daemon owes the task again from the write that it makes when the hold ends.
+  - The clock of the task runs only during the daemon's first wait: the time in which the worker has seen the task and can take it.
+    The clock starts at the line `supervise: a task value was reported seen` for the latest value that the daemon wrote for the task.
+    A new write of the task stops the clock until the worker reports the new value seen.
 
-  - The daemon stops owing the task when a take of it is accepted, when the task finishes, when its value is deleted, and when the daemon writes a newer task to the claim.
+  - A turn of the worker, `supervise: a turn started`, stops the clock.
+    The end of that turn, `supervise: a turn ended`, starts the clock again, and the bound starts again from zero.
+    A take-back of the task, `supervise: a task was taken back`, also ends the turn of the claim.
 
-  - The first bound counts only while the worker is not in a turn, because a worker takes a task only when it is idle.
-    If a turn was running when the daemon owed the task, the bound starts at the end of that turn.
-    If a turn starts before the bound passes, the bound starts again, from zero, at the end of that turn.
+  - A take that the daemon answered `refused` stops the clock until the daemon writes the task again, for example when the hold ends.
+    The clock then starts again at the next report that the worker saw the task.
+    A take that the daemon could not decide or record (`supervise: a take could not be decided or recorded; …`) and a take-back of the task stop the clock in the same way.
 
-  - A task whose first bound ends at `<to>` or later is not listed, because the window does not show whether a take came in time.
+  - The death of the worker's process, `supervise: process died`, stops the clock until the next registration of the worker's agent, `supervise: an agent registered`.
+
+  - A start of the daemon, `legion daemon started`, stops the clock as of the line before it, until the worker's next act in the log: a report that it saw the task, a take, a turn, or a registration.
+    A daemon that starts with a report of a seen task from its database writes the task again at the first bound, and charges nobody.
+    So a clock whose bound ends at a new write of the task has not passed the bound.
+
+  - A task whose clock has not passed the bound at `<to>` is not listed, because the window does not show whether a take came in time.
 
   - A task can be listed more than one time: one time for each time that the daemon owed it.
 
-  - The log has no line for the time that a new process of the worker needs to start after a release, a suspension or a relaunch, or for the time of a compaction.
-    The figure counts that time in the bound, so it can list a task that no worker could take in time.
+  - The figure can count too many tasks.
+    The log has no line for the time that a new process of the worker needs to start after a release, a suspension or a relaunch, for the time of a compaction, or for a hold that stands while the worker asks for nothing.
+    A turn that started before the first line of the window has no start line in the window.
+    The clock counts all of that time, so the figure can list a task that no worker could take in time.
+    To read a claim that was in a long turn, start the window before that turn started.
 
-  - When the daemon stops a process during a turn and takes back no task, the log has no line for the end of that turn.
-    The figure then counts only from the next turn line of that claim, so it can miss a task.
+  - The figure can also miss a task.
+    When the daemon stops a process during a turn for a reason other than a death, and takes back no task, the log has no line for the end of that turn.
+    The clock then starts again only at the end of the next turn of that claim, or at its next registration.
+    The shim's hello has no line in the log, so after a start of the daemon the clock starts again only at the worker's next act that the log shows.
 
 - `numbers finished, by what finished each` is the number of tasks that finished.
 
@@ -176,6 +191,7 @@ So each figure that names a task names its claim too.
      The daemon owes a task one time when it writes the task.
      Each take-back of the task opens one more time owed: the daemon writes `supervise: a task was taken back`.
      The verdict fails for a task taken more times than the daemon owed it.
+     It also fails for each time in `numbers owed that no take reached within the first bound`, because the daemon owed that task and no take came in time.
 
 ## An example
 
@@ -191,27 +207,28 @@ legion task-cost --from 2026-11-14T09:00:00Z --to 2026-11-14T10:00:00Z < package
 
 ```text
 window: 2026-11-14T09:00:00Z to 2026-11-14T10:00:00Z, every claim, first bound 5m0s
-daemon lines in the window: 41, the first at 2026-11-14T09:00:05.000Z, the last at 2026-11-14T09:55:30.000Z
-turns started: 5 (by a task number 4, with no cause 1)
-turns ended: 4 (by a task number 3, with no cause 1)
+daemon lines in the window: 57, the first at 2026-11-14T09:00:05.000Z, the last at 2026-11-14T09:55:30.000Z
+turns started: 7 (by a task number 5, with no cause 2)
+turns ended: 6 (by a task number 4, with no cause 2)
 turns each number took:
   legion-infra-infra-2811-implementer task 1: 1
   legion-infra-infra-2811-implementer task 2: 1
+  legion-infra-infra-2811-reviewer task 1: 1
   legion-infra-infra-2811-tester task 4: 1
   legion-infra-infra-2811-tester task 5: 1
-numbers written by origin: notice 1, phase-start 2, silence 1, wake 1 (5 in all)
+numbers written by origin: notice 1, operator 1, phase-start 2, silence 1, wake 1 (6 in all)
 numbers written to a claim whose phase waited, by origin: notice 1, silence 1, wake 1 (3 in all)
 silence repair (origin silence), counted apart from resume: numbers written 1, to a claim whose phase waited 1
-numbers taken: 4
-numbers owed that no take reached within the first bound: 2
-  legion-infra-infra-2811-implementer task 2: owed 2026-11-14T09:30:00.000Z, the bound passed 2026-11-14T09:35:00.000Z, taken 2026-11-14T09:35:20.000Z
-  legion-infra-infra-2811-implementer task 3: owed 2026-11-14T09:45:00.000Z, the bound passed 2026-11-14T09:50:00.000Z, still owed at the window's end
-numbers finished, by what finished each: end-frame 1, report 2 (3 in all)
+numbers taken: 5
+numbers owed that no take reached within the first bound: 1
+  legion-infra-infra-2811-implementer task 2: the clock started 2026-11-14T09:30:00.000Z, the bound passed 2026-11-14T09:35:00.000Z, taken 2026-11-14T09:35:20.000Z
+numbers finished, by what finished each: end-frame 1, report 3 (4 in all)
 charges by wait: take 1, turn-start 1 (2 in all)
 retirements: 0
 verdict: no charge of a worker whose turn began within the second bound after its take: pass
 verdict: no write of origin resume to a claim that finished its last task in its session: pass
-verdict: each number taken once for each time the record owed it: pass
+verdict: each number taken once for each time the record owed it: fail
+  legion-infra-infra-2811-implementer task 2: owed, and no take within the first bound, which passed 2026-11-14T09:35:00.000Z
 ```
 
 The sample shows these points:
@@ -219,7 +236,7 @@ The sample shows these points:
 - The sample holds a line before `<from>` and a line at `<to>`.
   The command counts neither of them.
 
-- The tester took task 4 two times, and the third verdict passes.
+- The tester took task 4 two times, and the third verdict does not fail for task 4.
   No turn started within the second bound, so the daemon charged the tester and took the task back.
   The take-back opened a second time owed.
 
@@ -227,19 +244,23 @@ The sample shows these points:
   The command does not count that take.
 
 - The daemon refused the first take of task 4 because of a hold.
-  That take reached task 4, so task 4 is not in the figure of the numbers owed.
+  The refusal stopped the clock of task 4 until the daemon wrote task 4 again when the hold ended.
+  The tester took task 4 one second after it saw that write, so task 4 is not in the figure of the numbers owed.
+
+- The reviewer saw task 1, and then ran a turn of its own for nearly eight minutes before it took task 1.
+  The turn stopped the clock, so the figure does not count task 1, although the take came more than a first bound after the reviewer saw the task.
 
 - The silence repair wrote task 2 to the implementer, which had finished task 1 in its session.
   The waited figure counts that task under `silence`, and the second verdict passes.
 
-- The implementer took task 2 twenty seconds after its first bound passed, and the daemon charged the implementer for it.
-  The figure of the numbers owed lists task 2, with the time of that take.
+- The implementer saw task 2 when the daemon wrote it, and took task 2 twenty seconds after its first bound passed.
+  The daemon charged the implementer for it.
+  The figure of the numbers owed lists task 2, with the time of that take, and the third verdict fails for task 2.
 
 - The daemon wrote task 3, a notice, to the implementer after the implementer finished task 2.
   The waited figure counts task 3 under `notice`.
   Nobody reported seeing task 3, so the daemon wrote it again at each first bound and charged nobody.
-  The daemon owed task 3 from its first write, and no take came.
-  So the figure of the numbers owed lists task 3 as still owed at the end of the window.
+  The clock of task 3 never started, so the figure does not count it: the relay failed, not the worker.
 
 This command reads one claim of the sample:
 
@@ -249,7 +270,7 @@ legion task-cost --from 2026-11-14T09:00:00Z --to 2026-11-14T10:00:00Z --claim l
 
 ```text
 window: 2026-11-14T09:00:00Z to 2026-11-14T10:00:00Z, claim legion-infra-infra-2811-implementer, first bound 5m0s
-daemon lines in the window: 22, the first at 2026-11-14T09:00:05.000Z, the last at 2026-11-14T09:55:00.000Z
+daemon lines in the window: 24, the first at 2026-11-14T09:00:05.000Z, the last at 2026-11-14T09:55:00.000Z
 turns started: 3 (by a task number 2, with no cause 1)
 turns ended: 3 (by a task number 2, with no cause 1)
 turns each number took:
@@ -259,13 +280,13 @@ numbers written by origin: notice 1, phase-start 1, silence 1 (3 in all)
 numbers written to a claim whose phase waited, by origin: notice 1, silence 1 (2 in all)
 silence repair (origin silence), counted apart from resume: numbers written 1, to a claim whose phase waited 1
 numbers taken: 2
-numbers owed that no take reached within the first bound: 2
-  legion-infra-infra-2811-implementer task 2: owed 2026-11-14T09:30:00.000Z, the bound passed 2026-11-14T09:35:00.000Z, taken 2026-11-14T09:35:20.000Z
-  legion-infra-infra-2811-implementer task 3: owed 2026-11-14T09:45:00.000Z, the bound passed 2026-11-14T09:50:00.000Z, still owed at the window's end
+numbers owed that no take reached within the first bound: 1
+  legion-infra-infra-2811-implementer task 2: the clock started 2026-11-14T09:30:00.000Z, the bound passed 2026-11-14T09:35:00.000Z, taken 2026-11-14T09:35:20.000Z
 numbers finished, by what finished each: end-frame 1, report 1 (2 in all)
 charges by wait: take 1 (1 in all)
 retirements: 0
 verdict: no charge of a worker whose turn began within the second bound after its take: pass
 verdict: no write of origin resume to a claim that finished its last task in its session: pass
-verdict: each number taken once for each time the record owed it: pass
+verdict: each number taken once for each time the record owed it: fail
+  legion-infra-infra-2811-implementer task 2: owed, and no take within the first bound, which passed 2026-11-14T09:35:00.000Z
 ```

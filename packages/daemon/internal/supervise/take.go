@@ -237,6 +237,9 @@ type TakeAnswer struct {
 // reworded or extended at its call site would answer that reading with a part of the answer. What
 // differs between the call sites belongs in the attributes, never in the message:
 //
+//   - taskSeenLine is every seen report that moves the revision the claim records seen (taskSeen):
+//     the number and that revision, which is where the cost reading's clock of R5's first wait
+//     starts;
 //   - takeAnsweredLine is every answer to a take: the number, the revision it was asked at, the
 //     outcome, the hold a refusal names, and whether it repeats an accepted answer from the record
 //     (answerAgain), which a reading counts as no second take;
@@ -248,6 +251,7 @@ type TakeAnswer struct {
 //     is what opens a new time the record owes the number;
 //   - taskFinishedLine is every finish of a task (finishTask), naming what finished it.
 const (
+	taskSeenLine     = "supervise: a task value was reported seen"
 	takeAnsweredLine = "supervise: a take was answered"
 	valueWrittenLine = "supervise: a task value was written"
 	valueDeletedLine = "supervise: a task value was deleted"
@@ -255,12 +259,19 @@ const (
 	taskFinishedLine = "supervise: a task was finished"
 )
 
+// takeUndecidedLine is a take the daemon failed to decide or record (undecided), at Warn, with the
+// number, the revision it was asked at and the failure. It is pinned as the lines above are: an
+// operator reads it for a take that had no answer, and the cost reading stops the first wait's
+// clock at it, as at a refused take.
+const takeUndecidedLine = "supervise: a take could not be decided or recorded; it is refused at its revision, and the value is written again under its number once the task is free to take"
+
 // The causes a write of the claim's value is logged under (valueWrittenLine), beside TaskValueBoot
 // and TaskValueRepair: the task's first queue (queue), the end of a hold that refused a take
 // (offerPending), a task taken back in this same process that can be taken again (offerPending,
-// Machine.retaken), a task whose take this same process failed to decide or record, once the task
-// is free to take again (offerPending, Machine.failedTake), and the first bound passing over a
-// value nobody reported seeing (takeBoundOver).
+// Machine.rewrite), a task whose take this same process failed to decide or record, once the task
+// is free to take again (offerPending, Machine.rewrite), and the first bound passing over a value
+// nobody reported seeing, or one whose seen report this daemon read from the store
+// (takeBoundOver).
 const (
 	TaskValueQueued     = "queued"
 	TaskValueHoldEnded  = "hold-ended"
@@ -484,8 +495,13 @@ func (m *Machine) refuseTake(ctx context.Context, take RequestTake, hold string)
 // of a number the claim no longer holds pending and untaken, nor one at a revision the worker has
 // since replaced (recordTake). A refusal records itself before its write (refuseTake), so a
 // failure there leaves the take refused already, and the hold's end writes the value. The
-// machine remembers the number (Machine.failedTake), so the write is logged under the cause it is
+// machine remembers the number (Machine.rewrite), so the write is logged under the cause it is
 // (TaskValueTakeFailed).
+//
+// The refusal is written with the claim, unless a claim write is owed already: the failed write
+// that owes it — the accept's, or takeInTurn's — is made again from memory, refusal included, by
+// this decision's own settle (accept leaves the delivery unsaved) or the next decision's repair,
+// so a write here would only wait out a second claim-write deadline under the issue's lock.
 func (m *Machine) undecided(ctx context.Context, request RequestTake, err error) error {
 	if err == nil || m.decided.answer.Outcome != "" || m.decided.adopt != nil {
 		return err
@@ -494,9 +510,11 @@ func (m *Machine) undecided(ctx context.Context, request RequestTake, err error)
 	if p == nil || p.Number != request.Number || p.taken() || !m.claim.recordTake(request, TakeRefused) {
 		return err
 	}
-	m.failedTake = p.Number
-	m.log.Warn("supervise: a take could not be decided or recorded; it is refused at its revision, and the value is written again under its number once the task is free to take",
-		"task", p.Number, "revision", request.Revision, "error", err)
+	m.rewrite = valueRewrite{number: p.Number, cause: TaskValueTakeFailed}
+	m.log.Warn(takeUndecidedLine, "task", p.Number, "revision", request.Revision, "error", err)
+	if m.owedWrite != nil {
+		return err
+	}
 	return errors.Join(err, m.persist(ctx))
 }
 
@@ -768,13 +786,12 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 	}
 	c.TaskTaken = taken.Number
 	c.recordTake(request, TakeAccepted)
-	if err := m.putClaimAndDelivery(ctx, c, taken); err != nil {
-		m.unsaved = true
-		return m.owes("PutClaimAndDelivery", err)
+	if err := m.saved(m.owes("PutClaimAndDelivery", m.putClaimAndDelivery(ctx, c, taken))); err != nil {
+		return err
 	}
 	*p = taken
 	c.Pending = p
-	m.claim, m.unsaved = c, false
+	m.claim = c
 	m.settleOwedWrite("PutClaimAndDelivery")
 	if toldAbandoned {
 		m.log.Info("supervise: an accepted take told the agent of the session its claim abandoned",
@@ -935,10 +952,11 @@ func (m *Machine) claimHold() string {
 // asked at it. A write the bucket refused is made here at the next chance, whatever the worker
 // asked (valueUnwritten).
 //
-// The write's cause is TaskValueTakeFailed where this same process failed to decide or record
-// the take at that revision (Machine.failedTake), TaskValueRetake where the task was taken back
-// in this same process and can be taken again now — after a provider error's wait, a compaction,
-// the second wait (Machine.retaken) — and TaskValueHoldEnded for every other write here.
+// The write's cause is the one the latest event that left one names (Machine.rewrite):
+// TaskValueTakeFailed where this same process failed to decide or record the take at that
+// revision, TaskValueRetake where the task was taken back in this same process and can be taken
+// again now — after a provider error's wait, a compaction, the second wait — and
+// TaskValueHoldEnded for every other write here.
 func (m *Machine) offerPending(ctx context.Context) error {
 	p := m.claim.Pending
 	if p == nil || p.taken() {
@@ -954,13 +972,17 @@ func (m *Machine) offerPending(ctx context.Context) error {
 		return err
 	}
 	cause := TaskValueHoldEnded
-	switch p.Number {
-	case m.failedTake:
-		cause = TaskValueTakeFailed
-	case m.retaken:
-		cause = TaskValueRetake
+	if r := m.rewrite; r.number == p.Number && r.cause != "" {
+		cause = r.cause
 	}
 	return m.writeValue(ctx, cause)
+}
+
+// valueRewrite is a pending task whose next value write at a hold's end is logged under a cause of
+// its own (Machine.rewrite): the task's number, and the cause.
+type valueRewrite struct {
+	number uint64
+	cause  string
 }
 
 // writeValue writes the claim's value under the pending task's number and records the write as
@@ -1001,7 +1023,7 @@ func (m *Machine) putValue(ctx context.Context, d Delivery, cause string) (strin
 			"task", d.Number, "origin", d.Origin, "cause", cause, "error", err)
 		return "", 0, false
 	}
-	m.valueUnwritten, m.valueWrittenAt, m.retaken, m.failedTake = false, m.deps.Clock.Now(), 0, 0
+	m.valueUnwritten, m.valueWrittenAt, m.rewrite, m.seenFromStore = false, m.deps.Clock.Now(), valueRewrite{}, false
 	m.log.Info(valueWrittenLine, "task", d.Number, "origin", d.Origin, "finished", finished,
 		"session", m.claim.Session, "epoch", epoch, "revision", revision, "cause", cause)
 	return epoch, revision, true
@@ -1045,7 +1067,9 @@ func (m *Machine) dropPending(ctx context.Context, cause string) error {
 
 // taskSeen records the newest revision of the claim's value its worker reports seeing. A revision
 // of its epoch it had already recorded, or an older one, changes nothing: the take state is the
-// newest revision's (Claim.TaskTakeState), and a new revision has had no take yet.
+// newest revision's (Claim.TaskTakeState), and a new revision has had no take yet. A report that
+// moves the revision is logged (taskSeenLine), and is one this process received, so the first
+// wait on it charges as any does (Machine.seenFromStore).
 func taskSeen(m *Machine, ctx context.Context, ev Event) error {
 	seen := ev.(RequestTaskSeen)
 	c := &m.claim
@@ -1053,7 +1077,8 @@ func taskSeen(m *Machine, ctx context.Context, ev Event) error {
 		return nil
 	}
 	c.TaskSeenEpoch, c.TaskSeenRevision, c.TaskTakeState = seen.Epoch, seen.Revision, ""
-	m.log.Debug("supervise: a task value was seen", "task", seen.Number, "epoch", seen.Epoch, "revision", seen.Revision)
+	m.seenFromStore = false
+	m.log.Info(taskSeenLine, "task", seen.Number, "revision", seen.Revision)
 	return m.persist(ctx)
 }
 
@@ -1130,7 +1155,7 @@ func (c Claim) sawLatestWrite() bool {
 // whatever note the cause left (Delivery.message); the end of the task's turn is no longer
 // awaited. The take state the claim recorded stays, which is how the end of the cause's hold
 // knows the worker asked at this revision and writes the value again (offerPending), and the
-// machine remembers the number (Machine.retaken), so that write is logged as the retake it is.
+// machine remembers the number (Machine.rewrite), so that write is logged as the retake it is.
 //
 // What the take told and, for a take whose turn had not started, the handshake's confirmation go
 // back with it (giveBackTake): a provider error's turn started on the take's text, and a
@@ -1143,7 +1168,7 @@ func (m *Machine) takeBack(ctx context.Context, cause string) error {
 	m.disarm(TimerFinish)
 	p := m.claim.Pending
 	claimMoved := m.clearTake(p, cause)
-	m.retaken = p.Number
+	m.rewrite = valueRewrite{number: p.Number, cause: TaskValueRetake}
 	if claimMoved {
 		return m.putClaimAndPendingOwed(ctx)
 	}

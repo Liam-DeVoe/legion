@@ -40,40 +40,51 @@ import (
 //     are an origin of their own, read apart from a resume's;
 //   - the numbers taken, from the accepted answers to a take (takeAnsweredLine), less an answer
 //     that repeats one from the record (repeat), which applied nothing;
-//   - the numbers owed that no take reached within the first bound (R5's first wait, whose bound
-//     is worker_take_timeout_seconds), each time owed listed with its claim: R5's stranded task,
-//     which check c9 reads as none (the rule is the two paragraphs below this list);
+//   - the numbers no take reached within the first bound of R5's first wait (TaskCostArgs.Take),
+//     each time listed with its claim: R5's stranded task, which check c9 reads as none, and which
+//     fails the third verdict below as well (the rule is the paragraphs below this list);
 //   - the numbers finished, from taskFinishedLine, by what finished each;
 //   - the charges, from the two charge lines (promptFailureLine, promptRetiredLine), by wait, and
 //     the retirements among them.
 //
-// A number becomes owed at a value write of it (valueWrittenLine) and at a take-back of it
-// (takenBackLine), the two moments the third verdict below counts it owed at, unless a time owed
-// of it is open already or an accepted take of it stands: a value written again under its number,
-// as the daemon writes a value nobody reported seeing once per bound, is owed from its first
-// write. A take answered for the number, whatever the answer — accepted, refused with a hold, or
-// dropped — reaches it and ends that time owed, since the worker asked; a refused number is owed
-// again from the write the hold's end makes. A time owed ends, too, at the number's finish
-// (taskFinishedLine), at a deletion of its value (valueDeletedLine), which a drop makes, and at a
-// write of a newer number to the claim, which replaces it.
+// A number is owed from a value write of it (valueWrittenLine), unless an accepted take of it
+// stands, until a take of it is accepted or dropped (takeAnsweredLine), it finishes
+// (taskFinishedLine), its value is deleted (valueDeletedLine), which a drop makes, or a newer
+// number is written to its claim, which replaces it. While it is owed, its clock counts only time
+// in which R5's first wait runs, so a worker the daemon would not charge is not counted:
 //
-// The first bound counts only while the claim is in no turn, since R5's first wait waits on an
-// idle worker: from the moment the number became owed or, when a turn of the claim stood then, from
-// that turn's end. A turn that starts before the bound passed stops the count, and the bound counts
-// whole again from the end of any turn of the claim, one that began before the window included. A
-// take-back ends the turn its claim stood in: it is that turn's end or the let-go of its process,
-// which writes no turn end. A time owed is listed when its bound passed before a take reached it
-// and before it ended; one whose bound ends at or after To is not, since the window does not show
-// whether a take came in time. The daemon writes no line that always carries the bound — only a
-// charge of the first wait and the write of a value nobody reported seeing name it — so the
-// command is told it (TaskCostArgs.Take).
+//   - the clock starts at the line that reports the number's latest written revision seen
+//     (taskSeenLine), and a newer revision of it written stops it until that one is reported seen;
+//   - a turn's start stops it, and that turn's end starts it again, the bound whole, a turn that
+//     began before the window included. A take-back (takenBackLine) ends the turn its claim stood
+//     in, since it is that turn's end or the let-go of its process, which writes no turn end;
+//   - a take answered refused, a take the daemon could not decide or record (takeUndecidedLine),
+//     and a take-back each stop it until the next value write of the number, whose seen report
+//     starts it again;
+//   - a death of the claim's process (processDiedLine) ends its turn and stops the clock until
+//     the claim's next registration (agentRegisteredLine);
+//   - a daemon's start (DaemonStartedLine) stops every clock as of the line before it, since
+//     nothing says the daemon before it lived any longer, until the claim's worker next acts in
+//     the log: a seen report, a take, a turn line or a registration.
 //
-// What this figure cannot see, it counts as time the worker could take in: no line marks when a
-// process the daemon started again after a release, a suspension or a relaunch is ready, nor when
-// a compaction that took a task back ends, so a slow start or a long compaction can list a number
-// no worker could have taken. And a let-go that cuts a turn off with no take-back writes no turn
-// end, so a number owed in that turn is counted only from the claim's next turn line, and can go
-// unlisted.
+// A clock that runs a whole bound has passed it, and that time owed is listed, however it ends
+// (a late take included). The bound is judged at every line of the claim the reading decodes but a
+// value write of the number itself: the first bound's own end writes the number again after a
+// daemon's start, over a seen report that daemon read from the store (takeBoundOver), so a clock
+// whose bound ends at a write of its number has not passed it. A time owed whose bound has not
+// passed at To is not listed, since the window does not show whether a take came in time. The
+// daemon writes no line that always carries the bound — only a charge of the first wait and the
+// write of a value nobody reported seeing name it — so the command is told it (TaskCostArgs.Take).
+//
+// What this figure cannot see can count a number too many or too few. Too many: no line marks
+// when a process the daemon started again after a release, a suspension or a relaunch is ready,
+// when a compaction that took a task back ends, or when a hold stands over a task its worker asked
+// nothing of, and a turn that began before the window's first line and is still running shows no
+// start, so a clock that runs through any of them can list a number no worker could have taken.
+// Too few: a let-go other than a death that cuts a turn off with no take-back writes no turn end,
+// so a clock stopped by that turn starts again only at the end of the claim's next turn or at its
+// next registration; and the shim's reconnect hello writes no line, so after a daemon's start a
+// clock starts again only at the worker's next act the log shows.
 //
 // And R9's three verdicts, each of which lists what fails it:
 //
@@ -84,11 +95,13 @@ import (
 //   - no write of origin resume to a claim that had finished its last task in its session (a value
 //     write of origin resume whose finished is true); a silence repair's write is not one;
 //   - each number taken once for each time the record owed it: a number is owed once when it is
-//     written, and once more at each take-back of it (takenBackLine), and no number may be taken
-//     more times in the window than it was owed.
+//     written, and once more at each take-back of it (takenBackLine); no number may be taken
+//     more times in the window than it was owed, and none may be owed with no take within the
+//     first bound (the figure above, which reads a time owed that no take reached as taken zero
+//     times).
 //
-// Every figure is a lower bound, apart from what the figure of the numbers no take reached cannot
-// see (above): the log reaches back only as far as the node kept the daemon container's log, and a
+// Every figure is a lower bound but the numbers no take reached, which can also count too many
+// (above): the log reaches back only as far as the node kept the daemon container's log, and a
 // take, a write or a turn that fell before the window's first line is not seen.
 
 // TaskCostArgs is what `legion task-cost` is asked: the window of the daemon's log to read, From
@@ -167,17 +180,18 @@ type TaskCost struct {
 	// by what finished each.
 	Taken, Finished int
 	FinishedBy      map[string]int
-	// Unreached is each time a number was owed and no take reached it within the first bound
-	// (Args.Take), by claim, number and time owed: what it was owed from, when the bound passed,
-	// and how the time owed ended.
+	// Unreached is each time a number was owed and its first-wait clock passed the first bound
+	// (Args.Take) with no take, by claim, number and when the bound passed: when the clock last
+	// started, when the bound passed, and how the time owed ended.
 	Unreached []string
 	// ChargesByWait is how many charges were made, by wait ("none" for a line that names none),
 	// and Retirements how many of them retired the process.
 	ChargesByWait map[string]int
 	Retirements   int
-	// ChargedWithinBound, ResumeToFinished and TakenPastOwed are what fails each of R9's three
-	// verdicts, in that order: empty for a verdict that passes.
-	ChargedWithinBound, ResumeToFinished, TakenPastOwed []string
+	// ChargedWithinBound, ResumeToFinished and TakenNotOncePerOwed are what fails each of R9's
+	// three verdicts, in that order: empty for a verdict that passes. The third lists each number
+	// taken more times than it was owed, and then each time owed in Unreached.
+	ChargedWithinBound, ResumeToFinished, TakenNotOncePerOwed []string
 }
 
 // TurnCauses is a count of turns by cause: a task number, or none.
@@ -200,6 +214,7 @@ type costLine struct {
 	Msg      string      `json:"msg"`
 	Task     *uint64     `json:"task"`
 	Sequence *uint64     `json:"sequence"`
+	Revision uint64      `json:"revision"`
 	Origin   string      `json:"origin"`
 	Finished bool        `json:"finished"`
 	Outcome  TakeOutcome `json:"outcome"`
@@ -209,11 +224,21 @@ type costLine struct {
 	Bound    int64       `json:"bound"`
 }
 
-// costedLines are the messages the reading decodes whole.
+// costedLines are the messages of a claim the reading decodes whole. A daemon's start
+// (DaemonStartedLine) is read too, from its message alone, and it names no claim.
 var costedLines = map[string]bool{
-	turnStartedLine: true, turnEndedLine: true, valueWrittenLine: true, valueDeletedLine: true,
-	takeAnsweredLine: true, takenBackLine: true, taskFinishedLine: true, promptFailureLine: true,
+	turnStartedLine: true, turnEndedLine: true, valueWrittenLine: true, taskSeenLine: true,
+	valueDeletedLine: true, takeAnsweredLine: true, takeUndecidedLine: true, takenBackLine: true,
+	taskFinishedLine: true, processDiedLine: true, agentRegisteredLine: true, promptFailureLine: true,
 	promptRetiredLine: true,
+}
+
+// workerActs are the messages of the worker's own acts the log shows, which start a clock again
+// after a daemon's start (claimClock.awaitsAct): its seen report, its take, its turn, its
+// registration.
+var workerActs = map[string]bool{
+	taskSeenLine: true, takeAnsweredLine: true, takeUndecidedLine: true, turnStartedLine: true,
+	turnEndedLine: true, agentRegisteredLine: true,
 }
 
 // costKey is one task: a number of one claim.
@@ -238,14 +263,33 @@ type costCharge struct {
 	take  openTake
 }
 
-// owedNumber is a number the record owes a claim and that no take has reached since it became
-// owed (the rule is the reading's doc comment above): since when, and from when its first bound
-// counts, which is zero while a turn of the claim stands. passed is when that bound passed with no
-// take of it, zero while it has not, and ended is how the time owed ended.
+// owedNumber is a number the record owes a claim, with the clock of R5's first wait on it (the
+// rule is the reading's doc comment above): the latest revision written of it and whether that
+// revision was reported seen; whether a take refused or undecided, or a take-back, stopped the
+// clock until the number's next write; when the clock last started, zero while it stands still;
+// when its bound passed, zero while it has not; and, once the time owed ended, how.
 type owedNumber struct {
-	key                 costKey
-	since, from, passed time.Time
-	ended               string
+	key          costKey
+	revision     uint64
+	seen         bool
+	stopped      bool
+	from, passed time.Time
+	ended        string
+}
+
+// claimClock is what the reading knows of one claim's first wait: whether its turn lines show a
+// turn in progress, whether a daemon's start waits on its worker's next act, whether a death
+// waits on its next registration, and the number it owes, nil for none.
+type claimClock struct {
+	inTurn, awaitsAct, awaitsRegistration bool
+	owed                                  *owedNumber
+}
+
+// runs is whether the claim's clock runs now: it owes a number whose latest revision was
+// reported seen and whose bound has not passed, and nothing stops the clock.
+func (k *claimClock) runs() bool {
+	o := k.owed
+	return o != nil && o.seen && !o.stopped && o.passed.IsZero() && !k.inTurn && !k.awaitsAct && !k.awaitsRegistration
 }
 
 // costReading is a reading under way.
@@ -261,11 +305,12 @@ type costReading struct {
 	open       map[string]openTake
 	turnStarts map[string][]time.Time
 	charges    []costCharge
-	// inTurn is each claim a turn stands for; owing each claim's owed number, and unreached each
-	// time owed whose first bound passed before a take reached it, once that time owed ended.
-	inTurn    map[string]bool
-	owing     map[string]*owedNumber
+	// clocks is each claim's first wait, unreached each time owed whose clock passed the bound,
+	// once that time owed ended, and alive the time of the last line of any claim in the window,
+	// which is the last the reading knows a daemon to have lived.
+	clocks    map[string]*claimClock
 	unreached []owedNumber
+	alive     time.Time
 }
 
 // ReadTaskCost reads the daemon's JSON lines from r and answers what the window from args.From
@@ -281,7 +326,7 @@ func ReadTaskCost(r io.Reader, args TaskCostArgs) (TaskCost, error) {
 		turns: map[costKey]int{}, written: map[string]map[costKey]bool{}, waited: map[string]map[costKey]bool{},
 		taken: map[costKey]int{}, owed: map[costKey]int{}, finished: map[costKey]string{},
 		resume: map[costKey]time.Time{}, open: map[string]openTake{}, turnStarts: map[string][]time.Time{},
-		inTurn: map[string]bool{}, owing: map[string]*owedNumber{},
+		clocks: map[string]*claimClock{},
 	}
 	lines := bufio.NewReader(r)
 	for {
@@ -313,7 +358,14 @@ func (c *costReading) line(raw []byte) {
 	}
 	claim, _ := head.Claim.(string)
 	args := c.cost.Args
-	if head.Time.Before(args.From) || !head.Time.Before(args.To) || (args.Claim != "" && claim != args.Claim) {
+	if head.Time.Before(args.From) || !head.Time.Before(args.To) {
+		return
+	}
+	if head.Msg == DaemonStartedLine {
+		c.daemonStarted()
+	}
+	c.alive = head.Time
+	if args.Claim != "" && claim != args.Claim {
 		return
 	}
 	if c.cost.Lines == 0 {
@@ -333,18 +385,32 @@ func (c *costReading) line(raw []byte) {
 
 // costed counts one line of the messages the reading decodes whole.
 func (c *costReading) costed(l costLine, claim string) {
+	if l.Msg == turnEndedLine && l.Sequence != nil {
+		// The turn-outcome report's line (turnoutcome.go): the report, not the turn's end.
+		return
+	}
 	var key costKey
 	if l.Task != nil {
 		key = costKey{claim: claim, number: *l.Task}
 	}
+	k := c.clocks[claim]
+	if k == nil {
+		k = &claimClock{}
+		c.clocks[claim] = k
+	}
+	// The bound is judged at every line of the claim but a write of the number its clock is on,
+	// which is the first bound's own end after a daemon's start (the reading's doc comment).
+	if o := k.owed; o == nil || l.Msg != valueWrittenLine || l.Task == nil || *l.Task != o.key.number {
+		c.boundPassed(k, l.Time)
+	}
+	if k.awaitsAct && workerActs[l.Msg] {
+		k.awaitsAct = false
+		c.restart(k, l.Time)
+	}
 	switch l.Msg {
 	case turnStartedLine:
 		c.turnStarts[claim] = append(c.turnStarts[claim], l.Time)
-		c.boundPassed(claim, l.Time)
-		c.inTurn[claim] = true
-		if owed := c.owing[claim]; owed != nil {
-			owed.from = time.Time{}
-		}
+		c.turnStarted(k)
 		if l.Task == nil {
 			c.cost.TurnsStarted.None++
 			return
@@ -352,16 +418,12 @@ func (c *costReading) costed(l costLine, claim string) {
 		c.cost.TurnsStarted.Task++
 		c.turns[key]++
 	case turnEndedLine:
-		switch {
-		case l.Sequence != nil:
-			// The turn-outcome report's line (turnoutcome.go): the report, not the turn's end.
-			return
-		case l.Task == nil:
+		if l.Task == nil {
 			c.cost.TurnsEnded.None++
-		default:
+		} else {
 			c.cost.TurnsEnded.Task++
 		}
-		c.turnEnded(claim, l.Time)
+		c.turnEnded(k, l.Time)
 	case valueWrittenLine:
 		if l.Task == nil {
 			return
@@ -379,26 +441,38 @@ func (c *costReading) costed(l costLine, claim string) {
 				c.resume[key] = l.Time
 			}
 		}
-		c.owe(claim, key.number, l.Time)
-	case valueDeletedLine:
-		if l.Task == nil {
-			return
+		c.owe(k, key, l.Revision, l.Time)
+	case taskSeenLine:
+		if o := k.owed; o != nil && l.Task != nil && *l.Task == o.key.number && l.Revision == o.revision {
+			o.seen = true
+			c.restart(k, l.Time)
 		}
-		c.endOwed(claim, key.number, l.Time, "its value deleted "+lineTime(l.Time))
+	case valueDeletedLine:
+		if l.Task != nil {
+			c.endOwed(k, key.number, l.Time, "its value deleted")
+		}
 	case takeAnsweredLine:
 		if l.Task == nil {
 			return
 		}
-		how := "taken " + lineTime(l.Time)
-		if l.Outcome != TakeOutcomeAccepted {
-			how = fmt.Sprintf("a take answered %s %s", l.Outcome, lineTime(l.Time))
-		}
-		c.endOwed(claim, key.number, l.Time, how)
-		if l.Outcome != TakeOutcomeAccepted || l.Repeat {
+		switch l.Outcome {
+		case TakeOutcomeRefused:
+			c.stop(k, key.number)
+			return
+		case TakeOutcomeAccepted:
+			c.endOwed(k, key.number, l.Time, "taken")
+		default:
+			c.endOwed(k, key.number, l.Time, "a take answered dropped")
 			return
 		}
-		c.taken[key]++
-		c.open[claim] = openTake{number: key.number, at: l.Time}
+		if !l.Repeat {
+			c.taken[key]++
+			c.open[claim] = openTake{number: key.number, at: l.Time}
+		}
+	case takeUndecidedLine:
+		if l.Task != nil {
+			c.stop(k, key.number)
+		}
 	case takenBackLine:
 		if l.Task == nil {
 			return
@@ -406,15 +480,24 @@ func (c *costReading) costed(l costLine, claim string) {
 		c.owed[key] = max(c.owed[key], 1) + 1
 		c.closeTake(claim, key.number)
 		// No turn outlives a take-back: it is the turn's end, or its process's let-go.
-		delete(c.inTurn, claim)
-		c.owe(claim, key.number, l.Time)
+		k.inTurn = false
+		c.stop(k, key.number)
 	case taskFinishedLine:
 		if l.Task == nil {
 			return
 		}
 		c.finished[key] = l.By
 		c.closeTake(claim, key.number)
-		c.endOwed(claim, key.number, l.Time, "finished "+lineTime(l.Time))
+		c.endOwed(k, key.number, l.Time, "finished")
+	case processDiedLine:
+		// The process and its turn are gone; the next process is the next registration's.
+		k.inTurn, k.awaitsRegistration = false, true
+		if o := k.owed; o != nil {
+			o.from = time.Time{}
+		}
+	case agentRegisteredLine:
+		k.inTurn, k.awaitsRegistration = false, false
+		c.restart(k, l.Time)
 	case promptFailureLine, promptRetiredLine:
 		wait := cmp.Or(l.Wait, "none")
 		c.cost.ChargesByWait[wait]++
@@ -433,62 +516,93 @@ func (c *costReading) closeTake(claim string, number uint64) {
 	}
 }
 
-// owe opens a time the record owes the claim number from at (the reading's doc comment says when),
-// unless the claim is owed that number already or an accepted take of it stands. An owed number
-// of another is replaced, which ends its time owed. The first bound counts from at, or from the
-// end of the turn of the claim that stands at it.
-func (c *costReading) owe(claim string, number uint64, at time.Time) {
-	if open, ok := c.open[claim]; ok && open.number == number {
+// owe is a write of key's number at revision, at at (the reading's doc comment says what it
+// owes). A write of the number the claim owes already is a newer revision of it: the clock stands
+// still until that revision is reported seen, and a refusal's stop ends. Otherwise the number the
+// claim owed, if any, is replaced, which ends its time owed, and key's number is owed from here,
+// unless an accepted take of it stands.
+func (c *costReading) owe(k *claimClock, key costKey, revision uint64, at time.Time) {
+	if o := k.owed; o != nil && o.key == key {
+		o.revision, o.seen, o.stopped, o.from = revision, false, false, time.Time{}
 		return
 	}
-	if owed := c.owing[claim]; owed != nil {
-		if owed.key.number == number {
-			return
+	if o := k.owed; o != nil {
+		c.endOwed(k, o.key.number, at, fmt.Sprintf("replaced by task %d", key.number))
+	}
+	if open, ok := c.open[key.claim]; ok && open.number == key.number {
+		return
+	}
+	k.owed = &owedNumber{key: key, revision: revision}
+}
+
+// boundPassed records that the claim's clock passed its bound before at, where it did. It is
+// asked at every line of the claim the reading decodes (costed), at a daemon's start, and at the
+// window's end.
+func (c *costReading) boundPassed(k *claimClock, at time.Time) {
+	o := k.owed
+	if o == nil || o.from.IsZero() || !o.passed.IsZero() {
+		return
+	}
+	if bound := o.from.Add(c.cost.Args.Take); at.After(bound) {
+		o.passed = bound
+	}
+}
+
+// restart starts the claim's clock from at, the bound whole, where nothing stops it.
+func (c *costReading) restart(k *claimClock, at time.Time) {
+	if k.runs() {
+		k.owed.from = at
+	}
+}
+
+// stop stops the clock of the claim's number until that number's next write (owe), if it is the
+// number the claim owes: a take refused or undecided at its revision, or a take-back of it.
+func (c *costReading) stop(k *claimClock, number uint64) {
+	if o := k.owed; o != nil && o.key.number == number {
+		o.stopped, o.from = true, time.Time{}
+	}
+}
+
+// turnStarted is the start of a turn of the claim, which stops its clock.
+func (c *costReading) turnStarted(k *claimClock) {
+	k.inTurn = true
+	if o := k.owed; o != nil {
+		o.from = time.Time{}
+	}
+}
+
+// turnEnded is the end of the claim's turn at at: its clock starts again from here, the bound
+// whole.
+func (c *costReading) turnEnded(k *claimClock, at time.Time) {
+	k.inTurn = false
+	c.restart(k, at)
+}
+
+// daemonStarted is a daemon's start: every clock stops as of the last line before it, and stands
+// still until its claim's worker next acts in the log (workerActs).
+func (c *costReading) daemonStarted() {
+	for _, k := range c.clocks {
+		c.boundPassed(k, c.alive)
+		k.awaitsAct = true
+		if o := k.owed; o != nil {
+			o.from = time.Time{}
 		}
-		c.endOwed(claim, owed.key.number, at, fmt.Sprintf("replaced by task %d %s", number, lineTime(at)))
 	}
-	owed := &owedNumber{key: costKey{claim: claim, number: number}, since: at}
-	if !c.inTurn[claim] {
-		owed.from = at
-	}
-	c.owing[claim] = owed
 }
 
-// boundPassed records that the first bound of the claim's owed number passed before at with no
-// take of it, where it did: at a turn's start, which stops the count, at the end of the time
-// owed, and at the window's end.
-func (c *costReading) boundPassed(claim string, at time.Time) {
-	owed := c.owing[claim]
-	if owed == nil || owed.from.IsZero() || !owed.passed.IsZero() {
+// endOwed ends at at, as how says, the time the claim was owed number, if it owes that number, and
+// keeps that time owed for the figure where its clock passed the bound. The line ending it has
+// judged the bound already (costed).
+func (c *costReading) endOwed(k *claimClock, number uint64, at time.Time, how string) {
+	o := k.owed
+	if o == nil || o.key.number != number {
 		return
 	}
-	if bound := owed.from.Add(c.cost.Args.Take); at.After(bound) {
-		owed.passed = bound
+	if !o.passed.IsZero() {
+		o.ended = how + " " + lineTime(at)
+		c.unreached = append(c.unreached, *o)
 	}
-}
-
-// turnEnded is the end of the claim's turn at at: the first bound of the claim's owed number
-// counts whole again from here, unless it passed already.
-func (c *costReading) turnEnded(claim string, at time.Time) {
-	delete(c.inTurn, claim)
-	if owed := c.owing[claim]; owed != nil && owed.passed.IsZero() {
-		owed.from = at
-	}
-}
-
-// endOwed ends at at, as how says, the time the claim was owed number, if it is owed that number,
-// and keeps that time owed for the figure where its first bound passed first.
-func (c *costReading) endOwed(claim string, number uint64, at time.Time, how string) {
-	owed := c.owing[claim]
-	if owed == nil || owed.key.number != number {
-		return
-	}
-	c.boundPassed(claim, at)
-	if !owed.passed.IsZero() {
-		owed.ended = how
-		c.unreached = append(c.unreached, *owed)
-	}
-	delete(c.owing, claim)
+	k.owed = nil
 }
 
 // mark records key under origin in sets.
@@ -515,17 +629,22 @@ func (c *costReading) done() TaskCost {
 	for _, by := range c.finished {
 		cost.FinishedBy[by]++
 	}
-	// A number still owed at the window's end is judged there: listed where its bound passed
-	// before To, and left out while it is still inside its bound.
-	for _, claim := range slices.Sorted(maps.Keys(c.owing)) {
-		c.endOwed(claim, c.owing[claim].key.number, c.cost.Args.To, "still owed at the window's end")
+	// A number still owed at the window's end is judged there: listed where its clock passed the
+	// bound before To, and left out while it has not. The list is sorted below, so the order the
+	// claims are read in here does not show.
+	for _, k := range c.clocks {
+		c.boundPassed(k, c.cost.Args.To)
+		if o := k.owed; o != nil && !o.passed.IsZero() {
+			o.ended = "still owed at the window's end"
+			c.unreached = append(c.unreached, *o)
+		}
 	}
 	slices.SortFunc(c.unreached, func(a, b owedNumber) int {
-		return cmp.Or(cmpKey(a.key, b.key), a.since.Compare(b.since))
+		return cmp.Or(cmpKey(a.key, b.key), a.passed.Compare(b.passed))
 	})
 	for _, owed := range c.unreached {
-		cost.Unreached = append(cost.Unreached, fmt.Sprintf("%s task %d: owed %s, the bound passed %s, %s",
-			owed.key.claim, owed.key.number, lineTime(owed.since), lineTime(owed.passed), owed.ended))
+		cost.Unreached = append(cost.Unreached, fmt.Sprintf("%s task %d: the clock started %s, the bound passed %s, %s",
+			owed.key.claim, owed.key.number, lineTime(owed.passed.Add(-c.cost.Args.Take)), lineTime(owed.passed), owed.ended))
 	}
 	for _, charge := range c.charges {
 		if started, ok := c.turnWithinBound(charge); ok {
@@ -546,9 +665,13 @@ func (c *costReading) done() TaskCost {
 	for _, key := range slices.SortedFunc(maps.Keys(c.taken), cmpKey) {
 		owed := max(c.owed[key], 1)
 		if c.taken[key] > owed {
-			cost.TakenPastOwed = append(cost.TakenPastOwed,
+			cost.TakenNotOncePerOwed = append(cost.TakenNotOncePerOwed,
 				fmt.Sprintf("%s task %d: taken %d times, owed %d", key.claim, key.number, c.taken[key], owed))
 		}
+	}
+	for _, owed := range c.unreached {
+		cost.TakenNotOncePerOwed = append(cost.TakenNotOncePerOwed, fmt.Sprintf("%s task %d: owed, and no take within the first bound, which passed %s",
+			owed.key.claim, owed.key.number, lineTime(owed.passed)))
 	}
 	return cost
 }
@@ -629,7 +752,7 @@ func (c TaskCost) Text() string {
 	}{
 		{"no charge of a worker whose turn began within the second bound after its take", c.ChargedWithinBound},
 		{"no write of origin resume to a claim that finished its last task in its session", c.ResumeToFinished},
-		{"each number taken once for each time the record owed it", c.TakenPastOwed},
+		{"each number taken once for each time the record owed it", c.TakenNotOncePerOwed},
 	} {
 		if len(verdict.fails) == 0 {
 			fmt.Fprintf(&b, "verdict: %s: pass\n", verdict.name)
