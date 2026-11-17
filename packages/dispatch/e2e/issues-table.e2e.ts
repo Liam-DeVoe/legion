@@ -195,7 +195,8 @@ test("merging an epic moves open descendants through closed intermediates and pr
       .getByRole("row")
       .filter({ has: page.getByRole("button", { name: /Source epic/ }) });
     await group.getByRole("button", { name: "Epic actions ▾" }).click();
-    await page.getByRole("combobox", { name: "Merge into another epic" }).selectOption(target.key);
+    await page.getByRole("button", { name: "Merge into another epic", exact: true }).click();
+    await page.getByRole("option", { name: target.title, exact: true }).click();
     await page.getByRole("button", { name: "Merge…" }).click();
     await page
       .getByRole("dialog", { name: "Merge this epic?" })
@@ -232,9 +233,8 @@ test("selection actions move, remove and create an epic, whose name can then cha
       page.getByRole("checkbox", { name: `Select ${key}`, exact: true }).check();
     await select(first.key);
     await select(second.key);
-    await page
-      .getByRole("combobox", { name: "Move to epic", exact: true })
-      .selectOption(target.key);
+    await page.getByRole("button", { name: "Move to epic", exact: true }).click();
+    await page.getByRole("option", { name: target.title, exact: true }).click();
     await page.getByRole("button", { name: "Move", exact: true }).click();
     await expect
       .poll(async () => [(await getIssue(first.key)).parent, (await getIssue(second.key)).parent])
@@ -864,7 +864,8 @@ test("a refused merge move leaves the source open without a close reason", async
     // source's rather than at whichever heading comes first.
     const heading = page.locator("tr", { has: page.getByRole("link", { name: /Merge source/ }) });
     await heading.getByRole("button", { name: "Epic actions ▾" }).click();
-    await page.getByRole("combobox", { name: "Merge into another epic" }).selectOption(target.key);
+    await page.getByRole("button", { name: "Merge into another epic", exact: true }).click();
+    await page.getByRole("option", { name: target.title, exact: true }).click();
     await page.getByRole("button", { name: "Merge…" }).click();
     await page
       .getByRole("dialog", { name: "Merge this epic?" })
@@ -1046,7 +1047,8 @@ test("reload mid merge moves current open descendants then records one reason an
       has: page.getByRole("link", { name: /Source workflow/ }),
     });
     await heading.getByRole("button", { name: "Epic actions ▾" }).click();
-    await page.getByRole("combobox", { name: "Merge into another epic" }).selectOption(target.key);
+    await page.getByRole("button", { name: "Merge into another epic", exact: true }).click();
+    await page.getByRole("option", { name: target.title, exact: true }).click();
     await page.getByRole("button", { name: "Merge…" }).click();
     await page
       .getByRole("dialog", { name: "Merge this epic?" })
@@ -1126,7 +1128,7 @@ test("an arrow key on the merge select closes no epic, and the confirmed merge d
     await page.goto("/projects/CORE/issues?group=epic");
     const heading = page.locator("tr", { has: page.getByRole("link", { name: /Arrow source/ }) });
     await heading.getByRole("button", { name: "Epic actions ▾" }).click();
-    const select = page.getByRole("combobox", { name: "Merge into another epic" });
+    const select = page.getByRole("button", { name: "Merge into another epic", exact: true });
     await select.focus();
     await page.keyboard.press("ArrowDown");
     // Nothing must follow the keystroke: a merge the arrow key had started would leave the page
@@ -1137,7 +1139,8 @@ test("an arrow key on the merge select closes no epic, and the confirmed merge d
     await expect(page.getByRole("dialog", { name: "Merge this epic?" })).toHaveCount(0);
 
     // The confirmed path still merges, and says what it is about to do first.
-    await select.selectOption(target.key);
+    await select.click();
+    await page.getByRole("option", { name: target.title, exact: true }).click();
     await page.getByRole("button", { name: "Merge…" }).click();
     const asked = page.getByRole("dialog", { name: "Merge this epic?" });
     await expect(asked).toContainText(source.key);

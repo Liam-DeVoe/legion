@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-// biome-ignore lint/style/noRestrictedImports: the two outside-press sites below are a pointerdown with no release, which user-event has no form for.
+// biome-ignore lint/style/noRestrictedImports: the outside-press sites below are a pointerdown with no release, which user-event has no form for.
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
@@ -23,6 +23,34 @@ function Host({ onCreate, options }: { onCreate?: (value: string) => void; optio
         selected={selected}
       />
       <output data-testid="selected">{selected.join(",")}</output>
+    </>
+  );
+}
+
+/** A single pick as a host draws one: the value it holds, every value the list handed it, and a
+ *  control outside the list to press. */
+function SingleHost({ initial, options }: { initial?: string; options: string[] }) {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState(initial);
+  const [handed, setHanded] = useState<string[]>([]);
+  return (
+    <>
+      <MultiSelect
+        emptyMessage="Nothing here."
+        label="Epic"
+        mode="single"
+        onOpenChange={setOpen}
+        onPick={(picked) => {
+          setValue(picked);
+          setHanded((before) => [...before, picked]);
+        }}
+        open={open}
+        options={options}
+        searchLabel="Search epics"
+        value={value}
+      />
+      <output data-testid="handed">{handed.join(",")}</output>
+      <button type="button">Elsewhere</button>
     </>
   );
 }
@@ -244,6 +272,114 @@ test("the compact size changes the trigger's look alone, and the control carries
     expect(trigger).toHaveAttribute("aria-expanded", "false");
     await user.click(trigger);
     expect(opened).toEqual([true]);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a single pick's listbox is not multiselectable, and only its current value's option is selected", async () => {
+  const user = userEvent.setup();
+  const view = render(<SingleHost initial="docs" options={["api", "docs", "frontend"]} />);
+  try {
+    // Named for the list whatever it shows, and the value it shows is what it says it holds.
+    const trigger = screen.getByRole("button", { name: "Epic", description: "docs" });
+    expect(trigger).toHaveTextContent("docs");
+    await user.click(trigger);
+    expect(screen.getByRole("listbox", { name: "Epic options" })).not.toHaveAttribute(
+      "aria-multiselectable"
+    );
+    expect(screen.getByRole("option", { name: "docs" })).toHaveAttribute("aria-selected", "true");
+    for (const name of ["api", "frontend"])
+      expect(screen.getByRole("option", { name })).toHaveAttribute("aria-selected", "false");
+    // One value is changed by picking another, so there is nothing to clear.
+    expect(screen.queryByRole("button", { name: "Clear epic" })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a single pick closes the list, puts the focus on its trigger and hands over one value", async () => {
+  const user = userEvent.setup();
+  const view = render(<SingleHost options={["api", "docs", "frontend"]} />);
+  try {
+    const trigger = screen.getByRole("button", { name: "Epic" });
+    await user.click(trigger);
+    await user.click(screen.getByRole("option", { name: "docs" }));
+    expect(screen.getByTestId("handed").textContent).toBe("docs");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveTextContent("docs");
+
+    // From the keyboard: the arrows move the active option, and Enter picks it.
+    await user.keyboard("{Enter}");
+    const search = screen.getByRole("combobox", { name: "Search epics" });
+    expect(search).toHaveFocus();
+    await user.keyboard("{ArrowDown}");
+    await user.keyboard("{ArrowDown}");
+    expect(search).toHaveAttribute(
+      "aria-activedescendant",
+      screen.getByRole("option", { name: "frontend" }).id
+    );
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("handed").textContent).toBe("docs,frontend");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveTextContent("frontend");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Escape, Tab and an outside press close a single pick with nothing picked and its value kept", async () => {
+  const user = userEvent.setup();
+  const view = render(<SingleHost initial="api" options={["api", "docs"]} />);
+  try {
+    const trigger = screen.getByRole("button", { name: "Epic" });
+    await user.click(trigger);
+    await user.keyboard("{ArrowDown}");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+
+    // Tab and Shift+Tab leave the reader on the trigger rather than carrying them past it.
+    for (const shift of [false, true]) {
+      await user.click(trigger);
+      await user.keyboard("{ArrowDown}");
+      await user.tab({ shift });
+      expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+      expect(trigger).toHaveFocus();
+    }
+
+    await user.click(trigger);
+    // A press with no release, as the multi-select's outside press above is.
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Elsewhere" }));
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+
+    expect(screen.getByTestId("handed").textContent).toBe("");
+    expect(trigger).toHaveTextContent("api");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a single pick's text box narrows its options, and Enter over none picks nothing", async () => {
+  const user = userEvent.setup();
+  const view = render(<SingleHost options={["api", "docs", "frontend"]} />);
+  try {
+    await user.click(screen.getByRole("button", { name: "Epic" }));
+    const search = screen.getByRole("combobox", { name: "Search epics" });
+    await user.click(search);
+    await user.paste("FRONT");
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(["frontend"]);
+    await user.clear(search);
+    await user.click(search);
+    await user.paste("zzz");
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
+    expect(screen.getByText("Nothing here.")).toBeTruthy();
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("handed").textContent).toBe("");
+    expect(screen.getByRole("listbox", { name: "Epic options" })).toBeTruthy();
   } finally {
     view.unmount();
   }

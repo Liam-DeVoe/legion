@@ -553,8 +553,8 @@ async function openSearchBar(page: Page, phone: boolean, term: string): Promise<
         .getByRole("button", { name: "Status" })
         .click();
       await page
-        .getByRole("dialog", { name: "Status" })
-        .getByRole("button", { name: "Todo" })
+        .getByRole("listbox", { name: "Status options" })
+        .getByRole("option", { name: "Todo" })
         .click();
       await closeControlPanel(root);
     },
