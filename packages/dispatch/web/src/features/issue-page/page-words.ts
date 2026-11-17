@@ -378,6 +378,10 @@ export const VERIFICATION_WORDS = freeze({
   /** After the count of a check's other results, which the line opens in place (ruling 6). */
   earlier_many: "earlier results",
   earlier_one: "earlier result",
+  /** After the count of the checks the coverage read counts for a statement beyond those the
+   *  view draws with it, which serve it from an issue under this one (part V's R9). */
+  elsewhere_many: "more checks elsewhere",
+  elsewhere_one: "more check elsewhere",
   /** The heading over each check's latest result. */
   latest_result: "Latest result",
   /** Between the two numbers of the covered count. */
@@ -496,9 +500,8 @@ export function issueStatusWord(token: string): string {
 
 /**
  * Every line the page draws where a place holds nothing, one per situation: a preset whose
- * query matches nothing, and a spec with no summary or none the head can draw whole. Each is
- * one sentence, in the simple present, saying what is absent rather than what the reader should
- * do about it.
+ * query matches nothing, and a spec with no summary. Each is one sentence, in the simple
+ * present, saying what is absent rather than what the reader should do about it.
  */
 export const EMPTY_STATE_LINES = freeze({
   /** The page with no filter on, on an issue whose tree holds nothing under it. */
@@ -522,12 +525,6 @@ export const EMPTY_STATE_LINES = freeze({
   spec_no_decision_many: "No decision shaped these statements.",
   spec_no_decision_one: "No decision shaped this statement.",
   spec_summary: "This spec has no summary.",
-  /** A summary whose stored excerpt stops inside its first sentence (`BlockExcerptRunes`, 480
-   *  runes): the spec has a summary, and the head has no whole sentence of it to draw. */
-  spec_summary_cut: "The summary is too long to show here.",
-  /** A summary whose whole text ends in no sentence end, so it holds no sentence the head
-   *  draws. */
-  spec_summary_unended: "The summary has no complete sentence.",
   verification: "This issue has no checks yet.",
   /** What the Verification filter's table says where the state its chip narrows to holds no
    *  statement. */
@@ -689,6 +686,10 @@ export const ANSWER_LINES = freeze({
   /** What the Spec filter says over its columns when the decisions could not be read, so the
    *  column beside each statement cannot say what shaped it. */
   decisions_unreadable: "Could not load the decisions.",
+  /** What the Spec view says when the spec's blocks or their coverage could not be read. */
+  statements_unreadable: "Could not load the statements.",
+  /** What the Spec view says when the results could not be read, so it marks no statement. */
+  results_unreadable: "Could not load the results.",
   /** What the list of what references the focused row says while its read, which the reader
    *  opened, is out, and when it failed (`node-references/NodeReferences.tsx`). */
   references_loading: "Loading references…",
@@ -708,6 +709,7 @@ export const ANSWER_LINES = freeze({
   /** What a control says while its own write is out: Dispatch has not answered, so none of
    *  these says the thing is done. */
   saving_close: "Closing…",
+  saving_components: "Saving components…",
   saving_field: "Saving…",
   saving_labels: "Saving labels…",
   saving_release: "Releasing…",
@@ -828,6 +830,10 @@ export const CONTROL_LABELS = freeze({
   accept: "Accept",
   /** The one control that reaches a property with no value yet (R11, which bans "more"). */
   add: "Add",
+  /** The labels control's word where the issue has no label yet, as `add_priority` is the
+   *  priority's: the property's own name would draw "Labels" twice in its row of Details
+   *  (decision 91 of dispatch://INFRA-1196/artifact/part-decisions-md). */
+  add_label: "Add a label",
   /** The control that places an issue under a priority, where the issue advances none: the
    *  words its name begins with, which `IssuePriorityLine.tsx` ends with the issue's key. */
   add_priority: "Add a priority",
@@ -848,10 +854,23 @@ export const CONTROL_LABELS = freeze({
   answer_chose: "you chose",
   /** What the line says while it is empty and answers a question. */
   answer_placeholder: "Answer in your own words…  (Enter sends · Shift+Enter new line)",
+  /** The document a design-gate step reviews, by the step (`StepEntry.step`; `criteria` reviews
+   *  the verification), as the names of that document's Approve and Request changes end with
+   *  it where the gate's list carries the actions of more than one document (`ApprovalSteps`'
+   *  `actionsOn`): each name begins with its control's own words and says its document,
+   *  "Approve the spec", "Approve v5 of the spec", "Request changes to the verification"
+   *  (WCAG 2.5.3, decision 99 of dispatch://INFRA-1196/artifact/part-decisions-md). */
+  approval_document_criteria: "the verification",
+  approval_document_decisions: "the decisions",
+  approval_document_spec: "the spec",
   /** What a stale approval chip says of the document's latest version inside `NoTooltips`,
    *  where no `title` carries it: "Approved v3 · latest v5" (`features/doc/ApprovalChip.tsx`,
    *  dispatch://INFRA-1196 R19, R22). */
   approval_latest: "latest",
+  /** The words between Request changes, or a stale approval's Approve, and the document it
+   *  reviews, in those names: "Request changes to the spec", "Approve v5 of the spec". */
+  approval_request_changes_to: "to",
+  approval_version_of: "of",
   /** Leaves an editor with the value the issue had, in every editor the page opens. */
   cancel: "Cancel",
   /** Changes the reader's own answer to a question, on its focused row: the line at the foot of

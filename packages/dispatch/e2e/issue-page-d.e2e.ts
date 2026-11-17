@@ -357,10 +357,24 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     await page.setViewportSize(viewportAt(390));
     await gotoIssue(page, `/issues/${key}`);
     await expect(iconRail(page), "the phone draws the rail").toHaveCount(0);
+    // The header's own "Open navigation" (part P) is the frame's; one outside the header is
+    // today's compact bar's.
+    const openNavigation = { exact: true, name: "Open navigation" };
     await expect(
-      page.getByRole("button", { exact: true, name: "Open navigation" }),
-      "the frame draws today's compact bar at 390 px"
-    ).toHaveCount(0);
+      page.locator("[data-issue-header]").getByRole("button", openNavigation),
+      "the header draws no navigation control at 390 px"
+    ).toHaveCount(1);
+    await expect
+      .poll(
+        () =>
+          page
+            .getByRole("button", openNavigation)
+            .evaluateAll(
+              (all) => all.filter((one) => one.closest("[data-issue-header]") === null).length
+            ),
+        { message: "the frame draws today's compact bar at 390 px" }
+      )
+      .toBe(0);
     await focusNothing(page);
     await page.keyboard.press("Shift+M");
     const phoneDetails = page.getByRole("dialog", { exact: true, name: "Details" });
@@ -744,6 +758,32 @@ test("at 760 px the header scrolls away and the view row stays at the top of a s
       .toBeGreaterThan(0);
     const row = await boxOf(filterRow(page), "the view row");
     expect(Math.round(row.y), "the row left the top at 760 px").toBe(0);
+  });
+});
+
+// From an address that names a node (`#b-`), a pointer press on Spec and then on Decisions moves
+// to each view's address, one history entry each (decision 93 of INFRA-1196's parts). There, a
+// press whose mousedown took the focus out of the outline closed the body of the outline's row,
+// the page grew shorter under the pointer, and the press ended elsewhere and did nothing. The
+// outline is a later part's; this row holds what each press must do.
+test("from an address that names a node, a press on Spec and then Decisions moves to each view's address, one history entry each", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    await gotoIssue(page, `/issues/${key}#b-r1`);
+    await expect(page).toHaveURL(new RegExp(`/issues/${key}#b-r1$`));
+    const entries = () => page.evaluate(() => window.history.length);
+    const before = await entries();
+    await presetToggle(page, "spec").click();
+    await expect(page, "a press on Spec did not move to Spec's address").toHaveURL(
+      addressOf(key, "spec")
+    );
+    expect(await entries(), "a press on Spec added no history entry").toBe(before + 1);
+    await presetToggle(page, "decisions").click();
+    await expect(page, "a press on Decisions did not move to Decisions' address").toHaveURL(
+      addressOf(key, "decisions")
+    );
+    expect(await entries(), "a press on Decisions added no history entry").toBe(before + 2);
   });
 });
 

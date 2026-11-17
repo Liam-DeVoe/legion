@@ -47,12 +47,21 @@ const pagePillTones: Record<PillTone, string> = {
 export const pillShapeClassName =
   "inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap";
 
+/** `pillShapeClassName` inside `NoTooltips` (the new issue page), where a pill can hold a value
+ *  (a label, a claim's holder) and every value wraps: it keeps `max-w-full` and breaks anywhere,
+ *  and the pill neither keeps its width nor holds its line (dispatch://INFRA-3935 R6, decision
+ *  104 of dispatch://INFRA-1196/artifact/part-decisions-md). */
+const pagePillShapeClassName =
+  "inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere]";
+
 /** The pill's full class string, for a host that must stay one interactive element (a parent
  *  link with a border) while looking identical - a border on a wrapper around a `Pill` would
  *  outline a bigger shape than the fill. `onPage` is a host's inside `NoTooltips`, which draws
- *  the tone in the new issue page's colours (R6). */
+ *  the tone in the new issue page's colours (R6), in the shape that wraps. */
 export function pillClassName(tone: PillTone, onPage = false): string {
-  return `${pillShapeClassName} ${(onPage ? pagePillTones : pillTones)[tone]}`;
+  return onPage
+    ? `${pagePillShapeClassName} ${pagePillTones[tone]}`
+    : `${pillShapeClassName} ${pillTones[tone]}`;
 }
 
 export function Pill({
