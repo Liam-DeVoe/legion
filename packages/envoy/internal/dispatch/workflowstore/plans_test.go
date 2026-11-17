@@ -395,6 +395,56 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 	}
 }
 
+// Two issues of one project that closed at one moment are each listed once and whole: each with
+// its own plan, its own rating, its own time and its own count of failed steps, however the rows of
+// the two come out of the statement. The read is compared by issue, since the contract orders only
+// by the close.
+func TestProjectPlansListsTwoIssuesClosedAtOneMomentWhole(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	closed := t0.Add(5 * time.Hour)
+	seedIssues(t, pool, "LEG", seededIssue{"LEG-1", "done", &closed}, seededIssue{"LEG-2", "done", &closed})
+
+	putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-1", 1), minute(0))
+	stepRun(t, pool, "LEG-1", StepKindStep, "planner", 1, 1, new(minute(0)), new(minute(5)), ResultPassed)
+	stepRun(t, pool, "LEG-1", StepKindStep, "reviewer", 4, 1, new(minute(6)), new(minute(9)), ResultFailed)
+	retroOne := ratedRetro(t, pool, "LEG-1", 1, minute(10), minute(12), 3, "The review came late.")
+	stepRun(t, pool, "LEG-1", StepKindMerge, "merger", 0, 1, nil, new(minute(15)), ResultPassed)
+
+	putPlan(t, pool, PlanWrite{
+		ID: uuid.NewString(), Issue: "LEG-2", Generation: new(int64(2)), Source: new(PlanSourceOwner), ArtifactID: new(uuid.NewString()), Version: new(1),
+		Tasks: []PlanTask{{ID: "ui", Steps: []string{"implementer"}}, {ID: "api", Steps: []string{"implementer", "tester"}}},
+	}, minute(20))
+	stepRun(t, pool, "LEG-2", StepKindStep, "implementer", 1, 2, new(minute(20)), new(minute(25)), ResultPassed)
+	stepRun(t, pool, "LEG-2", StepKindStep, "tester", 2, 2, new(minute(26)), new(minute(28)), ResultFailed)
+	stepRun(t, pool, "LEG-2", StepKindStep, "tester", 2, 2, new(minute(29)), new(minute(31)), ResultFailed)
+	retroTwo := ratedRetro(t, pool, "LEG-2", 2, minute(32), minute(33), 5, "Two tasks fit the work.")
+	stepRun(t, pool, "LEG-2", StepKindMerge, "merger", 0, 2, nil, new(minute(40)), ResultPassed)
+
+	read, err := ProjectPlans(context.Background(), pool, "LEG", nil, nil)
+	if err != nil {
+		t.Fatalf("read the plans of LEG: %v", err)
+	}
+	got := make([]string, len(read))
+	for index, issue := range read {
+		got[index] = issuePlanText(issue)
+	}
+	slices.Sort(got)
+	want := []string{
+		issuePlanText(IssuePlan{Issue: "LEG-1", Title: "Title of LEG-1", ClosedAt: closed,
+			Plan:      &Plan{Source: PlanSourceDefault, Generation: 1, Tasks: []PlanTask{{ID: "default", Steps: defaultSteps}}},
+			Ratings:   []Rating{{Rating: 3, Reason: "The review came late.", StepID: retroOne, EndedAt: new(minute(12))}},
+			StartedAt: new(minute(0)), EndedAt: new(minute(15)), FailedSteps: 1}),
+		issuePlanText(IssuePlan{Issue: "LEG-2", Title: "Title of LEG-2", ClosedAt: closed,
+			Plan: &Plan{Source: PlanSourceOwner, Generation: 2,
+				Tasks: []PlanTask{{ID: "ui", Steps: []string{"implementer"}}, {ID: "api", Steps: []string{"implementer", "tester"}}}},
+			Ratings:   []Rating{{Rating: 5, Reason: "Two tasks fit the work.", StepID: retroTwo, EndedAt: new(minute(33))}},
+			StartedAt: new(minute(20)), EndedAt: new(minute(40)), FailedSteps: 2}),
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("the read lists\n%s\nwant each issue once\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
 // The plan is the newest node of the issue, the one of the highest generation, whatever order the
 // plans were made in and however their generations sort as text, and every retro's rating is
 // listed, in the order the retros ran.
