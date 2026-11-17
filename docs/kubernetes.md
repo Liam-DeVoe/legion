@@ -2053,6 +2053,13 @@ delete from outbox where kind = 'supervise' and payload->>'op' = 'step_stop';
 
 Each deleted row costs the stop of one step's process: that process runs on until its issue closes, and the way back above drops the task's stop with the plan rows.
 
+#### Rolling back the release that keeps a production check for each merge
+
+This release's migration `20261117211603_production_check_of_each_merge.up.sql` keys `production_checks` by the issue and the moment the check opened, where the release before keys it by the issue alone, and adds two columns, `production_checks.generation` and `production_checks.task`: the issue's run at the merge and the task whose merge the check checks.
+An earlier release cannot write a check on that key: it writes with `on conflict (issue)`, which PostgreSQL refuses while no unique key is the issue alone (`there is no unique or exclusion constraint matching the ON CONFLICT specification`), so each open, look and close of a check fails.
+At the rollback, with the daemon stopped and before the earlier image is pinned, run the way back that the migration's header gives: it keeps the newest check of each issue, the one the earlier release reads, puts the key by the issue back, drops the two columns and deletes the migration's version row, so the roll-forward's `Migrate` runs the migration again (`versionRecorded` in `internal/store/store.go` decides each migration on its own row).
+An older check of an issue that is still open is lost with its row, and the header gives the query that lists each issue holding one: run the way back after those checks have closed.
+
 #### Rolling back the release whose update round ends at its bound
 
 This release's migration `20261113110610_drop_claim_update_answer_marks` takes two columns off `claims`: `update_answered_by_turn_end` and `update_reasked_for_push_check`, which the two `alter` statements below add back.
@@ -2628,6 +2635,7 @@ The migrations recorded above this one at contract 146 are these.
 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim` and touches none of the six, and the contract 146 block above reverses it too, so that the roll-forward can add it again.
 20261116234034_phase_reviewed_head adds `phases.reviewed_head` and touches none of the six, so the block holds over it; a rollback past it runs that migration's own way back too ([Rolling back the release that keeps the commit a reviewer last read](#rolling-back-the-release-that-keeps-the-commit-a-reviewer-last-read)), so that the roll-forward adds the column again at its default.
 20261117034837_issue_plans adds the tables `issue_plans`, `plan_tasks` and `plan_steps` and the columns `phases.step_task`, `phases.step_place` and `pull_requests.task`, and touches none of the six, so the block holds over it; a rollback past it runs that migration's own way back too ([Rolling back the release whose owner's plan picks the steps](#rolling-back-the-release-whose-owners-plan-picks-the-steps)), so that the roll-forward creates the tables again empty and adds the columns again at their defaults.
+20261117211603_production_check_of_each_merge keys `production_checks` by the issue and the moment the check opened and adds the columns `production_checks.generation` and `production_checks.task`, and touches none of the six, so the block holds over it; a rollback past it runs that migration's own way back too ([Rolling back the release that keeps a production check for each merge](#rolling-back-the-release-that-keeps-a-production-check-for-each-merge)), so that the roll-forward keys the table again by the issue and the moment and adds the columns again at their defaults.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:

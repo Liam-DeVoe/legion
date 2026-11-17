@@ -1073,13 +1073,16 @@ func (m MergeState) Mergeable() bool {
 	return m == MergeStateClean || m == MergeStateUnstable || m == MergeStateHasHooks
 }
 
-// ProductionCheck is an issue's production check: the work after the close in which the role the
-// project's `production_check` named at the open, which Role records, drives the merged change in
-// production and reports what it saw. There is one record
-// per issue, opened at the merge; a later merge of the same issue — a rerun's, after a re-entry or
-// a reopen inside the linger closed the first — replaces it (workflow.openCheck) and counts its
-// looks from one again, so OpenedAt is the check instance's identity (ID): what tells the two
-// checks' looks apart in the events their rows and reports are recorded under. It copies the
+// ProductionCheck is the production check of a merge of an issue: the work after the close in
+// which the role the project's `production_check` named at the open, which Role records, drives
+// the merged change in production and reports what it saw. An issue keeps a record of each check
+// it opened, keyed by the moment it opened: a later merge of the same issue — a rerun's, after a
+// re-entry or a reopen inside the linger closed the first — opens a check of its own and closes
+// an earlier one still open as not run (workflow.openCheck), so OpenedAt is the check instance's
+// identity (ID): what tells two checks of one issue, and their looks, which each counts from one,
+// apart in the events their rows and reports are recorded under. Generation is the issue's run at
+// the merge, and Task the task whose merge the check checks, "" for an issue with no plan rows; a
+// check that a release before them wrote reads run 0 and no task. It copies the
 // repository, the pull request's number and the merge commit, and is fenced on itself (the issue,
 // the check and the look number) rather than on the tree generation, so a re-admission that
 // clears the tree's merged pull requests leaves it as it is. Looks counts the checking role's
@@ -1119,6 +1122,8 @@ type ProductionCheck struct {
 	Last           bool
 	ClosedAt       *time.Time
 	Outcome        CheckOutcome
+	Generation     uint64
+	Task           string
 }
 
 // Open says whether the check is still open: no look has closed it.
@@ -1134,8 +1139,8 @@ func (c ProductionCheck) ID() string { return strconv.FormatInt(c.OpenedAt.UnixM
 
 // NamedBy says whether openedAt names this check instance, as the rows and facts of a check carry
 // its OpenedAt: a zero openedAt names no instance — a row queued before the rows carried one — and
-// so names this one too; another instant names another check of the issue, one a later merge
-// replaced, whose looks count from one again, or the one that replaced this.
+// so names this one too; another instant names another check of the issue, an earlier one a later
+// merge closed, or a later one, each counting its looks from one.
 func (c ProductionCheck) NamedBy(openedAt time.Time) bool {
 	return openedAt.IsZero() || openedAt.Equal(c.OpenedAt)
 }
@@ -1610,9 +1615,14 @@ type Store interface {
 	// a tree that has stopped with its work merged is exactly the tree such a caller reports.
 	PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string]PullRequest, error)
 	PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest) error
-	// ProductionCheck is issue's production check, nil for none; PutProductionCheck writes it,
-	// one per issue.
+	// ProductionCheck is issue's newest production check, nil for none; ProductionCheckOf reads
+	// one check of issue by the moment it opened, and the newest for the zero time, the read of a
+	// row or a fact that names no check, nil where no check of issue opened then;
+	// ProductionChecksOf is each check of issue, newest first. PutProductionCheck writes a check,
+	// one for each moment a check of issue opened.
 	ProductionCheck(ctx context.Context, tx pgx.Tx, issue string) (*ProductionCheck, error)
+	ProductionCheckOf(ctx context.Context, tx pgx.Tx, issue string, openedAt time.Time) (*ProductionCheck, error)
+	ProductionChecksOf(ctx context.Context, tx pgx.Tx, issue string) ([]ProductionCheck, error)
 	PutProductionCheck(ctx context.Context, tx pgx.Tx, check ProductionCheck) error
 	// OpenProductionChecks is every open check, oldest opened first, then by issue;
 	// OpenProductionChecksOfTree those of tree's issues, in the same order.

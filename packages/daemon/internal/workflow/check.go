@@ -46,14 +46,16 @@ func (e *Engine) checkRole() claim.Role { return e.cfg.ProductionCheckRole }
 // the line saying the close had nothing to check.
 // wake is only how the open is logged: a lingering tree's member has its claims suspended,
 // so the look's start row is a wake of the checking role's claim, where a running tree's is a task
-// handed to that role's live session; the rows are the same, since the start resumes either. One check
-// per issue: a second merge of the same issue — a rerun's, after a re-entry closed the first —
-// replaces the earlier record, whose bound row the new check then defers to its own bound
-// (checkBound); the same merge seen again — a done child a person parks and sets done again, each
-// move a leave — opens nothing, since the check it has, open or recorded, is that merge's. The
-// check's OpenedAt is its identity (record.ProductionCheck.ID), so it is the clock truncated to the
-// microsecond, Postgres's timestamptz precision: the value the rows and facts of this transaction
-// carry equals the one every later read of the record returns.
+// handed to that role's live session; the rows are the same, since the start resumes either. A
+// second merge of the same issue — a rerun's, after a re-entry closed the first — opens a check
+// of its own beside the earlier ones and closes each earlier check still open as not run
+// (markCheckClosed), so an issue holds at most one open check; the bound row of an earlier check
+// is then deferred to the new check's bound (checkBound). The same merge seen again — a done child
+// a person parks and sets done again, each move a leave — opens nothing, since the issue's newest
+// check, open or recorded, is that merge's. The check's OpenedAt is its identity
+// (record.ProductionCheck.ID), so it is the clock truncated to the microsecond, Postgres's
+// timestamptz precision: the value the rows and facts of this transaction carry equals the one
+// every later read of the record returns.
 func (e *Engine) openCheck(ctx context.Context, tx pgx.Tx, issue record.Issue, pr record.PullRequest, wake bool) error {
 	role := e.checkRole()
 	if role == "" {
@@ -61,18 +63,29 @@ func (e *Engine) openCheck(ctx context.Context, tx pgx.Tx, issue record.Issue, p
 			"mergeCommit", pr.MergeSHA, "pullRequest", pr.Number)
 		return nil
 	}
-	existing, err := e.store.ProductionCheck(ctx, tx, issue.Key)
+	checks, err := e.store.ProductionChecksOf(ctx, tx, issue.Key)
 	if err != nil {
 		return err
 	}
-	if existing != nil && e.sameRepository(existing.Repo, pr.Repo) && existing.Number == pr.Number && (existing.MergeSHA == "" || pr.MergeSHA == "" || existing.MergeSHA == pr.MergeSHA) {
-		state := "open"
-		if !existing.Open() {
-			state = "closed as " + string(existing.Outcome)
+	if len(checks) > 0 {
+		existing := checks[0]
+		if e.sameRepository(existing.Repo, pr.Repo) && existing.Number == pr.Number && (existing.MergeSHA == "" || pr.MergeSHA == "" || existing.MergeSHA == pr.MergeSHA) {
+			state := "open"
+			if !existing.Open() {
+				state = "closed as " + string(existing.Outcome)
+			}
+			e.logOnCommit(ctx, "workflow: production check not opened again: the issue's check is this merge's", "issue", issue.Key,
+				"mergeCommit", pr.MergeSHA, "pullRequest", pr.Number, "check", existing.OpenedAt, "state", state)
+			return nil
 		}
-		e.logOnCommit(ctx, "workflow: production check not opened again: the issue's check is this merge's", "issue", issue.Key,
-			"mergeCommit", pr.MergeSHA, "pullRequest", pr.Number, "check", existing.OpenedAt, "state", state)
-		return nil
+	}
+	for i := range checks {
+		if !checks[i].Open() {
+			continue
+		}
+		if err := e.markCheckClosed(ctx, tx, &checks[i], record.CheckNotRun); err != nil {
+			return err
+		}
 	}
 	now := e.now().Truncate(time.Microsecond)
 	check := record.ProductionCheck{

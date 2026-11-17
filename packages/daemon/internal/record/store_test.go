@@ -784,11 +784,11 @@ func samePullRequest(got, want PullRequest) bool {
 		got.StateReadAt.Equal(want.StateReadAt) && got.Task == want.Task
 }
 
-// A production check is one record per closed issue, every field read back as written — the role
-// that works it and the wake it named among them — with its null columns (the wake times, the
-// close and the outcome) absent until written; it is keyed by its issue, so a second write of the
-// same issue replaces the first. The open lists leave a closed check out,
-// OpenProductionChecksOfTree those of other trees too, and both order by the open.
+// A production check reads back every field as written — the role that works it and the wake it
+// named among them — with its null columns (the wake times, the close and the outcome) absent
+// until written; it is keyed by its issue and the moment it opened, so a second write of the same
+// check replaces the first. The open lists leave a closed check out, OpenProductionChecksOfTree
+// those of other trees too, and both order by the open.
 func TestStoreRoundTripsProductionChecksAndListsTheOpenOnesByTree(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -861,13 +861,76 @@ func TestStoreRoundTripsProductionChecksAndListsTheOpenOnesByTree(t *testing.T) 
 	}
 }
 
+// An issue that merged twice holds a production check of each merge, side by side, each keyed by
+// the moment it opened: ProductionChecksOf answers both, newest first; ProductionCheckOf answers
+// the check that a time names, nil for a time that names none, and the newest for the zero time,
+// which is how a row or a fact that names no check is read; a put of a check changes that check
+// alone; and the run and the task of each merge read back as written.
+func TestTwoChecksOfOneIssueStandSideBySide(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	opened := time.Date(2026, 11, 17, 8, 0, 0, 0, time.UTC)
+	issue := issueFixture("LEGION-320")
+	first := ProductionCheck{
+		Issue: issue.Key, Project: "LEGION", Tree: issue.Key, Repo: "sjawhar/legion", Number: 1320, MergeSHA: "a1", Role: claim.RoleTester,
+		OpenedAt: opened, BoundAt: opened.Add(336 * time.Hour), Looks: 1, LookOpen: true, Generation: 3, Task: "a",
+	}
+	second := ProductionCheck{
+		Issue: issue.Key, Project: "LEGION", Tree: issue.Key, Repo: "sjawhar/legion", Number: 1321, MergeSHA: "b2", Role: claim.RoleTester,
+		OpenedAt: opened.Add(time.Hour), BoundAt: opened.Add(337 * time.Hour), Looks: 1, LookOpen: true, Generation: 3, Task: "b",
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, issue))
+		must(t, records.PutProductionCheck(ctx, tx, first))
+		must(t, records.PutProductionCheck(ctx, tx, second))
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		all, err := records.ProductionChecksOf(ctx, tx, issue.Key)
+		must(t, err)
+		if len(all) != 2 || !sameProductionCheck(&all[0], second) || !sameProductionCheck(&all[1], first) {
+			t.Fatalf("the checks of %s = %+v, want the second merge's then the first's", issue.Key, all)
+		}
+		named, err := records.ProductionCheckOf(ctx, tx, issue.Key, first.OpenedAt)
+		must(t, err)
+		if !sameProductionCheck(named, first) {
+			t.Fatalf("the check of %s opened at %s = %+v, want the first merge's", issue.Key, first.OpenedAt, named)
+		}
+		newest, err := records.ProductionCheckOf(ctx, tx, issue.Key, time.Time{})
+		must(t, err)
+		if !sameProductionCheck(newest, second) {
+			t.Fatalf("the check of %s that no time names = %+v, want the newest, the second merge's", issue.Key, newest)
+		}
+		unnamed, err := records.ProductionCheckOf(ctx, tx, issue.Key, opened.Add(time.Minute))
+		must(t, err)
+		if unnamed != nil {
+			t.Fatalf("the check of %s opened at a time no check opened = %+v, want nil", issue.Key, unnamed)
+		}
+		none, err := records.ProductionChecksOf(ctx, tx, "LEGION-999")
+		must(t, err)
+		if len(none) != 0 {
+			t.Fatalf("the checks of an issue with none = %+v, want none", none)
+		}
+	})
+	again := first
+	again.Looks = 2
+	inTx(t, st, func(tx pgx.Tx) { must(t, records.PutProductionCheck(ctx, tx, again)) })
+	inTx(t, st, func(tx pgx.Tx) {
+		all, err := records.ProductionChecksOf(ctx, tx, issue.Key)
+		must(t, err)
+		if len(all) != 2 || !sameProductionCheck(&all[0], second) || !sameProductionCheck(&all[1], again) {
+			t.Fatalf("the checks of %s after a second put of the first = %+v, want the first at look 2 and the second as it was", issue.Key, all)
+		}
+	})
+}
+
 func sameProductionCheck(got *ProductionCheck, want ProductionCheck) bool {
 	return got != nil && got.Issue == want.Issue && got.Project == want.Project && got.Tree == want.Tree && got.Repo == want.Repo &&
 		got.Number == want.Number && got.MergeSHA == want.MergeSHA && got.OpenedAt.Equal(want.OpenedAt) && got.BoundAt.Equal(want.BoundAt) &&
 		got.Role == want.Role && got.Looks == want.Looks && got.LookOpen == want.LookOpen && sameInstant(got.LookWakeAt, want.LookWakeAt) &&
 		got.LastWakeKind == want.LastWakeKind && got.LastWakeDetail == want.LastWakeDetail && sameInstant(got.LastWakeAt, want.LastWakeAt) &&
 		sameInstant(got.WakeAt, want.WakeAt) && got.Last == want.Last &&
-		sameInstant(got.ClosedAt, want.ClosedAt) && got.Outcome == want.Outcome
+		sameInstant(got.ClosedAt, want.ClosedAt) && got.Outcome == want.Outcome && got.Generation == want.Generation && got.Task == want.Task
 }
 
 // sameInstant is whether two optional times are both absent or name the same instant.
@@ -2257,7 +2320,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 		"issue_plans":       {"issue", "generation", "version", "source", "artifact_id", "given_by", "given_at"},
 		"plan_tasks":        {"issue", "generation", "task", "plan_version", "block_text", "needs", "part_of", "owner_role", "merges", "steps_by_default", "state", "stopped_reason", "running_kind", "position", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told"},
 		"plan_steps":        {"issue", "generation", "task", "position", "role", "type", "agent_key", "reviewed_head"},
-		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome"},
+		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome", "generation", "task"},
 		"design_gates":      {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened"},
 		"root_asks":         {"issue", "ask", "kind", "artifact", "open", "seq", "waiting_on", "waiting_on_seq", "closed_by", "closed_seq", "by_tree", "person_seq", "person_answer_seq", "declined", "declined_note", "declined_words"},
 		"dispatch_issues":   {"key", "project", "status", "blockers", "dispatch_seq", "parent"},

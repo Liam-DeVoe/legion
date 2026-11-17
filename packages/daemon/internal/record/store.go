@@ -1526,32 +1526,59 @@ func scanPullRequest(row scanner) (*PullRequest, error) {
 }
 
 const productionCheckColumns = `issue, project, tree, repo, pr_number, merge_sha, opened_at, bound_at, role, looks, look_open,
-	look_wake_at, last_wake_kind, last_wake_detail, last_wake_at, wake_at, last, closed_at, outcome`
+	look_wake_at, last_wake_kind, last_wake_detail, last_wake_at, wake_at, last, closed_at, outcome, generation, task`
 
 func (s *Postgres) ProductionCheck(ctx context.Context, tx pgx.Tx, issue string) (*ProductionCheck, error) {
-	check, err := scanProductionCheck(tx.QueryRow(ctx, "select "+productionCheckColumns+" from production_checks where issue = $1", issue))
+	return s.ProductionCheckOf(ctx, tx, issue, time.Time{})
+}
+
+// ProductionCheckOf is the one place of the rule that a row or a fact naming no check acts on the
+// issue's newest check: a zero openedAt reads the check of issue that opened last, as
+// ProductionCheck.NamedBy takes the zero instant for any check, and another reads the check of
+// issue that opened at that instant. It answers nil where issue holds no such check.
+func (s *Postgres) ProductionCheckOf(ctx context.Context, tx pgx.Tx, issue string, openedAt time.Time) (*ProductionCheck, error) {
+	var at any
+	if !openedAt.IsZero() {
+		at = openedAt
+	}
+	check, err := scanProductionCheck(tx.QueryRow(ctx, "select "+productionCheckColumns+` from production_checks
+		where issue = $1 and ($2::timestamptz is null or opened_at = $2::timestamptz) order by opened_at desc limit 1`,
+		issue, at))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read production check of %s: %w", issue, err)
+		return nil, fmt.Errorf("read production check of %s opened at %s: %w", issue, openedAt, err)
 	}
 	return check, nil
 }
 
+func (s *Postgres) ProductionChecksOf(ctx context.Context, tx pgx.Tx, issue string) ([]ProductionCheck, error) {
+	describe := fmt.Sprintf("list the production checks of %s", issue)
+	rows, err := tx.Query(ctx, "select "+productionCheckColumns+" from production_checks where issue = $1 order by opened_at desc", issue)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	return collectProductionChecks(rows, describe)
+}
+
 func (s *Postgres) PutProductionCheck(ctx context.Context, tx pgx.Tx, check ProductionCheck) error {
+	if check.Generation > maxInt64 {
+		return fmt.Errorf("put production check of %s: generation %d does not fit a bigint", check.Issue, check.Generation)
+	}
 	_, err := tx.Exec(ctx, `insert into production_checks (issue, project, tree, repo, pr_number, merge_sha, opened_at, bound_at,
 		role, looks, look_open, look_wake_at, last_wake_kind, last_wake_detail, last_wake_at, wake_at,
-		last, closed_at, outcome)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, nullif($19::text, ''))
-		on conflict (issue) do update set project = excluded.project, tree = excluded.tree, repo = excluded.repo,
-		pr_number = excluded.pr_number, merge_sha = excluded.merge_sha, opened_at = excluded.opened_at, bound_at = excluded.bound_at,
+		last, closed_at, outcome, generation, task)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, nullif($19::text, ''), $20, $21)
+		on conflict (issue, opened_at) do update set project = excluded.project, tree = excluded.tree, repo = excluded.repo,
+		pr_number = excluded.pr_number, merge_sha = excluded.merge_sha, bound_at = excluded.bound_at,
 		role = excluded.role, looks = excluded.looks, look_open = excluded.look_open, look_wake_at = excluded.look_wake_at,
 		last_wake_kind = excluded.last_wake_kind, last_wake_detail = excluded.last_wake_detail, last_wake_at = excluded.last_wake_at,
-		wake_at = excluded.wake_at, last = excluded.last, closed_at = excluded.closed_at, outcome = excluded.outcome`,
+		wake_at = excluded.wake_at, last = excluded.last, closed_at = excluded.closed_at, outcome = excluded.outcome,
+		generation = excluded.generation, task = excluded.task`,
 		check.Issue, check.Project, check.Tree, check.Repo, check.Number, check.MergeSHA, check.OpenedAt, check.BoundAt,
 		string(check.Role), check.Looks, check.LookOpen, check.LookWakeAt, check.LastWakeKind, check.LastWakeDetail, check.LastWakeAt,
-		check.WakeAt, check.Last, check.ClosedAt, string(check.Outcome),
+		check.WakeAt, check.Last, check.ClosedAt, string(check.Outcome), int64(check.Generation), check.Task,
 	)
 	if err != nil {
 		return fmt.Errorf("put production check of %s: %w", check.Issue, err)
@@ -1574,30 +1601,38 @@ func openProductionChecks(ctx context.Context, tx pgx.Tx, tree, describe string)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
+	return collectProductionChecks(rows, describe)
+}
+
+// collectProductionChecks is each check rows holds, in its order; describe names the read in an
+// error.
+func collectProductionChecks(rows pgx.Rows, describe string) ([]ProductionCheck, error) {
 	defer rows.Close()
-	open := []ProductionCheck{}
+	checks := []ProductionCheck{}
 	for rows.Next() {
 		check, err := scanProductionCheck(rows)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", describe, err)
 		}
-		open = append(open, *check)
+		checks = append(checks, *check)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
-	return open, nil
+	return checks, nil
 }
 
 func scanProductionCheck(row scanner) (*ProductionCheck, error) {
 	var check ProductionCheck
 	var outcome *string
 	var role string
+	var generation int64
 	if err := row.Scan(&check.Issue, &check.Project, &check.Tree, &check.Repo, &check.Number, &check.MergeSHA, &check.OpenedAt, &check.BoundAt,
 		&role, &check.Looks, &check.LookOpen, &check.LookWakeAt, &check.LastWakeKind, &check.LastWakeDetail, &check.LastWakeAt,
-		&check.WakeAt, &check.Last, &check.ClosedAt, &outcome); err != nil {
+		&check.WakeAt, &check.Last, &check.ClosedAt, &outcome, &generation, &check.Task); err != nil {
 		return nil, err
 	}
+	check.Generation = uint64(generation)
 	check.Role = claim.Role(role)
 	if outcome != nil {
 		check.Outcome = CheckOutcome(*outcome)
