@@ -45,6 +45,24 @@ func TestMain(m *testing.M) {
 		if proven := os.Getenv(testProvenCheckEnv); proven != "" {
 			ghReadsProvenCheck.sha256 = proven
 		}
+		// The stand-ins a test gives `legion gh` answer what it waits for under bounds sized to
+		// the real programs, so the test names those bounds (ghTestBounds). Only this test binary
+		// reads the variables; the legion binary has none.
+		for name, bound := range ghTestBounds {
+			value := os.Getenv(name)
+			if value == "" {
+				continue
+			}
+			parsed, err := time.ParseDuration(value)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%s=%q is no duration: %v\n", name, value, err)
+				os.Exit(2)
+			}
+			*bound = parsed
+		}
+		if record := os.Getenv(testBoundsRecordEnv); record != "" {
+			recordTestBounds(record)
+		}
 		main()
 	}
 	// environment_test.go reads these variables again once every test before it has run, so the

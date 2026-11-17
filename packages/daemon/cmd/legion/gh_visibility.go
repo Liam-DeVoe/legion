@@ -16,8 +16,9 @@ import (
 // each of its two tries of that read 20 s (public_leak_check.py's vis_of), so the answer, or its
 // refusal, comes before the check stops waiting, and no read made for it outlives the check's
 // wait. The guard waits for a near rate-limit reset only where its caller's bound has room for
-// the wait and the reads after it, and this bound has room for none.
-const visibilityAnswerBound = 15 * time.Second
+// the wait and the reads after it, and this bound has room for none. It is a variable so that
+// this package's test binary, run as `legion`, can take the bound its test names (TestMain).
+var visibilityAnswerBound = 15 * time.Second
 
 // sharedCheckVisibilityRead is the repository the shared public leak check's own visibility read
 // names, and whether argv is that read: exactly leakguard.VisibilityReadArgs of the repository

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -823,18 +824,79 @@ func ghWrapperDir(t *testing.T) string {
 // legionGhCommand is the command legionGhIn runs and the one environment a `legion gh` of these
 // tests is given: this test binary as `legion gh args…` in the working directory dir, with env
 // and nothing of this process's own but PATH, whose head is a pane's `gh` wrapper
-// (ghWrapperDir) unless env names a PATH of its own. A test that drives the run itself — one
-// that signals it, or starts it under a shell of its own — takes the command and runs it, so
-// that base environment is built in one place.
+// (ghWrapperDir) unless env names a PATH of its own, and the bounds ghTestBoundsEnv names unless
+// env names one of its own. A test that drives the run itself — one that signals it, or starts it
+// under a shell of its own — takes the command and runs it, so that base environment is built in
+// one place.
 func legionGhCommand(t *testing.T, dir string, env map[string]string, args ...string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], append([]string{"gh"}, args...)...)
 	cmd.Dir = dir
-	cmd.Env = []string{testMainEnv + "=1", "PATH=" + ghWrapperDir(t) + ":" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull}
+	cmd.Env = append([]string{testMainEnv + "=1", "PATH=" + ghWrapperDir(t) + ":" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull}, ghTestBoundsEnv(t)...)
 	for name, value := range env {
 		cmd.Env = append(cmd.Env, name+"="+value)
 	}
 	return cmd
+}
+
+// The variables that name, to this package's test binary run as `legion` (TestMain), a bound of
+// `legion gh`'s as a Go duration: that of the answer to the shared check's own visibility read
+// (visibilityAnswerBound) and that of the read of gh's help (ghHelpBound); and the file each such
+// run records the bounds it took in, where a test names one (recordTestBounds).
+const (
+	testVisibilityAnswerBoundEnv = "LEGION_TEST_VISIBILITY_ANSWER_BOUND"
+	testGhHelpBoundEnv           = "LEGION_TEST_GH_HELP_BOUND"
+	testBoundsRecordEnv          = "LEGION_TEST_BOUNDS_RECORD"
+)
+
+// ghTestBounds is each bound a test names to `legion gh`, by the variable that names it.
+var ghTestBounds = map[string]*time.Duration{
+	testVisibilityAnswerBoundEnv: &visibilityAnswerBound,
+	testGhHelpBoundEnv:           &ghHelpBound,
+}
+
+// ghTestBoundsEnv is each bound of ghTestBounds at ghTestBound's value, as a `legion gh`'s
+// environment names it. Every test here that starts this binary as `legion gh` gives it these
+// (legionGhCommand, and TestRealGhAndGitSendTheTargetOwnersToken's own harness), and they reach
+// each `legion gh` that one starts in turn: the shared check's callback and the guard's own reads.
+func ghTestBoundsEnv(t *testing.T) []string {
+	bound := ghTestBound(t).String()
+	env := make([]string, 0, len(ghTestBounds))
+	for _, name := range slices.Sorted(maps.Keys(ghTestBounds)) {
+		env = append(env, name+"="+bound)
+	}
+	return env
+}
+
+// recordTestBounds appends to the file record the bounds this run of the binary as `legion` took,
+// as one line, `visibilityAnswerBound=<d> ghHelpBound=<d>`. It reads the product's own variables,
+// not ghTestBounds, so a test reads whether a bound it named reached them. A file it cannot write
+// gets no line, which the test that named it reads as no bound taken.
+func recordTestBounds(record string) {
+	file, err := os.OpenFile(record, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	fmt.Fprintf(file, "visibilityAnswerBound=%s ghHelpBound=%s\n", visibilityAnswerBound, ghHelpBound)
+}
+
+// ghTestBound is the bound ghTestBoundsEnv names for each of ghTestBounds: what is left of the
+// test binary's own deadline less a second, as testwait bounds a wait, and the longest duration
+// there is where the binary has no deadline. The product's bounds fit the real programs: the
+// answer's 15 s fits the installed check, which waits 20 s for each try of that read, and the
+// help's 30 s the real gh. Here the check is a stand-in that waits with no bound of its own and
+// gh a shell script, so neither bound is about what these tests read. Each, though, is all the
+// time a process `legion gh` starts has to start and answer, and a loaded machine makes those
+// starts slow. The answer's own `legion gh` did not reach the stand-in gh within 15 s, and a test
+// counting gh's reads failed on the machine's load, not on what `legion gh` did (two rows of
+// TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead, at a load average of 744 on 288 CPUs).
+// With that bound lifted, on one CPU beside 320 busy loops, the guard's read of gh's help ran
+// out its 30 s in the same test. A read that never answers still ends, by this bound.
+// TestLegionGhAnswersTheSharedChecksVisibilityReadWithinItsBound holds `legion gh` to the bound
+// its test names.
+func ghTestBound(t *testing.T) time.Duration {
+	return testwait.Bounded(t, math.MaxInt64, time.Second)
 }
 
 // legionGhIn runs `legion gh args…` as legionGh does, in the working directory dir with stdin,
@@ -1533,7 +1595,10 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 	rest := func(visibility string) string {
 		return "printf '%s\\r\\n' 'HTTP/2.0 200 OK' 'X-Ratelimit-Remaining: 4999' ''\nprintf '%s\\n' " + visibility + "\nexit 0\n"
 	}
-	restSpent := fmt.Sprintf("printf '%%s\\r\\n' 'HTTP/2.0 403 Forbidden' 'X-Ratelimit-Remaining: 0' 'X-Ratelimit-Reset: %d' ''\n", time.Now().Add(30*time.Minute).Unix()) +
+	// A spent core limit that names no reset, which the guard does not wait for (Guard.waitFits).
+	// The answer's bound here is the test binary's own deadline (ghTestBound), so a reset the read
+	// named would be waited for once the run came within the guard's wait of it.
+	restSpent := "printf '%s\\r\\n' 'HTTP/2.0 403 Forbidden' 'X-Ratelimit-Remaining: 0' ''\n" +
 		`printf '%s\n' '{"message":"API rate limit exceeded for installation ID 1."}'` + "\n" +
 		"echo 'gh: API rate limit exceeded for installation ID 1. (HTTP 403)' >&2\nexit 1\n"
 	restFails := "printf '%s\\r\\n' 'HTTP/2.0 500 Internal Server Error' ''\nprintf '%s\\n' '{\"message\":\"invented\"}'\nexit 1\n"
@@ -1662,6 +1727,50 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// `legion gh` answers the shared check's own visibility read within the bound its test names
+// (testVisibilityAnswerBoundEnv), and a read that bound stops answers nothing: exit 1, nothing on
+// standard output, the stop on standard error, and no visibility read reaches gh. The guard's
+// REST read is held in its `legion gh`'s read of gh api's help (GH_STANDIN_HOLD), which waits up
+// to ten seconds for a release this test writes only once `legion gh` has exited, so the bound,
+// a second here, is what ends the answer, whenever the read reaches the hold. A bound that runs
+// out during the read stops the read's process group, as the guard says of such a child
+// (ghBoundStop), and one that runs out before the guard starts the read is said as the context's
+// deadline. What shows that the bound named is the one that stopped it is the run's own record of
+// the bounds it took (recordTestBounds), which the answering `legion gh`, the first to start,
+// writes first: with the variable not read, it records the product's 15 s, whatever the load.
+func TestLegionGhAnswersTheSharedChecksVisibilityReadWithinItsBound(t *testing.T) {
+	root, defaultDir := gitCredentialBundle(t)
+	help, err := filepath.Abs(ghHelpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := t.TempDir()
+	ghRecord, release, bounds := filepath.Join(records, "gh"), filepath.Join(records, "release"), filepath.Join(records, "bounds")
+	stub := filepath.Join(t.TempDir(), "gh")
+	if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const slug = "sjawhar/legion"
+	code, stdout, stderr := legionGh(t, map[string]string{
+		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
+		"GH_STANDIN_RECORD": ghRecord, "GH_STANDIN_HOLD": "api", "GH_STANDIN_RELEASE": release,
+		leakguard.VisibilityReadVar: slug, testVisibilityAnswerBoundEnv: time.Second.String(), testBoundsRecordEnv: bounds,
+	}, leakguard.VisibilityReadArgs(slug)...)
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if taken, want := readRecord(t, bounds), "visibilityAnswerBound="+time.Second.String()+" "; !strings.HasPrefix(taken, want) {
+		t.Errorf("the answering legion gh recorded the bounds %q, want its first line to begin %q", taken, want)
+	}
+	stopped := strings.Contains(stderr, ghBoundStop) || strings.Contains(stderr, context.DeadlineExceeded.Error())
+	if code != 1 || stdout != "" || !stopped {
+		t.Errorf("legion gh = exit %d, stdout %q, stderr %q; want exit 1, nothing on standard output, and the bound's stop on standard error", code, stdout, stderr)
+	}
+	if reads := strings.Count(readRecord(t, ghRecord), "visibility "); reads != 0 {
+		t.Errorf("gh was asked the visibility %d times, want none, the bound having stopped the read: %q", reads, readRecord(t, ghRecord))
 	}
 }
 

@@ -332,9 +332,12 @@ func ghGeneratedSpellings() []ghSpelling {
 // collect takes as that value while gh sends the method, a value after `=` or joined to its short
 // option (`--method=GET`, `-XGET`), an empty header and one beginning with `-`, and a listed leaf
 // given a value after `=` — it costs the guard's read alone. The shared check's lookup reaches gh
-// as the guard's REST read, which `legion gh` answers it with, and the check records it. A lookup
-// that did not answer public fails as what it was, stopped by visibilityAnswerBound after so many
-// seconds or ending with its own status and words, and not as a read missing from gh's count.
+// as the guard's REST read, which `legion gh` answers it with, and the check records it. That
+// answer's bound, and that of each read of gh's help, is what is left of the test binary's own
+// deadline (ghTestBound), so a lookup a loaded machine makes slow is waited for, not missed from
+// gh's count. A lookup that did not answer public fails as what it was, stopped by
+// visibilityAnswerBound after so many seconds or ending with its own status and words, and not as
+// a read missing from gh's count.
 func TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead(t *testing.T) {
 	t.Run("the generated spellings", func(t *testing.T) {
 		spellings := ghGeneratedSpellings()
