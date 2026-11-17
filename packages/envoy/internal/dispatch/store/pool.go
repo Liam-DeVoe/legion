@@ -112,7 +112,7 @@ func ConnectionHeld(ctx context.Context) bool {
 // makes this a different question from ConnectionHeld's. The request pool serves a call under a
 // pin on the connection the request already holds rather than taking a second, so a pinned read
 // that asks the table for its trees takes no connection beside its pin and cannot deadlock on
-// one: were a pin reported here, every pinned read - which is every ordinary GET (serveRoute) -
+// one: were a pin reported here, every pinned read - which is every ordinary GET (routeHandler) -
 // would skip the table and read each of its texts for display again, and the stored trees would
 // serve only the routes that are not pinned. ConnectionHeld answers the other question, whether
 // the caller may wait (a document's writer gate), where a pin counts because the request holds

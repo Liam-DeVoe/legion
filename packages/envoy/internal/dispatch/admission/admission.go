@@ -38,7 +38,7 @@ const (
 // Reads reports whether a request with method only reads: it runs no statement that can commit,
 // so a call of its own the database never answered left nothing behind and the client may send
 // it again. It is the one place the server decides a method that question, for the class a
-// request is counted under (ClassOf), for the layers a route is wrapped in (api.serveRoute), and
+// request is counted under (ClassOf), for the layers a route is wrapped in (api.routeHandler), and
 // for the answer a call whose outcome nobody knows is given (WriteUnserved).
 //
 // A GET is one, and so is a HEAD: net/http's mux serves a HEAD with the route's GET handler, so

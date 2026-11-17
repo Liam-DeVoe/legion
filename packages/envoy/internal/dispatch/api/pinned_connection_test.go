@@ -136,11 +136,11 @@ func TestAnIssueReadIsAnsweredByAOneConnectionRequestPool(t *testing.T) {
 }
 
 // serveTestRoute serves one request to handler mounted as a route of method, as register mounts a
-// table route of that method (serveRoute), and answers the response.
+// table route of that method (routeHandler), and answers the response.
 func serveTestRoute(t *testing.T, s *server, method string, handler http.HandlerFunc) *httptest.ResponseRecorder {
 	t.Helper()
 	route := apiRoute{routeRow: routeRow{Method: method, Pattern: "/api/v1/pinned-test", Auth: authAny, Handler: handler}}
-	served := s.serveRoute(route, admission.New(admission.DefaultLimits()), 5*time.Second)
+	served := s.routeHandler(route, admission.New(admission.DefaultLimits()), 5*time.Second)
 	response := httptest.NewRecorder()
 	served(response, httptest.NewRequest(method, "/api/v1/pinned-test", nil))
 	return response

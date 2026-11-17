@@ -858,12 +858,12 @@ var openAPIRetryAfterHeader = map[string]openapi31.HeaderOrReference{
 // openAPIServerAnswers are the answers the server's own layers write for route, which no row of
 // routeShapes carries because no handler writes them: admission's refusals, a read's deadline, a
 // bound of the server's that ended a call before the database answered it, and a commit the
-// database did not answer (serveRoute,
+// database did not answer (routeHandler,
 // admission.WriteUnserved, (*server).writeHandlerError). Each carries the one refusal body every
 // route writes (errorBody), so what the document adds here is the status, the codes it may
 // carry, and the Retry-After beside them.
 //
-// Which of them a row can give is read off the row itself, exactly as serveRoute reads it:
+// Which of them a row can give is read off the row itself, exactly as routeHandler reads it:
 //
 //   - 429 goes to every row admission admits, which is every row but a test hook, a test's own,
 //     and a stream, whose reader holds it open for the run behind it (apiRoute.Streams);
@@ -892,8 +892,8 @@ func openAPIServerAnswers(route apiRoute) []openAPIServerAnswer {
 		"the connection the request held, leaving nothing behind - a read, a call that had " +
 		"not reached the database, or a statement whose transaction then rolled back."
 	unserved := "Unserved: " + busy
-	// A test hook's GET is not served as a read (serveRoute wraps only a row that is not a test
-	// hook in servedAsRead), so it has no deadline to run past.
+	// A test hook's GET is not served as a read (routeHandler wraps only a row that is not a
+	// test hook in servedAsRead), so it has no deadline to run past.
 	if admission.Reads(route.Method) && !route.TestHook {
 		unserved = "Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or " + busy
 	}

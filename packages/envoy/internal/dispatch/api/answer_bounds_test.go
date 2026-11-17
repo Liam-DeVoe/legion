@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
@@ -602,7 +601,7 @@ func TestAPinnedReadGivesItsConnectionBackWhenItsClientStopsReading(t *testing.T
 		t.Fatal("the test's route is not pinned, so it does not hold a request-pool connection to give back")
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc(route.Method+" "+pattern, served.serveRoute(route, admission.New(admission.DefaultLimits()), deadline))
+	mux.HandleFunc(route.Method+" "+pattern, served.routeHandler(route, admission.New(admission.DefaultLimits()), deadline))
 	httpServer := httptest.NewServer(mux)
 	t.Cleanup(httpServer.Close)
 	awaitQuietRequestPool(t, database.Pool)
@@ -649,8 +648,7 @@ func TestAnOrdinaryReadWhoseAnswerIsCutIsAbortedAndLogged(t *testing.T) {
 		}
 	}}}
 	mux := http.NewServeMux()
-	mux.HandleFunc(route.Method+" "+pattern,
-		accesslog.HandlerFunc(pattern, served.serveRoute(route, admission.New(admission.DefaultLimits()), deadline)))
+	mux.HandleFunc(route.Method+" "+pattern, served.routeHandler(route, admission.New(admission.DefaultLimits()), deadline))
 	httpServer := httptest.NewServer(mux)
 	t.Cleanup(httpServer.Close)
 
@@ -702,7 +700,7 @@ func TestASlowButSteadyReaderOfALargeAnswerIsAnsweredInFull(t *testing.T) {
 		}
 	}}}
 	mux := http.NewServeMux()
-	mux.HandleFunc(route.Method+" "+pattern, served.serveRoute(route, admission.New(admission.DefaultLimits()), deadline))
+	mux.HandleFunc(route.Method+" "+pattern, served.routeHandler(route, admission.New(admission.DefaultLimits()), deadline))
 	httpServer := httptest.NewServer(mux)
 	t.Cleanup(httpServer.Close)
 
@@ -760,7 +758,7 @@ func TestASlowButSteadyReaderOfAnAnswerWrittenInOneWriteIsAnsweredInFull(t *test
 		}
 	}}}
 	mux := http.NewServeMux()
-	mux.HandleFunc(route.Method+" "+pattern, served.serveRoute(route, admission.New(admission.DefaultLimits()), deadline))
+	mux.HandleFunc(route.Method+" "+pattern, served.routeHandler(route, admission.New(admission.DefaultLimits()), deadline))
 	httpServer := httptest.NewServer(mux)
 	t.Cleanup(httpServer.Close)
 
@@ -815,7 +813,7 @@ func TestAReaderSteadilyAboveTheFloorIsAnsweredInFullOverARealConnection(t *test
 		_, _ = w.Write(make([]byte, answer))
 	}}}
 	mux := http.NewServeMux()
-	mux.HandleFunc(route.Method+" "+pattern, served.serveRoute(route, admission.New(admission.DefaultLimits()), 5*time.Minute))
+	mux.HandleFunc(route.Method+" "+pattern, served.routeHandler(route, admission.New(admission.DefaultLimits()), 5*time.Minute))
 	httpServer := httptest.NewServer(mux)
 	t.Cleanup(httpServer.Close)
 
@@ -882,7 +880,7 @@ func TestAReaderThatStopsReadingIsCutWithinTheSendBuffersDrain(t *testing.T) {
 		cut <- err
 	}}}
 	mux := http.NewServeMux()
-	mux.HandleFunc(route.Method+" "+pattern, served.serveRoute(route, admission.New(admission.DefaultLimits()), deadline))
+	mux.HandleFunc(route.Method+" "+pattern, served.routeHandler(route, admission.New(admission.DefaultLimits()), deadline))
 	httpServer := httptest.NewServer(mux)
 	t.Cleanup(httpServer.Close)
 

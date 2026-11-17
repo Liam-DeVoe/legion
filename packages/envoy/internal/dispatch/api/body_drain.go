@@ -299,7 +299,7 @@ type drainedBody struct {
 	io.ReadCloser
 	movingDeadline
 	// ticket is the request's admission hold, which admitted hands to the body on the request it
-	// was given (admit; the drain sits outside admission, serveRoute); nil for a request
+	// was given (admit; the drain sits outside admission, routeHandler); nil for a request
 	// admission did not count or has not admitted yet, whose body parks nothing.
 	ticket *admission.Ticket
 	// refuse cancels the handler's own context with the refusal that would not let the request
@@ -841,7 +841,7 @@ func (w *drainingWriter) Unwrap() http.ResponseWriter {
 // tells this bound to leave the time its reads of the file store take out of what the floor
 // judges (movingDeadline.outside, leaveOutOfAnswerFloor), the store's pace being judged by a
 // floor of its own (storeBody).
-// Only a read is wrapped (serveRoute), and the websockets are mounted outside it, so no
+// Only a read is wrapped (routeHandler), and the websockets are mounted outside it, so no
 // long-lived connection is bounded here.
 //
 // A write of the answer that fails, or that takes less than it was given, cuts the answer: its

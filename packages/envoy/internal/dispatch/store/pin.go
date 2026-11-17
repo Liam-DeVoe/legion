@@ -9,7 +9,7 @@ import (
 
 // PinConnection returns a context on which every call to the request pool runs on one connection:
 // the first call takes it, each later one runs on it instead of taking another, and the returned
-// end gives it back to the pool. The API pins each ordinary read (api.serveRoute), which reads
+// end gives it back to the pool. The API pins each ordinary read (api.routeHandler), which reads
 // through a dozen statements one after another - an issue read through twelve, a page of its
 // comments through four - and made each of them wait for a connection of its own: under load
 // every statement queued behind every other request's, so a read waited a dozen times for

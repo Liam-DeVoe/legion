@@ -451,10 +451,15 @@ type routeScopeSet []string
 // token, a project-scoped session's token and a broker-issued token that names a service and no
 // person hold neither.
 //
+// The scope `read` a read-only token holds is no value of this map: a scope here is one the
+// caller must hold, and no person holds that one. The routes such a token may call are a list of
+// their own, readScopeRoutes below, which its own gate reads (refuseReadOnlyToken).
+//
 // A route that takes an id written short needs no scope of its own for it: the prefix layer
-// (resolveIDPrefixes, idRoutes) runs inside this gate - register wraps the gate around it, so
-// the row's scopes are the first thing a request is held to and a credential that holds none is
-// refused before any id is read - and it only rewrites the path value, so a short id reaches
+// (resolveIDPrefixes, idRoutes) runs inside this gate - register wraps the gate around it, so a
+// credential that holds none of the row's scopes is refused before any id is read, and the one
+// check a request meets ahead of the row's scopes is whether a read-only token may call the row
+// at all (refuseReadOnlyToken) - and it only rewrites the path value, so a short id reaches
 // exactly the scopes the whole id reaches, and a row that needs none with a whole id needs none
 // with a prefix.
 var routeScopes = map[string]routeScopeSet{
@@ -523,6 +528,27 @@ var routeScopes = map[string]routeScopeSet{
 	"POST /api/v1/artifacts/{id}/versions/{number}/reviews": {model.ScopePerson, model.ScopeApprove},
 }
 
+// readScopeRoutes is every route a read-only token may call, by "<method> <pattern>": a token the
+// secrets broker minted from a read entry, which holds the scope read alone and names a service
+// and a session and no person and no project (model.Credential.ReadOnly). Every other row of the
+// table, and GET /ws/live beside it, answers such a token 403 READ_ONLY_TOKEN before anything
+// else the route does (refuseReadOnlyToken), so a route added later stays closed to it until it
+// is listed here.
+//
+// A route is listed only when, for such a caller, it writes nothing but the row that records its
+// DPoP proof as spent (store.DPoPProofs) and caches Dispatch rebuilds from what it already holds:
+// the display trees a read with Dispatch-Trees: 1 stores (displayTreeReader.storeOf) and the
+// stored listener roster (route_roster). TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches
+// holds the route listed today to that.
+//
+// It is a list beside the table and not a value of routeScopes: a scope there is one the caller
+// must hold, and no person holds read, so the list says what a credential that holds read alone
+// may still call rather than what a route requires. For the same reason the route index (GET
+// /api/v1), the OpenAPI document and the reference generated from it do not carry it. routes()
+// stamps it onto the row (mountedRoutes, apiRoute.ReadScope), and register refuses to mount a
+// table whose list names anything but a GET row it mounts (readRoutesNotMountedAsGET).
+var readScopeRoutes = []string{"GET /api/v1/projects/{key}/architecture"}
+
 // routesNotMounted names every route of names that is no row of the table, sorted. The walk is
 // over the table with its test hooks in, since a hook's row is a row of the table wherever a
 // deployment leaves it out.
@@ -550,6 +576,23 @@ func scopedRoutesNotMounted() []string {
 	return routesNotMounted(maps.Keys(routeScopes))
 }
 
+// readRoutesNotMountedAsGET names every route of names that is not a GET row of the table,
+// sorted: one no row holds (routesNotMounted) and one whose method is not GET. register refuses
+// to mount a read list that names either (readScopeRoutes). A name no row holds opens nothing
+// while the list reads as though it opened a route - a row renamed or deleted and its entry left
+// behind - and a POST, PUT, PATCH or DELETE row is a write, which a read-only token is minted
+// never to make. The walk is over the table with its test hooks in, as routesNotMounted's is.
+func readRoutesNotMountedAsGET(names []string) []string {
+	refused := routesNotMounted(slices.Values(names))
+	for _, name := range names {
+		if method, _, _ := strings.Cut(name, " "); method != http.MethodGet && !slices.Contains(refused, name) {
+			refused = append(refused, name)
+		}
+	}
+	sort.Strings(refused)
+	return refused
+}
+
 // routeRow is one row of the route table: what a route is, the five columns every route has,
 // written as a positional literal, which is why neither the write class nor the OAuth scopes
 // are among them (writeClasses, routeScopes). Register mounts the table and GET /api/v1 lists
@@ -562,10 +605,10 @@ type routeRow struct {
 	Handler     http.HandlerFunc
 }
 
-// apiRoute is one mounted route: its row, how register serves it (serveRoute), and the write
-// class and OAuth scopes mountedRoutes stamps onto it from writeClasses and routeScopes. What
-// the route takes and answers is routeShapes', which only the OpenAPI emitter reads, so no row
-// carries it.
+// apiRoute is one mounted route: its row, how register serves it (routeHandler), and the write
+// class, the OAuth scopes and whether a read-only token may call it, which mountedRoutes stamps
+// onto it from writeClasses, routeScopes and readScopeRoutes. What the route takes and answers is
+// routeShapes', which only the OpenAPI emitter reads, so no row carries it.
 type apiRoute struct {
 	routeRow
 	// TestHook marks a route TestHooksEnabled mounts: a test's own route is neither admitted nor
@@ -616,6 +659,11 @@ type apiRoute struct {
 	// which register's one gate enforces (gateRouteScopes). mountedRoutes stamps it on from
 	// routeScopes: it is empty on every row any authenticated caller may reach.
 	OAuthScopes routeScopeSet
+	// ReadScope is whether a read-only token may call the route. mountedRoutes stamps it on from
+	// readScopeRoutes: it is true on the rows the read list names and on no other, and only the
+	// read-only gate reads it (refuseReadOnlyToken), never the route index or the OpenAPI
+	// document.
+	ReadScope bool
 }
 
 // pinsConnection reports whether a request of the route runs every request-pool statement on one
@@ -706,7 +754,7 @@ func download(row routeRow) apiRoute {
 
 // streamed is a read whose answer is a stream, the going run's server-sent events: it takes no
 // admission unit and pins no connection, and its deadline stops at its first frame
-// (apiRoute.Streams, serveRoute). The handler ends it itself at the run's window and the grace
+// (apiRoute.Streams, routeHandler). The handler ends it itself at the run's window and the grace
 // past it, and its frames go out under the answer's transfer bounds, so a reader that stops
 // reading is still cut.
 func streamed(row routeRow) apiRoute {
@@ -753,8 +801,9 @@ func (r apiRoute) bodyLimit() int64 {
 }
 
 // mountedRoutes is the table as register serves it: its rows, each test hook marked TestHook,
-// and every row's write class and OAuth scopes stamped on from writeClasses and routeScopes,
-// so apiRoute.Scope and apiRoute.OAuthScopes are what every reader of a route sees.
+// and every row's write class, OAuth scopes and read-list mark stamped on from writeClasses,
+// routeScopes and readScopeRoutes, so apiRoute.Scope, apiRoute.OAuthScopes and
+// apiRoute.ReadScope are what every reader of a route sees.
 func mountedRoutes(rows []apiRoute, testHooks []routeRow) []apiRoute {
 	routes := make([]apiRoute, 0, len(rows)+len(testHooks))
 	routes = append(routes, rows...)
@@ -765,6 +814,7 @@ func mountedRoutes(rows []apiRoute, testHooks []routeRow) []apiRoute {
 		name := routes[index].Method + " " + routes[index].Pattern
 		routes[index].Scope = writeClasses[name]
 		routes[index].OAuthScopes = routeScopes[name]
+		routes[index].ReadScope = slices.Contains(readScopeRoutes, name)
 	}
 	return routes
 }
