@@ -2101,15 +2101,18 @@ package api
 // null), or `409 PLAN_REFUSED` with `reasons`, one `{task, reason}` for each cause (`task` is ""
 // for a cause of the whole plan; `api.PlanRefusal`), `409 VERSION_NOT_IN_DISPATCH`,
 // `409 PLAN_VERSION_OLD`, `409 PLAN_DOCUMENT_CHANGED`, `409 ISSUE_ALREADY_RELEASED`,
-// `403 ARCHITECT_REQUIRED`, `403 ISSUE_OUTSIDE_TREE`, `404 ISSUE_NOT_FOUND`,
-// `404 ARTIFACT_NOT_ON_ISSUE`, `502 PLAN_UNREADABLE` or `502 DISPATCH_FAILED`. `POST
-// /legion/v1/tasks/stop` (`grantId`, `issue`, `task`) stops one task of the issue and answers
-// 200 `{}`, `404 TASK_NOT_FOUND` or `409 TASK_DONE`. `POST /legion/v1/handoff/complete` takes one
-// optional field, `returnTo`, the place of the step of the issue's running task, 1 for its first,
-// that a tester's completion with the verdict `fail` sends the task back to: below 1 it is
-// refused `400 INVALID_RETURN_TO`, and on any completion that fails no step, a production
-// check's report included, `400 RETURN_TO_NEEDS_FAIL` (`api.returnToRefusal`); the workflow
-// refuses a step it may not name, one that is not earlier in the task, `409 RETURN_REFUSED`. For
+// `409 TASK_DONE` (a version that changes a task that is done or left the workflow),
+// `409 PLAN_STALE_GENERATION` (a plan given at a generation the issue left before the workflow
+// applied it), `409 TREE_LINGERING`, `403 ARCHITECT_REQUIRED`, `403 ISSUE_OUTSIDE_TREE`,
+// `404 ISSUE_NOT_FOUND`, `404 ARTIFACT_NOT_ON_ISSUE`, `502 PLAN_UNREADABLE` or
+// `502 DISPATCH_FAILED`. `POST /legion/v1/tasks/stop` (`grantId`, `issue`, `task`) stops one task
+// of the issue and answers 200 `{}`, `404 TASK_NOT_FOUND` or `409 TASK_DONE`. `POST
+// /legion/v1/handoff/complete` takes one optional field, `returnTo`, the place of the step of the
+// issue's running task, 1 for its first, that a tester's completion with the verdict `fail` sends
+// the task back to: below 1 it is refused `400 INVALID_RETURN_TO`, and on any completion that
+// fails no step, a production check's report included, `400 RETURN_TO_NEEDS_FAIL`
+// (`api.returnToRefusal`); the workflow refuses a step it may not name, one that is not earlier in
+// the task, `409 RETURN_REFUSED`. For
 // an issue with plan rows the completion route may also answer `409 STEP_ENDED` and
 // `409 TASK_STOPPED` where it answered 200 for a late completion, and `retry_or_escalate` and
 // `legion claims retry` answer `409 TASK_STOPPED` or `409 HELD_FOR_CHILDREN` on a hold of one of

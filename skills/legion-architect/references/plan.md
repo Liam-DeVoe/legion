@@ -97,8 +97,13 @@ need from the planner's plan into your task's text.
   you change it.` It takes a version that leaves the running task's block as it is, including one
   that changes only the text outside the block.
 - Legion refuses a version at or below the one it holds (`PLAN_VERSION_OLD`), a version above
-  Dispatch's latest (`VERSION_NOT_IN_DISPATCH`), and a version of another document than the plan
-  in force (`PLAN_DOCUMENT_CHANGED`).
+  Dispatch's latest (`VERSION_NOT_IN_DISPATCH`), a version of another document than the plan in
+  force (`PLAN_DOCUMENT_CHANGED`), a version that changes a task that is done (`TASK_DONE`), and a
+  plan given for a generation the issue left before Legion applied it (`PLAN_STALE_GENERATION`):
+  give that plan again.
+- An issue that started its work before Legion took plans has no task, and Legion takes no plan for
+  it: `<KEY> started its work before Legion took plans, so it runs the steps it started with to
+  their end. This plan changed nothing.`
 
 ## The notices
 

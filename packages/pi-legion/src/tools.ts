@@ -375,11 +375,13 @@ export function createLegionTool(deps: {
         "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
         "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
         "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
-        "(PLAN_REFUSED, which also refuses a version that changes a running task: stop it with stop_task first), a version Dispatch does " +
+        "(PLAN_REFUSED, which also refuses a version that changes a running task: stop it with stop_task first, and a plan of an issue " +
+        "that started its work before Legion took plans), a version Dispatch does " +
         "not have (VERSION_NOT_IN_DISPATCH), a version no later than the plan in force (PLAN_VERSION_OLD), another document than the plan " +
         "in force (PLAN_DOCUMENT_CHANGED), a document of another issue (ARTIFACT_NOT_ON_ISSUE), an issue outside your tree " +
-        "(ISSUE_OUTSIDE_TREE), and an issue the daemon has not recorded whose Dispatch status is not triage, backlog, icebox or todo " +
-        "(ISSUE_ALREADY_RELEASED). " +
+        "(ISSUE_OUTSIDE_TREE), an issue the daemon has not recorded whose Dispatch status is not triage, backlog, icebox or todo " +
+        "(ISSUE_ALREADY_RELEASED), a version that changes a task that is done (TASK_DONE), and a plan given for a run of the issue " +
+        "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION). " +
         "stop_task (issue, task) stops one task of the plan Legion runs for a recorded issue: its running step stops, and the issue is " +
         "held, `holdReason` task-stopped, until a later version of the plan, given with register_plan, changes or replaces that task, " +
         "which then starts at its first step; retry_or_escalate does not start it again (TASK_STOPPED). The daemon refuses a task the plan " +

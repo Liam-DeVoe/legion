@@ -1006,11 +1006,14 @@ func (GateRegistered) isFact() {}
 // architect whose grant gave it, which is how the first step tells its owner's plan from an
 // earlier owner's.
 //
-// The workflow applies the rules of a later version (R16): it answers PLAN_REFUSED
-// (RunningTaskChanged), PLAN_VERSION_OLD or PLAN_DOCUMENT_CHANGED, and it leaves each of those
-// refusals unspent (Result.Unspent). The route names one registration by the issue, the
-// generation, the document and the version, so a version refused while its task ran is the same
-// fact when the owner gives it again after stop_task, and must apply then.
+// The workflow stores it (workflow's planGiven) where its task has not started, and applies the
+// rules of a later version (R16). It answers PLAN_REFUSED (RunningTaskChanged, or
+// StartedBeforePlans for an issue that ran before Legion took plans), PLAN_VERSION_OLD,
+// PLAN_DOCUMENT_CHANGED, TASK_DONE (PlanOfDoneTask, PlanOfLeftTask), PLAN_STALE_GENERATION and
+// TREE_LINGERING, and it leaves each of those refusals unspent (Result.Unspent). The route names
+// one registration by the issue, the generation, the document and the version, so a version
+// refused while its task ran is the same fact when the owner gives it again after stop_task, and
+// must apply then.
 type PlanGiven struct {
 	Issue      string
 	Generation uint64
@@ -1449,6 +1452,38 @@ func PlanVersionOld(issue string, held, given int) *Refusal {
 func PlanDocumentChanged(issue, artifact string) *Refusal {
 	return &Refusal{Status: 409, Code: "PLAN_DOCUMENT_CHANGED", Message: fmt.Sprintf(
 		"the plan in force of %s is document %s; give a later version of that document.", issue, artifact)}
+}
+
+// PlanOfDoneTask is the 409 TASK_DONE refusal of a version that changes task of issue, which is
+// done: nothing of it is left to change, and the code is that of a stop of a done task.
+func PlanOfDoneTask(issue, task string) *Refusal {
+	return &Refusal{Status: 409, Code: "TASK_DONE", Message: fmt.Sprintf(
+		"task %s of %s is done, so nothing of it is left to change. This plan changed nothing.", task, issue)}
+}
+
+// PlanOfLeftTask is the 409 TASK_DONE refusal of a version that changes task of issue, which left
+// the workflow with its issue before it was done (record.TaskLeft): nothing moves it again, as for
+// a task that is done, and the code is that one's.
+func PlanOfLeftTask(issue, task string) *Refusal {
+	return &Refusal{Status: 409, Code: "TASK_DONE", Message: fmt.Sprintf(
+		"task %s of %s left the workflow with its issue before it was done, so nothing of it is left to change. This plan changed nothing.", task, issue)}
+}
+
+// StartedBeforePlans is the reason a plan is refused for issue, which the daemon recorded with no
+// plan rows at its generation and whose work has started: it ran before Legion took plans, and it
+// walks today's line to its end (R20). It names no task, and it does not end with "This release
+// of Legion does not carry it out yet.", since no later release gives such a run a plan.
+func StartedBeforePlans(issue string) plan.Refusal {
+	return plan.Refusal{Reason: fmt.Sprintf(
+		"%s started its work before Legion took plans, so it runs the steps it started with to their end. This plan changed nothing.", issue)}
+}
+
+// PlanStaleGeneration is the 409 PLAN_STALE_GENERATION refusal of a plan given at generation given
+// of issue, which is on generation now: the route read the issue before its generation moved, so
+// the plan was given for a run that is over.
+func PlanStaleGeneration(issue string, given, now uint64) *Refusal {
+	return &Refusal{Status: 409, Code: "PLAN_STALE_GENERATION", Message: fmt.Sprintf(
+		"the plan was given for generation %d of %s, and %s is on generation %d now. Give the plan again. This plan changed nothing.", given, issue, issue, now)}
 }
 
 // TaskNotFound is the 404 TASK_NOT_FOUND refusal of stop_task for task, which the plan Legion

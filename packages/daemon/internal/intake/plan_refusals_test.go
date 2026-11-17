@@ -41,6 +41,16 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 			Message: "task a of LEGION-208 is done, so nothing of it is left to stop. This stop changed nothing."}},
 		{"a task that left the workflow with its issue", TaskLeft("LEGION-208", "a"), Refusal{Status: http.StatusConflict, Code: "TASK_DONE",
 			Message: "task a of LEGION-208 left the workflow with its issue before it was done, so nothing of it is left to stop. This stop changed nothing."}},
+		{"a version that changes a task that is done", PlanOfDoneTask("LEGION-208", "a"), Refusal{Status: http.StatusConflict, Code: "TASK_DONE",
+			Message: "task a of LEGION-208 is done, so nothing of it is left to change. This plan changed nothing."}},
+		{"a version that changes a task that left the workflow", PlanOfLeftTask("LEGION-208", "a"), Refusal{Status: http.StatusConflict, Code: "TASK_DONE",
+			Message: "task a of LEGION-208 left the workflow with its issue before it was done, so nothing of it is left to change. This plan changed nothing."}},
+		{"an issue that started before Legion took plans", PlanRefused([]plan.Refusal{StartedBeforePlans("LEGION-208")}), Refusal{Status: http.StatusConflict,
+			Code: "PLAN_REFUSED", Message: "Legion refused this plan and recorded nothing: LEGION-208 started its work before Legion took plans, " +
+				"so it runs the steps it started with to their end. This plan changed nothing.",
+			Reasons: []plan.Refusal{{Reason: "LEGION-208 started its work before Legion took plans, so it runs the steps it started with to their end. This plan changed nothing."}}}},
+		{"a plan given at a generation the issue has left", PlanStaleGeneration("LEGION-208", 1, 2), Refusal{Status: http.StatusConflict, Code: "PLAN_STALE_GENERATION",
+			Message: "the plan was given for generation 1 of LEGION-208, and LEGION-208 is on generation 2 now. Give the plan again. This plan changed nothing."}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.got == nil || !reflect.DeepEqual(*tc.got, tc.want) {

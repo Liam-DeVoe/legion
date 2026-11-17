@@ -32,7 +32,7 @@ func ownersPlan(issue string, generation uint64, version int, givenBy claim.Toke
 	v := PlanVersion{Issue: issue, Generation: generation, Version: version, ArtifactID: planAuthor, Source: PlanSourceOwner, GivenBy: givenBy, GivenAt: at}
 	tasks := []PlanTask{{
 		Issue: issue, Generation: generation, Task: "a", PlanVersion: version, BlockText: "Build the widget.",
-		Needs: []string{"b"}, PartOf: "widgets", OwnerRole: "architect", Merges: true,
+		Needs: []string{"b"}, PartOf: "widgets", OwnerRole: "architect", Merges: true, StepsByDefault: true,
 		State: TaskWaiting,
 	}}
 	steps := []PlanStep{
