@@ -1,6 +1,6 @@
 ---
 title: Concepts
-description: The controller, the architect, the phase workers, admission and the legion label, the design gate, handoffs, review, the architect's acceptance, the merge that closes the issue and the production check your project's production_check setting opens after it.
+description: The controller, the architect, the phase workers and the plan that picks which of them an issue runs, admission and the legion label, the design gate, handoffs, review, the architect's acceptance, the merge that closes the issue and the production check your project's production_check setting opens after it.
 sidebar:
   order: 2
 ---
@@ -31,10 +31,10 @@ section can use the words without stopping to explain them.
   Legion acts there through two GitHub Apps, so the account that reviews a change is never the one
   that wrote it. The daemon creates a root's branch at the recorded default branch (`main`,
   `develop` or `release/v7.1` alike) when it admits the root, before its architect starts, and a
-  child's when the child starts planning in its tree, so no agent's push is the one that creates a
-  branch: GitHub can refuse that push on a large repository. An issue's workspace with no branch to
-  start from starts at that default branch too. A pull request or push names its repository, and
-  counts for an issue only in the issue's own.
+  child's when the child starts its first step in its tree, so no agent's push is the one that
+  creates a branch: GitHub can refuse that push on a large repository. An issue's workspace with
+  no branch to start from starts at that default branch too. A pull request or push names its
+  repository, and counts for an issue only in the issue's own.
 
 ## Several repositories
 
@@ -103,7 +103,7 @@ admission to close. The architect:
 3. asks you to approve the spec (the [design gate](#the-design-gate));
 4. decides how many pull requests deliver the work best, files any child issues that takes, and releases them with their dependencies;
 5. decides what to do when a phase gets stuck, a review round cap is reached, or CI keeps failing;
-6. accepts the issue once the reviewer approves it, reading the tester's and the implementer's evidence, or sends it back; the merge then closes it.
+6. accepts the issue once the step before its acceptance passes (in the default steps, the reviewer's approval), reading the evidence of the steps that ran, or sends it back; the merge then closes it. An issue whose [plan](#the-plan-of-an-issue) has no acceptance step goes on to retro without one.
 
 The architect writes no code. A child issue runs the same phases as its root, with a pull request
 of its own, inside the same tree.
@@ -125,7 +125,8 @@ workflow.
 
 ## Phase workers
 
-The daemon starts each phase's worker itself, one phase at a time, in the order below. A role keeps
+The daemon starts each phase's worker itself, one phase at a time, in the order below, and runs
+only the phases of the steps the issue's [plan](#the-plan-of-an-issue) names. A role keeps
 its session between its assignments until its issue leaves the workflow, so its next task reaches
 the same session. Under the Kubernetes runtime the pod is shorter-lived than the session: the
 daemon releases an issue's pod once no role of it has a turn in progress or a turn due for ten
@@ -140,19 +141,44 @@ head — brings the pod back and resumes the same sessions where they stopped.
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
-| `accepting` | the architect | Reads the tester's handoff, each check of the issue's Verification document with its latest result, and the reviewer's approval of the head, and accepts the issue (on to retro) or sends it back to the implementer or the tester. Issues still running beneath it do not hold the acceptance: a root's close waits for them instead. No worker runs here; the issue's Dispatch status stays `needs_review`. | review App |
+| `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads each check of the issue's Verification document with its latest result, the tester's handoff and the reviewer's approval of the head where the plan has those steps, and accepts the issue (on to retro) or sends it back to the implementer, or to the tester where the plan has one. Issues still running beneath it do not hold the acceptance: a root's close waits for them instead. No worker runs here; the issue's Dispatch status stays `needs_review`. | review App |
 | `retro` | implementer | Writes down what the work taught, as one comment on the issue, and brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | implement App |
 | `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
 
 A failed test, a review that requests changes, or a head that starts conflicting with its base
-sends the issue back to `implementing` from testing, review, acceptance, retro or merging,
-and the change goes through the tester again before the reviewer sees it. Red CI sends nothing
+sends the issue back to `implementing` from testing, review, acceptance, retro or merging, and
+the change goes through the issue's steps after the implementer again: in the default steps, the
+tester before the reviewer sees it. Red CI sends nothing
 back from anywhere: the review round and CI are two rules, each read on its own, and the
 reviewer's approval of the head ends the round whatever CI says at that commit, since the
 reviewer reads the code commit's checks on GitHub before it approves
 ([review signalling](#review-signalling)). What a red check does is reach the tree's architect,
 the worker of the issue's current phase and the implementer, as one message naming each check and
 its conclusion; and hold the merge, where GitHub applies the base branch's own required checks.
+
+### The plan of an issue
+
+The table is the line of the **default steps**. The architect, as the owner of each issue of its
+tree, can give an issue a **plan** that picks which of these steps it runs: one task whose steps are
+some of `planner implementer tester reviewer acceptance:owner`, in that order, with `implementer`
+among them, where `acceptance:owner` is the architect's own acceptance in `accepting`. It writes
+the plan as the issue's `plan.md` document, with one `plan_task` block such as
+`:::plan_task{#a steps="implementer reviewer"}` whose text says what the task must deliver, and
+gives that version to Legion with the `legion` tool's `register_plan` before the issue's work
+starts. Legion runs only those steps, in that order, then the retro and the merge, so an issue with
+that plan runs no planner and no tester. Legion refuses any other plan with `PLAN_REFUSED` and one
+reason for each cause. An issue whose owner gives it no plan, or a task with no steps, runs the
+project's default steps, `projects.<KEY>.default_steps` in `legion.yaml`, which are the whole table
+unless the project sets others; so does an issue whose work started before its owner gave it a
+plan, until the owner stops that task with `stop_task` and gives a plan whose one task replaces it.
+
+A step a plan leaves out hands its duty on. With no tester step, the implementer's own results
+against the issue's checks are the evidence, and a reviewer step refuses to approve while any of
+them has no pass at the head. With no reviewer step, nothing approves the head, so on a base that
+requires an approving review the merger waits and tells the architect which review is missing. With
+no acceptance step, the last step passing starts the retro; a parent that gets there while an issue
+beneath it is still in the workflow is held before its retro until the last one leaves.
+`dispatch steps --issue <KEY>` prints each run of each step of an issue.
 
 ## Admission and the `legion` label
 
@@ -337,9 +363,10 @@ A worker's completion names its record, and the daemon reads that record back fr
 it moves the issue: it refuses a record another session wrote, one of another issue, phase or
 version, and the record the role named for its previous phase. No handoff is a commit, so the
 issue branch carries only work, every push gets its own CI, and the merge brings no handoff onto
-the default branch. Retro commits nothing, so the head that merges is the head the reviewer
-approved, and nothing in Legion compares the two in any case: a repository that wants a later
-push reviewed says so in its own rulesets, and GitHub holds the merge to them.
+the default branch. Retro commits nothing, so the head that merges is the head the issue's last
+step passed — the head the reviewer approved, where its plan has a review step — and nothing in
+Legion compares the two in any case: a repository that wants a later push reviewed says so in its
+own rulesets, and GitHub holds the merge to them.
 
 ## Review signalling
 
@@ -449,7 +476,8 @@ Legion uses GitHub's own review mechanisms rather than labels:
 
 ## The merge
 
-When the reviewer has approved, the architect has accepted and retro is done, the merger reads the
+When the issue's steps have passed — in the default steps, the reviewer has approved and the
+architect has accepted — and retro is done, the merger reads the
 pull request and merges it itself, as the implement App and at the head it read, which it names as
 the head GitHub must match (`gh pr merge <n> --squash --match-head-commit <head>`). On a base with
 a merge queue it enqueues the pull request instead, with GraphQL `enqueuePullRequest` and the same
@@ -467,9 +495,10 @@ the architect: only a person can change that setting, to `PR_BODY` or `BLANK`.
 
 The merger never turns auto-merge on, and the daemon submits no merge and changes no merge setting
 of any pull request. The repository's own required reviews and checks decide when it lands; Legion
-reads none of them at the merge, bypasses none, and waits for a review only a person can give.
-Nothing holds the head that merges to the head the reviewer approved: a repository that wants its
-newest push reviewed says so in its own rulesets.
+reads none of them at the merge, bypasses none, and waits for a review only a person can give. On
+an issue whose plan has no reviewer step and a base that requires an approving review, the merger
+also tells the architect which review is missing. Nothing holds the head that merges to the head a
+reviewer approved: a repository that wants its newest push reviewed says so in its own rulesets.
 
 When a merge fails, the decision is the merger's, on GitHub's own answer: wait for what GitHub
 waits for, merge again at the head it re-reads, send the issue back with `request_backward_move`
@@ -502,7 +531,8 @@ and the close comes when the last of them is done or parked. What is
 left after the close is to see the change work in production, and that is
 work after the close, where your project asks for it: `projects.<KEY>.production_check` in
 `legion.yaml` takes `off` or `tester` and is `tester` by default, so the tester is handed a
-production check in its live session as the issue closes, and a project that sets `off` opens no
+production check as the issue closes, in its own session or, where the issue's plan had no tester
+step, a fresh one, and a project that sets `off` opens no
 check at all — the close retires every claim of the issue and releases its pod. The loader
 refuses any other value, naming the key and the value it read. The check's record carries the
 role, written when the check opened, so changing the setting leaves an open check with the role

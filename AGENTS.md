@@ -89,11 +89,11 @@ A phase worker whose role `legion.yaml`'s `worker_backends` puts on `claude` run
 the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's Oh My Pi RPC frames on one side and Claude Code's stream-json on the other (`packages/daemon/internal/claudebridge`, transport only), with `packages/claude-envoy` as the worker's MCP server and plugins
 — a built checkout of it under tmux, the worker image's copy in a pod.
 
-- **Daemon** — Dispatch and GitHub intake, the fixed workflow table, the durable issue record in Postgres, admission, process supervision under either runtime, each role's GitHub App credential, session grants, and recovery.
+- **Daemon** — Dispatch and GitHub intake, the workflow table each issue's plan gives it, the durable issue record in Postgres, admission, process supervision under either runtime, each role's GitHub App credential, session grants, and recovery.
 
 - **OMP extensions** — two Oh My Pi plugins:
   `@sjawhar/pi-envoy` (`packages/pi-envoy`), which every session loads for Envoy messaging and the native Dispatch tools, and `@sjawhar/pi-legion` (`packages/pi-legion`), which a Legion pane loads beside it and which injects the Legion tool (its daemon calls carry session grants the tool mints in-process) and the daemon handshake into that session, reaching the Envoy plugin through the versioned interface in `packages/pi-shared`.
-  The daemon starts every phase worker (planner/implementer/tester/reviewer/merger) itself, from its fixed workflow table;
+  The daemon starts every phase worker (planner/implementer/tester/reviewer/merger) itself, each at its step of the issue's plan, the steps the issue's owner gave it or the project's default steps;
   a sub-architect for a child issue runs only when the operator starts one.
   The controller is an interactive OMP session the operator starts on their own machine with `legion controller start` (no `--mode rpc`, no shim), unless `legion.yaml` sets `controller: daemon`, where the daemon launches it in an Agent Sandbox pod of its own, whose one container runs the controller's `legion launcher`, or under `runtime: tmux` in a pane of its own `controller` window, and supervises it like a root architect (`docs/kubernetes.md`, "The controller";
   `docs/deployment.md`, "The `runtime.tmux` block").
@@ -602,6 +602,8 @@ it serves no repository of its own, which is why a pair may be configured before
 
 `projects.<KEY>.production_check` decides whether a merge that closes one of the project's issues opens a production check and who works it:
 it takes `off` or `tester`, is `tester` by default, and the loader refuses every other value, naming the key and the value it read.
+`projects.<KEY>.default_steps` is the line an issue of the project runs when its owner gives it no plan, or a task with no steps:
+`[planner, implementer, tester, reviewer, "acceptance:owner"]` by default, the whole line under Issue Lifecycle, and the loader reads it with the plan grammar and refuses an empty list and each list this release does not take, naming the key and the reason.
 `projects.<KEY>.deploys` is still accepted and read for nothing, since another repository's deployment still sets it:
 the loader warns once per project that sets it, `legion start` logs each warning as it boots, and `legion start --check-config` prints each after its `Config OK` line and exits 0.
 
@@ -935,11 +937,13 @@ Triage ──┬──► Icebox ──► Backlog ──► Todo ──► In P
                     (urgent + clear)
 ```
 
-**Phase roles:** architect → plan → implement → test → review → the architect's acceptance → retro → merge
+**Phase roles**, in the default steps (`projects.<KEY>.default_steps`): architect → plan → implement → test → review → the architect's acceptance → retro → merge
+
+The plan of an issue's owner picks which of these steps the issue runs — one task whose steps are some of `planner implementer tester reviewer acceptance:owner`, in that order, with `implementer` among them, then Legion's retro and merge — so the diagram above is the line of the default steps, and an issue passes over the Dispatch status of each step its plan leaves out.
 
 **Admission:** an admission slot is one issue the daemon has started, not one tree.
 Any issue, a root or a child, takes a slot when the daemon starts it — a root at its admission, which starts its architect, a child at the start of its first phase.
-An issue holds one of the cap's slots from the moment the daemon starts it until its work is past its review — `accepting`, `retro` and `merging` hold none — or until it is done or Dispatch takes it out of the workflow, except while it waits on another issue before that point (see the paragraph on started issues that wait, below).
+An issue holds one of the cap's slots from the moment the daemon starts it until its work is past its review — `accepting`, `retro` and `merging` hold none, and an issue whose task has no review step reaches them from its last step — or until it is done or Dispatch takes it out of the workflow, except while it waits on another issue before that point (see the paragraph on started issues that wait, below).
 So the row goes in five cases only: the issue's own phase is `done`; Dispatch shows it in `backlog`, `icebox`, `triage` or `done`; it belongs to a tree whose root closed or a tree the daemon no longer runs; it stands in `accepting`, `retro` or `merging`; or it waits on another issue before its review and is not one of the three roots that keep their slot through such a wait.
 Where it stands is its own phase, or, where that phase is `held` and the record names the phase the hold came from, that phase (`record.StandsAt`), so an issue held from its retro or its merge holds no row either.
 Every other phase keeps it — `admitted`, `planning`, `implementing`, `testing`, `reviewing`, `awaiting_person` and `held`, a hold the record names no phase past the review for — so an issue waiting on a person or on its review keeps its place against the cap and wins none back from the line when the wait ends.
@@ -968,17 +972,18 @@ One issue beneath is left out of the `sign_off` refusal, the `close_root` refusa
 When the root that held it closes, the tree's linger hands that child to Legion as a root of its own, so the work a person asked for runs once the ancestor has closed, as the `child-status` notice says it will.
 A parent with children puts the work into them, and its own pull request joins and proves their merged work.
 
-**Acceptance:** the reviewer's approval moves the issue to `accepting` (Dispatch status `needs_review`) once GitHub reports the approved head one it would merge or the pull request has merged at that head, and there no worker runs:
-the tree's architect reads the tester's handoff, each `check` block of the issue's Verification document with the results recorded against it (`dispatch results --issue <issue>`), and the reviewer's approval of the head by SHA, then accepts with the `legion` tool's `sign_off` (→ `retro`;
+**Acceptance:** where the issue's task holds the step `acceptance:owner`, as the default steps do, the step before it moves the issue to `accepting` (Dispatch status `needs_review`) as it passes — in the default steps, the reviewer's approval, once GitHub reports the approved head one it would merge or the pull request has merged at that head — and there no worker runs:
+the tree's architect reads each `check` block of the issue's Verification document with the results recorded against it (`dispatch results --issue <issue>`), the tester's handoff where the task has a tester step and the reviewer's approval of the head by SHA where it has a reviewer step, then accepts with the `legion` tool's `sign_off` (→ `retro`;
 refused in every other phase, `SIGNOFF_OUTSIDE_ACCEPTING`;
-refused while an issue beneath the one being accepted is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW` naming each one, since a parent's head proves its children's merged work) or sends the issue back to `implementing` or `testing` with `request_backward_move`, which counts a review round, or a conflict round that `review_round_cap` does not count when the record holds the pull request's head as conflicting with its base.
+refused while an issue beneath the one being accepted is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW` naming each one, since a parent's head proves its children's merged work) or sends the issue back to `implementing`, or to `testing` where the task has a tester step, with `request_backward_move`, which counts a review round, or a conflict round that `review_round_cap` does not count when the record holds the pull request's head as conflicting with its base.
 An architect's `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`); CI red there moves nothing, and is the architect's own read before it accepts.
-The architect's `catch-up` at each launch names, in its `reason`, every issue of the tree in `accepting`, since the reviewer's notice that moved it there is dropped while the architect's claim has failed.
+The architect's `catch-up` at each launch names, in its `reason`, every issue of the tree in `accepting`, since the notice that moved it there (the reviewer's, in the default steps) is dropped while the architect's claim has failed.
+A task with no `acceptance:owner` step has no `accepting`: its last step passing starts the retro, and a parent that passes its last step while an issue beneath it is still in the workflow is held before its retro instead (`held`, from `retro`, with the reason `children`, so it holds no slot), its architect told with a `retro-held` notice naming those issues, until the last one leaves and the retro starts.
 
-**Retro:** runs after the architect's acceptance and before the merger merges the head it reads; it commits nothing and records what the work taught as a `dispatch comment` on the issue.
+**Retro:** runs after the task's last step — the architect's acceptance, in the default steps — and before the merger merges the head it reads; it commits nothing and records what the work taught as a `dispatch comment` on the issue.
 
 **The merge closes the issue:** the daemon reads the merged pull request and writes `done`.
-A child's close tells its architect `child-closed`; where the project's `production_check` names the role that works the check it retires five of its six claims and hands that role the production check's first look in its live session, and where the setting is `off` it retires all six and releases the pod;
+A child's close tells its architect `child-closed`; where the project's `production_check` names the role that works the check it retires five of its six claims and hands that role the production check's first look in that role's session, a fresh one where no step of the issue's task was that role's, and where the setting is `off` it retires all six and releases the pod;
 a root's close lingers the tree, and every slot a member of it still holds is freed.
 A root whose pull request merges while any other issue of its tree is still in the workflow records the merge and stays in `merging` — no suspension, no linger, and no slot, since `merging` stands past its review and holds none, so no blocker has a slot to take back — and its architect gets one `pr-merged` notice naming the pull request and every issue the close is waiting for
 — and closes that way once the last open member of the tree is done or parked.
@@ -1210,7 +1215,7 @@ A later version of a step's document closes that step until someone approves the
 register_gate takes the step the document is for, and refuses a call that names none where the deployment gates more than one step (`GATE_STEP_REQUIRED`, 400), a step the deployment does not gate (`GATE_STEP_NOT_CONFIGURED`, 409) and a document that is not that step's document of that issue (`GATE_STEP_DOCUMENT_MISMATCH`, 409).
 It reads the issue's Dispatch event sequence, then the document's approval, and refuses a version above the latest one Dispatch shows (`VERSION_NOT_IN_DISPATCH`), since no person's review could open a gate on a version Dispatch never wrote;
 the gate is registered at the newer of the caller's version and Dispatch's.
-A registration Dispatch already shows approved at its latest version opens the gate at registration, and the root starts planning once it waits on no other issue, neither an open child under it nor an unfinished `blocked_by` link;
+A registration Dispatch already shows approved at its latest version opens the gate at registration, and the root starts its first step (planning, in the default steps) once it waits on no other issue, neither an open child under it nor an unfinished `blocked_by` link;
 one Dispatch shows changes requested at its latest version closes it with the architect told.
 A registration that finds the gate of its document already open at that version tells the architect nothing again.
 A registration older than the gate's newest version changes nothing but still queues the gate seed at the gate's version, and one whose read of Dispatch began before the review the gate already holds at that version is the older reader
@@ -1237,7 +1242,7 @@ An empty `gates.design` is the only way past the gate without a human review
 with no step gated the root architect is told `Design gate steps: none.` in its system prompt and adds no approval step, a registration records the step `spec` and approves the gate whatever it held and whatever step the call named, and no artifact event moves the gate, so an approval does not open a carried copy that was closed before the switch either;
 a changes request is still told to the architect, once, without closing the gate.
 Whether a human must approve a pull request before it merges is the repository's own branch-protection or CODEOWNERS rule: Legion neither reads nor writes it.
-Retro commits nothing, so the head that merges is the head the reviewer approved, and no Legion check compares the two in any case:
+Retro commits nothing, so the head that merges is the head the task's last step passed — the head the reviewer approved, where the task has a review step — and no Legion check compares the two in any case:
 a repository that wants a later push reviewed says so in its own rulesets.
 The merger merges the pull request itself, as the implement App and at the head it read, which it names as the head GitHub must match (`gh pr merge <n> --squash --match-head-commit <head>`;
 on a base with a merge queue it enqueues the pull request with GraphQL `enqueuePullRequest` and `expectedHeadOid` instead, since `gh pr merge` there turns auto-merge on while a required check is pending, and it then watches the pull request until GitHub merges it or takes it out of the queue).
@@ -1251,6 +1256,7 @@ A head GitHub still merges (every state but dirty and unknown) conflicted with a
 A dirty head conflicts with the base itself, which sends the issue back to `implementing` and tells the architect; an unknown merge state is asked again on the merger's own backoff for up to five minutes and then read the same way; and a second conflict removal of the same head, its one further enqueue already spent, sends the issue back too.
 A round such a conflict costs counts against no `review_round_cap`.
 The repository's required reviews and checks decide when a pull request merges; Legion bypasses none, and a review only a person can give is waited for.
+Where the issue's task has no reviewer step and the base requires an approving review that no step of the task gave, the merger neither merges nor approves the pull request itself: it waits, and tells the task's owner, the tree's architect, which review is missing, since only the owner or a person can give that review or change the plan.
 The merge carries a message the merger writes itself, `--subject '<pull request title> (#<n>)' --body ''`, because GitHub's default squash message (`squash_merge_commit_message` of `COMMIT_MESSAGES`) joins every commit message of the branch and would put the tree's Dispatch keys and its `Omp-Session:` and `Legion-Role:` trailers on the default branch;
 `enqueuePullRequest` can pass no message, so on a merge-queue base whose setting reads `COMMIT_MESSAGES` the merger enqueues nothing and tells the architect, since only a person can change that setting.
 The merger's completion records its phase row and moves nothing; what closes the issue is the daemon's own reading of the merged pull request.
@@ -1261,16 +1267,18 @@ A red check sends nothing back from anywhere: the daemon names every check GitHu
 GitHub's own merge queue (`merge_group` trigger) is a repository setting Legion does not modify.
 No lifecycle labels exist; GitHub issues are never read or written by Legion.
 
-**Review signaling:** Native GitHub review API, tester status checks, and the handoff records on each Dispatch issue are the phase-verdict artifacts.
+**Review signaling:** Native GitHub review API, the results the steps record against the issue's checks (`dispatch result`), and the handoff records on each Dispatch issue are the phase-verdict artifacts.
 No lifecycle labels carry worker state.
 
-**Testing gate:** Behavioral testing is mandatory after every implementation phase
-— both fresh implementation AND review-requested changes go through the tester before reaching the reviewer.
+**Testing gate:** where the issue's task has a tester step, as the default steps do, behavioral testing is mandatory after every implementation round
+— both fresh implementation AND changes a later step sent back go through the tester before they reach the step after it (in the default steps, the reviewer).
+A task with no tester step has no testing gate: the implementer's own results against the issue's `before_merge` checks are the behavioral evidence, which a reviewer step reads before it approves, refusing while any of them has no pass standing at the head, and which the architect's acceptance reads where the task holds that step.
 
 ## Documentation
 
 - Plans: `docs/plans/YYYY-MM-DD-<slug>.md` — human-authored design history, not a Legion artifact.
-  A Legion planner's plan lives in its `plan` handoff record and the issue's `plan.md` document on Dispatch; no Legion role commits a plan or spec file here.
+  An issue's plan lives in its `plan.md` document on Dispatch, one document for both kinds of plan: the owner's plan is the `plan_task` block the issue's owner gives Legion with `register_plan`, and a planner step writes its plan there too, below the owner's block and with no task block of its own where the owner wrote one, and records it in its `plan` handoff;
+  no Legion role commits a plan or spec file here.
 
 - Learnings: a retro's `dispatch comment` on its issue, for the skill librarian (`skills/legion-retro/references/learnings.md`).
   `docs/solutions/` holds the learnings written before that and stays as history; no role writes there.
