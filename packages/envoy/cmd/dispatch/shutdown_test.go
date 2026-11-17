@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -140,8 +141,10 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 }
 
 // renameLock is the statement with which a PATCH of an issue locks the issue's row before it
-// writes (lockIssueRows in internal/dispatch/api/issue_parent.go), as pg_stat_activity shows it.
-const renameLock = `select parent_key from issues where key = $1 for no key update`
+// writes (lockIssueRows in internal/dispatch/api/issue_parent.go), as pg_stat_activity shows it:
+// the row is locked only once the caller is known to see its project (access.ProjectClause), so
+// the text is built from the same fragment and follows it.
+var renameLock = `select parent_key from issues where key = $1 and ` + access.ProjectClause("project_key", "$2") + ` for no key update`
 
 // A write in flight at SIGTERM can wait on a lock past the HTTP drain's share, the document
 // service's budget and the point a fixed shutdown bound would end it, here a title change behind
