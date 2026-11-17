@@ -311,13 +311,18 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     reach: "[data-issue-composer]",
     write: "message-reply",
   },
+  // Only part M's Edit opens the box's edit line (dispatch://INFRA-1196 decision 154), so no
+  // reader reaches this write until part M is under the box; the row is covered then, with a
+  // driver step through that Edit.
   {
     box: "issue-page-composer",
-    covered: true,
+    covered: false,
     delivers: false,
     files: ["packages/dispatch/web/src/features/issue-page/IssueComposer.tsx"],
     issueRows: true,
     reach: "[data-issue-composer]",
+    reason:
+      "No reader reaches it yet: only part M's Edit opens the box's edit line, and the row is covered, with a driver step through that Edit, once part M is under the box.",
     write: "comment-edit",
   },
   {

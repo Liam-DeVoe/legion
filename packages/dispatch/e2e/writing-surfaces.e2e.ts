@@ -498,7 +498,8 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
   // reader gets once their `issue.page` is `outline` (`withIssuePage`). The line's name follows
   // what it writes, so it is reached by the attribute its form carries; the answer's field, drawn
   // in the line's place while the box answers a question, by its own name. An edit of the
-  // reader's own comment is opened only by part M's Edit, so part N's rows drive `comment-edit`.
+  // reader's own comment is opened only by part M's Edit, so the list leaves `comment-edit`
+  // uncovered until part M is under the box (dispatch://INFRA-1196 decision 154).
   "issue-page-composer": {
     drive: async (page, world) => {
       await withIssuePage(page.context(), "alice");
@@ -508,9 +509,13 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       const field = box.locator("[data-issue-composer] textarea");
       await expect(field).toBeVisible();
       // With no target the line writes on the issue: a comment while Comment is pressed, as it
-      // is at first, and a question once Question is.
+      // is at first, sent with the line's own Send, and a question once Question is.
       await walkBox(field, world);
-      await expectRow(page, field, "issue-page-composer", "comment");
+      await expectRow(page, field, "issue-page-composer", "comment", () =>
+        box.getByRole("button", { exact: true, name: CONTROL_LABELS.send }).click()
+      );
+      // The box stays at the foot after a send, and clears its draft as the comment lands.
+      await expect(field).toHaveValue("");
       const question = box.locator('[data-composer-kind="ask"]');
       await question.click();
       await expect(question).toHaveAttribute("aria-pressed", "true");
@@ -565,7 +570,9 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       const field = page.getByRole("textbox", { exact: true, name: CONTROL_LABELS.your_change });
       await expect(field).toBeFocused();
       await walkBox(field, world);
-      await expectRow(page, field, "issue-page-decision-change", "comment");
+      await expectRow(page, field, "issue-page-decision-change", "comment", () =>
+        page.getByRole("button", { exact: true, name: CONTROL_LABELS.send_change }).click()
+      );
     },
   },
   "margin-comment-edit": {
