@@ -412,8 +412,10 @@ func TestAProjectCredentialWritesNoPlanOrRatingOfAnotherProject(t *testing.T) {
 }
 
 // Each rating outside its form is refused 400 STEP_INPUT naming its field, and writes nothing: the
-// rating 1 to 5 and the reason not blank and at most 2,000 code points, both named. A reason of
-// exactly 2,000 code points is taken, which is the control of the bound.
+// rating 1 to 5 and the reason not blank and at most 2,000 code points, both named. A body naming
+// neither is the rating route's own refusal, since the store takes a step write with no rating; the
+// same body on the step route lands, which is its control. A reason of exactly 2,000 code points is
+// taken, which is the control of the bound.
 func TestARatingWriteRefusesItsBadValues(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := stepIssues(t, handler, "LEG", 1)[0]
@@ -429,6 +431,7 @@ func TestARatingWriteRefusesItsBadValues(t *testing.T) {
 		{"a rating of 0", with(retro, map[string]any{"rating": 0, "rating_reason": "Why."}), "rating"},
 		{"a rating of 6", with(retro, map[string]any{"rating": 6, "rating_reason": "Why."}), "rating"},
 		{"no rating", noRating, "rating"},
+		{"neither a rating nor a reason", retro, "rating"},
 		{"no reason", noReason, "rating_reason"},
 		{"a blank reason", with(retro, map[string]any{"rating": 3, "rating_reason": " \n "}), "rating_reason"},
 		{"a reason of 2,001 code points", with(retro, map[string]any{"rating": 3, "rating_reason": strings.Repeat("é", 2001)}), "rating_reason"},
@@ -439,6 +442,9 @@ func TestARatingWriteRefusesItsBadValues(t *testing.T) {
 	}
 	if steps := stepsOf(t, handler, issue); len(steps) != 0 {
 		t.Fatalf("the refused ratings left %d records, want none", len(steps))
+	}
+	if written := putStepOK(t, handler, issue, uuid.NewString(), retro); written.Kind != "retro" || written.Rating != nil {
+		t.Fatalf("the step route answers %s for the retro's identity alone, want the retro with no rating", stepJSON(t, written))
 	}
 	longest := putRatingOK(t, handler, issue, uuid.NewString(), with(retro, map[string]any{"rating": 1, "rating_reason": strings.Repeat("é", 2000)}))
 	if longest.RatingReason == nil || len([]rune(*longest.RatingReason)) != 2000 {
