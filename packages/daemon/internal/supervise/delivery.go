@@ -1286,7 +1286,7 @@ func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locat
 		return fmt.Errorf("%w: the git identity of %s: %w", runtime.ErrIdentityUnavailable, m.claim.Token, err)
 	}
 	started := m.deps.Clock.Now()
-	if err := m.deps.Runtime.AdoptWorkingCopy(ctx, *loc, id); err != nil {
+	if err := m.deps.Runtime.AdoptWorkingCopy(ctx, *loc, id, ""); err != nil {
 		return err
 	}
 	m.log.Info("supervise: the working copy was adopted for the phase task",

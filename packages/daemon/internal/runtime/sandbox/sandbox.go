@@ -993,10 +993,11 @@ func (r *Runtime) controllerSandbox(ctx context.Context, token claim.Token) (*sa
 	return s, nil
 }
 
-// AdoptWorkingCopy has the agent's shim set its working copy's author (the shared `jj metaedit
-// --update-author`, run in the pod's own workspace on the issue's volume) over the claim's
-// connection. The recorded process must still be the claim's running pod: the connection is its.
-func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity) error {
+// AdoptWorkingCopy has the agent's shim set the author of the working copy of the task whose branch
+// is branch, "" for the issue's own (the shared `jj metaedit --update-author`, run in that working
+// copy on the issue's volume), over the claim's connection. The recorded process must still be the
+// claim's running pod: the connection is its.
+func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity, branch string) error {
 	if err := r.checkLocator(loc); err != nil {
 		return err
 	}
@@ -1011,7 +1012,7 @@ func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id 
 	if !ok {
 		return fmt.Errorf("adopt %s's working copy: the claim has no connection to ask over", loc.Claim)
 	}
-	if err := conn.AdoptWorkingCopy(ctx, id, "", r.adoptTimeout); err != nil {
+	if err := conn.AdoptWorkingCopy(ctx, id, branch, r.adoptTimeout); err != nil {
 		return fmt.Errorf("adopt %s's working copy for %s <%s>: %w", loc.Claim, id.Name, id.Email, err)
 	}
 	return nil
