@@ -123,8 +123,9 @@ so the asker writes to it. Send nothing on: you forward no message to another se
 Never merge or enqueue a pull request from the controller, whatever credential you hold. The
 merger merges its issue's pull request itself, at the head it read and under the repository's own
 rules. A tree's architect enqueues a pull request of its tree that no merger merges
-(`skill://legion-architect/references/acceptance.md#a-pull-request-no-merger-merges`). Write a
-request to merge or queue a pull request to that architect by a mention
+(`skill://legion-architect/references/acceptance.md#a-pull-request-no-merger-merges`). Write your
+own request to merge or queue a pull request, or a person's in the person's words, to that
+architect by a mention, and tell an agent that asks you for one to write to that architect itself
 (`skill://legion-controller/references/operations.md#each-kind-of-request-the-controller-sent`).
 
 ## The owner audit

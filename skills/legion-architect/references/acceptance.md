@@ -133,7 +133,8 @@ It worked when `curl` exits 0: GitHub answered `201`, and the answer holds the c
 An issue's merger merges the pull request that its issue records, and no other. A pull request of
 your tree that no issue records is yours to put in its base's merge queue, or to arm with
 auto-merge where the base has no merge queue. Ask no other session, the controller included, to
-merge or queue it. The controller holds no enqueue: it writes such a request to you by a mention.
+merge or queue it. The controller holds no enqueue: it writes its own request, or a person's in
+the person's words, to you by a mention, and tells an agent that asks it to write to you itself.
 
 **Which pull request.** All three of these hold:
 
