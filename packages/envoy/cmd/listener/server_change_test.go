@@ -80,6 +80,11 @@ const (
 	// a member restarting and catching up its streams, a reconnect, a relay sending again after a
 	// pause.
 	serverChangeRecovery = time.Minute
+	// serverChangeListenerHealthy bounds the wait, after each disruption, for both listeners to
+	// report healthy again. It is the 30 s waitHealthy gave this wait before waitHealthy became a
+	// wait on a listener's start that only the test binary's deadline ends, kept as it was: here
+	// the listeners are running, and how soon they recover is part of what the run checks.
+	serverChangeListenerHealthy = 30 * time.Second
 )
 
 // The three kinds of message a run sends, one sender each, indexing serverChangeKinds.
@@ -695,8 +700,8 @@ func (s *serverChangeSoak) disrupt(t *testing.T, lameDuck bool) {
 	server.Start(t)
 	s.cluster.AwaitReady(t)
 	s.awaitReplicated(t)
-	s.holder.waitHealthy(t)
-	s.sender.waitHealthy(t)
+	s.holder.healthyWithin(t, serverChangeListenerHealthy)
+	s.sender.healthyWithin(t, serverChangeListenerHealthy)
 	s.mu.Lock()
 	outage := s.outages[len(s.outages)-1]
 	s.disruptions = append(s.disruptions, soakDisruption{kind: kind, target: target, outage: outage})

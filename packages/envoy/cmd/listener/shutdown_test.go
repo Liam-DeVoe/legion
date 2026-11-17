@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -17,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // errorLine matches an ERROR record in each format the listener's process writes: its own JSON
@@ -313,11 +316,31 @@ func refusedStart(t *testing.T, cmd *exec.Cmd) *cmdtest.Process {
 	return process
 }
 
-// listeningAddr waits for the listener's "envoy-listener listening" line and returns its addr.
+// listeningAddr waits for the listener's "envoy-listener listening" line and returns its addr. The
+// wait is the start's own (listenerStartWait): it ends when the line is logged or the process
+// exits, and otherwise only at the test binary's deadline.
 func listeningAddr(t *testing.T, process *cmdtest.Process) string {
 	t.Helper()
-	process.WaitForOutput(t, `"msg":"envoy-listener listening"`)
-	for line := range strings.SplitSeq(process.Output.String(), "\n") {
+	const listening = `"msg":"envoy-listener listening"`
+	began := time.Now()
+	logged := testwait.Holds(listenerStartWait(t), 20*time.Millisecond, func() bool {
+		select {
+		case <-process.Exited:
+			return true
+		default:
+			return strings.Contains(process.Output.String(), listening)
+		}
+	})
+	// Exited closes only once the output is whole, so the output read after seeing it closed is
+	// final, and one read before it may miss the last lines.
+	exited := false
+	select {
+	case <-process.Exited:
+		exited = true
+	default:
+	}
+	output := process.Output.String()
+	for line := range strings.SplitSeq(output, "\n") {
 		var record struct {
 			Msg  string `json:"msg"`
 			Addr string `json:"addr"`
@@ -326,8 +349,34 @@ func listeningAddr(t *testing.T, process *cmdtest.Process) string {
 			return record.Addr
 		}
 	}
-	t.Fatalf("the listener's output has no JSON listening line:\n%s", process.Output.String())
+	if exited {
+		t.Fatalf("the listener exited with %s before it logged that it listens; its last line was %q:\n%s",
+			process.Cmd.ProcessState, lastOutputLine(output), output)
+	}
+	if !logged {
+		_ = process.Cmd.Process.Kill()
+		t.Fatalf("the listener was still running and had not logged that it listens %v after the wait began, which is all the test binary's deadline left it:\n%s",
+			time.Since(began).Round(time.Millisecond), output)
+	}
+	t.Fatalf("the listener's output has no JSON listening line:\n%s", output)
 	return ""
+}
+
+// listenerStartWait is how long a wait on a listener's own start may last: what the test binary's
+// deadline (go test -timeout) leaves, less the second testwait leaves to report a wait, and no end
+// at all under -timeout 0. The test adds no bound of its own, because the listener bounds its start
+// itself: a JetStream request left unanswered three times, ten seconds each, ends the start, its
+// cache warm-ups give up after 30 s and serve, and its durable bind gives up after
+// durableBindDeadline and shuts the listener down, so a start that cannot finish exits, which the
+// waits report at once. A fixed span on top of those measures how much of the machine the test
+// binary and the listener were given. On a box at load1 1,254 neither ran for minutes at a time:
+// the listener reported its first ten-second request wait over 152 s after it began listening and
+// the next 238 s after that, and the test binary, which runs the NATS server, logged nothing for six
+// and a half minutes. TestListenerFollowsTheInterestRegistryAcrossNATSRestarts had given up on a
+// 30 s span, and when both ran again it killed a listener that logged it was ready in that same
+// second.
+func listenerStartWait(t *testing.T) time.Duration {
+	return testwait.Bounded(t, time.Duration(math.MaxInt64), time.Second)
 }
 
 // postListener calls a listener /v1 route as the test's shared-token caller and requires a 200.
@@ -338,74 +387,96 @@ func postListener(t *testing.T, port int, path, body string) {
 	}
 }
 
-// waitHealthy waits up to 30 s for the listener to log that it listens on its own loopback port,
-// then up to 30 s more for /healthz there to report "healthy", and kills the listener and fails
-// the test when it never does. The socket the listener inherited is not readiness: the kernel
-// queues connections on it from before the process starts, so a request there waits rather than
-// fails until the process serves, and only its listening line says it does. Each request has a
-// timeout, so one that waits on a socket nothing serves cannot outlast the deadline. /healthz
-// answers 200 with "starting" from the moment the listener serves, before NATS connects and
-// before the listener installs its SIGTERM handler, and a SIGTERM in that window kills the
-// process without an ordered shutdown.
-//
-// A listener that exits during its start-up fails this wait at once, naming its exit status and
-// its last output line, rather than waiting the whole 30 s out: a process that has exited answers
-// nothing, so every further poll reads the same closed port, and the health timeout the wait
-// would report names neither the exit nor its reason. Either failure also names the last /healthz
-// answer, so a listener still binding ("starting") reads differently from one whose dependency
-// is down ("unhealthy", with the error that endpoint reports).
+// waitHealthy waits for the listener to log that it listens on its own loopback port, then for
+// /healthz there to report "healthy" (healthyWithin), and kills the listener and fails the test
+// when it exits first or the test binary's deadline comes first (listenerStartWait): it is the wait
+// for a listener's start. The socket the listener inherited is not readiness: the kernel queues
+// connections on it from before the process starts, so a request there waits rather than fails
+// until the process serves, and only its listening line says it does. /healthz answers 200 with
+// "starting" from the moment the listener serves, before NATS connects and before the listener
+// installs its SIGTERM handler, and a SIGTERM in that window kills the process without an ordered
+// shutdown.
 func (p *listenerProcess) waitHealthy(t *testing.T) {
 	t.Helper()
 	if addr, own := listeningAddr(t, p.Process), "127.0.0.1:"+strconv.Itoa(p.port); addr != own {
 		_ = p.Cmd.Process.Kill()
 		t.Fatalf("the listener logged that it listens on %s, not on its own %s:\n%s", addr, own, p.Output.String())
 	}
+	// Read after the listening line's wait, which spends what the deadline leaves too.
+	p.healthyWithin(t, listenerStartWait(t))
+}
+
+// healthyWithin waits up to within for a listener that serves to report "healthy" on /healthz, and
+// kills the listener and fails the test when it exits first or within passes. waitHealthy gives it
+// the start's own bound; a caller whose bound on the listener's health is part of what it tests
+// gives its own, as TestServerChange does for a running listener's recovery from a server's
+// restart. Each request has a timeout, and none outlasts within, so a poll of a process that is
+// not running ends, the wait reads the process's exit again, and the wait fails inside its bound.
+//
+// A listener that exits before it is healthy fails this wait at once, naming its exit status and
+// its last output line: a process that has exited answers nothing, so every further poll reads the
+// same closed port, and a wait for its health would name neither the exit nor its reason. Either
+// failure also names the last /healthz answer, so a listener still binding ("starting") reads
+// differently from one whose dependency is down ("unhealthy", with the error that endpoint
+// reports).
+func (p *listenerProcess) healthyWithin(t *testing.T, within time.Duration) {
+	t.Helper()
 	client := &http.Client{Timeout: 5 * time.Second}
 	url := "http://127.0.0.1:" + strconv.Itoa(p.port) + "/healthz"
-	deadline := time.Now().Add(30 * time.Second)
+	began := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), within)
+	defer cancel()
 	answer := "none: no request to /healthz was answered"
-	// failIfExited ends the wait the moment the process is gone. It is read inside the loop and
-	// once more after it, because a listener that dies in the last sleep, or between the last poll
-	// and the deadline, would otherwise fall out below and be reported as still running, which is
-	// the misreading this helper exists to remove.
-	failIfExited := func() {
-		t.Helper()
+	healthy := false
+	testwait.Holds(within, 200*time.Millisecond, func() bool {
 		select {
 		case <-p.Exited:
-			// Exited closes only once the output is whole, so this read is final.
-			output := p.Output.String()
-			t.Fatalf("the listener exited during its start-up with %s; its last line was %q, and the last /healthz answer was %s:\n%s",
-				p.Cmd.ProcessState, lastOutputLine(output), answer, output)
+			return true
 		default:
 		}
-	}
-	for time.Now().Before(deadline) {
-		response, err := client.Get(url)
-		if err == nil {
-			var health struct {
-				Status string `json:"status"`
-				Error  string `json:"error"`
-			}
-			decodeErr := json.NewDecoder(response.Body).Decode(&health)
-			_ = response.Body.Close()
-			if decodeErr == nil && health.Status == "healthy" {
-				return
-			}
-			if decodeErr == nil {
-				answer = fmt.Sprintf("%d %q", response.StatusCode, health.Status)
-				if health.Error != "" {
-					answer += fmt.Sprintf(", error %q", health.Error)
-				}
-			} else {
-				answer = fmt.Sprintf("%d, which is no health report: %v", response.StatusCode, decodeErr)
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			t.Fatalf("/healthz request: %v", err)
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			return false
+		}
+		var health struct {
+			Status string `json:"status"`
+			Error  string `json:"error"`
+		}
+		decodeErr := json.NewDecoder(response.Body).Decode(&health)
+		_ = response.Body.Close()
+		switch {
+		case decodeErr != nil:
+			answer = fmt.Sprintf("%d, which is no health report: %v", response.StatusCode, decodeErr)
+		case health.Status == "healthy":
+			healthy = true
+		default:
+			answer = fmt.Sprintf("%d %q", response.StatusCode, health.Status)
+			if health.Error != "" {
+				answer += fmt.Sprintf(", error %q", health.Error)
 			}
 		}
-		failIfExited()
-		time.Sleep(200 * time.Millisecond)
+		return healthy
+	})
+	if healthy {
+		return
 	}
-	failIfExited()
+	// Read once more after the wait, because a listener that dies between the last poll and the
+	// deadline would otherwise be reported as still running.
+	select {
+	case <-p.Exited:
+		// Exited closes only once the output is whole, so this read is final.
+		output := p.Output.String()
+		t.Fatalf("the listener exited before it was healthy with %s; its last line was %q, and the last /healthz answer was %s:\n%s",
+			p.Cmd.ProcessState, lastOutputLine(output), answer, output)
+	default:
+	}
 	_ = p.Cmd.Process.Kill()
-	t.Fatalf("the listener never became healthy within 30s; it was still running, and the last /healthz answer was %s:\n%s", answer, p.Output.String())
+	t.Fatalf("the listener was still not healthy %v after the wait for its health began, the whole of the %v the wait had; it was still running, and the last /healthz answer was %s:\n%s",
+		time.Since(began).Round(time.Millisecond), within.Round(time.Millisecond), answer, p.Output.String())
 }
 
 // lastOutputLine is the final non-empty line of a process's output, the one a start-up that ended
