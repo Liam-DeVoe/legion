@@ -1791,21 +1791,28 @@ type Store interface {
 	// attributes and keeps where it stands (MoveTask, StopTask, PutReturnCounts); the steps of
 	// each task it gives are its steps alone.
 	PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks []PlanTask, steps []PlanStep) error
-	// Plan is the plan of issue at generation: its highest version, every task and every step.
-	// nil where the generation has no plan rows: an issue that ran before plans, and a generation
-	// no plan reached yet.
+	// PutPlanRoles writes the roles version of the plan of issue at generation defines over every
+	// role that generation holds: a role the version does not define is gone, and nil leaves none.
+	PutPlanRoles(ctx context.Context, tx pgx.Tx, issue string, generation uint64, version int, roles []PlanRole) error
+	// Plan is the plan of issue at generation: its highest version, every task, every step and
+	// every role it defines. nil where the generation has no plan rows: an issue that ran before
+	// plans, and a generation no plan reached yet.
 	Plan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (*StoredPlan, error)
+	// PlanRoleOf is the role named role that the plan of issue defines at the issue's current
+	// generation, and false, with no error, where it defines none of that name.
+	PlanRoleOf(ctx context.Context, tx pgx.Tx, issue, role string) (PlanRole, bool, error)
 	// OwnersNewestPlan is the newest plan in force, of any generation, generation 0 included, that
 	// an architect of issue's tree now gave (ArchitectOfTree); nil where no owner gave one in force.
 	OwnersNewestPlan(ctx context.Context, tx pgx.Tx, issue Issue) (*StoredPlan, error)
 	// PlansOfEarlierOwners is the version in force of each generation of issue whose giver is no
 	// architect of the issue's tree now (ArchitectOfTree): the plans its first step passes over.
 	PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error)
-	// CarryPlan copies the plan of issue at from to to: with carried, each task where it stands;
-	// without, each task waiting at no act with its counts at 0. It writes nothing where from has
-	// no plan rows, and gives the pull request row of issue the id of the new plan's one task.
+	// CarryPlan copies the plan of issue at from to to, with every role it defines: with carried,
+	// each task where it stands; without, each task waiting at no act with its counts at 0. It
+	// writes nothing where from has no plan rows, and gives the pull request row of issue the id of
+	// the new plan's one task.
 	CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from, to uint64, carried bool) error
-	// DeletePlan deletes the plan of issue at generation from its three tables.
+	// DeletePlan deletes the plan of issue at generation from its four tables.
 	DeletePlan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) error
 	// DeleteTasks deletes each of tasks, waiting or stopped, with its steps.
 	DeleteTasks(ctx context.Context, tx pgx.Tx, issue string, generation uint64, tasks []string) error
