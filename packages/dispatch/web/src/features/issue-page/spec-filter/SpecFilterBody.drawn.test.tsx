@@ -1379,7 +1379,9 @@ test("a statement carries no mark while the Verification document's blocks are o
         throw new Error("a failed read of the Verification document says nothing");
       return shown;
     });
-    expect(within(alert).getByRole("button", { name: "Retry" })).toBeDefined();
+    // The shared failed-read line draws its Retry beside its alert, in the line that holds both.
+    const line = alert.closest<HTMLElement>("[data-failed-read]") ?? alert;
+    expect(within(line).getByRole("button", { name: "Retry" })).toBeDefined();
     expect(rowOf(view, "spec#b-r1").hasAttribute("data-spec-mark")).toBe(false);
   } finally {
     view.unmount();
