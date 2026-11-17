@@ -41,8 +41,10 @@ import type { ApiRequest } from "./traffic";
  * What the rows of `e2e/issue-page-x.e2e.ts` write and read: a node's life - proposed, settled
  * or overtaken - and a node reserved for its author, and the marks, the overtaken lines, the
  * counts and the Settle act the new issue page draws for them
- * (`web/src/features/issue-page/node-states/`). It reuses the readers and writers of the other
- * `e2e/issue-page-*.ts` files and copies none of them, and none of them changes for it.
+ * (`web/src/features/issue-page/node-states/`). It reuses the readers and writers the other
+ * `e2e/issue-page-*.ts` files export, and none of them changes for it. It holds its own copies of
+ * two that `e2e/issue-page-w.ts` keeps private: `treeReadAs` repeats the page-and-merge loop of
+ * its `requestedTreeRead`, and `postAs` mirrors its `write`.
  *
  * - **The writers** `writeNodeState` and `settleNodeApi` send one request each, as a person,
  *   through the server's node state routes (`packages/envoy/internal/dispatch/api/node_state.go`):
@@ -64,7 +66,7 @@ import type { ApiRequest } from "./traffic";
  * - **What the page sent**: the requests to the node state routes (`nodeStateRequests`) and the
  *   address each settle names (`settlesSent`).
  * - **Details' facts of the focused row** (`FocusedNodeFacts.tsx`), with their "Referenced by"
- *   list: the rows read them only where this tree holds that file (`focusedFactsGate`), and
+ *   list: the rows read them only where this tree holds that file (`FOCUSED_FACTS_GATE`), and
  *   note the reading they leave out otherwise (`noteOwed`).
  */
 
@@ -220,19 +222,36 @@ export function nodeHolding(answer: IssueTreeAnswer, word: string): IssueTreeNod
   );
 }
 
+/** A tree read's nodes by the read `parent` each stands under. */
+type Children = ReadonlyMap<string, readonly IssueTreeNode[]>;
+
+/** Each tree read's `Children`, made once per answer. */
+const childrenByAnswer = new WeakMap<IssueTreeAnswer, Children>();
+
+/** The `Children` of `answer`, made at its first reading. */
+function childrenIn(answer: IssueTreeAnswer): Children {
+  const made = childrenByAnswer.get(answer);
+  if (made !== undefined) return made;
+  const children = new Map<string, IssueTreeNode[]>();
+  for (const node of answer.nodes) {
+    if (node.parent === null) continue;
+    const siblings = children.get(node.parent);
+    if (siblings === undefined) children.set(node.parent, [node]);
+    else siblings.push(node);
+  }
+  childrenByAnswer.set(answer, children);
+  return children;
+}
+
 /** Every node of issue `key` in `answer` under the node `readId`, at any depth, by the read's
  *  `parent`: the tree each count walks. */
 function underIn(answer: IssueTreeAnswer, key: string, readId: string): IssueTreeNode[] {
-  const children = new Map<string, IssueTreeNode[]>();
-  for (const node of answer.nodes) {
-    if (node.parent === null || !ownOf(node, key)) continue;
-    children.set(node.parent, [...(children.get(node.parent) ?? []), node]);
-  }
+  const children = childrenIn(answer);
   const found: IssueTreeNode[] = [];
   const seen = new Set<string>([readId]);
   const walk = (id: string): void => {
     for (const child of children.get(id) ?? []) {
-      if (seen.has(child.id)) continue;
+      if (!ownOf(child, key) || seen.has(child.id)) continue;
       seen.add(child.id);
       found.push(child);
       walk(child.id);
@@ -762,12 +781,16 @@ export function treeItemsDrawn(page: Page): Promise<TreeItem[]> {
     );
 }
 
-/** The items drawn directly under the row `parent` (a drawn id), or at the top for null, in order,
- *  by the tree's own levels. */
-export function childItems(items: readonly TreeItem[], parent: string | null): TreeItem[] {
-  const at = parent === null ? -1 : items.findIndex((item) => item.id === parent);
+/** The items drawn directly under `parent`, an item of `items` (a row or a line), or at the top
+ *  for null, in order, by the tree's own levels; none where `items` does not hold `parent`. */
+export function childItems(
+  items: readonly TreeItem[],
+  parent: TreeItem | null | undefined
+): TreeItem[] {
+  if (parent === undefined) return [];
+  const at = parent === null ? -1 : items.indexOf(parent);
   if (parent !== null && at === -1) return [];
-  const level = at === -1 ? 0 : (items[at]?.level ?? 0);
+  const level = parent?.level ?? 0;
   const children: TreeItem[] = [];
   for (const item of items.slice(at + 1)) {
     if (item.level <= level) break;
@@ -908,15 +931,13 @@ const FOCUSED_FACTS_FILE = new URL(
 
 /** Details' facts of the focused row and their "Referenced by" list, which the rows read only
  *  where this tree holds the file that draws them: until then the page draws none, and nothing
- *  of this change is owed there. */
-export function focusedFactsGate(): Gate {
-  return {
-    met: existsSync(FOCUSED_FACTS_FILE),
-    owed:
-      "owed until Details draws the focused row's facts (FocusedNodeFacts.tsx is not in this " +
-      "tree), so those facts and Referenced by are not read here",
-  };
-}
+ *  of this change is owed there. The file is looked for once, as this module loads. */
+export const FOCUSED_FACTS_GATE: Gate = {
+  met: existsSync(FOCUSED_FACTS_FILE),
+  owed:
+    "owed until Details draws the focused row's facts (FocusedNodeFacts.tsx is not in this " +
+    "tree), so those facts and Referenced by are not read here",
+};
 
 /** Goes on where `gate` is met; where it is not, records an `owed` annotation naming it, once
  *  for the row however often the row reaches it, and the row goes on without the reading it

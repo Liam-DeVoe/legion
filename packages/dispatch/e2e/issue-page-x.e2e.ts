@@ -9,6 +9,7 @@ import {
   NODE_STATE_WORDS,
   NODE_TYPE_NAMES,
   PRESET_NAMES,
+  phrasesIn,
   ROW_MARK_WORDS,
   SETTLE_ANSWERS,
 } from "../web/src/features/issue-page/page-words";
@@ -65,10 +66,10 @@ import {
   compactMarks,
   coveredCount,
   type DrawnMark,
+  FOCUSED_FACTS_GATE,
   type FoldedCount,
   filterCount,
   flagCount,
-  focusedFactsGate,
   focusedNodeFacts,
   foldedCounts,
   heldUnder,
@@ -96,7 +97,7 @@ import {
   treeReadAs,
 } from "./issue-page-x";
 import { type Browser, expect, type Locator, type Page, type Route, test } from "./test";
-import { expectLoadSettled, watchApiRequests } from "./traffic";
+import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 import { asUser } from "./users";
 
 /**
@@ -120,8 +121,8 @@ import { asUser } from "./users";
  * reads is the page's own word list's (`page-words.ts`), never typed here.
  *
  * Details draws the focused row's facts, and their "Referenced by" list, only where this tree
- * holds the file that draws them (`focusedFactsGate`): until then a row notes those readings as
- * owed (`noteOwed`) and makes every other.
+ * holds the file that draws them (`FOCUSED_FACTS_GATE`): until then a row notes those readings
+ * as owed (`noteOwed`) and makes every other.
  */
 
 /** The mark of a proposed node, an overtaken one and one reserved for its reader, each as the
@@ -159,12 +160,6 @@ const RISK_LINES: readonly string[] = [
   "prevented_by_nothing",
 ];
 
-/** Every string `value` holds, however deeply. */
-function phrasesOf(value: unknown): string[] {
-  if (typeof value === "string") return [value];
-  return typeof value === "object" && value !== null ? Object.values(value).flatMap(phrasesOf) : [];
-}
-
 /** The words the page's word list writes, as it writes them, which a text may be whole: a raw
  *  value of the tree read, or a word-list key, is none of them. */
 const WORD_BOOK: readonly string[] = [
@@ -178,7 +173,7 @@ const WORD_BOOK: readonly string[] = [
       PRESET_NAMES,
       ROW_MARK_WORDS,
       SETTLE_ANSWERS,
-    ].flatMap(phrasesOf)
+    ].flatMap(phrasesIn)
   ),
 ];
 
@@ -190,22 +185,32 @@ function rowSize(): { readonly height: number; readonly width: number } {
 /** How long a reading waits for the page to draw a row the read holds. */
 const DRAWN_MS = 30_000;
 
-/** The id the page draws the node `readId` names under, once it draws it: each poll first opens
- *  every branch a fold or the drawn levels left shut, which ends with the focus on no row. No
- *  poll opens an overtaken line: neither opener presses one. */
+/** Loads `address` on `page` and waits until the page has gone quiet. `traffic` is the page's one
+ *  watcher (`watchApiRequests`), made before its first load, so a read the load still has in
+ *  flight is one it waits for; once this returns, `traffic` holds this load's requests alone. */
+async function gotoSettled(page: Page, traffic: ApiRequests, address: string): Promise<void> {
+  traffic.reset();
+  await gotoIssue(page, address);
+  await expectLoadSettled(traffic);
+}
+
+/** The id the page draws the node `readId` names under, as the poll that found it drawn read it:
+ *  each poll first opens every branch a fold or the drawn levels left shut, which ends with the
+ *  focus on no row. No poll opens an overtaken line: neither opener presses one. */
 async function drawnRowId(page: Page, readId: string, what: string): Promise<string> {
   const message = `the page draws no row for ${what}`;
+  let id: string | null = null;
   await expect
     .poll(
       async () => {
         await unfoldEveryBranch(page);
         await openEveryDeeperBranch(page);
-        return drawnIdOf(page, readId);
+        id = await drawnIdOf(page, readId);
+        return id;
       },
       { message, timeout: DRAWN_MS }
     )
     .not.toBeNull();
-  const id = await drawnIdOf(page, readId);
   if (id === null) throw new Error(message);
   return id;
 }
@@ -259,17 +264,6 @@ function lineHolding(items: readonly TreeItem[], readId: string): TreeItem | und
   return undefined;
 }
 
-/** The rows the line `line` of `items` holds open, one level under it. */
-function heldByLine(items: readonly TreeItem[], line: TreeItem | undefined): TreeItem[] {
-  if (line === undefined) return [];
-  const held: TreeItem[] = [];
-  for (const item of items.slice(items.indexOf(line) + 1)) {
-    if (item.level <= line.level) break;
-    if (item.level === line.level + 1) held.push(item);
-  }
-  return held;
-}
-
 /** The node `readId` of `answer`'s words, as the read holds them. */
 function wordsOf(answer: IssueTreeAnswer, readId: string): string {
   return answer.nodes.find((node) => node.id === readId)?.text ?? "";
@@ -279,13 +273,14 @@ function wordsOf(answer: IssueTreeAnswer, readId: string): string {
 // Row 1: a proposed node is marked and settled, and an overtaken one folds away.
 // ---------------------------------------------------------------------------------------------
 
-/** What row 1 reads its page with: the issue, its tree read, and the id the page draws each node
- *  of that read under. */
+/** What row 1 reads its page with: the issue, its tree read, the id the page draws each node of
+ *  that read under, and the page's one watcher of its requests, made before its first load. */
 interface ProposedPage {
   readonly answer: IssueTreeAnswer;
   readonly key: string;
   readonly plain: string;
   readonly seeded: NodeStateSeed;
+  readonly traffic: ApiRequests;
   readonly treeId: (readId: string) => string;
   readonly wide: boolean;
 }
@@ -365,7 +360,7 @@ async function expectProposedMarks(page: Page, { answer, seeded }: ProposedPage)
  * row's facts; noted as owed otherwise.
  */
 async function expectProposedInDetails(page: Page, { seeded }: ProposedPage): Promise<void> {
-  if (!noteOwed(focusedFactsGate())) return;
+  if (!noteOwed(FOCUSED_FACTS_GATE)) return;
   const statement7 = await drawnRowId(page, seeded.ids.statement7, "statement 7");
   await focusRow(page, statement7);
   await openDetails(page);
@@ -405,7 +400,7 @@ async function expectOvertakenFold(page: Page, read: ProposedPage): Promise<void
 
   const parent = answer.nodes.find((node) => node.id === ids.statement8)?.parent ?? null;
   const parentId = parent === null ? key : treeId(parent);
-  const parentRow = parentId === key ? null : parentId;
+  const parentRow = parentId === key ? null : items.find((item) => item.id === parentId);
   const held = answer.nodes.filter(
     (node) =>
       node.parent === parent &&
@@ -448,7 +443,7 @@ async function expectOvertakenFold(page: Page, read: ProposedPage): Promise<void
   items = await treeItemsDrawn(page);
   const open = items.filter((item) => item.kind === "line")[lineAt];
   expect(
-    heldByLine(items, open).map((item) => item.readId),
+    childItems(items, open).map((item) => item.readId),
     "Enter does not draw statement 8 under its line"
   ).toContain(ids.statement8);
   const statement8 = issuePage(page).locator(
@@ -682,11 +677,9 @@ async function expectProposedViews(page: Page, read: ProposedPage): Promise<void
  * counts it; under Spec its mark is gone, with no reload and after one.
  */
 async function expectSettled(page: Page, read: ProposedPage): Promise<void> {
-  const { plain, seeded, treeId } = read;
+  const { plain, seeded, traffic, treeId } = read;
   const { ids } = seeded;
-  const traffic = watchApiRequests(page);
-  await gotoIssue(page, plain);
-  await expectLoadSettled(traffic);
+  await gotoSettled(page, traffic, plain);
   const statement7 = await drawnRowId(page, ids.statement7, "statement 7");
   const row = await focusRow(page, statement7);
   const settle = row.locator('[data-row-act="settle"]');
@@ -771,8 +764,7 @@ test("a proposed node is marked and settled on the page, and an overtaken one fo
     await page.setViewportSize(size);
     const tree = treeAnswerOf(page);
     const traffic = watchApiRequests(page);
-    await gotoIssue(page, plain);
-    await expectLoadSettled(traffic);
+    await gotoSettled(page, traffic, plain);
     // (5) The load sends no request of the node state routes: a node's life is the tree read's.
     expect(
       nodeStateRequests(traffic.requests),
@@ -786,6 +778,7 @@ test("a proposed node is marked and settled on the page, and an overtaken one fo
       key,
       plain,
       seeded,
+      traffic,
       treeId: treeIdOf(answer, await treeIdReads(key)),
       wide: size.width === DESKTOP.width,
     };
@@ -900,12 +893,17 @@ interface ReaderReading {
 }
 
 /**
- * Reads issue `key` on `page` as its reader: the load's folded counts, each beside the count the
- * reader's own tree read makes; the outline with `z` to every body open and every deeper branch
- * open; and each view, its control's count beside the count its own view read makes where the
- * page holds that read.
+ * Reads issue `key` on `page` as its reader, with `traffic`, the page's one watcher: the load's
+ * folded counts, each beside the count the reader's own tree read makes; the outline with `z` to
+ * every body open and every deeper branch open; and each view, its control's count beside the
+ * count its own view read makes where the page holds that read.
  */
-async function readAsReader(page: Page, key: string, who: string): Promise<ReaderReading> {
+async function readAsReader(
+  page: Page,
+  traffic: ApiRequests,
+  key: string,
+  who: string
+): Promise<ReaderReading> {
   const tree = treeAnswerOf(page);
   const views: Record<(typeof VIEWS)[number], TreeAnswerWatch> = {
     decisions: viewAnswerOf(page, "decisions"),
@@ -913,10 +911,8 @@ async function readAsReader(page: Page, key: string, who: string): Promise<Reade
     spec: viewAnswerOf(page, "spec"),
     verification: viewAnswerOf(page, "verification"),
   };
-  const traffic = watchApiRequests(page);
   const plain = presetPath(key, "conversation");
-  await gotoIssue(page, plain);
-  await expectLoadSettled(traffic);
+  await gotoSettled(page, traffic, plain);
   const answer = await heldAnswer(tree, `${who}'s tree read`);
   const folded = await foldedCounts(page);
   for (const row of folded) {
@@ -969,31 +965,37 @@ function readIdHolding(answer: IssueTreeAnswer, word: string, what: string): str
   return node.id;
 }
 
-/** What `?node=` of `node` draws: the row it focuses and the tree's text. */
+/** What `?node=` of `node` draws once the page has gone quiet (`gotoSettled`): the row it
+ *  focuses and the tree's text. */
 async function nodeAddressDraws(
   page: Page,
+  traffic: ApiRequests,
   plain: string,
   node: string
 ): Promise<{ readonly focused: string | null; readonly text: string }> {
-  await gotoIssue(page, `${plain}?node=${encodeURIComponent(node)}`);
-  await expectLoadSettled(watchApiRequests(page));
+  await gotoSettled(page, traffic, `${plain}?node=${encodeURIComponent(node)}`);
   return { focused: await focusedRowReadId(page), text: await treeText(page) };
 }
 
-/** What the words filter with `word` draws: the tree's text. */
-async function wordsFilterDraws(page: Page, plain: string, word: string): Promise<string> {
-  await gotoIssue(page, `${plain}?q=${encodeURIComponent(word)}`);
-  await expectLoadSettled(watchApiRequests(page));
+/** What the words filter with `word` draws once the page has gone quiet (`gotoSettled`): the
+ *  tree's text. */
+async function wordsFilterDraws(
+  page: Page,
+  traffic: ApiRequests,
+  plain: string,
+  word: string
+): Promise<string> {
+  await gotoSettled(page, traffic, `${plain}?q=${encodeURIComponent(word)}`);
   return treeText(page);
 }
 
 /** How many times the `j` walk presses `j` past the rows the tree draws before it gives up. */
 const WALK_SLACK = 4;
 
-/** The read id of every row `j` reaches from the outline's first row to its last, with every body
- *  and every deeper branch open. */
-async function jWalk(page: Page, plain: string): Promise<string[]> {
-  await gotoIssue(page, plain);
+/** The read id of every row `j` reaches from the outline's first row to its last, once the page
+ *  has gone quiet (`gotoSettled`), with every body and every deeper branch open. */
+async function jWalk(page: Page, traffic: ApiRequests, plain: string): Promise<string[]> {
+  await gotoSettled(page, traffic, plain);
   await focusThePage(page);
   await page.keyboard.press("z");
   await page.keyboard.press("z");
@@ -1018,7 +1020,7 @@ async function statementTwoReferences(
   answer: IssueTreeAnswer,
   who: string
 ): Promise<number | null> {
-  if (!noteOwed(focusedFactsGate())) return null;
+  if (!noteOwed(FOCUSED_FACTS_GATE)) return null;
   await gotoIssue(page, presetPath(key, "conversation"));
   await focusRow(page, await drawnRowId(page, statementTwo, "statement 2"));
   await openDetails(page);
@@ -1029,9 +1031,11 @@ async function statementTwoReferences(
   return count;
 }
 
-/** Bob's readings of the issue alice reserved nodes on: none of them, nor any trace of them. */
+/** Bob's readings of the issue alice reserved nodes on, on his page with `traffic`, its one
+ *  watcher: none of them, nor any trace of them. */
 async function expectNothingReserved(
   page: Page,
+  traffic: ApiRequests,
   seeded: AuthorOnlySeed,
   reserved: ReadonlyMap<string, string>,
   his: ReaderReading
@@ -1051,17 +1055,17 @@ async function expectNothingReserved(
   ).toEqual([]);
 
   // The words filter with each reserved word draws what a word nobody wrote draws.
-  const nobody = await wordsFilterDraws(page, plain, NOBODY_WROTE);
+  const nobody = await wordsFilterDraws(page, traffic, plain, NOBODY_WROTE);
   for (const word of words) {
     expect(
-      await wordsFilterDraws(page, plain, word),
+      await wordsFilterDraws(page, traffic, plain, word),
       `bob's words filter with ${word} draws what a word nobody wrote does not`
     ).toBe(nobody);
   }
 
   // `j` from the first row to the last never reaches one.
   expect(
-    (await jWalk(page, plain)).filter((id) => [...reserved.values()].includes(id)),
+    (await jWalk(page, traffic, plain)).filter((id) => [...reserved.values()].includes(id)),
     "j reaches a reserved node on bob's page"
   ).toEqual([]);
 
@@ -1088,8 +1092,10 @@ async function expectNothingReserved(
     await parentOfRow(page, riskId),
     "bob's project risk does not stand under statement 3"
   ).toBe(statementThree);
+  const items = await treeItemsDrawn(page);
+  const statementThreeItem = items.find((item) => item.id === statementThree);
   expect(
-    childItems(await treeItemsDrawn(page), statementThree).at(-1)?.readId,
+    childItems(items, statementThreeItem).at(-1)?.readId,
     "bob's project risk does not stand after statement 3's other children"
   ).toBe(projectRisk);
   const riskRow = nodeRow(page, riskId).first();
@@ -1103,10 +1109,10 @@ async function expectNothingReserved(
   ).toEqual([]);
 
   // `?node=` of the reserved lens and of the constraint draw what an unknown uuid draws.
-  const unknown = await nodeAddressDraws(page, plain, crypto.randomUUID());
+  const unknown = await nodeAddressDraws(page, traffic, plain, crypto.randomUUID());
   for (const name of ["lens", "constraint"] as const) {
     expect(
-      await nodeAddressDraws(page, plain, reserved.get(name) ?? ""),
+      await nodeAddressDraws(page, traffic, plain, reserved.get(name) ?? ""),
       `bob's ?node= of the reserved ${name} does not draw what an unknown uuid draws`
     ).toEqual(unknown);
   }
@@ -1124,11 +1130,12 @@ async function bobsReading(
   try {
     await withIssuePage(context, "bob");
     const page = await context.newPage();
+    const traffic = watchApiRequests(page);
     await page.setViewportSize(DESKTOP);
-    const his = await readAsReader(page, key, "bob");
+    const his = await readAsReader(page, traffic, key, "bob");
     const statementTwo = seeded.whole.requirements[1] ?? "";
     const references = await statementTwoReferences(page, key, statementTwo, his.answer, "bob");
-    await expectNothingReserved(page, seeded, reserved, his);
+    await expectNothingReserved(page, traffic, seeded, reserved, his);
     return { his, references };
   } finally {
     await context.close();
@@ -1164,7 +1171,8 @@ test("a node reserved for its author is on its author's page and on nobody else'
 
     // Then as alice, who reads each node she reserved, marked as hers alone.
     await page.setViewportSize(DESKTOP);
-    const her = await readAsReader(page, key, "alice");
+    const traffic = watchApiRequests(page);
+    const her = await readAsReader(page, traffic, key, "alice");
     for (const name of RESERVED_NODES) {
       const row = await drawnRow(page, reserved.get(name) ?? "", `her reserved ${name}`);
       expect(await ownMarks(row), `her reserved ${name} does not carry Only you`).toEqual([
