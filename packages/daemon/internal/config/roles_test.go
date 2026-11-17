@@ -14,7 +14,14 @@ import (
 // and answers the configuration's path: a role's prompt_file resolves against that directory.
 func rolesFile(t *testing.T, body string, prompts ...string) string {
 	t.Helper()
-	path := writeConfigFile(t, minimalFile+body)
+	return configFileWith(t, minimalFile+body, prompts...)
+}
+
+// configFileWith writes the whole of body as a legion.yaml and each named prompt file beside it,
+// and answers the configuration's path.
+func configFileWith(t *testing.T, body string, prompts ...string) string {
+	t.Helper()
+	path := writeConfigFile(t, body)
 	for _, name := range prompts {
 		if err := os.WriteFile(filepath.Join(filepath.Dir(path), name), []byte("You check the change.\n"), 0o600); err != nil {
 			t.Fatal(err)

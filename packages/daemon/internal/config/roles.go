@@ -197,7 +197,20 @@ func CheckRolePrompts(roles []Role) error {
 // issueRoles are the roles of an issue the deployment runs: Legion's six (claim.Roles), in the
 // order the workflow reaches them, then each role of `roles`, in the file's order.
 func (c Config) issueRoles() []claim.Role {
-	roles := slices.Clone(claim.Roles)
+	return c.withRoles(claim.Roles)
+}
+
+// roleConfigRoles are the roles `role_config_files` and `worker_stall_backstop_hours` may name:
+// Legion's (RoleConfigRoles, the controller among them), then each role of `roles`, in the
+// file's order.
+func (c Config) roleConfigRoles() []claim.Role {
+	return c.withRoles(RoleConfigRoles)
+}
+
+// withRoles is legion's roles followed by each role of `roles`, in the file's order, as a list of
+// its own.
+func (c Config) withRoles(legion []claim.Role) []claim.Role {
+	roles := slices.Clone(legion)
 	for _, role := range c.Roles {
 		roles = append(roles, role.Name)
 	}
@@ -208,12 +221,24 @@ func (c Config) issueRoles() []claim.Role {
 // each key's reader takes a name of the role grammar beside Legion's own, since `roles` may be
 // read after it, and this check, run once every key it judges is set, refuses a name that is
 // neither one of Legion's roles for that key nor a role of `roles`, with the reader's text whose
-// list names both. Its keys: `worker_backends`.
+// list names both. Its keys: `worker_backends`, `role_config_files` and
+// `worker_stall_backstop_hours`.
 func checkDeploymentRoleKeys(cfg Config) error {
-	roles := cfg.issueRoles()
-	for _, role := range slices.Sorted(maps.Keys(cfg.WorkerBackends)) {
+	if err := namedRoles(cfg.WorkerBackends, "worker_backends", "an issue role", cfg.issueRoles()); err != nil {
+		return err
+	}
+	if err := namedRoles(cfg.RoleConfigFiles, "role_config_files", "a Legion role", cfg.roleConfigRoles()); err != nil {
+		return err
+	}
+	return namedRoles(cfg.WorkerStallBackstops, stallBackstopKey, "a Legion role", cfg.roleConfigRoles())
+}
+
+// namedRoles refuses the first role in name order that key names and roles does not hold, as the
+// key's reader words a name that is not what (`an issue role`, `a Legion role`) and listing roles.
+func namedRoles[V any](named map[claim.Role]V, key, what string, roles []claim.Role) error {
+	for _, role := range slices.Sorted(maps.Keys(named)) {
 		if !slices.Contains(roles, role) {
-			return fmt.Errorf("worker_backends names %q, which is not an issue role (%s)", role, runtime.JoinRoles(roles))
+			return fmt.Errorf("%s names %q, which is not %s (%s)", key, role, what, runtime.JoinRoles(roles))
 		}
 	}
 	return nil
