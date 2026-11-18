@@ -97,20 +97,29 @@ func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeIssueStep(w, r, input.write(), input.Actor)
+	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a step record")
+	if !ok {
+		return
+	}
+	s.writeIssueStep(w, r, input.write(), actor, key)
 }
 
 // putIssueStepRating writes the rating of a retro's run, with every field of the run the body
 // states, as putIssueStep writes them: the rating and its reason are set once, and the record is
 // made where the retro's start and end have not landed yet. The record must be a retro's. A body
-// that names no rating is refused for its shape, before its writer is read, as the decoder refuses
-// a body it cannot read: the store takes a step write with no rating, so this route alone holds
-// one required. A reason the body leaves out is "", which the store refuses as a rating_reason
-// left out, after it has checked the write's other fields and the rating.
+// that names no rating is refused once its writer is checked, before the transaction and the
+// issue's lock, as the package refuses a required field it lacks: the store takes a step write
+// with no rating, so this route alone holds one required. A reason the body leaves out is "",
+// which the store refuses as a rating_reason left out, after it has checked the write's other
+// fields and the rating.
 func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 	var input stepRatingInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
+		return
+	}
+	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a step record")
+	if !ok {
 		return
 	}
 	if input.Rating == nil {
@@ -123,18 +132,14 @@ func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 	if input.RatingReason != nil {
 		write.Rating.Reason = *input.RatingReason
 	}
-	s.writeIssueStep(w, r, write, input.Actor)
+	s.writeIssueStep(w, r, write, actor, key)
 }
 
-// writeIssueStep is the one write of a step record behind both routes: the writer and the issue
-// are checked, write (its ID, Issue and Project filled here from the path and the issue row) is
-// written, and the record is answered as the read lists it.
-func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write workflowstore.StepWrite, supplied *model.Actor) {
-	actor, key, ok := s.requireIssueDaemon(w, r, supplied, "a step record")
-	if !ok {
-		return
-	}
-
+// writeIssueStep is the one write of a step record behind both routes, by actor to the issue key,
+// each of which the route has checked (requireIssueDaemon): the issue is read, write (its ID,
+// Issue and Project filled here from the path and the issue row) is written, and the record is
+// answered as the read lists it.
+func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write workflowstore.StepWrite, actor model.Actor, key string) {
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
