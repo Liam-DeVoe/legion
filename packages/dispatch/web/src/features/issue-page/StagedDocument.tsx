@@ -112,7 +112,7 @@ export function EditorBox({ children }: { children: ReactNode }): ReactNode {
   return (
     <div className="min-w-0 [overflow-anchor:none]">
       <div
-        className="max-h-[calc(100dvh-var(--issue-identity-height,0px)-var(--issue-composer-height,0px))] min-w-0 overflow-y-auto overscroll-contain [&_.ProseMirror]:[overflow-wrap:anywhere]! [&_.dispatch-reference]:max-w-[min(24em,100%)]!"
+        className="max-h-[calc(100dvh-var(--issue-identity-height,0px)-var(--issue-composer-height,0px))] overflow-y-auto overscroll-contain [&_.ProseMirror]:[overflow-wrap:anywhere]! [&_.dispatch-reference]:max-w-[min(24em,100%)]!"
         {...{ [EDITOR_BOX_ATTRIBUTE]: "" }}
       >
         {children}

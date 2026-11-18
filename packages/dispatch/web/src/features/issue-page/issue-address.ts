@@ -1,8 +1,7 @@
 import { type DispatchHrefItem, decodeBlockId, itemFromSearch } from "@legion/contracts";
 
 import type { Ask, Comment, MessageRead } from "../../api/types";
-import type { ItemRoute } from "../issue/useItemLanding";
-import { buildIssuePath, type IssueRoute, parseIssuePath } from "../refs/routes";
+import { buildIssuePath, type IssueRoute } from "../refs/routes";
 import { agentsOnlyIds } from "./agents-only";
 import type { TreeNode } from "./issue-tree";
 import type { Preset } from "./page-words";
@@ -199,45 +198,6 @@ export function issueAddress(
 }
 
 /**
- * The ask, comment or message `address` names as a node of the outline, by its route, which is
- * how the old page's landing reads an item (`issue/useItemLanding.ts`): an item's own route
- * (`/asks/<id>`, `/comments/<id>`, `/messages/<id>`), or the item a preset's address names
- * beside it (`?ask=`, `?comment=`) under the issue's key. Undefined for every other address,
- * and for an item the address names beside the document it opens (`documentItem`: `?mark=`, or
- * an item at a pinned version), whose page is that document's and not the outline.
- */
-export function outlineItemRoute(
-  route: IssueRoute,
-  search: string,
-  address: Pick<IssueAddress, "documentItem" | "target">
-): ItemRoute | undefined {
-  if (address.target?.kind !== "item" || address.documentItem !== undefined) return undefined;
-  if (route.kind === "ask" || route.kind === "comment" || route.kind === "message") return route;
-  const item = itemFromSearch(search);
-  return item === null || item === undefined
-    ? undefined
-    : { id: item.id, key: route.key, kind: item.kind };
-}
-
-/**
- * Where this page goes for the old page's landing `to` (`useItemLanding`'s `redirect` and
- * `rewrite`): `to` itself, unless it is an address of the issue page naming the item beside the
- * document it is the address of - `?ask=` or `?comment=`, as `documentItemPath` writes it -
- * which this page reads as the item's node of the outline again (`issueAddress`): the node the
- * tree does not hold, so the landing sent the reader there again and again. That one is the
- * document's address with the item marked (`?mark=`), the address "View in document" builds,
- * which opens the document with the item beside it (`documentItem`) and asks for no node.
- */
-export function landingPath(to: string): string {
-  const url = new URL(to, "http://dispatch.invalid");
-  const item = itemFromSearch(url.search);
-  if (item === null || item === undefined || parseIssuePath(url.pathname) === undefined) return to;
-  url.searchParams.delete(item.kind);
-  url.searchParams.set("mark", item.id);
-  return `${url.pathname}${url.search}${url.hash}`;
-}
-
-/**
  * The id `target` names where it is a comment or a message an agent wrote outside every thread
  * a person wrote in, which R20 lands in the panel's history rather than in the outline; undefined
  * for every other target, and while the reads that tell are not in (`agents-only.ts`). `asks`
@@ -253,41 +213,6 @@ export function agentsOnlyItem(
 ): string | undefined {
   if (target?.kind !== "item") return undefined;
   return agentsOnlyIds(comments, messages, asks).has(target.id) ? target.id : undefined;
-}
-
-/**
- * The chain from the issue down to the nearest node the tree `root` holds above `id`, a turn of
- * a thread only agents wrote in (`agentsOnlyItem`), which the outline draws no node for: the
- * entry the turn was written under - the comment its write answered (`answers`, else the head of
- * its thread, `reply_to`), the ask it replies under (`ask_id`), the message it answers
- * (`in_reply_to`) - where the tree holds it, else that entry's own, as `tree-drafts.ts`'s
- * `addTurns` places each turn. Where the tree holds none of them - the head of such a thread
- * sits under the issue, and an approval request is no node (`addAsks`) - it is the issue alone.
- */
-export function agentsOnlyAncestor(
-  root: TreeNode,
-  id: string,
-  comments: readonly Pick<Comment, "answers" | "ask_id" | "id" | "reply_to">[] | undefined,
-  messages: readonly MessageRead[] | undefined
-): readonly TreeNode[] {
-  const under = new Map<string, string | null>();
-  for (const comment of comments ?? []) {
-    under.set(comment.id, comment.answers ?? comment.reply_to ?? comment.ask_id);
-  }
-  for (const thread of messages ?? []) {
-    for (const message of [thread.message, ...(thread.replies ?? [])]) {
-      under.set(message.id, message.in_reply_to);
-    }
-  }
-  // Each entry is walked once, so reads whose entries answer each other end at the issue.
-  const walked = new Set([id]);
-  for (let above = under.get(id); typeof above === "string"; above = under.get(above)) {
-    if (walked.has(above)) break;
-    walked.add(above);
-    const chain = pathToTarget(root, { id: above, kind: "item" });
-    if (chain !== undefined) return chain;
-  }
-  return [root];
 }
 
 /** The chain from `root` down to the first node `wanted` answers for, the root first, or
