@@ -31,7 +31,7 @@ env:
 
 jobs:
   envoy-go-race:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # The step's -timeout 30m must fire before the runner cancels the job, so a hung test prints
     # the dump that names it. It is 2.2 times the step's slowest package over this job's 20 newest
     # green merge-group runs up to 2026-11-18T08:29Z (runs 44207461334 to 44264543200):

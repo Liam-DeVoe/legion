@@ -31,7 +31,7 @@ env:
 
 jobs:
   dispatch-multiprocess:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # The step's -timeout 35m is twice and more the package's slowest run over this job's 20 newest
     # green merge-group runs up to 2026-11-18T07:39Z (runs 44136695614 to 44258870089), 940.253 s
     # (run 44172328284), which the 25 minutes it had before held only 1.6 times. The limit is at

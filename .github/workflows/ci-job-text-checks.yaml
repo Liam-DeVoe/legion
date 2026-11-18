@@ -71,7 +71,7 @@ env:
 
 jobs:
   text-checks:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # At least the job's sum over its 20 green merge-group runs from #2945, which made it, to
     # 2026-11-16T17:33Z: its other steps at their longest, 28 s, and each test step's longest plus
     # its guard - the three modules' text checks 65 s, 81 s and 1 s plus 2 minutes each, the API's

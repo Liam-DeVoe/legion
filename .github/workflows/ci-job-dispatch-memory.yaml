@@ -31,7 +31,7 @@ env:
 
 jobs:
   dispatch-memory:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # The step's -timeout 70m is twice and more the package's slowest run over this job's 20 newest
     # green merge-group runs up to 2026-11-15, 1963.339 s (run 43677717022), which the 60 minutes
     # it had before held only 1.8 times. The limit is at least the job's sum over those runs: its

@@ -22,7 +22,7 @@ on:
 
 jobs:
   contracts:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
     # steps at their longest, 43 s, 5 s of its clock over them, and its test step's longest, 6 s,
     # plus the package script's guard of 15 s: 69 s in all.

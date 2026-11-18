@@ -420,7 +420,7 @@ These rules are how a file leaves nothing behind:
   Oh My Pi's native modules, about 116 MiB a pin, are hardlinked into each test's fresh HOME from one copy per binary at `$XDG_CACHE_HOME/legion/test-omp-natives`, or `$HOME/.cache/legion/test-omp-natives` where `XDG_CACHE_HOME` is unset (`nativesCacheRoot` in `packages/pi-shared/test/omp-natives.ts`);
   `nativesCache` in `packages/daemon/internal/testbin/natives.go` computes that same path with `os.UserCacheDir` and `OMPHome` hardlinks out of it, so moving the Bun side alone would split a cache that exists to be shared by both languages and either fills for the other.
   The Go build and module caches of the `go run` in `runDaemonPane` (`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`) stay for the same reason:
-  CI's `pi-legion` job restores `~/.cache/go-build` and `~/go/pkg/mod`, keyed `go-daemon-<runner os>-go<version>`, before it runs that scenario (`.github/workflows/ci-job-pi-legion.yaml`).
+  CI's `pi-legion` job restores `~/.cache/go-build` and `~/go/pkg/mod`, keyed `go-daemon-<runner os>-<runner arch>-go<version>`, before it runs that scenario (`.github/workflows/ci-job-pi-legion.yaml`).
   Those of `scripts/e2e/lib/held-port.test.ts` stay there too, although the `test` job that runs it restores no Go cache now that the daemon's Go suite is `daemon-go`'s.
   The condition is the rename: `fillNativesCache` in `packages/pi-shared/test/omp-natives.ts` renames a directory inside the cache root, and a directory rename under `$HOME` panics the gVisor sandbox of a Legion pod and kills every role in it.
   So the permission holds only while `XDG_CACHE_HOME` is honoured and the pod points it at its own volume, which Legion's runtime does for every role (`/legion/scratch/cache`).
