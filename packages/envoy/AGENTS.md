@@ -5559,13 +5559,14 @@ The row holds a SHA-256 of the method, the route pattern, its path values, the q
   `handoffRequestLimit`, 1,576,960 bytes, for the handoff write;
   `maxJSONRequestBytes`, 1 MiB, for every other).
   A body that declares a length past it is answered its route's `413` by the layer itself, and the handler does not run;
-  one that declared no length and runs past it as it is spooled goes to its handler whole, as it always did, with no key claimed.
+  one that declared no length and runs past it as it is spooled goes to its handler whole, with no key claimed and the `413` as its caller.
   A body the client did not finish sending is `400 REQUEST_BODY_UNREADABLE`, and a spill Dispatch could not write (`keyedSpillError`:
   a full disk, a temporary directory it cannot write) is a 5xx with the key echoed, Dispatch's own failure, which the client asks again.
 
-- A keyed request the layer hands its handler with no key claimed - that body, or a caller it could not resolve - is answered as it always was, and nothing the handler makes lands (`writeless`):
-  the handler meets a caller it could not resolve as the layer's refusal, at its own lookup, and never resolves it again, and each transaction it opens that wrote is refused at its `COMMIT`.
-  So a lookup that fails once and then succeeds no longer writes with no key, and the client's resend under the key writes once.
+- A keyed request the layer hands its handler with no key claimed - that body, or a caller it could not resolve - carries its refusal as its caller (`writeless`):
+  every lookup of the caller answers that refusal, and every keyed route's handler looks up its caller before its first write, a row, a broker call or a document room's write alike.
+  So the handler answers the refusal there, or a refusal of its own that comes first (a bearer-only route's `403`, the `413` of a body it reads), and each transaction it opens that wrote is refused at its `COMMIT` besides.
+  A lookup that fails once and then succeeds no longer writes with no key, and the client's resend under the key writes once.
 
 - The row is inserted in flight, in a statement of its own, before the handler runs;
   the claim and every later bookkeeping statement run under `context.WithoutCancel`, bounded by `keyedBookkeeping` (10 s), so a client that goes away mid-claim leaves no half-claimed key.

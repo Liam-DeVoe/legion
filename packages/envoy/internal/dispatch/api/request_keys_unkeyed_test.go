@@ -82,7 +82,9 @@ func (rig *lookupRig) write(_ int32, w http.ResponseWriter, r *http.Request) {
 //   - the declared body was past the route's limit (ContentLength): the layer answers the route's
 //     413 itself, and no handler runs.
 //   - a body that declared no length ran past the limit as it was spooled (body.size): the handler
-//     answers it as it always did, writeless.
+//     ran as its caller, and the routes that read no body - the revokes, the comment reopen, the
+//     architecture syncs - made their writes with no key claimed. The handler now meets the route's
+//     413 at its caller lookup, writeless too (TestAnUndeclaredBodyPastTheLimitReachesNoWrite).
 //   - every POST and PATCH row of the table, each a row of the walk, with its handler replaced by
 //     one that never looks up its caller and writes: whichever layer of the row looks first, the
 //     write does not land.
@@ -137,8 +139,8 @@ func TestAKeyedWriteNeverWritesUnkeyed(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// A handler that reads nothing of its body and writes, as no route does: what reaches
-			// it and what lands.
+			// A handler that never looks up its caller and writes a row, as no route's handler
+			// does: what reaches it, and what the second guard (writeless's COMMIT) lets land.
 			writing := func(t *testing.T) *keyedRig {
 				return newWritingRig(t, func(_ int32, w http.ResponseWriter, r *http.Request, write rigWrite) {
 					if err := write(r.Context(), nil); err != nil {

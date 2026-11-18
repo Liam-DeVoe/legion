@@ -3415,7 +3415,7 @@ a broadcast answers once its messages are committed, with its deliveries behind 
 The layer reads a keyed body before its handler runs, spooling at most the route's own limit:
 26 MiB for the three upload routes (`POST /api/v1/issues/{key}/artifacts`, `/projects/{key}/artifacts`, `/agents/{session_id}/artifacts`), 1,576,960 bytes for the handoff write (`POST /api/v1/issues/{key}/handoffs/{phase}`), 1 MiB for every other.
 A body that declares a length past it is answered its route's `413` by the layer itself, and the handler does not run.
-One that declared no length and runs past it as it is spooled goes to its handler whole, as it always did, and so does a request whose caller the layer could not resolve: each is answered as it always was, with no key claimed, and nothing its handler makes can land without the key.
+One that declared no length and runs past it as it is spooled goes to its handler whole with the `413` as its caller, and a request whose caller the layer could not resolve goes with that refusal as its caller: with no key claimed, each is answered at the handler's caller lookup, which every keyed route makes before its first write, or by a refusal of the handler's own that comes first, such as a bearer-only route's `403`.
 A body the client did not finish sending is `400 REQUEST_BODY_UNREADABLE`;
 one Dispatch cannot spool to its temporary directory is Dispatch's own failure, a 5xx with the key echoed, which the client asks again.
 

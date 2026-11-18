@@ -288,8 +288,8 @@
     "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/artifacts/{id}/asks | an undeclared body past the route's limit": {
-    "status": 404,
-    "body": "{\"code\":\"ARTIFACT_NOT_FOUND\",\"error\":\"artifact not found\"}\n"
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/artifacts/{id}/asks | no Authorization": {
     "status": 401,
@@ -344,8 +344,8 @@
     "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/artifacts/{id}/comments | an undeclared body past the route's limit": {
-    "status": 404,
-    "body": "{\"code\":\"ARTIFACT_NOT_FOUND\",\"error\":\"artifact not found\"}\n"
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/artifacts/{id}/comments | no Authorization": {
     "status": 401,
@@ -736,8 +736,8 @@
     "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/comments/{id}/reopen | an undeclared body past the route's limit": {
-    "status": 404,
-    "body": "{\"code\":\"NOT_FOUND\",\"error\":\"not found\"}\n"
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/comments/{id}/reopen | no Authorization": {
     "status": 401,
@@ -820,8 +820,8 @@
     "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/credential-grants/{id}/revoke | an undeclared body past the route's limit": {
-    "status": 404,
-    "body": "{\"code\":\"FEATURE_OFF\",\"error\":\"agent-secrets is not configured on this Dispatch\"}\n"
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/credential-grants/{id}/revoke | no Authorization": {
     "status": 401,
@@ -848,8 +848,8 @@
     "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/credential-requests/machine-lookup | an undeclared body past the route's limit": {
-    "status": 404,
-    "body": "{\"code\":\"FEATURE_OFF\",\"error\":\"agent-secrets is not configured on this Dispatch\"}\n"
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/credential-requests/machine-lookup | no Authorization": {
     "status": 401,
@@ -876,8 +876,8 @@
     "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/credential-requests/{id}/approve | an undeclared body past the route's limit": {
-    "status": 404,
-    "body": "{\"code\":\"FEATURE_OFF\",\"error\":\"agent-secrets is not configured on this Dispatch\"}\n"
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/credential-requests/{id}/approve | no Authorization": {
     "status": 401,
@@ -904,8 +904,8 @@
     "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/credential-requests/{id}/deny | an undeclared body past the route's limit": {
-    "status": 404,
-    "body": "{\"code\":\"FEATURE_OFF\",\"error\":\"agent-secrets is not configured on this Dispatch\"}\n"
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/credential-requests/{id}/deny | no Authorization": {
     "status": 401,
@@ -1184,8 +1184,8 @@
     "body": "{\"code\":\"CAP_EXCEEDED\",\"error\":\"request body exceeds 1576960 bytes: a handoff body is at most 262144 bytes\"}\n"
   },
   "POST /api/v1/issues/{key}/handoffs/{phase} | an undeclared body past the route's limit": {
-    "status": 403,
-    "body": "{\"code\":\"HANDOFF_FORBIDDEN\",\"error\":\"a handoff is written by an agent session under a bearer token, naming itself in actor\"}\n"
+    "status": 413,
+    "body": "{\"code\":\"CAP_EXCEEDED\",\"error\":\"request body exceeds 1576960 bytes: a handoff body is at most 262144 bytes\"}\n"
   },
   "POST /api/v1/issues/{key}/handoffs/{phase} | no Authorization": {
     "status": 401,
@@ -1268,8 +1268,8 @@
     "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/machine-logins/{id}/revoke | an undeclared body past the route's limit": {
-    "status": 404,
-    "body": "{\"code\":\"FEATURE_OFF\",\"error\":\"agent-secrets is not configured on this Dispatch\"}\n"
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/machine-logins/{id}/revoke | no Authorization": {
     "status": 401,
@@ -1548,8 +1548,8 @@
     "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/projects/{key}/architecture-source/sync | an undeclared body past the route's limit": {
-    "status": 404,
-    "body": "{\"code\":\"SOURCE_NOT_FOUND\",\"error\":\"no architecture source configured for TEST\"}\n"
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/projects/{key}/architecture-source/sync | no Authorization": {
     "status": 401,
@@ -1576,8 +1576,8 @@
     "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/projects/{key}/architecture-sources/sync | an undeclared body past the route's limit": {
-    "status": 404,
-    "body": "{\"code\":\"SOURCE_NOT_FOUND\",\"error\":\"no architecture source configured for TEST\"}\n"
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/projects/{key}/architecture-sources/sync | no Authorization": {
     "status": 401,
@@ -1604,8 +1604,8 @@
     "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync | an undeclared body past the route's limit": {
-    "status": 404,
-    "body": "{\"code\":\"SOURCE_NOT_FOUND\",\"error\":\"no architecture source from owner/repo configured for TEST\"}\n"
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync | no Authorization": {
     "status": 401,
@@ -1772,8 +1772,8 @@
     "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/signins/{id}/revoke | an undeclared body past the route's limit": {
-    "status": 404,
-    "body": "{\"code\":\"FEATURE_OFF\",\"error\":\"agent-secrets is not configured on this Dispatch\"}\n"
+    "status": 413,
+    "body": "{\"code\":\"REQUEST_TOO_LARGE\",\"error\":\"request body exceeds 1048576 bytes\"}\n"
   },
   "POST /api/v1/signins/{id}/revoke | no Authorization": {
     "status": 401,

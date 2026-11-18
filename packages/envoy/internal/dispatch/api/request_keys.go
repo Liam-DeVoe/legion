@@ -80,10 +80,9 @@ import (
 // with the header never writes unkeyed. A body that declares a length past its route's limit is
 // answered the route's 413, and no handler runs. A caller the layer cannot resolve, and a body that
 // declared no length and ran past the limit as it was spooled, reach the handler with no key
-// claimed, so they are answered as they always were, but writeless: the caller reaches it as the
-// layer's refusal (resolvedCallerKey) rather than being resolved again, and a transaction it opens
-// that wrote is refused at its COMMIT. So a lookup that failed here and then succeeded cannot make
-// the write with no key.
+// claimed and their refusal - the caller's, or the route's 413 - as its caller (writeless): the
+// handler answers as it answers the same request without a key wherever it refuses before it
+// looks up its caller, and with that refusal at the lookup otherwise, before any write.
 
 const (
 	// keyedAnswerKept is the largest answer a key keeps. A larger one is still answered in full, but
@@ -260,15 +259,12 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 		}
 		actor, human, err := s.optionalActor(r)
 		if err != nil {
-			// The handler refuses a caller it cannot resolve as it always has, and nothing is
-			// kept. It is handed this refusal as its caller rather than left to resolve the caller
-			// again: a failure that cleared between the two lookups - a store or an issuer down for
-			// a moment - ran the write with no key, and the retry under the key made it a second
-			// time. So the request is answered as one without a key is, by whichever refusal it
-			// meets first, the handler's own (a bearer-only route's 403 to a request with no
-			// bearer) or this one (a 401, a broker's 429, a 5xx), and no key was claimed, so no
-			// answer is kept and none names the key back. It cannot write either (writeless).
-			handler(w, writeless(r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{err: err})), err))
+			// A failure that cleared between this lookup and the handler's - a store or an issuer
+			// down for a moment - ran the write with no key, and the retry under the key made it a
+			// second time. The handler is handed this refusal as its caller instead (writeless):
+			// it answers as it would without a key, a bearer-only route's 403 or the refusal
+			// itself (a 401, a broker's 429, a 5xx), none of which is kept or names the key back.
+			handler(w, writeless(r, err))
 			return
 		}
 		r = r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human}))
@@ -317,9 +313,10 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 		}
 		if body.size > bodyLimit {
 			// A body that declared no length and ran past the limit as it was spooled goes to the
-			// handler whole, as it always did, so the request is answered as it always was - a
-			// bearer-only route's 403, an object that is not there, or the route's 413 - and no
-			// key is claimed. It cannot write either (writeless).
+			// handler whole with the route's 413 as its caller (writeless): a handler that reads
+			// its body first answers its own 413, and one that looks up its caller first - the
+			// revokes, the comment reopen, the architecture syncs, which read no body - answers
+			// this one there, before its write. Neither is kept or names the key back.
 			r.Body = io.NopCloser(io.MultiReader(replayable, r.Body))
 			handler(w, writeless(r, tooLarge))
 			return
@@ -373,10 +370,11 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 // upload's file and a megabyte of fields (uploadArtifactFor) for an upload route, a handoff
 // write's own limit (handoffRequestLimit) for that one, the markdown round trip's
 // (markdownRoundTripLimit) for that one, and a JSON body (decodeJSON) for every other. The
-// limit is the most the keyed layer spools before its handler runs - a body past it is
-// refused whatever its key, so the layer answers the 413 itself rather than spool it - and
-// the most an early answer discards before it is written (drainBeforeAnswer). One answer serves
-// all three layers and the handler, so none of them can disagree with another.
+// limit is the most the keyed layer spools before its handler runs - a body that declares a length
+// past it is refused whatever its key, so the layer answers the 413 itself rather than spool it, and
+// one that declared none is handed to its handler with the 413 as its caller once it runs past it
+// (writeless) - and the most an early answer discards before it is written (drainBeforeAnswer).
+// One answer serves all three layers and the handler, so none of them can disagree with another.
 func routeBody(method, pattern string) (limit int64, tooLarge *apiError) {
 	switch route := method + " " + pattern; {
 	case keyedUploads[route]:
@@ -1133,24 +1131,30 @@ func markRequestKeyCommitted(claim requestKeyClaim, running *atomic.Bool) store.
 // holds it until it ends. A transaction with no transaction id wrote nothing, and is not asked
 // further; one that only locked rows (SELECT ... FOR UPDATE) holds ROW SHARE and wrote nothing. The
 // locks are this backend's, which are this transaction's: a backend runs one transaction, and its
-// locks end with it.
+// locks end with it. A TRUNCATE takes ACCESS EXCLUSIVE instead and is not seen; no handler runs one.
 const transactionWrote = `txid_current_if_assigned() is not null and exists (
 	select 1 from pg_locks l join pg_class c on c.oid = l.relation
 	where l.pid = pg_backend_pid() and l.locktype = 'relation' and l.mode = 'RowExclusiveLock'
 	  and c.relkind in ('r', 'p') and c.oid <> 'request_keys'::regclass
 )`
 
-// writeless is r with every transaction its handler opens refused at its COMMIT when it wrote, the
-// refusal being refusal: the request of a keyed write the layer hands its handler with no key
-// claimed (a caller it could not resolve, a body past its route's limit found as it was spooled),
-// so the handler answers it as it always has and nothing it makes lands with no key. Two things
-// make that hold whatever the handler does. Every caller lookup goes through optionalActor, and
-// for a caller the layer could not resolve it answers that refusal and no actor, so no write is
-// recorded under anyone. And a keyed route writes only inside a transaction the pool opens
-// (TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks), each of which takes this step, so a
-// handler that ignored the refusal and wrote anyway rolls its write back.
+// writeless is r as the keyed layer hands it to its handler with no key claimed - its caller did
+// not resolve, or its body declared no length and ran past its route's limit - with refusal as its
+// caller, so that nothing the handler makes lands without the key. Two guards do that:
+//
+//   - Every lookup of the caller answers refusal and no actor (optionalActor reads resolvedCallerKey
+//     before any credential), and the handler of every keyed route looks up its caller before its
+//     first write, whether that is a row, a call to the secrets broker or a live document's room.
+//     So the handler answers refusal at that lookup, unless it refuses first for a reason of its
+//     own: a bearer-only route's 403 to a request with no bearer, or the 413 of a body it reads
+//     before its caller.
+//   - Each transaction the handler opens that wrote a row (transactionWrote) is refused at its
+//     COMMIT with refusal, and rolls back. It is the second guard, for a handler that wrote to the
+//     database without looking up its caller, and it reaches only the database: a broker call or a
+//     write to a room made before the lookup is the first guard's alone.
 func writeless(r *http.Request, refusal error) *http.Request {
-	return r.WithContext(store.WithBeforeCommit(r.Context(), func(ctx context.Context, tx pgx.Tx) error {
+	ctx := context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{err: refusal})
+	return r.WithContext(store.WithBeforeCommit(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		var wrote bool
 		if err := tx.QueryRow(ctx, `select `+transactionWrote).Scan(&wrote); err != nil {
 			return fmt.Errorf("ask whether an unkeyed handler's transaction wrote: %w", err)

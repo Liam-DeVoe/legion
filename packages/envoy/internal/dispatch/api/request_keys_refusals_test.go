@@ -17,14 +17,22 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
-// updateKeyedRefusals rewrites keyedRefusalsFile from the tree under test's own answers. It is run
-// once, on the main commit before the keyed layer answered a caller it could not resolve itself
-// (b1c42d1d7d's parent, #4350), so the file holds what every client read before that change.
+// updateKeyedRefusals rewrites keyedRefusalsFile from the tree under test's own answers. The file
+// was first written on the main commit before the keyed layer answered a caller it could not
+// resolve itself (b1c42d1d7d's parent, #4350), so it holds what every client read before that
+// change; every later write of it is a diff of that file a review reads row by row. A route added
+// later has no answer there, so the pull request that adds it runs this test with the flag at its
+// own head and its diff carries the route's new rows, and nothing else.
 var updateKeyedRefusals = flag.Bool("update-keyed-refusals", false,
 	"write "+keyedRefusalsFile+" from this tree's answers rather than compare them with it")
 
 // keyedRefusalsFile is every keyed route's answer to each caller keyedRefusalCallers names, as
-// main answered them at 958173da0e, the parent of #4350's b1c42d1d7d.
+// main answered them at 958173da0e, the parent of #4350's b1c42d1d7d, but for 13 rows of an
+// undeclared body past the route's limit, re-recorded by #4411. Those routes now answer their 413
+// at their caller lookup, as main has since #4350, because the seven of them that read no body
+// made their write with no key claimed (TestAnUndeclaredBodyPastTheLimitReachesNoWrite). Here each
+// of the 13 answered a refusal before, since the probes name objects that do not exist and the
+// server has no broker: a request too large that would have been refused anyway.
 const keyedRefusalsFile = "testdata/keyed_refusals.json"
 
 // keyedRefusal is one answer as a client reads it: its status, the headers a refusal sets, and
@@ -72,7 +80,8 @@ var keyedRefusalCallers = []keyedRefusalCaller{
 // R9 of dispatch://INFRA-3862/spec: a deployment behaves exactly as it did. Every POST and PATCH
 // route, sent a keyed write by each caller keyedRefusalCallers names, answers what main answered
 // before #4350 moved the refusal of a caller the keyed layer cannot resolve into that layer: the
-// same status, refusal headers and body, recorded in keyedRefusalsFile from that commit.
+// same status, refusal headers and body, recorded in keyedRefusalsFile from that commit, with the
+// 13 rows it names re-recorded.
 func TestEveryKeyedRefusalReadsAsItDidBeforeTheLayerAnsweredIt(t *testing.T) {
 	got := map[string]keyedRefusal{}
 	for _, caller := range keyedRefusalCallers {
