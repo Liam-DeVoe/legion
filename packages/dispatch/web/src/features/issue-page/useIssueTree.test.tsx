@@ -3988,3 +3988,60 @@ test("a filter pressed off and on after its view's refresh was refused sends no 
     client.clear();
   }
 });
+
+// A tree read refused, its retries spent, and the reader leaves the issue for another page, the
+// shell's event feed staying. While the reader is away, the live feed comes back with its gap
+// replayed whole, which reads a refused tree again. The reader comes back to the issue: the tree
+// is read, and the outline draws what Dispatch serves now in place of its failed line.
+test("a refused tree read is read again when the live feed comes back while the reader is on another page", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  let refused = true;
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () => {
+    if (refused) throw new Error("the tree read was refused");
+    return treeAnswer([comment]);
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const sockets = installFakeLiveSockets();
+  // Signed in at event head 1, as the app's sign-in gate holds it before the page.
+  client.setQueryData(["whoami"], { event_head: "1", kind: "user", login: "alice" });
+  const shell = render(
+    <QueryClientProvider client={client}>
+      <ShellEventFeed />
+    </QueryClientProvider>
+  );
+  const on: FilterOn = { preset: "conversation" };
+  try {
+    const first = renderHook(() => useIssueTree(issue), { wrapper: turnedStage(client, on) });
+    startFeedOn(sockets, true);
+    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error"));
+    await act(async () => {
+      await Bun.sleep(1_100);
+    });
+    first.unmount();
+    refused = false;
+
+    await feedBackAfterRestart(sockets, true);
+    await act(async () => {
+      await Bun.sleep(1_500);
+    });
+
+    const back = renderHook(() => useIssueTree(issue), { wrapper: turnedStage(client, on) });
+    await act(async () => {
+      await Bun.sleep(1_500);
+    });
+    expect(
+      client.getQueryState(issueTreeKey(KEY))?.status,
+      "the refused tree was read again for the feed coming back"
+    ).toBe("success");
+    expect(holdsComment(back.result.current.root), "the outline draws what Dispatch serves").toBe(
+      true
+    );
+    back.unmount();
+  } finally {
+    shell.unmount();
+    liveSocketFor(client).close();
+    sockets.restore();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
