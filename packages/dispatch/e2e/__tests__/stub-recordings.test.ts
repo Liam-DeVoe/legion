@@ -342,6 +342,7 @@ describe("every committed recording answers the display tree of every stored tex
       "BroadcastCreated.body",
       "BroadcastRead.body",
       "BroadcastSummary.body",
+      "CheckBlock.text",
       "CommentWithTrees.body",
       "CommentWriteResponse.body",
       "Decision.text",
@@ -356,6 +357,7 @@ describe("every committed recording answers the display tree of every stored tex
       "MyAnswerReply.body",
       "MyAnswerRow.question",
       "ReplyBlockWithTrees.text",
+      "RequirementCoverage.text",
       "SearchResult.snippet",
     ]);
   });

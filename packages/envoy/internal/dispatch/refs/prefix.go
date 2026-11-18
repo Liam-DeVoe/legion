@@ -14,12 +14,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// prefixCandidateLimit bounds what one ResolvePrefix read loads: it has to tell one match from
-// more than one and list the matches for a person to choose from, and ten is as long a list as
-// anyone reads before writing more of the id. A prefix more items carry is listed to this bound.
+// prefixCandidateLimit bounds what one ResolvePrefix read loads, and what ResolvePrefixes loads
+// for each of its ids: it has to tell one match from more than one and list the matches for a
+// person to choose from, and ten is as long a list as anyone reads before writing more of the
+// id. A prefix more items carry is listed to this bound.
 const prefixCandidateLimit = 10
 
-// prefixLimit is prefixCandidateLimit as the `limit` of every query of this file.
+// prefixLimit is prefixCandidateLimit as the `limit` of every query of this file and of
+// target_prefixes.go.
 var prefixLimit = strconv.Itoa(prefixCandidateLimit)
 
 // Candidate is one item an id prefix names, as ResolvePrefix answers with and
@@ -101,10 +103,13 @@ type Scope struct {
 
 // ResolvePrefix is the one item kind names whose id starts with prefix: an ask, a comment, a
 // message, a document (`artifact`) or a document block, looked for where scope says, as viewer.
-// Both callers of a short id go through it - the resolver that rewrites a body's short ids as it
-// is indexed (text.Resolver.Items), with the zero Viewer and the owner the reference names, and
-// the API route that resolves one id for a person or a session, with the viewer it authenticated
-// and, where its route names no owner, the whole kind.
+// Both callers that resolve one short id at a time go through it - the resolver that rewrites a
+// body's short ids as it is indexed (text.Resolver.Items), with the zero Viewer and the owner the
+// reference names, and the API route that resolves one id for a person or a session, with the
+// viewer it authenticated and, where its route names no owner, the whole kind. ResolvePrefixes
+// is the batched second copy of these queries, which GET /api/v1/reference-targets uses to
+// resolve the short ids of a whole set at once. It shares the selection rule of this function
+// (choosePrefixCandidate), so a short id names the same item through either function.
 //
 // It answers for who: an item who may not see is no candidate, so a prefix it alone carries
 // matches nothing and one it shares with a visible item names that item, and neither its id nor
@@ -126,7 +131,7 @@ type Scope struct {
 // needs; where the id is a uuid, one that differs from the prefix in case alone wins after it,
 // since a uuid's text form is lowercase hex and the prefix is read without case. A block id is
 // text its author wrote, so `Deadbeef` and `deadbeef` are two blocks and the prefix names the one
-// it is written as.
+// it is written as. That rule has one copy, choosePrefixCandidate.
 //
 // An item's prefix is read as a range on its table's uuid primary key, the prefix with its
 // hyphens where a uuid has them and the rest filled with `0` and with `f`, which that key's btree
@@ -160,6 +165,17 @@ func resolvePrefix(ctx context.Context, q Queryer, who *model.Actor, kind string
 	if err != nil {
 		return Candidate{}, err
 	}
+	return choosePrefixCandidate(kind, prefix, found)
+}
+
+// choosePrefixCandidate is the one item prefix names among found, every candidate of kind the
+// query of that prefix read, in id order. It is the one copy of the rule ResolvePrefix answers
+// by, and ResolvePrefixes answers each of its ids by it too, so a short id names the same item
+// either way. The id written exactly as the prefix wins; where kind is no block, an id that
+// differs from the prefix in case alone wins after it; then the one candidate, where found
+// holds one. No candidate is pgx.ErrNoRows, and two or more are ErrPrefixAmbiguous, which lists
+// them all.
+func choosePrefixCandidate(kind, prefix string, found []Candidate) (Candidate, error) {
 	for _, candidate := range found {
 		if candidate.ID == prefix {
 			return candidate, nil
@@ -341,16 +357,22 @@ func artifactPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, 
 		if err := rows.Scan(append(document.targets(), &name)...); err != nil {
 			return nil, fmt.Errorf("scan the documents %q names: %w", prefix, err)
 		}
-		candidate := Candidate{Kind: "artifact", ID: *document.id, FirstLine: contracts.OneLineSummary(name)}
-		if parent := document.parent(); parent != nil {
-			candidate.Ref = parent.Ref
-		}
-		if document.issueKey != nil {
-			candidate.IssueKey = *document.issueKey
-		}
-		found = append(found, candidate)
+		found = append(found, artifactCandidate(document, name))
 	}
 	return found, rows.Err()
+}
+
+// artifactCandidate is one document row as a candidate: addressed as the graph addresses it
+// (documentParent.parent) and owned by its issue, where an issue owns it.
+func artifactCandidate(document documentParent, name string) Candidate {
+	candidate := Candidate{Kind: "artifact", ID: *document.id, FirstLine: contracts.OneLineSummary(name)}
+	if parent := document.parent(); parent != nil {
+		candidate.Ref = parent.Ref
+	}
+	if document.issueKey != nil {
+		candidate.IssueKey = *document.issueKey
+	}
+	return candidate
 }
 
 // blockPrefixCandidates is the blocks of one version of the document scope names whose id starts
@@ -358,10 +380,11 @@ func artifactPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, 
 // whose blocks document_blocks holds with the excerpt a mention of each shows, or the one the
 // reference pins, whose blocks are the ids document_block_texts records a text of at or before
 // it, the latest of those texts each, and none at all unless a block-aware build indexed that
-// version (BlockTextAt reads one block the same way). A block id is text, not a uuid, so the
-// prefix is matched on it, which is a read of the one document's blocks and not a scan. A block
-// who may not see is none of them, at its node's id, the document's ref_key, '#' and the block
-// id, whichever version names it.
+// version (BlockTextAt reads one block the same way). Both are read where the block index keeps
+// them, in the room the document is edited in (DocumentRoomBlocksSQL, documentRoomTextsSQL). A
+// block id is text, not a uuid, so the prefix is matched on it, which is a read of the one
+// document's blocks and not a scan. A block who may not see is none of them, at its node's id,
+// the room's ref_key, '#' and the block id, whichever version names it.
 func blockPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, scope Scope, prefix string) ([]Candidate, error) {
 	if scope.Document == "" || scope.IssueKey != "" || scope.Version < 0 || scope.Version > math.MaxInt32 {
 		return nil, nil
@@ -369,8 +392,8 @@ func blockPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, sco
 	var args queryArgs
 	document, written := args.param(scope.Document), args.param(strings.ToLower(prefix))
 	query := `select d.block_id, d.excerpt, ` + documentColumns("a") + `
-		from document_blocks d
-		join artifacts a on a.id = d.artifact_id
+		from artifacts a
+		join document_blocks d on ` + DocumentRoomBlocksSQL("d", "a.id") + `
 		where a.ref_key = ` + document + ` and starts_with(lower(d.block_id), ` + written + `)` +
 		args.andVisible(who, "block", `d.node_id`) + `
 		order by d.block_id limit ` + prefixLimit
@@ -381,12 +404,12 @@ func blockPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, sco
 			cross join lateral (
 				select distinct on (b.block_id) b.block_id, b.text
 				from document_block_texts b
-				where b.artifact_id = a.id and b.version <= ` + version + ` and starts_with(lower(b.block_id), ` + written + `)
+				where ` + documentRoomTextsSQL("b", "a.id") + ` and b.version <= ` + version + ` and starts_with(lower(b.block_id), ` + written + `)
 				order by b.block_id, b.version desc
 			) t
 			where a.ref_key = ` + document + ` and t.text is not null
 			  and exists (select 1 from document_indexed_versions i where i.artifact_id = a.id and i.version = ` + version + `)` +
-			args.andVisible(who, "block", `a.ref_key || '#' || t.block_id`) + `
+			args.andVisible(who, "block", documentRoomBlockAddressSQL("a.id", "t.block_id")) + `
 			order by t.block_id limit ` + prefixLimit
 	}
 	rows, err := q.Query(ctx, query, args.values...)
@@ -401,18 +424,42 @@ func blockPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, sco
 		if err := rows.Scan(append([]any{&blockID, &body}, document.targets()...)...); err != nil {
 			return nil, fmt.Errorf("scan the blocks of %s %q names: %w", scope.Document, prefix, err)
 		}
-		candidate := Candidate{Kind: "block", ID: blockID, FirstLine: contracts.OneLineSummary(body)}
-		if parent := document.parent(); parent != nil {
-			candidate.Ref = BlockRef(parent.Ref, blockID)
-			if document.issueKey != nil {
-				candidate.IssueKey = *document.issueKey
-			} else if document.project != "" {
-				candidate.Document = parent.Ref
-			}
-		}
-		found = append(found, candidate)
+		found = append(found, blockCandidate(blockID, body, document))
 	}
 	return found, rows.Err()
+}
+
+// documentRoomTextsSQL is true of the document_block_texts row aliased alias while it records a
+// text of a block of the document document names: a row under that document or under the room it
+// is edited in (blockTextOwners, the keys BlockTextAt reads one block's texts under), of a block
+// that stands in no other document of the room now (BlockDocumentOrSQL), so a block of another
+// fragment of the room is none of its blocks, and one the room's index no longer holds is read as
+// the document's own.
+func documentRoomTextsSQL(alias, document string) string {
+	return alias + `.artifact_id = any(` + blockTextOwners(document) + `) and ` + BlockDocumentOrSQL(alias, document) + ` = ` + document
+}
+
+// documentRoomBlockAddressSQL is the node address of the block whose id the SQL expression
+// blockID names in the document document names, as the room that document is edited in keys it:
+// the room's ref_key, '#' and the id, the document's own ref_key where it is its own room.
+func documentRoomBlockAddressSQL(document, blockID string) string {
+	return `(select keyed.ref_key from artifacts keyed where keyed.id = ` + DocumentRoomSQL(document) + `) || '#' || ` + blockID
+}
+
+// blockCandidate is one block of document as a candidate, body being its text: addressed under
+// its document's reference and owned by its document's owner, the issue, or else the project
+// document itself.
+func blockCandidate(blockID, body string, document documentParent) Candidate {
+	candidate := Candidate{Kind: "block", ID: blockID, FirstLine: contracts.OneLineSummary(body)}
+	if parent := document.parent(); parent != nil {
+		candidate.Ref = BlockRef(parent.Ref, blockID)
+		if document.issueKey != nil {
+			candidate.IssueKey = *document.issueKey
+		} else if document.project != "" {
+			candidate.Document = parent.Ref
+		}
+	}
+	return candidate
 }
 
 // queryArgs are the arguments of a query this file builds by concatenation: param appends one

@@ -171,6 +171,9 @@ var readsWithoutAViewer = map[string]string{
 	"BlockChanges":         nodeDetail,
 	"BlockEmbeddingStates": nodeDetail,
 	"BlockTargets":         serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
+	"BlockTexts": "it reads the texts of blocks its caller has already resolved through TargetNames, which binds each " +
+		"block's predicate: GET /api/v1/reference-targets asks it for the members TargetNames answered alone, so a block " +
+		"who may not see is never asked",
 	"BlockTextAt":          nodeDetail,
 	"CanonicalRepo":        noNode,
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
@@ -397,6 +400,21 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 			return err
 		})
 	}
+	// ResolvePrefixes reads each kind its ids name in one statement, and the blocks of a document in
+	// two: those of its latest version and those of a version a reference pins.
+	record("ResolvePrefixes", "ResolvePrefixes of every kind", func() error {
+		_, _, err := ResolvePrefixes(ctx, recorder, who, []ShortID{
+			{Kind: "ask", Prefix: "00000000"}, {Kind: "comment", Scope: Scope{IssueKey: "CORE-1"}, Prefix: "00000000"},
+			{Kind: "message", Scope: Scope{IssueKey: "CORE-1"}, Prefix: "00000000"}, {Kind: "artifact", Prefix: "00000000"},
+			{Kind: "block", Scope: Scope{Document: "CORE-1/spec"}, Prefix: "00000000"},
+			{Kind: "block", Scope: Scope{Document: "CORE-1/spec", Version: 1}, Prefix: "00000000"},
+		})
+		return err
+	})
+	record("TargetNames", "TargetNames of an issue and a document", func() error {
+		_, err := TargetNames(ctx, recorder, who, []Target{{Kind: "issue", ID: "CORE-1"}, {Kind: "artifact", ID: "CORE-1/spec"}})
+		return err
+	})
 	// A document's own scope is its id, answered with no statement; the three kinds whose scope
 	// is read are read here.
 	for _, kind := range []string{"ask", "comment", "message"} {

@@ -220,6 +220,16 @@ func BlockDocumentOrSQL(alias, fallback string) string {
 		fallback + `)`
 }
 
+// DocumentRoomBlocksSQL is true of the document_blocks row aliased alias while it is a block of
+// the document whose uuid the SQL expression document names, read where the block index keys it:
+// a row of the room that document is edited in (DocumentRoomSQL) whose document is that one
+// (BlockDocumentSQL), the document's own rows where it is its own room. Every reader that takes a
+// document's id and reads its block rows reads them through it, never by the document's own id:
+// an issue born converted keeps its documents' rows under its tree artifact.
+func DocumentRoomBlocksSQL(alias, document string) string {
+	return alias + `.artifact_id = ` + DocumentRoomSQL(document) + ` and ` + BlockDocumentSQL(alias) + ` = ` + document
+}
+
 // AskBlockDocumentSQL is the document holding the block of the ask aliased alias, as SQL text
 // answering a uuid: an ask of an issue room is keyed by the room's tree artifact (its
 // block_artifact_id), and its block is in the document whose fragment the room's index records it

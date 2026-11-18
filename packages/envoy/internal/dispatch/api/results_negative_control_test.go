@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -98,8 +99,8 @@ func TestResultRefusesABeforeMergePassWithNoNegativeControl(t *testing.T) {
 	var version int
 	var digest string
 	if err := database.Pool.QueryRow(ctx, `
-		select changed_version, text_sha256 from document_blocks
-		where artifact_id = $1::uuid and block_id = 'nc-default' and type = 'check'
+		select d.changed_version, d.text_sha256 from document_blocks d
+		where `+refs.DocumentRoomBlocksSQL("d", "$1::uuid")+` and d.block_id = 'nc-default' and d.type = 'check'
 	`, verification.Artifact.ID).Scan(&version, &digest); err != nil {
 		t.Fatalf("read the indexed check nc-default: %v", err)
 	}
