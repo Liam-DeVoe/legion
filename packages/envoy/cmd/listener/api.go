@@ -1346,7 +1346,19 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(sendRequestBudget))
 		defer cancel()
 		item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
-		ack, err := d.client.PublishAckWithin(ctx, item)
+		// The stream's duplicate verdict is read by the sender limit's charge alone
+		// (senderCharge.published), so only a message the limit counts is published with it
+		// (PublishAckWithin), which the bus sends once and answers a lost answer as the 503 it
+		// costs one for. Any other is published as the route always published it (PublishWithin):
+		// a publish whose answer a lost connection took is sent again on the new connection, the
+		// stream stores it once under its key, and the 200 names the stored copy's event.
+		var ack bus.StoredAck
+		var err error
+		if charge != nil {
+			ack, err = d.client.PublishAckWithin(ctx, item)
+		} else {
+			err = d.client.PublishWithin(ctx, item)
+		}
 		charge.published(ack, err)
 		if err != nil {
 			record.refuseBusUnavailable(w, err)

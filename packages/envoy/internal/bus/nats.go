@@ -1935,9 +1935,11 @@ func (c *Client) PublishReportingDuplicateWithin(ctx context.Context, item contr
 // a copy stored before this call: an answer the connection's loss took is the error, which wraps
 // ErrUnacknowledged since the stream may hold this call's copy (sendStored). A core-transport
 // topic has no acknowledgement, so it answers the zero StoredAck beside PublishCoreContext's
-// error. The listener's send and publish routes publish this way: their sender limit charges
-// nothing for a copy the stream already held, and one for a copy this call may have stored
-// (cmd/listener's senderCharge.published).
+// error. The listener's send route publishes this way, and its topic publish route for a message
+// its sender limit counts: that limit charges nothing for a copy the stream already held, and one
+// for a copy this call may have stored (cmd/listener's senderCharge.published). A topic publish the
+// limit does not count reads no verdict and goes through PublishWithin, which sends it again after
+// a lost answer.
 func (c *Client) PublishAckWithin(ctx context.Context, item contracts.Envelope) (StoredAck, error) {
 	return c.publishEnvelope(ctx, item, true)
 }
