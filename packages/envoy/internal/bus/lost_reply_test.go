@@ -190,7 +190,7 @@ func lostReplyBucket(t *testing.T, c *Client) KeyValue {
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
-	kv, err := EnsureKeyValue(c.Conn, js, &nats.KeyValueConfig{Bucket: "envoy_lost_reply", Storage: nats.MemoryStorage})
+	kv, err := EnsureKeyValue(t.Context(), c.Conn, js, &nats.KeyValueConfig{Bucket: "envoy_lost_reply", Storage: nats.MemoryStorage})
 	if err != nil {
 		t.Fatalf("open the bucket: %v", err)
 	}
