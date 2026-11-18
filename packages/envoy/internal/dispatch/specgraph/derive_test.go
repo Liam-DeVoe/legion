@@ -463,7 +463,10 @@ func approveText(in *Input, change func(s *Statement)) {
 // CheckStates alike. R22: "Dispatch refuses the approval of a change request that puts a statement
 // under a parent that the approved spec does not hold"; R6: a check's claim is "narrower than its
 // statement", so a check serves one statement; R5: "The parent and support relations taken
-// together form no cycle, and Dispatch refuses a change that makes one."
+// together form no cycle, and Dispatch refuses a change that makes one." A change of the approved
+// spec is a new version of a node, so the loop rule reads the newest text of each node: a loop that
+// version 2 of a node of two versions makes is refused, and one that its version 1 alone made is
+// taken (the control).
 func TestTheEntryRefusesARelationOfNoNodeOfItsKindAndALoopOfTheApprovedSpec(t *testing.T) {
 	t.Parallel()
 	const survives, late = "a-message-survives-a-restart", "a-message-reaches-a-late-session"
@@ -473,6 +476,23 @@ func TestTheEntryRefusesARelationOfNoNodeOfItsKindAndALoopOfTheApprovedSpec(t *t
 			v := n.Versions[0]
 			v.Block = strings.Replace(v.Block, `parent="envoy-delivers-messages"`, `parent="`+parent+`"`, 1)
 			n.Versions = []ApprovedVersion{v}
+			nodes[id] = n
+		}
+	}
+	// twoVersions gives id two approved versions at the time of its one version, the first with the
+	// parent first and the second with the parent second, where "" keeps the block as written.
+	twoVersions := func(id, first, second string) func(nodes map[string]ApprovedNode) {
+		return func(nodes map[string]ApprovedNode) {
+			n := nodes[id]
+			version := func(number int, parent string) ApprovedVersion {
+				v := n.Versions[0]
+				v.Version = number
+				if parent != "" {
+					v.Block = strings.Replace(v.Block, `parent="envoy-delivers-messages"`, `parent="`+parent+`"`, 1)
+				}
+				return v
+			}
+			n.Versions = []ApprovedVersion{version(1, first), version(2, second)}
 			nodes[id] = n
 		}
 	}
@@ -498,6 +518,10 @@ func TestTheEntryRefusesARelationOfNoNodeOfItsKindAndALoopOfTheApprovedSpec(t *t
 		}}, want: `specgraph: approved node "a-restart-keeps-the-message" version 1: bad-approved-block: serves "" names no node of the approved spec (line 1 of its block)`},
 		{name: "a statement its own parent", changes: []func(map[string]ApprovedNode){parentOf(survives, survives)},
 			want: "specgraph: approved spec: loop: a-message-survives-a-restart -[parent]-> a-message-survives-a-restart"},
+		{name: "version 2 of a statement of two versions makes it its own parent", changes: []func(map[string]ApprovedNode){twoVersions(survives, "", survives)},
+			want: "specgraph: approved spec: loop: a-message-survives-a-restart -[parent]-> a-message-survives-a-restart"},
+		{name: "control: version 1 of a statement of two versions made it its own parent, and version 2 is as written",
+			changes: []func(map[string]ApprovedNode){twoVersions(survives, survives, "")}},
 		{name: "two statements each the parent of the other", changes: []func(map[string]ApprovedNode){parentOf(survives, late), parentOf(late, survives)},
 			want: "specgraph: approved spec: loop: a-message-reaches-a-late-session -[parent]-> a-message-survives-a-restart -[parent]-> a-message-reaches-a-late-session"},
 		{name: "a statement that serves the statement under it", changes: []func(map[string]ApprovedNode){func(nodes map[string]ApprovedNode) {

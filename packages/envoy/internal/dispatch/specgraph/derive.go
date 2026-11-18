@@ -62,8 +62,10 @@ type State struct {
 // statements under it, no supporter and no own check, or none of its checks reads the subject. So
 // at the head of main a wait on S never waits for a check of production.
 //
-// Derive gives an error, and no state, for an Input that is not whole (Input.check), and for a
-// History that could not answer, as CheckStates does.
+// Derive gives an error, and no state, for an Input that is not whole (Input.check), for a History
+// that could not answer, as CheckStates does, and for an answer that is not whole: a current
+// statement that it gives no state of once, as a loop past the entry would make
+// (statementJudge.derive), so such a gap is an error and never a met.
 func Derive(in Input) (State, error) {
 	checks, err := newCheckJudge(in)
 	if err != nil {
@@ -78,10 +80,8 @@ func Derive(in Input) (State, error) {
 		s.Checks = []CheckState{}
 	}
 	j := newStatementJudge(checks.current, in.Approved, checks.holds, checks.refused, s.Checks)
-	order := j.inPreorder(checks.current)
-	s.Statements = make([]StatementState, 0, len(order))
-	for _, id := range order {
-		s.Statements = append(s.Statements, j.state(id))
+	if s.Statements, err = j.derive(checks.current); err != nil {
+		return State{}, err
 	}
 	return s, nil
 }
@@ -122,8 +122,9 @@ func Derive(in Input) (State, error) {
 //     known tie with no path covers no change, and no tie that is not known and holds a path;
 //   - JobRuns and Uncited set, empty for none: with no job run a leg that ended with no result
 //     would be hidden (R9), and with no map of the checks that CI refused, a refused check would be
-//     judged by results that R48 cancels ("At that commit, such a check reads unknown, and no
-//     earlier result of it counts"); and Uncited as the reader of uncited.json refuses it
+//     judged at its commit by its results, where R48 makes it unknown ("At that commit, such a
+//     check reads unknown, and no earlier result of it counts"), and elsewhere by the results of
+//     the refused commit, which count nowhere; and Uncited as the reader of uncited.json refuses it
 //     (uncitedFault);
 //   - each job run (JobRun.fault), its Leg and Ended set among it.
 //

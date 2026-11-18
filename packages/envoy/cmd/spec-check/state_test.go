@@ -157,6 +157,43 @@ spec-check: cycle of waits: u-a -> a-message-reaches-a-late-session -> u-b -> a-
 `})
 }
 
+// R5: "The parent and support relations taken together form no cycle, and Dispatch refuses a change
+// that makes one." A change of the approved spec is a new version of a node, and a loop that only
+// an older version made is no loop of the approved spec now: wait-cycle, where version 1 of
+// a-message-survives-a-restart made it its own parent and version 2, its text as written, is the one
+// that the files hold, reads as wait-cycle (want.txt). The loop in version 2 is a row of
+// TestScenarioRefusals.
+func TestALoopThatOnlyAnOlderVersionOfTheApprovedSpecMadeIsTaken(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	dir := copyScenario(t, "wait-cycle")
+	withSecondVersion(t, dir, "a-message-survives-a-restart", `parent="envoy-delivers-messages"`, `parent="a-message-survives-a-restart"`, 1)
+	want, err := os.ReadFile(filepath.Join(dir, "want.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect(t, runBinary(t, binary, "", "state", "--scenario", dir), result{stdout: string(want)})
+}
+
+// withSecondVersion gives the node id of approved.json of dir a version 2 at the time of its
+// version 1, with the block of version 1, and replaces old with new in the block of version
+// changed. The test fails when that block does not hold old.
+func withSecondVersion(t *testing.T, dir, id, old, new string, changed int) {
+	t.Helper()
+	editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
+		n := approvedNode(t, nodes, id)
+		second := n.Versions[0]
+		second.Version = 2
+		n.Versions = append(n.Versions, second)
+		v := &n.Versions[changed-1]
+		if !strings.Contains(v.Block, old) {
+			t.Fatalf("version %d of %s does not hold %q", changed, id, old)
+		}
+		v.Block = strings.Replace(v.Block, old, new, 1)
+		return nodes
+	})
+}
+
 // R9: "An agent that did not write the test writes the fault." Through the command, carry's failing
 // example counts at c2 and m2 only while its record names an author of the test and the fault is by
 // another agent: with no test_authors, or an empty list, the check reads unknown, as it does when

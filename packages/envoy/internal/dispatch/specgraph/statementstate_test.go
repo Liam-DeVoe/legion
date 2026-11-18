@@ -1,6 +1,8 @@
 package specgraph
 
 import (
+	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -551,6 +553,78 @@ func TestDeriveListsEachStatementInPreorder(t *testing.T) {
 	want := []string{statementFast.ID, checkStateTop.ID, statementLeafTwo.ID, checkStateLeaf.ID, statementSupporter.ID}
 	if got := statementIDs(state); !slices.Equal(got, want) {
 		t.Errorf("the statements of Derive: %q, want %q", got, want)
+	}
+}
+
+// The entry of the derivation refuses a loop of parent and serves relations among the current
+// statements (approvedFault; R5: "The parent and support relations taken together form no cycle"),
+// and the derivation checks its own answer too (statementJudge.derive): each current statement has
+// its state once, by its own relations, or Derive gives an error that names each statement that it
+// gives no state of. So a gap of the entry's rule is an error and never a met: a loop of parents
+// leaves its statements out of the preorder, and the statement above them would read met without
+// them, and a loop through serves would make the search go on with no end. Each row: wait-cycle's
+// judges at m1, from its whole Input, with the current tree that the row changes laid past the
+// entry, as a gap of its loop rule would lay it; the control gives wait-cycle's three states.
+func TestTheDerivationGivesNoStateOfAStatementThatALoopPastTheEntryReaches(t *testing.T) {
+	t.Parallel()
+	const top, survives, late = "envoy-delivers-messages", "a-message-survives-a-restart", "a-message-reaches-a-late-session"
+	type relations struct {
+		parent string
+		serves []string
+	}
+	const passed = ": a loop of parent and serves relations among the current statements passed the entry"
+	for _, row := range []struct {
+		name    string
+		changes map[string]relations
+		want    string // the error; "" for the control
+	}{
+		{name: "control: wait-cycle as written"},
+		{name: "a statement its own parent", changes: map[string]relations{survives: {parent: survives}},
+			want: `specgraph: the derivation gives no state of "a-message-survives-a-restart"` + passed},
+		{name: "two statements each the parent of the other", changes: map[string]relations{survives: {parent: late}, late: {parent: survives}},
+			want: `specgraph: the derivation gives no state of "a-message-reaches-a-late-session", "a-message-survives-a-restart"` + passed},
+		{name: "a statement that serves itself", changes: map[string]relations{survives: {parent: top, serves: []string{survives}}},
+			want: `specgraph: the derivation gives no state of "a-message-survives-a-restart"` + passed},
+		{name: "two statements each a supporter of the other", changes: map[string]relations{survives: {parent: top, serves: []string{late}}, late: {parent: top, serves: []string{survives}}},
+			want: `specgraph: the derivation gives no state of "a-message-reaches-a-late-session", "a-message-survives-a-restart"` + passed},
+		{name: "the top statement serves one under it", changes: map[string]relations{top: {serves: []string{survives}}},
+			want: `specgraph: the derivation gives no state of "a-message-survives-a-restart", "envoy-delivers-messages"` + passed},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			s, err := ReadScenario(scenarioFS(t, filepath.Join("testdata", "scenarios", "wait-cycle")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			in := s.Input(0)
+			checks, err := newCheckJudge(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			states, err := checks.states()
+			if err != nil {
+				t.Fatal(err)
+			}
+			current := checks.current
+			current.Statements = slices.Clone(current.Statements)
+			changed := 0
+			for i, st := range current.Statements {
+				if r, held := row.changes[st.ID]; held {
+					current.Statements[i].Parent, current.Statements[i].Serves = r.parent, r.serves
+					changed++
+				}
+			}
+			if changed != len(row.changes) {
+				t.Fatalf("the current tree holds %d of the %d statements that the row changes", changed, len(row.changes))
+			}
+			got, err := newStatementJudge(current, in.Approved, checks.holds, checks.refused, states).derive(current)
+			switch {
+			case row.want == "" && (err != nil || len(got) != 3):
+				t.Errorf("error %v, %d states; want the 3 states of wait-cycle", err, len(got))
+			case row.want != "" && (fmt.Sprint(err) != row.want || got != nil):
+				t.Errorf("error %v, %d states\nwant the error %q and no state", err, len(got), row.want)
+			}
+		})
 	}
 }
 

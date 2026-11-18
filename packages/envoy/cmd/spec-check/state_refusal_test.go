@@ -85,6 +85,11 @@ func TestScenarioRefusals(t *testing.T) {
 		}, "approved.json", "specgraph: approved spec: " + loopDetail},
 		{"a statement of the approved spec that is its own parent", "wait-cycle", approvedParent("a-message-survives-a-restart"),
 			"approved.json", "specgraph: approved spec: loop: a-message-survives-a-restart -[parent]-> a-message-survives-a-restart"},
+		// A change of the approved spec is a new version of a node, so the loop rule reads the newest
+		// text of each node (TestALoopThatOnlyAnOlderVersionOfTheApprovedSpecMadeIsTaken, the control).
+		{"a statement that version 2 of its two approved versions makes its own parent", "wait-cycle", func(t *testing.T, dir string) {
+			withSecondVersion(t, dir, "a-message-survives-a-restart", `parent="envoy-delivers-messages"`, `parent="a-message-survives-a-restart"`, 2)
+		}, "approved.json", "specgraph: approved spec: loop: a-message-survives-a-restart -[parent]-> a-message-survives-a-restart"},
 		// The one strict JSON reader: RFC 8259 "JSON text … MUST be encoded using UTF-8", and a member
 		// is the format's, in its own letters, one time in its object.
 		{"a field name in capitals", "carry", replace("results.json", firstOutcome, `"OUTCOME": "pass",`),

@@ -1,6 +1,10 @@
 package specgraph
 
-import "slices"
+import (
+	"fmt"
+	"slices"
+	"strings"
+)
 
 // StatementState is the state of one statement at the subject (R10): State "not_built", "met",
 // "not_met" or "unknown", with the Reason code of the rule that decided it and Detail, the id that
@@ -56,6 +60,8 @@ type statementJudge struct {
 	own        map[string][]string       // the checks of each statement, sorted by id
 	supporters map[string][]string       // the statements that support each statement, sorted by id
 	states     map[string]StatementState // each state derived so far, by id
+	path       []string                  // the statements whose state is being derived, outermost first
+	looped     map[string]bool           // each statement whose state came to depend on its own (state)
 }
 
 // newStatementJudge is the judge of the statements of current, the current text of each node of
@@ -64,7 +70,7 @@ type statementJudge struct {
 func newStatementJudge(current Tree, approved Approved, holds map[string]Holding, refused map[string]string, checks []CheckState) *statementJudge {
 	j := &statementJudge{approved: approved, holds: holds, refused: refused, checks: make(map[string]CheckState, len(checks)),
 		statements: make(map[string]bool, len(current.Statements)), children: map[string][]string{},
-		own: map[string][]string{}, supporters: map[string][]string{}, states: map[string]StatementState{}}
+		own: map[string][]string{}, supporters: map[string][]string{}, states: map[string]StatementState{}, looped: map[string]bool{}}
 	for _, c := range checks {
 		j.checks[c.ID] = c
 	}
@@ -84,10 +90,38 @@ func newStatementJudge(current Tree, approved Approved, holds map[string]Holding
 	return j
 }
 
+// derive is the state of each statement of current in preorder (inPreorder), or an error that names
+// each statement of current that it gives no state of once, by its own relations: one that
+// inPreorder does not list, as each statement of a loop of parents, and one whose state came to
+// depend on its own, as in a loop of parent and serves relations (state). The entry of the
+// derivation refuses a loop among the current statements (approvedFault), so the error is a gap of
+// that rule: the statements of a loop would read as under no statement, and the statement above
+// them as met without them, or the search would not end.
+func (j *statementJudge) derive(current Tree) ([]StatementState, error) {
+	order := j.inPreorder(current)
+	states := make([]StatementState, 0, len(order))
+	listed := make(map[string]bool, len(order))
+	for _, id := range order {
+		states = append(states, j.state(id))
+		listed[id] = true
+	}
+	var missing []string
+	for _, s := range current.Statements {
+		if !listed[s.ID] || j.looped[s.ID] {
+			missing = append(missing, quoted(s.ID))
+		}
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("specgraph: the derivation gives no state of %s: a loop of parent and serves relations among the current statements passed the entry", strings.Join(missing, ", "))
+	}
+	return states, nil
+}
+
 // inPreorder is the id of each current statement in preorder: the top statements by id, then the
 // statements under each one by id, depth first. A statement whose parent is no current statement is
 // a top statement. The entry of the derivation refuses a loop of parents (approvedFault), so each
-// statement is under one top statement and is listed once.
+// statement is under one top statement and is listed once; derive refuses an answer that leaves one
+// out.
 func (j *statementJudge) inPreorder(current Tree) []string {
 	seen := make(map[string]bool, len(current.Statements))
 	order := make([]string, 0, len(current.Statements))
@@ -113,11 +147,21 @@ func (j *statementJudge) preorder(id string, seen map[string]bool, order []strin
 	return order
 }
 
-// state is the state of the statement id, in the order of Derive.
+// state is the state of the statement id, in the order of Derive. A statement whose state is asked
+// while its own is being derived is in a loop: state marks it and each statement between them on
+// the path (looped), so derive gives an error, and answers unknown, so that the search ends.
 func (j *statementJudge) state(id string) StatementState {
 	if st, derived := j.states[id]; derived {
 		return st
 	}
+	if i := slices.Index(j.path, id); i >= 0 {
+		for _, s := range j.path[i:] {
+			j.looped[s] = true
+		}
+		return StatementState{ID: id, State: statementUnknown}
+	}
+	j.path = append(j.path, id)
+	defer func() { j.path = j.path[:len(j.path)-1] }()
 	st := StatementState{ID: id, Own: j.ownState(id)}
 	if h := j.holds[id]; h.Present {
 		st.HeldVersion, st.EarlierText = h.Version, !h.Current
@@ -150,7 +194,8 @@ func (j *statementJudge) state(id string) StatementState {
 //   - a supporter: supporter_not_met, supporter_unknown or supporter_not_built, detail it.
 //
 // The entry of the derivation refuses a loop of parent and support relations among the current
-// statements (approvedFault), so no statement reaches itself and the search ends.
+// statements (approvedFault), so no statement reaches itself and the search ends; past the entry, a
+// loop ends the search at the statement that it reaches again (state), and derive gives an error.
 func (j *statementJudge) byChecks(id string) (state, reason, detail string) {
 	var notMet, unknown finding
 	rule, refused := j.refused[id]

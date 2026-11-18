@@ -101,19 +101,23 @@ func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 }
 
 // sweepBases is each base that the sweeps read, by its name: each scenario of testdata/scenarios,
-// and five shapes that no scenario holds. silent-leg with the job's matrix dropped after c1, one
+// and six shapes that no scenario holds. silent-leg with the job's matrix dropped after c1, one
 // run of no matrix at m2 that ended with no result: there a run result of the leg "" at c1, where
 // the job had legs, would answer that run, and the check would read true (legFault refuses it).
-// carry with a failure of c2 at 10:03, between c1's pass and c1's caught failing example, and a
-// later pass of c2 with its caught failing example: c2 reads unknown (disagree). And carry with c0,
-// c1's parent with c1's tree and ties, whose failure at 09:00 counts where c1's results count, and
-// a later pass of c2. In each of the two a refusal of CI at c1 cancels the failure with c1's
-// evidence (R48: "no earlier result of it counts"), and the pass of c2 decides (CheckStates, step
-// 2). And two of wait-cycle where a check that is false is the one fault under a statement, so a
-// failing check that reads as a check of no statement would leave that statement met:
-// envoy-delivers-messages, with its own check false and the check of a-message-survives-a-restart
-// true (its two outcomes swapped); and a-message-survives-a-restart, with a second check that
-// passes beside its failing one.
+// Three of carry where a failure and a later pass count at one subject, so the check reads unknown
+// (disagree; R7: "A pass and a failure on one such subject and one procedure make the state
+// unknown"): a failure of c2 at 10:03, between c1's pass and c1's caught failing example, and a
+// later pass of c2 with its caught failing example; c0, c1's parent with c1's tree and ties, whose
+// failure at 09:00 counts where c1's results count, and a later pass of c2; and a failure of c2 at
+// 10:30 and a pass of m2 on 13 November with its caught failing example. A refusal of CI at a
+// commit makes its check read unknown there and takes out the results of that commit alone (R48:
+// "At that commit, such a check reads unknown"), so a rule by which a refusal cancelled the
+// failure of another commit, or let newer evidence decide at the refused commit, would read the
+// later pass true. And two of wait-cycle where a check that is false is the one fault under a
+// statement, so a failing check that reads as a check of no statement would leave that statement
+// met: envoy-delivers-messages, with its own check false and the check of
+// a-message-survives-a-restart true (its two outcomes swapped); and a-message-survives-a-restart,
+// with a second check that passes beside its failing one.
 func sweepBases(t *testing.T) map[string]fstest.MapFS {
 	t.Helper()
 	dirs, err := filepath.Glob(filepath.Join("testdata", "scenarios", "*"))
@@ -180,6 +184,10 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 		return ties
 	})
 	bases["carry with a failure of c0, c1's parent, and a later pass of c2"] = parent
+	bases["carry with c2's failure at 10:30 and a later pass of m2"] = carry([]string{"c2", "m2"},
+		add{0, map[string]any{"commit": "c2", "outcome": "fail", "at": "2026-11-12T10:30:00Z", "seq": 5}},
+		add{0, map[string]any{"commit": "m2", "at": "2026-11-13T12:00:00Z", "seq": 6}},
+		add{1, map[string]any{"commit": "m2", "at": "2026-11-13T12:05:00Z", "seq": 7}})
 	swapped := maps.Clone(bases["wait-cycle"])
 	editTree(t, swapped, "results.json", func(v any) any {
 		for _, r := range v.([]any) {
@@ -263,7 +271,8 @@ type sweepCount struct {
 }
 
 // sweepAgainst derives each input and compares its states with whole, the states of its base: an
-// input that moves a state toward true fails the test, unless the input has a right to it.
+// input that moves a state toward true fails the test, unless the input has a right to it. A right
+// with allowed covers only the places where the input reads the state that allowed holds there.
 func sweepAgainst(t *testing.T, whole map[string]string, inputs []sweepInput) sweepCount {
 	t.Helper()
 	n := sweepCount{inputs: len(inputs)}
@@ -277,6 +286,14 @@ func sweepAgainst(t *testing.T, whole map[string]string, inputs []sweepInput) sw
 		default:
 			n.moved++
 			toward := towardTrue(whole, got)
+			if in.right != "" && in.allowed != nil {
+				beyond := maps.Clone(got)
+				maps.DeleteFunc(beyond, func(at, state string) bool { return in.allowed[at] == state })
+				if rest := towardTrue(whole, beyond); len(rest) > 0 {
+					t.Errorf("%s, beyond its right (%s): %s", in.what, in.right, strings.Join(rest, "; "))
+					continue
+				}
+			}
 			switch {
 			case len(toward) == 0:
 			case in.right != "":
@@ -290,16 +307,19 @@ func sweepAgainst(t *testing.T, whole map[string]string, inputs []sweepInput) sw
 	return n
 }
 
-// A refusal of CI at a commit makes its check read unknown there, and cancels each result of the
-// check recorded no later than the newest result of that commit (CheckStates, step 2; R48: "At
-// that commit, such a check reads unknown, and no earlier result of it counts"). So adding one
-// moves no check toward true, no statement or its own state toward met, and no wait toward ends,
-// but by one right, which the input's data gives: where the refusal cancels a failing run, a run
-// that could not run or a failing example that missed its fault (failureCancelled), the newer
-// evidence decides, and it can read true. The sweep adds one refusal at a time to uncited.json of
-// each base (sweepBases), at each commit that a record of the base names, for each check of its
-// approved spec that the base does not refuse there.
-func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByCancellingAFailure(t *testing.T) {
+// A refusal of CI at a commit A makes its check read unknown at A, whatever else holds there, and
+// the own results of A count nowhere, at A or where R8 would carry them; the results of each other
+// commit stay (CheckStates, step 2; R48: "At that commit, such a check reads unknown, and no
+// earlier result of it counts"). So adding one moves no check toward true, no statement or its own
+// state toward met, and no wait toward ends, but by one right, which the input's data gives: where
+// A holds a result of the check, taking that result out can let the results of other commits
+// decide, and they can read true (refusedCommitsResults). The right covers each place of a subject
+// at another commit than A where the input reads what the base reads with each result of the check
+// whose commit is A (resultCommit) taken out of results.json, and no place at A, where R48 gives
+// none. The sweep adds one refusal at a time to uncited.json of each base (sweepBases), at each
+// commit that a record of the base names, for each check of its approved spec that the base does
+// not refuse there.
+func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
@@ -329,8 +349,8 @@ func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByCancellingAFailure(t *test
 						return uncited
 					})
 					in := sweepInput{what: fmt.Sprintf("uncited.json: a refusal of %s at %s", c.ID, commit), fsys: fsys}
-					if cancelsAFailure(s.Results, c.ID, commit) {
-						in.right = failureCancelled
+					if slices.ContainsFunc(s.Results, func(r Result) bool { return r.Check == c.ID && resultCommit(r) == commit }) {
+						in.right, in.allowed = refusedCommitsResults, withoutResultsOf(t, base, s, c.ID, commit)
 					}
 					inputs = append(inputs, in)
 				}
@@ -342,26 +362,37 @@ func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByCancellingAFailure(t *test
 	}
 }
 
-// failureCancelled is the right of a refusal of CI that cancels an answer against its check: R48
-// says that no earlier result of it counts, failures among them, and the newer evidence decides.
-const failureCancelled = `the refusal cancels an earlier failing run, run that could not run or failing example that missed its fault, and the newer evidence decides (R48: "no earlier result of it counts")`
+// refusedCommitsResults is the right of a refusal of CI at a commit that holds results of its
+// check: those results count nowhere (R48), and the results of the other commits decide.
+const refusedCommitsResults = `the results of the refused commit count nowhere, and the results of the other commits decide (R48: "no earlier result of it counts")`
 
-// cancelsAFailure is whether results hold, of the check id, a result whose commit is commit
-// (resultCommit), and a failing run, a run that could not run or a failing example that missed its
-// fault recorded no later than the newest of those (byRecord), which a refusal of the check at
-// commit cancels.
-func cancelsAFailure(results []Result, id, commit string) bool {
-	var newest Result
-	held := false
-	for _, r := range results {
-		if r.Check == id && resultCommit(r) == commit && (!held || byRecord(r, newest) > 0) {
-			newest, held = r, true
+// withoutResultsOf is the states of base, whose scenario is s, with each result of the check id
+// whose commit (resultCommit: its commit, else its test_commit) is commit taken out of results.json,
+// and with no state of a subject at commit: the places that a refusal of the check at commit may
+// move toward true, each to the state given here.
+func withoutResultsOf(t *testing.T, base fstest.MapFS, s Scenario, id, commit string) map[string]string {
+	t.Helper()
+	fsys := maps.Clone(base)
+	editTree(t, fsys, "results.json", func(v any) any {
+		return slices.DeleteFunc(slices.Clone(v.([]any)), func(r any) bool {
+			record := r.(map[string]any)
+			at, _ := record["commit"].(string)
+			if at == "" {
+				at, _ = record["test_commit"].(string)
+			}
+			return record["check"] == id && at == commit
+		})
+	})
+	states, err := sweepStates(fsys)
+	if err != nil {
+		t.Fatalf("the base with the results of %s at %s taken out: %v", id, commit, err)
+	}
+	for i, subject := range s.Subjects {
+		if subject.Commit == commit {
+			maps.DeleteFunc(states, func(at, _ string) bool { return strings.HasPrefix(at, fmt.Sprintf("subject %d ", i+1)) })
 		}
 	}
-	return held && slices.ContainsFunc(results, func(r Result) bool {
-		passing := r.Kind == ResultRun && r.Outcome == OutcomePass || r.Kind == ResultFailingExample && r.Outcome == OutcomeFail
-		return r.Check == id && !passing && byRecord(r, newest) <= 0
-	})
+	return states
 }
 
 // addableMembers is each member that a record of a JSON file of a scenario can leave out (the ten
@@ -486,11 +517,13 @@ func namesOf(t *testing.T, fsys fstest.MapFS) map[string][]string {
 }
 
 // sweepInput is one input of the sweep: what it changed, for the line of a failure alone, the files
-// of the scenario with it, and the reason of its right to move a state toward true, "" for none.
+// of the scenario with it, the reason of its right to move a state toward true, "" for none, and
+// the states that the right allows, by place, nil for a right that covers each place.
 type sweepInput struct {
-	what  string
-	fsys  fstest.MapFS
-	right string
+	what    string
+	fsys    fstest.MapFS
+	right   string
+	allowed map[string]string
 }
 
 // pathOfOneSpace is the right of a repository path of a tree of the history written " ": a real
