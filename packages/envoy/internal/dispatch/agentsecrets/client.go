@@ -36,6 +36,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // defaultTimeout is the window every broker call gets, matching envoy.Client's default.
@@ -121,7 +122,11 @@ func (c *Client) do(ctx context.Context, method, path string, body json.RawMessa
 	}
 	request, err := http.NewRequestWithContext(ctx, method, c.URL+path, reader)
 	if err != nil {
-		return nil, fmt.Errorf("agent-secrets: build %s %s request: %w", method, path, err)
+		// The broker URL (DISPATCH_AGENT_SECRETS_URL) may carry a user and a password, and a parse
+		// error or net/http's transport error quotes the request's URL (net/http keeps the user,
+		// and a token written as the whole user part): redact.Error prints only the failure's
+		// class then.
+		return nil, fmt.Errorf("agent-secrets: build %s %s request: %w", method, path, redact.Error(err, c.URL))
 	}
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
@@ -129,7 +134,7 @@ func (c *Client) do(ctx context.Context, method, path string, body json.RawMessa
 	request.Header.Set("Authorization", "Bearer "+token)
 	response, err := c.HTTP.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("agent-secrets: %s %s: %w", method, path, err)
+		return nil, fmt.Errorf("agent-secrets: %s %s: %w", method, path, redact.Error(err, c.URL))
 	}
 	defer response.Body.Close()
 	responseBody, err := io.ReadAll(response.Body)

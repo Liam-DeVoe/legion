@@ -52,6 +52,23 @@ func URL(raw string) string {
 // Clean reports whether raw is not empty and URL prints it unchanged.
 func Clean(raw string) bool { return raw != "" && clean(raw) }
 
+// UserPartLeftOver reports whether an @ is left in raw once the user part net/url found is taken
+// out, or net/url cannot parse a raw that holds an @. net/url ends a user part at its last @ and
+// ends the authority at the first /, ?, # or \, so a user part that holds one of those (a token in
+// base64 does) is read in part as the host or the path: a host read from such a value may be a
+// piece of its user part, and a setting that names one is refused by its length.
+func UserPartLeftOver(raw string) bool {
+	if !strings.Contains(raw, "@") {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return true
+	}
+	parsed.User = nil
+	return strings.Contains(parsed.String(), "@")
+}
+
 // clean reports whether raw passes URL's allow-list.
 func clean(raw string) bool {
 	for i := range len(raw) {

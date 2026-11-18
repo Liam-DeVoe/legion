@@ -420,7 +420,7 @@ func TestReadRejectsAResponseLargerThanTheLimit(t *testing.T) {
 	}
 
 	body, status, header, err := client.Read(context.Background(), "installation-token", "/repos/acme/web/pulls/7")
-	if err == nil || !strings.Contains(err.Error(), "GET "+server.URL+"/repos/acme/web/pulls/7: ") ||
+	if err == nil || !strings.Contains(err.Error(), "GET /repos/acme/web/pulls/7: ") ||
 		!strings.Contains(err.Error(), "1048576-byte limit") {
 		t.Fatalf("Read: err = %v, want a response-limit error naming the method and path", err)
 	}

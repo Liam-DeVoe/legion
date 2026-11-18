@@ -389,7 +389,8 @@ func TestResolveBootConfigRejectsAgentSecretsURLWithPathOrBadScheme(t *testing.T
 
 // Both DISPATCH_AGENT_SECRETS_URL refusals - a shape refusal (a path, or a value that does not
 // parse) and the dev sign-in's refusal of a remote broker - name a clean URL as it is and any
-// other value as redact.NotPrinted: user info, a query, escapes, a control byte.
+// other value as redact.NotPrinted: user info, a query, escapes, a control byte. A value with an @
+// left once net/url takes out its user part is refused before either, named by its length.
 func TestResolveBootConfigRefusesAgentSecretsURLWithoutNamingItsCredential(t *testing.T) {
 	shape := func(brokerURL string) settingValues {
 		return envGetter(map[string]string{
@@ -415,9 +416,9 @@ func TestResolveBootConfigRefusesAgentSecretsURLWithoutNamingItsCredential(t *te
 		"a clean remote broker":            {remote("https://broker.example.com"), `DISPATCH_AGENT_SECRETS_URL="https://broker.example.com"`},
 		"a path":                           {shape("https://tokuser9f3:hunter2pw@broker.example.com/v1?token=qtok77"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
 		"a remote broker":                  {remote("https://tokuser9f3:hunter2pw@broker.example.com?token=qtok77"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
-		"an '@' in a query value":          {shape("https://broker.example.com/?password=hunter@2pwSECRET"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
-		"a remote broker, '@' in a query":  {remote("https://broker.example.com?a=1&token=qtok@77SECRET&b=2"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
-		"a literal '@' and an escaped one": {shape("https://ada@corp.example:hunter2pw%40127.0.0.1:1"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
+		"an '@' in a query value":          {shape("https://broker.example.com/?password=hunter@2pwSECRET"), "DISPATCH_AGENT_SECRETS_URL, a value of 53 characters,"},
+		"a remote broker, '@' in a query":  {remote("https://broker.example.com?a=1&token=qtok@77SECRET&b=2"), "DISPATCH_AGENT_SECRETS_URL, a value of 54 characters,"},
+		"a literal '@' and an escaped one": {shape("https://ada@corp.example:hunter2pw%40127.0.0.1:1"), "DISPATCH_AGENT_SECRETS_URL, a value of 48 characters,"},
 		"a double-escaped '@'":             {shape("https://tokuser9f3:hunter2pw%2540broker.example.com"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
 		"a newline forging a line":         {shape("https://broker.example.com\nFORGED"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
 	} {

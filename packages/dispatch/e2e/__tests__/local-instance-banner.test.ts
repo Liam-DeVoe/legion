@@ -98,7 +98,8 @@ describe("instanceBanner", () => {
       expect(text).not.toContain(password);
       expect(text).not.toContain("made-up-broker-user");
       expect(command(text)).toBe(
-        '    DISPATCH_E2E_REUSE_SERVERS=1 DATABASE_URL="$DATABASE_URL" DISPATCH_E2E_PORT=8777 DISPATCH_E2E_AGENT_SECRETS_URL="$DISPATCH_E2E_AGENT_SECRETS_URL" DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE" bunx playwright test --config e2e/playwright.config.ts --project=chromium e2e/broadcast.e2e.ts'
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: the pasted command's own shell expansions
+        '    DISPATCH_E2E_REUSE_SERVERS=1 DATABASE_URL="$DATABASE_URL" DISPATCH_E2E_PORT=8777 env ${DISPATCH_E2E_AGENT_SECRETS_URL+"DISPATCH_E2E_AGENT_SECRETS_URL=$DISPATCH_E2E_AGENT_SECRETS_URL"} ${DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE+"DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE=$DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE"} bunx playwright test --config e2e/playwright.config.ts --project=chromium e2e/broadcast.e2e.ts'
       );
       expect(text).toContain(
         "  The command reads DATABASE_URL, DISPATCH_E2E_AGENT_SECRETS_URL and DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE as the shell that runs it sets them: set them there as you set them here.\n"
@@ -123,6 +124,40 @@ describe("instanceBanner", () => {
       });
       if (code !== 0) throw new Error(`${named} exited ${code}: ${stderr}`);
       expect(stdout).toBe(`${broker} ${tokenFile}`);
+    },
+    // The bash that runs the pasted command, with the stand-in under it.
+    rowLimit("short")
+  );
+
+  // The harness reads an empty broker switch as "no broker" and an unset one as "the fake broker"
+  // (e2e/harness-broker.ts), so the pasted command, run in a shell that sets neither switch, leaves
+  // each of them unset rather than empty. The control is the same command in a shell that sets
+  // both, which hands both on (the row above).
+  test(
+    "a broker switch the shell that runs the command does not set is left unset",
+    async () => {
+      const text = instanceBanner(
+        banner("postgres://made-up-user@127.0.0.1:5432/acme_local", true, {
+          DISPATCH_E2E_AGENT_SECRETS_URL: "http://127.0.0.1:13380",
+          DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE: "/var/run/made-up/account-token",
+        })
+      );
+      const bin = makeDirectory();
+      // A stand-in `bunx` that says, of each broker switch, whether it is set at all.
+      writeFileSync(
+        join(bin, "bunx"),
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: the stand-in's own shell expansions
+        '#!/bin/sh\nprintf "[%s][%s]" "${DISPATCH_E2E_AGENT_SECRETS_URL+set}" "${DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE+set}"\n',
+        { mode: 0o755 }
+      );
+      const { code, named, stderr, stdout } = await runBounded({
+        argv: ["bash", "-c", command(text)],
+        bound: "short",
+        env: { PATH: `${bin}:/usr/bin:/bin`, DATABASE_URL: "postgres://127.0.0.1:5432/acme_local" },
+        from: import.meta.url,
+      });
+      if (code !== 0) throw new Error(`${named} exited ${code}: ${stderr}`);
+      expect(stdout).toBe("[][]");
     },
     // The bash that runs the pasted command, with the stand-in under it.
     rowLimit("short")

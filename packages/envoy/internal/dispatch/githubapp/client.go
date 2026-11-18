@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/githubappjwt"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // Typed access-check failures. Handlers surface these verbatim to the human
@@ -468,7 +469,7 @@ func (c *Client) installation(ctx context.Context, owner, repo string) (Installa
 		return Installation{}, limited
 	}
 	if status != http.StatusOK {
-		return Installation{}, fmt.Errorf("GET %s: status %d: %s", target, status, body)
+		return Installation{}, fmt.Errorf("GET %s: status %d: %s", c.shownTarget(target), status, body)
 	}
 	var payload installationPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -773,7 +774,7 @@ func (c *Client) Token(ctx context.Context, installationID int64) (string, error
 		return "", limited
 	}
 	if status != http.StatusCreated {
-		return "", fmt.Errorf("POST %s: status %d: %s", target, status, body)
+		return "", fmt.Errorf("POST %s: status %d: %s", c.shownTarget(target), status, body)
 	}
 	var payload struct {
 		Token     string    `json:"token"`
@@ -820,7 +821,7 @@ func (c *Client) CheckSource(ctx context.Context, owner, repo string) (Source, e
 		return Source{}, fmt.Errorf("%w: its token cannot read %s/%s", ErrNoInstallation, owner, repo)
 	}
 	if status != http.StatusOK {
-		return Source{}, fmt.Errorf("GET %s: status %d: %s", target, status, body)
+		return Source{}, fmt.Errorf("GET %s: status %d: %s", c.shownTarget(target), status, body)
 	}
 	return Source{InstallationID: installation.ID, AppSlug: installation.AppSlug}, nil
 }
@@ -895,7 +896,7 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, method, target, body)
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("build %s %s: %w", method, target, err)
+		return nil, 0, nil, fmt.Errorf("build %s %s: %w", method, c.shownTarget(target), redact.Error(err, c.base))
 	}
 	request.Header.Set("Authorization", authorization)
 	request.Header.Set("Accept", accept)
@@ -907,17 +908,29 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 	}
 	response, err := c.http.Do(request)
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("%s %s: %w", method, target, err)
+		return nil, 0, nil, fmt.Errorf("%s %s: %w", method, c.shownTarget(target), redact.Error(err, c.base))
 	}
 	defer response.Body.Close()
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("read %s %s response: %w", method, target, err)
+		return nil, 0, nil, fmt.Errorf("read %s %s response: %w", method, c.shownTarget(target), err)
 	}
 	if int64(len(responseBody)) > limit {
-		return nil, 0, nil, fmt.Errorf("%s %s: %w", method, target, &ResponseTooLargeError{Limit: limit})
+		return nil, 0, nil, fmt.Errorf("%s %s: %w", method, c.shownTarget(target), &ResponseTooLargeError{Limit: limit})
 	}
 	return responseBody, response.StatusCode, response.Header, nil
+}
+
+// shownTarget is target, a URL of a request to the API, as an error names it: its path and query
+// after the API base, which DISPATCH_GITHUB_API_BASE sets and which may carry a user and a
+// password, so no part of the base is printed; a target on no path of the base is named through
+// redact.URL. The errors of a request name the base through redact.Error, since a parse error and
+// net/http's transport error quote the request's URL (net/http keeps its user).
+func (c *Client) shownTarget(target string) string {
+	if rest, ok := strings.CutPrefix(target, c.base); ok && (rest == "" || strings.HasPrefix(rest, "/") || strings.HasPrefix(rest, "?")) {
+		return rest
+	}
+	return redact.URL(target)
 }
 
 // Ref resolves branch to its commit SHA under an installation token
@@ -946,7 +959,7 @@ func (c *Client) Ref(ctx context.Context, token, owner, repo, branch string) (st
 		return "", fmt.Errorf("%w: %s on %s/%s", ErrNoBranch, branch, owner, repo)
 	}
 	if status != http.StatusOK {
-		return "", fmt.Errorf("GET %s: status %d: %s", target, status, body)
+		return "", fmt.Errorf("GET %s: status %d: %s", c.shownTarget(target), status, body)
 	}
 	sha := strings.TrimSpace(string(body))
 	if !commitSHA.MatchString(sha) {
@@ -980,7 +993,7 @@ func (c *Client) Branch(ctx context.Context, token, owner, repo, branch string) 
 	case http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity:
 		return "", noBranch
 	default:
-		return "", fmt.Errorf("GET %s: status %d: %s", target, status, body)
+		return "", fmt.Errorf("GET %s: status %d: %s", c.shownTarget(target), status, body)
 	}
 	var ref struct {
 		Ref    string `json:"ref"`
@@ -1041,7 +1054,7 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 		return Dir{}, nil
 	}
 	if status != http.StatusOK {
-		return Dir{}, fmt.Errorf("GET %s: status %d: %s", target, status, body)
+		return Dir{}, fmt.Errorf("GET %s: status %d: %s", c.shownTarget(target), status, body)
 	}
 	var tree struct {
 		SHA       string `json:"sha"`

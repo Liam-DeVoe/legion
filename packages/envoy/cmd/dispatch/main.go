@@ -1196,7 +1196,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.DatabaseURL == "" {
 		return bootConfig{}, errors.New("DATABASE_URL required")
 	}
-	if misreadDatabaseURL(boot.DatabaseURL) {
+	if store.MisreadURL(boot.DatabaseURL) {
 		return bootConfig{}, misreadRefusal("DATABASE_URL", boot.DatabaseURL)
 	}
 	agentTokens := env.get("DISPATCH_AGENT_TOKEN")
@@ -1312,7 +1312,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if envoyURL == "" {
 		envoyURL = defaultEnvoyURL
 	}
-	if userPartLeftOver(envoyURL) {
+	if redact.UserPartLeftOver(envoyURL) {
 		return bootConfig{}, misreadRefusal("ENVOY_URL", envoyURL)
 	}
 	parsed, err := url.Parse(envoyURL)
@@ -1332,7 +1332,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 
 	agentSecretsURL := strings.TrimSuffix(strings.TrimSpace(env.get("DISPATCH_AGENT_SECRETS_URL")), "/")
 	if agentSecretsURL != "" {
-		if userPartLeftOver(agentSecretsURL) {
+		if redact.UserPartLeftOver(agentSecretsURL) {
 			return bootConfig{}, misreadRefusal("DISPATCH_AGENT_SECRETS_URL", agentSecretsURL)
 		}
 		parsed, err := url.Parse(agentSecretsURL)
@@ -1449,7 +1449,7 @@ func logServiceTokens(boot bootConfig) {
 // the host and port the route serves, which routes.DevSignInOrigin reads from the dashboard
 // origin. Main calls it only after devSignInLoadedFence accepted serverURL, so that is a loopback
 // name or IP literal with an optional port. It names nothing of an origin with an @ left once
-// net/url takes out its user part (userPartLeftOver): that @ may end a user part that held a /,
+// net/url takes out its user part (redact.UserPartLeftOver): that @ may end a user part that held a /,
 // whose password's first characters net/url then read as the port
 // (http://localhost:4821/<rest>@127.0.0.1:8766), so no host net/url read from it is printed.
 func logDevSignInMounted(boot bootConfig, serverURL string) {
@@ -1458,7 +1458,7 @@ func logDevSignInMounted(boot bootConfig, serverURL string) {
 		cookies = "cookies are valid on every process given this DISPATCH_DEV_SIGNIN_SHARED_KEY"
 	}
 	host, err := routes.DevSignInOrigin(serverURL)
-	if err != nil || userPartLeftOver(serverURL) {
+	if err != nil || redact.UserPartLeftOver(serverURL) {
 		host = redact.NotPrinted
 	}
 	slog.Warn("dispatch: dev sign-in mounted: any email signs in at /auth/_dev/signin without the sign-in issuer; "+cookies, "host", host)
@@ -1469,7 +1469,7 @@ func logDevSignInMounted(boot bootConfig, serverURL string) {
 // both the URL and the key=value forms, multi-host lists included, exactly as store.Open will.
 // The value may carry a user and a password, so a value pgx cannot parse is named by its length:
 // pgx's own error for it names its user. A host pgx read is named: resolveBootConfig refused a
-// value whose user part pgx may read apart from its host (misreadDatabaseURL) before this runs,
+// value whose user part pgx may read apart from its host (store.MisreadURL) before this runs,
 // so that host is no part of a user part.
 func loopbackDatabase(databaseURL string) error {
 	config, err := pgx.ParseConfig(databaseURL)
@@ -1489,39 +1489,11 @@ func loopbackDatabase(databaseURL string) error {
 	return nil
 }
 
-// misreadDatabaseURL reports whether raw, a DATABASE_URL, is a Postgres URL whose user part pgx
-// may read apart from where net/url reads it, so that pgx takes a piece of the user part for a
-// host or a database name, which its connect error and the dev sign-in fence would print. pgx
-// reads the user part as libpq does, up to the FIRST @ before any /, and net/url up to the LAST @,
-// ending the authority at the first /, ? or #: a value with more than one @ is one, and so is one
-// with an @ left once net/url takes out its user part (userPartLeftOver). The key=value form has
-// no such part.
-func misreadDatabaseURL(raw string) bool {
-	if !strings.HasPrefix(raw, "postgres://") && !strings.HasPrefix(raw, "postgresql://") {
-		return false
-	}
-	return strings.Count(raw, "@") > 1 || userPartLeftOver(raw)
-}
-
 // misreadRefusal is the refusal of raw, the value of setting, whose user part a reader may take
 // for its host or a part of its path: it names the value by its length, since any piece of it may
 // be the password, and says how to write it so.
 func misreadRefusal(setting, raw string) error {
 	return fmt.Errorf("%s, a value of %d characters, has a user part this server cannot read apart from the rest of it; write each @, /, ?, # and \\ in that part percent-encoded (@ as %%40, / as %%2F), or remove the user part", setting, len(raw))
-}
-
-// userPartLeftOver reports whether an @ is left in raw once the user part net/url found is taken
-// out, or net/url cannot parse it: then a host read from it may be a part of its user part.
-func userPartLeftOver(raw string) bool {
-	if !strings.Contains(raw, "@") {
-		return false
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return true
-	}
-	parsed.User = nil
-	return strings.Contains(parsed.String(), "@")
 }
 
 // explainMigrateError wraps a migration failure Postgres attributes to a missing CREATE

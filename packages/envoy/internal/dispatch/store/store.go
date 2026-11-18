@@ -10,14 +10,17 @@ import (
 	"log/slog"
 	"math"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // Store is the shared Dispatch database handle.
@@ -44,8 +47,14 @@ const poolSizeParam = "pool_max_conns"
 // Open connects to databaseURL and verifies the database is reachable. The pool's size is
 // sharedPoolSize: how many connections Dispatch may hold is a property of Dispatch, not of the
 // string that names its database. Every connection it opens scans timestamptz in UTC
-// (scanTimestampsInUTC), as do the pools Pool.separate copies from its configuration.
+// (scanTimestampsInUTC), as do the pools Pool.separate copies from its configuration. A URL whose
+// user part pgx may read apart from the rest of it (MisreadURL) is refused first, named by its
+// length, since pgx would take a piece of that part for a host or a database, which its errors
+// print.
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
+	if MisreadURL(databaseURL) {
+		return nil, fmt.Errorf("DATABASE_URL, a value of %d characters, has a user part this server cannot read apart from the rest of it; write each @, /, ?, # and \\ in that part percent-encoded (@ as %%40, / as %%2F), or remove the user part", len(databaseURL))
+	}
 	declared, err := declaresPoolSize(databaseURL)
 	if err != nil {
 		return nil, err
@@ -67,9 +76,42 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("ping Postgres: %w", err)
+		return nil, fmt.Errorf("ping Postgres: %w", withoutConnectUser(err))
 	}
 	return &Store{Pool: NewPool(pool)}, nil
+}
+
+// MisreadURL reports whether raw, a DATABASE_URL, is a Postgres URL whose user part pgx may read
+// apart from where net/url reads it, so that pgx takes a piece of the user part for a host or a
+// database name, which its connect error and a refusal naming its host would print. pgx reads the
+// user part as libpq does, up to the FIRST @ before any /, and net/url up to the LAST @, ending the
+// authority at the first /, ? or #: a value with more than one @ is one, and so is one with an @
+// left once net/url takes out its user part (redact.UserPartLeftOver). The key=value form has no
+// such part.
+func MisreadURL(raw string) bool {
+	if !strings.HasPrefix(raw, "postgres://") && !strings.HasPrefix(raw, "postgresql://") {
+		return false
+	}
+	return strings.Count(raw, "@") > 1 || redact.UserPartLeftOver(raw)
+}
+
+// connectFailure is a pgconn.ConnectError as a message may print it: what failed at each host the
+// connection tried, without the user and the database pgx names in front of it, since a URL's user
+// part can be a token written where the user stands. It unwraps to the ConnectError, so errors.As
+// still finds it.
+type connectFailure struct{ connect *pgconn.ConnectError }
+
+func (c connectFailure) Error() string { return "failed to connect: " + c.connect.Unwrap().Error() }
+func (c connectFailure) Unwrap() error { return c.connect }
+
+// withoutConnectUser is err with a pgconn.ConnectError in it written as connectFailure, and err
+// itself otherwise.
+func withoutConnectUser(err error) error {
+	var connect *pgconn.ConnectError
+	if errors.As(err, &connect) {
+		return connectFailure{connect}
+	}
+	return err
 }
 
 // scanTimestampsInUTC makes every timestamptz a connection scans come back in UTC, whatever zone

@@ -68,10 +68,11 @@
  */
 import path from "node:path";
 import { search } from "./setting-prints/analysis";
+import { staleBases } from "./setting-prints/bases";
 import { goFindings } from "./setting-prints/go";
 import { PLANTED, plantedBlind, plantedFile, plantedName } from "./setting-prints/planted";
 import { changedFiles, inScope, readPath, root } from "./setting-prints/program";
-import { printFinding, printStale, verdict } from "./setting-prints/report";
+import { printFinding, printShaken, printStale, verdict } from "./setting-prints/report";
 import { JUDGED, type Judged } from "./setting-prints.judged";
 
 if (import.meta.main) {
@@ -108,6 +109,9 @@ if (import.meta.main) {
   if (all) for (const finding of quiet) printFinding(finding, undefined, true);
   const stale = JUDGED.filter((j) => !used.has(j));
   for (const j of stale) printStale(j);
+  // A judgement that names its basis stands only while that basis is as it was judged.
+  const shaken = [...used].flatMap((j) => staleBases(j).map((why) => ({ judged: j, why })));
+  for (const { judged, why } of shaken) printShaken(judged, why);
   const status = verdict({
     scope: scope.size,
     outside: everywhere.length - findings.length,
@@ -120,6 +124,7 @@ if (import.meta.main) {
     found: findings.length,
     open,
     stale: stale.length,
+    shaken: shaken.length,
   });
   if (status !== 0) process.exit(status);
 }

@@ -3,13 +3,31 @@
  * cannot print a user part of a URL, each with why. An entry names its file and a part of its
  * line's own text, so it follows the line when lines above it move; an entry that names no line the
  * search finds fails the search, so a fixed or moved line takes its entry with it.
+ *
+ * A judgement whose why rests on code other than its line (a guard that refuses the value before
+ * the line runs, a function that names it, a table that admits it) names that code in `rests`:
+ * each basis is a statement, by its file and a part of its first line, with the digest of its text
+ * when it was judged (`setting-prints/bases.ts`). A basis the tree no longer holds, or one whose
+ * text changed, fails the search, which prints the digest it has now, until the judgement is read
+ * again and the new digest written. A judgement with no `rests` rests on its line's own text and on
+ * what the setting it prints is (a path, a name, a number), which the search's own reading of the
+ * data established, or on lines of the scope the search reads itself.
  */
 
-/** A line the search finds that cannot carry a user part, with why. */
+/** What a judgement rests on: the statement whose first line holds `at` in `file`, whose text had
+ *  the digest `digest` when it was judged. */
+export interface Basis {
+  readonly file: string;
+  readonly at: string;
+  readonly digest: string;
+}
+
+/** A line the search finds that cannot carry a user part, with why, and what that rests on. */
 export interface Judged {
   readonly file: string;
   readonly text: string;
   readonly why: string;
+  readonly rests?: readonly Basis[];
 }
 
 const PATH =
@@ -35,17 +53,162 @@ const PLAYWRIGHT_BASE =
 
 const DISPATCH = "packages/envoy/cmd/dispatch/";
 
+const basis = (file: string, at: string, digest: string): Basis => ({ file, at, digest });
+/** The bases the judgements below rest on. */
+const RESTS = {
+  hostAndPort: basis(
+    "packages/broker-client/src/metadata-identity.ts",
+    "const HOST_AND_PORT =",
+    "eeebf40b3235"
+  ),
+  shownIssuer: basis(
+    "packages/broker-client/src/person-identity.ts",
+    "if (shownIssuer === undefined) {",
+    "35095c58543e"
+  ),
+  tokenClient: basis(
+    "packages/broker-client/src/token-client.ts",
+    "the broker URL must be an http or https URL",
+    "cb980260847d"
+  ),
+  sendEnvoyShown: basis(
+    "packages/claude-envoy/src/envoy-client.ts",
+    "const shown = shownSettingUrl(url.href)",
+    "73d3d4e4ebc0"
+  ),
+  sendEnvoyCleaned: basis(
+    "packages/claude-envoy/src/envoy-client.ts",
+    "const cleaned = error.message.replaceAll(url.href, shown)",
+    "d274ae096869"
+  ),
+  baseUrlOf: basis("packages/dispatch/e2e/api.ts", "export function baseUrlOf(", "a85145f96f34"),
+  liveProbe: basis(
+    "packages/dispatch/e2e/delivery-live-probe.ts",
+    "if (shownSettingUrl(rawUrl) === undefined) {",
+    "c1d37daf73ef"
+  ),
+  fileStore: basis(
+    "packages/dispatch/e2e/harness-pool.ts",
+    "if (shownEndpoint === undefined) {",
+    "9e93d32ced3c"
+  ),
+  databaseUrlRefusal: basis(
+    "packages/dispatch/e2e/local-instance-support.ts",
+    "export function databaseUrlRefusal(",
+    "d6b986ee7821"
+  ),
+  httpUrl: basis(
+    "packages/envoy-client/src/envoy-config.ts",
+    "export function httpUrl(",
+    "64fac4d01852"
+  ),
+  httpUrlSchema: basis(
+    "packages/envoy-client/src/envoy-config.ts",
+    "const httpUrlSchema = z",
+    "89e56807d28d"
+  ),
+  gatewayShown: basis(
+    "packages/pi-legion/scripts/skill-scenarios/label-comments.ts",
+    "const shown = shownSettingUrl(gateway);",
+    "3692507804ee"
+  ),
+  gatewayRefused: basis(
+    "packages/pi-legion/scripts/skill-scenarios/label-comments.ts",
+    "--gateway must be an http or https URL",
+    "849fdc0d41f4"
+  ),
+  daemon: basis(
+    "packages/pi-shared/src/daemon-client.ts",
+    "shownSettingUrl(baseUrl) === undefined",
+    "7a14d8156067"
+  ),
+  claimantDispatch: basis(
+    "scripts/e2e/dispatch-claimant-delivery.ts",
+    "if (shownSettingUrl(dispatchUrl) === undefined) {",
+    "29fe680e9712"
+  ),
+  claimantEnvoy: basis(
+    "scripts/e2e/dispatch-claimant-delivery.ts",
+    "if (shownSettingUrl(envoyUrl) === undefined) {",
+    "f50de315082e"
+  ),
+  keyed: basis(
+    "scripts/e2e/lib/dispatch-keyed-comment.ts",
+    "if (shownSettingUrl(rawURL) === undefined) {",
+    "6b3e24acb10a"
+  ),
+  live: basis(
+    "scripts/e2e/lib/dispatch-live-events.ts",
+    "if (shownSettingUrl(rawURL) === undefined) {",
+    "6b3e24acb10a"
+  ),
+  verificationDispatch: basis(
+    "scripts/e2e/verification-results.ts",
+    "if (shownSettingUrl(dispatchUrl) === undefined) {",
+    "29fe680e9712"
+  ),
+  verificationGitHub: basis(
+    "scripts/e2e/verification-results.ts",
+    "if (shownSettingUrl(githubUrl) === undefined) {",
+    "f488e10c9657"
+  ),
+  bootMisread: basis(
+    `${DISPATCH}main.go`,
+    "if store.MisreadURL(boot.DatabaseURL) {",
+    "8ccb77ab8a9f"
+  ),
+  misread: basis(
+    "packages/envoy/internal/dispatch/store/store.go",
+    "func MisreadURL(",
+    "a012937fe927"
+  ),
+  leftOver: basis(
+    "packages/envoy/internal/redact/url.go",
+    "func UserPartLeftOver(",
+    "ee9864af2625"
+  ),
+  loopback: basis(`${DISPATCH}main.go`, "func loopbackDatabase(", "cb1739b16110"),
+  mounted: basis(`${DISPATCH}main.go`, "func logDevSignInMounted(", "732b00ad4201"),
+  devOrigin: basis(
+    "packages/envoy/internal/dispatch/routes/devsignin.go",
+    "func DevSignInOrigin(",
+    "6773c11bb213"
+  ),
+  serverURL: basis(
+    "packages/envoy/internal/dispatch/config/config.go",
+    "func dispatchServerURL(",
+    "f83aec577c14"
+  ),
+  natsURLs: basis(
+    "packages/envoy/internal/dispatch/config/config.go",
+    "func natsURLs(",
+    "452b7162809b"
+  ),
+  loadApp: basis(
+    "packages/envoy/internal/dispatch/auth/app.go",
+    "func LoadAppFromEnv(",
+    "37afc265408d"
+  ),
+  remoteNATS: basis(
+    "packages/envoy/internal/bus/reach.go",
+    "func refuseRemoteNATS(",
+    "98ece7f415b9"
+  ),
+};
+
 // biome-ignore-start lint/suspicious/noTemplateCurlyInString: each entry quotes a part of a source line, placeholders included
 export const JUDGED: readonly Judged[] = [
   {
     file: "packages/broker-client/src/metadata-identity.ts",
     text: "return `http://${host}${IDENTITY_PATH}",
     why: "GCE_METADATA_HOST, admitted only as a host or an IP with an optional port (HOST_AND_PORT above), so it holds no user part",
+    rests: [RESTS.hostAndPort],
   },
   {
     file: "packages/broker-client/src/person-identity.ts",
     text: "const config = await discovery(new URL(flow.issuer)",
     why: "the sign-in issuer, which discover parses only when read() calls it, after read() refused an issuer that shownSettingUrl does not show (shownIssuer) and one with a user part",
+    rests: [RESTS.shownIssuer],
   },
   {
     file: "packages/broker-client/src/pool-identity.ts",
@@ -61,11 +224,13 @@ export const JUDGED: readonly Judged[] = [
     file: "packages/claude-envoy/hooks/session-hook.ts",
     text: "for (const warning of warnings)",
     why: CONFIG,
+    rests: [RESTS.httpUrl],
   },
   {
     file: "packages/claude-envoy/hooks/session-hook.ts",
     text: "summary unavailable: ${dispatch.error}",
     why: CONFIG,
+    rests: [RESTS.httpUrl],
   },
   {
     file: "packages/claude-envoy/hooks/session-hook.ts",
@@ -81,6 +246,7 @@ export const JUDGED: readonly Judged[] = [
     file: "packages/claude-envoy/hooks/session-hook.ts",
     text: "process.stderr.write(`envoy: ${notice}",
     why: CONFIG,
+    rests: [RESTS.httpUrl],
   },
   {
     file: "packages/claude-envoy/hooks/session-hook.ts",
@@ -91,6 +257,7 @@ export const JUDGED: readonly Judged[] = [
     file: "packages/claude-envoy/src/envoy-client.ts",
     text: "throw new Error(cleaned,",
     why: "ky's message with the URL replaced by its shown form (shownSettingUrl), which holds no user part",
+    rests: [RESTS.sendEnvoyShown, RESTS.sendEnvoyCleaned],
   },
   {
     file: "packages/contracts/src/legion-roles.ts",
@@ -111,6 +278,7 @@ export const JUDGED: readonly Judged[] = [
     file: "packages/dispatch/e2e/api.ts",
     text: "const url = new URL(path, options.baseUrl ?? baseUrl)",
     why: "PLAYWRIGHT_BASE_URL, admitted by baseUrlOf only when shownSettingUrl shows it with no user part, or a stack's own loopback origin, so it parses",
+    rests: [RESTS.baseUrlOf],
   },
   ...[
     "export const dashboardOrigin = new URL(baseUrl).origin",
@@ -119,12 +287,14 @@ export const JUDGED: readonly Judged[] = [
     file: "packages/dispatch/e2e/api.ts",
     text,
     why: PLAYWRIGHT_BASE,
+    rests: [RESTS.baseUrlOf],
   })),
   ...['const liveUrl = new URL("/ws/live", options.url)', "fetch(new URL(route.route, base)"].map(
     (text) => ({
       file: "packages/dispatch/e2e/delivery-live-probe.ts",
       text,
       why: "--url, which parseOptions admits only when shownSettingUrl shows it, and hands on as the URL it parsed then",
+      rests: [RESTS.liveProbe],
     })
   ),
   {
@@ -136,6 +306,7 @@ export const JUDGED: readonly Judged[] = [
     file: "packages/dispatch/e2e/harness-pool.ts",
     text: "`the file store at ${endpoint} refused",
     why: "DISPATCH_E2E_FILE_STORE_ENDPOINT, which this file admits only when shownSettingUrl shows it as written, before any stack's bucket is made",
+    rests: [RESTS.fileStore],
   },
   {
     file: "packages/dispatch/e2e/harness-postgres.ts",
@@ -151,6 +322,7 @@ export const JUDGED: readonly Judged[] = [
     file: "packages/dispatch/e2e/local-instance-support.ts",
     text: '`socket, not ${remote.join(", ")}',
     why: "the hosts of a DATABASE_URL, named only when no raw @ is left once its user part is taken out (the misread branch names the value by its length), so they are no part of a user part",
+    rests: [RESTS.databaseUrlRefusal],
   },
   {
     file: "packages/dispatch/e2e/local-instance-support.ts",
@@ -189,6 +361,7 @@ export const JUDGED: readonly Judged[] = [
     file: "packages/dispatch/e2e/read-token-live.ts",
     text,
     why: "the broker's URL, which the broker client admits only when shownSettingUrl shows it, and the token files' paths",
+    rests: [RESTS.tokenClient],
   })),
   ...[
     "problems: [`unknown command ${quoteWord(command)}",
@@ -240,7 +413,12 @@ export const JUDGED: readonly Judged[] = [
     "`${config.path}: dispatch is enabled and no token is",
     "`DISPATCH_URL is set and no token is",
     "throw new Error(`dispatch config: ${resolution.error}`)",
-  ].map((text) => ({ file: "packages/envoy-client/src/dispatch-config.ts", text, why: CONFIG })),
+  ].map((text) => ({
+    file: "packages/envoy-client/src/dispatch-config.ts",
+    text,
+    why: CONFIG,
+    rests: [RESTS.httpUrl],
+  })),
   {
     file: "packages/envoy-client/src/dispatch-http.ts",
     text: "`GET /api/v1/issues/${issueKey}/events?after=${after}",
@@ -260,6 +438,7 @@ export const JUDGED: readonly Judged[] = [
     file: "packages/envoy-client/src/dispatch-http.ts",
     text: "`${this.#baseUrl}/`",
     why: DISPATCH_BASE,
+    rests: [RESTS.httpUrl],
   },
   ...[
     "return `images: ${path} is not a file`",
@@ -295,6 +474,7 @@ export const JUDGED: readonly Judged[] = [
     file: "packages/envoy-client/src/envoy-config.ts",
     text: 'return `${filePath}: ${issue.path.join(".")}: ${issue.message}`',
     why: "a schema refusal of envoy.json: the file's path, the key, and the schema's words, which name a URL only by its length (httpUrlSchema's refine, unshownSettingUrl)",
+    rests: [RESTS.httpUrlSchema],
   },
   {
     file: "packages/envoy-client/src/envoy-config.ts",
@@ -310,7 +490,12 @@ export const JUDGED: readonly Judged[] = [
     'if (config.kind === "failed") return offWithError(config.error)',
     "`${config.path} sets envoy.enabled to false",
     "? `${config.path} names no Envoy listener or NATS server",
-  ].map((text) => ({ file: "packages/envoy-client/src/envoy-settings.ts", text, why: CONFIG })),
+  ].map((text) => ({
+    file: "packages/envoy-client/src/envoy-settings.ts",
+    text,
+    why: CONFIG,
+    rests: [RESTS.httpUrl],
+  })),
   {
     file: "packages/envoy-client/src/redirect.ts",
     text: ": `redirecting to ${target.origin}`",
@@ -348,6 +533,7 @@ export const JUDGED: readonly Judged[] = [
     file: "packages/pi-legion/scripts/skill-scenarios/label-comments.ts",
     text: "redirectTarget(response, `${route.url}/v1/messages`)",
     why: ADMITTED_URL("--gateway, label-comments.ts's parse of its arguments"),
+    rests: [RESTS.gatewayShown, RESTS.gatewayRefused],
   },
   ...[
     "return `unknown argument ${flag}. ${USAGE}`",
@@ -362,16 +548,19 @@ export const JUDGED: readonly Judged[] = [
     file: "packages/pi-legion/scripts/skill-scenarios/production-dispatch.ts",
     text: "`Dispatch is not configured: ${resolution.error ?? resolution.notice}`",
     why: CONFIG,
+    rests: [RESTS.httpUrl],
   },
   {
     file: "packages/pi-legion/scripts/skill-scenarios/production-dispatch.ts",
     text: "const url = new URL(`${this.#base}${shown}`)",
     why: DISPATCH_BASE,
+    rests: [RESTS.httpUrl],
   },
   {
     file: "packages/pi-legion/scripts/skill-scenarios/seed.ts",
     text: "const url = new URL(route, baseUrl)",
     why: PLAYWRIGHT_BASE,
+    rests: [RESTS.baseUrlOf],
   },
   ...[
     "`LEGION_PROJECT ${project} names controller role ${controllerToken(project)}, but the daemon at",
@@ -387,6 +576,7 @@ export const JUDGED: readonly Judged[] = [
     why: ADMITTED_URL(
       "LEGION_DAEMON_URL, refused before any call when shownSettingUrl does not show it"
     ),
+    rests: [RESTS.daemon],
   },
   ...["`./${row.file}`,", "const shown = `${row.site}: ${row.directory}/${row.file}`"].map(
     (text) => ({
@@ -410,6 +600,7 @@ export const JUDGED: readonly Judged[] = [
     why: ADMITTED_URL(
       "<dispatch-url> and <fake-envoy-url>, refused at the driver's top level before any of its functions runs"
     ),
+    rests: [RESTS.claimantDispatch, RESTS.claimantEnvoy],
   })),
   ...[
     'await fetch(new URL("/healthz", base))',
@@ -419,6 +610,7 @@ export const JUDGED: readonly Judged[] = [
     file: "scripts/e2e/lib/dispatch-keyed-comment.ts",
     text,
     why: ADMITTED_URL("--url, at its parse"),
+    rests: [RESTS.keyed],
   })),
   {
     file: "scripts/e2e/lib/dispatch-keyed-comment.ts",
@@ -432,6 +624,7 @@ export const JUDGED: readonly Judged[] = [
     file: "scripts/e2e/lib/dispatch-live-events.ts",
     text,
     why: ADMITTED_URL("--url, at its parse"),
+    rests: [RESTS.live],
   })),
   {
     file: "scripts/e2e/verification-results.ts",
@@ -444,6 +637,7 @@ export const JUDGED: readonly Judged[] = [
     why: ADMITTED_URL(
       "<dispatch-url> and <fake-github-url>, refused at the driver's top level before any of its functions runs"
     ),
+    rests: [RESTS.verificationDispatch, RESTS.verificationGitHub],
   })),
   {
     file: "scripts/e2e/verification-results.ts",
@@ -479,11 +673,13 @@ export const JUDGED: readonly Judged[] = [
     file: `${DISPATCH}main.go`,
     text: 'slog.Error("dispatch: load envoy config", "error", err)',
     why: "config.Load's refusals (internal/dispatch/config): a file by its path, a key, DISPATCH_SERVER_URL through redact.URL and NATS_URLS by its length",
+    rests: [RESTS.serverURL, RESTS.natsURLs],
   },
   {
     file: `${DISPATCH}main.go`,
     text: 'slog.Error("dispatch: load app credentials", "error", err)',
     why: "the App's refusals (internal/dispatch/auth, LoadAppFromEnv), which name the variable and quote at most an App ID that is no integer, never the key",
+    rests: [RESTS.loadApp],
   },
   {
     file: `${DISPATCH}main.go`,
@@ -498,7 +694,8 @@ export const JUDGED: readonly Judged[] = [
   {
     file: `${DISPATCH}main.go`,
     text: 'slog.Error("dispatch: connect the agent conversation relay", "error", err)',
-    why: "bus.Dial's refusals, which name the variables, never their values (internal/bus reach.go and socks5.go, held by their tests)",
+    why: "bus.Dial's refusals, which name the variables, and a NATS URL only by its length or without its user part (internal/bus reach.go, refuseRemoteNATS, and socks5.go, held by their tests)",
+    rests: [RESTS.remoteNATS],
   },
   {
     file: `${DISPATCH}main.go`,
@@ -519,6 +716,7 @@ export const JUDGED: readonly Judged[] = [
     file: `${DISPATCH}main.go`,
     text: 'slog.Error("dispatch: build app context", "error", err)',
     why: "routes.BuildAppContext's refusals, which name the dashboard origin through redact.URL (routes.DevSignInOrigin)",
+    rests: [RESTS.devOrigin],
   },
   ...[
     'slog.Info("dispatch: redelivering the GitHub App',
@@ -537,6 +735,7 @@ export const JUDGED: readonly Judged[] = [
     file: `${DISPATCH}main.go`,
     text: 'fmt.Errorf("load app from env: %w", err)',
     why: "auth.LoadAppFromEnv's refusal, which names the variable and quotes at most an App ID that is no integer, never the key",
+    rests: [RESTS.loadApp],
   },
   {
     file: `${DISPATCH}main.go`,
@@ -559,12 +758,14 @@ export const JUDGED: readonly Judged[] = [
   {
     file: `${DISPATCH}main.go`,
     text: 'slog.Warn("dispatch: dev sign-in mounted',
-    why: "the host and port routes.DevSignInOrigin reads, after the dev sign-in fence admitted a loopback origin with no user part",
+    why: "the host and port routes.DevSignInOrigin reads, after the dev sign-in fence admitted a loopback origin, and none of an origin with an @ left once net/url takes out its user part (redact.UserPartLeftOver)",
+    rests: [RESTS.mounted, RESTS.leftOver, RESTS.devOrigin],
   },
   {
     file: `${DISPATCH}main.go`,
     text: "serves a loopback database only: DATABASE_URL names host %q",
-    why: "a host of DATABASE_URL, named only when net/url finds the whole user part (userPartLeftOver), so it is no part of one",
+    why: "a host pgx read from DATABASE_URL, named only after resolveBootConfig refused a value whose user part pgx and net/url may read apart (store.MisreadURL: more than one @, or an @ left once net/url takes out its user part), so it is no part of a user part",
+    rests: [RESTS.bootMisread, RESTS.misread, RESTS.leftOver, RESTS.loopback],
   },
   {
     file: `${DISPATCH}main.go`,
@@ -611,6 +812,7 @@ export const JUDGED: readonly Judged[] = [
     file: "packages/envoy/internal/dispatch/routes/router.go",
     text: 'fmt.Errorf("BuildAppContext: %w", err)',
     why: "routes.DevSignInOrigin's refusal, which names the origin through redact.URL",
+    rests: [RESTS.devOrigin],
   },
 ];
 // biome-ignore-end lint/suspicious/noTemplateCurlyInString: the quoted source lines end here.

@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
@@ -158,7 +159,7 @@ var _ Client = (*HTTPClient)(nil)
 func NewHTTPClient(cfg HTTPConfig) (*HTTPClient, error) {
 	endpoint, err := url.Parse(cfg.Endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("going: chat endpoint: %w", err)
+		return nil, fmt.Errorf("going: chat endpoint: %w", redact.Error(err, cfg.Endpoint))
 	}
 	if !endpoint.IsAbs() || endpoint.Host == "" {
 		return nil, errors.New("going: chat endpoint must be an absolute URL with a host")
@@ -305,7 +306,10 @@ func (c *HTTPClient) Chat(ctx context.Context, request ChatRequest, onText func(
 	defer cancel()
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("going: build chat request: %w", err)
+		// The endpoint is a setting that may carry a user and a password, and a parse error or
+		// net/http's transport error quotes the URL (net/http keeps the user, and a token written
+		// as the whole user part): redact.Error prints only the failure's class then.
+		return nil, fmt.Errorf("going: build chat request: %w", redact.Error(err, c.url))
 	}
 	token, err := c.token(ctx)
 	if err != nil {
@@ -316,7 +320,7 @@ func (c *HTTPClient) Chat(ctx context.Context, request ChatRequest, onText func(
 	httpRequest.Header.Set("Authorization", "Bearer "+token)
 	response, err := c.http.Do(httpRequest)
 	if err != nil {
-		return nil, fmt.Errorf("going: chat completions: %w", err)
+		return nil, fmt.Errorf("going: chat completions: %w", redact.Error(err, c.url))
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode > 299 {

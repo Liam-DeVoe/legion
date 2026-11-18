@@ -242,14 +242,19 @@ function fromShell(banner: InstanceBanner): string[] {
 
 /** The harness inputs a command needs to reach this instance, as a shell prefix: the database,
  *  each port the harness reported, and the broker switch this shell set, each variable of
- *  `fromShell` written as its own name read from the shell. */
+ *  `fromShell` written as its own name read from the shell. A broker switch is handed on through
+ *  `env` and only when the shell that runs the command sets it (`${NAME+"NAME=$NAME"}`): the
+ *  harness reads an empty switch as "no broker" and an unset one as "the fake broker", so a shell
+ *  without it must leave it unset. */
 function harnessEnvironment(banner: InstanceBanner): string {
+  const switches = brokerSwitches(banner);
   return [
     banner.databaseGiven
       ? 'DATABASE_URL="$DATABASE_URL"'
       : `DATABASE_URL=${shellQuote(banner.databaseUrl)}`,
     ...Object.entries(banner.ports).map(([variable, port]) => `${variable}=${port}`),
-    ...brokerSwitches(banner).map((variable) => `${variable}="$${variable}"`),
+    ...(switches.length === 0 ? [] : ["env"]),
+    ...switches.map((variable) => `\${${variable}+"${variable}=$${variable}"}`),
   ].join(" ");
 }
 
