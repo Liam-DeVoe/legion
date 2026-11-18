@@ -2327,7 +2327,7 @@ Each step of the port names the function it ports in its own comment, so what a 
 No list is left to goldmark's looseness and no spacing is refused.
 The blank lines indented code keeps past where goldmark ends it are that code's and space nothing (`heldCodeLines`).
 
-The renderer writes each spacing so that it reads back (`blanksAfterList`, `writesBlankAfterItem`):
+The renderer writes each spacing so that it reads back, each blank line it counts once and with no space at its end (`blanksAfterList`, `blanksAfterItem`):
 no blank line before a block that opens on the line after a list where one would spread what it follows, none inside a list item after a list ending in an empty item, where goldmark ends the item at a blank line, and none in a quote after a footnote definition ending in a list no line continues, where the reader refuses one (`endsInClosedList`);
 a footnote definition a tight list item holds writes its blocks with the item's tight lines, and so does a typed block one holds, since that parser reads the lines of both as the item's (`itemBlocks`, `inTightItemBelowQuotes`): a blank line between two of them would be a blank line of the item, which that parser reads as spacing it.
 One shape is refused rather than spaced, and it is goldmark's tree rather than the spacing: an empty list item and a blank line before a block an item around it holds, however far out, since goldmark ends that outer item there and the browser editor's parser does not (`emptyItemEndsOuterItem`).
