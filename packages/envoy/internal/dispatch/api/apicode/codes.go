@@ -345,6 +345,9 @@ var (
 	// deployment rather than to any one project.
 	ProjectScopeDeployment = both("PROJECT_SCOPE_DEPLOYMENT", http.StatusForbidden)
 	ProjectUnmapped        = both("PROJECT_UNMAPPED", http.StatusBadRequest)
+	// QueuedOnBus is the queued-messages test hook's read on a process that publishes a queued
+	// message to NATS, where the stream holds it and no recorder of the process does (#4088).
+	QueuedOnBus = both("QUEUED_ON_BUS", http.StatusNotFound)
 	// RankInput refuses a move to a place the order does not have, which is the code and the
 	// wording the issue board's own drag is refused with (the api package's issue_rank.go).
 	RankInput                      = both("RANK_INPUT", http.StatusBadRequest)

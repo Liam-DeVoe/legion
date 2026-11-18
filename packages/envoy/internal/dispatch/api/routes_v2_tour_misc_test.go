@@ -59,6 +59,15 @@ func miscTourSteps() []tourStep {
 			},
 		},
 		{
+			// One reference that names the toured issue and one that names nothing, which is
+			// answered gone rather than refused; the path names no stored object.
+			Method: http.MethodGet, Pattern: "/reference-targets", Status: http.StatusOK,
+			Setup: func(t *testing.T, tour *routeTour) tourRequest {
+				issue := "dispatch://" + tour.issue(t).Key
+				return tourRequest{Query: url.Values{"ref": {issue, "dispatch://NOPE-1"}}, As: alice}
+			},
+		},
+		{
 			Method: http.MethodGet, Pattern: "/block-schema", Status: http.StatusOK,
 			Setup: func(*testing.T, *routeTour) tourRequest { return tourRequest{} },
 		},

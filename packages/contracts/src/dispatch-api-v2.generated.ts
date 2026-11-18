@@ -190,6 +190,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v2/_test/messages/queued": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Test hook: list the targeted messages this process queued itself for a session neither the listener's registry nor its known-session store held, each as the envelope its session's subject would hold: {queued: [{subject, dedupe_key, event_id, source, payload_summary, payload, urgency}]}, oldest first; 404 QUEUED_ON_BUS on a process that publishes them to NATS. */
+    get: operations["getApiV2TestMessagesQueued"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v2/_test/settings/new-issue": {
     parameters: {
       query?: never;
@@ -1869,14 +1886,14 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/v2/projects/{key}/legion-board": {
+  "/api/v2/projects/{key}/legion/board": {
     parameters: {
       query?: never;
       header?: never;
       path?: never;
       cookie?: never;
     };
-    /** @description The Legion board of the project its path names, from what the sampler recorded of that project's daemon: {project, header, columns, settings, computed_at}. columns are the eleven columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_person, held) in that order, each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; header holds the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure; settings are the settings the daemon reports, {} until a read records them. A project whose daemon has never answered is answered the board with empty columns. The live socket's legion view sends the same body. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    /** @description The Legion board of the project its path names, from what the sampler recorded of that project's daemon: eleven columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. */
     get: operations["getApiV2ProjectsByKeyLegionBoard"];
     put?: never;
     post?: never;
@@ -1886,19 +1903,19 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/v2/projects/{key}/legion-daemon": {
+  "/api/v2/projects/{key}/legion/daemon": {
     parameters: {
       query?: never;
       header?: never;
       path?: never;
       cookie?: never;
     };
-    /** @description The Legion daemon this project's state is read from, {project, state_url, created_by, updated_at}: the base URL Dispatch reads the daemon's GET /legion/v1/state from once a minute, the actor that first named a daemon of the project, and when the setting was last written; null when the project names none. No route lists every project's daemon: a page that shows them all reads each project's. 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    /** @description The Legion daemon this project's state is read from, the one Dispatch reads `GET /legion/v1/state` from once a minute, with the actor that first named it and when it was last written; null when the project names none. No route lists every project's daemon: a page that shows them all reads each project's. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. */
     get: operations["getApiV2ProjectsByKeyLegionDaemon"];
-    /** @description Name the Legion daemon this project's state is read from {state_url}, a bearer naming its session in actor: an absolute http(s) URL with a host and no path, carrying no user, password, query or fragment, else 400 LEGION_SETTING_INPUT. The daemon belongs to the deployment, so a credential scoped to one project is refused it, the project this path names included. The setting records no setter, so a PUT of the state_url it already holds, by any caller, answers the setting as it stands and writes nothing. Answers 200 the setting, {project, state_url, created_by, updated_at}: the base URL Dispatch reads the daemon's GET /legion/v1/state from once a minute, the actor that first named a daemon of the project, and when the setting was last written, and an open board of the project hears of the write at once. 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    /** @description Name the Legion daemon this project's state is read from {state_url}: an absolute http(s) URL with a host and no path, else 400 LEGION_SETTING_INPUT. The daemon belongs to the deployment, so a project-scoped credential is refused it, the project this path names included. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. */
     put: operations["putApiV2ProjectsByKeyLegionDaemon"];
     post?: never;
-    /** @description Stop reading this project's Legion daemon, a bearer naming its session in actor; what was already read stays, and nothing reads it again. Scoped as the PUT is. 204. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    /** @description Stop reading this project's Legion daemon; what was already read stays. 404 NOT_FOUND when the project names none, 400 INVALID_PROJECT for a key that is not a project key and 404 PROJECT_NOT_FOUND for a project that does not exist. */
     delete: operations["deleteApiV2ProjectsByKeyLegionDaemon"];
     options?: never;
     head?: never;
@@ -1933,6 +1950,23 @@ export interface paths {
     put?: never;
     /** @description Run the related-item check an issue create runs over a title and a text as long as an issue's spec {title?, text?, exclude_issue?, exclude_issues?, keywords_only?} (checked as the title, a newline and the text; either alone is enough), writing nothing - no issue, ask, suggestion or related_checks record - and waiting at most 5 seconds. A title over 1000 characters is 400 CAP_EXCEEDED, and the text is held to the body's 1 MiB bound. exclude_issue leaves that issue of the project and everything it holds out of the results and out of the word statistics; exclude_issues leaves each of up to 50 issues of the project out of the results alone (400 EXCLUDE_ISSUE_INPUT for a key the project does not hold, or a longer list); keywords_only true skips meaning search. Answers the create's advice.suggestions shape: outcome found, none or not_made (a blank text is not_made, the reason in missing), search, search_note, search_query and related, with up to 3 open issues before any item of another kind and everything a done issue owns last. include=other_projects adds other_projects beside related: at most 2 answered question asks of other projects, each with its ask state, its answer and the project it stands in, ranked by meaning alone and offered with no claim that they answer the question. 404 PROJECT_NOT_FOUND for a project that does not exist. */
     post: operations["postApiV2ProjectsByKeyRelatedSearches"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/reference-targets": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description What many dispatch:// references point at, in one read: ref=<dispatch ref> once per reference, at most 256 of them; none is 400 INVALID_REFERENCE, and more than that 400 CAP_EXCEEDED naming the cap. One member per ref in the request's order (a reference named twice answered twice), each {ref, kind, name, gone}: ref as the request wrote it, kind the kind of node it names, name the words shown for the target in place of its text (an issue's title, a document's name, an ask's question, a comment's or a message's body, a component's title, a block's text), and gone whether nothing answers to that reference now, once an id it writes short is resolved, which carries no name. A caller that sent Dispatch-Trees: 1 is also given text_tree on each member whose kind is block: the block's whole text as the tree a reader is shown, links and references kept and nothing cut, a typed block's being of what stands between its opening line and its closing one, read by the block's kind as GET /api/v1/reference-targets reads it. A reference the grammar cannot read is 400 INVALID_REFERENCE naming it; one that reads but names nothing is answered gone, never refused. An item id or a block id written short (8 characters or more, never a whole uuid) is resolved in the scope the reference names, as GET /api/v2/references resolves its to=, and ref still echoes it as written: a prefix that nothing carries is answered gone, and a prefix that two or more items carry answers that member gone with ambiguous: true, which no other member carries, and every other member is answered; this read refuses no prefix. limit 1 to 256 (default 256, so one read of at most the cap is one page) and offset page the members; {items, total, limit, offset}, total the count of refs named. The answer carries an ETag over the page, each tree and each ambiguous included; If-None-Match answers 304. This answers no edges: GET /api/v2/references reads one node's edges. */
+    get: operations["getApiV2ReferenceTargets"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -3163,6 +3197,12 @@ export interface components {
       sha256: string;
       surface: string;
       text: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       version: number;
       when: string;
     };
@@ -4296,8 +4336,10 @@ export interface components {
     IssueChild: {
       /** Format: date-time */
       active_at: string;
+      claim?: components["schemas"]["IssueClaim"];
       external_links: components["schemas"]["ExternalLink"][] | null;
       key: string;
+      needs?: string[];
       status: string;
       subtree_done: number;
       subtree_total: number;
@@ -5200,6 +5242,12 @@ export interface components {
       offset: number;
       total: number;
     };
+    PageOfReferenceTarget: {
+      items: components["schemas"]["ReferenceTarget"][] | null;
+      limit: number;
+      offset: number;
+      total: number;
+    };
     PageOfRepoProject: {
       items: components["schemas"]["RepoProject"][] | null;
       limit: number;
@@ -5401,6 +5449,18 @@ export interface components {
       error: string;
       key: string;
     };
+    QueuedMessage: {
+      dedupe_key: string;
+      event_id: string;
+      payload: string;
+      payload_summary: string;
+      source: string;
+      subject: string;
+      urgency?: string;
+    };
+    QueuedMessages: {
+      queued: components["schemas"]["QueuedMessage"][] | null;
+    };
     RebuildArtifactInput: {
       markdown?: null | string;
     };
@@ -5453,6 +5513,19 @@ export interface components {
       artifact: components["schemas"]["ArtifactV2"];
       depth: number;
       via: components["schemas"]["ReferenceVia"];
+    };
+    ReferenceTarget: {
+      ambiguous?: boolean;
+      gone: boolean;
+      kind: string;
+      name: string;
+      ref: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
     };
     ReferenceVia: {
       id: string;
@@ -5545,6 +5618,12 @@ export interface components {
       plan_tasks: number;
       ref: string;
       text: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
     };
     ResidentRooms: {
       rooms: string[] | null;
@@ -6352,6 +6431,38 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["TestHookOK"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV2TestMessagesQueued: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["QueuedMessages"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -12613,17 +12724,6 @@ export interface operations {
           "application/json": components["schemas"]["LegionBoardResponse"];
         };
       };
-      /** @description Bad Request */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json":
-            | components["schemas"]["QueryKeyUnknownBody"]
-            | components["schemas"]["ErrorBody"];
-        };
-      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -12656,17 +12756,6 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["LegionSetting"] | null;
-        };
-      };
-      /** @description Bad Request */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json":
-            | components["schemas"]["QueryKeyUnknownBody"]
-            | components["schemas"]["ErrorBody"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -12707,17 +12796,6 @@ export interface operations {
           "application/json": components["schemas"]["LegionSetting"];
         };
       };
-      /** @description Bad Request */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json":
-            | components["schemas"]["QueryKeyUnknownBody"]
-            | components["schemas"]["ErrorBody"];
-        };
-      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -12741,11 +12819,7 @@ export interface operations {
       };
       cookie?: never;
     };
-    requestBody?: {
-      content: {
-        "application/json": components["schemas"]["ActorInput"];
-      };
-    };
+    requestBody?: never;
     responses: {
       /** @description No Content */
       204: {
@@ -12753,17 +12827,6 @@ export interface operations {
           [name: string]: unknown;
         };
         content?: never;
-      };
-      /** @description Bad Request */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json":
-            | components["schemas"]["QueryKeyUnknownBody"]
-            | components["schemas"]["ErrorBody"];
-        };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
@@ -12852,6 +12915,59 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["Suggestions"];
         };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["QueryKeyUnknownBody"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV2ReferenceTargets: {
+    parameters: {
+      query?: {
+        limit?: number;
+        offset?: number;
+        ref?: string[];
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PageOfReferenceTarget"];
+        };
+      };
+      /** @description Not Modified */
+      304: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
       /** @description Bad Request */
       400: {
@@ -14011,6 +14127,7 @@ export type PageOfPendingEntry = components["schemas"]["PageOfPendingEntry"];
 export type PageOfPersonSignInResp = components["schemas"]["PageOfPersonSignInResp"];
 export type PageOfPriorityAct = components["schemas"]["PageOfPriorityAct"];
 export type PageOfProjectV2 = components["schemas"]["PageOfProjectV2"];
+export type PageOfReferenceTarget = components["schemas"]["PageOfReferenceTarget"];
 export type PageOfRepoProject = components["schemas"]["PageOfRepoProject"];
 export type PageOfShapedComment = components["schemas"]["PageOfShapedComment"];
 export type PageOfSubscriber = components["schemas"]["PageOfSubscriber"];
@@ -14035,12 +14152,15 @@ export type PutArchitectureSourceInput = components["schemas"]["PutArchitectureS
 export type PutLegionSettingInput = components["schemas"]["PutLegionSettingInput"];
 export type PutRepoProjectInput = components["schemas"]["PutRepoProjectInput"];
 export type QueryKeyUnknownBody = components["schemas"]["QueryKeyUnknownBody"];
+export type QueuedMessage = components["schemas"]["QueuedMessage"];
+export type QueuedMessages = components["schemas"]["QueuedMessages"];
 export type RebuildArtifactInput = components["schemas"]["RebuildArtifactInput"];
 export type RecordCheckResultInput = components["schemas"]["RecordCheckResultInput"];
 export type RecordDecisionResp = components["schemas"]["RecordDecisionResp"];
 export type RecordEnrollmentResp = components["schemas"]["RecordEnrollmentResp"];
 export type RecordResponse = components["schemas"]["RecordResponse"];
 export type ReferenceMemberV2 = components["schemas"]["ReferenceMemberV2"];
+export type ReferenceTarget = components["schemas"]["ReferenceTarget"];
 export type ReferenceVia = components["schemas"]["ReferenceVia"];
 export type ReferencesV2 = components["schemas"]["ReferencesV2"];
 export type RelatedCheckInput = components["schemas"]["RelatedCheckInput"];

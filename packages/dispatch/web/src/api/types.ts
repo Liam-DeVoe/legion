@@ -249,6 +249,7 @@ export type {
   RecordResponse,
   ReferenceMemberV2,
   ReferencesV2,
+  ReferenceTarget,
   ReplyBlockWithTrees,
   RepoProject,
   RequirementCoverage,

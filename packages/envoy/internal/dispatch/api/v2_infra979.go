@@ -4,13 +4,16 @@ import (
 	"net/http"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 )
 
 // v2Infra979Rows are the rows of the INFRA-979 tree (infra979Rows), each served in both versions
 // by one declaration, at /api/v1 where that tree wrote it and at the same path under /api/v2. Each
 // keeps its v1 handler, its description and its shape: that tree's own spec decides their change,
 // in both versions (R3), and the parent's shape rules bind none of them, so they declare none of
-// the R1 columns. The facts the side maps held for them are their columns now.
+// the R1 columns. The facts the side maps held for them are their columns now. #2731's four rows
+// of a project's Legion daemon and board are that tree's too (dispatch://INFRA-1077, a child of
+// INFRA-979), served as the delivery rows are: same path, v1's handler, answers and codes.
 func (s *server) v2Infra979Rows() []routeRow {
 	return []routeRow{
 		{
@@ -53,6 +56,42 @@ func (s *server) v2Infra979Rows() []routeRow {
 			Handler:     s.getDeliveryPipeline,
 			Query:       deliveryPipelineQuery{},
 			Shape:       routeShape{Status: http.StatusOK, Response: deliveryPipelineResponse{}},
+		},
+		{
+			Method: http.MethodGet, Pattern: "/projects/{key}/legion/daemon", Auth: authAny,
+			Description: "The Legion daemon this project's state is read from, the one Dispatch reads `GET /legion/v1/state` from once a minute, with the actor that first named it and when it was last written; null when the project names none. No route lists every project's daemon: a page that shows them all reads each project's. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.",
+			Handler:     s.getLegionSetting,
+			Shape: routeShape{
+				Status: http.StatusOK, Response: legion.Settings{},
+				// A project that names no daemon answers 200 and the JSON literal `null`
+				// (settings_legion.go).
+				Nullable: true,
+			},
+		},
+		{
+			Method: http.MethodPut, Pattern: "/projects/{key}/legion/daemon", Auth: authAny,
+			Description: "Name the Legion daemon this project's state is read from {state_url}: an absolute http(s) URL with a host and no path, else 400 LEGION_SETTING_INPUT. The daemon belongs to the deployment, so a project-scoped credential is refused it, the project this path names included. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.",
+			Handler:     s.putLegionSetting,
+			Body:        requestBody{Kind: bodyJSON, Type: putLegionSettingInput{}},
+			Shape:       routeShape{Status: http.StatusOK, Response: legion.Settings{}},
+			// Which daemon a project's Legion state is read from is addressed under the project it
+			// serves and does not belong to it: pointing Dispatch at a host is the deployment's
+			// write, so a credential that may write one project's issues is refused it by name, the
+			// project its path names included.
+			Scope: scopeDeployment,
+		},
+		{
+			Method: http.MethodDelete, Pattern: "/projects/{key}/legion/daemon", Auth: authAny,
+			Description: "Stop reading this project's Legion daemon; what was already read stays. 404 NOT_FOUND when the project names none, 400 INVALID_PROJECT for a key that is not a project key and 404 PROJECT_NOT_FOUND for a project that does not exist.",
+			Handler:     s.deleteLegionSetting,
+			Shape:       routeShape{Status: http.StatusNoContent},
+			Scope:       scopeDeployment,
+		},
+		{
+			Method: http.MethodGet, Pattern: "/projects/{key}/legion/board", Auth: authAny,
+			Description: "The Legion board of the project its path names, from what the sampler recorded of that project's daemon: eleven columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.",
+			Handler:     s.getLegionBoard,
+			Shape:       routeShape{Status: http.StatusOK, Response: legionBoardResponse{}},
 		},
 	}
 }

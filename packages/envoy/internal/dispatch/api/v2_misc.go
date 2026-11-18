@@ -1,14 +1,16 @@
 package api
 
 // v2_misc.go is the routes of /api/v2 no other group holds (R1 of dispatch://INFRA-4071/spec):
-// the agents and what people wrote to one of them, the block links and the block schema, search
+// the agents and what people wrote to one of them, the block links, the reference targets (the
+// row #4178 added, which no row of the route map names) and the block schema, search
 // and its coverage, the going actions and requests, the limits, the users, the dashboard builds,
 // the session groups, one deploy run, the markdown round trip and the CI reconcile passes. Every
 // route runs the work its /api/v1 route runs (agentRows, sessionanswers.List, blockLinkDocuments,
-// searchAnswer, goingAsker, createGoingRequestFrom, signedInUsers, liveDashboardEntries,
-// createDeliverySessionGroupFrom, updateDeliverySessionGroupFrom, deleteDeliverySessionGroupAs,
-// markdownRoundTrip), or is that route's handler where it reads no query and answers the same,
-// but the CI reconcile passes, which /api/v1 reads as the last 24 hours whole
+// referenceTargets, searchAnswer, goingAsker, createGoingRequestFrom, signedInUsers,
+// liveDashboardEntries, createDeliverySessionGroupFrom, updateDeliverySessionGroupFrom,
+// deleteDeliverySessionGroupAs, markdownRoundTrip), or is that route's handler where it reads no
+// query and answers the same, but the CI reconcile passes, which /api/v1 reads as the last 24
+// hours whole
 // (cireconcile.RecentPasses) and /api/v2 within a window it names (cireconcile.Passes). A list
 // answers the envelope; a report, bytes, a stream and one object answer
 // none (R1.4's departure). The {id} of a session group answers SESSION_GROUP_NOT_FOUND and of a
@@ -18,6 +20,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"slices"
@@ -50,7 +54,7 @@ const sessionGroupText = "A group is a stable id, a name and the agent sessions 
 	"one project is refused, since a group belongs to none."
 
 // v2MiscRows are the other routes: rows 2, 3, 43, 174, 175 and 177, 176, 75, 76, 77,
-// 116, 188, 64, 68, 69, 70, 67, 119 and 47 of the route map.
+// 116, 188, 64, 68, 69, 70, 67, 119 and 47 of the route map, and #4178's reference targets.
 func (s *server) v2MiscRows() []routeRow {
 	person := routeScopeSet{model.ScopePerson}
 	sessionGroupIDs := func() *idRoute { return &idRoute{Reason: "a Delivery session group id"} }
@@ -106,6 +110,37 @@ func (s *server) v2MiscRows() []routeRow {
 			Query:    blockLinksV2Query{},
 			Shape:    routeShape{Status: http.StatusOK, Response: blockLinksV2{}},
 			Refusals: listRefusals(documentMissingRefusal),
+		},
+		{
+			Method: http.MethodGet, Pattern: "/reference-targets", Auth: authAny, Versions: onlyV2,
+			Description: fmt.Sprintf("What many dispatch:// references point at, in one read: ref=<dispatch ref> once per "+
+				"reference, at most %d of them; none is 400 INVALID_REFERENCE, and more than that 400 CAP_EXCEEDED naming the "+
+				"cap. One member per ref in the request's order (a reference named twice answered twice), each {ref, kind, "+
+				"name, gone}: ref as the request wrote it, kind the kind of node it names, name the words shown for the target "+
+				"in place of its text (an issue's title, a document's name, an ask's question, a comment's or a message's body, "+
+				"a component's title, a block's text), and gone whether nothing answers to that reference now, once an id it "+
+				"writes short is resolved, which carries no name. A caller that sent Dispatch-Trees: 1 is also given text_tree "+
+				"on each member whose kind is block: the block's whole text as the tree a reader is shown, links and references "+
+				"kept and nothing cut, a typed block's being of what stands between its opening line and its closing one, read "+
+				"by the block's kind as GET /api/v1/reference-targets reads it. A reference the grammar cannot read is 400 "+
+				"INVALID_REFERENCE naming it; one that reads but names nothing is answered gone, never refused. An item id or a "+
+				"block id written short (8 characters or more, never a whole uuid) is resolved in the scope the reference "+
+				"names, as GET /api/v2/references resolves its to=, and ref still echoes it as written: a prefix that nothing "+
+				"carries is answered gone, and a prefix that two or more items carry answers that member gone with ambiguous: "+
+				"true, which no other member carries, and every other member is answered; this read refuses no prefix. limit 1 "+
+				"to %d (default %d, so one read of at most the cap is one page) and offset page the members; {items, total, "+
+				"limit, offset}, total the count of refs named. The answer carries an ETag over the page, each tree and each "+
+				"ambiguous included; If-None-Match answers 304. This answers no edges: GET /api/v2/references reads one "+
+				"node's edges.", referenceTargetsMax, referenceTargetsMax, referenceTargetsMax),
+			Handler:  s.listReferenceTargetsV2,
+			Resource: "reference-targets", Kind: kindCollection,
+			Query: referenceTargetsV2Query{},
+			List:  listBounds{Default: referenceTargetsMax, Max: referenceTargetsMax},
+			Shape: routeShape{
+				Status: http.StatusOK, Response: page[model.ReferenceTarget]{},
+				Also: []routeAnswer{{Status: http.StatusNotModified}},
+			},
+			Refusals: listRefusals(),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/block-schema", Auth: authPublic, Versions: onlyV2,
@@ -449,6 +484,49 @@ func (s *server) getBlockLinksV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, blockLinksV2{From: documents[0], To: documents[1], page: pageOf(links, query.pageQuery)})
+}
+
+// referenceTargetsV2Query is GET /api/v2/reference-targets's query: the references to resolve,
+// and the page of their members.
+type referenceTargetsV2Query struct {
+	pageQuery
+	// Ref is one reference to resolve, given once per reference, at most referenceTargetsMax of
+	// them; naming none is 400 INVALID_REFERENCE and naming more than the cap 400 CAP_EXCEEDED.
+	// An item id or a block id written short in it is resolved in the scope the reference names.
+	Ref []string `query:"ref"`
+}
+
+// listReferenceTargetsV2 answers GET /api/v2/reference-targets: one page of the members GET
+// /api/v1/reference-targets answers whole (referenceTargets), read from the decoded query, under
+// an ETag of its own. The trees are resolved before the tag is made, as the v1 read resolves them,
+// because the tag hashes them.
+func (s *server) listReferenceTargetsV2(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAuthenticated(w, r) {
+		return
+	}
+	query := v2Query[referenceTargetsV2Query](r)
+	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	targets, err := s.referenceTargets(r.Context(), query.Ref, trees)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	trees.resolve()
+	answer := pageOf(targets, query.pageQuery)
+	if answerNotModified(w, r, referenceTargetsV2ETag(answer)) {
+		return
+	}
+	WriteJSON(w, http.StatusOK, answer)
+}
+
+// referenceTargetsV2ETag is GET /api/v2/reference-targets's validator: the page's members, hashed
+// as the v1 read hashes its whole answer (hashReferenceTargets), after the version and the
+// page's bounds, so a page and the v1 answer of the same set never share a tag.
+func referenceTargetsV2ETag(answer page[model.ReferenceTarget]) string {
+	hash := sha256.New()
+	_, _ = fmt.Fprintf(hash, "version=v2\ntotal=%d\nlimit=%d\noffset=%d\n", answer.Total, answer.Limit, answer.Offset)
+	hashReferenceTargets(hash, answer.Items)
+	return `"` + hex.EncodeToString(hash.Sum(nil)) + `"`
 }
 
 // searchResultsV2Description is GET /api/v2/search-results's description.

@@ -1,5 +1,5 @@
-// legion_board.go serves GET /api/v1/projects/{key}/legion/board and GET
-// /api/v2/projects/{key}/legion-board (v2_legion.go), one project's Legion board from what the
+// legion_board.go serves GET /api/v1/projects/{key}/legion/board, served at the same path under
+// /api/v2 too as a row of the INFRA-979 tree (v2Infra979Rows), one project's Legion board from what the
 // sampler recorded (dispatch://INFRA-1077), and the body the `legion` live view kind sends
 // (live_frames.go's legionBoardView). No dashboard page draws it: the routes and the live view
 // kind are all there is of it.
@@ -95,16 +95,12 @@ var legionPhaseColumns = map[string]string{
 }
 
 // legionNotConfigured is the refusal of a Legion board read for a project that names no daemon,
-// whichever route or live view asked (answerLegionBoard, the live hub's worker), naming the write
-// of the version that answers: PUT /api/v1/projects/{key}/legion/daemon, or PUT
-// /api/v2/projects/{key}/legion-daemon. The live socket, which no version serves, names /api/v2's,
-// the version the web app reads it beside, as deliveryNotConfigured does.
+// whichever route or live view asked (getLegionBoard, the live hub's worker), naming the write
+// of the version that answers: PUT <version>/projects/{key}/legion/daemon. The live socket,
+// which no version serves, names /api/v2's, the version the web app reads it beside, as
+// deliveryNotConfigured does.
 func legionNotConfigured(version apiVersion) string {
-	write := "/api/v1/projects/{key}/legion/daemon"
-	if version == apiV2 {
-		write = "/api/v2/projects/{key}/legion-daemon"
-	}
-	return "this project has no Legion daemon; set one through PUT " + write
+	return "this project has no Legion daemon; set one through PUT " + versionPrefix(version) + "/projects/{key}/legion/daemon"
 }
 
 // legionBoardResponse is GET /api/v1/projects/{key}/legion/board: the project the board shows, its header, its
@@ -191,12 +187,6 @@ func (s *server) getLegionBoard(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.answerLegionBoard(w, r, project)
-}
-
-// answerLegionBoard answers the board of project, which the caller has found exists: both
-// versions' board read, and 404 LEGION_NOT_CONFIGURED for a project that names no daemon.
-func (s *server) answerLegionBoard(w http.ResponseWriter, r *http.Request, project string) {
 	population, err := s.readLegionBoard(r.Context(), project)
 	if err != nil {
 		if errors.Is(err, legion.ErrNoSettings) {

@@ -1,6 +1,6 @@
 // Every project's Legion daemon, read one project at a time. No route lists them: R26 of
 // dispatch://INFRA-979's spec allows one cross-project read, and that one is not this. So the
-// project list is read and then each project's `GET /api/v2/projects/{key}/legion-daemon`, each
+// project list is read and then each project's `GET /api/v2/projects/{key}/legion/daemon`, each
 // its own cache entry (`legionDaemonQuery`), so a write to one project's daemon changes that entry
 // alone. A project with no daemon answers `null` and is simply not among the daemons.
 import { useQueries, useQuery } from "@tanstack/react-query";

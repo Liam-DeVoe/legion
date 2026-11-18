@@ -73,7 +73,4 @@ var (
 	// BrokerUnconfigured is a request to a route that relays to the secrets broker, on a Dispatch
 	// configured with none (DISPATCH_AGENT_SECRETS_URL unset).
 	BrokerUnconfigured = Condition{"secrets broker unconfigured"}
-	// LegionUnconfigured is a read of a project's Legion board, or a removal of its Legion daemon,
-	// for a project that names no daemon.
-	LegionUnconfigured = Condition{"legion daemon unconfigured"}
 )

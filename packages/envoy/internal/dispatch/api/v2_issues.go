@@ -967,7 +967,8 @@ func (s *server) listIssueCollaboratorsV2(w http.ResponseWriter, r *http.Request
 }
 
 // getIssueCoverageV2 answers GET /api/v2/issues/{key}/coverage: the report GET
-// /api/v1/issues/{key}/coverage answers (issueCoverage).
+// /api/v1/issues/{key}/coverage answers (issueCoverage), each requirement's text_tree with
+// Dispatch-Trees: 1 as there.
 func (s *server) getIssueCoverageV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -976,11 +977,13 @@ func (s *server) getIssueCoverageV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireIssueV2(w, r, key) {
 		return
 	}
-	coverage, err := s.issueCoverage(r.Context(), s.deps.Store.Pool, key)
+	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	coverage, err := s.issueCoverage(r.Context(), s.deps.Store.Pool, key, trees)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	trees.resolve()
 	WriteJSON(w, http.StatusOK, coverage)
 }
 
@@ -1132,11 +1135,15 @@ func (s *server) listIssueChecksV2(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, apicode.InvalidQuery, "at must be a commit of 40 lowercase hex characters")
 		return
 	}
-	read, reader, err := s.readIssueChecks(r.Context(), key, query.At)
+	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	read, reader, err := s.readIssueChecks(r.Context(), key, query.At, trees)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	// Each check's tree is filled in the row the read registered it in, so the rows are copied
+	// into the page's shape only once it is.
+	trees.resolve()
 	checks := make([]checkV2, len(read.Checks))
 	for index, check := range read.Checks {
 		checks[index] = checkV2{CheckBlock: check, ComparedNothing: comparedNothingV2(r.Context(), reader, check)}

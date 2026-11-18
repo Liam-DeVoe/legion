@@ -10,6 +10,7 @@ import {
   type IdempotencyLandedCode,
   NO_ROUTE_MESSAGE_PREFIX,
   NO_ROUTE_ROLLING_RELEASE_MESSAGE,
+  REFERENCE_TARGETS_MAX,
   retryNoRoute,
   type Sleep,
   sleep,
@@ -179,6 +180,26 @@ export type ReferenceSourceKind = "artifact" | "ask" | "comment" | "message";
  *  policy, as a dropped connection is. A body that keeps moving, either way, goes on however long
  *  it takes: the deadline is on the silence, not the transfer. */
 export const REQUEST_DEADLINE_MS = 30_000;
+
+/** How many references one `getReferenceTargets` may name: `REFERENCE_TARGETS_MAX`, the literal in
+ *  `@legion/contracts` that is generated into Go and that the server reads as its own cap
+ *  (`referenceTargetsMax` in `packages/envoy/internal/dispatch/api/reference_targets.go`). Past
+ *  it the read is refused `400 CAP_EXCEEDED`, so a caller holding more reads them in batches. */
+export { REFERENCE_TARGETS_MAX };
+
+/** The budget, in characters of query string, that the batches of `referenceTargetsQuery` keep
+ *  each `getReferenceTargets` call inside (`referenceTargetBatches` in `queries.ts`), except a
+ *  batch of one address longer than the budget, which goes alone and passes it: a batch of no
+ *  address would name nothing. `getReferenceTargets` itself writes every reference it is given
+ *  and applies no budget. The server bounds a batch by the count alone and says so
+ *  (`referenceTargetsMax` in `packages/envoy/internal/dispatch/api/reference_targets.go`): it
+ *  sets no limit on the request line itself, but a proxy in front of it can set one, and 16 KB is
+ *  one known such limit (an AWS load balancer's). A full batch of comment or message references
+ *  encodes to more than that, so a caller splits by the length it writes as well as by the
+ *  count, which is the two-request read that comment describes. The budget is the query alone,
+ *  which leaves the route, the verb and the version of the request line room of their own inside
+ *  16 KB. It is set under that one known limit, not measured against the deployed Dispatch. */
+export const REFERENCE_TARGETS_MAX_QUERY_CHARS = 12_000;
 
 /** A request Dispatch went silent on for its deadline, which the page then aborted. It is no
  *  refusal: the request may still have reached Dispatch, so only a read, or a write made again
@@ -1768,6 +1789,17 @@ export class DispatchApiClient {
     return this.readWholeList("/api/v2/issues/{key}/collaborators", { key });
   }
 
+  /** What many `dispatch://` references point at, in one read, every page: one member per `ref`
+   *  in the request's order, each `{ref, kind, name, gone}`. A page that names many references
+   *  can read all their names through this, in as few requests as both bounds allow
+   *  (`referenceTargetsQuery`), rather than one `getReferences` per reference, so a page's first
+   *  load makes no request for each reference. At most `REFERENCE_TARGETS_MAX` references: past
+   *  that the server answers `400 CAP_EXCEEDED`. The route's default page is that cap, so a set
+   *  within it is one request. */
+  getReferenceTargets(refs: readonly string[]) {
+    return this.readWholeList("/api/v2/reference-targets", {}, { ref: [...refs] });
+  }
+
   /** The edges at a node, every page, with the node beside them; `kind` keeps those of one kind
    *  - `part_of` lists a document's blocks, which a document's read otherwise leaves out. */
   getReferences(reference: string, options: { kind?: string } = {}) {
@@ -1806,12 +1838,12 @@ export class DispatchApiClient {
 
   /** One project's Legion daemon: the base URL its state is read from, the actor that first named
    *  a daemon of the project and when the setting last changed, or `null` for a project that names
-   *  none (`GET /api/v2/projects/{key}/legion-daemon`). There is no list of every project's
-   *  daemon, so the Settings page's daemon section reads this once per project
-   *  (`useLegionDaemons`): `null` is an ordinary answer rather than a failure. An unknown project
-   *  is `404 PROJECT_NOT_FOUND`. */
+   *  none (`GET /api/v2/projects/{key}/legion/daemon`, the INFRA-979 tree's row, which answers
+   *  as its `/api/v1` path does). There is no list of every project's daemon, so the Settings
+   *  page's daemon section reads this once per project (`useLegionDaemons`): `null` is an
+   *  ordinary answer rather than a failure. An unknown project is `404 PROJECT_NOT_FOUND`. */
   getLegionDaemon(project: string) {
-    return this.read("/api/v2/projects/{key}/legion-daemon", { key: project });
+    return this.read("/api/v2/projects/{key}/legion/daemon", { key: project });
   }
 
   /** Names the daemon a project's state is read from, and answers the setting as it was stored.
@@ -1819,11 +1851,10 @@ export class DispatchApiClient {
    *  `state_url` that is not an absolute http(s) URL with a host and no path, carrying no user,
    *  password, query or fragment, is `400 LEGION_SETTING_INPUT` with the server's own reason
    *  (`legionStateURL` in packages/envoy/internal/dispatch/api/settings_legion.go), and an
-   *  unknown project is `404 PROJECT_NOT_FOUND`. A PUT of the URL the project already names
-   *  answers the setting and writes nothing. */
+   *  unknown project is `404 PROJECT_NOT_FOUND`. */
   putLegionDaemon(project: string, stateUrl: string, bounds: WriteBounds) {
     return this.put(
-      "/api/v2/projects/{key}/legion-daemon",
+      "/api/v2/projects/{key}/legion/daemon",
       { key: project },
       { state_url: stateUrl },
       bounds
@@ -1831,9 +1862,9 @@ export class DispatchApiClient {
   }
 
   /** Stops reading a project's daemon: what was read stays, and nothing reads it again. Scoped
-   *  as the PUT is; a project with no daemon is `404 LEGION_NOT_CONFIGURED`. */
+   *  as the PUT is; a project with no daemon is `404 NOT_FOUND`. */
   async deleteLegionDaemon(project: string, bounds: WriteBounds): Promise<void> {
-    await this.remove("/api/v2/projects/{key}/legion-daemon", { key: project }, bounds);
+    await this.remove("/api/v2/projects/{key}/legion/daemon", { key: project }, bounds);
   }
 
   /** Creates a Delivery session group: its sessions' pull requests take it as their Parent agent.

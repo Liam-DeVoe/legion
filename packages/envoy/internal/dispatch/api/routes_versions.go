@@ -616,17 +616,23 @@ func servedAt(version apiVersion, routes []apiRoute) []apiRoute {
 }
 
 // infra979Rows are the rows of the INFRA-979 tree, by method and the path that tree wrote them
-// at: rows 65, 66, 71, 179 and 180 of c8a44f97's routes.txt. Each is one routeRow served in both
-// versions with its v1 handler and shape (v2Infra979Rows), and the INFRA-979 tree adds its own rows
-// here when it merges forward, as that tree writes them. The parent's shape rules bind none of
-// them (dispatch://INFRA-2946/spec, R1): the shape test, the decoder, the v2 document's contract,
-// the code list and the keyed writes of /api/v2 leave out every route this list names.
+// at: rows 65, 66, 71, 179 and 180 of c8a44f97's routes.txt, and the four #2731 added on main
+// after it (dispatch://INFRA-1077, a child of INFRA-979: a project's Legion daemon and board).
+// Each is one routeRow served in both versions with its v1 handler and shape (v2Infra979Rows),
+// and the INFRA-979 tree adds its own rows here when it merges forward, as that tree writes them.
+// The parent's shape rules bind none of them (dispatch://INFRA-2946/spec, R1): the shape test,
+// the decoder, the v2 document's contract, the code list and the keyed writes of /api/v2 leave
+// out every route this list names.
 var infra979Rows = map[string]bool{
-	http.MethodGet + " /api/v1/delivery/measures": true,
-	http.MethodGet + " /api/v1/delivery/pipeline": true,
-	http.MethodGet + " /api/v1/delivery/timeline": true,
-	http.MethodGet + " /api/v1/settings/delivery": true,
-	http.MethodPut + " /api/v1/settings/delivery": true,
+	http.MethodGet + " /api/v1/delivery/measures":               true,
+	http.MethodGet + " /api/v1/delivery/pipeline":               true,
+	http.MethodGet + " /api/v1/delivery/timeline":               true,
+	http.MethodGet + " /api/v1/settings/delivery":               true,
+	http.MethodPut + " /api/v1/settings/delivery":               true,
+	http.MethodGet + " /api/v1/projects/{key}/legion/board":     true,
+	http.MethodGet + " /api/v1/projects/{key}/legion/daemon":    true,
+	http.MethodPut + " /api/v1/projects/{key}/legion/daemon":    true,
+	http.MethodDelete + " /api/v1/projects/{key}/legion/daemon": true,
 }
 
 // ofINFRA979 reports whether route is one infra979Rows names, at either version.

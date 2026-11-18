@@ -1,7 +1,7 @@
 // settings_legion.go serves a project's Legion daemon (dispatch://INFRA-1077), a named
 // sub-resource of the project it serves: GET, PUT and DELETE /api/v1/projects/{key}/legion/daemon,
-// and the same three at /api/v2/projects/{key}/legion-daemon (v2_legion.go), which run the work
-// here (answerLegionSetting, writeLegionSetting, removeLegionSetting).
+// served at the same path under /api/v2 too, since they are rows of the INFRA-979 tree
+// (v2Infra979Rows, infra979Rows).
 // No route lists every project's daemon: R26 of dispatch://INFRA-979's spec permits one
 // cross-project read, and this is not it, so a page that shows every daemon reads each project's.
 //
@@ -9,8 +9,8 @@
 // (internal/dispatch/legion). The path names the project, but writing one belongs to the
 // deployment rather than to that project — it points Dispatch at a host, which a credential that
 // may write one project's issues has no business doing — so the PUT and the DELETE are classed
-// scopeDeployment beside the repository-mapping rows, not scopeProject (routes_table.go,
-// writeClasses, and the /api/v2 rows' Scope).
+// scopeDeployment beside the repository-mapping rows, not scopeProject (v2Infra979Rows, the rows'
+// Scope).
 //
 // Unlike putRepoProject, and like putDeliverySettings, these write no event. The write belongs to
 // the deployment, so there is no project whose event it would be, and events/broker.go's
@@ -41,12 +41,6 @@ func (s *server) getLegionSetting(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.answerLegionSetting(w, r, project)
-}
-
-// answerLegionSetting answers the daemon of project, which the caller has found exists, or null
-// when it names none: both versions' read of it.
-func (s *server) answerLegionSetting(w http.ResponseWriter, r *http.Request, project string) {
 	settings, err := legion.GetSettings(r.Context(), s.deps.Store.Pool, project)
 	if err != nil {
 		if errors.Is(err, legion.ErrNoSettings) {
@@ -90,12 +84,6 @@ func (s *server) putLegionSetting(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.writeLegionSetting(w, r, project, stateURL, actor)
-}
-
-// writeLegionSetting names stateURL, a URL legionStateURL took, the daemon of project, which the
-// caller has found exists, and answers the setting as it was stored: both versions' write of it.
-func (s *server) writeLegionSetting(w http.ResponseWriter, r *http.Request, project, stateURL string, actor model.Actor) {
 	settings, err := legion.PutSettings(r.Context(), s.deps.Store.Pool, project, stateURL, actor)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
@@ -121,21 +109,13 @@ func (s *server) deleteLegionSetting(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.removeLegionSetting(w, r, project, apicode.NotFound)
-}
-
-// removeLegionSetting stops reading the daemon of project, which the caller has found exists:
-// both versions' removal of it. A project that names none is answered unset, which is /api/v1's
-// NOT_FOUND and /api/v2's LEGION_NOT_CONFIGURED, the code /api/v2's board read answers that
-// project with (dispatch://INFRA-4071/spec R7).
-func (s *server) removeLegionSetting(w http.ResponseWriter, r *http.Request, project string, unset apicode.Code) {
 	deleted, err := legion.DeleteSettings(r.Context(), s.deps.Store.Pool, project)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !deleted {
-		writeError(w, r, unset, "this project has no Legion daemon configured")
+		writeError(w, r, apicode.NotFound, "this project has no Legion daemon configured")
 		return
 	}
 	if err := legion.NotifyRead(r.Context(), s.deps.Store.Pool, project); err != nil {

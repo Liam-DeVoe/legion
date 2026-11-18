@@ -81,8 +81,8 @@ const shellHandlers: RequestHandler[] = [
   // is drawn. `null` is a project that names no daemon, not a failure (`legionDaemonQuery`'s own
   // doc), and that is what the page drew before MSW: an empty daemon list. Every row that asserts
   // on a daemon spies `api.getLegionDaemon` above MSW and never reaches this.
-  http.get("/api/v2/projects/:key/legion-daemon", () =>
-    Response.json(null satisfies Result<"/api/v2/projects/{key}/legion-daemon", "get">)
+  http.get("/api/v2/projects/:key/legion/daemon", () =>
+    Response.json(null satisfies Result<"/api/v2/projects/{key}/legion/daemon", "get">)
   ),
   http.get("/api/v2/me/threads", () =>
     Response.json({

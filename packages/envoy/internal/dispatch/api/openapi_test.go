@@ -205,7 +205,7 @@ func walkOpenAPI(node any, path string, visit func(path string, m map[string]any
 
 // A test hook is a route a deployment may leave out, so each document marks each one and nothing
 // else: a client generated from it keeps the hooks out of the API it offers, and a hook that lost
-// its mark would be offered as an ordinary route. Each version serves the 14 hooks, /api/v2 at
+// its mark would be offered as an ordinary route. Each version serves the 15 hooks, /api/v2 at
 // /api/v2/_test/....
 func TestOpenAPIDocumentMarksEveryTestHookAndNothingElse(t *testing.T) {
 	eachOpenAPIVersion(t, func(t *testing.T, version apiVersion) {
@@ -219,8 +219,8 @@ func TestOpenAPIDocumentMarksEveryTestHookAndNothingElse(t *testing.T) {
 			}
 		}
 		hooks := openAPIHookRoutes(version)
-		if len(hooks) != 14 {
-			t.Fatalf("the table mounts %d test hooks with Deps.TestHooksEnabled, want 14", len(hooks))
+		if len(hooks) != 15 {
+			t.Fatalf("the table mounts %d test hooks with Deps.TestHooksEnabled, want 15", len(hooks))
 		}
 		for name := range hooks {
 			if !marked[name] {
