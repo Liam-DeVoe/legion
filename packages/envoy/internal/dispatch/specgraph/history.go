@@ -30,11 +30,14 @@ type History interface {
 // Commits is nil when it is not set, which check refuses, and an empty list for a history of no
 // commit. Files is the whole tree of each commit, as a label of each path's content: a path that
 // the commit does not hold is no key. It is set at each commit and has each label nonzero, as its
-// mark says for a map (memberMark): a label has at least one character, since one with none names
-// no content, and two commits with "" at a path would read as one content. By its own rule, a tree
-// also holds at least one path, and each path is a repository path (FixtureHistory.check), since a
-// test reads at least one file, two commits with no path would read as one tree, and no tie covers
-// a path such as "./a". Parent is for the reader, and Changed never reads it.
+// mark says for a map (memberMark), and by its own rule each label has a letter or a digit
+// (hasWord), since one of none names no content: two commits with "" or " " at a path would read
+// as one content, and a change of a label to " " would read as a change of the file. By its own
+// rule, a tree also holds at least one path, and each path is a repository path
+// (FixtureHistory.check), since a test reads at least one file, two commits with no path would
+// read as one tree, and no tie covers a path such as "./a". A path of one space is a repository
+// path, as git holds one: a tree that holds a file " " lists it as such. Parent is for the reader,
+// and Changed never reads it.
 type FixtureHistory struct {
 	Commits []FixtureCommit `json:"commits" input:"present: [] is no commit, so no result carries"`
 }
@@ -68,10 +71,11 @@ func ReadFixtureHistory(r io.Reader) (FixtureHistory, error) {
 // or nil: no list of commits, a commit with no id, or with an id or a parent of no letter and no
 // digit (hasWord), which names no commit, an id on two commits, and then a commit that sets no
 // files, whose tree holds no path, or whose tree has a path that is no repository path
-// (isRepoPath) or a content label with no character, the least such path by its order being the
-// one named. Each would read as a tree or a content that another such commit shares, or as a
-// change that no tie covers, so a result would carry between them (R8); and a history that does
-// not set its commits is not one that knows that it has none.
+// (isRepoPath) or a content label of no letter and no digit (hasWord), which names no content,
+// the least such path by its order being the one named. Each would read as a tree or a content
+// that another such commit shares, or as a change that no tie covers, so a result would carry
+// between them (R8); and a history that does not set its commits is not one that knows that it
+// has none.
 func (h FixtureHistory) check() error {
 	if h.Commits == nil {
 		return errors.New("specgraph: history: it sets no commits; a history of no commit sets an empty list")
@@ -100,7 +104,7 @@ func (h FixtureHistory) check() error {
 		}
 		least, found := "", false
 		for path, label := range c.Files {
-			if (label == "" || !isRepoPath(path)) && (!found || path < least) {
+			if (!hasWord(label) || !isRepoPath(path)) && (!found || path < least) {
 				least, found = path, true
 			}
 		}
@@ -109,7 +113,7 @@ func (h FixtureHistory) check() error {
 		case !isRepoPath(least):
 			return fmt.Errorf(`specgraph: history: commit %s: the path %s is no repository path, whose parts "/" separates and none of which is empty, "." or ".."`, quoted(c.ID), quoted(least))
 		default:
-			return fmt.Errorf("specgraph: history: commit %s: the content label of %s is empty, and a label has at least one character", quoted(c.ID), quoted(least))
+			return fmt.Errorf("specgraph: history: commit %s: the content label of %s has no letter and no digit, so it names no content", quoted(c.ID), quoted(least))
 		}
 	}
 	return nil

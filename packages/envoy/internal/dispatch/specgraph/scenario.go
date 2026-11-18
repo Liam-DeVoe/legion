@@ -114,8 +114,8 @@ const (
 //     it, which Parse reads and Validate judges with no problem, as `spec-check tree` does, and no
 //     directory that no subject reads;
 //   - history.json, as ReadFixtureHistory reads it: it sets commits, [] for none, and each commit
-//     sets its files, a tree of one path or more, each a repository path with a content label of
-//     one character or more;
+//     sets its files, a tree of one path or more, each a repository path with a content label that
+//     has a letter or a digit;
 //   - ties.json, {"<commit>":{"<check id>":["<path or pattern>", …]}}, as ReadCommitTies reads it:
 //     a check that the object of a commit does not name has a tie that is not known at that commit,
 //     and so has each check at a commit that the file does not name. A result at one commit counts

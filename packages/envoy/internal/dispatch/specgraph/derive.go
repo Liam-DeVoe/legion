@@ -112,9 +112,10 @@ func Derive(in Input) (State, error) {
 //     one that states that it has none; a FixtureHistory as ReadFixtureHistory refuses it
 //     (FixtureHistory.check), Commits set among it, a GitHistory with no Dir, and a nil value of
 //     any type that implements History (historyFault): a commit with no files, or a tree with no
-//     path, would be an empty tree, and two of them one tree, a content label "" would be one
-//     content at each commit that has it, a path that is no repository path a change that no tie
-//     covers, and a nil history would panic where a result carries;
+//     path, would be an empty tree, and two of them one tree, a content label of no letter and no
+//     digit, such as "" or " ", would be one content at each commit that has it, a path that is no
+//     repository path a change that no tie covers, and a nil history would panic where a result
+//     carries;
 //   - Ties set, CommitTies{} for none, as ReadCommitTies refuses it (CommitTies.fault), for the
 //     same reason: each commit and check of it a name, the map of each commit that it names set (a
 //     commit where no tie is known has {} or no key), each known tie as NewTie refuses it, since a

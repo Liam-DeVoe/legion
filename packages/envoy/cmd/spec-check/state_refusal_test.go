@@ -249,9 +249,10 @@ func TestScenarioRefusals(t *testing.T) {
 			"jobs.json", "job run 1: it sets no commit"},
 		// A commit of the history with no files would read as an empty tree, and two such trees as
 		// one, so a result would carry between them (R8); so would a tree with no path, {}, since a
-		// test reads at least one file, and a content label "" at two commits, since a label names
-		// the content of a file. A history.json that does not set commits would read as no commit,
-		// which its writer may mean: it sets [] for that.
+		// test reads at least one file, and a content label "" or " " at two commits, since a label
+		// names the content of a file and one of no letter and no digit names none. A history.json
+		// that does not set commits would read as no commit, which its writer may mean: it sets []
+		// for that.
 		{"a commit of the history with no files", "carry", write("history.json", `{"commits":[{"id":"m1"}]}`),
 			"history.json", `specgraph: history: commit "m1": it sets no files`},
 		{"a commit of the history whose tree holds no path", "carry",
@@ -259,7 +260,10 @@ func TestScenarioRefusals(t *testing.T) {
 			"history.json", `specgraph: history: commit "c1": its files hold no path, and the tree of a commit holds at least one file`},
 		{"a content label of the history that is empty", "carry",
 			replace("history.json", `"packages/envoy/cmd/listener/main.go": "2"`, `"packages/envoy/cmd/listener/main.go": ""`),
-			"history.json", `specgraph: history: commit "c4": the content label of "packages/envoy/cmd/listener/main.go" is empty, and a label has at least one character`},
+			"history.json", `specgraph: history: commit "c4": the content label of "packages/envoy/cmd/listener/main.go" has no letter and no digit, so it names no content`},
+		{"a content label of the history of no letter and no digit", "carry",
+			replace("history.json", `"packages/envoy/cmd/listener/main.go": "2"`, `"packages/envoy/cmd/listener/main.go": " "`),
+			"history.json", `specgraph: history: commit "c4": the content label of "packages/envoy/cmd/listener/main.go" has no letter and no digit, so it names no content`},
 		// R48: a refusal of CI names the rule that refused the check; an empty rule names none.
 		{"a rule of uncited.json that is empty", "carry", write("uncited.json", `{"c2":{"a-restart-loses-no-message":""}}`),
 			"uncited.json", `commit "c2": check "a-restart-loses-no-message": its rule is empty, and a refusal of CI names the rule that refused the check`},

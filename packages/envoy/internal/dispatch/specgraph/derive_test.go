@@ -168,14 +168,18 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 		{name: "a commit of the history with no files", change: func(in *Input) {
 			in.History = &FixtureHistory{Commits: []FixtureCommit{{ID: "c1"}}}
 		}, want: `specgraph: history: commit "c1": it sets no files`},
-		// A tree with no path, or a content label with no character, would read as a tree, or a
-		// content, that other commits share, so a result would carry between them (R8).
+		// A tree with no path, or a content label of no letter and no digit, would read as a tree, or
+		// a content, that other commits share, so a result would carry between them (R8), and a label
+		// changed to " " as a change of a file that a tie covers, so a failure would carry no more.
 		{name: "a commit of the history whose tree holds no path", change: func(in *Input) {
 			in.History = &FixtureHistory{Commits: []FixtureCommit{{ID: "c1", Files: map[string]string{}}}}
 		}, want: `specgraph: history: commit "c1": its files hold no path, and the tree of a commit holds at least one file`},
 		{name: "a content label of the history that is empty", change: func(in *Input) {
 			in.History = &FixtureHistory{Commits: []FixtureCommit{{ID: "c1", Files: map[string]string{"go.work": ""}}}}
-		}, want: `specgraph: history: commit "c1": the content label of "go.work" is empty, and a label has at least one character`},
+		}, want: `specgraph: history: commit "c1": the content label of "go.work" has no letter and no digit, so it names no content`},
+		{name: "a content label of the history of no letter and no digit", change: func(in *Input) {
+			in.History = &FixtureHistory{Commits: []FixtureCommit{{ID: "c1", Files: map[string]string{"go.work": " "}}}}
+		}, want: `specgraph: history: commit "c1": the content label of "go.work" has no letter and no digit, so it names no content`},
 		// A nil value of each type that implements History, a type of the package or of the caller,
 		// would panic where a result carries, and an Input with no history gives a FixtureHistory of
 		// no commit, with which no result carries.
@@ -448,7 +452,7 @@ func TestARefusalNamesTheLeastPlaceOfTwoFaults(t *testing.T) {
 	for _, row := range []struct{ name, file, content, want string }{
 		{"two empty content labels in one tree of the history", "history.json",
 			`{"commits":[{"id":"c1","files":{"b.go":"","a.go":"","go.work":"1"}}]}`,
-			`history.json: specgraph: history: commit "c1": the content label of "a.go" is empty, and a label has at least one character`},
+			`history.json: specgraph: history: commit "c1": the content label of "a.go" has no letter and no digit, so it names no content`},
 		{"two empty rules of uncited.json at two commits", "uncited.json",
 			`{"c2":{"a-restart-loses-no-message":""},"c1":{"a-restart-loses-no-message":""}}`,
 			`uncited.json: commit "c1": check "a-restart-loses-no-message": its rule is empty, and a refusal of CI names the rule that refused the check`},

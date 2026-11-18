@@ -62,8 +62,8 @@ func TestFixtureHistoryListsBothPathsOfAMove(t *testing.T) {
 // JSON formatter gives them, and refuses what the strict JSON reader refuses (a field it does not
 // know, one written in other letters or two times, a byte that is not UTF-8, text after the
 // history, a value of another type, named with the form of history.json and its place), a commit
-// with no id, an id on two commits, a tree with no path and a content label with no character. A
-// path of a tree keeps its own letters.
+// with no id, an id on two commits, a tree with no path and a content label of no letter and no
+// digit. A path of a tree keeps its own letters, and a path of one space is one that git holds.
 func TestReadFixtureHistory(t *testing.T) {
 	t.Parallel()
 	paths, err := filepath.Glob("testdata/scenarios/*/history.json")
@@ -92,16 +92,17 @@ func TestReadFixtureHistory(t *testing.T) {
 		`{"commits":[{"id":"c1"},{"id":"c1","files":{}}]}`:                      `commit "c1" is in the history two times`,
 		`{"commits":"c1"}`:                                                      `specgraph: history: it is not in the form {"commits":[{"id":"<commit>","parent":"<commit>","files":{"<repository path>":"<content label>"}}, …]}: the value at "/commits" is of another type`,
 		`{"commits":[{"id":"c1","files":{"a.md":"1"}},{"id":"c2","files":{}}]}`: `specgraph: history: commit "c2": its files hold no path, and the tree of a commit holds at least one file`,
-		`{"commits":[{"id":"c1","files":{"a.md":"1","b.md":""}}]}`:              `specgraph: history: commit "c1": the content label of "b.md" is empty, and a label has at least one character`,
+		`{"commits":[{"id":"c1","files":{"a.md":"1","b.md":""}}]}`:              `specgraph: history: commit "c1": the content label of "b.md" has no letter and no digit, so it names no content`,
+		`{"commits":[{"id":"c1","files":{"a.md":"1","b.md":" "}}]}`:             `specgraph: history: commit "c1": the content label of "b.md" has no letter and no digit, so it names no content`,
 	} {
 		_, err := ReadFixtureHistory(strings.NewReader(text))
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("ReadFixtureHistory(%s): %v, want %q", text, err, want)
 		}
 	}
-	h, err := ReadFixtureHistory(strings.NewReader(`{"commits":[{"id":"c1","files":{"AGENTS.md":"1","docs/README.md":"1"}}]}`))
-	if err != nil || !slices.Equal(slices.Sorted(maps.Keys(h.Commits[0].Files)), []string{"AGENTS.md", "docs/README.md"}) {
-		t.Errorf("ReadFixtureHistory of paths in capitals: %+v, %v; want both paths as written", h, err)
+	h, err := ReadFixtureHistory(strings.NewReader(`{"commits":[{"id":"c1","files":{"AGENTS.md":"1","docs/README.md":"1"," ":"1"}}]}`))
+	if err != nil || !slices.Equal(slices.Sorted(maps.Keys(h.Commits[0].Files)), []string{" ", "AGENTS.md", "docs/README.md"}) {
+		t.Errorf("ReadFixtureHistory of paths in capitals and of one space: %+v, %v; want each path as written", h, err)
 	}
 }
 

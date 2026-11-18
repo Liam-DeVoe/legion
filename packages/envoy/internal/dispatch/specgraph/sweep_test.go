@@ -69,17 +69,19 @@ func notRepoPaths(path string) []string {
 // commit of their test (test_commit), a query of the graph at the transaction of its subject
 // (graph_tx), and a run of a job that has not ended. So each member that a rule reads is in a
 // record of some scenario, and each place of it is swept. The sweep also reads the shapes that no
-// scenario holds (sweepBases). One right: a content label or a repository path of a tree written
-// " ", which the reader takes, is a real label or a real path, so the tree changed at a path that
-// a tie covers, and a result there, a failure among them, carries no more across it (R8:
-// "A result at one commit also counts at another commit when no code that the check runs changed
-// between the two"); a base whose failure at one commit carries to another shows it.
+// scenario holds (sweepBases). One right: a repository path of a tree written " " is a real path,
+// since git holds a file of that name (git ls-tree of a tree that holds one lists the path " "), so
+// the tree changed at a path that a tie covers, and a result there, a failure among them, carries
+// no more across it (R8: "A result at one commit also counts at another commit when no code that
+// the check runs changed between the two"); a base whose failure at one commit carries to another
+// shows it. A content label is no path, and one of " " names no content, so the reader refuses it
+// and it has no right.
 func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
 	byRight := func(what string) string {
-		if strings.HasPrefix(what, "history.json /commits/") && strings.Contains(what, "/files/") {
-			return "the tree changed at a path that a tie covers, so the carry ends (R8)"
+		if strings.HasPrefix(what, "history.json /commits/") && strings.Contains(what, "/files/") && strings.HasSuffix(what, ` as the key " "`) {
+			return `the path " " of the tree is a real path, which git holds, so the tree changed at a path that a tie covers, and the carry ends (R8)`
 		}
 		return ""
 	}
