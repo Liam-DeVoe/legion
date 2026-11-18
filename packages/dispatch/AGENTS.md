@@ -1405,11 +1405,6 @@ are the tables of `features/issue-page/page-words.ts` and `page-structure.ts` th
 and keeps no copy of its own, and one test of `page-words.test.ts` reads every phrase for an
 internal word.
 
-The page's typeface file holds only the characters its `unicode-range` lists, so a character
-outside them is drawn in a face of the reader's machine, at that face's width: the page draws
-such a glyph as an inline `<svg>`, as `features/issue-page/StatusGlyph.tsx` draws a status's
-shape.
-
 ## Document editor
 
 `features/doc/` adapts `@legion/proof-editor` to Dispatch: it owns the Hocuspocus/Yjs
