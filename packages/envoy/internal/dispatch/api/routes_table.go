@@ -794,9 +794,9 @@ func heavyRead(row routeRow, lane admission.Lane) apiRoute {
 
 // bodyLimit is the most bytes a request of the route may carry: the row's own, and
 // maxJSONRequestBytes (decodeJSON) for every row that sets none. It is the most the keyed layer
-// spools before its handler runs - a body past it is refused by the route's handler whatever its
-// key, so it runs unkeyed rather than spooled - and the most an early answer discards before it
-// is written (drainBeforeAnswer).
+// spools before its handler runs - a body past it is refused whatever its key, so the layer
+// answers the 413 itself (bodyTooLarge) rather than spool it - and the most an early answer
+// discards before it is written (drainBeforeAnswer).
 func (r apiRoute) bodyLimit() int64 {
 	return cmp.Or(r.BodyLimit, maxJSONRequestBytes)
 }
