@@ -990,6 +990,53 @@ func TestAnAnsweredAskWhoseBlockIdABlockOfAnotherTypeTookNamesNoDocument(t *test
 	}
 }
 
+// INFRA-1150, test round 1, the case Verification v41 gives c-attribute-removal: once the fleet
+// is one build, the text `dispatch doc-read` prints (GET /api/v1/artifacts/{id}/text) holds none
+// of the eight server-owned ask attributes, and that text sent back unchanged is what the store
+// writes: the round trip the CLI's upload check asks answers it byte for byte, and the agent's
+// upload of it is taken. Measured on a real server of this head: doc-read printed state, answered_by,
+// answered_at, selected and answer on an answered ask block the store held as
+// `:::ask{#q-drive urgency="med" multiple="false"}`, and `dispatch artifact --force` refused that
+// text naming the ask's line.
+func TestTheTextADocumentReadPrintsHoldsNoServerOwnedAskAttributeAndUploadsBackUnchanged(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	documents := deps.Docs.(*docs.Service)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", "A spec.\n")
+	uploadAs(t, handler, issue.Key, "asks.md", ":::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n\nOther.\n", "alice")
+	settleIssue(t, documents, issue.Key)
+	askID := blockAskID(t, handler, issue.Key, "a1")
+	answerDecisionBlock(t, handler, askID, "bob", []string{"REST"}, "Plain HTTP until a client streams.", nil)
+	settleIssue(t, documents, issue.Key)
+	artifactID := readDecisionDocument(t, database, issue.Key, "asks-md").id
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("read the text of asks.md: status=%d body=%s", response.Code, response.Body.String())
+	}
+	var read struct {
+		Markdown string `json:"markdown"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &read); err != nil {
+		t.Fatalf("decode the text of asks.md: %v: %s", err, response.Body.String())
+	}
+	for _, attribute := range []string{"state", "answered_by", "answered_at", "selected", "answer", "invalid", "copied_from", "copied_from_document"} {
+		if strings.Contains(read.Markdown, " "+attribute+"=\"") {
+			t.Errorf("the text a document read prints holds the server-owned ask attribute %s, which the store no longer writes and an upload takes off:\n%s", attribute, read.Markdown)
+		}
+	}
+	stored := dispatchRequest(t, handler, http.MethodPost, "/api/v1/markdown/round-trip", map[string]any{"markdown": read.Markdown}, "alice")
+	var roundTrip struct {
+		Markdown string `json:"markdown"`
+	}
+	if stored.Code != http.StatusOK || json.Unmarshal(stored.Body.Bytes(), &roundTrip) != nil {
+		t.Fatalf("the round trip of the read text: status=%d body=%s", stored.Code, stored.Body.String())
+	}
+	if strings.TrimSuffix(roundTrip.Markdown, "\n") != strings.TrimSuffix(read.Markdown, "\n") {
+		t.Errorf("the store writes the text a document read prints under another spelling, so dispatch artifact refuses it:\nread:\n%s\nstored:\n%s", read.Markdown, roundTrip.Markdown)
+	}
+	agentUploadAs(t, handler, issue.Key, "asks.md", read.Markdown, nil)
+}
+
 // Above the deferral bound no block index runs in the write, and the typed-node pass states each
 // decision and reading of the document that the version no longer holds gone in that write's own
 // transaction: a version that removes a decision and the reading under another leaves both out
