@@ -44,6 +44,7 @@ import {
   LegionTurnOutcomeResponse,
   LegionWaveReleaseRequest,
   LegionWaveReleaseResponse,
+  legionStateMessage,
 } from "./legion-api";
 import { DISPATCH_KEY_PATTERN, isLegionRole, LEGION_ROLES } from "./legion-roles";
 
@@ -323,16 +324,22 @@ function isSchema(value: unknown): value is z.ZodType {
 }
 
 /** The module's exported schemas of one side of the wire, keyed by export name: the answer side
- * is every exported schema whose name ends in `Response`, the request side every one whose name
- * does not. The roster is derived rather than listed so that a schema a later change adds is
- * held by the cases that walk it without anyone adding a row — a list somebody must remember to
- * extend is the very defect this issue is about, and a merge has already brought a schema no
- * list named. The exports that are no schema at all (`LEGION_PHASES` and the other frozen
- * lists) are left out by `isSchema`, so the suffix alone is not trusted. */
-function exportedSchemas(side: "answer" | "request"): Record<string, z.ZodType> {
+ * is every exported schema whose name ends in `Response`, the message side every one whose name
+ * ends in `Message` (what the daemon publishes on the bus, `legionStateMessage`), and the request
+ * side every other one. The roster is derived rather than listed so that a schema a later change
+ * adds is held by the cases that walk it without anyone adding a row — a list somebody must
+ * remember to extend is the very defect this issue is about, and a merge has already brought a
+ * schema no list named. The exports that are no schema at all (`LEGION_PHASES` and the other
+ * frozen lists) are left out by `isSchema`, so the suffix alone is not trusted. */
+function exportedSchemas(side: "answer" | "message" | "request"): Record<string, z.ZodType> {
   const roster: Record<string, z.ZodType> = {};
   for (const [name, value] of Object.entries(legionApi)) {
-    if (isSchema(value) && name.endsWith("Response") === (side === "answer")) {
+    const sideOfName = name.endsWith("Response")
+      ? "answer"
+      : name.endsWith("Message")
+        ? "message"
+        : "request";
+    if (isSchema(value) && sideOfName === side) {
       roster[name] = value;
     }
   }
@@ -423,9 +430,12 @@ function objectCensus(roots: Record<string, z.ZodType>): Record<ObjectMark, stri
 // or so objects its own route carries, so a partial edit that left one nested view refusing would
 // pass every other case here. The census walks every answer schema the module exports — the
 // roster is derived, so a schema a later change adds is walked without anyone adding a row — and
-// every node below them, and reads zod's own mark on each object. What it holds is the shape:
-// nothing refuses, and `settings` alone is loose. The roster and the number of nodes walked are
-// printed rather than pinned, since a count goes stale at every addition.
+// every node below them, and reads zod's own mark on each object. A message the daemon publishes
+// is written by the daemon as a body is and read by whoever follows its subject, so the census
+// walks every message schema too, after the answers, so that a block both carry is counted at the
+// answer's path. What it holds is the shape: nothing refuses, and `settings` alone is loose. The
+// roster and the number of nodes walked are printed rather than pinned, since a count goes stale
+// at every addition.
 test("every answer-side object strips a key it does not name", () => {
   // The mark first, on three nodes built here: were a zod release to stop setting `catchall`,
   // every node would read as stripping and the census below would pass proving nothing.
@@ -435,7 +445,7 @@ test("every answer-side object strips a key it does not name", () => {
     loose: objectMark(z.looseObject({})),
   }).toEqual({ strict: "refuses", stripping: "strips", loose: "loose" });
 
-  const roster = exportedSchemas("answer");
+  const roster = { ...exportedSchemas("answer"), ...exportedSchemas("message") };
   const found = objectCensus(roster);
   const names = Object.keys(roster).sort();
   const nodes = found.strips.length + found.loose.length + found.refuses.length;
@@ -2346,4 +2356,119 @@ test("a claim's registration and the controller's are told apart by their schema
   expect(LegionControllerRegisterResponse.safeParse(controller).success).toBeTrue();
   expect(LegionRegisterResponse.safeParse(controller).success).toBeFalse();
   expect(LegionControllerRegisterResponse.safeParse(claim).success).toBeFalse();
+});
+
+// `daemon.stateSeq` is the sequence of the last state event the state's snapshot holds, after
+// which a reader of the state lane starts. A daemon before the contract that added it writes
+// none, so the key may be absent; a number that counts no events is refused.
+test("the state names the last state event it holds, and the key may be absent", () => {
+  const state = fixture("state.json") as { daemon: Record<string, unknown> };
+  delete state.daemon.stateSeq;
+  expect(LegionStateResponse.parse(state).daemon.stateSeq).toBeUndefined();
+  for (const stateSeq of [0, 43]) {
+    state.daemon.stateSeq = stateSeq;
+    expect(LegionStateResponse.parse(state).daemon.stateSeq).toBe(stateSeq);
+  }
+  for (const stateSeq of [-1, 1.5, "43"]) {
+    state.daemon.stateSeq = stateSeq;
+    expect(LegionStateResponse.safeParse(state).success, `stateSeq ${stateSeq}`).toBeFalse();
+  }
+});
+
+/** One message of the state lane: the events one transaction committed, at sequences 41 to 43 —
+ * a change of an answered root's phase, tree, slot, wait and implementer claim, the admission
+ * block, and a boot — with the block and the settings the state golden serves. */
+function stateMessage() {
+  const state = fixture("state.json") as { admission: unknown; settings: unknown };
+  return {
+    project: "INFRA",
+    run: "0b9f6a52-4c1e-4f0e-9a51-7d3c2b1a0e9f",
+    firstSeq: 41,
+    seq: 43,
+    at: "2026-11-18T16:00:00.123456Z",
+    events: [
+      {
+        seq: 41,
+        kind: "change",
+        issue: "INFRA-12",
+        changes: [
+          { field: "phase", old: "awaiting_person", new: "planning" },
+          { field: "tree", old: null, new: "INFRA-12" },
+          { field: "slot", old: null, new: 0 },
+          {
+            field: "waitingOn",
+            old: { kind: "ask", ask: "ask-7", since: "2026-11-18T15:00:00Z" },
+            new: null,
+          },
+          { field: "claim", role: "implementer", old: null, new: "launching" },
+        ],
+      },
+      { seq: 42, kind: "admission", admission: state.admission },
+      { seq: 43, kind: "boot", settings: state.settings, migrated: false },
+    ],
+  };
+}
+
+/** A message whose one event is a change of INFRA-12 naming `change` alone. */
+function changeMessage(change: Record<string, unknown>) {
+  return {
+    ...stateMessage(),
+    seq: 41,
+    events: [{ seq: 41, kind: "change", issue: "INFRA-12", changes: [change] }],
+  };
+}
+
+// A message of each kind of event parses to itself, alone and with the other two in one
+// transaction: every key the daemon writes has a line in the schema, the admission block and the
+// settings the state route serves among them.
+test("a state message carries a change, an admission block and a boot", () => {
+  const message = stateMessage();
+  expect(legionStateMessage.safeParse(message).error?.issues ?? []).toEqual([]);
+  expect<unknown>(legionStateMessage.parse(message)).toEqual(message);
+  for (const event of message.events) {
+    const alone = { ...message, firstSeq: event.seq, seq: event.seq, events: [event] };
+    expect(legionStateMessage.safeParse(alone).error?.issues ?? [], event.kind).toEqual([]);
+    expect<unknown>(legionStateMessage.parse(alone)).toEqual(alone);
+  }
+});
+
+// A claim's change names its role, since an issue has one claim per role, and no other change
+// names one; a field the state route does not serve at an issue, and a value that is not one of
+// its field's, are refused.
+test("a state change names a role exactly for a claim, and a value of its own field", () => {
+  expect(
+    legionStateMessage.safeParse(changeMessage({ field: "claim", old: "working", new: "idle" }))
+      .success
+  ).toBeFalse();
+  expect(
+    legionStateMessage.safeParse(
+      changeMessage({ field: "phase", role: "implementer", old: "planning", new: "implementing" })
+    ).success
+  ).toBeFalse();
+  expect(
+    legionStateMessage.safeParse(
+      changeMessage({ field: "status", old: "todo", new: "in_progress" })
+    ).success
+  ).toBeFalse();
+  expect(
+    legionStateMessage.safeParse(changeMessage({ field: "slot", old: null, new: "implementing" }))
+      .success
+  ).toBeFalse();
+  expect(
+    legionStateMessage.safeParse(changeMessage({ field: "phase", old: null, new: "planning" }))
+      .success
+  ).toBeTrue();
+});
+
+// A reader applies a message whose `firstSeq` follows the sequence it holds and reads a later one
+// as a gap, so the events of one message run from `firstSeq` to `seq` with none missing. The
+// project is the Dispatch project key, never the deployment's token.
+test("a state message's events run from firstSeq to seq, under a project key", () => {
+  const message = stateMessage();
+  expect(legionStateMessage.safeParse({ ...message, firstSeq: 44 }).success).toBeFalse();
+  expect(
+    legionStateMessage.safeParse({ ...message, events: [message.events[0], message.events[2]] })
+      .success
+  ).toBeFalse();
+  expect(legionStateMessage.safeParse({ ...message, project: "infra" }).success).toBeFalse();
 });

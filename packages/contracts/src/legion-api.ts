@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PROJECT_KEY_PATTERN } from "./dispatch-tools";
 import { DISPATCH_KEY_PATTERN, GATED_STEPS, LEGION_ROLES } from "./legion-roles";
 
 /**
@@ -849,13 +850,19 @@ const legionIssue = z.object({
   assignments: z.array(legionAssignment).optional(),
 });
 
-/** `api.DaemonInfo` — the running daemon: its project, its store's schema, and its boot history. */
+/** `api.DaemonInfo` — the running daemon: its project, its store's schema, its boot history, and
+ * `stateSeq`, the sequence of the last state event the body's snapshot holds
+ * (`legionStateMessage`), 0 while the project has none: every event at or below it is in the body
+ * and none above it is, so a reader of the state lane starts at `stateSeq + 1`. It is optional
+ * because a daemon before the contract that added it writes none, and the route strips it from
+ * the body it serves a caller below that contract. */
 const daemonInfo = z.object({
   project: nonEmptyString,
   schemaVersion: z.number().int().nonnegative(),
   boots: z.number().int().nonnegative(),
   firstBootAt: timestamp,
   startedAt: timestamp,
+  stateSeq: z.number().int().nonnegative().optional(),
 });
 
 /** `api.ContractView` — the mark of the narrowing, beside the daemon's own block: `daemon` is the
@@ -1170,6 +1177,113 @@ export const LegionStateResponse = z.object({
 
 export type LegionState = z.output<typeof LegionStateResponse>;
 export type LegionIssue = LegionState["issues"][string];
+
+/** The fields a state event's change names (the `state_change` outbox payload of
+ * `packages/daemon/internal/record/outbox.go`), each one Dispatch observes of an issue: its phase,
+ * its tree, its admission slot, what it waits on from a person, and one role's claim. */
+const LEGION_STATE_FIELDS = ["phase", "tree", "slot", "waitingOn", "claim"] as const;
+
+/** Each field's value as the state route serves it at that issue (`legionIssue`): the phase, the
+ * key of the tree's root, the slot's index, the `waitingOn` view, and the claim's state. */
+const legionStateFieldValues = {
+  phase: z.enum(LEGION_PHASES),
+  tree: issueKey,
+  slot: z.number().int().nonnegative(),
+  waitingOn: legionWaitingOn,
+  claim: z.enum(LEGION_CLAIM_STATES),
+} satisfies Record<(typeof LEGION_STATE_FIELDS)[number], z.ZodType>;
+
+/** A change's `old` or `new`: a value of one of the fields, or `null` where the issue holds
+ * none — no tree, no slot, no wait, no claim — and as `old` on the issue's first write. */
+const legionStateValue = z
+  .union([
+    legionStateFieldValues.phase,
+    legionStateFieldValues.tree,
+    legionStateFieldValues.slot,
+    legionStateFieldValues.waitingOn,
+    legionStateFieldValues.claim,
+  ])
+  .nullable();
+
+/** One field a write moved, from `old` to `new`, each a value of that field. A `claim` change
+ * names the claim's role, and a change of any other field names none. */
+const legionStateChange = z
+  .object({
+    field: z.enum(LEGION_STATE_FIELDS),
+    role: z.enum(LEGION_ROLES).optional(),
+    old: legionStateValue,
+    new: legionStateValue,
+  })
+  .superRefine((change, ctx) => {
+    if ((change.role !== undefined) !== (change.field === "claim")) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["role"],
+        message: "a claim change names its role, and a change of any other field names none",
+      });
+    }
+    for (const side of ["old", "new"] as const) {
+      const value = change[side];
+      if (value !== null && !legionStateFieldValues[change.field].safeParse(value).success) {
+        ctx.addIssue({
+          code: "custom",
+          path: [side],
+          message: `${side} is no ${change.field} value`,
+        });
+      }
+    }
+  });
+
+/** A state event's sequence: the project's count of the state events its daemon committed, from 1,
+ * in commit order and with no gap (the outbox row's `state_seq`). */
+const legionStateSeq = z.number().int().positive();
+
+/** One state event, one row of the project's state lane with the sequence its commit took: a
+ * `change` names an issue and each field of it that one write moved; an `admission` is the whole
+ * block the state route serves (`legionAdmission`) after a pass that changed it; a `boot` is the
+ * first event of a daemon's run, the settings the state route serves (`legionSettings`) and
+ * whether that boot applied a migration. */
+const legionStateEvent = z.discriminatedUnion("kind", [
+  z.object({
+    seq: legionStateSeq,
+    kind: z.literal("change"),
+    issue: issueKey,
+    changes: z.array(legionStateChange).min(1),
+  }),
+  z.object({ seq: legionStateSeq, kind: z.literal("admission"), admission: legionAdmission }),
+  z.object({
+    seq: legionStateSeq,
+    kind: z.literal("boot"),
+    settings: legionSettings,
+    migrated: z.boolean(),
+  }),
+]);
+
+/** One message of a Legion deployment's state lane (`legionStateSubject`): the state events of one
+ * committed daemon transaction, in sequence order. `project` is the Dispatch project key the daemon
+ * works for, `run` the id of the daemon run that wrote the events, `firstSeq` and `seq` the first
+ * and the last event's sequence, and `at` when the transaction committed, which every event of it
+ * shares. A transaction too large for one message is split between events into consecutive
+ * messages. The events run from `firstSeq` to `seq` with no gap, so a reader that holds sequence
+ * `n` applies the message whose `firstSeq` is `n + 1`, and knows from a later one that it missed
+ * one. */
+export const legionStateMessage = z
+  .object({
+    project: z.string().regex(PROJECT_KEY_PATTERN),
+    run: z.uuid(),
+    firstSeq: legionStateSeq,
+    seq: legionStateSeq,
+    at: timestamp,
+    events: z.array(legionStateEvent).min(1),
+  })
+  .refine(
+    (message) =>
+      message.events.length === message.seq - message.firstSeq + 1 &&
+      message.events.every((event, index) => event.seq === message.firstSeq + index),
+    { path: ["events"], message: "the events run from firstSeq to seq, one sequence each" }
+  );
+
+export type LegionStateMessage = z.output<typeof legionStateMessage>;
 
 /** `claim.RegisterResponse`, the body of `POST /legion/v1/claims/register`: the claim the agent
  * holds, the secret its ready and exit authenticate with, and `promptAgents`, the sorted names of
