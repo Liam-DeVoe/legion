@@ -117,11 +117,10 @@ func (r *idleWakeRig) releaseAsks(key string, role claim.Role) []idleRigMessage 
 // disk. Each claim the release stopped is stored suspended by `project_release`, for the next boot
 // to start, and the record names each pod and each such claim with its session.
 func TestProjectReleaseTakesEachPodOfTheProject(t *testing.T) {
-	rig := newIdleWakeRig(t, "clean", "unpushed", "unread", "held")
+	rig := newIdleWakeRig(t, map[string]idleRigPlan{
+		"unpushed": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1, WorkingCopyChanged: true}, AnswerRelease: true},
+	}, "clean", "unpushed", "unread", "held")
 	clean, unpushed, unread, held := rig.issue("clean"), rig.issue("unpushed"), rig.issue("unread"), rig.issue("held")
-	rig.agents.setPlan(unpushed.key, string(unpushed.role), idleRigPlan{TakeTurn: true,
-		Unpushed: &idleRigUnpushed{Commits: 1, WorkingCopyChanged: true}, AnswerRelease: true})
-	rig.launchAll()
 	// The pod no role process runs in: its one claim is stopped, and its Sandbox stays, which
 	// only the tree's cleanup deletes.
 	if status, body := rig.api.request(http.MethodPost, "/legion/v1/operator/claims/"+string(rig.token(unread))+"/stop", nil, true); status != http.StatusOK {
@@ -236,12 +235,10 @@ func TestProjectReleaseTakesEachPodOfTheProject(t *testing.T) {
 // with its result, the same result its own GET answers. A later GET, after the daemon's restart
 // on the same database, says a boot ended it, and so does the state.
 func TestProjectReleaseShowsInTheStateWithItsResult(t *testing.T) {
-	rig := newIdleWakeRig(t, "waiting")
-	waiting := rig.issue("waiting")
 	// A role that does not answer holds its pod to the bound, which is what keeps the release
 	// running while the state is read.
-	rig.agents.setPlan(waiting.key, string(waiting.role), idleRigPlan{TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 2}})
-	rig.launchAll()
+	rig := newIdleWakeRig(t, map[string]idleRigPlan{"waiting": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 2}}}, "waiting")
+	waiting := rig.issue("waiting")
 	if served := rig.stateRelease(); served != nil {
 		t.Fatalf("the state before any release carries %v, want no projectRelease", served)
 	}
@@ -432,9 +429,8 @@ func (r *idleWakeRig) refuseReleaseStops(token claim.Token) {
 // role still running in a pod that is gone. The release reads the row, so it leaves the pod with
 // its disk, its line naming how the store holds the claim, and holds the claim for an operator.
 func TestProjectReleaseLeavesAPodWhoseStopTheStoreDidNotTake(t *testing.T) {
-	rig := newIdleWakeRig(t, "refused")
+	rig := newIdleWakeRig(t, nil, "refused")
 	refused := rig.issue("refused")
-	rig.launchAll()
 	rig.refuseReleaseStops(rig.token(refused))
 
 	rig.startRelease("10s")
@@ -547,12 +543,10 @@ func (a *issueSandboxAPI) putSandbox(name string, labels map[string]string) {
 // process runs is deleted unread, a repository cache is deleted, and a Sandbox of a kind the
 // release does not know is left, so the command does not exit 0 while it stands.
 func TestProjectReleaseTakesTheSandboxesItsFirstListDidNotHold(t *testing.T) {
-	rig := newIdleWakeRig(t, "waiting")
-	waiting := rig.issue("waiting")
 	// A role that does not answer holds its pod to the bound, so the release lists the project
 	// again only after the Sandboxes below landed.
-	rig.agents.setPlan(waiting.key, string(waiting.role), idleRigPlan{TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}})
-	rig.launchAll()
+	rig := newIdleWakeRig(t, map[string]idleRigPlan{"waiting": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}}}, "waiting")
+	waiting := rig.issue("waiting")
 	project := rig.kube.label(waiting.pod, "legion.dev/project")
 	lateIssue := rig.cfg.Project + "-99"
 	lateToken := rig.roleToken(idleRigIssue{key: lateIssue}, claim.RoleImplementer)
@@ -597,10 +591,10 @@ func TestProjectReleaseTakesTheSandboxesItsFirstListDidNotHold(t *testing.T) {
 // role process ran at the last read, as deleted_read_refused: deleted_unread is a pod no read
 // ever reached.
 func TestProjectReleaseKeepsTheCountOfAPodWhoseRoleEndedBeforeItsLastRead(t *testing.T) {
-	rig := newIdleWakeRig(t, "ended")
+	rig := newIdleWakeRig(t, map[string]idleRigPlan{
+		"ended": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 2, WorkingCopyChanged: true}},
+	}, "ended")
 	ended := rig.issue("ended")
-	rig.agents.setPlan(ended.key, string(ended.role), idleRigPlan{TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 2, WorkingCopyChanged: true}})
-	rig.launchAll()
 
 	rig.startRelease("15s")
 	idleRigEventually(t, idleRigRecordWait, "the release's ask to the pod's role", func() bool {
@@ -636,10 +630,8 @@ func (r *idleWakeRig) refuseAsks() {
 // be written and why, names no asked role and keeps the read's count, and the pod's claim is held
 // for an operator, which the next boot does not start.
 func TestProjectReleaseLeavesAPodWhoseAskItCouldNotWrite(t *testing.T) {
-	rig := newIdleWakeRig(t, "unasked")
+	rig := newIdleWakeRig(t, map[string]idleRigPlan{"unasked": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}}}, "unasked")
 	unasked := rig.issue("unasked")
-	rig.agents.setPlan(unasked.key, string(unasked.role), idleRigPlan{TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}})
-	rig.launchAll()
 	rig.refuseAsks()
 
 	rig.startRelease("15s")
@@ -726,10 +718,10 @@ func (r *idleWakeRig) writesCaught(name string) int64 {
 // and the pod is deleted after that answer, before the bound, its line naming its role asked and
 // answered and giving no reason.
 func TestProjectReleaseWritesAgainAnAskItCouldNotWrite(t *testing.T) {
-	rig := newIdleWakeRig(t, "asked")
+	rig := newIdleWakeRig(t, map[string]idleRigPlan{
+		"asked": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}, AnswerRelease: true},
+	}, "asked")
 	asked := rig.issue("asked")
-	rig.agents.setPlan(asked.key, string(asked.role), idleRigPlan{TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}, AnswerRelease: true})
-	rig.launchAll()
 	rig.refuseFirstAsk()
 
 	rig.startRelease("60s")
@@ -760,10 +752,8 @@ func TestProjectReleaseWritesAgainAnAskItCouldNotWrite(t *testing.T) {
 // had an ask written at the bound by then, and keeps the read's count, and the pod's claim is held
 // for an operator, which the next boot does not start.
 func TestProjectReleaseLeavesAPodWhoseAskLandedAtTheBound(t *testing.T) {
-	rig := newIdleWakeRig(t, "late")
+	rig := newIdleWakeRig(t, map[string]idleRigPlan{"late": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}}}, "late")
 	late := rig.issue("late")
-	rig.agents.setPlan(late.key, string(late.role), idleRigPlan{TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}})
-	rig.launchAll()
 	rig.refuseAsksBeforeTheBound()
 
 	rig.startRelease("15s")

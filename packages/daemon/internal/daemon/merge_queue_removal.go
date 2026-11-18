@@ -104,15 +104,17 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 // it reaches, as a phase-ended message stops nothing.
 //
 // The row is held as an architect's notice is held (notice_exceptions.go, noticeAnswered), not
-// dropped as a phase-ended message nobody holds is (phaseEnded). A phase-ended message is worth
-// nothing later, since the role's next task names its phase anyway. Nothing else tells a merger
-// of this removal: its pull request waits out of the queue with nobody to enqueue it again or send
-// the issue back, and a merger whose pod was released would learn of it only when the release's
-// backstop wakes it (backstop_minutes, an hour by default). So a released merger is woken
-// (wakeForDelivery), and the row waits on its backoff until the woken session holds the role, as
-// it waits while the listener answers that nobody holds it (notify.ErrNoHolder) or that its holder
-// is unresponsive (notify.ErrHolderUnresponsive). A merger with no claim yet, its start still
-// owed, is no end either: the row waits for it.
+// ended as the row of a phase-ended message nobody holds is (phaseEnded). That row can end because
+// the role's next task names its phase anyway and the listener keeps its message for the role's
+// next holder (publishKeptToRole). Nothing else tells a merger of this removal: its pull request
+// waits out of the queue with nobody to enqueue it again or send the issue back, and a merger
+// whose pod was released would learn of it only when the release's backstop wakes it
+// (backstop_minutes, an hour by default). So a released merger is woken (wakeForDelivery), and
+// the row waits on its backoff until the woken session holds the role, or, while the wake pacing
+// holds that resume, for its turn, reading the claim again at most parkedWakeBound apart
+// (parkedWait), as it waits while the listener answers that nobody holds it (notify.ErrNoHolder)
+// or that its holder is unresponsive (notify.ErrHolderUnresponsive). A merger with no claim yet,
+// its start still owed, is no end either: the row waits for it.
 //
 // Each attempt reads, in this order, what ends or holds the row. The row finishes undelivered,
 // with one log line naming why, once the issue has left merging at the row's head (mergingAt, the
@@ -165,8 +167,10 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 	}
 	// This runs before the publish, which would otherwise answer ErrNoHolder for the released
 	// merger on every attempt and wait for a session nothing brings back. The wait it answers
-	// says whether the merger's released pod is coming back or the merger waits for the start the
-	// daemon's boot gives it after a project release.
+	// says whether the merger's released pod is coming back, the merger's launch waits for its
+	// turn in the wake pacing, the claim read again at that turn or parkedWakeBound on, whichever
+	// comes first (parkedWait), or the merger waits for the start the daemon's boot gives it after
+	// a project release.
 	if err := r.wakeForDelivery(ctx, token, "the merge-queue removal of "+row.Issue); err != nil {
 		return err
 	}
