@@ -49,30 +49,68 @@ for (const driver of drivers) {
     "postgresql://localhost/mine",
     "postgres://user@[::1]:5433/mine",
   ]) {
-    test(`${driver} accepts the loopback authority ${new URL(databaseUrl).hostname}`, async () => {
-      const run = await drive(driver, databaseUrl);
-      expect(run.started, run.stderr).toBe(true);
-    }, rowLimit("short"));
+    test(
+      `${driver} accepts the loopback authority ${new URL(databaseUrl).hostname}`,
+      async () => {
+        const run = await drive(driver, databaseUrl);
+        expect(run.started, run.stderr).toBe(true);
+      },
+      rowLimit("short")
+    );
   }
 
   for (const { shape, databaseUrl } of [
-    { shape: "a loopback string in a remote URL's path", databaseUrl: "postgres://user@remote.invalid/db/@127.0.0.1:5433/" },
-    { shape: "a loopback string in a remote URL's query", databaseUrl: "postgres://user@remote.invalid/db?application_name=@127.0.0.1:5433" },
-    { shape: "a host override", databaseUrl: "postgres://user@127.0.0.1:5433/db?host=remote.invalid" },
-    { shape: "an encoded host override", databaseUrl: "postgres://user@127.0.0.1:5433/db?ho%73t=remote.invalid" },
-    { shape: "a host override after a newline", databaseUrl: "postgres://user@127.0.0.1:5433/db?application_name=test\n&host=remote.invalid" },
-    { shape: "a query value holding @ that libpq reads as the host", databaseUrl: "postgres://127.0.0.1?application_name=@remote.invalid/db" },
-    { shape: "a query value holding @ after other parameters", databaseUrl: "postgres://127.0.0.1?sslmode=disable&x=@remote.invalid:5432/db" },
-    { shape: "a remote host listed before a loopback one", databaseUrl: "postgres://u@remote.invalid,@127.0.0.1:5433/db" },
-    { shape: "a remote host and port listed before a loopback one", databaseUrl: "postgres://u@remote.invalid:5432,x@127.0.0.1/db" },
-    { shape: "a hostaddr override", databaseUrl: "postgres://user@localhost/db?hostaddr=192.0.2.1" },
+    {
+      shape: "a loopback string in a remote URL's path",
+      databaseUrl: "postgres://user@remote.invalid/db/@127.0.0.1:5433/",
+    },
+    {
+      shape: "a loopback string in a remote URL's query",
+      databaseUrl: "postgres://user@remote.invalid/db?application_name=@127.0.0.1:5433",
+    },
+    {
+      shape: "a host override",
+      databaseUrl: "postgres://user@127.0.0.1:5433/db?host=remote.invalid",
+    },
+    {
+      shape: "an encoded host override",
+      databaseUrl: "postgres://user@127.0.0.1:5433/db?ho%73t=remote.invalid",
+    },
+    {
+      shape: "a host override after a newline",
+      databaseUrl: "postgres://user@127.0.0.1:5433/db?application_name=test\n&host=remote.invalid",
+    },
+    {
+      shape: "a query value holding @ that libpq reads as the host",
+      databaseUrl: "postgres://127.0.0.1?application_name=@remote.invalid/db",
+    },
+    {
+      shape: "a query value holding @ after other parameters",
+      databaseUrl: "postgres://127.0.0.1?sslmode=disable&x=@remote.invalid:5432/db",
+    },
+    {
+      shape: "a remote host listed before a loopback one",
+      databaseUrl: "postgres://u@remote.invalid,@127.0.0.1:5433/db",
+    },
+    {
+      shape: "a remote host and port listed before a loopback one",
+      databaseUrl: "postgres://u@remote.invalid:5432,x@127.0.0.1/db",
+    },
+    {
+      shape: "a hostaddr override",
+      databaseUrl: "postgres://user@localhost/db?hostaddr=192.0.2.1",
+    },
     { shape: "a service override", databaseUrl: "postgres://user@localhost/db?service=remote" },
   ]) {
-    test(`${driver} refuses ${shape} before any HTTP request`, async () => {
-      const run = await drive(driver, databaseUrl);
-      expect(run.started, run.stderr).toBe(false);
-      expect(run.stderr).toContain("DATABASE_URL");
-      expect(run.stderr).toContain("loopback");
-    }, rowLimit("short"));
+    test(
+      `${driver} refuses ${shape} before any HTTP request`,
+      async () => {
+        const run = await drive(driver, databaseUrl);
+        expect(run.started, run.stderr).toBe(false);
+        expect(run.stderr).toContain("DATABASE_URL");
+        expect(run.stderr).toContain("loopback");
+      },
+      rowLimit("short")
+    );
   }
 }
