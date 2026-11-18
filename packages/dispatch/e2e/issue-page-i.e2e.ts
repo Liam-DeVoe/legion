@@ -1661,6 +1661,49 @@ test("a row that edits a statement is no taller than the window, and the page ar
   });
 });
 
+// The tester's finding at #4205's 861adff1, on "after each move the focused row is on screen":
+// `.` zooms into a row of the outline's top level, which draws that row alone at the top of the
+// page, and `,` draws the whole outline again with the focus still on that row, and nothing
+// places it: the row keeps the focus it held, so `useRowOnScreen` (NodeRow.tsx) has no new focus
+// to answer, and a zoom back to the whole issue places nothing of its own. At 1440 by 900, on a
+// real issue of some 160 rows and on this seed with forty more comments, the row stood 2,000 to
+// 40,000 px below the window until the next key. The key row presses `,` on a row the page then
+// draws on the first screen, so no row met it.
+// SLOW(>=2s): a whole seeded issue and forty comments, a load waited on until the focus lands,
+// then End, the zoom in and the zoom out, each waited on until the row settles.
+test("zooming back out of a top-level row keeps that row on screen", async ({ browser }) => {
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    // Forty rows of the outline's top level under what the seed draws, so the last of them is
+    // far below the first screen once the whole outline is drawn again.
+    for (let older = 1; older <= 40; older += 1) {
+      await createComment(seeded.key, { body: `Older words, number ${older}.` });
+    }
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await expect
+      .poll(async () => (await focusedRow(page)) !== null, {
+        message: "the page opens with the focus on no row",
+      })
+      .toBe(true);
+    await page.keyboard.press("End");
+    await expectFocusedRowOnScreen(page, "End", "left the last row off screen");
+    const last = await focusedRow(page);
+    await page.keyboard.press(".");
+    await expect
+      .poll(async () => (await visibleIds(page))[0], {
+        message: "the zoom key did not make the last row the tree's root",
+      })
+      .toBe(last);
+    await page.keyboard.press(",");
+    expect(await focusedRow(page), "the key back out moved the focus off the row").toBe(last);
+    await expectFocusedRowOnScreen(
+      page,
+      "the key back out of a top-level row",
+      "left that row off screen at 1440x900"
+    );
+  });
+});
+
 // c-children, as the architect ruled on the children's section: no view draws a children's
 // section above the outline; the children are one group of rows of the outline, where the model
 // places them, which for every child today is under the issue; each child's row holds its
