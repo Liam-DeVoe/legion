@@ -32,10 +32,12 @@ env:
 jobs:
   envoy-go-race-api:
     runs-on: ubuntu-24.04
-    # The step's -timeout 30m must fire before the runner cancels the job, so a hung test prints
+    # The step's -timeout 50m must fire before the runner cancels the job, so a hung test prints
     # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race
-    # binaries, then the step's own 30 minutes, which is 36.
-    timeout-minutes: 45
+    # binaries, then the step's own 50 minutes, which is 56. The package took 1,215 s under -race
+    # before the eval registry (INFRA-2916) and 2,373 s after it on one farm node, because every
+    # project a test creates is seeded with its evals and its evals-md document.
+    timeout-minutes: 60
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -65,7 +67,7 @@ jobs:
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Race-test the Dispatch API
-        run: go test -count=1 -race -timeout 30m ./internal/dispatch/api/
+        run: go test -count=1 -race -timeout 50m ./internal/dispatch/api/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

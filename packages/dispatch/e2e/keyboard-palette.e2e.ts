@@ -100,12 +100,14 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     await expect(page.getByLabel(`Priority of ${issue.key}`)).toBeEnabled();
     await page.locator("body").focus();
     await page.keyboard.press("Control+k");
-    await input.fill("priority p2");
+    await input.fill("p2");
     const setP2 = actions.getByRole("option", { name: "Set priority P2" });
     await expect(actions.getByRole("option")).toHaveCount(1);
-    // `priority p2` sits inside the label rather than starting it, so the row is offered but not
-    // highlighted: Enter alone runs nothing, even once the search has answered with no hits.
-    await expect(dialog.getByText('No results for "priority p2"')).toBeVisible();
+    // `p2` sits inside the label rather than starting it, so the row is offered but not
+    // highlighted: Enter alone runs nothing, even once the search has answered with no hits. Not
+    // `priority p2`: every project holds its `evals-md` document, whose text holds `priority`,
+    // so the search would answer that document as a hit.
+    await expect(dialog.getByText('No results for "p2"')).toBeVisible();
     await expect(input).not.toHaveAttribute("aria-activedescendant");
     await input.press("Enter");
     await expect(dialog).toBeVisible();
@@ -152,12 +154,12 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Astrolabe issue calibration" });
+  const issue = await createIssue({ project: "CORE", title: "Astrolabes lose their calibration" });
   const context = await asUser(browser, "alice");
 
   try {
     const page = await context.newPage();
-    await openIssue(page, issue.key, "Astrolabe issue calibration");
+    await openIssue(page, issue.key, "Astrolabes lose their calibration");
 
     const dialog = page.getByRole("dialog", { name: "Search" });
     const input = page.getByRole("combobox", { name: "Search" });
@@ -183,9 +185,11 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
 
-    // The same query under `$mod+k` lists the hits first. No action here starts with `issue`, so
-    // the ones that hold it further in (`Close issue` among them) sit below the hits, and Enter
-    // opens the first hit rather than closing the issue the reader is on.
+    // A query under `$mod+k` lists the hits first. No action here starts with `lose`, so the one
+    // that holds it further in (`Close issue`, in its `Close`) sits below the hit, and Enter opens
+    // the hit rather than closing the issue the reader is on. The query is not `issue`: every
+    // project holds its `evals-md` document, whose text names issues throughout, and that
+    // document would be a hit ranked above this issue.
     const statusWrites: string[] = [];
     page.on("request", (request) => {
       if (
@@ -197,7 +201,7 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
     });
     await page.keyboard.press("Control+k");
     await expect(input).toHaveValue("");
-    await input.fill("issue");
+    await input.fill("lose");
     const options = dialog.getByRole("option");
     await expect(options.first()).toHaveAttribute("id", /^search-option-issue-/);
     await expect(actions.getByRole("option", { name: "Close issue" })).toBeVisible();
@@ -208,7 +212,7 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
     await expect(
       page
         .getByTestId("issue-header")
-        .getByRole("heading", { level: 1, name: "Astrolabe issue calibration" })
+        .getByRole("heading", { level: 1, name: "Astrolabes lose their calibration" })
     ).toBeVisible();
     await expect(page.getByRole("button", { exact: true, name: "Close issue" })).toBeVisible();
     expect(statusWrites).toEqual([]);
@@ -220,9 +224,17 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
 
 test("a query that holds a card move further in moves no card on Enter", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
-  // Two cards in one column, so `Move card down` from the first one has somewhere to go.
-  const first = await createIssue({ project: "CORE", title: "Board query one" });
-  const second = await createIssue({ project: "CORE", title: "Board query two" });
+  // Two cards in one column, so `Move card down` from the first one has somewhere to go. The
+  // column is Todo rather than Triage, where an issue starts: Triage is the first status, and
+  // from it `Move card to the previous status`, the move `previous` finds below, moves nothing.
+  const first = await patchIssue(
+    (await createIssue({ project: "CORE", title: "Board query one" })).key,
+    { status: "todo" }
+  );
+  const second = await patchIssue(
+    (await createIssue({ project: "CORE", title: "Board query two" })).key,
+    { status: "todo" }
+  );
   const context = await asUser(browser, "alice");
 
   try {
@@ -250,9 +262,11 @@ test("a query that holds a card move further in moves no card on Enter", async (
     // Each query sits inside a move's label without starting it: the move is offered, and only
     // an arrow can highlight it, so Enter, even once the search has answered, moves nothing.
     // `down` has no searchable term, so it returns no hits, and the move stays unhighlighted
-    // through that answer too.
+    // through that answer too. The searchable words are in no text a new project holds: every
+    // project holds its `evals-md` document, whose text holds `status`, `next`, `move` and
+    // `card`, and that document would be a hit, which takes the highlight.
     for (const [query, move] of [
-      ["status", "Move card to the next status"],
+      ["previous", "Move card to the previous status"],
       ["down", "Move card down"],
     ] as const) {
       await page.keyboard.press("Control+k");
@@ -267,8 +281,9 @@ test("a query that holds a card move further in moves no card on Enter", async (
       await expect(card).toBeFocused();
     }
 
-    // Nor can an arrow pressed while the search is still out: `next` leads no label, and Down
-    // then would have taken the move to the next status before any answer came.
+    // Nor can an arrow pressed while the search is still out: `the previous` leads no label, and
+    // Down then would have taken the move to the previous status before any answer came. The
+    // loop above typed no such query, so no cached answer stands in for the search held here.
     const release = Promise.withResolvers<void>();
     let held = 0;
     await page.route(searchPath, async (route) => {
@@ -277,9 +292,9 @@ test("a query that holds a card move further in moves no card on Enter", async (
       await route.continue();
     });
     await page.keyboard.press("Control+k");
-    await input.fill("next");
-    const nextMove = actions.getByRole("option", { name: "Move card to the next status" });
-    await expect(nextMove).toHaveCount(1);
+    await input.fill("the previous");
+    const previousMove = actions.getByRole("option", { name: "Move card to the previous status" });
+    await expect(previousMove).toHaveCount(1);
     await input.press("ArrowDown");
     await input.press("Enter");
     await expect(dialog).toBeVisible();
@@ -501,7 +516,7 @@ test("an arrow pressed before the search answers reaches no action the query fin
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Arrow before the issue search" });
+  const issue = await createIssue({ project: "CORE", title: "Arrows lose to a held search" });
   await patchIssue(issue.key, { status: "in_progress" });
   const context = await asUser(browser, "alice");
 
@@ -523,15 +538,17 @@ test("an arrow pressed before the search answers reaches no action the query fin
       await release.promise;
       await route.continue();
     });
-    await openIssue(page, issue.key, "Arrow before the issue search");
+    await openIssue(page, issue.key, "Arrows lose to a held search");
     await page.keyboard.press("Control+k");
     const dialog = page.getByRole("dialog", { name: "Search" });
     const input = page.getByRole("combobox", { name: "Search" });
-    await input.fill("issue");
+    await input.fill("lose");
     await expect(dialog.getByRole("option", { name: "Close issue" })).toHaveCount(1);
     // Down and Enter right after typing, and again once the request is held: the list holds only
-    // the actions `issue` finds mid-label, `Close issue` first, and the hits are still to arrive
-    // above them, so neither burst highlights or runs anything.
+    // the action `lose` finds mid-label, `Close issue`, and the hit is still to arrive above it,
+    // so neither burst highlights or runs anything. Not `issue`: every project holds its
+    // `evals-md` document, whose text names issues throughout, and that document would be a hit
+    // ranked above this issue.
     await input.press("ArrowDown");
     await input.press("Enter");
     await expect(dialog).toBeVisible();
@@ -559,7 +576,7 @@ test("a stale answer refreshing for the same query keeps the arrows off the acti
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Stale answer for an issue search" });
+  const issue = await createIssue({ project: "CORE", title: "Stale answers lose to a refetch" });
   await patchIssue(issue.key, { status: "in_progress" });
   const context = await asUser(browser, "alice");
 
@@ -576,14 +593,16 @@ test("a stale answer refreshing for the same query keeps the arrows off the acti
     });
     // The clock is the page's own, so the cached answer can go stale without a 30 s wait.
     await page.clock.install();
-    await openIssue(page, issue.key, "Stale answer for an issue search");
+    await openIssue(page, issue.key, "Stale answers lose to a refetch");
     const dialog = page.getByRole("dialog", { name: "Search" });
     const input = page.getByRole("combobox", { name: "Search" });
     const hit = dialog.getByRole("option").first();
 
-    // The reader searched `issue` once: the answer is cached, with `Close issue` below the hit.
+    // The reader searched `lose` once: the answer is cached, with `Close issue` below the hit.
+    // Not `issue`: every project holds its `evals-md` document, whose text names issues
+    // throughout, and that document would be a hit ranked above this issue.
     await page.keyboard.press("Control+k");
-    await input.fill("issue");
+    await input.fill("lose");
     await expect(hit).toHaveAttribute("id", /^search-option-issue-/);
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
@@ -599,7 +618,7 @@ test("a stale answer refreshing for the same query keeps the arrows off the acti
     });
     await page.locator("body").focus();
     await page.keyboard.press("Control+k");
-    await input.fill("issue");
+    await input.fill("lose");
     await expect.poll(() => held).toBeGreaterThan(0);
     await expect(hit).toHaveAttribute("id", /^search-option-issue-/);
     await expect(input).toHaveAttribute("aria-activedescendant", /^search-option-issue-/);
