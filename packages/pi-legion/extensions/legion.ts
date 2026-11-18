@@ -897,16 +897,24 @@ export default function legionExtension(pi: PiApi): void {
   // (`reportsProviderError`): a task's turn reported without one is finished by that report, so
   // its take holds the number finished from here on; a take the end of the run allows is asked at
   // once, and a text a take held for the end of this run is sent now, to start the task's own turn.
+  // The report's answer settles that mark: a 2xx finished the number in the record, so it stays,
+  // and a 4xx refusal of a report that would have finished it applied nothing, so the take holds
+  // the number finished no longer (`reportRefused`), and takes a newer revision of it as owed.
   pi.on("agent_end", async (event, context) => {
     const sessionID = context.sessionManager.getSessionId();
     let task: number | undefined;
+    let providerError = false;
     if (!subagentEvent(context)) {
-      const providerError = reportsProviderError(event);
+      providerError = reportsProviderError(event);
       const claimed = claimSession.runEnded(providerError);
       const controlled = controllerSession.runEnded(sessionID, providerError);
       task = claimed ?? controlled;
     }
-    await turnOutcomes.report(sessionID, event, task);
+    const answer = await turnOutcomes.report(sessionID, event, task);
+    if (answer === "refused" && task !== undefined && !providerError) {
+      claimSession.reportRefused(task);
+      controllerSession.reportRefused(sessionID, task);
+    }
   });
 
   // The run is about to settle with nothing left for the host to continue: a phase still open

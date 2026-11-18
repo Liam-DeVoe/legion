@@ -2370,6 +2370,81 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       });
     }
 
+    // The local finish lasts only until the turn's report is answered. A 4xx refusal of a report
+    // that would have finished the task applied nothing, so the record still owes the number: the
+    // newer revision the daemon wrote while the report was on its way, untaken while the report
+    // stood unanswered, is taken once the refusal comes, and its text runs once. The report of
+    // that second turn finishes the task, so a revision after it runs nothing.
+    test("a task's turn whose report the daemon refuses with a 4xx takes the newer revision of its number and runs it once", async () => {
+      const text = "Implement REPO-43 on its branch.";
+      const tasks = taskStandIn();
+      const value = tasks.give(text);
+      const outcome = Promise.withResolvers<Response>();
+      let taken = 0;
+      let reports = 0;
+      const worker = await bootStalling({
+        taskValue: value,
+        idle: () => true,
+        routes: (url, body) => {
+          if (url.pathname === "/legion/v1/claims/take") taken += 1;
+          if (url.pathname === "/legion/v1/claims/turn-outcome") {
+            reports += 1;
+            // The first report is refused: the stand-in's record applies nothing of it.
+            if (reports === 1) return outcome.promise;
+          }
+          return tasks.answer(url.pathname, body as Record<string, unknown>);
+        },
+      });
+      const turns = async (until: () => boolean): Promise<void> => {
+        for (let turn = 0; turn < 50 && !until(); turn += 1) {
+          const { promise, resolve } = Promise.withResolvers<void>();
+          setImmediate(resolve);
+          await promise;
+        }
+      };
+      const relay = (revision: number): void =>
+        envoyPluginInterface().taskValues.taker?.({
+          kind: "value",
+          session: "ses_stall",
+          value: {
+            claim: worker.claimToken,
+            epoch: value.epoch,
+            revision,
+            op: "put",
+            task: value.number,
+          },
+        });
+      await turns(() => worker.sentUserMessages.length > 0);
+      expect(worker.sentUserMessages).toEqual([text]);
+
+      await hook(worker.handlers, "agent_start")({}, worker.context);
+      const ending = worker.ends({ messages: [{ role: "assistant", stopReason: "stop" }] });
+      await turns(() => false);
+      relay(value.revision + 1);
+      await turns(() => false);
+      expect(taken).toBe(1);
+
+      outcome.resolve(Response.json({ error: "turn outcome refused" }, { status: 409 }));
+      await ending;
+      await turns(() => worker.sentUserMessages.length > 1);
+      expect(taken).toBe(2);
+      expect(worker.sentUserMessages).toEqual([text, text]);
+
+      await hook(worker.handlers, "agent_start")({}, worker.context);
+      await worker.ends({ messages: [{ role: "assistant", stopReason: "stop" }] });
+      relay(value.revision + 2);
+      await turns(() => false);
+      expect(taken).toBe(2);
+      expect(worker.sentUserMessages).toEqual([text, text]);
+      const reported = daemonRequests(worker.requests)
+        .filter((request) => request.path === "/legion/v1/claims/turn-outcome")
+        .map((request) => request.body as Record<string, unknown>);
+      expect(reported.map((report) => [report.sequence, report.task])).toEqual([
+        [1, value.number],
+        [2, value.number],
+      ]);
+    });
+
     // dispatch://INFRA-264: every turn of that implementer was refused by its provider, and every
     // reminder it earned bought another refused turn. The worker read nothing and said nothing, so
     // the turn earns no continuation and the record stands as the last real turn left it. One

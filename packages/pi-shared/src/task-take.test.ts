@@ -345,6 +345,85 @@ test("a task's turn whose report carries a provider error leaves it owed: the ne
   expect(ran).toEqual([TEXT, TEXT]);
 });
 
+// R2 and c2: each value is reported seen, idle or not. While the run-end mark stands, a value
+// naming the marked number is reported seen like any other; only its take waits.
+test("a value naming the marked number is reported seen while the mark stands, and only its take waits", async () => {
+  const { take, routed, takes, ran, advance } = rig();
+  take.ready();
+  takes.push({ answer: ACCEPTED });
+  take.relayed(put(4, 12));
+  await advance(0);
+  take.runStarted();
+  expect(take.runEnded(false)).toBe(4);
+
+  takes.push({ answer: ACCEPTED });
+  take.relayed(put(4, 13));
+  take.read({ task: value(4, 14), finished: 3 });
+  await advance(0);
+
+  expect(routed("task-seen")).toEqual([body(4, 12), body(4, 13), body(4, 14)]);
+  expect(routed("take")).toEqual([body(4, 12)]);
+  expect(ran).toEqual([TEXT]);
+});
+
+// The mark lasts only until the turn's report is answered. Here the daemon refuses it with a 4xx,
+// which applied nothing: the record still owes the number, so the newer revision it wrote while
+// the report was on its way, reported seen and not taken while the mark stood, is taken once the
+// refusal comes, as a number the record owes, and its text runs once. That turn's end marks the
+// number again, so a revision after it runs nothing.
+test("a report refused with a 4xx clears the mark, and the newer revision of n is then taken and runs once", async () => {
+  const { take, routed, takes, ran, advance, marks } = rig();
+  take.ready();
+  takes.push({ answer: ACCEPTED });
+  take.relayed(put(4, 12));
+  await advance(0);
+  take.runStarted();
+  expect(take.runEnded(false)).toBe(4);
+
+  take.relayed(put(4, 13));
+  await advance(0);
+  expect(routed("take")).toEqual([body(4, 12)]);
+  expect(marks).toEqual([true, false]);
+
+  takes.push({ answer: ACCEPTED });
+  take.reportRefused(4);
+  await advance(0);
+  expect(routed("take")).toEqual([body(4, 12), body(4, 13)]);
+  expect(ran).toEqual([TEXT, TEXT]);
+  // The task-turn mark is up again from the take until the task's turn starts.
+  expect(marks).toEqual([true, false, true]);
+
+  take.runStarted();
+  expect(marks).toEqual([true, false, true, false]);
+  expect(take.runEnded(false)).toBe(4);
+  takes.push({ answer: ACCEPTED });
+  take.relayed(put(4, 14));
+  await advance(0);
+  expect(routed("take")).toEqual([body(4, 12), body(4, 13)]);
+  expect(ran).toEqual([TEXT, TEXT]);
+});
+
+// The run-end mark is kept apart from the number a reading says the record finished: a refusal
+// of the report clears the mark alone, and never lowers what a reading said.
+test("a refused report clears the run-end mark alone: a number a reading said finished stays finished", async () => {
+  const { take, routed, takes, ran, advance } = rig();
+  take.ready();
+  takes.push({ answer: ACCEPTED });
+  take.relayed(put(4, 12));
+  await advance(0);
+  take.runStarted();
+  expect(take.runEnded(false)).toBe(4);
+
+  take.read({ task: null, finished: 4 });
+  take.reportRefused(4);
+  takes.push({ answer: ACCEPTED });
+  take.relayed(put(4, 13));
+  await advance(0);
+
+  expect(routed("take")).toEqual([body(4, 12)]);
+  expect(ran).toEqual([TEXT]);
+});
+
 // Finding 1 of review round 1, the race: the take is asked on an idle host and the daemon accepts
 // it, but a run no take started (a background job's result, a reminder) begins before the answer
 // comes back. The daemon gives that run to the take, as the first to start after its accept; the

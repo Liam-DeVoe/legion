@@ -664,12 +664,13 @@ export function createLegionDaemonClient(
     ready: (input, options) => acknowledge("/legion/v1/claims/ready", input, options?.signal),
     readyForUpdate: (input) => acknowledge("/legion/v1/claims/ready-for-update", input),
     exit: (input) => acknowledge("/legion/v1/claims/exit", input),
-    turnOutcome: (input) =>
+    turnOutcome: (input, options) =>
       post(
         "/legion/v1/claims/turn-outcome",
         LegionTurnOutcomeRequest,
         LegionTurnOutcomeResponse,
-        input
+        input,
+        options?.signal
       ),
     task: (input) => post("/legion/v1/claims/task", LegionTaskRequest, LegionTaskResponse, input),
     taskSeen: (input, options) =>

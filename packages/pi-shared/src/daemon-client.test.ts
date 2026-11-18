@@ -328,6 +328,35 @@ test("a state read hands fetch its caller's signal, and an abort ends a read the
   expect(handed).toEqual([controller.signal]);
 });
 
+test("a turn-outcome report hands fetch its caller's signal, so a sender's bound ends an attempt the daemon never answers", async () => {
+  const handed: (AbortSignal | null | undefined)[] = [];
+  const hung = (async (_input, init) => {
+    handed.push(init?.signal);
+    const { promise, reject } = Promise.withResolvers<Response>();
+    init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+    return promise;
+  }) as typeof fetch;
+  const controller = new AbortController();
+  const bound = new Error("the attempt's bound passed");
+
+  const report = createLegionDaemonClient("http://daemon.test", hung).turnOutcome(
+    {
+      claimToken: "legion-legion-legion-208-implementer",
+      sessionId: "session-1",
+      secret: "secret-1",
+      generation: 1,
+      sequence: 1,
+      outcome: "clean",
+      task: 1,
+    },
+    { signal: controller.signal }
+  );
+  controller.abort(bound);
+
+  await expect(report).rejects.toBe(bound);
+  expect(handed).toEqual([controller.signal]);
+});
+
 test("posts every Stage 3 workflow request through its matching route", async () => {
   type WorkflowClient = {
     readonly grant: (body: object) => Promise<unknown>;

@@ -27,7 +27,13 @@ import { takeTaskSignals, taskTurnMark } from "./task-values";
  * was sent is that task's turn, as the daemon counts it, and its end is reported naming the
  * task's number (`runEnded`); for a worker on the current contract that report alone finishes
  * the task, so from the end of a turn whose report carries no provider error the take holds the
- * number finished, and a newer revision of it is owed nothing.
+ * number finished, and a newer revision of it is owed nothing. The report's answer settles that
+ * run-end mark: a 2xx finished the number in the record, which deletes its value, so the mark
+ * may stay; a 4xx refusal applied nothing and the record still owes the number, so the mark
+ * is cleared (`reportRefused`) and a newer revision of it is taken and runs once, as R2's "a
+ * number the record owes it". The mark is kept apart from the `finished` a reading says, so its
+ * clearing never lowers what a reading said. A value naming the marked number is still reported
+ * seen, as every value is; only its take waits.
  *
  * Nothing sends a task into a busy worker (R5). A take the daemon accepts while a run is going —
  * the run started after the daemon decided the take and before its answer came back, or while a
@@ -97,14 +103,25 @@ export interface TaskTake {
    * report names, or undefined for a run of no task. `providerError` is whether that report
    * carries the provider's failure (`reportsProviderError` in `packages/pi-legion/src/turn-outcome.ts`).
    * The daemon finishes a current claim's task on a report naming its number with no provider
-   * error, so from such a run's end the take holds that number finished, as a reading's
-   * `finished` does: a newer revision of the same number, which the daemon may write before the
-   * report lands (a daemon start writes every owed value again) and would answer with the same
-   * text while the task is unfinished, is owed nothing and runs nothing a second time. A report
-   * with a provider error finishes nothing: the daemon takes the task back, and the take takes
-   * that number again at the revision the daemon writes after its wait.
+   * error, so from such a run's end the take holds that number finished, beside a reading's
+   * `finished`, until the daemon refuses that report (`reportRefused`): a newer revision of the
+   * same number, which the daemon may write before the report lands (a daemon start writes every
+   * owed value again) and would answer with the same text while the task is unfinished, is
+   * reported seen, owed nothing and runs nothing a second time. A report with a provider error
+   * finishes nothing: the daemon takes the task back, and the take takes that number again at
+   * the revision the daemon writes after its wait.
    */
   readonly runEnded: (providerError: boolean) => number | undefined;
+  /**
+   * The daemon refused with a 4xx the report of a turn of task `number` that `runEnded` held
+   * finished, one whose report carried no provider error: that report applied nothing and the
+   * record still owes the number, so the take holds it finished no longer, and asks about a newer
+   * revision of it, one it holds already or one the daemon writes later, which then runs once. A
+   * number a reading said finished stays finished, and a mark that has moved on to a later number
+   * since stays. A report the daemon answered with a 2xx finished the number in the record, which
+   * deletes its value, so nothing is told of it.
+   */
+  readonly reportRefused: (number: number) => void;
   /** The take is replaced by another of the same host: every request it is sending stops, an
    * answer that still arrives for one changes nothing, its task-turn mark is cleared, and every
    * call after this one does nothing. */
@@ -122,10 +139,14 @@ const keyOf = (value: { readonly epoch: string; readonly revision: number }): st
 
 export function createTaskTake(deps: TaskTakeDeps): TaskTake {
   const { caller, log } = deps;
-  // The newest value this process was handed, and the number of the last task the daemon said
-  // the claim finished: a value naming that number or a lower one is owed nothing.
+  // The newest value this process was handed; the number of the last task the daemon's readings
+  // said the claim finished; and the run-end mark, the number of the last task whose turn ended
+  // here with no provider error, which that turn's report finishes on the daemon, kept apart from
+  // the readings' number so that a refused report clears the mark alone (`reportRefused`). A value
+  // naming a number at or below either is owed nothing.
   let held: TaskValue | undefined;
   let finished = 0;
+  let finishing = 0;
   // The pairs this process reported seen and asked at, in its memory alone.
   const seen = new Set<string>();
   const asked = new Set<string>();
@@ -143,7 +164,7 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
   let closed = false;
 
   const owed = (value: TaskValue | undefined): value is TaskValue =>
-    value !== undefined && value.number > finished;
+    value !== undefined && value.number > Math.max(finished, finishing);
 
   const request = (value: TaskValue) => ({
     ...caller,
@@ -190,7 +211,7 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
         // The daemon answers a take of the number it accepted with the same text until that task
         // finishes, whether or not its turn has started: a take sent again at a newer revision
         // of the same number, before the task's turn, during it, or after its end was reported
-        // with no provider error (`runEnded`), runs nothing more.
+        // with no provider error (`runEnded`) and until that report is refused, runs nothing more.
         if (!owed(value) || accepted === value.number || running === value.number) return;
         accepted = value.number;
         // Nothing goes into a busy worker: a text accepted while a run is going waits for that
@@ -319,8 +340,9 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       const ended = running;
       running = undefined;
       // That run's report names the task with no provider error, which finishes it on the
-      // daemon: the number is owed nothing from here on, before the report has even landed.
-      if (ended !== undefined && !providerError) finished = Math.max(finished, ended);
+      // daemon: the number is owed nothing from here on, before the report has even landed, and
+      // until the daemon refuses it (`reportRefused`).
+      if (ended !== undefined && !providerError) finishing = Math.max(finishing, ended);
       // A text accepted during the run that just ended: that run was not the task's turn, so its
       // end names no task (`ended` is undefined), and the text starts the next run, the task's.
       if (heldText !== undefined) {
@@ -330,6 +352,11 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       }
       settle();
       return ended;
+    },
+    reportRefused: (number) => {
+      if (closed || finishing !== number) return;
+      finishing = 0;
+      settle();
     },
     close: () => {
       if (closed) return;

@@ -6,7 +6,12 @@ import {
 } from "@legion/pi-shared/daemon-client";
 import type { AgentEndEvent } from "@legion/pi-shared/pi-types";
 import { taskStandIn } from "@legion/pi-shared/test/task-stand-in";
-import { createTurnOutcomeReporter, type ReportedClaim, type TurnOutcomeLog } from "./turn-outcome";
+import {
+  createTurnOutcomeReporter,
+  type ReportedClaim,
+  type TurnOutcomeLog,
+  type TurnReportAnswer,
+} from "./turn-outcome";
 
 const SESSION = "ses_implementer_208";
 
@@ -22,7 +27,11 @@ const implementer: ReportedClaim = {
 };
 
 interface Rig {
-  readonly report: (sessionID: string, event: AgentEndEvent, task?: number) => Promise<void>;
+  readonly report: (
+    sessionID: string,
+    event: AgentEndEvent,
+    task?: number
+  ) => Promise<TurnReportAnswer | undefined>;
   readonly sessionEnded: (sessionID: string) => void;
   readonly posted: Record<string, unknown>[];
   readonly debugged: string[];

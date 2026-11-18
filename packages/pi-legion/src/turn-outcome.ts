@@ -45,7 +45,10 @@ import type { AgentEndEvent, AgentEndMessage } from "@legion/pi-shared/pi-types"
  * nothing, and one whose write failed is applied. A 2xx ends the sending, and so does a refusal
  * (a 4xx, or any other answer the daemon names a code for), which is warned about once: nothing
  * this pane can do changes it. The session's end stops what is still being sent for it
- * (`sessionEnded`).
+ * (`sessionEnded`). The report resolves how the daemon answered it (`TurnReportAnswer`): a 4xx
+ * applied nothing, so a task the report named is still owed, and the claim's take, which held
+ * that number finished from the turn's end, holds it finished no longer (`TaskTake.reportRefused`
+ * in `@legion/pi-shared/task-take`, which `extensions/legion.ts` calls).
  *
  * Claude Code's half of the same report is `packages/daemon/internal/claudebridge`: neither half
  * is a shimwire frame, because a plugin cannot put one on the shim stream and `shimwire.AgentEnd`
@@ -78,15 +81,27 @@ export interface TurnOutcomeReporterDeps {
   readonly wait?: (ms: number, signal: AbortSignal) => Promise<boolean>;
 }
 
+/**
+ * How the daemon answered a turn's report (`TurnOutcomeReporter.report`): `recorded`, a 2xx;
+ * `refused`, a 4xx, coded or not, which is not sent again and applied nothing, so a task the
+ * report named is still owed.
+ */
+export type TurnReportAnswer = "recorded" | "refused";
+
 export interface TurnOutcomeReporter {
   /**
    * Reports the turn that `agent_end` just ended, for the claim the session holds; `task` is the
-   * number of the task whose turn it was, undefined for a turn of no task. Resolves once the
-   * daemon answered, refused, or the session ended. Never rejects: Oh My Pi does not await an
-   * `agent_end` handler, so a rejection here would be an unhandled one, and nothing of the turn
-   * waits on the report either way.
+   * number of the task whose turn it was, undefined for a turn of no task. Resolves how the
+   * daemon answered (`TurnReportAnswer`) once it answered or refused, and undefined for a session
+   * that holds no claim, a session that ended first, and a failure that is neither a 2xx nor a
+   * 4xx. Never rejects: Oh My Pi does not await an `agent_end` handler, so a rejection here would
+   * be an unhandled one, and nothing of the turn waits on the report either way.
    */
-  readonly report: (sessionID: string, event: AgentEndEvent, task?: number) => Promise<void>;
+  readonly report: (
+    sessionID: string,
+    event: AgentEndEvent,
+    task?: number
+  ) => Promise<TurnReportAnswer | undefined>;
   /** The session ended (`session_shutdown`): every report of it still being sent stops. */
   readonly sessionEnded: (sessionID: string) => void;
 }
@@ -147,7 +162,7 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
   return {
     report: async (sessionID, event, task) => {
       const claim = deps.claim(sessionID);
-      if (claim === undefined) return;
+      if (claim === undefined) return undefined;
       const { caller } = claim;
       // Taken before the first await, so two turns can never take the same number nor take them
       // out of the order they ended in. A generation this producer has not counted within starts
@@ -194,11 +209,16 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
           refusedRun: outcome.refusedRun,
           failed: outcome.failed,
         });
+        return "recorded";
       } catch (error) {
         deps.log.warn("legion: a turn's outcome did not reach the daemon", {
           ...lines,
           error: messageFor(error),
         });
+        // A 4xx, coded or not, is not sent again, and the report it refused applied nothing.
+        return error instanceof LegionDaemonApiError && error.status >= 400 && error.status < 500
+          ? "refused"
+          : undefined;
       }
     },
     sessionEnded: (sessionID) => {

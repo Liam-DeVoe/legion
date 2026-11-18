@@ -809,9 +809,13 @@ daemon answers it, by the policy a take is sent by (`sendUntilAnswered` in
 within five minutes, a 502, 503 or 504 with no Legion error code, and any 500 (the daemon's own
 failure to record it) are sent again, the same report, with backoff and no attempt limit, until a
 2xx or a refusal, which is warned about once; the session's end (`session_shutdown`) stops it. The
-reporter runs for an architect's claim as well as a phase worker's, and for the daemon-launched
-controller's, whose start task's turn names that task's number; for an operator's controller,
-which takes no task, and a `task` subagent, whose instance registers no claim, not at all.
+claim's take holds a task's number finished from the end of a turn whose report names it with no
+provider error; a 4xx refusal of that report applied nothing, so `agent_end` tells the take
+(`reportRefused` in `@legion/pi-shared/task-take`), which then takes a newer revision of the
+number as one the record still owes, and a 2xx leaves the mark. The reporter runs for an
+architect's claim as well as a phase worker's, and for the daemon-launched controller's, whose
+start task's turn names that task's number; for an operator's controller, which takes no task, and
+a `task` subagent, whose instance registers no claim, not at all.
 
 Four variables tune it, read from the worker's own environment (`@legion/pi-shared/stall-limits`;
 the daemon passes on whichever its own environment holds, to a pane and to a pod alike):

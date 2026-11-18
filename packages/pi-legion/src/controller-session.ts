@@ -65,6 +65,11 @@ export interface ControllerSession {
    * operator's controller, which takes no task. `providerError` is whether that report carries
    * the provider's failure; without one the take holds the task finished (`TaskTake.runEnded`). */
   readonly runEnded: (sessionID: string, providerError: boolean) => number | undefined;
+  /** The daemon refused with a 4xx the report of a turn of `sessionID` that named task `number`
+   * with no provider error (`src/turn-outcome.ts`): the daemon-launched controller's take holds
+   * the number finished no longer, since the record still owes it (`TaskTake.reportRefused`).
+   * Another session's report changes nothing. */
+  readonly reportRefused: (sessionID: string, number: number) => void;
   /** The claim whose turns `sessionID` reports (`src/turn-outcome.ts`): the daemon-launched
    * controller's, for the session its take was made for, so the end of its start task's turn
    * names that task's number, which is what finishes it, and a provider error on it reaches the
@@ -657,6 +662,9 @@ export function createControllerSession(deps: {
     },
     runEnded: (sessionID, providerError) =>
       taking?.caller.sessionId === sessionID ? taking.take.runEnded(providerError) : undefined,
+    reportRefused: (sessionID, number) => {
+      if (taking?.caller.sessionId === sessionID) taking.take.reportRefused(number);
+    },
     reportedClaim: (sessionID) =>
       taking?.caller.sessionId === sessionID
         ? { caller: taking.caller, role: "controller" }

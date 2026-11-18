@@ -33,6 +33,10 @@ export interface ClaimSession {
    * `providerError` is whether that report carries the provider's failure; without one the take
    * holds the task finished (`TaskTake.runEnded`). */
   readonly runEnded: (providerError: boolean) => number | undefined;
+  /** The daemon refused with a 4xx the report of a turn of task `number` that carried no provider
+   * error (`src/turn-outcome.ts`): the take holds the number finished no longer, since the record
+   * still owes it (`TaskTake.reportRefused`). It does nothing before the claim is registered. */
+  readonly reportRefused: (number: number) => void;
 }
 
 /**
@@ -164,5 +168,6 @@ export function createClaimSession(deps: {
     capability: (sessionID) => (capability?.sessionID === sessionID ? capability : undefined),
     runStarted: () => taking?.take.runStarted(),
     runEnded: (providerError) => taking?.take.runEnded(providerError),
+    reportRefused: (number) => taking?.take.reportRefused(number),
   };
 }
