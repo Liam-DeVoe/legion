@@ -407,9 +407,9 @@ session holds (`409` naming the session), and its hand-back of the role's topic 
 while the process holding the claim keeps the role through both. Such a hand-back does not take
 the lane topic out of the record either, because one interest record serves every process under
 one session id and that topic is the interest half of a claim that still stands, written there
-by the claim itself: `POST /v1/interests/unsubscribe`
-answers in `removed` the topics that actually left the record, which is not always the list the
-request named. The second process is granted
+by the claim itself: `POST /v1/interests/unsubscribe` answers in `removed` each topic the request
+named that the record no longer holds, one it never held included, which is not always the list
+the request named. The second process is granted
 the role once the first stops answering for the claim and the live window passes, and only while
 the listener can tell that the first process stopped, and not that the listener itself failed to
 renew the claim: the claim reads the same either way. So the listener refuses that one grant and

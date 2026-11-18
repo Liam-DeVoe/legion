@@ -806,6 +806,8 @@ const BUS_UNANSWERED_PREFIX = "envoy: the message bus did not answer";
  * bus did not answer, and says `bus: NATS is reconnecting` when NATS was reconnecting. The work
  * the listener did before that call can have landed: an unsubscribe gets this answer after it
  * wrote the session's record, when only the update of the consumer's filter met the reconnect.
+ * `request` throws the error of its last attempt alone, so a first attempt that got this answer
+ * and a retry that failed another way reads false here.
  */
 export function isBusUnanswered(error: unknown): boolean {
   return (

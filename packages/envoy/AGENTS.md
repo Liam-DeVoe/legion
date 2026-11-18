@@ -5046,7 +5046,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   No delivery rides on that topic: a role lane is not stream-captured, so it never enters a session's consumer filter (`sessionConsumerFilter`), and a role message reaches its holder's agent subject with the holder read off the claim (`resolveCoreRoleHolder`).
   What the record's role topics are read for is the session's own deregistration, which releases the claims they name (`store.Registry.Remove`, `releaseAllRoleClaims`), so a lane topic taken out from under the live holder would leave its standing claim with nothing in the record naming it.
   A deregistration, which names no topic and deletes the whole record, a release whose every named topic was kept, and a removal from a session the bucket holds no record for all answer the empty list, and `removed` is never written as `null`.
-  A removal from a session with no record removes nothing and is no error (`store.Registry.Remove`), so the route answers it 200.
+  A removal from a session with no record removes nothing and is no error (`store.Registry.Remove`), so the route answers it 200 unless its filter update meets a reconnect.
   It carries `client_instance_id`, the process handing the interests back, and that is what decides the role claims it frees: the claims naming that same process and no others (`store.RoleReleaseAuthority`).
   A release that names no process frees no claim that names one, and neither does any other process's instance — an absent instance is no match against a claim that names a process — while every topic it named that is not such a claim's lane is removed either way.
   A claim that names no process at all, one an earlier build wrote before its holder's first registration adopts it, is the carve-out: it keeps the rule it was written under and this session's own release frees it, whichever process asks, so no claim standing at the deploy waits out the role claim reaper.
@@ -5064,7 +5064,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   A failure there is logged, and the plugin drops a frame no followed topic matches.
   A failure because NATS is reconnecting is answered the bus-outage `503` instead, after the record is written.
   envoy-client's retry removes the same topics again and sets the filter.
-  A first attempt that took the record's last topic deleted the record, so its retry finds no record and answers 200 with `removed` as `[]`.
+  A first attempt that took the record's last topic deleted the record, so its retry finds no record and answers 200 with `removed` as `[]` once its own filter update is answered; one that meets the reconnect again is the same `503`.
   A caller whose retry finds the topics already gone, as Dispatch's `unsubscribeSession` does, calls the listener no more, so the filter waits for the session's next registration, and the plugin drops a frame no followed topic matches.
 
 - An unsubscribe naming a topic in either form of its name takes out every form of it the record holds (`store.Remove`), and `removed` names each, the named form first and then the record's other forms (`otherFormsHeld`), so a client that followed both forms and dropped one reads that both are gone.

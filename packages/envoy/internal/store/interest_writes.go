@@ -502,12 +502,13 @@ func (r *Registry) controllerLaneRoles(ctx context.Context, sessionID string, to
 // whose every named topic was kept writes nothing at all, since an empty list is how
 // removeInterestTopics is told to delete the whole record.
 //
-// Remove answers the topics it took out of the record, and that list is what POST
-// /v1/interests/unsubscribe reports as removed. It is the removed list rather than the one the
-// caller named because the two part company over a kept lane topic: the caller named it, the
-// record still holds it, and an answer echoing the request would report a removal that did not
-// happen. A deregistration answers no list at all - it deletes the whole record, so there is no
-// list of named topics to report, and its route writes the empty list for it.
+// Remove answers each topic the caller named that the record no longer holds, one it never held
+// included, with the other forms of them the record held, and that list is what POST
+// /v1/interests/unsubscribe reports as removed. It is not the list the caller named because the
+// two part company over a kept lane topic: the caller named it, the record still holds it, and an
+// answer echoing the request would report a removal that did not happen. A deregistration answers
+// no list at all - it deletes the whole record, so there is no list of named topics to report, and
+// its route writes the empty list for it.
 //
 // A removal of named topics from a session the bucket holds no record for removes nothing and is
 // no error, as a deregistration of such a session is not. It answers no list, because no topic
