@@ -632,7 +632,8 @@ type phaseWorker struct {
 }
 
 // phaseWorkerOf is issue as a candidate of a repair over phase workers, and whether it is one:
-// an issue of this project whose phase has a worker role (workflow.OpenPhaseRole) and whose work
+// an issue of this project whose phase has a worker role (workflow.OpenRoleOf, which reads the
+// role with the issue, so at step it is the role of the running step) and whose work
 // the record shows under way in a tree that does not linger. project is the project's claim
 // token (claim.ProjectToken), and byKey is the project's live records by key, which the tree
 // roots are read from and which the slot repair walks its slots and its issues past review
@@ -650,7 +651,7 @@ type phaseWorker struct {
 //
 // A candidate with no work where it stands is passed over, because both repairs are about a
 // worker that is owed a turn, and that candidate has none to start. The gate is unreachable on
-// this release: the role skip above it passes over every phase phase.RoleFor names no worker
+// this release: the role skip above it passes over every phase Issue.RoleAt names no worker
 // role for — the architect's admitted and accepting, and the empty role of held,
 // awaiting_person and done — and merging, the one holder record.AtWork used to answer false
 // for, is a worker's phase now, since its merger makes the merge itself. It is kept so that a
@@ -667,7 +668,7 @@ func (a *Admission) phaseWorkerOf(project string, issue record.Issue, byKey map[
 	if issue.Project != a.project {
 		return phaseWorker{}, false
 	}
-	role := workflow.OpenPhaseRole(issue.Phase)
+	role := workflow.OpenRoleOf(issue)
 	if role == "" {
 		return phaseWorker{}, false
 	}
@@ -2504,7 +2505,8 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 // phase never runs again.
 //
 // The roles are enumerated as every other sweep of them does, over claim.Roles (the engine's
-// everyClaim).
+// everyClaim), and then the role of the deployment that runs the member's step where one does
+// (promotedRoles).
 //
 // What an issue waits on is deliberately not read here: every member this starts is mid-phase,
 // work already under way, and a member standing at admitted is passed over, since nothing of it
@@ -2559,8 +2561,9 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 			return nil
 		}
 		// Accepting's role is the tree's architect, which promotion already started: nothing of
-		// that phase is resumed here.
-		owner := phase.RoleFor(member.Phase)
+		// that phase is resumed here. At step the role is the running step's, read with the
+		// member (record.Issue.RoleAt), since no phase of Legion's names it.
+		owner := member.RoleAt(member.Phase)
 		if owner == claim.RoleArchitect {
 			owner = ""
 		}
@@ -2579,7 +2582,7 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 			}
 		}
 		standing := midPhaseMember{issue: member, owner: owner}
-		for _, role := range claim.Roles {
+		for _, role := range promotedRoles(member) {
 			// The tree's architect is promotion's own start, with the task that hands it its
 			// tree; a member's own sub-architect is no phase worker and comes back with the rest.
 			if claim.IsTreeArchitect(role, member.Key, member.Tree) {
@@ -2678,6 +2681,20 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		}
 	}
 	return nil
+}
+
+// promotedRoles is the roles of member a promotion brings back (startMidPhaseMembers): Legion's
+// six (claim.Roles) and, after them, the role of the deployment that runs the step member stands
+// at, read with the member (record.Issue.RoleAt over record.StandsAt), so the checker of a member
+// at step is started with its phase's work, and the checker of a member held from step comes back
+// with no task, as a role of Legion's that has run on a held member does. A role that no step of
+// the member's runs at the moment is not among them.
+func promotedRoles(member record.Issue) []claim.Role {
+	running := member.RoleAt(record.StandsAt(member))
+	if running == "" || claim.IsBuiltin(running) {
+		return claim.Roles
+	}
+	return append(slices.Clone(claim.Roles), running)
 }
 
 // owedEntryRole is one role the entry work is owed to: the issue whose current phase it is the
