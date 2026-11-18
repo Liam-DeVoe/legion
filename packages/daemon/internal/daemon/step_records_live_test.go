@@ -147,10 +147,10 @@ func (l *stepRecordsLive) outage() {
 	l.dispatch.start()
 	l.note("Dispatch started again on the same database and port")
 	want := []stepWant{stepRecordsTen[6], stepRecordsTen[7], stepRecordsTen[8], stepRecordsTen[9]}
-	// A row Dispatch refused while it was stopped waits out its backoff, at most the cap of
-	// record.RetryBackoff, before it runs again, and the sweep finds a lease that lapsed within one
-	// more lease.
-	within := record.RetryBackoff(6) + outboxLease
+	// A row Dispatch refused while it was stopped waits out its backoff, at most
+	// record.RetryBackoffMost, before it runs again, and the sweep finds a lease that lapsed within
+	// one more lease.
+	within := record.RetryBackoffMost + outboxLease
 	started := time.Now()
 	var last error
 	var lines []stepLine

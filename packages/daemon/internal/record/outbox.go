@@ -1426,11 +1426,18 @@ func (p MergeQueueRemoval) Message(issue, repo string) string {
 		issue, repo, p.Number, p.Head, unread)
 }
 
+// retryBackoffDoublings is how many times a row's backoff doubles before it stops at
+// RetryBackoffMost.
+const retryBackoffDoublings = 6
+
+// RetryBackoffMost is the longest a row waits to run again after a failed run: the backoff's cap.
+const RetryBackoffMost = time.Second << retryBackoffDoublings
+
 // RetryBackoff is how long a row waits to run again after a failed run, given its attempts before
-// that run (the count RetryOutbox raises): one second, doubled at each attempt, at most 64 seconds.
-// The daemon's outbox sets a retried row's next run by it.
+// that run (the count RetryOutbox raises): one second, doubled at each attempt, at most
+// RetryBackoffMost. The daemon's outbox sets a retried row's next run by it.
 func RetryBackoff(attempts int) time.Duration {
-	return time.Second << min(max(attempts, 0), 6)
+	return time.Second << min(max(attempts, 0), retryBackoffDoublings)
 }
 
 // NewOutboxRow encodes one validated payload for durable delivery at nextAt.

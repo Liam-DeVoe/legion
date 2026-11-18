@@ -115,7 +115,7 @@ const convergeEntrySweep = 2 * time.Second
 
 // convergeOwedBound is how long a step waits for a task the daemon sends by itself. It outlasts
 // the longest wait either run can owe: the outbox's own retry backoff, which doubles to a minute
-// and is capped there (record.RetryBackoff), for the start row run one leaves waiting behind the
+// and is capped there (record.RetryBackoffMost), for the start row run one leaves waiting behind the
 // task the claim already holds, and one sweep period for run two.
 const convergeOwedBound = 2 * time.Minute
 

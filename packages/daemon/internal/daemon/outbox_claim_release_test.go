@@ -390,9 +390,9 @@ func testReleaseClaimRecord(t *testing.T) {
 // refusal no retry repairs ends the row with that refusal logged; and an outage, whatever its
 // shape, is ridden out and the next attempt releases the claim.
 func testReleaseClaimAnswers(t *testing.T) {
-	// A claim release's backoff climbs to the cap of record.RetryBackoff, so one advance of the
-	// cap brings every attempt but the one the hour ends on due again.
-	const capped = 64 * time.Second
+	// A claim release's backoff climbs to record.RetryBackoffMost, so one advance of the cap brings
+	// every attempt but the one the hour ends on due again.
+	const capped = record.RetryBackoffMost
 	for _, tc := range []struct {
 		name string
 		// age is how old the row already is at its first attempt.
