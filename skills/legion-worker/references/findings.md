@@ -26,7 +26,8 @@ three steps that fits:
 2. **Write to its owner.** A defect goes to another tree's architect only when your fix would
    collide with that tree's open pull request. A defect in a repository your token does not reach
    goes to the architect of the tree whose code it is. When no tree owns that code, it goes to the
-   controller of that repository's project, which files it. After the merge, a production check
+   controller of the project that repository maps to, or of your own project when Dispatch maps it
+   to none, which files it. After the merge, a production check
    has no pull request to fix in, so the tester writes each clear defect it finds to its owner.
    [Write to the owner](#write-to-the-owner) says how.
 3. **Ask.** A defect goes to a person only when it needs a person's decision, a deploy window, or
@@ -90,7 +91,8 @@ owner's role. Dispatch delivers the mention and retries it, so you check no live
    tree, which for your own project is the word after `legion-` in your role token. So project
    `acme` and root `LEGION-41` give `role:legion-acme-legion-41-architect`.
 
-When no tree owns that code, write to the controller of that repository's project instead. Post
+When no tree owns that code, write to the controller of the project that repository maps to
+instead, or to your own project's controller when Dispatch maps it to none. Post
 the same comment on that project's report issue ([Where it goes](#where-it-goes)), with
 `--mention 'role:legion-<project>-controller'`; your own project's controller is the one your
 `Legion addressing` line names. A closed report issue takes a comment too. When the project has no

@@ -1046,7 +1046,7 @@ No other Legion agent files an issue for a finding outside its own issue.
 A defect with a clear fix is fixed by the role that found it, in its own pull request or a separate pull request of its tree, in whichever repository the defect is.
 It goes to another tree's architect only when the fix would collide with that tree's open pull request.
 A defect in a repository the finder's token does not reach goes to the architect of the tree whose code it is, as a Dispatch comment on the owning issue that mentions that architect's role.
-Only when no tree owns that code does it go to that repository's project's controller, which files a Legion root, with the label and a `Filed for Legion from <role> on <issue>: <evidence>` line, which its triage admits (the operator's answer on one such case:
+Only when no tree owns that code does it go to the controller of the project that repository maps to, or of the finder's own project when Dispatch maps it to none, which files a Legion root, with the label and a `Filed for Legion from <role> on <issue>: <evidence>` line, which its triage admits (the operator's answer on one such case:
 a clear defect is fixed, not asked about).
 The controller forwards no message from one agent to another.
 A defect that needs a person's decision, a deploy window or work much larger than the finder's own, and any other finding that needs a person's authority, taste or risk appetite, is a Dispatch ask, and a person decides whether it needs an issue (`skills/legion-worker/references/findings.md`).
