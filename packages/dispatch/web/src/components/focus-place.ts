@@ -371,18 +371,48 @@ function leaveUnseen(region: Element): void {
   region.focus({ preventScroll: true });
 }
 
+/** Where a node stood in the page while it was there: the parent holding it and the siblings
+ *  either side of it, `previous` and `next`, null at either end. */
+interface Spot {
+  readonly next: Node | null;
+  readonly node: Node;
+  readonly parent: Node;
+  readonly previous: Node | null;
+}
+
+/** Where `element` stands in `region`, and where each parent of it up to the region's own
+ *  children stands, nearest first: read while the element is still in the page, so that the spot
+ *  a press later takes it, or a parent of it, away from is known (`controlsInPlace`). */
+function spotsOf(element: Element, region: Element): Spot[] {
+  const spots: Spot[] = [];
+  let node: Node = element;
+  for (let parent = node.parentNode; parent !== null && node !== region; parent = node.parentNode) {
+    spots.push({ next: node.nextSibling, node, parent, previous: node.previousSibling });
+    node = parent;
+  }
+  return spots;
+}
+
 /** A focus an element lost: the element, the region it was counted in, its place there among
  *  the controls the page draws, the path of the page it was focused on, whether the page took it
  *  from the reader (`taken`: the element was disabled, hidden or taken away) rather than the
  *  reader moving off it, and - in a dialog - the loss the dialog was opened from (`opener`):
  *  the place the focus left for it, or null for a dialog the focus entered from the body. */
 interface Loss {
+  /** The elements the page added from the moment the element went until the loss is answered,
+   *  noted while its check or its wait is out: what can now stand where it stood (`standingAt`). */
+  readonly arrived: ReadonlySet<Node>;
   readonly caused: boolean;
   readonly element: HTMLElement;
   readonly index: number;
   readonly opener: Loss | null;
   readonly path: string;
   readonly region: Element;
+  /** Where the element stood, and where each parent of it up to the region stood, nearest first
+   *  (`controlsInPlace`): read at its `focusout` while it is still in the page, or, for an element
+   *  taken away with no `focusout`, off the record that took it, ahead of the spots read when it
+   *  took the focus. */
+  readonly spots: readonly Spot[];
   readonly taken: boolean;
 }
 
@@ -413,33 +443,47 @@ function afterComponents(then: () => void): () => void {
   };
 }
 
-/** The record of `records` that took `element` away, itself or with a parent, read at a point
+/** A removal `records` tell of: where the node the record took stood (`spot`), and which of the
+ *  records took the lost element out of the page (`at`), so that what the page added from there on
+ *  can be told from what it held before. */
+interface Removal {
+  readonly at: number;
+  readonly spot: Spot;
+}
+
+/** The removal in `records` that took `element` away, itself or with a parent, read at a point
  *  still in the page: where the parent it was taken from went too, later in the same batch, the
  *  record that took that parent. */
-function removalOf(
-  records: readonly MutationRecord[],
-  element: Element
-): MutationRecord | undefined {
+function removalOf(records: readonly MutationRecord[], element: Element): Removal | undefined {
   let node: Node = element;
-  let found: MutationRecord | undefined;
+  let removal: Removal | undefined;
   for (;;) {
-    const record = records.find((each) =>
-      [...each.removedNodes].some((removed) => removed.contains(node))
-    );
-    if (record === undefined) return found;
-    found = record;
-    if (record.target.isConnected) return record;
+    const holds = (removed: Node) => removed.contains(node);
+    const at = records.findIndex((each) => [...each.removedNodes].some(holds));
+    const record = records[at];
+    const taken = record === undefined ? undefined : [...record.removedNodes].find(holds);
+    if (record === undefined || taken === undefined) return removal;
+    removal = {
+      at: removal?.at ?? at,
+      spot: {
+        next: record.nextSibling,
+        node: taken,
+        parent: record.target,
+        previous: record.previousSibling,
+      },
+    };
+    if (record.target.isConnected) return removal;
     node = record.target;
   }
 }
 
-/** The place of a control `record` took away, itself or with a parent, among the controls
+/** The place of a control taken away from `spot`, itself or with a parent, among the controls
  *  `region` draws: how many of them come before the point it was taken from - before the sibling
  *  after it while that is still in the page, else up to and through the sibling before it, else
  *  through the parent it was taken from. */
-function placeOfRemoval(region: Element, record: MutationRecord, main: HTMLElement | null): number {
-  const next = record.nextSibling?.isConnected ? record.nextSibling : null;
-  const through = record.previousSibling?.isConnected ? record.previousSibling : record.target;
+function placeOfRemoval(region: Element, spot: Spot, main: HTMLElement | null): number {
+  const next = spot.next?.isConnected ? spot.next : null;
+  const through = spot.previous?.isConnected ? spot.previous : spot.parent;
   let index = 0;
   for (const control of drawnIn(region, main)) {
     const before =
@@ -451,6 +495,59 @@ function placeOfRemoval(region: Element, record: MutationRecord, main: HTMLEleme
     index += 1;
   }
   return index;
+}
+
+/** What now stands at `spot`: the elements its parent holds between the siblings its node stood
+ *  between that the page added since the loss (`arrived`). A sibling no longer in that parent
+ *  bounds nothing, so the parent's start or end bounds that side instead; only what arrived
+ *  counts, so an element that stood in the parent before the loss is never taken for what stands
+ *  there, and a block taken away with nothing drawn in its place leaves nothing standing. */
+function standingAt(spot: Spot, arrived: ReadonlySet<Node>): Element[] {
+  const { parent } = spot;
+  const previous = spot.previous?.parentNode === parent ? spot.previous : null;
+  const next = spot.next?.parentNode === parent ? spot.next : null;
+  const standing: Element[] = [];
+  for (
+    let node = previous === null ? parent.firstChild : previous.nextSibling;
+    node !== null && node !== next;
+    node = node.nextSibling
+  ) {
+    if (node instanceof Element && arrived.has(node)) standing.push(node);
+  }
+  return standing;
+}
+
+/** The first `<form>` among `elements`, itself one of them or inside one, else null. */
+function formIn(elements: readonly Element[]): Element | null {
+  for (const element of elements) {
+    const form = element.matches("form") ? element : element.querySelector("form");
+    if (form !== null) return form;
+  }
+  return null;
+}
+
+/** The controls of what now stands where `loss`'s element left the page, among `drawn`, in the
+ *  order the focus is offered them: those of a `<form>` there first - the editor a press opened in
+ *  the control's place, as Change answer and Add a priority open theirs - so that a header the new
+ *  content repeats above the form is not taken for the place, then the rest. None where nothing
+ *  new stands there (`standingAt`). The place is the nearest of the loss's spots whose node has
+ *  gone while the parent it stood in is still in the region: the element's own spot, or that of
+ *  the parent it went with. There is none while the element and every parent of it are still in
+ *  the page - a control disabled, hidden or moved. */
+function controlsInPlace(loss: Loss, drawn: readonly HTMLElement[]): HTMLElement[] {
+  const spot = loss.spots.find(
+    ({ node, parent }) => !node.isConnected && parent.isConnected && loss.region.contains(parent)
+  );
+  if (spot === undefined) return [];
+  const standing = standingAt(spot, loss.arrived);
+  if (standing.length === 0) return [];
+  const controls = drawn.filter((control) => standing.some((each) => each.contains(control)));
+  const form = formIn(standing);
+  if (form === null) return controls;
+  return [
+    ...controls.filter((control) => form.contains(control)),
+    ...controls.filter((control) => !form.contains(control)),
+  ];
 }
 
 /** Focuses `target` without a scroll, so a loss the reader did not cause never scrolls the page.
@@ -486,21 +583,24 @@ function landBox(box: HTMLElement): boolean {
   return took;
 }
 
-/** Hands a loss the reader did not cause to no row and with no scroll: the first candidate in no
- *  row takes the focus where it is, since the loss itself was in sight; a candidate in a row sends
- *  the focus to the box that row is drawn in instead (`boxAround`), never into the row and only
- *  while the reader can see the box; where none takes it, the region itself does if the reader can
- *  see it, else the focus stays on the body, where the base left it. */
+/** Lands a loss the reader did not cause on `candidate` in no row and with no scroll: a candidate
+ *  in no row takes the focus where it is, since the loss itself was in sight; a candidate in a row
+ *  sends the focus to the box that row is drawn in instead (`boxAround`), never into the row and
+ *  only while the reader can see the box. Answers whether the focus landed. */
+function landQuietly(candidate: HTMLElement, region: Element): boolean {
+  if (!candidate.isConnected || !rendered(candidate)) return false;
+  const row = candidate.closest(ROW);
+  if (row === null) return focusNoScroll(candidate);
+  const box = boxAround(row, region);
+  return box !== null && landBox(box);
+}
+
+/** Hands a loss the reader did not cause to no row and with no scroll: the first candidate that
+ *  takes it (`landQuietly`); where none does, the region itself if the reader can see it, else the
+ *  focus stays on the body, where the base left it. */
 function handOnQuietly(candidates: readonly HTMLElement[], region: Element): void {
   for (const candidate of candidates) {
-    if (!candidate.isConnected || !rendered(candidate)) continue;
-    const row = candidate.closest(ROW);
-    if (row === null) {
-      if (focusNoScroll(candidate)) return;
-    } else {
-      const box = boxAround(row, region);
-      if (box !== null && landBox(box)) return;
-    }
+    if (landQuietly(candidate, region)) return;
   }
   if (present(region) && region instanceof HTMLElement && region !== document.body) {
     landBox(region);
@@ -508,7 +608,13 @@ function handOnQuietly(candidates: readonly HTMLElement[], region: Element): voi
 }
 
 /** Hands on the focus `loss`'s element took with it when it went, inside the region it was lost
- *  in while that region is still in the page and drawn (`present`). A loss the reader caused keeps
+ *  in while that region is still in the page and drawn (`present`). Where something now stands
+ *  where the element stood - what a press drew in its place - the focus lands on that first: on
+ *  the first control of a `<form>` there, the editor the press opened in the control's place, else
+ *  on the first control of what stands there (`controlsInPlace`). That control is focused with no
+ *  scroll, whoever caused the loss, since it stands where the reader was; for a loss the reader
+ *  did not cause, one in a row sends the focus to the box that row is drawn in (`landQuietly`).
+ *  Only where nothing new stands there does the focus walk back. A loss the reader caused keeps
  *  the walk it always had: to the control the region now draws at its place, else the nearest one
  *  before it however many went together (`placesFrom`), else the region itself, which is every
  *  region but the document, and that control is scrolled into view (`land`). A loss they did not
@@ -525,7 +631,11 @@ function handOn(loss: Loss, main: HTMLElement | null, caused: boolean): void {
   let candidates: HTMLElement[] = [];
   let answerRegion: Element = region;
   if (present(region)) {
-    candidates = placesFrom(drawnIn(region, main), loss.index);
+    const drawn = drawnIn(region, main);
+    for (const control of controlsInPlace(loss, drawn)) {
+      if (caused ? focusNoScroll(control) : landQuietly(control, region)) return;
+    }
+    candidates = placesFrom(drawn, loss.index);
   } else {
     let opener = loss.opener;
     while (opener !== null && !present(opener.region)) opener = opener.opener;
@@ -566,9 +676,16 @@ function handOn(loss: Loss, main: HTMLElement | null, caused: boolean): void {
  * `focusout` for it; Chromium fires one as well, and whichever comes first is the loss recorded.
  * Each loss holds its element, its region, its place among the controls the region draws, the
  * path, whether the page took the element (`taken`), whether the reader caused the loss
- * (`causedByReader`), and its dialog's opener. A move from one
- * control to another in the same region is no loss. A new loss cancels whatever is still out for
- * the one before it.
+ * (`causedByReader`), and its dialog's opener. It holds where the element stood in the page too:
+ * the parent it stood in and the siblings either side of it, and the same for each parent of it
+ * up to the region (`spotsOf`). For a `focusout` they are read there and then, while the element
+ * is still in the page; for a control taken away with no `focusout`, the record that took it -
+ * its parent and its siblings at that moment - is that spot, with the spots read as the element
+ * took the focus behind it for a record whose parent has gone too. From the loss on, while its
+ * check or its wait is out, the page's watcher notes every element the page adds (`arrived`); for
+ * a loss read off a removal, the batch that took the element counts from that record on. A move
+ * from one control to another in the same region is no loss. A new loss cancels whatever is still
+ * out for the one before it.
  *
  * The check runs a frame and a task after the loss, once React has committed and run its passive
  * effects, so every component's own hand-off has had its turn first: every `useFocusPlace`
@@ -582,28 +699,38 @@ function handOn(loss: Loss, main: HTMLElement | null, caused: boolean): void {
  * Inbox's and the Board's Escape. A taken element that is back by then gets the focus back.
  *
  * An element that went - taken away, hidden, no longer drawn, or replaced under a new key - hands
- * the focus on (`handOn`) inside the region it was lost in. A loss the reader caused - a press of
- * theirs within the wait on the lost control, inside its row, or inside the region (`causedByReader`)
- * - goes to the control the region now draws at its place, else the nearest one before it however
- * many went together, else the region itself, and that control is scrolled into view; a loss they
- * did not cause goes into no row and scrolls nothing (`handOnQuietly`), to a control in no row, or
- * to the box a lost row was drawn in while the reader can see it, else the body. So the page behind
- * a modal dialog is never reached. Only a region that has gone hands the focus
- * out of it: from a dialog that closed it goes only back to the place the dialog was opened from; a
- * dialog opened from the body - a single-key shortcut with nothing focused - leaves the focus on
- * the body, where the reader was, and never puts it in a text box whose next key would be typed.
- * An element the press disabled, itself or through the fieldset around it, gets the focus back
- * when it is enabled again, watched rather than polled, since its write's latency is the
- * server's; if it goes instead, or is still disabled after `RESCUE_WAIT_MS`, the focus is handed
- * on as from an element that went. That settle too waits a frame and a task, so a component that
- * watches the same control - the Agents composer, giving its box the focus back - acts on the
+ * the focus on (`handOn`) inside the region it was lost in. What a press drew where the element
+ * stood takes it first: the elements the page added since the loss between the siblings either
+ * side of the element, or of the parent it went with, in the parent it was taken from, which is
+ * still in the region (`standingAt`). Where that holds a `<form>` - an editor the press opened in
+ * the control's place, as Change answer and Add a priority do - the form's first control takes the
+ * focus, so that a header the new content repeats above the form is not taken for the place; else
+ * the first control of what stands there does. It is focused with no scroll, whoever caused the
+ * loss, since it stands where the reader was; for a loss the reader did not cause, one in a row
+ * sends the focus to the box the row is drawn in. Only where nothing new stands there - a block
+ * taken away with nothing in its place - does the focus walk back. A loss the reader caused - a
+ * press of theirs within the wait on the lost control, inside its row, or inside the region
+ * (`causedByReader`) - goes to the control the region now draws at its place, else the nearest one
+ * before it however many went together, else the region itself, and that control is scrolled into
+ * view; a loss they did not cause goes into no row and scrolls nothing (`handOnQuietly`), to a
+ * control in no row, or to the box a lost row was drawn in while the reader can see it, else the
+ * body. So the page behind a modal dialog is never reached. Only a region that has gone hands the
+ * focus out of it: from a dialog that closed it goes only back to the place the dialog was opened
+ * from; a dialog opened from the body - a single-key shortcut with nothing focused - leaves the
+ * focus on the body, where the reader was, and never puts it in a text box whose next key would
+ * be typed. An element the press disabled, itself or through the fieldset around it, gets the
+ * focus back when it is enabled again, watched rather than polled, since its write's latency is
+ * the server's; if it goes instead, or is still disabled after `RESCUE_WAIT_MS`, the focus is
+ * handed on as from an element that went. That settle too waits a frame and a task, so a component
+ * that watches the same control - the Agents composer, giving its box the focus back - acts on the
  * change first. A pointer press anywhere while a check or a wait is out is the reader moving on -
  * onto a control, or onto the page itself - and ends it, so a control enabled again later never
  * pulls back a focus the reader left on the page. So is the reader's Escape: a control it takes
  * away or leaves - the issue title's editor, whose heading would open it again if it took the
  * focus - is the reader leaving it, and the focus stays where Escape left it, as the Inbox's and
- * the Board's own Escape leave it on the page. The element a loss the reader caused lands on is
- * scrolled into view (`land`); a loss they did not cause scrolls nothing.
+ * the Board's own Escape leave it on the page. The control a loss the reader caused walks back to
+ * is scrolled into view (`land`); what stands where the element stood, and anything a loss they
+ * did not cause lands on, is focused with no scroll.
  *
  * A loss the reader can no longer see is not answered: the element was scrolled out of their
  * sight - out of the viewport, or out of a scroll box around it - before it went, or before the
@@ -628,10 +755,15 @@ function handOn(loss: Loss, main: HTMLElement | null, caused: boolean): void {
 export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
   useEffect(() => {
     rescueMounted = true;
-    /** The element holding the focus, its region and the path it was focused on, until it loses
-     *  the focus by a `focusout`; one still noted here once it has left the page went with no
-     *  `focusout` at all. */
-    let focused: { element: HTMLElement; path: string; region: Element } | null = null;
+    /** The element holding the focus, its region, the path it was focused on and where it stood
+     *  as it took the focus (`spotsOf`), until it loses the focus by a `focusout`; one still noted
+     *  here once it has left the page went with no `focusout` at all. */
+    let focused: {
+      element: HTMLElement;
+      path: string;
+      region: Element;
+      spots: readonly Spot[];
+    } | null = null;
     /** The loss each dialog the focus has entered was opened from, or null for one it entered
      *  from the body. */
     const openedFrom = new Map<Element, Loss | null>();
@@ -639,6 +771,18 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
     let moving: { from: Loss | null; to: Element } | null = null;
     /** Cancels the check or the wait still out for the latest loss. */
     let pending: (() => void) | null = null;
+    /** The elements the page has added since the latest loss went (that loss's `arrived`), noted
+     *  only while its check or its wait is out (`pending`). */
+    let arriving = new Set<Node>();
+    /** Notes each element `records` added to the page as one the latest loss's place may now
+     *  hold. */
+    const noteArrivals = (records: readonly MutationRecord[]) => {
+      for (const each of records) {
+        for (const node of each.addedNodes) {
+          if (node instanceof Element) arriving.add(node);
+        }
+      }
+    };
     /** Whether the reader had scrolled `loss`'s element out of their sight before it went, in a
      *  region still in the page. */
     const unseen = (loss: Loss) => outOfSight(loss.element) && present(loss.region);
@@ -719,7 +863,12 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
         openedFrom.set(region, moving?.to === element ? moving.from : null);
       }
       moving = null;
-      focused = { element, path: window.location.pathname, region };
+      focused = {
+        element,
+        path: window.location.pathname,
+        region,
+        spots: spotsOf(element, region),
+      };
       // The same element taking the focus again - the window given back the focus - keeps what
       // the scrolls since it was first noted saw. A new one is read where it took the focus,
       // before the engine has scrolled it into view.
@@ -745,25 +894,37 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
         moving = { from: null, to: next };
         return;
       }
+      const arrived = new Set<Node>();
       const loss: Loss = {
+        arrived,
         caused: causedByReader(element),
         element,
         index: countBefore(drawnIn(region, main.current), element),
         opener: openedFrom.get(region) ?? null,
         path,
         region,
+        spots: spotsOf(element, region),
         taken: element.matches(":disabled") || !rendered(element),
       };
       // A focus going straight to another region is kept only as the place it left: the opener
       // of the dialog it is entering.
-      if (next instanceof Element) moving = { from: loss, to: next };
-      else pending = afterComponents(() => check(loss));
+      if (next instanceof Element) {
+        moving = { from: loss, to: next };
+        return;
+      }
+      // What the page changed before this loss is none of what a press draws in its place: those
+      // records are dropped unread, and only the ones after it are noted as arrivals.
+      watcher.takeRecords();
+      arriving = arrived;
+      pending = afterComponents(() => check(loss));
     };
 
     // A focused element taken away with no `focusout` - Firefox's and WebKit's way, for the
     // element or a parent of it - is read off the mutation that took it, at the place it was
-    // taken from, or at the region's end where no record of this batch names it.
+    // taken from, or at the region's end where no record of this batch names it. Every batch
+    // that comes while a loss's check or wait is out is noted first as that loss's arrivals.
     const watcher = new MutationObserver((records) => {
+      if (pending !== null) noteArrivals(records);
       const held = focused;
       if (held === null || held.element.isConnected) return;
       focused = null;
@@ -772,13 +933,20 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       const index =
         removal === undefined || !held.region.isConnected
           ? drawnIn(held.region, main.current).length
-          : placeOfRemoval(held.region, removal, main.current);
+          : placeOfRemoval(held.region, removal.spot, main.current);
       pending?.();
+      // What this batch added from the record that took the element on is what can stand in its
+      // place; what it added before that record is not.
+      const arrived = new Set<Node>();
+      arriving = arrived;
+      noteArrivals(records.slice(removal?.at ?? 0));
       const loss: Loss = {
+        arrived,
         caused: causedByReader(held.element),
         ...held,
         index,
         opener: openedFrom.get(held.region) ?? null,
+        spots: removal === undefined ? held.spots : [removal.spot, ...held.spots],
         taken: true,
       };
       pending = afterComponents(() => check(loss));
