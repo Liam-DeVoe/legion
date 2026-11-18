@@ -140,6 +140,17 @@ function renderComposer(options: ComposerOptions = {}) {
   return { queryClient, rerender: (next: ComposerOptions) => view.rerender(composer(next)), view };
 }
 
+/** Answers, with no agent, the live agents read (`useAgents`) that an issue composer given no
+ *  `agents` makes as it mounts, for a row on the fake clock. Left to the shell's handler
+ *  (`network.ts`), the read is answered through MSW on promise turns alone, and a row on the fake
+ *  clock moves on promise turns alone too, so where the answer lands is a count of turns: one
+ *  that falls between two of the row's steps updates the composer outside `act`. The spy's
+ *  answer lands within the row's first user-event step, which Testing Library runs with the act
+ *  environment off. */
+function answerLiveAgents(): Mock<typeof api.listAgents> {
+  return spyOn(api, "listAgents").mockResolvedValue([]);
+}
+
 function holdControls(): HTMLFieldSetElement {
   const controls = screen.getByRole("form", { name: "Comment composer" }).querySelector("fieldset");
   if (!(controls instanceof HTMLFieldSetElement))
@@ -577,6 +588,7 @@ test("a token-only targeted legacy reply cannot submit, and Send says why", asyn
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const createMessage = spyOn(api, "createMessage").mockResolvedValue({} as never);
+  const listAgents = answerLiveAgents();
   const { view } = renderComposer({
     replyTo: {
       actor: plannerAuthor,
@@ -601,6 +613,7 @@ test("a token-only targeted legacy reply cannot submit, and Send says why", asyn
     realClock();
     view.unmount();
     createMessage.mockRestore();
+    listAgents.mockRestore();
   }
 });
 
@@ -2372,6 +2385,7 @@ const stillSending = KEYED_SEND_LATE_TEXT;
 test("a send the server answers at 35 s posts once: the deadline offers no Retry, and the answer lands", async () => {
   const answer = Promise.withResolvers<Comment>();
   const createComment = spyOn(api, "createComment").mockReturnValueOnce(answer.promise);
+  const listAgents = answerLiveAgents();
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const { invalidated, view } = renderHostedComposer();
@@ -2412,6 +2426,7 @@ test("a send the server answers at 35 s posts once: the deadline offers no Retry
     realClock();
     view.unmount();
     createComment.mockRestore();
+    listAgents.mockRestore();
   }
 });
 
@@ -2420,6 +2435,7 @@ test("a send the server answers at 35 s posts once: the deadline offers no Retry
 test("a refusal after the deadline hands the draft back with Retry", async () => {
   const answer = Promise.withResolvers<Comment>();
   const createComment = spyOn(api, "createComment").mockReturnValueOnce(answer.promise);
+  const listAgents = answerLiveAgents();
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const { view } = renderHostedComposer();
@@ -2448,6 +2464,7 @@ test("a refusal after the deadline hands the draft back with Retry", async () =>
     realClock();
     view.unmount();
     createComment.mockRestore();
+    listAgents.mockRestore();
   }
 });
 
@@ -2867,6 +2884,7 @@ test("a pasted file answered KEY_COMMITTED says it was stored and adds no refere
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
     new ApiError(409, { code: "KEY_COMMITTED", error: "already made" })
   );
+  const listAgents = answerLiveAgents();
   const user = userOnFakeClock();
   const { view } = renderComposer();
 
@@ -2891,6 +2909,7 @@ test("a pasted file answered KEY_COMMITTED says it was stored and adds no refere
     realClock();
     view.unmount();
     uploadArtifact.mockRestore();
+    listAgents.mockRestore();
   }
 });
 
@@ -2942,6 +2961,7 @@ test("a send waits for a pasted picture still uploading, by Send and by Ctrl+Ent
     return uploaded("shot-png", "shot.png", 1);
   });
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
+  const listAgents = answerLiveAgents();
   const user = userOnFakeClock();
   const { view } = renderComposer();
 
@@ -2976,6 +2996,7 @@ test("a send waits for a pasted picture still uploading, by Send and by Ctrl+Ent
     view.unmount();
     uploadArtifact.mockRestore();
     createComment.mockRestore();
+    listAgents.mockRestore();
   }
 });
 
