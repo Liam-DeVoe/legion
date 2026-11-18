@@ -2090,7 +2090,7 @@ func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 		got     []string
 		carried map[string]bool
 	}{
-		{"legionVolumeNames", legionVolumeNames(), volumes},
+		{"legionVolumeNames", legionVolumeNames(launcherRoles), volumes},
 		{"legionMountPaths", legionMountPaths(), mounts},
 		{"runtimeOwned with composed", slices.Collect(maps.Keys(runtimeOwnedOrComposed)), env},
 	} {

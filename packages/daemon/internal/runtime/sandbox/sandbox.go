@@ -348,7 +348,8 @@ func configureProber(opts Options) (*Runtime, error) {
 			return refuse("agent secrets: token expiry %s is not between %s and %s (the API server's floor and the cluster's admission cap)", a.TokenExpiry, 10*time.Minute, time.Hour)
 		}
 	}
-	if err := CheckPod(opts.Pod, opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore); err != nil {
+	issueRoles := issueRolesOf(opts.DeploymentApps)
+	if err := CheckPod(opts.Pod, append(slices.Clone(issueRoles), claim.RoleController), opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore); err != nil {
 		return refuse("%v", err)
 	}
 	for _, name := range opts.ProvidersSecrets {
@@ -356,7 +357,6 @@ func configureProber(opts Options) (*Runtime, error) {
 			return refuse("providers secret %s is not a launch secret (%s)", name, strings.Join(opts.LaunchSecrets, ", "))
 		}
 	}
-	issueRoles := issueRolesOf(opts.DeploymentApps)
 	for role, files := range opts.RoleConfigFiles {
 		if role != claim.RoleController && !slices.Contains(issueRoles, role) {
 			return refuse("Oh My Pi overlays for %q, which is not a Legion role", role)
@@ -421,6 +421,12 @@ func configureProber(opts Options) (*Runtime, error) {
 func issueRolesOf(deployed appauth.DeploymentApps) []claim.Role {
 	return append(slices.Clone(claim.Roles), slices.Sorted(maps.Keys(deployed))...)
 }
+
+// IssueRoles is issueRolesOf exported, the one rule of the order of an issue pod's roles, for the
+// daemon's own reads of the deployment that build no runtime (`legion start --check-config` and
+// the boot's check of the operator's pod, checkOperatorConfig), so they refuse what configure
+// refuses.
+func IssueRoles(deployed appauth.DeploymentApps) []claim.Role { return issueRolesOf(deployed) }
 
 // roleConfigRoles are the roles Options.RoleConfigFiles may name, in the order the image probe is
 // told them: every issue role (issueRoles), then the controller.

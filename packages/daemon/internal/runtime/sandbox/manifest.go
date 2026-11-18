@@ -199,17 +199,18 @@ const sessionProxyAccountFlag = "--session-impersonate-service-account"
 // legionVolumeNames are the volumes Legion puts in a pod, an issue pod's, the controller's or the
 // probe's, whose names the operator's volumes may not take: the shared ones, the role homes, the
 // test database's, the skills clone's and its fetch's TMPDIR, and each launcher role's private
-// ones. The agent-secrets volumes are reserved
+// ones, for every role of roles (the runtime's issue roles, a role the deployment defines among
+// them, then the controller). The agent-secrets volumes are reserved
 // whether or not this deployment enrolls, the test database's whether or not it sets
 // `runtime.kubernetes.test_postgres`, and the skills volumes whether or not it names a
 // `runtime.kubernetes.skills_repository`: an operator's pod may never claim them. Every launcher
 // role, the controller's included, has a key volume when the pod enrolls and a gh volume always.
-func legionVolumeNames() []string {
+func legionVolumeNames(roles []claim.Role) []string {
 	names := []string{
 		issueVolume, provisionVolume, tempVolume, configVolume, providersVolume, agentSecretsTokenVolume, roleHomesVolume, roleProbeVolume, testPGVolume,
 		skillsVolume, skillsTempVolume,
 	}
-	for _, role := range launcherRoles {
+	for _, role := range roles {
 		names = append(names, roleVolume("launcher", role), roleVolume("private", role), roleVolume(stateVolume, role), roleVolume(ghVolume, role),
 			roleVolume(agentSecretsKeyVolume, role))
 	}

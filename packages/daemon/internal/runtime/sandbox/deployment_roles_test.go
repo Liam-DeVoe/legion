@@ -7,12 +7,14 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
@@ -158,5 +160,20 @@ func TestAPodsLogAndBoundCountItsDeploymentsRoles(t *testing.T) {
 	}
 	if got, want := withChecker.LaunchBound()-plain.LaunchBound(), time.Duration(relaunchRoleCalls)*apiTimeout; got != want {
 		t.Errorf("the checker's runtime's launch bound exceeds the plain runtime's by %s, want %s (one role's calls)", got, want)
+	}
+}
+
+// An operator's pod volume may not take the name of a volume Legion gives a role of the
+// deployment, as it may not take one of Legion's own roles': the role's launcher volume in the
+// pod would collide with it.
+func TestAnOperatorVolumeMayNotTakeADeploymentRolesVolumeName(t *testing.T) {
+	pod := Pod{Volumes: []corev1.Volume{{Name: "launcher-checker", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}}
+	legion := append(slices.Clone(claim.Roles), claim.RoleController)
+	want := "runtime.kubernetes.pod.volumes[0].name launcher-checker is a volume Legion puts in every pod"
+	if err := CheckPod(pod, append(slices.Clone(legion), "checker"), nil, testOptions().Tools, nil, nil, ompsessions.Store{}); err == nil || err.Error() != want {
+		t.Errorf("CheckPod with the checker among the roles = %v, want %q", err, want)
+	}
+	if err := CheckPod(pod, legion, nil, testOptions().Tools, nil, nil, ompsessions.Store{}); err != nil {
+		t.Errorf("CheckPod with no checker among the roles = %v, want no refusal", err)
 	}
 }
