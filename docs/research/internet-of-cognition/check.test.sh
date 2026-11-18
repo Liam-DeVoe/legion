@@ -1864,7 +1864,7 @@ dir_copy() {
 BROKEN_LINE='{"id": "broken-row", "kind": '
 LIST_COMMAND='{"id":"command-list","requirement":"r7","source":"the case","kind":"behaviour","claim":"A command that is a list.","mark":"verified","evidence":{"surface":"cli"},"command":["ls"],"expect":{"contains":"ls"},"note":"planted"}'
 NUMBER_ID='{"id":7,"requirement":"r7","source":"the case","kind":"behaviour","claim":"An id that is a number.","mark":"verified","evidence":{"surface":"cli"},"command":"printf ran","expect":{"contains":"ran"},"note":"planted"}'
-for mode in replay:17:claim-form citations:5:citation-kinds; do
+for mode in replay:18:claim-form citations:5:citation-kinds; do
     family="${mode##*:}"
     count="${mode#*:}"
     count="${count%%:*}"
