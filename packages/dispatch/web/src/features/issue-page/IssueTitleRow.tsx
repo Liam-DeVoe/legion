@@ -132,7 +132,12 @@ export function IssueTitleRow({
           className={`${box} resize-none overflow-hidden outline-none ${borderTransparent} ${bgTransparent} ${borderStrongHover} ${focusBorder}`}
           disabled={isClosed}
           maxLength={ISSUE_TITLE_MAX}
-          onBlur={() => {
+          onBlur={(event) => {
+            // A switch to another window or tab blurs the editor but leaves it the page's focused
+            // element, and the browser focuses it again as the reader comes back: they have not
+            // left the editor, so it stays open with their draft, sends nothing and leaves the
+            // press alone.
+            if (!event.currentTarget.ownerDocument.hasFocus()) return;
             drafts.requestTitleSubmit();
             if (pressing.current) {
               // The press this blur came from lets the heading go as it ends.
@@ -144,6 +149,9 @@ export function IssueTitleRow({
           // A title is one line of words: a line break typed or pasted is a space.
           onChange={(event) => drafts.writeTitle(event.target.value.replace(/\s*\n\s*/gu, " "))}
           onKeyDown={(event) => {
+            // The Escape that cancels an IME composition and the Enter that confirms one are the
+            // input method's keys, not the reader ending the edit.
+            if (event.nativeEvent.isComposing) return;
             if (event.key === "Escape") {
               drafts.discardTitle();
               returning.current = true;

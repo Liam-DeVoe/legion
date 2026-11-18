@@ -2,7 +2,7 @@ import { beforeEach, expect, type Mock, setSystemTime, spyOn, test } from "bun:t
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: user-event has no form for the presses and events the title's and the actions group's cases send: a press the browser cancels as it turns into a drag (its pointercancel and dragend, with no mouseup), a right press whose context menu takes its release (its contextmenu, with no pointerup), a tap's order (its pointer up before the mousedown that moves the focus, where user-event moves the focus as its pointer goes down), and a blur of the window.
+// biome-ignore lint/style/noRestrictedImports: user-event has no form for the presses and events the title's and the actions group's cases send: a press the browser cancels as it turns into a drag (its pointercancel and dragend, with no mouseup), a right press whose context menu takes its release (its contextmenu, with no pointerup), a tap's order (its pointer up before the mousedown that moves the focus, where user-event moves the focus as its pointer goes down), a blur of the window, and a key pressed during an IME composition.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { http } from "msw";
@@ -1278,6 +1278,124 @@ test("a tap that ends the edit holds the title whole until its click", async () 
   } finally {
     outside.remove();
     view.unmount();
+    restore();
+  }
+});
+
+/** Opens the title's editor by a click on the heading and writes `draft` in it in place of the
+ *  title, with the editor keeping the focus. */
+async function editTitle(user: UserEvent, draft: string) {
+  const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+  await user.click(heading);
+  const editor = await screen.findByRole("textbox", { name: "Issue title" });
+  await waitFor(() => expect(editor).toHaveFocus());
+  await user.clear(editor);
+  await user.keyboard(draft);
+  expect(editor).toHaveValue(draft);
+  return { editor, heading };
+}
+
+// A switch to another window or tab blurs the editor with no element for the focus to go to, and
+// the editor stays the page's focused element, which the browser focuses again as the reader comes
+// back. The reader has not left the editor, so it stays open with their draft and sends nothing.
+// Back in the window, a press elsewhere still ends the edit and sends the draft, once.
+test("a switch to another window keeps the title's editor open with its draft and sends no write", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, title: "Review the plan" });
+  const view = renderHeader();
+  const outside = document.createElement("button");
+  outside.type = "button";
+  outside.textContent = "Elsewhere";
+  document.body.append(outside);
+
+  try {
+    const { editor } = await editTitle(user, "Review the plan");
+    // The document has no focus while the reader is in the other window.
+    const hasFocus = spyOn(document, "hasFocus").mockReturnValue(false);
+    try {
+      // What a browser sends as its window loses the focus, with no relatedTarget and the focus
+      // left where it was: user-event has no form for a window's blur.
+      fireEvent.blur(editor, { relatedTarget: null });
+      fireEvent.focusOut(editor, { relatedTarget: null });
+      fireEvent.blur(window);
+    } finally {
+      hasFocus.mockRestore();
+    }
+    expect(screen.getByRole("textbox", { name: "Issue title" })).toBe(editor);
+    expect(editor).toHaveValue("Review the plan");
+    expect(editor).toHaveFocus();
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    await user.click(outside);
+    await waitFor(() =>
+      expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument()
+    );
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+  } finally {
+    outside.remove();
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// The Escape that cancels an IME composition is the input method's: the editor stays open with the
+// reader's draft. A plain Escape after it still discards the draft and gives the focus back to the
+// heading.
+test("an Escape that ends an IME composition leaves the title's editor open with its draft", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, title: "Review the plan" });
+  const view = renderHeader();
+
+  try {
+    const { editor, heading } = await editTitle(user, "Review the plan");
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(editor, { isComposing: true, key: "Escape" });
+    expect(screen.getByRole("textbox", { name: "Issue title" })).toBe(editor);
+    expect(editor).toHaveValue("Review the plan");
+    expect(editor).toHaveFocus();
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument();
+    expect(heading).toHaveTextContent(issue.title);
+    expect(patchIssue).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// The Enter that confirms an IME composition is the input method's: the editor stays open with the
+// reader's draft and sends nothing, where the title would be written mid-word. A plain Enter after
+// it still writes the title, once, and gives the focus back to the heading.
+test("an Enter that ends an IME composition leaves the title's editor open and sends no write", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, title: "Review the plan" });
+  const view = renderHeader();
+
+  try {
+    const { editor, heading } = await editTitle(user, "Review the plan");
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(editor, { isComposing: true, key: "Enter" });
+    expect(screen.getByRole("textbox", { name: "Issue title" })).toBe(editor);
+    expect(editor).toHaveValue("Review the plan");
+    expect(editor).toHaveFocus();
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument();
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
     restore();
   }
 });
