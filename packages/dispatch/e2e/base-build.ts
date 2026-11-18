@@ -62,16 +62,16 @@ export type BaseBuild =
   | { readonly binary: string; readonly commit: string | undefined }
   | { readonly skip: string };
 
-/** The commit `BASELINE_SHA` names, in full; unset or empty it is `git merge-base origin/main
- *  HEAD`, the commit of main this branch was built on, as lib-baseline.sh reads it. */
+/** The commit `BASELINE_SHA` names, in full: the release this branch lands after. It has no
+ *  default, as lib-baseline.sh's has none: main's merge base is older than any sibling branch this
+ *  one is stacked on, so a row built on it could pass without being able to fail. */
 export async function baselineCommit(): Promise<string> {
-  const given = (process.env.BASELINE_SHA ?? "").trim();
-  const revision =
-    given !== ""
-      ? given
-      : (
-          await execFileAsync("git", ["-C", repository, "merge-base", "origin/main", "HEAD"])
-        ).stdout.trim();
+  const revision = (process.env.BASELINE_SHA ?? "").trim();
+  if (revision === "")
+    throw new Error(
+      "BASELINE_SHA is unset: set it to the commit of the release this branch lands after, " +
+        "or set BASELINE_BINARY to a server already built from it; it has no default"
+    );
   const { stdout } = await execFileAsync("git", [
     "-C",
     repository,

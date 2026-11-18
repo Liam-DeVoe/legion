@@ -29,15 +29,15 @@ usage() {
 Usage: cd packages/dispatch && DATABASE_URL=$ISSUE_BOOT_DATABASE_URL DISPATCH_TOKEN=e2e-token \
          PROJECT=CORE BASELINE_SHA=<commit> LEGION_TEST_PG_DSN=<dsn> \
          bash e2e/acceptance/one-inbox-census.sh
-       (BASELINE_SHA unset is git merge-base origin/main HEAD. The database is this check's own:
-       the servers truncate and seed whatever database they are given.)
+       (BASELINE_SHA is the release this branch lands after, and has no default. The database is
+       this check's own: the servers truncate and seed whatever database they are given.)
 USAGE
 }
 
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-require_env DATABASE_URL DISPATCH_TOKEN PROJECT
+require_env DATABASE_URL DISPATCH_TOKEN PROJECT BASELINE_SHA
 require_commands go git curl psql jq python3
 
 database_url="$DATABASE_URL"
@@ -45,7 +45,7 @@ project="$PROJECT"
 token="$DISPATCH_TOKEN"
 unset DISPATCH_TOKEN
 workspace="${LEGION_WORKSPACE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)}"
-baseline_sha="${BASELINE_SHA:-$(git -C "$workspace" merge-base origin/main HEAD)}"
+baseline_sha="$BASELINE_SHA"
 work="${TMPDIR:?TMPDIR is required}/one-inbox-census-$$"
 mkdir -p "$work"
 failures_file="$work/failures"

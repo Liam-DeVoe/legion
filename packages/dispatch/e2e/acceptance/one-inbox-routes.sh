@@ -58,9 +58,9 @@
 #
 # Inputs: DISPATCH_URL (the server at the commit under test), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE
 # (its agent bearer, read here and never printed), PROJECT (a project the server holds),
-# ISSUE_PREFLIP_DATABASE_URL (the database it serves, on this machine), and optionally BASELINE_SHA
-# (the base commit; unset, `git merge-base origin/main HEAD`), BASELINE_BINARY (a prebuilt base
-# build, which spares the run its build), DEV_SIGNIN_LOGIN (default alice) and
+# ISSUE_PREFLIP_DATABASE_URL (the database it serves, on this machine), BASELINE_SHA (the release
+# this branch lands after, which has no default) or BASELINE_BINARY (a prebuilt base build of it,
+# which spares the run its build), and optionally DEV_SIGNIN_LOGIN (default alice) and
 # DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY (the dev sign-in key the server was started with; unset, the
 # fixed `e2e-dev-signin` e2e/run-server.sh gives a one-process server, which the base build must
 # share to start beside it). The comparison and the backfill are this checkout's own
@@ -83,7 +83,7 @@ usage() {
   cat >&2 <<'USAGE'
 Usage: ISSUE_PREFLIP_DATABASE_URL=postgres://user@127.0.0.1:5433/db \
          DISPATCH_URL=http://127.0.0.1:8778 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
-         [BASELINE_SHA=<commit> | BASELINE_BINARY=<path>] [DEV_SIGNIN_LOGIN=alice] \
+         {BASELINE_SHA=<commit> | BASELINE_BINARY=<path>} [DEV_SIGNIN_LOGIN=alice] \
          one-inbox-routes.sh
        (DISPATCH_TOKEN_FILE=<file holding the bearer> in place of DISPATCH_TOKEN;
        ISSUE_PREFLIP_DATABASE_URL must name the database that server serves, on this machine)
@@ -95,6 +95,13 @@ token="" work="" answer="" status=""
 # shellcheck source-path=SCRIPTDIR source=lib.sh disable=SC1091 # followed under shellcheck -x
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 require_env DISPATCH_URL PROJECT ISSUE_PREFLIP_DATABASE_URL
+# The base commit has no default: main's merge base is older than any sibling branch this one is
+# stacked on, so a comparison built on it could pass without being able to fail.
+if [[ -z "${BASELINE_SHA:-}" && -z "${BASELINE_BINARY:-}" ]]; then
+  printf 'BASELINE_SHA is unset: set it to the commit of the release this branch lands after, or set BASELINE_BINARY to a server already built from it\n' >&2
+  usage
+  exit 2
+fi
 require_commands base64 curl git go jq psql sed sleep sort tar
 read_bearer
 
@@ -273,9 +280,7 @@ if [[ -n "${BASELINE_BINARY:-}" ]]; then
   [[ -x "$base_binary" ]] || fail setup "boot the base build" "BASELINE_BINARY $base_binary is no executable file"
   base_commit="(prebuilt $base_binary)"
 else
-  sha="${BASELINE_SHA:-}"
-  [[ -n "$sha" ]] || sha="$(git -C "$checkout" merge-base origin/main HEAD)" ||
-    fail setup "find the base commit" "BASELINE_SHA is unset and git merge-base origin/main HEAD found none"
+  sha="$BASELINE_SHA"
   base_commit="$(git -C "$checkout" rev-parse --verify --quiet "${sha}^{commit}")" ||
     fail setup "find the base commit" "BASELINE_SHA $sha names no commit"
   [[ ! -e "$base_dir" ]] || fail setup "build the base" "$base_dir exists already; another run may still read it"

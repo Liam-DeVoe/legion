@@ -42,8 +42,10 @@ import (
 // It carries the basebuild tag, as cmd/dispatch's store_census_test.go does: it reads the
 // repository's history and builds a second server, which no CI suite pays for.
 
-// baselineSHAEnv names the commit the base build is built from. Unset or empty it is the commit of
-// main this branch was built on, `git merge-base origin/main HEAD`, as lib-baseline.sh reads it.
+// baselineSHAEnv names the commit the base build is built from: the release this branch lands
+// after. It has no default, as lib-baseline.sh's has none: main's merge base is older than any
+// sibling branch this one is stacked on, so a check built on it could pass without being able to
+// fail, and only the caller knows which release the branch lands after.
 const baselineSHAEnv = "BASELINE_SHA"
 
 // fullCommit is the only spelling of a commit the harness builds: a revision that resolves to
@@ -54,15 +56,14 @@ var fullCommit = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // boot migrates a whole schema from empty, which is the longest this wait covers.
 const baselineBoot = 3 * time.Minute
 
-// baselineCommit is the commit the base build is built from: BASELINE_SHA, or `git merge-base
-// origin/main HEAD` when it is empty, resolved with `git rev-parse --verify <rev>^{commit}` to a
-// full sha.
+// baselineCommit is the commit the base build is built from: BASELINE_SHA, resolved with `git
+// rev-parse --verify <rev>^{commit}` to a full sha. An unset or empty one fails the test, naming it.
 func baselineCommit(t *testing.T) string {
 	t.Helper()
 	root := gitOutput(t, ".", "rev-parse", "--show-toplevel")
 	revision := strings.TrimSpace(os.Getenv(baselineSHAEnv))
 	if revision == "" {
-		revision = gitOutput(t, root, "merge-base", "origin/main", "HEAD")
+		t.Fatalf("%s is unset: set it to the commit of the release this branch lands after; it has no default", baselineSHAEnv)
 	}
 	commit := gitOutput(t, root, "rev-parse", "--verify", revision+"^{commit}")
 	if !fullCommit.MatchString(commit) {
