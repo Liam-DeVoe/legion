@@ -899,6 +899,13 @@ export interface InboundUnavailableOptions {
   readonly firstOpenBoundMs?: number;
   /** Tells the session once that it receives again, after it was told that it receives nothing. */
   readonly restored?: () => void;
+  /**
+   * Whether the session has begun to stop; once it answers true, the report tells nothing, neither
+   * `tell` nor `restored`. A stopping session closes its own relay on purpose, and a registration
+   * refused, answered or skipped during the stop says nothing about what the session receives,
+   * since its record is deleted next.
+   */
+  readonly stopping?: () => boolean;
 }
 
 /**
@@ -914,7 +921,8 @@ export interface InboundUnavailableOptions {
  * its start, and it receives once the relay opens. So until the session's first accepted
  * registration, an outage with no relay subject is held: the first such call starts the bound,
  * and only a call at or after its end tells the session. A refusal is told at once, as is an
- * outage with no relay subject after the first accepted registration.
+ * outage with no relay subject after the first accepted registration. A session that has begun to
+ * stop (`stopping`) is told nothing at all.
  */
 export function inboundUnavailable(
   tell: (why: string) => void,
@@ -922,13 +930,14 @@ export function inboundUnavailable(
     now = () => Date.now(),
     firstOpenBoundMs = INBOUND_FIRST_OPEN_BOUND_MS,
     restored,
+    stopping = () => false,
   }: InboundUnavailableOptions = {}
 ): InboundUnavailable {
   let told = false;
   let everAccepted = false;
   let heldSince: number | undefined;
   const say = (error: unknown) => {
-    if (told) return;
+    if (told || stopping()) return;
     told = true;
     tell(messageFor(error));
   };
@@ -946,7 +955,7 @@ export function inboundUnavailable(
     },
     accepted() {
       everAccepted = true;
-      if (!told) return;
+      if (!told || stopping()) return;
       told = false;
       restored?.();
     },

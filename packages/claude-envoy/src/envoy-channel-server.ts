@@ -972,6 +972,8 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     if (shuttingDown || relay === undefined) return
     relay.delivery.beginEpoch()
     serialized(register).catch((error: unknown) => {
+      // A registration that fails once the stop has begun is retried by no heartbeat.
+      if (shuttingDown) return
       process.stderr.write(
         `envoy-channel: could not register again after a reconnect (${messageFor(error)}); the next heartbeat retries\n`,
       )
@@ -1055,7 +1057,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * `ErrorWireSchema.reason` lists (`@legion/envoy-client`'s `transport.ts`), which the error
    * carries in its message and which `inboundUnavailableNoticeText` words for every host. Once a
    * registration is accepted after a told outage, the session is told once that it receives
-   * again, by the same path, so it learns that what the stream stored meanwhile is arriving.
+   * again, by the same path, so it learns that what the stream stored meanwhile is arriving. A
+   * session whose shutdown has begun is told neither (`stopping`): the shutdown closed the relay
+   * on purpose, and the record is deleted next.
    */
   const inboundOutage = inboundUnavailable(
     (why) => {
@@ -1079,6 +1083,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
           )
         })
       },
+      stopping: () => shuttingDown,
     },
   )
 
@@ -1094,8 +1099,14 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * this session (`registrationTopics`), taken by the relay as followed first, the relay's
    * delivery request, the outage told once, and the answer's consumer taken
    * (`takeDeliveryAnswer`).
+   *
+   * A stopping session registers nothing (R24 of dispatch://INFRA-3589). Its shutdown closes the
+   * relay on purpose and deletes the record next, so a registration the chain still holds when the
+   * stop begins has nothing to ask for. It returns at once: made, it would find no relay subject
+   * and be refused, which would only report an outage that the stop made on purpose.
    */
   const register = async (): Promise<void> => {
+    if (shuttingDown) return
     const title = options.title?.(identity.id) ?? ""
     if (
       options.stampTitle !== undefined &&
@@ -1551,6 +1562,10 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     heartbeatInFlight = true
     try {
       await serialized(async () => {
+        // A tick the chain held until the stop began does nothing: the DELETE follows it, so it
+        // has no registration to refresh and no role to assert or take back for a session that is
+        // going.
+        if (shuttingDown) return
         await adoptHandoff()
         try {
           await register()
@@ -1568,6 +1583,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // would refresh is fresh now, and a listener that is still slow is owed nothing.
       clearRetry()
     } catch (error) {
+      // A tick that fails once the stop has begun is no outage: no heartbeat follows it, and the
+      // DELETE does, so the line would promise a retry that never comes.
+      if (shuttingDown) return
       // The extra call this failure buys, armed only from an interval tick: a retry that fails
       // is followed by the next tick, not by a second retry, so a listener that keeps refusing
       // sees one extra call per interval and no more. A handoff that unregistered the old id and
@@ -1786,6 +1804,8 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       if (shuttingDown) return
       // The same path a reconnect takes: one more registration, behind whatever is queued.
       serialized(register).catch((error: unknown) => {
+        // A registration that fails once the stop has begun is retried by no heartbeat.
+        if (shuttingDown) return
         process.stderr.write(
           `envoy-channel: could not advertise this session's delivery modes (${messageFor(error)}); the next heartbeat retries\n`,
         )
@@ -1812,9 +1832,11 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // The relay's unanswered frames `nak`, so the listener sends them to whoever resumes.
       closeRelay()
       await followedTopics.close()
-      // The heartbeat is stopped and `follow` refuses while shutting down, so no registration
-      // starts from here. What the chain still holds is waited out — a registration it runs after
-      // the DELETE would write the record back — and so is one already on the wire, both bounded,
+      // The heartbeat is stopped, `follow` refuses while shutting down, and `register` does
+      // nothing once it is, so no registration starts from here: one the chain still holds does
+      // nothing when its turn comes. The chain is still waited out, so the writes it holds (a
+      // removal of topics) land before the DELETE, and so is a registration already on the wire,
+      // which would write the record back if it landed after the DELETE. Both waits are bounded,
       // and on this path bounded together by `shutdownSettleMs`: a write this listener has
       // stalled on must not keep the deregistration off the wire entirely, since a record left
       // behind outlives this process by the whole gone horizon, and the process is not given the

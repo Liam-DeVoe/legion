@@ -3190,7 +3190,9 @@ export default function envoyExtension(pi: PiApi): void {
   // every tick until one is accepted. A session whose first relay open is still being tried at
   // its start is told only once `INBOUND_FIRST_OPEN_BOUND_MS` has passed. Once a registration is
   // accepted after a told outage, the session is told once that it receives again, by the same
-  // path, so it learns that what the stream stored meanwhile is arriving.
+  // path, so it learns that what the stream stored meanwhile is arriving. A session whose stop has
+  // begun is told neither (`stopping`): the stop closed the relay on purpose, and the record is
+  // deleted next.
   const inboundOutage = inboundUnavailable(
     (why) => {
       logger.warn(`envoy: this session receives nothing: ${why}`);
@@ -3206,6 +3208,7 @@ export default function envoyExtension(pi: PiApi): void {
         activeSessionContext?.ui.notify("envoy: inbound messages are back", "info");
         unwritten.sendNotice(inboundRestoredNoticeText());
       },
+      stopping: () => shuttingDown,
     }
   );
 
@@ -3236,9 +3239,18 @@ export default function envoyExtension(pi: PiApi): void {
   // decides for every host: every subject the session follows, a role-bound one included, since
   // a notice lane reaches this session from its own consumer and from nowhere else (INFRA-771),
   // but one the listener would not store for it. They are read afresh at every registration.
+  //
+  // A stopping session registers nothing (R24 of dispatch://INFRA-3589). Its stop closes the
+  // relay on purpose and deletes the record next, so a registration that a queued pass or a timer
+  // makes once the stop began has nothing to ask for. It is refused here, before
+  // `registerWithRelay`, with an error that says why: a pass reads it as a pass that decided
+  // nothing (`reconcileNow`), and every other caller that reports it reports the truth.
   const sendRegistration = (
     send: (input: RegistrationInput) => Promise<SubscribeResult>
   ): Promise<SubscribeResult> => {
+    if (shuttingDown) {
+      return Promise.reject(new Error("this session is stopping, so it registers nothing"));
+    }
     // Taken in the turn this call starts, with no await ahead of it, so the whole body is built
     // and posted without a tmux call in between: the session the deregistration at shutdown
     // waits out is the one that reaches the wire, and no registration can resume behind the
@@ -3778,6 +3790,10 @@ export default function envoyExtension(pi: PiApi): void {
     // The catch-all above turned whatever the registration threw into `registration.error`, a
     // refused step included: this says so rather than report a registration failure.
     handle.check();
+    // A registration the stop refused (`sendRegistration`), or one that failed once the stop
+    // began, is no outage to report: the stop deletes the record next, and nothing asks again. So
+    // the pass decides nothing and says nothing, as a pass whose session moved does.
+    if (registration !== undefined && shuttingDown) return false;
     // Established once the registration landed, which is what a bridge call asks before it runs
     // a pass of its own (`establishForBridge`): a pass this call queues reads the host as it
     // stands when its turn comes, so one queued for an established session would learn a session
@@ -4117,7 +4133,11 @@ export default function envoyExtension(pi: PiApi): void {
         if (established || attempting) return;
         attempting = true;
         void establish()
-          .then(() => context.ui.notify("envoy: this session is registered", "warning"))
+          // A pass that ends once the stop began says nothing: it registered nothing
+          // (`sendRegistration`), or the stop deletes the record it wrote.
+          .then(() => {
+            if (!shuttingDown) context.ui.notify("envoy: this session is registered", "warning");
+          })
           // Quiet on purpose: the initial warning disclosed the outage, and a
           // fresh warning every retry tick would spam the session.
           .catch(() => undefined)
@@ -4300,9 +4320,10 @@ export default function envoyExtension(pi: PiApi): void {
     try {
       // The role claims go back first (`releaseRoleClaims`), and the record only after them: the
       // DELETE goes once the release answered or its share of the deadline ran out. The
-      // heartbeat has stopped (`shuttingDown`), so no new registration starts; one already on
-      // the wire is waited out before the DELETE, or it would land behind it and leave the session
-      // registered with nobody heartbeating it. That wait takes `SHUTDOWN_SETTLE_MS` here rather
+      // heartbeat has stopped and every registration is refused (`shuttingDown`,
+      // `sendRegistration`), so no new registration starts; one already on the wire is waited
+      // out before the DELETE, or it would land behind it and leave the session registered with
+      // nobody heartbeating it. That wait takes `SHUTDOWN_SETTLE_MS` here rather
       // than the whole of `REGISTRATION_SETTLE_MS`, which is longer than the deadline
       // below: the DELETE has to be on the wire before the host abandons this stop, since a
       // record left behind outlives the process by the gone horizon. The drain starts beside the

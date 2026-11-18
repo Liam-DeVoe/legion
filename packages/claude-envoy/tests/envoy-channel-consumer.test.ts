@@ -627,3 +627,61 @@ test("a heartbeat that runs after the session's shutdown closed its relay tells 
     await session.shutdown()
   }
 })
+
+// The outage report's own rule says that a stopping session is told nothing
+// (`inboundUnavailable`'s `stopping`). `register` sends nothing once the stop began, but a
+// registration already on the wire when it began is answered during it, and its refusal says
+// nothing about what a session whose record is deleted next receives.
+test("a registration on the wire when the session's shutdown began and refused during it tells the session nothing", async () => {
+  const directory = scratchState()
+  const nats = new FakeNats()
+  const notifier = heldNotifier()
+  let hold: PromiseWithResolvers<void> | undefined
+  const registrations: SubscribeInput[] = []
+  const client = recordingClient([], {
+    subscribe: async (input) => {
+      registrations.push(input)
+      const gate = hold
+      if (gate === undefined) return noInterest(input.sessionID)
+      await gate.promise
+      throw new EnvoyApiError({
+        method: "POST",
+        url: "http://127.0.0.1:4000/v1/interests/subscribe",
+        status: 409,
+        responseBody: JSON.stringify({
+          error: "the listener could not give this session a consumer",
+          reason: "not_requested",
+        }),
+      })
+    },
+  })
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity(SESSION, "/tmp"), directory, {
+      connection: nats,
+      notifier: notifier.notifier,
+      client,
+    }),
+  )
+  try {
+    // A follow's registration is held on the wire.
+    hold = Promise.withResolvers<void>()
+    const asked = registrations.length
+    const following = session.follow(["notifications.team.r24-refused"])
+    await waitFor(async () => registrations.length > asked, "the held registration")
+
+    // The session shuts down, and the listener refuses the held registration meanwhile.
+    const stopping = session.shutdown()
+    hold.resolve()
+    await following.catch(() => [])
+    await stopping
+    for (const write of notifier.pending) write.resolve()
+
+    // A notice this server writes for itself is the one write that names no Envoy event.
+    const notices = notifier.written.filter((written) => written.eventId === undefined)
+    expect(notices.map((written) => written.content)).toEqual([])
+  } finally {
+    hold?.resolve()
+    for (const write of notifier.pending) write.resolve()
+    await session.shutdown()
+  }
+})

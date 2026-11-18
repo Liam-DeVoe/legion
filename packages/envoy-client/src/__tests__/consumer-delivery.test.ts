@@ -1185,10 +1185,11 @@ describe("one registration", () => {
   /**
    * One session's outage report on a clock the row moves (`at`), with what it told, the clock at
    * each time it said the session receives again, and the two registrations a row makes: one with
-   * no relay subject, and one whose send answers `answer`.
+   * no relay subject, and one whose send answers `answer`. `stop` begins the session's stop.
    */
   function reportOnClock() {
     let clock = 0;
+    let stopping = false;
     const told: string[] = [];
     const restored: number[] = [];
     const sent: unknown[] = [];
@@ -1196,6 +1197,7 @@ describe("one registration", () => {
       now: () => clock,
       firstOpenBoundMs: BOUND,
       restored: () => restored.push(clock),
+      stopping: () => stopping,
     });
     return {
       told,
@@ -1203,6 +1205,9 @@ describe("one registration", () => {
       sent,
       at: (ms: number) => {
         clock = ms;
+      },
+      stop: () => {
+        stopping = true;
       },
       withoutRelay: () =>
         registerWithRelay({
@@ -1299,6 +1304,54 @@ describe("one registration", () => {
     report.at(16_000);
     await report.withRelay(Promise.resolve("registered"));
     expect([report.told, report.restored]).toEqual([[NO_RELAY], [16_000]]);
+  });
+
+  // R24 of dispatch://INFRA-3589: a stopping session closes its own relay on purpose, and its
+  // record is deleted next, so a registration refused, answered or skipped during the stop says
+  // nothing about what it receives.
+  test("a session that has begun to stop is told nothing of a registration with no relay subject or a refused one, though it was told of both before", async () => {
+    const report = reportOnClock();
+
+    await report.withRelay(Promise.resolve("registered"));
+    // Before the stop, each tells the session once, and the accepted registration after each
+    // tells it that it receives again.
+    report.at(1_000);
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    await report.withRelay(Promise.resolve("registered"));
+    report.at(2_000);
+    await expect(report.withRelay(Promise.reject(new Error("no_grant")))).rejects.toThrow(
+      "no_grant"
+    );
+    await report.withRelay(Promise.resolve("registered"));
+    expect([report.told, report.restored]).toEqual([
+      [NO_RELAY, "no_grant"],
+      [1_000, 2_000],
+    ]);
+
+    report.stop();
+    report.at(3_000);
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    await expect(report.withRelay(Promise.reject(new Error("no_grant")))).rejects.toThrow(
+      "no_grant"
+    );
+    expect([report.told, report.restored]).toEqual([
+      [NO_RELAY, "no_grant"],
+      [1_000, 2_000],
+    ]);
+  });
+
+  test("a session told of an outage that then begins to stop is not told that it receives again", async () => {
+    const report = reportOnClock();
+
+    await report.withRelay(Promise.resolve("registered"));
+    report.at(1_000);
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    expect(report.told).toEqual([NO_RELAY]);
+
+    report.stop();
+    report.at(2_000);
+    await report.withRelay(Promise.resolve("registered"));
+    expect([report.told, report.restored]).toEqual([[NO_RELAY], []]);
   });
 
   test("a refused registration tells the session once and takes no answer", async () => {

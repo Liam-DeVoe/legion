@@ -9,8 +9,10 @@ body: |-
   and so is a lost relay subject after the first accepted registration. The first registration
   accepted after a told outage calls the new `restored` option once, which a host words with the
   new `inboundRestoredNoticeText`: the session receives again, and what the stream stored
-  meanwhile arrives now. `inboundUnavailable` takes `{ now, firstOpenBoundMs, restored }` as its
-  second argument.
+  meanwhile arrives now. Once the new `stopping` option answers true, the report tells the
+  session nothing, since a stopping session closes its own relay and its record is deleted next.
+  `inboundUnavailable` takes `{ now, firstOpenBoundMs, restored, stopping }` as its second
+  argument.
 time: 2026-11-17T03:00:15Z
 custom:
     Issue: pr4194

@@ -509,7 +509,10 @@ order; that relay, not a subscription of this plugin's, is where the session's m
   (two minutes) has passed. After the first accepted registration, a lost relay subject is told at
   once, as is a refusal at any time. The first registration accepted after a told outage says once
   that Envoy inbound is restored, so the session knows that what the stream stored meanwhile
-  arrives now. There is no second path to fall back to.
+  arrives now. A session whose stop has begun is told neither, and registers nothing
+  (`sendRegistration`): the stop closes the relay on purpose and deletes the record next, so a
+  registration refused, answered or skipped during it says nothing about what the session
+  receives. There is no second path to fall back to.
 - Each relay frame is answered `received` as it decodes, then goes through `deliver`, the one path
   into the session. Its claim answers the listener as the claim ends: `done` once it settles, which is the
   `message_end` of the frame's card or person's turn (`UnwrittenFrames`), at once for a frame
@@ -718,6 +721,7 @@ listener can give no consumer is said once as a `logger.warn`, a UI warning and 
 (`inboundUnavailableNoticeText`) that Envoy inbound is unavailable, naming the refusal's reason,
 and every heartbeat asks again. The first registration accepted after that is said once as a
 `logger.info`, a UI note and a card (`inboundRestoredNoticeText`) that Envoy inbound is restored.
+A session whose stop has begun says neither.
 
 Each frame is shown once across reconnects and restarts, within two limits: the ledger's 72
 hours, and its 20,000 entries, the oldest dropped first, so a session shown more frames than that

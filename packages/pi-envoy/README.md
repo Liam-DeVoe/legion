@@ -159,8 +159,9 @@ unavailable and asks again at every heartbeat. When a registration is accepted a
 session says once that Envoy inbound is restored and that what the stream stored meanwhile
 arrives now. At the session's start the first NATS dial can fail: the start warns in the pane that
 the session is not registered and keeps trying in the background, but the session is told that
-Envoy inbound is unavailable only when no registration is accepted within two minutes. "Each frame
-shown once" in `AGENTS.md` has the full rules.
+Envoy inbound is unavailable only when no registration is accepted within two minutes. A session
+whose stop has begun registers nothing, and is told neither that Envoy inbound is unavailable nor
+that it is restored. "Each frame shown once" in `AGENTS.md` has the full rules.
 
 ## Session identity
 

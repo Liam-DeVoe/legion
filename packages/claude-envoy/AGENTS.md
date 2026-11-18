@@ -49,7 +49,10 @@ registered: the server says so once, on stderr and as a notice to the session
 (`inboundUnavailableNoticeText`), and asks again at each heartbeat. The first registration
 accepted after that is said once on stderr, and to the session as a notice
 (`inboundRestoredNoticeText`) that it receives again and that what the stream stored meanwhile
-arrives now. The outage report is `inboundUnavailable` in `@legion/envoy-client/consumer-delivery`,
+arrives now. A session whose shutdown has begun is told neither, and registers nothing
+(`register`): the shutdown closes the relay on purpose and deletes the record next, so a
+registration refused, answered or skipped during it says nothing about what the session
+receives. The outage report is `inboundUnavailable` in `@legion/envoy-client/consumer-delivery`,
 which pi-envoy uses too. There is no second path to fall back to.
 
 A message published while the session was not running or its connection was down waits in that

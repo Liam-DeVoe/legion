@@ -8,7 +8,11 @@ import * as consumerDeliveryModule from "@legion/envoy-client/consumer-delivery"
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import { logger } from "@oh-my-pi/pi-utils";
-import { REPLAY_DELIVERED_ENTRY, REPLAY_STATE_ENTRY } from "../src/missed-messages";
+import {
+  REPLAY_DELIVERED_ENTRY,
+  REPLAY_NOTICE_ENTRY,
+  REPLAY_STATE_ENTRY,
+} from "../src/missed-messages";
 import {
   busOutageAnswer,
   createPi,
@@ -137,6 +141,8 @@ describe("consumer delivery", () => {
     process.env.DISPATCH_URL = "http://dispatch.test";
     process.env.DISPATCH_TOKEN = "dispatch-token";
     let refusing = options.refuse;
+    // While set, the listener holds each registration on the wire until the row releases it.
+    let holding: PromiseWithResolvers<void> | undefined;
     const registrations: Registration[] = [];
     const dispatchReplies: string[] = [];
     const listener = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -156,6 +162,8 @@ describe("consumer delivery", () => {
           ...(body.delivery === undefined ? {} : { delivery: body.delivery }),
           relaySubscribed: natsState.controls.get(RELAY)?.active() === true,
         });
+        const held = holding;
+        if (held !== undefined) await held.promise;
         if (refusing !== undefined) {
           return new Response(
             JSON.stringify({
@@ -271,12 +279,35 @@ describe("consumer delivery", () => {
       accept: () => {
         refusing = undefined;
       },
+      /** The listener refuses every registration from here on, as `options.refuse` does. */
+      refuse: (refusal: { readonly status: number; readonly reason: string }) => {
+        refusing = refusal;
+      },
+      /** The listener holds each registration from here on on the wire, until `release`. */
+      hold: () => {
+        holding = Promise.withResolvers<void>();
+      },
+      /** The listener answers every registration it holds, and holds no more. */
+      release: () => {
+        holding?.resolve();
+        holding = undefined;
+      },
       entries: () => [...prior, ...fixture.entries, ...written],
       /** The `envoy-message` cards handed whose text holds `text`: a frame's event id, or the
        *  name of a notice the session tells itself ("Envoy inbound unavailable"). */
       cards: (text: string) =>
         fixture.deliveries.filter(
           (delivery) => delivery.customType === "envoy-message" && delivery.content.includes(text)
+        ),
+      /**
+       * The notices whose text holds `text` that the session holds for a settled host. A stopping
+       * host is never settled, so a notice raised during the stop is never handed: it is held,
+       * and recorded in the transcript, which the session's next process shows it from.
+       */
+      heldNotices: (text: string) =>
+        fixture.entries.filter(
+          (entry) =>
+            entry.customType === REPLAY_NOTICE_ENTRY && JSON.stringify(entry.data).includes(text)
         ),
       /** The listener relays stored message `seq`; answers the reply inbox it carried. */
       relay: (
@@ -312,6 +343,10 @@ describe("consumer delivery", () => {
         for (const interval of intervals) interval();
         await until(() => registrations.length > before, "the heartbeat's registration");
         await settle();
+      },
+      /** One heartbeat tick, not waited on: its pass may queue behind another. */
+      beat: () => {
+        for (const interval of intervals) interval();
       },
       /**
        * One heartbeat tick while NATS refuses every dial, run until its pass dialled and settled:
@@ -353,6 +388,8 @@ describe("consumer delivery", () => {
         fixture.tools
           .find((tool) => tool.name === "envoy_subscribe")
           ?.execute("", { topics: [topic] }),
+      /** A session event that keeps the session's id (a tree navigation): its pass registers. */
+      navigate: () => fixture.handlers.get("session_tree")?.({}, context),
       stop: () => fixture.handlers.get("session_shutdown")?.({}, context),
     };
     return session;
@@ -745,6 +782,65 @@ describe("consumer delivery", () => {
         message.includes("inbound messages are unavailable (")
       )
     ).toHaveLength(1);
+  });
+
+  // Row (d) of check l23, for this plugin (R24 of dispatch://INFRA-3589): a session that stops
+  // while a heartbeat's pass waits behind a registration on the wire is told nothing. Its stop
+  // closes the relay on purpose and deletes the record next, so no registration runs once the
+  // stop began (`sendRegistration`), and the pass that waited decides nothing and says nothing.
+  test("(d) a session that stops while a heartbeat's registration waits behind one on the wire sends no registration after the stop began and is told nothing", async () => {
+    const session = await bootConsumer("consumer-stop-behind-registration");
+    // A session event's pass registers, and the listener holds that registration on the wire.
+    session.hold();
+    const asked = session.registrations.length;
+    const navigating = session.navigate();
+    await until(() => session.registrations.length > asked, "the held registration");
+    // The heartbeat's pass queues behind it.
+    session.beat();
+    await settle();
+    const notified = session.notifications.length;
+
+    // The session stops: the stop closes the relay, then waits out the registration on the wire,
+    // which the listener answers meanwhile.
+    const stopping = session.stop();
+    const sent = session.registrations.length;
+    session.release();
+    await stopping;
+    await navigating;
+    // The heartbeat's pass runs once the held one has ended.
+    await settle();
+
+    expect(session.registrations).toHaveLength(sent);
+    for (const notice of ["Envoy inbound unavailable", "Envoy inbound restored"]) {
+      expect(session.cards(notice)).toEqual([]);
+      expect(session.heldNotices(notice)).toEqual([]);
+    }
+    expect(session.notifications.slice(notified)).toEqual([]);
+  });
+
+  // The outage report's own rule says that a stopping session is told nothing
+  // (`inboundUnavailable`'s `stopping`), since the refusal of every registration once the stop
+  // began does not reach this case: a registration already on the wire when the stop began is
+  // answered during it, and its refusal says nothing about what a session whose record is deleted
+  // next receives.
+  test("a registration on the wire when the stop began and refused during it tells the session nothing", async () => {
+    const session = await bootConsumer("consumer-stop-refused-on-wire");
+    session.hold();
+    const asked = session.registrations.length;
+    const navigating = session.navigate();
+    await until(() => session.registrations.length > asked, "the held registration");
+    const notified = session.notifications.length;
+
+    const stopping = session.stop();
+    session.refuse({ status: 409, reason: "not_requested" });
+    session.release();
+    await stopping;
+    await navigating;
+    await settle();
+
+    expect(session.cards("Envoy inbound unavailable")).toEqual([]);
+    expect(session.heldNotices("Envoy inbound unavailable")).toEqual([]);
+    expect(session.notifications.slice(notified)).toEqual([]);
   });
 
   test("a late BTW is shown as a card that starts no turn, and runs no side turn", async () => {
