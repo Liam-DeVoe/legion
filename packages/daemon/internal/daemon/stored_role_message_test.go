@@ -49,6 +49,12 @@ func (p *storingPublisher) Publish(_ context.Context, topic, message string, pay
 	return nil
 }
 
+// PublishKept answers as Publish does: a stored publish is the same 504, and a delivered one was
+// taken by its live holder, so nothing is kept.
+func (p *storingPublisher) PublishKept(ctx context.Context, topic, message string, payload any, key string) (bool, error) {
+	return false, p.Publish(ctx, topic, message, payload, key)
+}
+
 func (p *storingPublisher) storeFor(topic, holder string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()

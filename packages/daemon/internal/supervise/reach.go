@@ -320,7 +320,9 @@ func (m *Machine) relaunchUnreachable(ctx context.Context, ev RequestRelaunch) e
 		return err
 	}
 	if m.held != nil {
-		return m.endHeld(ctx)
+		// The relaunch's stop keeps the session's Envoy registration for the launch it makes, so
+		// no clean stop has been sent; the suspension that runs instead owes it (stopOwed).
+		return m.endHeld(ctx, stopOwed)
 	}
 	m.letGo(ctx, letGoCause{cause: ev.Cause, relaunch: true})
 	// The launch that starts writes the generation it left the claim at beside the relaunch, in

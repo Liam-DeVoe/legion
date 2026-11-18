@@ -409,7 +409,7 @@ func TestARegistrationTheCleanStopDeletesStillCountsTheTwentyMinutes(t *testing.
 	listener := &listenerRecorder{held: storedRegistration{clientInstanceID: "inst_dead", lastSeen: registered}}
 	server := listener.server(t)
 	stop := sessionStop{sessions: notify.New(server.URL, "envoy-token"), log: quietLogger(), seen: r.k.registrationRead}
-	stop.send(context.Background(), "ses_planner", registered.Add(8*time.Second))
+	stop.send("ses_planner", registered.Add(8*time.Second))
 	if !listener.entryRemoved {
 		t.Fatal("the clean stop did not delete the registration")
 	}

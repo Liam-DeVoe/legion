@@ -88,6 +88,30 @@ func TestAHookPromptForAClaimThatKeepsItsSessionIsHeldUntilItsRoleIsHeld(t *test
 	}
 }
 
+// A listener that keeps the prompt for the role's next holder (cybermonklabs/legion#4079) is its
+// one keeper, so the row ends there, and is not held beside the kept copy, though the claim keeps
+// its session: the relaunched process on that session takes it from the kept lane when it holds
+// the role again.
+func TestAHookPromptTheListenerKeepsIsNotHeldForAClaimThatKeepsItsSession(t *testing.T) {
+	publisher := &holderPublisher{keeps: true}
+	runner, sup, pool := hookRunner(t, publisher)
+	sessionKeptClaim(t, sup, claim.RoleImplementer, supervise.StateWorking)
+	topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleImplementer))
+	publisher.setAbsent(topic)
+	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", firedHook, time.Now().Add(-time.Minute)))
+
+	drain(t, runner)
+	if left := outboxRows(t, pool); left != 0 {
+		t.Fatalf("outbox rows left = %d, want the row ended once the listener kept the prompt", left)
+	}
+	publisher.mu.Lock()
+	kept := publisher.kept
+	publisher.mu.Unlock()
+	if len(kept) != 1 || kept[0].topic != topic || !kept[0].keep {
+		t.Fatalf("kept = %#v, want the prompt kept once on %s", kept, topic)
+	}
+}
+
 func TestAHeldHookPromptFinishesWhenTheClaimEndsOrItsPhaseMovesOn(t *testing.T) {
 	for _, tc := range []struct {
 		name string
