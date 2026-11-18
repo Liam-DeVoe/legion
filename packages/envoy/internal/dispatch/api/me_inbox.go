@@ -765,15 +765,19 @@ func (args *meInboxArgs) bind(value any) string {
 // Agent rows this statement splices in name them as $1 to $3 (myRepliesPageRest, myAgentUnreadRoots
 // and their siblings), and the person's node is that same canonical login.
 //
-// The entries are read one of two ways. With no state they are the walk: the distinct relation
-// kinds that touch each of the person's nodes, read by a skip over graph_tuples_inbound and
-// graph_tuples_current (one index probe a kind, kinds_in and kinds_out), then each kind's current
-// tuples through graphstore.CurrentTupleRead, one index range a kind, grouped by the node at the
-// other end. Under a state they are the page's own rows in that state, read from the caches the
-// page's lists read (meInboxPageRows), and each row's relation kinds are then read from the tuples
-// between its node and the person's, the same kinds keyed to the pair, so a person whose history is
-// long reads their inbox and not their history. Either way the visibility predicate is over the
-// node's own row of graph_nodes, in this statement and bound once, and the counts are taken after it.
+// The relations are read once either way, by the walk: the distinct relation kinds that touch each
+// of the person's nodes, read by a skip over graph_tuples_inbound and graph_tuples_current (one index
+// probe a kind, kinds_in and kinds_out), then each kind's current tuples through
+// graphstore.CurrentTupleRead, one index range a kind, grouped by the node at the other end
+// (related). With no state the entries are those nodes. Under a state they are the page's own rows
+// in that state, read from the caches the page's lists read (meInboxPageRows), each joined to its
+// node's relations from that one walk: the read costs one pass over the person's current tuples and
+// one over their page, and never the product of the two, which a probe of the tuples between each
+// row's node and the person's made it (dispatch://INFRA-1152 c-p99: 8,002 probes, 71 s of 74, for
+// the person whose history is a hundred times the median, since every probe the planner chose read
+// all the person's tuples of a kind and kept the row's). Either way the visibility predicate is over
+// the node's own row of graph_nodes, in this statement and bound once, and the counts are taken
+// after it.
 func meInboxStatement(caller model.Actor, horizon int64, request meInboxRequest, trees, readsRoster bool, known *time.Time) (string, []any, error) {
 	args := &meInboxArgs{values: unreadDirectRepliesArgs(caller.ID, nil)}
 	visibility := args.bind(refs.VisibilityArg(caller))
@@ -826,40 +830,43 @@ func meInboxStatement(caller model.Actor, horizon int64, request meInboxRequest,
 	page_rows(node_kind, node_id, page, moment, agent_session, agent) as (` +
 		meInboxPageRows(request, issue, artifactParam) + `
 	),`)
-	if request.state == "" {
-		statement.WriteString(`
+	statement.WriteString(`
 	walked(near_kind, near_id, kind, direction, at) as (
 		select stated.from_kind, stated.from_id, k.kind, '` + meInboxInbound + `', stated.at
 		from kinds_in k
 		cross join lateral (` + graphstore.CurrentTupleRead(`t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.at, t.asserted`,
-			`t.to_kind = k.node_kind and t.to_id = k.node_id and t.kind = k.kind
+		`t.to_kind = k.node_kind and t.to_id = k.node_id and t.kind = k.kind
 				and t.to_kind <> '`+graphstore.KindValue+`' and `+atHorizon) + `) stated
 		where ` + readKind("k.kind") + ` and stated.asserted
 		union all
 		select stated.to_kind, stated.to_id, k.kind, '` + meInboxOutbound + `', stated.at
 		from kinds_out k
 		cross join lateral (` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.at, t.asserted`,
-			`t.from_kind = k.node_kind and t.from_id = k.node_id and t.kind = k.kind
+		`t.from_kind = k.node_kind and t.from_id = k.node_id and t.kind = k.kind
 				and t.to_kind <> '`+graphstore.KindValue+`' and `+atHorizon) + `) stated
 		where ` + readKind("k.kind") + ` and stated.asserted
 	),
-	candidates(node_kind, node_id, moment, kinds, directions, ats) as (
-		select related.near_kind, related.near_id, max(related.at),
-		       array_agg(related.kind order by related.kind, related.direction),
-		       array_agg(related.direction order by related.kind, related.direction),
-		       array_agg(related.at order by related.kind, related.direction)
+	-- Each node the person's current tuples reach, once, with every relation kind that ties it to
+	-- them: read whole once and kept, so a page joins its rows to it rather than asking each row.
+	related(node_kind, node_id, moment, kinds, directions, ats) as materialized (
+		select tied.near_kind, tied.near_id, max(tied.at),
+		       array_agg(tied.kind order by tied.kind, tied.direction),
+		       array_agg(tied.direction order by tied.kind, tied.direction),
+		       array_agg(tied.at order by tied.kind, tied.direction)
 		from (
 			select w.near_kind, w.near_id, w.kind, w.direction, max(w.at) as at
 			from walked w
 			where (w.near_kind, w.near_id) not in (select kind, id from person_nodes)
 			group by w.near_kind, w.near_id, w.kind, w.direction
-		) related
-		group by related.near_kind, related.near_id
-	),
+		) tied
+		group by tied.near_kind, tied.near_id
+	),`)
+	if request.state == "" {
+		statement.WriteString(`
 	entries as (
 		select c.node_kind, c.node_id, c.moment, c.kinds, c.directions, c.ats,
 		       pr.page, pr.agent_session, pr.agent
-		from candidates c
+		from related c
 		left join page_rows pr on pr.node_kind = c.node_kind and pr.node_id = c.node_id
 		left join graph_nodes n on n.kind = c.node_kind and n.id = c.node_id
 		where (n.kind is null or ` + refs.VisibleRow("n", visibility) + `)
@@ -868,37 +875,15 @@ func meInboxStatement(caller model.Actor, horizon int64, request meInboxRequest,
 	} else {
 		statement.WriteString(`
 	entries as (
-		select pr.node_kind, pr.node_id, pr.moment, related.kinds, related.directions, related.ats,
+		select pr.node_kind, pr.node_id, pr.moment,
+		       coalesce(r.kinds, '{}') as kinds, coalesce(r.directions, '{}') as directions, coalesce(r.ats, '{}') as ats,
 		       pr.page, pr.agent_session, pr.agent
 		from page_rows pr
-		cross join lateral (
-			select coalesce(array_agg(tied.kind order by tied.kind, tied.direction), '{}') as kinds,
-			       coalesce(array_agg(tied.direction order by tied.kind, tied.direction), '{}') as directions,
-			       coalesce(array_agg(tied.at order by tied.kind, tied.direction), '{}') as ats
-			from (
-				select k.kind, '` + meInboxInbound + `' as direction, max(stated.at) as at
-				from kinds_in k
-				cross join lateral (` + graphstore.CurrentTupleRead(`t.from_kind, t.from_id`, `t.at, t.asserted`,
-			`t.to_kind = k.node_kind and t.to_id = k.node_id and t.kind = k.kind
-						and t.from_kind = pr.node_kind and t.from_id = pr.node_id
-						and t.to_kind <> '`+graphstore.KindValue+`' and `+atHorizon) + `) stated
-				where ` + readKind("k.kind") + ` and stated.asserted
-				group by k.kind
-				union all
-				select k.kind, '` + meInboxOutbound + `', max(stated.at)
-				from kinds_out k
-				cross join lateral (` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.at, t.asserted`,
-			`t.from_kind = k.node_kind and t.from_id = k.node_id and t.kind = k.kind
-						and t.to_kind = pr.node_kind and t.to_id = pr.node_id
-						and t.to_kind <> '`+graphstore.KindValue+`' and `+atHorizon) + `) stated
-				where ` + readKind("k.kind") + ` and stated.asserted
-				group by k.kind
-			) tied
-		) related
+		left join related r on r.node_kind = pr.node_kind and r.node_id = pr.node_id
 		left join graph_nodes n on n.kind = pr.node_kind and n.id = pr.node_id
 		where (n.kind is null or ` + refs.VisibleRow("n", visibility) + `)
 		  and ` + inProject + `
-		  and (` + kindsParam + `::text[] is null or cardinality(related.kinds) > 0)
+		  and (` + kindsParam + `::text[] is null or r.node_kind is not null)
 	),`)
 	}
 	var moment, kind, id any
