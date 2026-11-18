@@ -45,9 +45,10 @@ jobs:
     # 66 (its -timeout bounds each package, not the step, so the step has a limit of its own, and
     # its comment below says why 25); after that step's measured 6 minutes, the statement-timing
     # step's own 15 is 62; after that step's 3, the differential's own 10 is 60; after that step's
-    # 2, natslive's default 10 and the bus matrix's own 5 are 67, and the integration step's 5 is
-    # less.
-    timeout-minutes: 70
+    # 2, the moto run's own 10 is 62; after the moto run, which no run has measured yet and so
+    # counts at that whole 10, natslive's default 10 and the bus matrix's own 5 are 77, and the
+    # integration step's 5 is less.
+    timeout-minutes: 80
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -101,8 +102,8 @@ jobs:
           docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "select current_setting('server_version_num'), coalesce((select default_version from pg_available_extensions where name = 'vector'), 'no vector')"
       # Every image the tests here start: testnats.HubImage, which the natslive step below runs
       # Envoy on, testnats.Image (nats:2.10), which only the tests of that server itself and of the
-      # listener's refusal of it start, and tests3.Image, pulled first for the reason the action
-      # gives.
+      # listener's refusal of it start, tests3.Image, and agent-secrets' motoImage, which the moto
+      # run below starts, pulled first for the reason the action gives.
       - name: Pull test container images
         uses: ./.github/actions/pull-test-images
         with:
@@ -110,6 +111,7 @@ jobs:
             packages/envoy/internal/testnats/nats.go Image
             packages/envoy/internal/testnats/nats.go HubImage
             packages/envoy/internal/tests3/seaweedfs.go Image
+            packages/envoy/cmd/agent-secrets/secret_moto_test.go motoImage
       # The tests the race detector makes impossible, which the race job of each of these packages
       # therefore cannot make, so envoy-go keeps a plain run of exactly them: internal/bus counts
       # HoldsSeed's allocations, which the race runtime's own allocations would be counted into,
@@ -255,11 +257,18 @@ jobs:
           done < packages/envoy/internal/dispatch/testdata/repository-markdown.txt > "$RUNNER_TEMP/differential-corpus/repository-markdown.jsonl"
           packages/envoy/internal/dispatch/pmdoc/gen/differential.sh --base "$DIFFERENTIAL_BASE" \
             --corpus "$RUNNER_TEMP/differential-corpus/repository-markdown.jsonl" --out "$RUNNER_TEMP/differential"
-      # The run of the built agent-secrets against moto sits behind the moto build tag, and starts
-      # moto itself in a test container (cmd/agent-secrets/secret_moto_test.go, startMoto) whose
-      # image is a row of .github/ci-images.yaml. Vetting it keeps it compiling.
-      - name: Vet agent-secrets' moto run (no moto)
-        run: go vet -tags moto ./cmd/agent-secrets/
+      # The built agent-secrets against moto's AWS, with no AWS account
+      # (cmd/agent-secrets/secret_moto_test.go, TestTheBuiltCLIAgainstMoto): the one run of the
+      # binary through the AWS SDK's own profile and credential chain, which the in-process tests
+      # replace (useAWS). The test sits behind the moto build tag, builds the CLI from this tree
+      # and starts moto itself in a test container (startMoto) from motoImage, the row of
+      # .github/ci-images.yaml the pull step above fetched. The package's untagged tests run in the
+      # unit step, so the -run comes from .github/scripts/go-tagged-tests.sh, and the assignment is
+      # a line of its own, for the reasons the natslive step's comment below gives.
+      - name: Run the built agent-secrets against moto (moto)
+        run: |
+          moto=$(../../.github/scripts/go-tagged-tests.sh moto ./cmd/agent-secrets)
+          go test -count=1 -timeout 10m -tags moto -run "$moto" -v ./cmd/agent-secrets/
         working-directory: packages/envoy
       # internal/testnats runs its server in the test process, so the untagged step above starts
       # no container. The real-server tests, a rendered authorization on the image the hub runs

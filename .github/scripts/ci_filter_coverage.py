@@ -1054,8 +1054,8 @@ def reduce_line(line: str) -> tuple:
 # the variables that turn on a test's own input or bound: the corpus directories the pmdoc and
 # document-service corpus tests read (PMDOC_ANCHOR_CORPUS, DISPATCH_RENDER_CORPUS,
 # PMDOC_WALK_CORPUS, DISPATCH_TOKEN_CORPUS, DISPATCH_TEST_SPEC_CORPUS), the seeded database the
-# statement timings measure on (DISPATCH_BENCH_DATABASE_URL), the scale and load tests' switches
-# (LEGION_SCALE_TEST, DISPATCH_OUTBOX_LOAD_STEPS), the intake drain's bound
+# statement timings measure on (DISPATCH_BENCH_DATABASE_URL), the outbox load steps' switch
+# (DISPATCH_OUTBOX_LOAD_STEPS), the intake drain's bound
 # (LEGION_TEST_DRAIN_MEASURE), and the base commit envoy-go's pmdoc differential step hands its
 # script (DIFFERENTIAL_BASE), which no go command reads.
 ENV_ALLOWED = frozenset({
@@ -1075,7 +1075,7 @@ ENV_ALLOWED = frozenset({
     "GH_TOKEN",
     "GOPROXY",
     "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
-    "LEGION_RUN_FUZZ_ITERS", "LEGION_SCALE_TEST", "LEGION_TEST_DAEMON_LOG_DIR", "LEGION_TEST_DRAIN_MEASURE",
+    "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_DAEMON_LOG_DIR", "LEGION_TEST_DRAIN_MEASURE",
     "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN", "PMDOC_ANCHOR_CORPUS", "PMDOC_WALK_CORPUS", "PREVIOUS_COMMIT",
     "TESTCONTAINERS_RYUK_DISABLED",
 })

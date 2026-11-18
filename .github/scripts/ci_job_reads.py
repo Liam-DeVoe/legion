@@ -937,7 +937,7 @@ SCHEMA_SCRIPT = (
     "# shellcheck disable=SC2016 # ${VERSION} is Pulumi's placeholder, not a shell expansion\n"
     """pulumi package get-schema "$RUNNER_TEMP/pr" | jq -e '.version == "1.2.3" and .pluginDownloadURL == "https://github.com/cybermonklabs/legion/releases/download/envoy-infra-v${VERSION}"'"""
 )
-# The six steps that run only what their build tag adds. A tag adds files to a package and
+# The steps that run only what their build tag adds. A tag adds files to a package and
 # subtracts none, so `go test -tags T ./pkg` would run the untagged tests another job already
 # ran: each step takes its -run from .github/scripts/go-tagged-tests.sh, which reads the names
 # off the source at run time. The assignment is a line of its own, so that under bash -e an empty
@@ -952,6 +952,13 @@ rig=$(../../{TAGGED_TESTS} natslive ./internal/testnats)
 go test -count=1 -tags natslive -run "$rig" -v ./internal/testnats/
 cap=$(../../{TAGGED_TESTS} natslive ./internal/bus)
 go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/"""
+# envoy-go's run of the built agent-secrets against moto: cmd/agent-secrets/secret_moto_test.go
+# sits behind the moto tag and starts moto itself in a test container (startMoto), from the
+# motoImage the job's "Pull test container images" step pulls first.
+MOTO_STEP = "Run the built agent-secrets against moto (moto)"
+MOTO_SCRIPT = f"""\
+moto=$(../../{TAGGED_TESTS} moto ./cmd/agent-secrets)
+go test -count=1 -timeout 10m -tags moto -run "$moto" -v ./cmd/agent-secrets/"""
 # One call per package, never one union -run over the three: a name an untagged test of one
 # package shares with a natslive test of another would then run a second time unremarked.
 INFRA_NATSLIVE_STEP = "Live tests of envoy-infra against nats-server (natslive)"
@@ -1656,34 +1663,6 @@ def race_step(job):
     return step_run(job.job, job.step, text, ENVOY, pkgs, race=True)
 
 
-# ---------------------------------------------------------------- the API's dismissed-scale measurement
-# internal/dispatch/api's TestDismissedScaleHoldsTheInboxsReads seeds 110,000 dismissed rows three
-# times over and holds the Inbox's reads to fixed p95 bounds and a p50 ratio, and runs only with
-# LEGION_SCALE_TEST=1 (inbox_dismissed_scale_test.go's dismissedScaleEnv). The race detector would
-# change the times it bounds, so it runs in a step of its own without -race (SCALE_SCRIPT, under
-# the step's LEGION_SCALE_TEST), and envoy-go-race-api's race step, which runs its package, skips
-# it by name (RACE_API_SCRIPT). The step is envoy-go-race's (SCALE_JOB), not envoy-go-race-api's:
-# a plain build of internal/dispatch/api compiles its `//go:build !race` source guards, whose
-# module_source_test.go reads every .go file of packages/envoy (MODULE_SOURCES), so the job that
-# runs the step must be selected by a change to any of them. envoy-go-race's filter names
-# packages/envoy/** already, and envoy_go_race_api's is the API's race closure, which keeps that
-# 30-minute job off changes the API's race build cannot see. Both step texts are built from this
-# one list, and check-ci-filters.sh pins each step's whole script, so the -run and the -skip cannot
-# come to name different tests.
-SCALE_TESTS = ["TestDismissedScaleHoldsTheInboxsReads"]
-SCALE_JOB = "envoy-go-race"
-SCALE_RACE_JOB = "envoy-go-race-api"
-SCALE_PACKAGE = "internal/dispatch/api"
-SCALE_STEP = "Test the Inbox's reads at the dismissed scale, without the race detector"
-SCALE_PATTERN = f"'^({'|'.join(sorted(SCALE_TESTS))})$'"
-SCALE_SCRIPT = f"go test -v -count=1 -timeout 10m -run {SCALE_PATTERN} ./{SCALE_PACKAGE}/"
-if [p.name for p in RACE_JOBS[SCALE_RACE_JOB].packages] != [SCALE_PACKAGE]:
-    raise ValueError(f"the dismissed-scale test is in {SCALE_PACKAGE}, and {SCALE_RACE_JOB}'s race step, which skips "
-                     f"it by name, no longer runs that package alone; move the -skip to the race step that runs it")
-RACE_API_SCRIPT = (f"go test -v -count=1 -race -timeout {RACE_JOBS[SCALE_RACE_JOB].timeout} -skip {SCALE_PATTERN} "
-                   + " ".join(race_pkgs(RACE_JOBS[SCALE_RACE_JOB])))
-
-
 # The architecture-note and spec-file rules and the commands that run them, which envoy-go-checks
 # tests in a step of their own: they need no database, so they run there on every push, and that
 # step is their one run. Both that step's package list and the unit step's exclusion of them are
@@ -1884,7 +1863,6 @@ def hold_web_fixture_tests():
 
 
 hold_web_fixture_tests()
-hold_declared(SCALE_TESTS, f"{ENVOY}/{SCALE_PACKAGE}", "SCALE_TESTS")
 hold_declared(OUTBOX_LOAD_TESTS, f"{ENVOY}/cmd/dispatch", "OUTBOX_LOAD_TESTS", tag="multiprocess")
 
 
@@ -3148,8 +3126,6 @@ GATES = [
     gate("envoy_go", "envoy-go", runs=[
         step_run("envoy-go", "Integration test envoy (a real NATS server, in the test process)",
                  "go test -v ./internal/integration/ -timeout 300s -count=1", ENVOY, ["./internal/integration/"]),
-        step_run("envoy-go", "Vet agent-secrets' moto run (no moto)", "go vet -tags moto ./cmd/agent-secrets/", ENVOY,
-                 ["./cmd/agent-secrets/"], tags="moto", mode="vet"),
         ceiling_run("envoy-go"),
     ], exact=[
         # One go test per package of the plain run the race lane cannot make (RACE_IMPOSSIBLE_*),
@@ -3211,9 +3187,14 @@ GATES = [
             (ENVOY, ["./internal/testnats/"], "go test -tags natslive ./internal/testnats/", {"tags": "natslive"}),
             (ENVOY, ["./internal/bus/"], "go test -tags natslive ./internal/bus/", {"tags": "natslive"}),
         ]),
+        # The moto run (MOTO_SCRIPT): only what the moto tag adds to ./cmd/agent-secrets/, whose
+        # untagged tests the unit step runs (the envoy_go moto entry of TAG_RUNS).
+        pinned_step("envoy-go", MOTO_STEP, ENVOY, MOTO_SCRIPT, [
+            (ENVOY, ["./cmd/agent-secrets/"], "go test -tags moto ./cmd/agent-secrets/", {"tags": "moto"}),
+        ]),
     ], reads=reads(
         (".github/actions/pull-test-images/**", at("envoy-go", "Pull test container images")),
-        (TAGGED_TESTS, f"{at('envoy-go', NATS_MATRIX_STEP)} takes its -run from it"),
+        (TAGGED_TESTS, f"{at('envoy-go', NATS_MATRIX_STEP)} and {at('envoy-go', MOTO_STEP)} take their -run from it"),
         *[(g, f"{at('envoy-go', DIFFERENTIAL_STEP)} runs internal/dispatch/pmdoc/gen/differential.sh, whose "
               "gen/differential.ts reads the corpus through the browser editor's engines") for g in PMDOC_GEN],
     ) + repository_markdown_reads("envoy-go") + ceiling_reads("envoy-go") + setup_go("envoy-go", f"{ENVOY}/go.mod")
@@ -3389,22 +3370,13 @@ GATES = [
     # envoy-go unit step and its plain companion are built from too. envoy-go-race-docs is the one
     # whose step is not race_step's text: it runs the package under .github/scripts/race_memory.py
     # (dispatch://INFRA-1085), so its gate pins that whole line while the lane table still names
-    # the package, which is what keeps it out of the unit step. envoy-go-race-api's race step
-    # carries a -skip, the dismissed-scale test (SCALE_TESTS), which is no form check-ci-filters.sh
-    # reduces, so it is pinned whole too, and so is the plain step of envoy-go-race that runs that
-    # test, whose -run the simple form does not reduce either.
-    gate("envoy_go_race", SCALE_JOB, runs=[race_step(RACE_JOBS[SCALE_JOB]), ceiling_run(SCALE_JOB)], exact=[
-        pinned_step(SCALE_JOB, SCALE_STEP, ENVOY, SCALE_SCRIPT, [
-            (ENVOY, [f"./{SCALE_PACKAGE}/"], "go test -run of the dismissed-scale test, without the race detector", {}),
-        ]),
-    ], reads=ceiling_reads(SCALE_JOB) + setup_go(SCALE_JOB, f"{ENVOY}/go.mod")),
+    # the package, which is what keeps it out of the unit step.
+    gate("envoy_go_race", "envoy-go-race", runs=[race_step(RACE_JOBS["envoy-go-race"]), ceiling_run("envoy-go-race")],
+         reads=ceiling_reads("envoy-go-race") + setup_go("envoy-go-race", f"{ENVOY}/go.mod")),
 
-    gate("envoy_go_race_api", SCALE_RACE_JOB, runs=[ceiling_run(SCALE_RACE_JOB)], exact=[
-        pinned_step(SCALE_RACE_JOB, RACE_JOBS[SCALE_RACE_JOB].step, ENVOY, RACE_API_SCRIPT, [
-            (ENVOY, race_pkgs(RACE_JOBS[SCALE_RACE_JOB]), "go test -race over the API, the dismissed-scale test "
-                                                         "skipped by name", {"race": True}),
-        ]),
-    ], reads=ceiling_reads(SCALE_RACE_JOB) + setup_go(SCALE_RACE_JOB, f"{ENVOY}/go.mod")),
+    gate("envoy_go_race_api", "envoy-go-race-api",
+         runs=[race_step(RACE_JOBS["envoy-go-race-api"]), ceiling_run("envoy-go-race-api")],
+         reads=ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod")),
 
     gate("envoy_go_race_docs", "envoy-go-race-docs", runs=[ceiling_run("envoy-go-race-docs")], exact=[
         pinned_step("envoy-go-race-docs", RACE_DOCS_STEP, ENVOY, RACE_DOCS_SCRIPT, [
@@ -3804,12 +3776,12 @@ GATES = [
 # One entry per step of ci.yaml that runs a package under a build tag and passes -run: the job
 # whose untagged run of that package the -run leans on, which check-ci-filters.sh holds to running
 # in every run the tag step runs (check_tag_runs). The note says which step runs the untagged
-# tests, the judgement the check cannot derive. The last two entries pair a job with itself: the
+# tests, the judgement the check cannot derive. The last three entries pair a job with itself: the
 # untagged run is a step of the same job, so the filters are the same one and the subset holds
 # trivially; they are here all the same, so the rule covers every -run step and a later move of
 # one to another job is caught. What the check holds an untagged job's filter to is what the tag
 # step's gate reads and the tag step filter's listed block, never what the tag filter selects, so
-# these two hold their filter to nothing its own gate does not read already, and rules 9 and 17
+# these three hold their filter to nothing its own gate does not read already, and rules 9 and 17
 # judge it as they judge any other.
 TAG_RUNS = [
     TagRun("dispatch_memory", "dispatch-memory", MEMORY_STEP, "envoy_go", "envoy-go",
@@ -3838,6 +3810,9 @@ TAG_RUNS = [
            job_file("listener-server-change")),
     TagRun("envoy_go", "envoy-go", NATS_MATRIX_STEP, "envoy_go", "envoy-go",
            f"envoy-go's own \"{UNIT_TEST_STEP}\" runs ./internal/testnats's untagged tests",
+           job_file("envoy-go")),
+    TagRun("envoy_go", "envoy-go", MOTO_STEP, "envoy_go", "envoy-go",
+           f"envoy-go's own \"{UNIT_TEST_STEP}\" runs ./cmd/agent-secrets's untagged tests",
            job_file("envoy-go")),
     TagRun("envoy_infra_go", "envoy-infra-go", INFRA_NATSLIVE_STEP, "envoy_infra_go", "envoy-infra-go",
            f"envoy-infra-go's own \"Unit test envoy-infra\" runs {', '.join(INFRA_NATSLIVE_PACKAGES)} untagged",
