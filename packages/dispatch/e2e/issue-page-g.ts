@@ -1292,3 +1292,42 @@ export async function seedLongRows(): Promise<LongRowsSeed> {
     statement: blockNode(specSlug, "r-long"),
   };
 }
+
+/** How many columns the table of `seedWideNote`'s note holds: at 390 px, each headed by one word
+ *  that no line breaks, far more than the width of a row's words. */
+export const WIDE_NOTE_COLUMNS = 16;
+
+/** What `seedWideNote` wrote: the issue, and its note's node id. */
+export interface WideNoteSeed {
+  readonly key: string;
+  readonly note: string;
+}
+
+/**
+ * One issue whose notes document holds one note - a `callout` block, which the page names "note"
+ * - whose body is a table of `WIDE_NOTE_COLUMNS` columns: a line of heads and a line of values.
+ * A row cuts words taller than six lines (ruling 1), and the table is two lines tall, so its row
+ * draws it whole. It is an issue of its own, so no seed another row reads changes,
+ * and no row that reads every row of `seedRows` - c-row-layout reads where each typed row's first
+ * line ends against its tag - meets a table wider than a row's words.
+ */
+export async function seedWideNote(): Promise<WideNoteSeed> {
+  await createProject({ key: PROJECT, name: "Rows" });
+  const issue = await createIssue({
+    force: true,
+    project: PROJECT,
+    title: "A note holds a table wider than a phone",
+  });
+  const line = (cells: readonly string[]) => `| ${cells.join(" | ")} |`;
+  const columns = Array.from({ length: WIDE_NOTE_COLUMNS }, (_unused, at) => at + 1);
+  const table = [
+    line(columns.map((column) => `column${column}`)),
+    line(columns.map(() => "---")),
+    line(columns.map((column) => `value${column}`)),
+  ].join("\n");
+  const notes = await createIssueArtifact(issue.key, {
+    content: `:::callout{#n-wide kind="note"}\n${table}\n:::\n`,
+    name: "notes.md",
+  });
+  return { key: issue.key, note: blockNode(notes.artifact.slug, "n-wide") };
+}

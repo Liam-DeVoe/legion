@@ -40,7 +40,9 @@ import {
   rowWords,
   seedLongRows,
   seedRows,
+  seedWideNote,
   unfoldEveryBranch,
+  WIDE_NOTE_COLUMNS,
 } from "./issue-page-g";
 import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
@@ -370,6 +372,57 @@ test("at 390 px a focused row stands below the view row that stays at the top, a
         message: "after t s the focused row's top lies under the view row that stays at the top",
       })
       .toBeGreaterThanOrEqual(0);
+  });
+});
+
+// Decision 282: at 390 px a note whose body holds a table of sixteen columns, drawn in its row and
+// not edited, made the whole page 794 px wide. A wide block in a node's words scrolls sideways
+// inside itself, as a table does in a document's reading: the page is no wider than the screen,
+// and the table's own scroll still reaches its last column.
+// SLOW(>=2s): an issue with one note seeded and loaded at 390 px, and its table waited for until
+// the batched read that carries a block's words draws it.
+test("at 390 px a note's table of sixteen columns scrolls inside its row, and the page is no wider than the screen", async ({
+  browser,
+}) => {
+  test.setTimeout(60_000);
+  await phase(browser, seedWideNote, async (page, seeded) => {
+    await page.setViewportSize(PHONE);
+    await openIssue(page, seeded.key);
+    const table = rowWords(nodeRow(page, seeded.note)).locator("table");
+    await expect
+      .poll(
+        async () => {
+          await unfoldEveryBranch(page);
+          return table.locator("th").count();
+        },
+        { message: "the note's row never drew the heads of its table" }
+      )
+      .toBe(WIDE_NOTE_COLUMNS);
+    await expect(table, "the note's table is not drawn").toBeVisible();
+    // The poll above waited until the row drew the whole table, and a read of the page's widths
+    // lays the page out first, so one read gives the widths the table leaves the page.
+    const widths = await page.evaluate(() => ({
+      client: document.documentElement.clientWidth,
+      scroll: document.documentElement.scrollWidth,
+    }));
+    expect(widths.client, "the page is laid out wider than the screen").toBeLessThanOrEqual(
+      PHONE.width
+    );
+    expect(widths.scroll, "the note's table makes the page wider than the screen").toBe(
+      widths.client
+    );
+    // The table is drawn whole and a read of its widths lays it out first, and the scroll this
+    // sets is read back in the same task, where nothing else can move it, so one read holds.
+    const own = await table.evaluate((element) => {
+      const box = { client: element.clientWidth, scroll: element.scrollWidth };
+      element.scrollLeft = element.scrollWidth;
+      return { ...box, left: element.scrollLeft };
+    });
+    expect(
+      own.scroll,
+      "the table is no wider than its own box, so it has nothing to scroll"
+    ).toBeGreaterThan(own.client);
+    expect(own.left, "the table does not scroll sideways to its last column").toBeGreaterThan(0);
   });
 });
 
