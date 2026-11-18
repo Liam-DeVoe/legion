@@ -12834,6 +12834,124 @@ for line in "32	python3 runs it" "33	a command word whose first line names pytho
 done
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 10)"
 
+# W17. Six glob shapes the Spec draft's review drove past the gate at bd06b2a2, each exit 0 under
+# a one-minute key (dispatch://INFRA-1545, round 38): a glob or a brace expansion in a run's
+# target names the file that runs from the names the file system holds as the step runs, as a
+# variable names one from what it holds, and none of them was read as one. A `?`, a bracket and a
+# brace in the target's last element, by bash, as a command word and in a `bash -c` text, are
+# refused as a run built from data; a `*` in its directory names the file by its name. Beside them
+# a glob character in quotes or after a backslash is that character, as bash reads it, so bash
+# opens no such file and runs nothing, and passes; and a glob in an argument of a program that
+# runs no file, `ls` and `rm`, and a `case` pattern or a piece of a `[[ … =~ … ]]` regex, which
+# CallScanner reads as commands of their own, pass too. Two quoting shapes of the same review
+# passed the same way: `bash $'.github/scripts/x.py'`, whose `$'…'` this check read as a `$` and a
+# quote, so it named no file, and a command word `.github/scripts/x."sh"`, whose name SCRIPT_CALL
+# never found in the text as written, so the 1050 s of its script were charged nothing. A run's
+# target is now read as bash reads it, its quotes removed and a `$'…'`'s escapes read: the first
+# is refused by name as the same path unquoted is; the second is charged its script's 1050 s, so
+# it is refused under its one-minute key and passes under a key of 18 that holds them, as the
+# same path unquoted would, and so is a command word whose `$'…'` spells the dot as `\x2e`; and a
+# backslash in a name in a `bash -c` text is read the same way, refused as that script's run in
+# the text of a shell is. `python3` running the program written in `$'…'` with that escape
+# passes, as `python3` running it plainly does.
+echo "case: r37 W17 a path holding a glob or a brace expansion is read as built at run time and refused by name"
+root=$(fixture r37-w17-globs)
+printf '%s\n. .github/scripts/ci-retry.sh\nretry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b\n' \
+  '#!/usr/bin/env bash' > "$root/.github/scripts/r38-fetch.sh"
+printf '#!/usr/bin/env python3\nprint("quiet")\n' > "$root/.github/scripts/r38-tool.py"
+chmod +x "$root/.github/scripts/r38-fetch.sh" "$root/.github/scripts/r38-tool.py"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run the fetching script by a question mark
+        timeout-minutes: 1
+        run: bash .github/scripts/r38-fetc?.sh
+      - name: Run the fetching script by a bracket as a command
+        timeout-minutes: 1
+        run: .github/scripts/r38-fetch.[s]h
+      - name: Run the Python program by a question mark
+        timeout-minutes: 1
+        run: bash .github/scripts/r38-tool.p?
+      - name: Run the Python program by a bracket
+        timeout-minutes: 1
+        run: bash .github/scripts/r38-tool.[p]y
+      - name: Run the Python program by a brace expansion
+        timeout-minutes: 1
+        run: bash .github/scripts/r38-tool.{py,x}
+      - name: Run the Python program through a star in its directory
+        timeout-minutes: 1
+        run: bash .github/scr*/r38-tool.py
+      - name: Run the fetching script by a question mark in a bash -c text
+        timeout-minutes: 1
+        run: bash -c 'bash .github/scripts/r38-fetc?.sh'
+      - name: Run the Python program in ANSI-C quotes
+        timeout-minutes: 1
+        run: bash $'.github/scripts/r38-tool.py'
+      - name: Run the fetching script with a quoted part in its name as a command
+        timeout-minutes: 1
+        run: .github/scripts/r38-fetch."sh"
+      - name: Run the fetching script with an escape in its name in a bash -c text
+        timeout-minutes: 1
+        run: bash -c '.github/scripts/r38-fetch\.sh'
+      - name: Run the fetching script with an escape in ANSI-C quotes as a command
+        timeout-minutes: 1
+        run: $'.github/scripts/r38-fetch\x2esh'
+      - name: Run the fetching script with a quoted part in its name under a key that holds it
+        timeout-minutes: 18
+        run: .github/scripts/r38-fetch."sh"
+      - name: Write glob characters where no run is
+        run: |
+          bash ".github/scripts/r38-fetc?.sh"
+          bash .github/scripts/r38-fetc\?.sh
+          ls .github/scripts/*.sh
+          rm -rf "$RUNNER_TEMP"/*
+          python3 .github/scripts/r38-tool.py
+          python3 $'.github/scripts/r38-tool\x2epy'
+          case "$f" in
+            # anything else
+            *) echo other ;;
+          esac
+          [[ $n =~ ^([0-9]{1,6})$ ]] && echo number
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for refusal in \
+  "9	Run the fetching script by a question mark	runs ..github/scripts/r38-fetc.\.sh. with .bash., which ends in .\.sh. and holds an expansion" \
+  "12	Run the fetching script by a bracket as a command	runs ..github/scripts/r38-fetch\..s.h. as a command, which names a file under .github/scripts/ through an expansion" \
+  "15	Run the Python program by a question mark	runs ..github/scripts/r38-tool\.p.. with .bash., which names a file under .github/scripts/ through an expansion" \
+  "18	Run the Python program by a bracket	runs ..github/scripts/r38-tool\..p.y. with .bash., which names a file under .github/scripts/ through an expansion" \
+  "21	Run the Python program by a brace expansion	runs ..github/scripts/r38-tool\..py,x.. with .bash., which names a file under .github/scripts/ through an expansion" \
+  "27	Run the fetching script by a question mark in a bash -c text	runs .bash -c. on text that runs .bash .github/scripts/r38-fetc.\.sh., which ends in .\.sh. and holds an expansion"; do
+  IFS=$'\t' read -r line step says <<<"$refusal"
+  check "refuses '$step' by name at its run, as a run built from data" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' $says, so this check cannot name the script that runs there")"
+done
+check "refuses the star in the program's directory by the program's name" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=24::step 'Run the Python program through a star in its directory' of job 'build' writes ..github/scr.*/r38-tool\.py. as an argument of .bash., and it names .github/scripts/r38-tool.py, a file under .github/scripts/ this check does not read as a script")"
+check "refuses the Python program in ANSI-C quotes by name, as the same path unquoted is" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=30::step 'Run the Python program in ANSI-C quotes' of job 'build' writes ..github/scripts/r38-tool\.py. as an argument of .bash., and it names .github/scripts/r38-tool.py, a file under .github/scripts/ this check does not read as a script")"
+check "charges the script a quoted part of its name runs its 1050 s, so its one-minute key is refused" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=32::step 'Run the fetching script with a quoted part in its name as a command' carries .timeout-minutes: 1., 60 s, and its own retries take 1050 s to exhaust, which that budget does not strictly exceed\. That arithmetic is the step's own and that of .github/scripts/r38-fetch\.sh, which it runs")"
+check "refuses the escaped name in a bash -c text where its script fetches" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=36::step 'Run the fetching script with an escape in its name in a bash -c text' of job 'build' names .github/scripts/r38-fetch\.sh in an argument of .bash., a place this check does not read as a call, and that script fetches")"
+check "charges the script an escape in ANSI-C quotes names its 1050 s, so its one-minute key is refused" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=38::step 'Run the fetching script with an escape in ANSI-C quotes as a command' carries .timeout-minutes: 1., 60 s, and its own retries take 1050 s to exhaust, which that budget does not strictly exceed\. That arithmetic is the step's own and that of .github/scripts/r38-fetch\.sh, which it runs")"
+check "passes the quoted part of a name under a key that holds its script's 1050 s" \
+  "$(is "$(contains "$out" "step 'Run the fetching script with a quoted part in its name under a key that holds it'")" false)"
+for line in "45	a question mark in quotes" "46	a question mark after a backslash" \
+  "47	a star in an argument of ls" "48	a star in an argument of rm" "49	python3 runs it" \
+  "50	python3 runs it in ANSI-C quotes" "53	a case pattern after a comment line" \
+  "55	a piece of a [[ =~ ]] regex"; do
+  IFS=$'\t' read -r at form <<<"$line"
+  check "passes $form" "$(is "$(contains "$out" "file=.github/workflows/case.yaml,line=$at::")" false)"
+done
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 11)"
+
 # F2. A heredoc line reading `timeout-minutes: 20` is text, no key: it took the block's one key,
 # so the job's own key went unpaired and the job passed under the 1200 s its block states. The
 # line is refused by name, and the block is paired with the key below it.
