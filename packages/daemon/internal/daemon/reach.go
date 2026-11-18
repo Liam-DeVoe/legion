@@ -179,8 +179,12 @@ func newReachKeeper(o reachKeeperOptions) *reachKeeper {
 	}
 }
 
-// wait waits for the controller relaunch a sweep started, for the daemon's stop and for a test.
-func (k *reachKeeper) wait() { k.wg.Wait() }
+// wait waits for the controller relaunch a sweep started and for every record of R6's lines the
+// writer still owes the store, for the daemon's stop and for a test.
+func (k *reachKeeper) wait() {
+	k.wg.Wait()
+	k.alerts.Wait()
+}
 
 // registrationRead takes in a registration of session read outside the minute's list: the one the
 // daemon's clean stop of a dead role's session reads just before it deletes it (sessionStop),

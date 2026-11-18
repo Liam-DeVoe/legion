@@ -8,6 +8,7 @@ import (
 	"maps"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 )
@@ -206,6 +207,7 @@ func TestALineOpenBeforeABootIsNotWrittenAgainAfterIt(t *testing.T) {
 	if got := len(lines(t, firstLog)); got != 2 {
 		t.Fatalf("the first daemon wrote %d lines, want 2", got)
 	}
+	first.Wait()
 
 	second, secondLog := boot(t, held)
 	if wrote := second.Open(ControllerUnreachable, "claim-1"); wrote {
@@ -219,6 +221,7 @@ func TestALineOpenBeforeABootIsNotWrittenAgainAfterIt(t *testing.T) {
 	}
 
 	second.Close(ControllerUnreachable, "claim-1")
+	second.Wait()
 	third, thirdLog := boot(t, held)
 	if wrote := third.Open(ControllerUnreachable, "claim-1"); !wrote {
 		t.Error("a case that ended before the boot and came back wrote nothing")
@@ -237,12 +240,15 @@ func TestAClosedLineTheStoreKeptIsDeletedAtTheNextClose(t *testing.T) {
 	held := &heldLines{open: map[Line]bool{}}
 	w, _ := boot(t, held)
 	w.Open(SessionListUnreadable, "")
+	w.Wait()
 	held.refuseNext = errors.New("the database is restarting")
 	w.Close(SessionListUnreadable, "")
+	w.Wait()
 	if !held.open[Line{Word: SessionListUnreadable.Word}] {
 		t.Fatal("the refused delete took the line out of the store")
 	}
 	w.Close(SessionListUnreadable, "")
+	w.Wait()
 	if held.open[Line{Word: SessionListUnreadable.Word}] {
 		t.Fatal("the next close of the line did not delete it from the store")
 	}
@@ -258,8 +264,54 @@ func TestCloseEndedEndsTheLinesWhoseCaseNoLongerHolds(t *testing.T) {
 	w.Open(ControllerUnreachable, "claim-1")
 
 	w.CloseEnded(NewerProcessRefused, func(claim string) bool { return claim == "claim-2" })
+	w.Wait()
 	want := map[Line]bool{{Word: NewerProcessRefused.Word, Claim: "claim-2"}: true, {Word: ControllerUnreachable.Word, Claim: "claim-1"}: true}
 	if !maps.Equal(held.open, want) {
 		t.Fatalf("the open lines are %v, want %v", held.open, want)
 	}
+}
+
+// blockingLines is a store of open lines whose writes wait until release closes, as a store that
+// does not answer does; entered receives each line whose write has begun.
+type blockingLines struct {
+	*heldLines
+	entered chan Line
+	release chan struct{}
+}
+
+func (b *blockingLines) PutLine(ctx context.Context, l Line) error {
+	b.entered <- l
+	<-b.release
+	return b.heldLines.PutLine(ctx, l)
+}
+
+// A store that does not answer holds back the record of a line, never another line: the writer
+// writes each line, and answers its caller, while the store still waits on an earlier record.
+func TestAStoreThatDoesNotAnswerStallsNoOtherLine(t *testing.T) {
+	held := &blockingLines{heldLines: &heldLines{open: map[Line]bool{}}, entered: make(chan Line, 4), release: make(chan struct{})}
+	w, buf := writer(t)
+	if err := w.Load(context.Background(), held); err != nil {
+		t.Fatalf("load the open lines: %v", err)
+	}
+	go w.Open(ControllerUnreachable, "claim-1")
+	select {
+	case <-held.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the store was never asked to keep the first line")
+	}
+
+	opened := make(chan bool, 1)
+	go func() { opened <- w.Open(NoLiveSession, "") }()
+	select {
+	case wrote := <-opened:
+		if !wrote {
+			t.Error("the second case's line was not written")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the second case's line waited on the store's write of the first line's record")
+	}
+	if got := len(lines(t, buf)); got != 2 {
+		t.Fatalf("the writer wrote %d lines while the store held the first record back, want 2: %s", got, buf.String())
+	}
+	close(held.release)
 }

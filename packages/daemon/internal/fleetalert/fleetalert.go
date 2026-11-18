@@ -103,6 +103,19 @@ type Writer struct {
 	// each line closed here whose delete the store refused, deleted again at its next close.
 	lines     Lines
 	undeleted map[Line]struct{}
+	// pending is each record of the store not written yet, in the order its lines opened and
+	// closed. One goroutine at a time writes them, outside mu (drain), so a store that does not
+	// answer holds back records alone, never a line; draining is whether it runs, and settled is
+	// signalled when it ends.
+	pending  []lineRecord
+	draining bool
+	settled  *sync.Cond
+}
+
+// lineRecord is one write of the store: line kept open, or forgotten.
+type lineRecord struct {
+	line Line
+	keep bool
 }
 
 // Line keys a case that has been written and not ended, as its store keeps it: one case may be
@@ -131,7 +144,9 @@ const lineBudget = 30 * time.Second
 // New is a Writer that logs through log for project, and keeps its open lines in its own memory
 // until Load gives it a store.
 func New(log *slog.Logger, project string) *Writer {
-	return &Writer{log: log, project: project, open: map[Line]struct{}{}, undeleted: map[Line]struct{}{}}
+	w := &Writer{log: log, project: project, open: map[Line]struct{}{}, undeleted: map[Line]struct{}{}}
+	w.settled = sync.NewCond(&w.mu)
+	return w
 }
 
 // Load reads the lines lines holds open, which the daemon before this one wrote and no case's
@@ -154,8 +169,8 @@ func (w *Writer) Load(ctx context.Context, lines Lines) error {
 // Open writes c's line, naming claim where there is one and whatever else the caller gives as
 // slog key-value pairs, and returns whether it wrote: a case already open, in this daemon or in
 // the one before it, writes nothing until Close ends it. The line is written before its record
-// is kept, so a store that refuses the record costs at most a second line from the next daemon,
-// never the line itself.
+// is kept, and the record is kept outside the writer's lock, so a store that refuses the record
+// costs at most a second line from the next daemon, and one that does not answer delays no line.
 func (w *Writer) Open(c Case, claim string, attrs ...any) bool {
 	key := Line{Word: c.Word, Claim: claim}
 	w.mu.Lock()
@@ -171,10 +186,7 @@ func (w *Writer) Open(c Case, claim string, attrs ...any) bool {
 		args = append(args, "claim", claim)
 	}
 	w.log.Error(Prefix+": "+c.Sentence, append(args, attrs...)...)
-	if err := w.keep(key, Lines.PutLine); err != nil {
-		w.log.Warn("fleet alert: the line is written, but the store did not keep it open; a daemon that boots before its case ends writes it again",
-			"case", c.Word, "claim", claim, "error", err)
-	}
+	w.record(lineRecord{line: key, keep: true})
 	return true
 }
 
@@ -183,7 +195,14 @@ func (w *Writer) Open(c Case, claim string, attrs ...any) bool {
 func (w *Writer) Close(c Case, claim string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.close(Line{Word: c.Word, Claim: claim})
+	key := Line{Word: c.Word, Claim: claim}
+	_, open := w.open[key]
+	_, undeleted := w.undeleted[key]
+	if !open && !undeleted {
+		return
+	}
+	delete(w.open, key)
+	w.record(lineRecord{line: key})
 }
 
 // CloseEnded ends each line of c whose claim holds says the case no longer holds for: a case
@@ -205,30 +224,65 @@ func (w *Writer) CloseEnded(c Case, holds func(claim string) bool) {
 	}
 }
 
-// close ends key. The caller holds mu.
-func (w *Writer) close(key Line) {
-	_, open := w.open[key]
-	_, undeleted := w.undeleted[key]
-	if !open && !undeleted {
-		return
+// Wait waits until every record an open or a close asked of the store has been written, for the
+// daemon's stop and for a test.
+func (w *Writer) Wait() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for w.draining {
+		w.settled.Wait()
 	}
-	delete(w.open, key)
-	if err := w.keep(key, Lines.DeleteLine); err != nil {
-		w.undeleted[key] = struct{}{}
-		w.log.Warn("fleet alert: the store did not forget a line whose case ended; it is forgotten again at the next close",
-			"case", key.Word, "claim", key.Claim, "error", err)
-		return
-	}
-	delete(w.undeleted, key)
 }
 
-// keep writes key to the store by write, under lineBudget, where a store is loaded. The caller
-// holds mu, so no open and close of one line reach the store out of order.
-func (w *Writer) keep(key Line, write func(Lines, context.Context, Line) error) error {
+// record asks the store for rec, where a store is loaded, and starts the goroutine that writes
+// the records if none runs. The caller holds mu.
+func (w *Writer) record(rec lineRecord) {
 	if w.lines == nil {
-		return nil
+		return
 	}
+	w.pending = append(w.pending, rec)
+	if !w.draining {
+		w.draining = true
+		go w.drain()
+	}
+}
+
+// drain writes the pending records in their order, each under lineBudget and outside mu, until
+// none is left. A delete the store refuses marks its line undeleted, unless the line has opened
+// again since, so the line's next close deletes it again.
+func (w *Writer) drain() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for len(w.pending) > 0 {
+		rec := w.pending[0]
+		w.pending = w.pending[1:]
+		w.mu.Unlock()
+		err := w.write(rec)
+		w.mu.Lock()
+		switch {
+		case err != nil && rec.keep:
+			w.log.Warn("fleet alert: the line is written, but the store did not keep it open; a daemon that boots before its case ends writes it again",
+				"case", rec.line.Word, "claim", rec.line.Claim, "error", err)
+		case err != nil:
+			if _, reopened := w.open[rec.line]; !reopened {
+				w.undeleted[rec.line] = struct{}{}
+			}
+			w.log.Warn("fleet alert: the store did not forget a line whose case ended; it is forgotten again at the next close",
+				"case", rec.line.Word, "claim", rec.line.Claim, "error", err)
+		case !rec.keep:
+			delete(w.undeleted, rec.line)
+		}
+	}
+	w.draining = false
+	w.settled.Broadcast()
+}
+
+// write is rec written to the store, under lineBudget.
+func (w *Writer) write(rec lineRecord) error {
 	ctx, cancel := context.WithTimeout(context.Background(), lineBudget)
 	defer cancel()
-	return write(w.lines, ctx, key)
+	if rec.keep {
+		return w.lines.PutLine(ctx, rec.line)
+	}
+	return w.lines.DeleteLine(ctx, rec.line)
 }

@@ -633,12 +633,14 @@ func TestALineIsWrittenOnceUntilItsCaseEndsAcrossARestart(t *testing.T) {
 	first := d.booted(logged)
 	first.alerts.Open(fleetalert.NewerProcessRefused, "legion-legion-legion-209-implementer")
 	d.sweepEach(1, 25, noLiveSession, first)
+	first.wait()
 	if got := lines(fleetalert.NoLiveSession.Word); got != 1 {
 		t.Fatalf("the first daemon wrote the no-live line %d times in 25 minutes, want once", got)
 	}
 
 	next := d.booted(logged)
 	d.sweepEach(26, 50, noLiveSession, next)
+	next.wait()
 	if got := lines(fleetalert.NoLiveSession.Word); got != 1 {
 		t.Fatalf("the no-live line was written %d times across a restart its case held through, want once", got)
 	}
@@ -649,6 +651,7 @@ func TestALineIsWrittenOnceUntilItsCaseEndsAcrossARestart(t *testing.T) {
 
 	d.noLiveSessions(false)
 	d.sweepEach(51, 51, noLiveSession, next)
+	next.wait()
 	d.noLiveSessions(true)
 	d.sweepEach(52, 75, noLiveSession, d.booted(logged))
 	if got := lines(fleetalert.NoLiveSession.Word); got != 2 {
