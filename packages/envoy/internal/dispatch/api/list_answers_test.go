@@ -106,8 +106,7 @@ func listTargets(t *testing.T, handler http.Handler, project string, comments in
 	return key, "/api/v1/issues/" + key + "/comments", "/api/v1/issues/" + key + "/events"
 }
 
-// issueLastSeq is the issue's newest event sequence: what the activity feed's validator is built
-// on, and what the comment list's deliberately is not.
+// issueLastSeq is the issue's newest event sequence, which both lists' validators hash.
 func issueLastSeq(t *testing.T, database *store.Store, key string) int {
 	t.Helper()
 	var lastSeq int

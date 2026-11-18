@@ -243,10 +243,10 @@ jobs:
     #   Browser-test dispatch dashboard         413, 293, 307, 292  419, 297, 334, 295
     #   every other step summed                  76, 67, 72, 85      79, 76, 80, 77
     #
-    # The rule is in this file's head. The browser step's maximum is the full lane's 419 s, so
-    # 419 x 1.15 = 482 s -> 9 min, which is the bound this issue's R1 asks of the longest
+    # The rule is in this file's head. The browser step's maximum was the full lane's 419 s, so
+    # 419 x 1.15 = 482 s -> 9 min, which is the bound this issue's R1 asked of the longest
     # shard's browser step, and which the container does not move: it is the same rows in the
-    # same browsers.
+    # same browsers. The maximum has since moved, and the budget with it (below).
     #
     # The job budget below is the rule's arithmetic, read on sha256:ba003193, the build of commit
     # 47a222cd (run 42480325123, job 128730667606), and not on the digest this file pins, which
@@ -305,17 +305,18 @@ jobs:
     # The three uploads are three steps of this job and not one, so the sum below counts each
     # of them: 3 + 2 + 4, not 4.
     #
-    # The browser step's own 9 minutes above still holds at the merged head, where #2958's
-    # accessibility rows joined the shards: its maxima here are 381 s (run 42521581875, job
-    # 128856388199), 355 s (job 128851420516) and 283 s (nightly run 42522550380), all under the
-    # 419 s that budget was derived from, so the pooled maximum the rule reads is still that
-    # 419 s and the budget the rule gives is still 9 minutes. The 474 s main measured for this
-    # step, which raised it to 10 minutes there, is not in that sample: it was taken on the bare
-    # runner with the Playwright install this change removes still in the job.
+    # The browser step's maximum is now 486 s: the shared search, sort and filter controls'
+    # rows of dispatch://INFRA-3135 (e2e/table-controls.e2e.ts) took shard 3 to 486 s in full-lane
+    # runs 44176775681 and 44230393182 and 485 s in 44239098359, whose shard 4 took 469 s. main's
+    # merge-group run 44234702002 took 365, 218, 378 and 269 s, so those rows add 107 s to shard 3
+    # and 200 s to shard 4. 486 x 1.15 = 559 s -> 10 min, the budget the step carries below. The
+    # 9 minutes held at #2958's merged head (maxima 381 s, 355 s and 283 s, under 419 s), and the
+    # 474 s main measured once was taken on the bare runner with the Playwright install still in
+    # the job.
     #
     # The browser step is the one step of this job that carries a budget, so the job's budget is
     # that budget plus the maxima above of every step without one, which sum to 219 s:
-    # 540 + 219 = 759 s, 12 min 39 s, rounded up to the 13 minutes below. That is a backstop
+    # 600 + 219 = 819 s, 13 min 39 s, rounded up to the 14 minutes below. That is a backstop
     # above the sum of the step budgets, as this file's head says a job budget is.
     #
     # The rows behind those seconds were the suite of the head those runs measured. Listed
@@ -327,7 +328,7 @@ jobs:
     # pull-request lane names hold 1,252, of which that lane's `@pr` grep selects 282. The two
     # `visual` projects hold 20, which the visual job runs one row at a time, and the 54
     # wall-clock rows are the alone job's.
-    timeout-minutes: 13
+    timeout-minutes: 14
     strategy:
       fail-fast: false
       # Four legs. The count is written here and in the `--shard` denominator of the browser step
@@ -485,12 +486,10 @@ jobs:
         # checkout would leave it dirty afterwards. The blob report goes beside the list
         # reporter's output, so a green run reports what it ran too.
         #
-        # The budget below is the 9 minutes the job's head derives from the sharded head's own
-        # runs, and neither the container nor #2958's added rows move it: at the merged head this
-        # step's maxima are 381 s, 355 s and 283 s, which the job's head lists with their runs,
-        # all under the sharded head's 419 s, so the pooled maximum the rule reads is still
-        # 419 s.
-        timeout-minutes: 9
+        # The budget below is the 10 minutes the job's head derives by the rule from this step's
+        # maximum, 486 s, which the shared controls' rows of dispatch://INFRA-3135 set and the
+        # job's head lists with its runs: 486 x 1.15 = 559 s.
+        timeout-minutes: 10
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory the stack pool
           # makes (mkdtempSync in os.tmpdir(), e2e/harness-pool.ts:143) among it, which is what
@@ -1445,7 +1444,14 @@ jobs:
     # handed them anything. The verdict step below names it as it names the rest.
     needs: [binaries, shard, alone, multiprocess, embedder, visual]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
+    # arm64, for the reason the comment on ci.yaml's `changes` job gives (INFRA-4222). This job
+    # runs JavaScript actions, `bunx playwright merge-reports` and two scripts over gh and jq, with
+    # the runner image's own node, python3, gh and jq. The one toolchain it installs is Bun, from
+    # the aarch64 row of .github/actions/setup-bun that ci.yaml's tool-fallback-arm job proves.
+    # Playwright's report merge starts no browser. At busy
+    # hours the x64 pool held this 35-second job for about 35 minutes (run 44126172228 on
+    # 2026-11-17), and it holds every browser run's verdict, after the legs and before ci-ok.
+    runs-on: ubuntu-24.04-arm
     # The budget is measured. Over the 32 concluded `dispatch-browser / merge` jobs of the last
     # 43 completed ci.yaml runs, read from the jobs API on 2026-11-08, the job's maximum is
     # 34 s: job 128737694112 of run 42481906495, 12:57:25Z to 12:57:59Z. The 37 s this comment

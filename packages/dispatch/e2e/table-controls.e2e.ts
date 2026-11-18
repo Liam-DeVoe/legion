@@ -5677,7 +5677,9 @@ test("every list of options a reader picks from holds a text box that narrows it
             `${at}: the list's text box is not an input of 16 px`
           ).toBe("INPUT 16px");
         }
-        return panel.getByRole("option");
+        // A row that takes the typed text as it is (the Repository list's `Use "…"`, a single
+        // pick's `onCreate`, drawn with a leading `+`) is no option the list holds.
+        return panel.getByRole("option").filter({ hasNotText: /^\+/ });
       }
       missing.push(`${at}: the list its trigger opens holds ${boxes} text boxes, not one`);
     } else {

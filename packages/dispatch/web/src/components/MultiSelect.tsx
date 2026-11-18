@@ -51,6 +51,9 @@ interface SharedProps {
    *  show (`badge-select.ts`), and a table header's funnel, whose text-filter twin is a
    *  `PanelTrigger` that draws none either. */
   readonly chevron?: boolean;
+  /** The text of the row `onCreate` adds for a search that matches no option, drawn from the
+   *  typed value. Defaults to `Create "<value>"`. */
+  readonly createLabel?: (value: string) => string;
   readonly disabled?: boolean;
   /** Which control of the vocabulary this is, written into the trigger's `data-control`: a
    *  column filter is a multi-select under its own name, while a multi-select a page draws for
@@ -61,7 +64,9 @@ interface SharedProps {
   readonly ariaDisabled?: boolean;
   /** Shown under the list, e.g. a host's validation message for a rejected `onCreate`. */
   readonly error?: string | null;
-  /** Shown in place of the list when nothing is left to choose or nothing matches the search. */
+  /** Shown in place of the list when nothing is left to choose or nothing matches the search. A
+   *  single pick shows it over its `onCreate` row too: that row takes the typed value as it is,
+   *  and the message says no option holds it. */
   readonly emptyMessage: string;
   /** Whether opening moves the focus into the text box, as it does by default. A host that
    *  opens the list before its options have come passes `false`, and hands the focus in itself
@@ -108,7 +113,8 @@ interface SharedProps {
 interface MultipleProps extends SharedProps {
   readonly mode?: "multiple";
   readonly onChange: (selected: string[]) => void;
-  /** Enables the `Create "<query>"` row for a search that matches no option. */
+  /** Enables the `createLabel` row for a search that matches no option, which adds the typed
+   *  value. */
   readonly onCreate?: (value: string) => void;
   readonly selected: readonly string[];
 }
@@ -116,6 +122,10 @@ interface MultipleProps extends SharedProps {
 /** One value: a pick hands it to `onPick`, closes the list and puts the focus on the trigger. */
 interface SingleProps extends SharedProps {
   readonly mode: "single";
+  /** Enables the `createLabel` row for a search that matches no option, which hands the typed
+   *  value, trimmed, to the host: `true` takes it, and the list closes as a pick does; `false`
+   *  refuses it, and the list stays open with the text in its box. */
+  readonly onCreate?: (value: string) => boolean;
   readonly onPick: (value: string) => void;
   /** The value picked now, which the list marks selected and the trigger shows; absent while
    *  the host holds none. */
@@ -136,7 +146,9 @@ export type MultiSelectProps = MultipleProps | SingleProps;
  * unticks its value in the checkbox drawn beside it, `onCreate` adds a row for a search that
  * matches no option, and a `Clear` foot empties the selection. `mode="single"` picks one: the
  * rows are plain options, the picked one `aria-selected` and marked, and a pick hands its one
- * value to `onPick`, closes the list and returns the focus to the trigger. It opens with its
+ * value to `onPick`, closes the list and returns the focus to the trigger. Its `onCreate` row
+ * hands a typed value no option holds to the host, which takes it, and the list closes as a pick
+ * does, or refuses it, and the list stays open with the text in its box. It opens with its
  * picked value active, as a `<select>` and the WAI-ARIA select-only combobox do, so Enter there
  * keeps the value and the arrows move on from it; Escape picks nothing, changes no value and
  * returns the focus to the trigger. Its trigger is named for the list (`label`) and then for what
@@ -152,6 +164,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     children,
     chevron = true,
     control,
+    createLabel = (value: string) => `Create "${value}"`,
     disabled = false,
     emptyMessage,
     error = null,
@@ -175,7 +188,6 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // What is picked now, a single pick's value as a list of one, so both modes read it alike.
   const selected =
     props.mode !== "single" ? props.selected : props.value === undefined ? [] : [props.value];
-  const onCreate = props.mode === "single" ? undefined : props.onCreate;
   const id = useId();
   const panelId = `${id}-panel`;
   const listboxId = `${id}-options`;
@@ -198,15 +210,20 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const visibleOptions = open
     ? options.filter((option) => fold(labelOf(option)).includes(needle))
     : [];
+  // A search that names an option, by its value or by the text its row shows, creates nothing.
   const createValue =
     open &&
-    onCreate !== undefined &&
+    props.onCreate !== undefined &&
     searchText !== "" &&
-    !options.some((option) => fold(option) === fold(searchText))
+    !options.some((option) => fold(option) === needle || fold(labelOf(option)) === needle)
       ? searchText
       : undefined;
   const rows = createValue === undefined ? visibleOptions : [...visibleOptions, createValue];
   const activeRow = activeValue !== undefined && rows.includes(activeValue) ? activeValue : rows[0];
+  // The empty message stands where no option is left. A multi-select's create row stands in its
+  // place, since it adds an option; a single pick's row takes the typed value as it is, so the
+  // message stays over it.
+  const showsEmpty = visibleOptions.length === 0 && (single || createValue === undefined);
 
   // What the reader picked, compared as the server compares a label: a URL that lower-cased
   // `Legion` still ticks the option the project spells `Legion`, and ticking it again removes it
@@ -235,11 +252,18 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
         : [...selected, value]
     );
   };
+  // A multi-select's row adds the typed value and starts a fresh search. A single pick's row
+  // hands it to the host, which answers whether it took it: taken, the list closes as a pick
+  // does; refused, the list stays open with the text in its box for the reader to correct.
   const create = (value: string) => {
-    if (onCreate === undefined) return;
-    onCreate(value);
-    setQuery("");
     setActiveValue(value);
+    if (props.mode !== "single") {
+      props.onCreate?.(value);
+      setQuery("");
+    } else if (props.onCreate?.(value) === true) {
+      onOpenChange(false, "pick");
+      triggerRef.current?.focus();
+    }
   };
 
   // Opening starts a fresh search on the value a single pick holds; the panel hands the focus to
@@ -437,6 +461,9 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
                 </button>
               );
             })}
+            {showsEmpty ? (
+              <p className={`px-3 py-2 text-sm ${textMutedOnSurface}`}>{emptyMessage}</p>
+            ) : null}
             {createValue === undefined ? null : (
               <button
                 aria-selected="false"
@@ -451,12 +478,9 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
                 <span aria-hidden="true" className="w-4 shrink-0 text-center">
                   +
                 </span>
-                Create &quot;{createValue}&quot;
+                {createLabel(createValue)}
               </button>
             )}
-            {rows.length === 0 ? (
-              <p className={`px-3 py-2 text-sm ${textMutedOnSurface}`}>{emptyMessage}</p>
-            ) : null}
           </div>
           {error === null ? null : (
             <p className={`border-t px-3 py-2 text-sm ${borderDefault} ${dangerText}`}>{error}</p>

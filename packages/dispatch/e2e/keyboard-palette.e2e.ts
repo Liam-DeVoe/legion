@@ -13,6 +13,10 @@ import { asUser } from "./users";
  * recording's would be. What the palette draws over one fixed answer - its listing, its focus,
  * the addresses its rows open and the way the list fits a window - is in
  * `keyboard-palette.stub.e2e.ts`.
+ *
+ * Every project holds its `evals-md` document from its creation, so a word these rows type to
+ * find only their own issue or action, or nothing, is one that document does not hold: a word it
+ * holds makes the document a hit, which ranks above the issue and takes the highlight.
  */
 
 test("the palette lists the issue page's actions, guarded like their buttons, and runs one", async ({
@@ -104,9 +108,7 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     const setP2 = actions.getByRole("option", { name: "Set priority P2" });
     await expect(actions.getByRole("option")).toHaveCount(1);
     // `p2` sits inside the label rather than starting it, so the row is offered but not
-    // highlighted: Enter alone runs nothing, even once the search has answered with no hits. Not
-    // `priority p2`: every project holds its `evals-md` document, whose text holds `priority`,
-    // so the search would answer that document as a hit.
+    // highlighted: Enter alone runs nothing, even once the search has answered with no hits.
     await expect(dialog.getByText('No results for "p2"')).toBeVisible();
     await expect(input).not.toHaveAttribute("aria-activedescendant");
     await input.press("Enter");
@@ -187,9 +189,7 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
 
     // A query under `$mod+k` lists the hits first. No action here starts with `lose`, so the one
     // that holds it further in (`Close issue`, in its `Close`) sits below the hit, and Enter opens
-    // the hit rather than closing the issue the reader is on. The query is not `issue`: every
-    // project holds its `evals-md` document, whose text names issues throughout, and that
-    // document would be a hit ranked above this issue.
+    // the hit rather than closing the issue the reader is on.
     const statusWrites: string[] = [];
     page.on("request", (request) => {
       if (
@@ -262,9 +262,7 @@ test("a query that holds a card move further in moves no card on Enter", async (
     // Each query sits inside a move's label without starting it: the move is offered, and only
     // an arrow can highlight it, so Enter, even once the search has answered, moves nothing.
     // `down` has no searchable term, so it returns no hits, and the move stays unhighlighted
-    // through that answer too. The searchable words are in no text a new project holds: every
-    // project holds its `evals-md` document, whose text holds `status`, `next`, `move` and
-    // `card`, and that document would be a hit, which takes the highlight.
+    // through that answer too.
     for (const [query, move] of [
       ["previous", "Move card to the previous status"],
       ["down", "Move card down"],
@@ -546,9 +544,7 @@ test("an arrow pressed before the search answers reaches no action the query fin
     await expect(dialog.getByRole("option", { name: "Close issue" })).toHaveCount(1);
     // Down and Enter right after typing, and again once the request is held: the list holds only
     // the action `lose` finds mid-label, `Close issue`, and the hit is still to arrive above it,
-    // so neither burst highlights or runs anything. Not `issue`: every project holds its
-    // `evals-md` document, whose text names issues throughout, and that document would be a hit
-    // ranked above this issue.
+    // so neither burst highlights or runs anything.
     await input.press("ArrowDown");
     await input.press("Enter");
     await expect(dialog).toBeVisible();
@@ -599,8 +595,6 @@ test("a stale answer refreshing for the same query keeps the arrows off the acti
     const hit = dialog.getByRole("option").first();
 
     // The reader searched `lose` once: the answer is cached, with `Close issue` below the hit.
-    // Not `issue`: every project holds its `evals-md` document, whose text names issues
-    // throughout, and that document would be a hit ranked above this issue.
     await page.keyboard.press("Control+k");
     await input.fill("lose");
     await expect(hit).toHaveAttribute("id", /^search-option-issue-/);

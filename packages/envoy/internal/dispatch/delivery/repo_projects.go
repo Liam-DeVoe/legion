@@ -43,15 +43,14 @@ func ScanRepoProject(row pgx.Row) (model.RepoProject, error) {
 //   - the event owners of the mapping's current project and of projects, in one LockOwners call
 //     before the first event, which serializes each project's default switch and orders two
 //     moves between the same projects;
-//   - the mapping's row, for update, which conflicts with the key-share lock an issue write naming
-//     it takes (api's checkIssueRepoMapped and the issues foreign key), so a count of the issues
-//     naming it read after it holds until the write commits.
+//   - the mapping's row, for update, which holds the row and its project still until this write
+//     commits, so the default it read and the project it is moving the mapping out of cannot
+//     change under it. No issue write takes a lock on this row: an issue names any owner/name as
+//     its repository, mapped or not, so nothing an issue write does depends on this row.
 //
-// An issue create locks its project before the mapping too (api's createIssue), so the two never
-// wait on each other in a circle, and no issue write takes the change log's lock. Every writer of
-// a mapping goes through here, so none takes the change log's lock after a row of the table: the
-// PUT and the DELETE of api's mapping routes, the boot seed (api.SeedRepoProjects), cmd/dispatch-seed's
-// projects, and the delivery fixtures that tests and the eval bench write
+// Every writer of a mapping goes through here, so none takes the change log's lock after a row of
+// the table: the PUT and the DELETE of api's mapping routes, the boot seed (api.SeedRepoProjects),
+// cmd/dispatch-seed's projects, and the delivery fixtures that tests and the eval bench write
 // (deliverytest.WriteRepoProjects).
 func LockRepoProjectWrite(ctx context.Context, tx pgx.Tx, broker *events.Broker, repo string, projects ...string) (*model.RepoProject, error) {
 	if err := LockChanges(ctx, tx); err != nil {

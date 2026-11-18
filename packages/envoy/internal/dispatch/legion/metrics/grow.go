@@ -46,21 +46,22 @@ const (
 )
 
 // GrowthRates is how fast the facts a Legion board entry carries grow after the moment they are
-// closed at (api's legionBoardGrowth carries it field by field): the work time, the slot hours and
-// each column's hours in hours an hour, and how fast the last moment of measured work moves with
-// the clock, 1 while a bar is still open and 0 where it stands. PhaseHours holds a column only
-// where its hours grow, and is nil where no column's do.
+// closed at (api's legionBoardGrowth is this type with JSON names, converted from it, so the two
+// keep one field list): each column's hours, the work time and the slot hours in hours an hour,
+// and how fast the last moment of measured work moves with the clock, 1 while a bar is still open
+// and 0 where it stands. HoursByPhase holds a column only where its hours grow, and is nil where
+// no column's do.
 type GrowthRates struct {
-	WorkHours  float64
-	SlotHours  float64
-	WorkLastAt float64
-	PhaseHours map[string]float64
+	HoursByPhase map[string]float64
+	WorkHours    float64
+	SlotHours    float64
+	WorkLastAt   float64
 }
 
 // Grows is whether any rate of r is not 0: whether any fact a board entry carries moves after the
 // moment it is closed at.
 func (r GrowthRates) Grows() bool {
-	return r.WorkHours != 0 || r.SlotHours != 0 || r.WorkLastAt != 0 || len(r.PhaseHours) != 0
+	return r.WorkHours != 0 || r.SlotHours != 0 || r.WorkLastAt != 0 || len(r.HoursByPhase) != 0
 }
 
 // Rates is g's rates of the facts a Legion board entry carries (GrowthRates). g's other names are
@@ -84,10 +85,10 @@ func (g Growth) Rates() GrowthRates {
 			rates.WorkLastAt = rate
 		default:
 			if column, phase := strings.CutPrefix(name, growthPhasePrefix); phase {
-				if rates.PhaseHours == nil {
-					rates.PhaseHours = map[string]float64{}
+				if rates.HoursByPhase == nil {
+					rates.HoursByPhase = map[string]float64{}
 				}
-				rates.PhaseHours[column] = rate
+				rates.HoursByPhase[column] = rate
 			}
 		}
 	}

@@ -34,11 +34,13 @@ function SingleHost({
   focusOnOpen,
   initial,
   marks,
+  onCreate,
   options,
 }: {
   focusOnOpen?: boolean;
   initial?: string;
   marks?: ListMarks;
+  onCreate?: (value: string) => boolean;
   options: string[];
 }) {
   const [open, setOpen] = useState(false);
@@ -48,11 +50,13 @@ function SingleHost({
   return (
     <>
       <MultiSelect
+        createLabel={(typed) => `Use "${typed}"`}
         emptyMessage="Nothing here."
         focusOnOpen={focusOnOpen}
         label="Epic"
         marks={marks}
         mode="single"
+        onCreate={onCreate}
         onOpenChange={(next, closedBy) => {
           setOpen(next);
           if (!next) setClosings((before) => [...before, closedBy ?? "nothing"]);
@@ -571,6 +575,98 @@ test("a single pick's text box narrows its options, and Enter over none picks no
     await user.keyboard("{Enter}");
     expect(screen.getByTestId("handed").textContent).toBe("");
     expect(screen.getByRole("listbox", { name: "Epic options" })).toBeTruthy();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A single pick whose host takes values its options lack - the issue header's Repository takes
+// any `owner/name` - offers a typed text no option holds as a row of its own, in the host's words,
+// and hands the text over trimmed. A text that names an option offers no such row; one an option
+// merely contains does. The host's `true` closes the list as a pick does.
+test("a single pick's onCreate row offers a text no option holds, and a taken one closes the list on the trigger", async () => {
+  const user = userEvent.setup();
+  const created: string[] = [];
+  const view = render(
+    <SingleHost
+      onCreate={(value) => {
+        created.push(value);
+        return true;
+      }}
+      options={["api", "docs"]}
+    />
+  );
+  try {
+    const trigger = screen.getByRole("button", { name: "Epic" });
+    await user.click(trigger);
+    const search = screen.getByRole("combobox", { name: "Search epics" });
+    await user.click(search);
+    await user.paste("DOCS");
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(["docs"]);
+    await user.clear(search);
+    await user.click(search);
+    await user.paste(" urgent ");
+    // No option holds it: the empty message says so, and the row under it takes the text.
+    expect(screen.getByText("Nothing here.")).toBeTruthy();
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual([
+      '+Use "urgent"',
+    ]);
+    await user.click(screen.getByRole("option", { name: 'Use "urgent"' }));
+    expect(created).toEqual(["urgent"]);
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    expect(screen.getByTestId("closings").textContent).toBe("pick");
+    expect(screen.getByTestId("handed").textContent).toBe("");
+
+    // From the keyboard: Enter takes the row while it is the active one.
+    await user.keyboard("{Enter}");
+    await user.paste("ap");
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "api",
+      '+Use "ap"',
+    ]);
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("combobox", { name: "Search epics" })).toHaveAttribute(
+      "aria-activedescendant",
+      screen.getByRole("option", { name: 'Use "ap"' }).id
+    );
+    await user.keyboard("{Enter}");
+    expect(created).toEqual(["urgent", "ap"]);
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    expect(screen.getByTestId("handed").textContent).toBe("");
+  } finally {
+    view.unmount();
+  }
+});
+
+// The host's `false` refuses the text: the list stays open with the text in its box and the
+// focus in it, for the reader to correct.
+test("a single pick's onCreate row the host refuses leaves the list open with the text in its box", async () => {
+  const user = userEvent.setup();
+  const created: string[] = [];
+  const view = render(
+    <SingleHost
+      onCreate={(value) => {
+        created.push(value);
+        return false;
+      }}
+      options={["api"]}
+    />
+  );
+  try {
+    await user.click(screen.getByRole("button", { name: "Epic" }));
+    const search = screen.getByRole("combobox", { name: "Search epics" }) as HTMLInputElement;
+    await user.click(search);
+    await user.paste("not one");
+    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("option", { name: 'Use "not one"' }));
+    expect(created).toEqual(["not one", "not one"]);
+    expect(screen.getByRole("listbox", { name: "Epic options" })).toBeTruthy();
+    expect(search.value).toBe("not one");
+    expect(search).toHaveFocus();
+    expect(screen.getByTestId("closings").textContent).toBe("");
+    expect(screen.getByTestId("handed").textContent).toBe("");
   } finally {
     view.unmount();
   }
