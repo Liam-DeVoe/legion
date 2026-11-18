@@ -213,6 +213,9 @@ export async function drawnRowReadings(
   page: Page,
   { bodies = true }: { readonly bodies?: boolean } = {}
 ): Promise<RowReading[]> {
+  // One reading of the rows as the page draws them at this instant, which is all this helper
+  // claims: a caller that needs the rows settled reads it inside `steadily` or a poll, and the
+  // walk below fails where a row moved before its body was read.
   const drawn = await page.evaluate(readPageRows, {
     alsoUnder: CONTROL_LABELS.also_under,
     focused: null,
@@ -233,6 +236,8 @@ async function focusedBody(page: Page, index: number, row: PageRow): Promise<Pag
   await target.focus();
   await expect(target, `${where} never took the focus`).toBeFocused();
   await expect(rowBody(target), `${where} drew no body with the focus`).toHaveCount(1);
+  // The two expects above waited for the focus and the body, so this one reading is of a settled
+  // row, and a row other than the one read before means the rows moved, not a page still drawing.
   const [focused] = await page.evaluate(readPageRows, {
     alsoUnder: CONTROL_LABELS.also_under,
     focused: index,
@@ -304,6 +309,8 @@ function readPageRows({ alsoUnder, focused }: PageRead): PageRow[] {
   };
   const rows = [...document.querySelectorAll("[data-issue-page] [data-node-row]")];
   const levels = rows.map((row) => {
+    // `readPageRows` runs in the page through `page.evaluate`, one synchronous pass over the DOM
+    // that no render can interleave, so this level is the one the row drew at that instant.
     const level = Number(row.getAttribute("aria-level") ?? "");
     return Number.isInteger(level) && level > 0 ? level : null;
   });
@@ -360,6 +367,8 @@ function readPageRows({ alsoUnder, focused }: PageRead): PageRow[] {
         name: text(name) ?? "",
       };
     });
+    // Read in the same synchronous pass over the DOM as every other field of the row, so the
+    // state it records is the one the row drew at the instant the whole reading stands for.
     const token = row.getAttribute("data-node-state");
     const word = text(margin?.querySelector("[data-node-state]"));
     const unsure = text(margin?.querySelector("[data-node-unsure]"));

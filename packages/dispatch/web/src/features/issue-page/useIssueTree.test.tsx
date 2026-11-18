@@ -4352,6 +4352,15 @@ async function quiet(rig: Rig): Promise<void> {
   throw new Error("the page was still reading after 12 s");
 }
 
+/** An event of the issue: the event feed's refresh of the issue's comments, in an awaited `act`.
+ *  The page's subscription hears the comments marked stale and asks for its reads in a microtask,
+ *  which runs after a plain `act` has closed, and a read it begins updates the stage. */
+async function commentsEvent(rig: Rig): Promise<void> {
+  await act(async () => {
+    refreshQueries(rig.client, [{ queryKey: ["comments", KEY] }]);
+  });
+}
+
 /** Dispatch restarting under the page's socket, and 200 ms of the clock, in which the page makes
  *  its next socket (`feedBackAfterRestart`'s first half, on the row's clock). */
 async function restartFeed(rig: Rig): Promise<void> {
@@ -4404,9 +4413,7 @@ const STATES = {
     reach: async (rig, observed) => {
       if (observed) throw new Error("an observer reads a stale answer");
       await answered(rig, false);
-      act(() => {
-        refreshQueries(rig.client, [{ queryKey: ["comments", KEY] }]);
-      });
+      await commentsEvent(rig);
       await tick(100, 10);
       expect(rig.client.getQueryState(ruleKey(rig))?.isInvalidated).toBe(true);
     },
@@ -4488,9 +4495,7 @@ function marginResolve(latency: number): RuleWay {
       }
       expect(answered, "Dispatch answered the resolve").toBe(true);
       await tick(150, 10);
-      act(() => {
-        refreshQueries(rig.client, [{ queryKey: ["comments", KEY] }]);
-      });
+      await commentsEvent(rig);
     },
     ends: (rig) => {
       expect(
@@ -4565,11 +4570,7 @@ const WAYS = {
   },
   event: {
     words: "an event of the issue",
-    does: async (rig) => {
-      act(() => {
-        refreshQueries(rig.client, [{ queryKey: ["comments", KEY] }]);
-      });
-    },
+    does: commentsEvent,
   },
   retry: {
     words: "the reader's Retry",
