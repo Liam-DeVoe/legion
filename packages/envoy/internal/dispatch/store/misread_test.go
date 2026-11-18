@@ -100,10 +100,10 @@ func TestOpenNamesNoPartOfAUserPartWithARawQuestionMarkOrHash(t *testing.T) {
 	}
 }
 
-// A DATABASE_URL whose other @ is in its query or its database name, after its first /, is read by
-// pgx and net/url alike, so Open takes it to pgx, whose connect to a port nothing listens on then
-// fails naming no part of the password. The control is the misread form above, which is refused.
-// The user and the password are made for this test.
+// A DATABASE_URL whose other @ is in its query, after a ?, is read by pgx and net/url alike, and so
+// is one whose @ in its database name is written %40: Open takes each to pgx, whose connect to a
+// port nothing listens on then fails naming no part of the password. The control is the misread
+// form above, which is refused. The user and the password are made for this test.
 func TestOpenTakesAnAtInTheQueryOrTheDatabaseNameToPgx(t *testing.T) {
 	const (
 		user     = "made-up-user-1b7c"
@@ -113,7 +113,7 @@ func TestOpenTakesAnAtInTheQueryOrTheDatabaseNameToPgx(t *testing.T) {
 		"postgres://" + user + ":" + password + "@127.0.0.1:1/dispatch?application_name=dispatch@box&connect_timeout=3",
 		"postgres://" + user + ":" + password + "@127.0.0.1:1/dispatch?sslmode=disable&application_name=ops@example.com&connect_timeout=3",
 		"postgres://" + user + "@127.0.0.1:1/dispatch?application_name=a@b&connect_timeout=3",
-		"postgres://" + user + ":" + password + "@127.0.0.1:1/dis@patch?connect_timeout=3",
+		"postgres://" + user + ":" + password + "@127.0.0.1:1/dis%40patch?connect_timeout=3",
 	} {
 		_, err := Open(context.Background(), value)
 		if err == nil || strings.Contains(err.Error(), "DATABASE_URL, a value of") || !strings.Contains(err.Error(), "127.0.0.1:1") {

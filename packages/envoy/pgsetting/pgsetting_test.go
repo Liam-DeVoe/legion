@@ -14,10 +14,10 @@ import (
 )
 
 // Each misread form of a Postgres connection string is refused naming its cause, one row per
-// cause, and each honest form whose other @ is in its query or its database name is read; a value
-// pgx cannot parse is refused by its length too, and a failed connect names no user and no
-// database. No refusal holds a part of the value. The user, the passwords and the token are made
-// for this test.
+// cause, an @ in the database name among them, and each honest form whose other @ is in its query,
+// or in its database name written %40, is read; a value pgx cannot parse is refused by its length
+// too, and a failed connect names no user and no database. No refusal holds a part of the value.
+// The user, the passwords and the token are made for this test.
 func TestEachOpenerReadsItsConnectionStringWithNoPartOfItsUserPartPrinted(t *testing.T) {
 	const (
 		user   = "made-up-user-71ce"
@@ -37,7 +37,9 @@ func TestEachOpenerReadsItsConnectionStringWithNoPartOfItsUserPartPrinted(t *tes
 		{"a token with a ? as the user part", "postgres://" + token + "?" + second + "@127.0.0.1:1/x", ""},
 		{"a mistyped option", "postgres://" + user + ":" + first + "@127.0.0.1:1/x?sslmode=bogus", pgsetting.NotParsed},
 		{"an @ in the query", "postgres://" + user + ":" + first + "@127.0.0.1:1/x?application_name=a@b", ""},
-		{"an @ in the database name", "postgres://" + user + ":" + first + "@127.0.0.1:1/dis@patch", ""},
+		{"an @ in the database name", "postgres://" + user + ":" + first + "@127.0.0.1:1/dis@patch", pgsetting.AtInDatabaseName},
+		{"an @ and a / in the password, read as a host and a database name", "postgres://" + user + ":" + first + "@" + second + "/x@127.0.0.1:1/x", pgsetting.AtInDatabaseName},
+		{"an @ in the database name written %40", "postgres://" + user + ":" + first + "@127.0.0.1:1/dis%40patch", ""},
 		{"the key=value form", "host=127.0.0.1 port=1 user=" + user + " password=" + first, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

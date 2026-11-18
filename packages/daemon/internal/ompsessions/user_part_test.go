@@ -58,3 +58,33 @@ func TestConnectURLRefusesAMisreadURLByItsLength(t *testing.T) {
 		}
 	}
 }
+
+// A session database URL with an @ before its first / and another in its database name, whose host
+// pgx reads may be a piece of a password that holds a raw @ and then a raw /, is refused by
+// ConnectURL by its length and the cause before any connect: pgx names that host in every error of
+// a connect. The control is the same URL with no @ after its /, whose refusal names the address.
+// The user, the password and its piece are made for this test.
+func TestConnectURLRefusesAURLWithAnAtInItsPasswordAndItsDatabaseName(t *testing.T) {
+	const (
+		user  = "made-up-user-5e2b"
+		first = "not-a-secret-pw5e2b"
+		piece = "not-a-secret-piece-5e2b"
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	control := "postgres://" + user + ":" + first + "@" + piece + "/omp?connect_timeout=3"
+	if _, err := ConnectURL(ctx, control); err == nil || !strings.Contains(err.Error(), "connect to Postgres at "+piece) {
+		t.Fatalf("UNKNOWN: the control's refusal names no address, so this row saw nothing: %v", err)
+	}
+	shape := "postgres://" + user + ":" + first + "@" + piece + "/x@127.0.0.1:1/omp?connect_timeout=3"
+	_, err := ConnectURL(ctx, shape)
+	named := fmt.Sprintf("the session database URL %s names, a value of %d characters, has an @ before its first / and another in its database name", DSNFileVariable, len(shape))
+	if err == nil || !strings.Contains(err.Error(), named) {
+		t.Fatalf("%v, want a refusal naming %q", err, named)
+	}
+	for _, part := range []string{user, first, piece} {
+		if strings.Contains(err.Error(), part) {
+			t.Errorf("the refusal names a part of the password as the address or the user: %q", err)
+		}
+	}
+}

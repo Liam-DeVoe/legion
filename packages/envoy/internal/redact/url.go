@@ -84,6 +84,10 @@ const (
 	// ControlCharacter: net/url refuses a control character, and a line that showed the value
 	// would carry it; a line ending left from a file is the usual one.
 	ControlCharacter Misreading = "holds a control character (a line ending or a tab, often one left from a file); remove it"
+	// NoScheme: the value has no "://". net/url reads the text before its first colon as the
+	// scheme and the rest as an opaque path, so the @ that ends a user part is left over, or the
+	// value does not parse; the cause is the missing scheme, which the TypeScript check names too.
+	NoScheme Misreading = "does not start with http:// or https://, so its user part is read as a scheme and a path; write the scheme first"
 	// Unparsed: net/url cannot parse a value that holds an @, whose error quotes it whole, and a
 	// user part that holds a /, ?, # or \ is the usual cause (its password then reads as a port).
 	Unparsed Misreading = "does not parse as a URL; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part"
@@ -94,14 +98,18 @@ const (
 )
 
 // Misread is what net/url's reading of raw, a value that holds an @, finds that makes a host read
-// from it a possible piece of its user part: ControlCharacter, Unparsed or AtOutsideUserPart, in
-// that order. A value with no @ has no user part, and Misread finds nothing in it.
+// from it a possible piece of its user part: ControlCharacter, NoScheme, Unparsed or
+// AtOutsideUserPart, in that order. A value with no @ has no user part, and Misread finds nothing
+// in it.
 func Misread(raw string) Misreading {
 	if !strings.Contains(raw, "@") {
 		return ""
 	}
 	if strings.ContainsFunc(raw, func(r rune) bool { return r < ' ' || r == 0x7f }) {
 		return ControlCharacter
+	}
+	if !strings.Contains(raw, "://") {
+		return NoScheme
 	}
 	parsed, err := url.Parse(raw)
 	if err != nil {

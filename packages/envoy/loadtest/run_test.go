@@ -196,6 +196,28 @@ func TestAForeignRunsMetaHoldsNoTokenOrPassword(t *testing.T) {
 			want:    recordedPG("postgres://h:5432/db"),
 			secrets: []string{"keypass-m4vq"},
 		},
+		{
+			// A user part pgx reads apart (pgsetting.Refuse): pgx would read a piece of the
+			// password as the host, which the meta records, so parsePG refuses the value and it is
+			// recorded redacted whole: an @ in the password ends pgx's user part early, and a /
+			// in a token written as the whole user part ends the host.
+			args:    foreignPG("postgres://loader:not-a-secret-pw-7a2e@not-a-secret-host-7a2e@db.example:5432/dispatch"),
+			want:    recordedPG(redacted),
+			secrets: []string{"not-a-secret-pw-7a2e", "not-a-secret-host-7a2e"},
+		},
+		{
+			args:    foreignPG("postgres://not-a-secret-tok-4f9b/x@db.example:5432/dispatch"),
+			want:    recordedPG(redacted),
+			secrets: []string{"not-a-secret-tok-4f9b"},
+		},
+		{
+			// An @ before the first / and another in the database name: the host pgx reads may be
+			// a piece of a password that holds a raw @ and then a raw /, so parsePG refuses it too
+			// and it is recorded redacted whole.
+			args:    foreignPG("postgres://loader:not-a-secret-pw-2c8d@not-a-secret-piece-2c8d/x@db.example:5432/dispatch?connect_timeout=3"),
+			want:    recordedPG(redacted),
+			secrets: []string{"not-a-secret-pw-2c8d", "not-a-secret-piece-2c8d"},
+		},
 	} {
 		fs := flag.NewFlagSet("run", flag.ContinueOnError)
 		var ef endpointFlags

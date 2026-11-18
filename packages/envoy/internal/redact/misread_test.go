@@ -32,6 +32,8 @@ func TestEachMisreadingIsNamedByItsCause(t *testing.T) {
 		{"a # in a token that is the user part", "http://" + token + "#" + password + "@envoy.example:9020", AtOutsideUserPart},
 		{"a ? in a token that is the user part", "http://" + token + "?" + password + "@envoy.example:9020", AtOutsideUserPart},
 		{"an @ in the query and no user part", "http://envoy.example:9020/?via=a@b", AtOutsideUserPart},
+		{"a user part and no scheme, its user read as one", user + ":" + password + "@envoy.example:9020", NoScheme},
+		{"a token and no scheme", token + "@envoy.example:9020", NoScheme},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := Misread(tc.raw)
@@ -52,6 +54,30 @@ func TestEachMisreadingIsNamedByItsCause(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Each cause the TypeScript check (unshownSettingUrl in packages/contracts/src/setting-url.ts)
+// names for a value with an @ is the one Misread names for the same value: setting-url.test.ts holds
+// the same inputs, by the same cause, in "the cause of each value the Go check reads too". A value
+// with no @ is not among them: Misread finds nothing in it, since it has no user part, and the
+// setting's own refusal names it.
+func TestEachCauseIsTheOneTheTypeScriptCheckNames(t *testing.T) {
+	const secret = "pw-4c7e19"
+	for _, tc := range []struct {
+		raw  string
+		want Misreading
+	}{
+		{"https://made-up-user:" + secret + "@host.example/a\tb", ControlCharacter},
+		{"https://made-up-user:pa/" + secret + "@host.example", Unparsed},
+		{"made-up-user:" + secret + "@host.example", NoScheme},
+		{"https://MadeUpTok3n/" + secret + "@host.example", AtOutsideUserPart},
+		{"https://made-up-user:4821#" + secret + "@host.example", AtOutsideUserPart},
+		{"https://host.example/?to=a@b", AtOutsideUserPart},
+	} {
+		if got := Misread(tc.raw); got != tc.want {
+			t.Errorf("Misread of %d characters = %q, want %q", len(tc.raw), got, tc.want)
+		}
 	}
 }
 

@@ -30,6 +30,13 @@ const (
 	// AtsBeforePath: more than one @ before the first /. pgx ends the user part at the first,
 	// net/url at the last, so one of them reads a piece of the password as the host.
 	AtsBeforePath redact.Misreading = "has more than one @ before its first /, and pgx ends its user part at the first while Go's URL parser ends it at the last; write each @ in its user part as %40, and one in its query as %40 or after a / before the query"
+	// AtInDatabaseName: an @ before the first / and another in the database name, after the first
+	// / and before any ?. A password that holds a raw @ and then a raw / (u:p@S/x@host/db) gives
+	// pgx the host S, a piece of the password, and an honest host with an @ in its database name
+	// (u:p@host/dis@patch) reads the same: no rule of the string tells the two apart, and pgx names
+	// the host it read in every error of a connect, a later query's included, so no line could be
+	// kept from printing the piece. The honest form can always be written with that @ as %40.
+	AtInDatabaseName redact.Misreading = "has an @ before its first / and another in its database name, so the host pgx reads may be a piece of a password that holds a raw @ and /; write the @ in its password, or in its database name, as %40 (and a / in its password as %2F)"
 	// EndBeforeAt: a ?, # or \ before the @ that ends pgx's user part. pgx reads such a value
 	// right, so the openers admit it (misread finds nothing in it), but net/url ends the authority
 	// at that character and reads a piece of the user part as the host, or fails with an error that
@@ -80,13 +87,17 @@ func ParsePoolConfig(setting, raw string) (*pgxpool.Config, error) {
 // refusal naming its host would print; the empty Misreading when nothing does. pgx reads the user
 // part as libpq does, up to the FIRST @ before the first / (pgconn's parseURLSettings), and keeps a
 // ?, # or \ before that @ in it, where net/url would end the authority (URLParserReadsApart). An @
-// after the first / belongs to the path or the query, unless no @ comes before it: then it may end
-// a user part that held a /. The key=value form has no such part.
+// after the first / and before any ? is refused either way: with no @ before the / it may end a
+// user part that held a / (AtAfterPath), and with one it may follow a piece of a password that held
+// an @ and a / (AtInDatabaseName). An @ in the query, after a ?, is the query's, and is admitted
+// when an @ comes before the / (a password would need a raw @, / and ? to put one there). The
+// key=value form has no such part.
 func misread(raw string) redact.Misreading {
 	authority, afterPath, ok := splitURL(raw)
 	if !ok {
 		return ""
 	}
+	database, _, _ := strings.Cut(afterPath, "?")
 	at := strings.Index(authority, "@")
 	switch {
 	case at < 0 && strings.Contains(afterPath, "@"):
@@ -95,6 +106,8 @@ func misread(raw string) redact.Misreading {
 		return ""
 	case strings.Count(authority, "@") > 1:
 		return AtsBeforePath
+	case strings.Contains(database, "@"):
+		return AtInDatabaseName
 	}
 	return ""
 }

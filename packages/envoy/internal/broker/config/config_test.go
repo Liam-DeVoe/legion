@@ -2,6 +2,7 @@
 package config
 
 import (
+	"fmt"
 	"maps"
 	"net/netip"
 	"os"
@@ -224,6 +225,42 @@ func TestLoadRefusesAURLWithoutPrintingItsCredential(t *testing.T) {
 			if strings.Contains(err.Error(), secret) {
 				t.Errorf("Load(%s=%q) = %v, names %q", row.name, row.value, err, secret)
 			}
+		}
+	}
+}
+
+// A BROKER_DATABASE_URL whose user part pgx reads apart is refused by Load, before the RDS IAM
+// check reads it, by its length and the cause pgsetting found: an @ in the password before the
+// first /, and a token with a / written as the whole user part. The refusal holds no part of the
+// user part. The control is the same value with that @ or / percent-encoded, which loads. The user,
+// the passwords and the token are made for this test.
+func TestLoadRefusesADatabaseURLWhoseUserPartPgxReadsApart(t *testing.T) {
+	const (
+		user   = "made-up-user-1b6f"
+		first  = "not-a-secret-pw1b6f"
+		second = "not-a-secret-pw2c7a"
+		token  = "not-a-secret-tok3d8b"
+	)
+	for _, row := range []struct{ value, encoded, cause string }{
+		{"postgres://" + user + ":" + first + "@" + second + "@db.example:5432/broker", "postgres://" + user + ":" + first + "%40" + second + "@db.example:5432/broker", "has more than one @ before its first /"},
+		{"postgres://" + token + "/" + first + "@db.example:5432/broker", "postgres://" + token + "%2F" + first + "@db.example:5432/broker", "has an @ after its first / and none before it"},
+	} {
+		e := validEnv()
+		e["BROKER_DATABASE_URL"] = row.value
+		_, err := Load(env(e))
+		want := fmt.Sprintf("BROKER_DATABASE_URL, a value of %d characters, %s", len(row.value), row.cause)
+		if err == nil || !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("%d characters: %v, want a refusal that begins %q", len(row.value), err, want)
+			continue
+		}
+		for _, part := range []string{user, first, second, token} {
+			if strings.Contains(err.Error(), part) {
+				t.Errorf("the refusal holds a part of the user part: %q", err)
+			}
+		}
+		e["BROKER_DATABASE_URL"] = row.encoded
+		if _, err := Load(env(e)); err != nil {
+			t.Errorf("the control, %d characters: %v, want it loaded", len(row.encoded), err)
 		}
 	}
 }
