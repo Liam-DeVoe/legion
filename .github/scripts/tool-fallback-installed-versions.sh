@@ -12,7 +12,9 @@
 # repository out in its first step, above every step below it, so this script, the helper it
 # sources and the rig it runs are all in the checkout when the step runs.
 #
-# Run from the repository root: .github/scripts/tool-fallback-installed-versions.sh <tarball>
+# Run from the repository root: LEGION_TEST_UV=<uv binary> .github/scripts/tool-fallback-installed-versions.sh <tarball>
+# LEGION_TEST_UV is the uv binary the install-uv action fetched, which that action writes to
+# GITHUB_ENV; the script runs it for uv's version, and under `set -u` an unset one stops it.
 # CI runs it in ci-job-tool-fallback.yaml's tool-fallback job, at the step "Check every tool is
 # the version its row pins".
 set -euo pipefail

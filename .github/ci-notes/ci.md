@@ -103,7 +103,9 @@ shared is written once here, where each was written out again in every step that
 YAML anchor reaches no further than the string it is in.
 
 The text below is what the changes job's steps carried until the filters became one file, kept
-as it stood, so its present tense describes that layout.
+as it stood, so its present tense describes that layout. The exceptions are the lines that
+pointed at a comment this change removed, or at a line number that moved, which now name what
+they meant.
 
 The second of the three filter strings. Actions hands a step's input to the action as one
 environment variable, and Linux caps one of those at MAX_ARG_STRLEN, 131,072 bytes: the
@@ -576,8 +578,6 @@ alone must start both jobs, or the side it disagrees with stays green.
 The three jobs whose tag steps lean on this job's untagged run of ./cmd/dispatch
 and ./cmd/broker: each runs only what its tag adds, so a change that starts one
 must start this job too (check-ci-filters.sh's rule 15).
-
-Rule 15 holds this job to the two-build Go step's listed block too, which packages/contracts/src/** above takes in.
 
 ## envoy_go_checks: envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
 
