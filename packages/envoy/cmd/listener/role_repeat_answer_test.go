@@ -7,11 +7,13 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
+	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -29,6 +31,11 @@ import (
 // forward's Nats-Msg-Id is made of the key whatever its form (bus.ForwardMsgID). The charge is the
 // role send's own, unchanged: a forward the stream confirmed costs one, a duplicate among them,
 // and an answer from the confirm record forwards nothing and costs nothing.
+//
+// A repeat's forward the stream refuses while the first one under its id is in process (as
+// nats-server's 10158 refusal, which a forward's wait returns as ErrForwardNotStored wrapping it)
+// is tried again, as any forward that failed is, and the stream's next answer, the duplicate
+// naming the first forward, is the copy the 200 carries.
 //
 // The control is the same repeat to a role nobody claims: its 202 kept answer is the copy the
 // role's kept lane holds, which the route already answered before this change (roleSend.kept).
@@ -128,6 +135,33 @@ func TestARolePublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testi
 		repeat := rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, map[string]any{"idempotency_key": key, "expects_reply": "required"})
 		if got := expectsReplyOf(t, "the repeat asking for a required reply", repeat); !repeat.Duplicate || got != "false" {
 			t.Fatalf("the role repeat asking for a required reply answered expects_reply %s and duplicate %t, want the stored forward's false and duplicate", got, repeat.Duplicate)
+		}
+	})
+
+	t.Run("case: a repeat whose forward is refused while the first is in process is tried again and answers the stored forward with duplicate", func(t *testing.T) {
+		role := "role-repeat-in-process-" + id.New()
+		holder := "ses_role_repeat_in_process_" + id.New()
+		sender := "ses_role_repeat_in_process_sender_" + id.New()
+		claimRoleFor(t, rig.deps.registry, rig.deps.sessions, holder, role, nil)
+		key := uuid.NewString()
+		first := held(t, rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, map[string]any{"idempotency_key": key}))
+		first.requireHeld(t, "the first role publish", stored(t, holder), false)
+		rig.deps.confirmed.Clear(publishDedupePrefix+key, holder)
+		saved := rig.deps.delivery
+		t.Cleanup(func() { rig.deps.delivery = saved })
+		inProcess := fmt.Errorf("%w: %w", bus.ErrForwardNotStored,
+			&natsgo.APIError{Code: 409, ErrorCode: 10158, Description: "duplicate message id is in process"})
+		made := rig.interceptForwards(func(n int, forward func() (func() (bus.StoredAck, error), error)) (func() (bus.StoredAck, error), error) {
+			if n == 1 {
+				return func() (bus.StoredAck, error) { return bus.StoredAck{}, inProcess }, nil
+			}
+			return forward()
+		})
+		repeat := held(t, rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role,
+			map[string]any{"idempotency_key": key, "message": "the repeat's own body"}))
+		repeat.requireHeld(t, "the repeat whose first forward was refused in process", stored(t, holder), true)
+		if *made != 2 {
+			t.Fatalf("the repeat made %d forwards, want 2: the one refused in process and the one the stream answered a duplicate", *made)
 		}
 	})
 

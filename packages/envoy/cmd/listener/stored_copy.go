@@ -74,8 +74,10 @@ func publishHeld(ctx context.Context, client *bus.Client, publish storedPublish,
 // wrapping errStoredCopyUnread:
 //
 //   - sequence 0, which names no copy, refused before any read as a defence: the read would hand
-//     back the subject's first message, another one (nats-server v2.10.29 answered a duplicate at
-//     0, and every server the listener admits answers a stored sequence);
+//     back the subject's first message, another one. nats-server v2.10.29 acknowledged a
+//     duplicate at 0 for an id it had staged there; the 2.11 line answers a staged id with the
+//     in-process error instead, and later lines stage nothing, so no server the listener admits
+//     sends one (packages/envoy/AGENTS.md);
 //   - a read that failed or did not answer within ctx;
 //   - a stream that holds nothing at seq on subject, as after an operator's delete, or at the
 //     edge of the 72-hour age, which equals the duplicate window, where the stream can still
