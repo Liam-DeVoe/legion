@@ -41,6 +41,7 @@ import {
 import { appKeymap } from "../../shell/keymap";
 import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
+import type { DecisionNode } from "../decision-nodes/decision-nodes";
 import { decisionNodes } from "../decision-nodes/decision-nodes";
 import { conversationPath } from "../decisions-filter/decisions-parts";
 import { useSetFocusedNode } from "../focused-node";
@@ -87,7 +88,6 @@ import { nodesInOrder } from "../tree-keys";
 import { useTreeRead, viewQuery } from "../tree-read/tree-read";
 import { useTreeKeymap } from "../useTreeKeymap";
 import {
-  cellNodeOf,
   type SpecDecision,
   type SpecGroup,
   type SpecMark,
@@ -270,67 +270,39 @@ export function SpecFilterBody({
   // addresses a node, which is the one rule the tree was built with, so a `shaped` tie resolves
   // to the node it names (`tree-drafts.ts`).
   const { nameOf, nodeIdOf } = useIssueNames(issue, root);
-  const { groups, others } = useMemo(
-    () =>
-      specDecidedBy({
-        asksHeld,
-        checks: resultsRead.data?.checks ?? [],
-        decisions,
-        nameOf,
-        nodeIdOf,
-        reader,
-        root,
-        view,
-      }),
-    [asksHeld, decisions, nameOf, nodeIdOf, reader, resultsRead.data, root, view]
-  );
   // The id of each node of the tree at or under an overtaken node, which shaped nothing that still
   // stands: a later node took its place.
   const closedIds = useMemo(
     () => new Set(nodesInOrder(root).flatMap((node) => (node.closed === true ? [node.id] : []))),
     [root]
   );
-  // Each group of `groups` as the body draws it: read again with each decision at or under an
-  // overtaken node left out before any run is headed, so no cell draws one and no statement
-  // names one. A decision stands where the node its cell is drawn as stands (`cellNodeOf` in
-  // `spec-decided-by.ts`): its own node where the tree holds it, else, for a person's, the answered
-  // question it is drawn by. A statement such a decision would have headed is headed by its next
-  // tie, as `specDecidedBy` picks it - a person's decision that waits on the asks read keeps its
-  // place - or by none. A group is the statements under one parent, whatever shaped them, so the
-  // groups of the two readings are one for one; each is itself where no decision is closed.
-  const drawnGroups = useMemo((): ReadonlyMap<SpecGroup, SpecGroup> => {
-    if (closedIds.size === 0) return new Map(groups.map((group) => [group, group]));
+  // The decisions the body reads: each but those at or under an overtaken node, which are left
+  // out before any run is headed, so no cell draws one and no statement names one. A decision
+  // stands where the node its cell is drawn as stands (`cellNodeOf`). A statement such a decision
+  // would have headed is headed by its next tie, as `specDecidedBy` picks it - a person's decision
+  // that waits on the asks read keeps its place - or by none.
+  const standing = useMemo(() => {
+    if (closedIds.size === 0) return decisions;
     const cellOf = cellNodeOf(root, nodeIdOf);
-    const standing = decisions.filter((made) => {
+    return decisions.filter((made) => {
       const cell = cellOf(made);
       return cell === undefined || !closedIds.has(cell.id);
     });
-    const read =
-      standing.length === decisions.length
-        ? groups
-        : specDecidedBy({
-            asksHeld,
-            checks: resultsRead.data?.checks ?? [],
-            decisions: standing,
-            nameOf,
-            nodeIdOf,
-            reader,
-            root,
-            view,
-          }).groups;
-    return new Map(groups.map((group, at) => [group, read[at] ?? group]));
-  }, [
-    asksHeld,
-    closedIds,
-    decisions,
-    groups,
-    nameOf,
-    nodeIdOf,
-    reader,
-    resultsRead.data,
-    root,
-    view,
-  ]);
+  }, [closedIds, decisions, nodeIdOf, root]);
+  const { groups, others } = useMemo(
+    () =>
+      specDecidedBy({
+        asksHeld,
+        checks: resultsRead.data?.checks ?? [],
+        decisions: standing,
+        nameOf,
+        nodeIdOf,
+        reader,
+        root,
+        view,
+      }),
+    [asksHeld, nameOf, nodeIdOf, reader, resultsRead.data, root, standing, view]
+  );
   const specSlug = spec?.slug ?? "";
   const summary = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
   const setFocusedNode = useSetFocusedNode();
@@ -508,10 +480,7 @@ export function SpecFilterBody({
     (key: string, open: boolean) => setLines((held) => toggledLines(held, key, open, holdsWords)),
     [holdsWords]
   );
-  const folded = useMemo(
-    () => foldedLines(drawnGroups, closedIds, root),
-    [closedIds, drawnGroups, root]
-  );
+  const folded = useMemo(() => foldedLines(groups, closedIds, root), [closedIds, groups, root]);
   const folds = useMemo(
     () => openedRows(folded, groups, others, (key) => lineIsOpen(lines, holdsWords, key)),
     [folded, groups, holdsWords, lines, others]
@@ -772,7 +741,6 @@ export function SpecFilterBody({
         {groups.map((group) => (
           <Group
             context={context}
-            drawn={drawnGroups.get(group)}
             focused={focused}
             group={group}
             key={group.parent?.id ?? group.runs[0]?.statements[0]?.node.id ?? ""}
@@ -843,6 +811,33 @@ function issueAsksQuery(key: string) {
   return { queryFn: () => api.listIssueAsks(key, "all"), queryKey: ["asks", key] };
 }
 
+/** The node of `root` each decision's cell is drawn as, by the rule `spec-decided-by.ts`'s
+ *  `decisionOf` draws a decision by: its own node where the tree holds it, else, for a person's
+ *  decision, the question they answered; undefined where the tree holds neither. It looks both
+ *  up as `nodesById` and `asksById` there do, which that module keeps to itself: each node at its
+ *  first placement, and each ask by the id a decision names it with (`Decision.asks`). */
+function cellNodeOf(
+  root: TreeNode,
+  nodeIdOf: (reference: string) => string | undefined
+): (decision: DecisionNode) => TreeNode | undefined {
+  const nodes = new Map<string, TreeNode>();
+  const asks = new Map<string, TreeNode>();
+  for (const node of nodesInOrder(root)) {
+    if (nodes.has(node.id)) continue;
+    nodes.set(node.id, node);
+    if (node.type !== "ask" || node.reference === undefined) continue;
+    const route = parseNodeReference(node.reference);
+    if (route?.kind === "ask") asks.set(route.id, node);
+  }
+  return (decision) => {
+    const own = nodes.get(nodeIdOf(decision.ref) ?? "");
+    if (own !== undefined || decision.kind !== "person") return own;
+    return (decision.asks ?? [])
+      .map((ask) => asks.get(ask))
+      .find((ask) => ask?.answer !== undefined);
+  };
+}
+
 /** A line of statements at or under an overtaken node as the keys read it (`tree-fold.ts`'s
  *  `OvertakenRow`). */
 type LineRow = Extract<DrawnRow, { kind: "overtaken" }>;
@@ -878,28 +873,27 @@ const NO_FOLDS: FoldedLines = { holding: new Map(), lines: new Map() };
  * statement (`line:` and its id), so two groups under one parent draw two lines, and the line
  * counts the overtaken nodes its statements fold with: "1 overtaken", "N overtaken". Its row
  * carries the key as its `of`'s id too, which the keys hand back to open or close it
- * (`useTreeKeymap.ts`'s `onOvertaken`). The statements are read from each group as the body
- * draws it (`drawn`, by the group it stands for), and the line holds them run by run as their
- * runs there are headed, a run that waits on the asks read included; `closed` is the ids of the
- * tree's nodes at or under an overtaken node.
+ * (`useTreeKeymap.ts`'s `onOvertaken`). The line holds the statements run by run as their runs
+ * are headed in `groups`, the groups the body draws, a run that waits on the asks read included;
+ * `closed` is the ids of the tree's nodes at or under an overtaken node.
  */
 function foldedLines(
-  drawn: ReadonlyMap<SpecGroup, SpecGroup>,
+  groups: readonly SpecGroup[],
   closed: ReadonlySet<string>,
   root: TreeNode
 ): ReadonlyMap<SpecGroup, GroupLine> {
   const lines = new Map<SpecGroup, GroupLine>();
   const groupOf = new Map<string, SpecGroup>();
-  for (const [group, { runs }] of drawn) {
-    for (const run of runs) {
+  for (const group of groups) {
+    for (const run of group.runs) {
       for (const statement of run.statements) groupOf.set(statement.node.id, group);
     }
   }
   // What each group's line holds: its folded statements, each with the head of its run, in the
   // order the view draws them, and the overtaken nodes they fold with.
   const held = new Map<SpecGroup, { counted: Set<string>; folded: Headed[] }>();
-  for (const [group, { runs }] of drawn) {
-    for (const run of runs) {
+  for (const group of groups) {
+    for (const run of group.runs) {
       for (const statement of run.statements) {
         if (statement.node.closed !== true) continue;
         const top = statement.node.closedBy ?? statement.node.id;
@@ -925,7 +919,7 @@ function foldedLines(
       }
     }
   }
-  for (const group of drawn.keys()) {
+  for (const group of groups) {
     const into = held.get(group);
     if (into === undefined) continue;
     const key = `line:${group.runs[0]?.statements[0]?.node.id ?? ""}`;
@@ -1228,7 +1222,6 @@ function dotted(parts: readonly LinePart[]): ReactNode {
  *  of the grid per run of statements one decision shaped. */
 function Group({
   context,
-  drawn,
   focused,
   group,
   known,
@@ -1244,10 +1237,6 @@ function Group({
   underLine,
 }: {
   context: ReadonlySet<string>;
-  /** The group as the body draws it, in place of `group` (`SpecFilterBody`'s `drawnGroups`): the
-   *  same statements, with no decision at or under an overtaken node heading a run of live
-   *  statements or named by a statement. */
-  drawn?: SpecGroup;
   focused: string | undefined;
   group: SpecGroup;
   /** Whether the Spec view read the decisions come from and the asks read hold an answer, which
@@ -1285,7 +1274,6 @@ function Group({
   // The marks of the node the statements hang under, which its heading's line carries: each of
   // its statements names it by that line.
   const parentLine = group.runs[0]?.statements[0]?.node.parentLine;
-  group = drawn ?? group;
   // Each statement at or under an overtaken node folds out of its run: the line drawn after the
   // group's other statements holds it, with every other statement that folds with the same
   // overtaken node, and draws them under it, run by run as their decisions shaped them, once it is

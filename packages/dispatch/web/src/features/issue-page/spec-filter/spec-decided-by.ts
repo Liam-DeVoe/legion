@@ -336,25 +336,6 @@ function asksById(nodes: ReadonlyMap<string, TreeNode>): ReadonlyMap<string, Tre
   return asks;
 }
 
-/** The node of `root` each decision's cell is drawn as, read through the two indexes
- *  `decisionOf` reads: its own node where the tree holds it, else, for a person's, the question
- *  they answered; undefined where the tree holds neither. `SpecFilterBody.tsx` reads by it which
- *  decisions stand under an overtaken node. */
-export function cellNodeOf(
-  root: TreeNode,
-  nodeIdOf: (reference: string) => string | undefined
-): (decision: DecisionNode) => TreeNode | undefined {
-  const nodes = nodesById(root);
-  const asks = asksById(nodes);
-  return (decision) => {
-    const own = nodes.get(nodeIdOf(decision.ref) ?? "");
-    if (own !== undefined || decision.kind !== "person") return own;
-    return (decision.asks ?? [])
-      .map((ask) => asks.get(ask))
-      .find((ask) => ask?.answer !== undefined);
-  };
-}
-
 /** The decisions that shaped each statement, by the statement's node id, in the order the Spec
  *  view read answers them: each drawn, but a person's while the asks read holds no answer
  *  (`specDecidedBy`'s `asksHeld`), which keeps its place as a tie that waits. */
