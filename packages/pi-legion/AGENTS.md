@@ -95,7 +95,12 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 156 (the owner's plan: the
+number is the one `DaemonAPIVersion` declares, last bumped by contract 161 (the roles a deployment
+defines run steps of a task: the state's `phase` takes `step`, which a caller below 161 is served as
+`implementing`, with `issues.<key>.stepRole` naming the role and no stranded claim or waiting wake
+of a role outside Legion's six; such a role completes with the verdict `pass` or `fail` and a
+commit; and `LegionPhaseBackwardRequest`'s `returnTo`, which a daemon before 161 refuses as a field
+it does not know), after contract 156 (the owner's plan: the
 architect's `register_plan` (`POST /legion/v1/plans/register`, `LegionPlanRegisterRequest`,
 answered `LegionPlanRegisterResponse`) and `stop_task` (`POST /legion/v1/tasks/stop`,
 `LegionTaskStopRequest`), a tester's fail naming the step its task returns to,

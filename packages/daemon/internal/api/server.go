@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -25,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -878,6 +880,11 @@ func (s *server) stateFor(r *http.Request, state State, claims []supervise.Claim
 		if contract >= narrowing.contract || !narrowing.carries(state) {
 			continue
 		}
+		if narrowing.left != nil {
+			for _, left := range narrowing.left(state) {
+				s.log.Info(leftAClaimOut, "caller", r.RemoteAddr, "pod", pod, "pluginContract", contract, "claim", left)
+			}
+		}
 		state = narrowing.without(state)
 		s.log.Info(narrowedTheState, "caller", r.RemoteAddr, "pod", pod,
 			"pluginContract", contract, "daemonApiVersion", DaemonAPIVersion,
@@ -891,6 +898,11 @@ func (s *server) stateFor(r *http.Request, state State, claims []supervise.Claim
 // (TestANarrowedBodySaysSo).
 const narrowedTheState = "api: narrowed the state to the caller's plugin contract"
 
+// leftAClaimOut is the message of the line the daemon writes for each claim a narrowing leaves out
+// of the body (stateNarrowing.left): a stranded claim or a waiting wake of a role the deployment
+// defines, which a caller below deploymentRolesContract cannot parse.
+const leftAClaimOut = "api: left a claim of a role of the deployment out of the state for the caller's plugin contract"
+
 // stateNarrowing is one of the narrowings stateFor applies: the contract that added the
 // keys to this route, whether a state carries anything of it, the body served without it, and
 // what the log line names as dropped. Each arm carries its own `dropped` rather than the
@@ -901,6 +913,9 @@ type stateNarrowing struct {
 	carries  func(State) bool
 	without  func(State) State
 	dropped  string
+	// left is each claim the row leaves out of the body, `<role> of <issue>`, which stateFor logs
+	// one line for (leftAClaimOut); nil for a row that leaves no claim out.
+	left func(State) []string
 }
 
 // stateNarrowings are the narrowings, lowest contract first, which is the order stateFor applies
@@ -921,32 +936,34 @@ type stateNarrowing struct {
 // kept beyond that so a reader of this table and a reader of version.go walk the contracts the
 // same way.
 var stateNarrowings = []stateNarrowing{
-	{supervise.PodUpdateContract, carriesUpdateRounds, withoutUpdateRounds, "the claim views' updateRound and updateHead"},
-	{memoryContract, carriesMemory, withoutMemory, "the issues' memoryGroup, memoryDrawMode and memoryDrawnAt"},
-	{treeContract, carriesTrees, withoutTrees, "admission.trees and the issues' tree"},
-	{wakesWaitingContract, carriesWakesWaiting, withoutWakesWaiting, "wakesWaiting"},
-	{gatedStepsContract, carriesGatedSteps, withoutGatedSteps, "the issues' gatedSteps"},
-	{retiredStrandedContract, carriesRetiredStranded, withoutRetiredStranded, "the retired entries of strandedClaims"},
-	{stallRecordContract, carriesStallRecord, withoutStallRecord, "the claim views' step"},
-	{waitingLineContract, carriesWaitingLine, withoutWaitingLine, "the issues' waitingLine"},
-	{backwardMovesContract, carriesBackwardMoves, withoutBackwardMoves, "the workers' backwardMoves"},
-	{claimsToRefreshContract, carriesClaimsToRefresh, withoutClaimsToRefresh, "claimsToRefresh"},
+	{supervise.PodUpdateContract, carriesUpdateRounds, withoutUpdateRounds, "the claim views' updateRound and updateHead", nil},
+	{memoryContract, carriesMemory, withoutMemory, "the issues' memoryGroup, memoryDrawMode and memoryDrawnAt", nil},
+	{treeContract, carriesTrees, withoutTrees, "admission.trees and the issues' tree", nil},
+	{wakesWaitingContract, carriesWakesWaiting, withoutWakesWaiting, "wakesWaiting", nil},
+	{gatedStepsContract, carriesGatedSteps, withoutGatedSteps, "the issues' gatedSteps", nil},
+	{retiredStrandedContract, carriesRetiredStranded, withoutRetiredStranded, "the retired entries of strandedClaims", nil},
+	{stallRecordContract, carriesStallRecord, withoutStallRecord, "the claim views' step", nil},
+	{waitingLineContract, carriesWaitingLine, withoutWaitingLine, "the issues' waitingLine", nil},
+	{backwardMovesContract, carriesBackwardMoves, withoutBackwardMoves, "the workers' backwardMoves", nil},
+	{claimsToRefreshContract, carriesClaimsToRefresh, withoutClaimsToRefresh, "claimsToRefresh", nil},
 	{recordFieldsContract, carriesRecordFields, withoutRecordFields, "the claim views' servingGeneration, " +
 		"updateReasons, providerErrorRun, pendingTask, failure and pendingCause, the issues' heldFrom, " +
-		"lingerUntil and ancestry, and the contract mark"},
+		"lingerUntil and ancestry, and the contract mark", nil},
 	{whyAndLineFieldsContract, carriesWhyAndLineFields, withoutWhyAndLineFields, "the issues' why and " +
-		"every field of the waiting line beside place and length"},
-	{leakCheckCauseContract, carriesLeakCheckCause, withoutLeakCheckCause, "the claim views' leakCheckCause"},
-	{phaseEntriesContract, carriesPhaseEntries, withoutPhaseEntries, "the issues' phaseEntry and givenEntry"},
-	{heldContract, carriesHeld, withoutHeld, "admission.held"},
-	{quietTimeContract, carriesQuietTime, withoutQuietTime, "the issues' treeMovedAt and quietHours"},
+		"every field of the waiting line beside place and length", nil},
+	{leakCheckCauseContract, carriesLeakCheckCause, withoutLeakCheckCause, "the claim views' leakCheckCause", nil},
+	{phaseEntriesContract, carriesPhaseEntries, withoutPhaseEntries, "the issues' phaseEntry and givenEntry", nil},
+	{heldContract, carriesHeld, withoutHeld, "admission.held", nil},
+	{quietTimeContract, carriesQuietTime, withoutQuietTime, "the issues' treeMovedAt and quietHours", nil},
 	{waitingOnIssueContract, carriesWaitingOnIssue, withoutWaitingOnIssue, "the waiting line's kind " +
-		"of every member waiting on another issue"},
-	{mergeWaitContract, carriesMergeWait, withoutMergeWait, "the issues' mergeWait"},
-	{assignmentsContract, carriesAssignments, withoutAssignments, "the issues' assignments"},
-	{entryTimesContract, carriesEntryTimes, withoutEntryTimes, "the issues' entryQueuedAt, entryConfirmedAt and architectStalls"},
+		"of every member waiting on another issue", nil},
+	{mergeWaitContract, carriesMergeWait, withoutMergeWait, "the issues' mergeWait", nil},
+	{assignmentsContract, carriesAssignments, withoutAssignments, "the issues' assignments", nil},
+	{entryTimesContract, carriesEntryTimes, withoutEntryTimes, "the issues' entryQueuedAt, entryConfirmedAt and architectStalls", nil},
 	{OwnerPlanContract, carriesNewHoldReasons, withoutNewHoldReasons, "the issues' holdReason task-stopped and children, " +
-		"and admission.held's words children_before_retro and task_stopped"},
+		"and admission.held's words children_before_retro and task_stopped", nil},
+	{deploymentRolesContract, carriesDeploymentRoles, withoutDeploymentRoles, "the phase step (served as implementing), the issues' stepRole, " +
+		"and the stranded claims and waiting wakes of a deployment's roles", leftDeploymentRoles},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1518,6 +1535,123 @@ func withoutNewHoldReasons(state State) State {
 		state.Admission.Held = held
 	}
 	return state
+}
+
+// deploymentRolesContract is the contract whose entry in version.go added the roles a deployment
+// defines to the state: the phase step, the issues' `stepRole`, and the stranded claims and waiting
+// wakes of a role outside Legion's six. A caller below it reads `phase` and a pending task's
+// `phase` as a strict list without step, and a stranded claim's or a wake's `role` as one of the
+// six, so it is served the state without them (withoutDeploymentRoles).
+const deploymentRolesContract = 161
+
+// carriesDeploymentRoles is whether state carries anything deploymentRolesContract added: an
+// issue at step or held from it, an issue's stepRole, a claim view whose pending task is at step,
+// or a stranded claim or a waiting wake of a role outside Legion's six.
+func carriesDeploymentRoles(state State) bool {
+	for _, issue := range state.Issues {
+		if issue.Phase == phase.Step || issue.HeldFrom == string(phase.Step) || issue.StepRole != "" {
+			return true
+		}
+		if issue.Architect != nil && pendingAtStep(*issue.Architect) {
+			return true
+		}
+		for _, worker := range issue.Workers {
+			if pendingAtStep(worker.Claim) {
+				return true
+			}
+		}
+	}
+	return len(leftDeploymentRoles(state)) > 0
+}
+
+// pendingAtStep is whether view holds a task queued for the phase step.
+func pendingAtStep(view ClaimView) bool {
+	return view.PendingTask != nil && view.PendingTask.Phase == phase.Step
+}
+
+// withoutDeploymentRoles is state as a caller below deploymentRolesContract reads it: an issue at
+// step is at work, so it is served as implementing — its Dispatch status is in_progress, as
+// step's is; it keeps its slot and is at work, as step does; none of the phases an older
+// controller reads as past review or as a wait describes it; and every plan of this release holds
+// an implementer — and it stays in `issues` and in `admission.active`, which the daemon computes
+// before any narrowing. A hold from step is served as a hold from implementing, a pending task
+// at step as one at implementing, and `stepRole` is cleared; each stranded claim and waiting wake
+// of a role outside Legion's six is dropped (leftDeploymentRoles names each). An issue's workers
+// keep the deployment role's key, which such a caller reads as a record keyed by any string. The
+// maps and lists it changes are copied, as every sibling strip copies what it changes, so the state
+// the source answered is left as it was.
+func withoutDeploymentRoles(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		if issue.Phase == phase.Step {
+			issue.Phase = phase.Implementing
+		}
+		if issue.HeldFrom == string(phase.Step) {
+			issue.HeldFrom = string(phase.Implementing)
+		}
+		issue.StepRole = ""
+		if issue.Architect != nil && pendingAtStep(*issue.Architect) {
+			architect := atWork(*issue.Architect)
+			issue.Architect = &architect
+		}
+		if issue.Workers != nil {
+			workers := make(map[claim.Role]PhaseView, len(issue.Workers))
+			for role, worker := range issue.Workers {
+				if pendingAtStep(worker.Claim) {
+					worker.Claim = atWork(worker.Claim)
+				}
+				workers[role] = worker
+			}
+			issue.Workers = workers
+		}
+		issues[key] = issue
+	}
+	state.Issues = issues
+	if state.StrandedClaims != nil {
+		stranded := make([]StrandedClaim, 0, len(state.StrandedClaims))
+		for _, c := range state.StrandedClaims {
+			if claim.IsBuiltin(c.Role) {
+				stranded = append(stranded, c)
+			}
+		}
+		state.StrandedClaims = stranded
+	}
+	if state.WakesWaiting != nil {
+		wakes := make([]WakeWaiting, 0, len(state.WakesWaiting))
+		for _, wake := range state.WakesWaiting {
+			if claim.IsBuiltin(wake.Role) {
+				wakes = append(wakes, wake)
+			}
+		}
+		state.WakesWaiting = wakes
+	}
+	return state
+}
+
+// atWork is view with its pending task, queued at step, served as queued at implementing.
+func atWork(view ClaimView) ClaimView {
+	pending := *view.PendingTask
+	pending.Phase = phase.Implementing
+	view.PendingTask = &pending
+	return view
+}
+
+// leftDeploymentRoles is each claim withoutDeploymentRoles leaves out of the body, `<role> of
+// <issue>`: every stranded claim and every waiting wake of a role outside Legion's six, in the
+// state's order, the stranded first.
+func leftDeploymentRoles(state State) []string {
+	var left []string
+	for _, c := range state.StrandedClaims {
+		if !claim.IsBuiltin(c.Role) {
+			left = append(left, fmt.Sprintf("%s of %s", c.Role, c.Issue))
+		}
+	}
+	for _, wake := range state.WakesWaiting {
+		if !claim.IsBuiltin(wake.Role) {
+			left = append(left, fmt.Sprintf("%s of %s", wake.Role, wake.Issue))
+		}
+	}
+	return left
 }
 
 // podContract is the lowest plugin contract a claim whose process runs in pod records, and 0 when

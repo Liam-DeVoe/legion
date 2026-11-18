@@ -294,8 +294,8 @@ func populatedState(t *testing.T) State {
 			StartedAt:     time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC),
 		},
 		Admission: Admission{
-			Cap:    5,
-			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219"},
+			Cap:    6,
+			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219", "LEGION-240"},
 			// The line is two long and carries one member of each of its two parts, in the order
 			// the line publishes them: LEGION-212, the root a person answered, stands at 1 in the
 			// part whose work came back, which takes the free slots first, and LEGION-211, a root
@@ -666,6 +666,37 @@ func populatedState(t *testing.T) State {
 			// `label_off`, which record.HeldReasonOf answers for that shape (measured against the
 			// ladder, not assumed). Its tree is no live tree and no draw reached it, so it carries
 			// no memory group.
+			// LEGION-240 stands at step: its task runs the step of checker, a role the deployment
+			// defines, which the phase alone does not name (`stepRole`), and the checker holds the
+			// step's task. It holds a slot and is at work (deploymentRolesContract). LEGION-241 is
+			// held from that step, its checker's claim failed, so its hold names the phase it left
+			// and the role of that step.
+			"LEGION-240": {
+				Key:           "LEGION-240",
+				Generation:    1,
+				Phase:         phase.Step,
+				StepRole:      "checker",
+				Status:        "in_progress",
+				Tree:          "LEGION-240",
+				Repo:          "acme/widgets",
+				DefaultBranch: "main",
+				Workers: map[claim.Role]PhaseView{
+					"checker": {Claim: ClaimView{Session: "ses_checker", State: "working",
+						PendingTask: &PendingTaskView{Phase: phase.Step, QueuedAt: time.Date(2026, 9, 22, 9, 16, 2, 0, time.UTC)}}},
+				},
+			},
+			"LEGION-241": {
+				Key:           "LEGION-241",
+				Generation:    1,
+				Phase:         phase.Held,
+				HeldFrom:      string(phase.Step),
+				StepRole:      "checker",
+				Status:        "in_progress",
+				Tree:          "LEGION-241",
+				Repo:          "acme/widgets",
+				DefaultBranch: "main",
+				Workers:       map[claim.Role]PhaseView{},
+			},
 			"LEGION-214": {
 				Key:           "LEGION-214",
 				Generation:    1,
@@ -857,6 +888,7 @@ func populatedState(t *testing.T) State {
 			{Issue: "LEGION-210", Role: claim.RoleImplementer, State: "failed"},
 			{Issue: "LEGION-211", Role: claim.RoleImplementer, State: "suspended"},
 			{Issue: "LEGION-212", Role: claim.RoleTester, State: "retired"},
+			{Issue: "LEGION-241", Role: "checker", State: "failed"},
 		},
 		// A wave going out at the pace its operator set, with one wake of each lane still held:
 		// LEGION-207's implementer, working its production check in the pod the daemon keeps,
