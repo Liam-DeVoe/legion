@@ -707,13 +707,15 @@ The job's steps, which build the image and smoke it: check-image-trigger-paths.s
 counts the workflow file holding a build step among the image's inputs, so a
 change to it must start the build.
 
-## envoy_smoke: envoy-infra's host live tests and its plugin build, in
+## envoy_smoke: The Envoy module, which the image's Go stage copies whole
 
-envoy-infra's host live tests and its plugin build, in packages/envoy/infra's own
-workspace; the live tests compile internal/pulumitest, which holds the version
-they pin the docker provider at, under infra/internal. The plugin build's step is
-pinned whole in check-ci-filters.sh's table (an exact entry), so what it compiles
-is here, not the infra module.
+The Envoy module, which the image's Go stage copies whole, and the envoy-infra
+module under it, which the held-port image's build copies whole with it
+(packages/envoy/infra/host/heldportwrapper/Dockerfile and its .dockerignore) and
+envoy-infra's host live tests and plugin build compile in packages/envoy/infra's own
+workspace. The two `!` patterns below leave out deploy and the changelog fragments,
+which neither .dockerignore lets in; the generated block leaves out the test files
+(internal/integration holds nothing else).
 
 ## envoy_e2e_local: And @legion/broker-client with it: the tsc program of
 
