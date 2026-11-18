@@ -11,12 +11,16 @@
 #
 # and reads that report; the -timeout bounds each package's test binary, not the run, since the
 # packages run several at a time, so a caller that must bound the run sets a limit of its own (CI's
-# step does). `--report FILE` reads FILE instead and runs nothing, which a control
-# uses. It prints each skipped test as `SKIP PACKAGE TEST`, then `database_skips=N`, and for a run
-# of its own `go_test_exit=E`. A report that is missing, empty or holds no test of a broker
-# package is no count at all: it prints `database_skips=UNKNOWN` and names what it could not read,
-# rather than a zero. It exits 0 only when the report shows broker tests run, none of them skipped,
-# and, for a run of its own, go test passed; 1 otherwise.
+# step does). `--report FILE` reads FILE instead and runs nothing, which a control uses. A run of
+# its own prints its test log to stdout as the tests run: the Output of each -json event, which
+# holds each test's `=== RUN` line and its `--- PASS`, `--- FAIL` or `--- SKIP` line, since -json
+# runs the test binary verbose (-test.v=test2json; a -v beside it would pass -test.v=true after
+# that and take test2json's framing away). Then it prints each skipped test as `SKIP PACKAGE
+# TEST`, then `database_skips=N`, and for a run of its own `go_test_exit=E`. A report that is
+# missing, empty or holds no test of a broker package is no count at all: it prints
+# `database_skips=UNKNOWN` and names what it could not read, rather than a zero. It exits 0 only
+# when the report shows broker tests run, none of them skipped, and, for a run of its own, go test
+# passed; 1 otherwise.
 #
 # A skip whose test is named in EXPECTED_SKIPS below is no database suite's and is not counted:
 # each one skips by its own design, whatever the database, and the list says why.
@@ -46,7 +50,11 @@ case "${1:-}" in
   "")
     report="$work/report.json"
     go_test_exit=0
-    go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-15m}" ./internal/broker/... >"$report" 2>"$work/stderr" || go_test_exit=$?
+    # tee keeps the whole stream as the report; the reader of the log takes a line it cannot
+    # parse as nothing, so it neither fails nor closes the pipe before go test ends.
+    go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-15m}" ./internal/broker/... 2>"$work/stderr" |
+      tee "$report" | jq --unbuffered -Rrj 'fromjson? | objects | .Output | strings' ||
+      go_test_exit=${PIPESTATUS[0]}
     ;;
   *)
     echo "database-skips.sh: unknown argument $1 (run it with none, or with --report FILE)" >&2

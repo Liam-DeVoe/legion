@@ -950,7 +950,7 @@ TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
 NATS_MATRIX_STEP = "Test the container-backed NATS matrix (natslive)"
 NATS_MATRIX_SCRIPT = f"""\
 rig=$(../../{TAGGED_TESTS} natslive ./internal/testnats)
-go test -count=1 -tags natslive -run "$rig" ./internal/testnats/
+go test -count=1 -tags natslive -run "$rig" -v ./internal/testnats/
 cap=$(../../{TAGGED_TESTS} natslive ./internal/bus)
 go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/"""
 # One call per package, never one union -run over the three: a name an untagged test of one
@@ -960,7 +960,7 @@ INFRA_NATSLIVE_PACKAGES = ["./core", "./seed", "./gcp"]
 INFRA_NATSLIVE_SCRIPT = f"""\
 for pkg in {" ".join(INFRA_NATSLIVE_PACKAGES)}; do
   pattern=$(../../../{TAGGED_TESTS} natslive "$pkg")
-  go test -count=1 -timeout 30m -tags natslive -run "$pattern" "$pkg"
+  go test -count=1 -timeout 30m -tags natslive -run "$pattern" -v "$pkg"
 done"""
 MEMORY_STEP = "Memory tests of the Dispatch server"
 MEMORY_SCRIPT = f"""\
@@ -978,7 +978,7 @@ TWO_BUILDS_JOB = "dispatch-two-builds"
 TWO_BUILDS_STEP = "Two-build tests of the Dispatch server"
 TWO_BUILDS_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} twobuild ./cmd/dispatch)
-go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch"""
+go test -tags twobuild -count=1 -timeout 30m -v -run "$pattern" ./cmd/dispatch"""
 # The same suite in the same file's dispatch-two-builds-same job, with this tree's own build as
 # the previous build, which a merge-group run alone runs (that job's comment says why). Its gates
 # and its TAG_RUNS entry are the Go step's.
@@ -999,9 +999,9 @@ AIRLOCK_JOB = "airlock-lean"
 AIRLOCK_LEAN = f"{ENVOY}/internal/broker/airlock/lean"
 AIRLOCK_PKGS = ["./internal/broker/airlock/"]
 AIRLOCK_SEED_STEP = "Compare the Go airlock with the model over the seed corpus"
-AIRLOCK_SEED_SCRIPT = "go test -run FuzzAirlock ./internal/broker/airlock/"
+AIRLOCK_SEED_SCRIPT = "go test -v -run FuzzAirlock ./internal/broker/airlock/"
 AIRLOCK_FUZZ_STEP = "Fuzz the Go airlock against the model"
-AIRLOCK_FUZZ_SCRIPT = "go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/broker/airlock/"
+AIRLOCK_FUZZ_SCRIPT = "go test -v -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/broker/airlock/"
 AIRLOCK_BUILD_STEP = "Build the Lean model"
 AIRLOCK_AXIOMS_STEP = "Print the theorems' axioms"
 AIRLOCK_AXIOMS_SCRIPT = f"{ENVOY}/scripts/airlock-lean-axioms.sh"
@@ -1186,7 +1186,7 @@ INFRA_PLAIN_STEP = "Unit test envoy-infra"
 INFRA_PLAIN_PATTERN = f"/{TEXT_CHECK_PACKAGE}$"
 INFRA_PLAIN_SCRIPT = f"""\
 set -o pipefail
-go list ./... | grep -Ev '{INFRA_PLAIN_PATTERN}' | xargs go test -count=1"""
+go list ./... | grep -Ev '{INFRA_PLAIN_PATTERN}' | xargs go test -v -count=1"""
 
 
 # The three packages the test job's race step runs, and which its plain step therefore leaves out.
@@ -1231,7 +1231,7 @@ PLUGIN_PACK_PACKAGE = "internal/daemon"
 PLUGIN_PACK_JOB = "plugin-pack"
 PLUGIN_PACK_STEP = "Pack the plugin releases and run the prompt probes on the real Oh My Pi"
 PLUGIN_PACK_PATTERN = f"'^({'|'.join(sorted(PLUGIN_PACK_TESTS))})$'"
-PLUGIN_PACK_SCRIPT = f"go test -count=1 -timeout 15m -run {PLUGIN_PACK_PATTERN} ./{PLUGIN_PACK_PACKAGE}/"
+PLUGIN_PACK_SCRIPT = f"go test -v -count=1 -timeout 15m -run {PLUGIN_PACK_PATTERN} ./{PLUGIN_PACK_PACKAGE}/"
 # The skip belongs to the step that would otherwise run these tests, so the two lists are held
 # together here rather than by a reader noticing: a package moved out of the race step while the
 # pack tests stayed in it would run them twice and read the lockfile in both jobs.
@@ -1239,7 +1239,7 @@ if PLUGIN_PACK_PACKAGE not in DAEMON_RACE_PACKAGES:
     raise ValueError(f"the plugin-pack tests are in {PLUGIN_PACK_PACKAGE}, which the race step does not run, so "
                      f"nothing skips them there; name that package's step here, or move the -skip to the step that "
                      f"runs them")
-DAEMON_RACE_SCRIPT = f"go test -count=1 -race -timeout 30m -skip {PLUGIN_PACK_PATTERN} " + " ".join(DAEMON_RACE_PKGS)
+DAEMON_RACE_SCRIPT = f"go test -v -count=1 -race -timeout 30m -skip {PLUGIN_PACK_PATTERN} " + " ".join(DAEMON_RACE_PKGS)
 
 
 PLUGIN_PACK_SOURCE = f"{DAEMON}/{PLUGIN_PACK_PACKAGE}"
@@ -1349,7 +1349,7 @@ SUPERVISE_TABLE_PACKAGE = "internal/supervise"
 SUPERVISE_TABLE_SOURCE = f"{DAEMON}/{SUPERVISE_TABLE_PACKAGE}"
 SUPERVISE_TABLE_STEP = "Test the supervise table's two pure pins (no database)"
 SUPERVISE_TABLE_PATTERN = f"'^({'|'.join(sorted(SUPERVISE_TABLE_TESTS))})$'"
-SUPERVISE_TABLE_SCRIPT = f"go test -count=1 -run {SUPERVISE_TABLE_PATTERN} ./{SUPERVISE_TABLE_PACKAGE}/"
+SUPERVISE_TABLE_SCRIPT = f"go test -v -count=1 -run {SUPERVISE_TABLE_PATTERN} ./{SUPERVISE_TABLE_PACKAGE}/"
 # The skip belongs to the step that would otherwise run these tests, so the two lists are held
 # together here rather than by a reader noticing: the plain step runs every package of the module but
 # the race step's three and the text checks, and this package moved into one of those while these
@@ -1360,7 +1360,7 @@ if SUPERVISE_TABLE_PACKAGE in DAEMON_RACE_PACKAGES + [TEXT_CHECK_PACKAGE]:
                      f"that runs them")
 DAEMON_PLAIN_SCRIPT = f"""\
 set -o pipefail
-go list ./... | grep -Ev '{DAEMON_PLAIN_PATTERN}' | xargs go test -count=1 -timeout 15m -skip {SUPERVISE_TABLE_PATTERN}"""
+go list ./... | grep -Ev '{DAEMON_PLAIN_PATTERN}' | xargs go test -v -count=1 -timeout 15m -skip {SUPERVISE_TABLE_PATTERN}"""
 
 
 def hold_supervise_table_tests():
@@ -1460,7 +1460,7 @@ def race_pkgs(job):
 def race_step(job):
     """The one go command of a race job's step, pinned to the text this declaration builds."""
     pkgs = race_pkgs(job)
-    text = f"go test -count=1 -race -timeout {job.timeout} " + " ".join(pkgs)
+    text = f"go test -v -count=1 -race -timeout {job.timeout} " + " ".join(pkgs)
     return step_run(job.job, job.step, text, ENVOY, pkgs, race=True)
 
 
@@ -1473,7 +1473,7 @@ NOTE_AND_SPEC_PACKAGES = ["internal/dispatch/architecture/notes", "internal/runn
                           "cmd/architecture-check", "cmd/spec-check"]
 NOTE_AND_SPEC_STEP = "Test the architecture-note and spec-file rules and their commands"
 NOTE_AND_SPEC_PKGS = [f"./{p}/" for p in NOTE_AND_SPEC_PACKAGES]
-NOTE_AND_SPEC_TEXT = "go test -count=1 " + " ".join(NOTE_AND_SPEC_PKGS)
+NOTE_AND_SPEC_TEXT = "go test -v -count=1 " + " ".join(NOTE_AND_SPEC_PKGS)
 
 # The broker's packages, internal/broker and every package under it, which envoy-go's step
 # "Count the database broker suites' skips" runs with `go test -json` through
@@ -1525,7 +1525,7 @@ FIXTURE_STEP = "Check the web app's display-tree fixture is up to date"
 WEB_FIXTURE_PATTERN = f"'^({'|'.join(sorted(WEB_FIXTURE_TESTS))})$'"
 # The fixture check's `-run` and its `-args --check` are not flags the simple form reduces, and
 # they move no closure: the whole pmdoc package compiles, whichever test the run selects.
-FIXTURE_SCRIPT = f"go test -count=1 -run {WEB_FIXTURE_PATTERN} ./{WEB_FIXTURE_PACKAGE}/ -args --check"
+FIXTURE_SCRIPT = f"go test -v -count=1 -run {WEB_FIXTURE_PATTERN} ./{WEB_FIXTURE_PACKAGE}/ -args --check"
 # The skip belongs to the step that would otherwise run these tests, so the two are held together
 # here rather than by a reader noticing: the unit step runs every package of the module its
 # `grep -Ev` does not take out, and pmdoc taken out of it - moved into the race lane, say - while
@@ -1538,7 +1538,7 @@ if re.search(UNIT_TEST_PATTERN, f"/{WEB_FIXTURE_PACKAGE}"):
                      f"`grep -Ev` takes out, so that step does not run them and the -skip below skips nothing; "
                      f"name the step that runs that package now and move the -skip to it")
 UNIT_TEST_SCRIPT = (f"go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | "
-                    f"xargs go test -count=1 -timeout 20m -skip {WEB_FIXTURE_PATTERN}")
+                    f"xargs go test -v -count=1 -timeout 20m -skip {WEB_FIXTURE_PATTERN}")
 
 
 def hold_web_fixture_tests():
@@ -1792,7 +1792,7 @@ def race_impossible_script(packages) -> str:
     sorted, in its -run."""
     lines = []
     for under, names in packages.items():
-        lines.append(f"go test -count=1 -timeout 10m -run '^({'|'.join(sorted(names))})$' ./{under}")
+        lines.append(f"go test -v -count=1 -timeout 10m -run '^({'|'.join(sorted(names))})$' ./{under}")
     return "\n".join(lines)
 
 
@@ -1814,14 +1814,14 @@ RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)
 # neither, so a cached pass would say nothing about the text as it now stands.
 TEXT_CHECK_JOB = "text-checks"
 TEXT_CHECK_PKG = f"./{TEXT_CHECK_PACKAGE}/"
-TEXT_CHECK_TEXT = f"go test -count=1 {TEXT_CHECK_PKG}"
+TEXT_CHECK_TEXT = f"go test -v -count=1 {TEXT_CHECK_PKG}"
 # The three modules whose text checks the job runs, in the order its steps run them: each step's
 # name carries the module path, so the path is written once and the name is built from it.
 TEXT_CHECK_MODULES = (ENVOY, INFRA, DAEMON)
 TEXT_CHECK_STEPS = {module: f"Check the text {module} pins" for module in TEXT_CHECK_MODULES}
 GUARD_PACKAGE = "./internal/dispatch/api"
 GUARD_STEP = "Test the Dispatch API's source guards (no database)"
-GUARD_SCRIPT = ("go test -count=1 -run "
+GUARD_SCRIPT = ("go test -v -count=1 -run "
                 f"'^({'|'.join(sorted(name for names in TEXT_CHECK_TESTS.values() for name in names))})$' "
                 f"{GUARD_PACKAGE}")
 
@@ -2719,7 +2719,7 @@ GATES = [
 
     gate("envoy_go", "envoy-go", runs=[
         step_run("envoy-go", "Integration test envoy (a real NATS server, in the test process)",
-                 "go test ./internal/integration/ -timeout 300s -count=1", ENVOY, ["./internal/integration/"]),
+                 "go test -v ./internal/integration/ -timeout 300s -count=1", ENVOY, ["./internal/integration/"]),
         step_run("envoy-go", "Vet agentloop's live proof (no model call)", "go vet -tags modellive ./agentloop/", ENVOY,
                  ["./agentloop/"], tags="modellive", mode="vet"),
         step_run("envoy-go", "Vet agent-secrets' moto run (no moto)", "go vet -tags moto ./cmd/agent-secrets/", ENVOY,

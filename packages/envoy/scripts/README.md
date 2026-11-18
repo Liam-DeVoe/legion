@@ -323,12 +323,13 @@ packages/envoy/scripts/backend-count.sh PACKAGE... -- TEST...
 ```
 
 It runs only the named tests in only the named packages, `go test -json -count=1 -timeout 5m
--run '^(TEST|…)$' PACKAGE...`, each package a `./` path under `packages/envoy`, and prints
-`TEST aws=N gcp=M` for each, then `go_test_exit=E`. It exits 1 when no package or no test is
-named, when a package is not a `./` path, when a name is not a Go test name, when a named test
-has no passing run on either backend (a test in none of the named packages included), or when go
-test failed. It counts only the tests it names, so the `aws` and `gcp` subtests of other tests
-cannot stand in for a new test's.
+-run '^(TEST|…)$' PACKAGE...`, each package a `./` path under `packages/envoy`, and prints the
+test log as the tests run, each test's `=== RUN` line and its `--- PASS`, `--- FAIL` or
+`--- SKIP` line, then `TEST aws=N gcp=M` for each named test, then `go_test_exit=E`. It exits 1
+when no package or no test is named, when a package is not a `./` path, when a name is not a Go
+test name, when a named test has no passing run on either backend (a test in none of the named
+packages included), or when go test failed. It counts only the tests it names, so the `aws` and
+`gcp` subtests of other tests cannot stand in for a new test's.
 `GO_TEST_SKIP` is go test's `-skip` pattern: the negative control
 `GO_TEST_SKIP='^(TestA|TestB)$/^aws$'` makes both lines read `aws=0` and the run exit 1.
 `GO_TEST_TIMEOUT` replaces the 5-minute `-timeout`, which `ci.yaml`'s `envoy-go` job counts
@@ -347,10 +348,11 @@ BROKER_TEST_DATABASE_URL=postgres://… packages/envoy/scripts/database-skips.sh
 packages/envoy/scripts/database-skips.sh --report REPORT.json
 ```
 
-With no argument it runs `go test -json -count=1 -timeout 15m ./internal/broker/...` and
-reads that report; `--report` reads a `go test -json` report instead and runs nothing. It
-prints `SKIP PACKAGE TEST` for each skip, then `database_skips=N` and, for a run of its own,
-`go_test_exit=E`. A report that is missing, empty or holds no broker test prints
+With no argument it runs `go test -json -count=1 -timeout 15m ./internal/broker/...`, prints the
+test log as the tests run (each test's `=== RUN` line and its `--- PASS`, `--- FAIL` or
+`--- SKIP` line) and reads that report; `--report` reads a `go test -json` report instead and
+runs nothing. It prints `SKIP PACKAGE TEST` for each skip, then `database_skips=N` and, for a
+run of its own, `go_test_exit=E`. A report that is missing, empty or holds no broker test prints
 `database_skips=UNKNOWN`, names what it could not read, and exits 1. It exits 0 only when
 broker tests ran, none skipped and go test passed. The tests `EXPECTED_SKIPS` names in the
 script skip by their own design in every run, and are not counted. `GO_TEST_TIMEOUT`

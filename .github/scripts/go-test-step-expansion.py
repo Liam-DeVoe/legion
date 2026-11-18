@@ -305,12 +305,13 @@ class AuditedScript:
 AUDITED_SCRIPTS = {
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and, called with no argument, runs
     # `go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-15m}" ./internal/broker/...` once, with
-    # no -tags, -race, -run or -skip, then counts the skips in its report. With `--report FILE` it
-    # reads a report and runs no test; a step that passes an argument is not read through here.
+    # no -tags, -race, -run or -skip, its stdout through tee into the report and through jq to the
+    # log, then counts the skips in its report. With `--report FILE` it reads a report and runs no
+    # test; a step that passes an argument is not read through here.
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
         command="go test -json -count=1 -timeout 15m ./internal/broker/...",
-        sha256="e8e058377d522a938e4016fdd88dc6c9f1459b89cf80e12c15b1545b13dd76b0",
+        sha256="6b32276a1e4c2876eeca20bc9a023fa93f4e74c1a6417ca63ca4ee4d6cab849f",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.

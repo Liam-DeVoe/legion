@@ -125,8 +125,8 @@ jobs:
       # 127 s, so 10 minutes each is ample.
       - name: Test what the race build cannot run at all or at full size
         run: |
-          go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
-          go test -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
+          go test -v -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
+          go test -v -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
         working-directory: packages/envoy
       # Everything the three race jobs run is left out here, since they run it under the detector,
       # and so is internal/integration, which the integration step below tests, and
@@ -150,7 +150,7 @@ jobs:
       # are built from the same list.
       - name: Unit test envoy Go package
         run: |
-          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/internal/broker($|/)|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$'
+          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/internal/broker($|/)|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -v -count=1 -timeout 20m -skip '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$'
         working-directory: packages/envoy
       # Each named test runs once on each store backend as its `aws` and `gcp` subtests, and each
       # backend's rows run that backend's own code: the store forms against the GCP fake and the
@@ -213,13 +213,13 @@ jobs:
       - name: Test the container-backed NATS matrix (natslive)
         run: |
           rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
-          go test -count=1 -tags natslive -run "$rig" ./internal/testnats/
+          go test -count=1 -tags natslive -run "$rig" -v ./internal/testnats/
           cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
           go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
         working-directory: packages/envoy
 
       - name: Integration test envoy (a real NATS server, in the test process)
-        run: go test ./internal/integration/ -timeout 300s -count=1
+        run: go test -v ./internal/integration/ -timeout 300s -count=1
         working-directory: packages/envoy
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

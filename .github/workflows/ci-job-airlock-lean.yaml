@@ -74,10 +74,10 @@ jobs:
         run: bash packages/envoy/scripts/airlock-lean-axioms.sh packages/envoy/internal/broker/airlock/lean
       # The committed seed corpus (testdata/fuzz/FuzzAirlock): every seed through both sides.
       - name: Compare the Go airlock with the model over the seed corpus
-        run: go test -run FuzzAirlock ./internal/broker/airlock/
+        run: go test -v -run FuzzAirlock ./internal/broker/airlock/
         working-directory: packages/envoy
       - name: Fuzz the Go airlock against the model
-        run: go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/broker/airlock/
+        run: go test -v -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/broker/airlock/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

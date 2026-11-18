@@ -107,7 +107,7 @@ jobs:
       - name: Unit test envoy-infra
         run: |
           set -o pipefail
-          go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1
+          go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -v -count=1
         working-directory: packages/envoy/infra
       - name: Live tests of envoy-infra against nats-server (natslive)
         # gcp's live tests build helm, nats-server, the config reloader and the exporter with go
@@ -119,7 +119,7 @@ jobs:
         run: |
           for pkg in ./core ./seed ./gcp; do
             pattern=$(../../../.github/scripts/go-tagged-tests.sh natslive "$pkg")
-            go test -count=1 -timeout 30m -tags natslive -run "$pattern" "$pkg"
+            go test -count=1 -timeout 30m -tags natslive -run "$pattern" -v "$pkg"
           done
         working-directory: packages/envoy/infra
       - name: Report ci-ok when this job decides a merge-group run

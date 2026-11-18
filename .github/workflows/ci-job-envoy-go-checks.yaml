@@ -117,7 +117,7 @@ jobs:
       # run: envoy-go's unit step leaves them out, its `grep -Ev` and this step's package list
       # built from NOTE_AND_SPEC_PACKAGES in .github/scripts/ci_job_reads.py.
       - name: Test the architecture-note and spec-file rules and their commands
-        run: go test -count=1 ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./internal/dispatch/specgraph/ ./cmd/architecture-check/ ./cmd/spec-check/
+        run: go test -v -count=1 ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./internal/dispatch/specgraph/ ./cmd/architecture-check/ ./cmd/spec-check/
         working-directory: packages/envoy
       - name: Check Go contracts are generated from the shared schema
         run: bun run check:go
@@ -145,7 +145,7 @@ jobs:
       # envoy-go's unit step skips both by the same names, both texts built from
       # WEB_FIXTURE_TESTS in .github/scripts/ci_job_reads.py.
       - name: Check the web app's display-tree fixture is up to date
-        run: go test -count=1 -run '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' ./internal/dispatch/pmdoc/ -args --check
+        run: go test -v -count=1 -run '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' ./internal/dispatch/pmdoc/ -args --check
         working-directory: packages/envoy
       - name: Isolation test for dev-broker.sh (fakes docker/go/curl; no real Postgres or network)
         run: bash scripts/dev-broker.test.sh
