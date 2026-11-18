@@ -26,6 +26,7 @@ import {
   unreadThreadRows,
 } from "./inbox-threads";
 import { refusePosts, WRITE_REFUSED } from "./sends";
+import { expandedState } from "./settled";
 import { type BrowserContext, expect, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
@@ -167,9 +168,9 @@ async function seenReplies(): Promise<Record<string, InboxDismissSeen>> {
 /** Picks one choice of the **View** menu's **Show** section and shuts the menu again. */
 async function chooseShow(page: Page, label: string): Promise<void> {
   const menu = await openDisplayMenu(page);
+  const trigger = page.getByRole("button", { exact: true, name: "View" });
   await menu.getByRole("group", { name: "Show" }).getByRole("radio", { name: label }).click();
-  if ((await menu.count()) !== 0)
-    await page.getByRole("button", { exact: true, name: "View" }).click();
+  if ((await expandedState("the View menu", trigger)) === "open") await trigger.click();
   await expect(menu).toHaveCount(0);
 }
 
@@ -427,7 +428,8 @@ test("Select all dismisses every row of the group in one request that names each
     await expect(rows).toHaveCount(GROUP_PAGE);
     expect(await bandHeadings(page)).toEqual([`P2 (${THREADS})`]);
 
-    // One row ticked, then **Select all**: the band holds every row, drawn or not.
+    // One row ticked, then **Select all**: the band holds every row, drawn or not. The count
+    // above waited for the `GROUP_PAGE` rows the band draws, so the read takes each drawn row.
     const drawn = await rows.evaluateAll((nodes) =>
       nodes.map((node) => node.getAttribute("data-inbox-row") ?? "")
     );

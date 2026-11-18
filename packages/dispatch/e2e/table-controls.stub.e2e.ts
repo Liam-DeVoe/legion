@@ -205,7 +205,7 @@ test("one search box, panel trigger and chip across the Inbox and the Board, and
   const look = async (name: "Inbox" | "project Board") => {
     const surface = await openSurface(page, name, scene);
     await surface.narrow();
-    const read = async (which: ControlName) =>
+    const drawnStyle = async (which: ControlName) =>
       control(controlRow(surface.root), which)
         .first()
         .evaluate((node) => {
@@ -219,9 +219,9 @@ test("one search box, panel trigger and chip across the Inbox and the Board, and
           };
         });
     return {
-      chip: await read(CONTROL.chip),
-      search: await read(CONTROL.searchBox),
-      trigger: await read(CONTROL.panelTrigger),
+      chip: await drawnStyle(CONTROL.chip),
+      search: await drawnStyle(CONTROL.searchBox),
+      trigger: await drawnStyle(CONTROL.panelTrigger),
     };
   };
   await page.setViewportSize({ height: 900, width: 1440 });
