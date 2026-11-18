@@ -590,7 +590,10 @@ test("Keep leaves a tree read in flight to finish and reads the tree again after
     </QueryClientProvider>
   );
   try {
-    void client.refetchQueries({ exact: true, queryKey: issueTreeKey(KEY) });
+    // The read in flight starts inside `act`, since it moves the tree read the page draws from.
+    await act(async () => {
+      void client.refetchQueries({ exact: true, queryKey: issueTreeKey(KEY) });
+    });
     await waitFor(() =>
       expect(tree, "no tree read was in flight before the Keep").toHaveBeenCalledTimes(1)
     );
