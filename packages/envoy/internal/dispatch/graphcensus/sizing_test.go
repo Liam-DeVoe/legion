@@ -633,9 +633,10 @@ var countedBy = map[writtenKind][]string{
 // append no kind these do not: the API's comment path states what the backfill's comment pass
 // states of a comment (graphstore.CommentFacts, graphstore.AuthorFacts), the creates of an issue,
 // a document, an ask and a message state what the backfill's object pass states of each, a
-// document's removal states the state that pass states, the settle of a delivery attempt, the
-// follow of an ask and the seed's followers each state a session's node, the sites that cause a
-// version's index append what the block index stated, and the erase appends nothing.
+// document's removal states the state that pass states, and so does the roll tick's sweep of a
+// document a build before this one removed (StateOrphanedGone), the settle of a delivery attempt,
+// the follow of an ask and the seed's followers each state a session's node, the sites that cause
+// a version's index append what the block index stated, and the erase appends nothing.
 func writeTheStore(t *testing.T, database *store.Store) map[writtenKind]int64 {
 	t.Helper()
 	ctx := context.Background()

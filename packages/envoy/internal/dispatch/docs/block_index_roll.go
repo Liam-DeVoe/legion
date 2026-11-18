@@ -256,7 +256,7 @@ var rollNow time.Time
 // objectPassBatches bounds the batches one tick's object pass writes across the four kinds, so a
 // first deploy's whole backlog never holds the block-index lease in one tick: a pass that stops
 // with rows left leaves its debt and makes the tick full, and the next one runs blockIndexStep
-// later. At the backfill's batch size it writes the nodes of up to 2,000 rows a tick.
+// later. At the backfill's batch size of 200 it writes the nodes of up to 800 rows a tick.
 const objectPassBatches = 4
 
 // orphanedNodesSwept bounds the orphaned document nodes one tick states gone, each in a
@@ -304,6 +304,11 @@ func (s *Service) writeObjectNodesAnotherBuildWrote(ctx context.Context, tick *B
 	pass, passErr := graphcensus.WriteOwedObjectNodes(ctx, s.store, objectPassBatches)
 	tick.ObjectNodes = int(pass.Rows)
 	more = pass.More
+	if pass.Moved != nil {
+		// No second pass cures a row whose node the store holds in another project, so it holds
+		// back no debt: it is logged for a person, and the census names the row.
+		slog.Error("dispatch: block index left rows whose node the store holds in another project", "error", pass.Moved)
+	}
 	failed := []error{passErr}
 	orphaned, err := graphcensus.OrphanedDocumentNodes(ctx, s.store.Pool, orphanedNodesSwept+1)
 	failed = append(failed, err)

@@ -3,6 +3,7 @@ package graphcensus
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -203,11 +204,11 @@ func TestTheOrphanSweepTakesTheStoreLockOrder(t *testing.T) {
 	}
 }
 
-// The object pass writes at most its budget of batches: over 501 asks owed their node, a pass of
-// one batch writes the backfill's batch and answers More, and the next writes the one left and
-// answers no More.
+// The object pass writes at most its budget of batches: over 201 asks owed their node, one more
+// than the backfill's batch, a pass of one batch writes that batch and answers More, and the next
+// writes the one left and answers no More.
 //
-// Its control is the budget not spent: the first pass then writes all 501 and answers no More.
+// Its control is the budget not spent: the first pass then writes all 201 and answers no More.
 func TestTheObjectPassStopsAtItsBatchBound(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -249,6 +250,55 @@ func TestAFailingKindHoldsBackNoOtherKind(t *testing.T) {
 	}
 	if _, held, readErr := graphstore.ReadNode(ctx, database.Pool, graphstore.KindMessage, message); readErr != nil || !held {
 		t.Errorf("after the pass the message holds a node %t (%v), want it written beside the failing asks: %v", held, readErr, err)
+	}
+}
+
+// A row whose node the store holds in another project is one no pass can write, since a node's
+// project never moves (graphstore.ErrProjectMoved), and no writer makes one: it is a store a
+// person has to read. It holds back no other row: with a gone node at ORPH-1/a-md in project
+// ELSEWHERE and rows a-md and b-md in ORPH, the pass writes b-md's node, answers a-md in Moved, and
+// answers no failure, and a second pass does the same.
+//
+// Its control is the batch written whole with no retry of its rows one at a time: the pass then
+// fails at that batch, and b-md keeps no node.
+func TestARowWhoseNodeStandsInAnotherProjectHoldsBackNoOtherRow(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seedOrphanIssueWithAsks(t, database, 0)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('ELSEWHERE', 'Elsewhere', 'alice')`); err != nil {
+			return err
+		}
+		moved := graphstore.ArtifactNode(orphanIssue+"/a-md", "ELSEWHERE", "", alice, time.Now().UTC().Add(-time.Hour))
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{moved}, nil); err != nil {
+			return err
+		}
+		moved.State, moved.MadeAt = graphstore.StateGone, time.Now().UTC().Add(-time.Minute)
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{moved}, nil); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
+			values ('ORPH-1', 'ORPH', 'a-md', 'A', 'doc', '{"kind":"user","id":"alice"}'),
+			       ('ORPH-1', 'ORPH', 'b-md', 'B', 'doc', '{"kind":"user","id":"alice"}')
+		`)
+		return err
+	}); err != nil {
+		t.Fatalf("seed the node in another project and the two rows: %v", err)
+	}
+	for run := 1; run <= 2; run++ {
+		pass, err := WriteOwedObjectNodes(ctx, database, 0)
+		if err != nil || !errors.Is(pass.Moved, graphstore.ErrProjectMoved) || !strings.Contains(pass.Moved.Error(), orphanIssue+"/a-md") {
+			t.Fatalf("pass %d answered %+v and %v, want a-md alone in Moved and no failure", run, pass, err)
+		}
+		if strings.Contains(pass.Moved.Error(), orphanIssue+"/b-md") {
+			t.Errorf("pass %d left b-md as moved: %v", run, pass.Moved)
+		}
+		node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindArtifact, orphanIssue+"/b-md")
+		if err != nil || !held || node.Project != "ORPH" || node.State != graphstore.StateLive {
+			t.Errorf("after pass %d the node of b-md is %+v (held %t, %v), want it live in ORPH", run, node, held, err)
+		}
 	}
 }
 
