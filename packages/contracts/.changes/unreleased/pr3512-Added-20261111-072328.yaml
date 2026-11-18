@@ -9,7 +9,8 @@ body: |-
   IDEMPOTENCY_ANSWER_NOT_KEPT also answers a repeat whose first answer held text a delete withdrew,
   and its message says whether the request wrote. GOING_ERROR_ANSWER_WITHDRAWN is the error code
   that ends an answer's stream once a comment or an issue message whose text the answer read is
-  deleted.
+  deleted. A reply's reply_block carries edited_at, the time the quoted comment or message was
+  last edited by its author, and none for a post nobody edited.
 time: 2026-11-11T07:23:28.113040407Z
 custom:
     Issue: pr3512

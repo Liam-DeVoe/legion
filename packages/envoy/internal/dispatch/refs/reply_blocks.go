@@ -100,9 +100,11 @@ func CurrentItemBlock(ctx context.Context, q Queryer, kind ItemKind, itemID, blo
 // reply's owner (as itemBlockParent addresses the reply's parent); a message is owned by its
 // issue alone, so a message reply needs neither project nor slug, and a direct message's block
 // has no reference. Text is the block's stored excerpt, which a removal keeps, so a removed
-// block reads the last text it held. A block of a comment or a message its author deleted reads
-// removed with no text, since the delete clears every excerpt (TombstoneItem), and carries the
-// post's delete mark, read from the item row the block belongs to.
+// block reads the last text it held. A block of a comment or a message carries the post's
+// EditedAt, read from the item row the block belongs to, so a read of the reply alone says its
+// parent was edited. A block of a post its author deleted reads removed with no text, since the
+// delete clears every excerpt (TombstoneItem), and carries the post's delete mark, read from the
+// same row.
 func ReplyBlocks(ctx context.Context, q Queryer, kind ItemKind, replyIDs []string) (map[string]*model.ReplyBlock, error) {
 	blocks := make(map[string]*model.ReplyBlock)
 	if len(replyIDs) == 0 {
@@ -142,6 +144,7 @@ func ReplyBlocks(ctx context.Context, q Queryer, kind ItemKind, replyIDs []strin
 		if block.DeletedAt, block.DeletedBy, err = marks.deleted(); err != nil {
 			return nil, fmt.Errorf("the %s block %s: %w", kind, block.Node, err)
 		}
+		block.EditedAt = marks.editedAt
 		block.Ref = BlockRef(itemRef(string(kind), issueKey, project, slug, itemID), block.BlockID)
 		blocks[replyID] = &block
 	}

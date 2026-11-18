@@ -1247,8 +1247,10 @@ test("a reply names the block it answers, and an event recorded before reads no 
     replyInput.in_reply_to_block,
   ]).toEqual(["b2", "b2", "b2", "b2"]);
 
+  // A quote of a post its author edited carries the edit; a quote of an unedited one, none.
   const block: ReplyBlock = {
     block_id: "b2",
+    edited_at: "2026-09-10T00:00:00.5Z",
     node: "comment/comment-1#b2",
     ref: "dispatch://DSP-1/comment/comment-1#b-b2",
     removed: false,

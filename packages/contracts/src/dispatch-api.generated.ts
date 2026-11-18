@@ -6120,6 +6120,8 @@ export interface components {
       /** Format: date-time */
       deleted_at?: string;
       deleted_by?: components["schemas"]["Actor"];
+      /** Format: date-time */
+      edited_at?: string;
       node: string;
       ref?: string;
       removed: boolean;
@@ -6130,6 +6132,8 @@ export interface components {
       /** Format: date-time */
       deleted_at?: string;
       deleted_by?: components["schemas"]["Actor"];
+      /** Format: date-time */
+      edited_at?: string;
       node: string;
       ref?: string;
       removed: boolean;

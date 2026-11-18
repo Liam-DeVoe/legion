@@ -1956,8 +1956,9 @@ type AskEventPayload struct {
 	Restored bool `json:"restored,omitempty"`
 	// ThreadLogins is carried by ask.opened, ask.answered and ask.resolved: every login with a
 	// Replies row (user_threads) on the ask's thread once the write is in, read in its own
-	// transaction (events.ThreadLogins), so a viewer knows whether their Inbox can have moved.
-	// Absent on every other ask event; [] when nobody has a row.
+	// transaction (events.ThreadLogins), so a viewer knows whether their Inbox can have moved;
+	// [] when nobody has a row. ask.asked_of carries the two people the hand-on moved the ask
+	// between instead (api/ask_asked_of.go, movedLogins). Absent on every other ask event.
 	ThreadLogins []string `json:"thread_logins,omitzero"`
 }
 
@@ -2755,16 +2756,25 @@ type Comment struct {
 // excerpt (its text cut to refs.BlockExcerptRunes, the last text it held once removed), and
 // whether its item's current revision no longer holds it.
 //
-// DeletedAt and DeletedBy are the mark of the quoted post, a comment or a message its author
-// deleted: the delete clears every excerpt its blocks stored (refs.TombstoneItem), so the block
-// reads removed with no text, and the mark is what says the post itself is gone rather than the
-// one block. Nil while the post stands and on a part of an ask, which no delete marks.
+// EditedAt, DeletedAt and DeletedBy are the marks of the quoted post, read from its own row, so a
+// read that prints the reply without its parent (GET /api/v1/comments/{id} or GET
+// /api/v1/issues/{key}/messages/{id} of the reply) still says the post was edited or deleted.
+// EditedAt is the time its author last edited it, absent on a post nobody edited, as the delete
+// mark is absent while the post stands: contracts' ReplyBlockSchema is held to this shape's
+// document (dispatch-api-owned.ts) and must read a frame written before a mark as it did
+// (dispatch-inbound-parity.test.ts), which together leave a mark optional, never null. DeletedAt
+// and DeletedBy mark a comment or a message its author deleted: the delete clears every excerpt
+// its blocks stored (refs.TombstoneItem), so the block reads removed with no text, and the mark
+// is what says the post itself is gone rather than the one block. All three are absent on a part
+// of an ask, which no correction marks. An event's reply_block keeps the marks the write that
+// appended it read.
 type ReplyBlock struct {
 	Node      string     `json:"node"`
 	Ref       string     `json:"ref,omitempty"`
 	BlockID   string     `json:"block_id"`
 	Text      string     `json:"text"`
 	Removed   bool       `json:"removed"`
+	EditedAt  *time.Time `json:"edited_at,omitempty"`
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 	DeletedBy *Actor     `json:"deleted_by,omitempty"`
 }
@@ -3109,7 +3119,8 @@ type MessageEventPayload struct {
 	// thread (its root, up in_reply_to, events.ThreadLogins); on a direct (issue-less)
 	// conversation's, which keeps no Replies row, it is the thread root author's login, the one
 	// Inbox an Agent row of that thread sits in, and [] when no person opened the thread. Carried
-	// by message.created and message.answered; absent on a delivery frame.
+	// by message.created, message.answered, message.edited and message.deleted; absent on a
+	// delivery frame.
 	ThreadLogins []string `json:"thread_logins,omitzero"`
 }
 

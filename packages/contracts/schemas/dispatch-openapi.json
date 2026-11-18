@@ -26027,6 +26027,10 @@
           "deleted_by": {
             "$ref": "#/components/schemas/Actor"
           },
+          "edited_at": {
+            "format": "date-time",
+            "type": "string"
+          },
           "node": {
             "type": "string"
           },
@@ -26059,6 +26063,10 @@
           },
           "deleted_by": {
             "$ref": "#/components/schemas/Actor"
+          },
+          "edited_at": {
+            "format": "date-time",
+            "type": "string"
           },
           "node": {
             "type": "string"
