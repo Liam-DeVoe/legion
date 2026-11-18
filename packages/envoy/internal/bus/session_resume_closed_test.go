@@ -11,12 +11,15 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// withBeforeStoredSend has the client run before in sendStored, between its read of the client's
-// JetStream context and its first send on it (beforeStoredSend), so a row can replace the client's
-// connection there.
-func withBeforeStoredSend(before func()) ConnectOption {
+// withBeforeStoredSend has the client run before in sendStored (beforeStoredSend): between its
+// read of the client's JetStream context and its first send on it, with resend false, and in its
+// branch for a closed connection, before the wait for the connection the second send goes out on,
+// with resend true. A row replaces the client's connection at the first, and takes the replacement
+// down at the second.
+func withBeforeStoredSend(before func(resend bool)) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.beforeStoredSend = before })
 }
 
@@ -46,9 +49,11 @@ func newestMsgID(t *testing.T, subject string) string {
 // than likely: the seam runs after the client has read its JetStream context and before the send
 // (withBeforeStoredSend), and closes the connection and waits there for the client to replace it,
 // so the send is made on the closed connection's context and bound to the replacement's life, which
-// has not ended (bindRequest), however loaded the box. A later record of the session is a message
-// of its own under an id of its own, so the stream holds both and the reader takes the newest
-// (resumeFloor), each record carrying its id.
+// has not ended (bindRequest), however loaded the box. The replacement is still up when the seam
+// runs again, before the wait for the second send's connection, so that wait (connForRequest)
+// serves it at once; the row after this one takes it down there. A later record of the session is
+// a message of its own under an id of its own, so the stream holds both and the reader takes the
+// newest (resumeFloor), each record carrying its id.
 //
 // The controls: this row with publishStoredRaw passing sendStored no id, and with sendStored's
 // branch for a closed connection taken out; in each the delete answers the closed error and the
@@ -60,10 +65,10 @@ func TestAResumeRecordWhoseConnectionClosedUnderItIsSentAgainAndStoredOnce(t *te
 		t.Fatalf("connect the stream's owner: %v", err)
 	}
 	t.Cleanup(owner.Close)
-	var replace atomic.Pointer[func()]
-	consumers, err := ConnectSessionConsumers([]string{uri}, 0, nil, withBeforeStoredSend(func() {
-		if run := replace.Swap(nil); run != nil {
-			(*run)()
+	var stage atomic.Pointer[func(resend bool)]
+	consumers, err := ConnectSessionConsumers([]string{uri}, 0, nil, withBeforeStoredSend(func(resend bool) {
+		if run := stage.Load(); run != nil {
+			(*run)(resend)
 		}
 	}))
 	if err != nil {
@@ -83,14 +88,22 @@ func TestAResumeRecordWhoseConnectionClosedUnderItIsSentAgainAndStoredOnce(t *te
 	closed := client.Connection()
 	var replaced *nats.Conn
 	var replaceErr error
-	run := func() {
+	var sent, upAtResend bool
+	run := func(resend bool) {
+		if resend {
+			upAtResend = client.Connected()
+			stage.Store(nil)
+			return
+		}
+		sent = true
 		closed.Close()
 		replaceErr = client.ensureConnWithContext(ctx)
 		replaced = client.Connection()
 	}
-	replace.Store(&run)
+	stage.Store(&run)
 	floor, err := consumers.Delete(ctx, session, nil)
-	if replace.Load() != nil {
+	stage.Store(nil)
+	if !sent {
 		t.Fatalf("the delete made no stored send (%d, %v), so no connection closed under its resume record", floor, err)
 	}
 	if replaceErr != nil || replaced == closed || !replaced.IsConnected() {
@@ -98,6 +111,9 @@ func TestAResumeRecordWhoseConnectionClosedUnderItIsSentAgainAndStoredOnce(t *te
 	}
 	if err != nil {
 		t.Fatalf("the delete whose resume record's connection closed under it answered %v, want the record sent again on the replacement and the consumer deleted", err)
+	}
+	if !upAtResend {
+		t.Fatalf("the record reached no wait for its second send with the replacement up (floor %d): it did not take sendStored's branch for a closed connection", floor)
 	}
 	if _, err := consumers.Info(ctx, session); !errors.Is(err, ErrSessionConsumerNotFound) {
 		t.Fatalf("the consumer's info after the delete = %v, want ErrSessionConsumerNotFound", err)
@@ -126,6 +142,119 @@ func TestAResumeRecordWhoseConnectionClosedUnderItIsSentAgainAndStoredOnce(t *te
 	}
 	if got, recorded, err := consumers.resumeFloor(ctx, session, streamID); err != nil || !recorded || got != later {
 		t.Fatalf("the resume record after the later write = %d, %t, %v; want the newest, floor %d", got, recorded, err, later)
+	}
+}
+
+// A delete whose resume record's send goes out on the JetStream context of a connection the
+// session consumers' client has just replaced, as in the row above, and whose replacement is down
+// when the record would be sent again, answers the loss at once (ErrConnectionLost, connForRequest)
+// rather than waiting for the connection with the session's lock held, which the listener's
+// delete holds while it calls this (cmd/listener's deleteConsumer). It deletes nothing and writes
+// no record, so the consumer stands. Once the connection is back (Reconnected), the delete made
+// again, as the listener's delete makes it after the wait and the sweep's next pass would, records
+// the floor and deletes the consumer.
+//
+// The order is made certain rather than likely by the seam (withBeforeStoredSend): before the
+// first send it closes the connection and waits for the client to replace it, through the hold;
+// before the wait for the second send's connection it cuts the hold (testnats.ReplyHold.Cut), so
+// no reconnect can land, and waits until the replacement is not connected. The answer then comes
+// while the hold still refuses every reconnect and the delete's own context runs, so a delete that
+// waited for the connection could end only at a deadline, the record's own bound (publishBound)
+// or that context's, and not with ErrConnectionLost, which fails the row.
+//
+// The control is this row with sendStored's branch for a closed connection waiting through
+// ensureConnWithContext, as at 7ae8da8a4f: the delete waits, with the session's lock held in the
+// listener, for a connection the hold refuses, and answers the record's own bound, `waiting for
+// NATS to reconnect: context deadline exceeded`.
+func TestAResumeRecordWhoseReplacementIsDownAnswersTheLossAtOnceAndDeletesNothing(t *testing.T) {
+	uri := testnats.URL(t)
+	owner, err := ConnectOwningStream([]string{uri})
+	if err != nil {
+		t.Fatalf("connect the stream's owner: %v", err)
+	}
+	t.Cleanup(owner.Close)
+	hold := testnats.StartReplyHold(t, uri)
+	var stage atomic.Pointer[func(resend bool)]
+	consumers, err := ConnectSessionConsumers([]string{hold.URL()}, 0, nil, withBeforeStoredSend(func(resend bool) {
+		if run := stage.Load(); run != nil {
+			(*run)(resend)
+		}
+	}))
+	if err != nil {
+		t.Fatalf("connect session consumers through the hold: %v", err)
+	}
+	t.Cleanup(consumers.Close)
+	t.Cleanup(hold.Restore)
+	ctx, cancel := context.WithTimeout(context.Background(), ownWait(t))
+	defer cancel()
+	const session = "ses_resume_closed_down"
+	agent := contracts.LegacyAgentSubject(session)
+	subject := SessionResumeSubject(session)
+	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
+		t.Fatalf("ensure the session's consumer: %v", err)
+	}
+
+	client := consumers.client
+	closed := client.Connection()
+	var replaced *nats.Conn
+	var replaceErr error
+	var sent, cut bool
+	run := func(resend bool) {
+		if !resend {
+			sent = true
+			closed.Close()
+			replaceErr = client.ensureConnWithContext(ctx)
+			replaced = client.Connection()
+			return
+		}
+		cut = true
+		stage.Store(nil)
+		hold.Cut()
+		testwait.WithinPolling(t, testnats.Remaining(t), time.Millisecond, "the replacement connection to drop under the cut",
+			func() bool { return !replaced.IsConnected() })
+	}
+	stage.Store(&run)
+	floor, err := consumers.Delete(ctx, session, nil)
+	connected, ended := client.Connected(), ctx.Err()
+	stage.Store(nil)
+	if !sent {
+		t.Fatalf("the delete made no stored send (%d, %v), so no connection closed under its resume record", floor, err)
+	}
+	if replaceErr != nil || replaced == closed {
+		t.Fatalf("the client did not replace its closed connection before the record's send: %v", replaceErr)
+	}
+	if !cut {
+		t.Fatalf("the delete answered %d, %v before any wait for a second send of its record, so the hold was never cut", floor, err)
+	}
+	if !errors.Is(err, ErrConnectionLost) || ended != nil || connected {
+		t.Fatalf("the delete whose record's replacement connection was down answered %d, %v (its context: %v, connected: %t); want ErrConnectionLost at once, while its context runs and the client is not connected", floor, err, ended, connected)
+	}
+	if floor != 0 {
+		t.Fatalf("the delete that wrote no record answered floor %d, want 0", floor)
+	}
+	if stored := storedOn(t, subject); stored != 0 {
+		t.Fatalf("the stream holds %d resume records of %s, want none: the record was answered unsent", stored, session)
+	}
+
+	hold.Restore()
+	if !Reconnected(ctx, err) {
+		t.Fatalf("the client did not recover its connection within the row's wait: %v", err)
+	}
+	if _, err := consumers.Info(ctx, session); err != nil {
+		t.Fatalf("the consumer's info after the delete that wrote no record = %v, want the consumer still there", err)
+	}
+	floor, err = consumers.Delete(ctx, session, nil)
+	if err != nil {
+		t.Fatalf("the delete made again once the connection was back answered %v, want the floor recorded and the consumer deleted", err)
+	}
+	if _, err := consumers.Info(ctx, session); !errors.Is(err, ErrSessionConsumerNotFound) {
+		t.Fatalf("the consumer's info after the second delete = %v, want ErrSessionConsumerNotFound", err)
+	}
+	if stored := storedOn(t, subject); stored != 1 {
+		t.Fatalf("the stream holds %d resume records of %s after the second delete, want 1", stored, session)
+	}
+	if got, recorded, err := consumers.resumeFloor(ctx, session, streamIDOf(t, consumers)); err != nil || !recorded || got != floor {
+		t.Fatalf("the resume record after the second delete = %d, %t, %v; want the floor %d it answered", got, recorded, err, floor)
 	}
 }
 

@@ -89,7 +89,8 @@ func requestUnsent(err error) bool {
 	return errors.As(err, &lost) && lost.unsent
 }
 
-// connForRequest is the wait a request on c makes for a connection before it is sent:
+// connForRequest is the wait a request on c makes for a connection before it is sent, and a stored
+// publish whose connection closed under it before it is sent again (sendStored):
 // ensureConnWithContext's, except on a client every caller of which retries a lost request itself
 // (withLossAtOnce), where a request made while nats.go reconnects its connection answers
 // ErrConnectionLost at once. Such a caller holds a session's lock, the shared stream read or a

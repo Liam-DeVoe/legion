@@ -70,12 +70,15 @@ type SessionResumeRecord struct {
 // The write carries a Nats-Msg-Id of its own, drawn here once (id.New, 128 random bits) and
 // shared by the write's sends, so a send of it the bus makes again stores no second copy of one
 // that landed: the bus sends it again when the connection closed under it, on the JetStream context
-// of a connection the client had just replaced (sendStored). The id names this write and nothing
-// else, so a later write of the session, however equal its record, is a message of its own and
-// stands as the newest. A lost connection is answered rather than sent again (withLossAtOnce), and
-// its caller's retry is such a later write. The id carries no subject, as ForwardMsgID's do,
-// because the subject is there to keep one key's copies on several subjects apart, and this id is
-// one write's alone. A reader of the record reads its body and no header (resumeFloor).
+// of a connection the client had just replaced, and that replacement is up (sendStored,
+// connForRequest). The id names this write and nothing else, so a later write of the session,
+// however equal its record, is a message of its own and stands as the newest. A lost connection,
+// and a replacement nats.go is still reconnecting, are answered at once rather than waited for
+// with the caller's lock held (withLossAtOnce): the delete then deletes nothing (Delete), and its
+// caller's retry once the connection is back, or the sweep's next pass, is such a later write. The
+// id carries no subject, as ForwardMsgID's do, because the subject is there to keep one key's copies
+// on several subjects apart, and this id is one write's alone. A reader of the record reads its
+// body and no header (resumeFloor).
 //
 // The floor recorded is floor itself unless floor is past the stream's end: above the stream's last
 // sequence, as the stream read this call makes reads it (streamState, whose read begins after this

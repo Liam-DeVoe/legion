@@ -48,7 +48,7 @@ type connectOpts struct {
 	reconnectWaitTick           func()
 	beforeRequestFlush          func()
 	lifeEndGate                 func()
-	beforeStoredSend            func()
+	beforeStoredSend            func(resend bool)
 	background                  bool
 	silentCutDetection          bool
 	lossAtOnce                  bool
@@ -291,13 +291,15 @@ type Client struct {
 	// nats.go's answer for its connection's close, the order nats.go gives when close clears the
 	// pending requests before its status report reaches the client.
 	lifeEndGate func()
-	// beforeStoredSend, when not nil, runs in sendStored between its read of the client's
-	// JetStream context and its first send on that context, on the goroutine that sends. It is nil
-	// outside tests: a test sets it (withBeforeStoredSend, session_resume_closed_test.go) to close
-	// the client's connection and have the client replace it there, so the send goes out on the
-	// JetStream context of a connection the client has just replaced, which nats.go answers with
-	// its close.
-	beforeStoredSend func()
+	// beforeStoredSend, when not nil, runs in sendStored on the goroutine that sends: between its
+	// read of the client's JetStream context and its first send on that context (resend false),
+	// and, in its branch for a closed connection, before the wait for the connection the second
+	// send goes out on (resend true). It is nil outside tests: a test sets it (withBeforeStoredSend,
+	// session_resume_closed_test.go) to close the client's connection and have the client replace
+	// it before the first send, so that send goes out on the JetStream context of a connection the
+	// client has just replaced, which nats.go answers with its close, and to take the replacement
+	// down before the second.
+	beforeStoredSend func(resend bool)
 	// lossAtOnce is withLossAtOnce's: a request made while the connection is reconnecting answers
 	// ErrConnectionLost without waiting for it (connForRequest).
 	lossAtOnce bool
@@ -2190,9 +2192,15 @@ func unacknowledged(err error, mayHold bool) error {
 // connection's own error comes back from a client that was stopped (lostOrClosed), and from the
 // JetStream context of a connection the client replaced as the send began, which nats.go refuses
 // before it writes anything (nats.go v1.53.1 nats.go:4573-4576), and such a publish is sent again
-// on the connection ensureConnWithContext serves, whichever client it is: the replacement, or the
-// one Drain still drains. The session resume record is such a publish, under a message id each
-// write draws for its own sends (SessionConsumers.recordResumeFloorAt).
+// on the connection connForRequest serves: the replacement, or the one Drain still drains. That is
+// ensureConnWithContext's wait on every client but one that answers a loss at once
+// (withLossAtOnce), whose callers hold a session's lock, the shared stream read or a relay's
+// restart turn: there a replacement nats.go is reconnecting answers the loss at once
+// (ErrConnectionLost, unsent), so the caller releases what it holds before it waits
+// (Reconnected), a replacement that is up is sent the publish again, and one that has closed in
+// turn is dialled again, as before every request of that client. The session resume record is
+// such a publish, under a message id each write draws for its own sends
+// (SessionConsumers.recordResumeFloorAt).
 //
 // Every other publish is sent once and answers the error. One with no message id, whatever its
 // caller asks, since nothing would let the stream tell a second send of one that landed from a
@@ -2218,7 +2226,7 @@ func (c *Client) sendStored(ctx context.Context, subject string, data []byte, ms
 	once = once || msgID == ""
 	js := c.JS()
 	if c.beforeStoredSend != nil {
-		c.beforeStoredSend()
+		c.beforeStoredSend(false)
 	}
 	sentAt := time.Now()
 	live := ctx.Err() == nil
@@ -2228,7 +2236,10 @@ func (c *Client) sendStored(ctx context.Context, subject string, data []byte, ms
 	switch {
 	case err == nil, once:
 	case errors.Is(err, nats.ErrConnectionClosed):
-		if err := c.ensureConnWithContext(ctx); err != nil {
+		if c.beforeStoredSend != nil {
+			c.beforeStoredSend(true)
+		}
+		if err := c.connForRequest(ctx); err != nil {
 			return StoredAck{}, unacknowledged(err, mayHold)
 		}
 		resend = true
