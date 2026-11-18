@@ -300,14 +300,14 @@ EXCEPTIONS = (
         package="github.com/sjawhar/envoy/internal/broker/airlock",
         functions=("TestModelAgreesOnHostShapes",),
         requirement=(
-            "R3 (dispatch://INFRA-1408/spec), as for FuzzAirlock above: airlock-lean holds the Go "
-            "airlock to its Lean model, and its filter takes files envoy_go's does not, so on such a "
-            "change envoy-go does not run and the comparison would run nowhere. Its step \"Compare "
-            "the Go airlock with the model over the seed corpus\" runs this test against the model it "
-            "built. envoy-go's step \"Count the database broker suites' skips\" runs "
-            "./internal/broker/... whole through packages/envoy/scripts/database-skips.sh, so a "
-            "listing counts the test run there too, but it skips there for want of AIRLOCK_MODEL, as "
-            "that script's EXPECTED_SKIPS records, so the comparison runs only in airlock-lean."
+            "The same reason as FuzzAirlock above: airlock-lean's corpus comparison runs the host "
+            "shapes a rules file may hold through both the Go validation and the Lean model's, "
+            "with AIRLOCK_MODEL set, and runs on changes that do not start envoy-go. envoy-go's "
+            "step \"Count the database broker suites' skips\" runs ./internal/broker/... whole "
+            "through packages/envoy/scripts/database-skips.sh, so a listing counts the function "
+            "run there too, but it skips there for want of AIRLOCK_MODEL, as that script's "
+            "EXPECTED_SKIPS records, so the comparison runs only in airlock-lean. The fuzz step "
+            "runs FuzzAirlock alone and does not name it."
         ),
     ),
 )
