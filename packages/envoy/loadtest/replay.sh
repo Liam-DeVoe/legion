@@ -1,6 +1,8 @@
 # shellcheck shell=bash
 # replay.sh: the LINUX replay's own stack.sh commands (README.md), sourced by stack.sh, which
 # dispatches them and documents them in its header. Not executable.
+# go-offline-file: a person runs these commands through stack.sh on a load-test box; no CI job
+# runs them.
 #
 # It holds replay-seed-patch-check and replay-seed (the seed build at REPLAY_COMMIT, the work
 # Dispatch still owes, the dump and its parts), replay-manifest, replay-get (the manifest's parts,

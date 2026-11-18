@@ -19,10 +19,12 @@
 #                  exec.LookPath("go"), filepath.Join(..., "bin", "go")
 #      TypeScript  Bun.spawn, Bun.spawnSync, spawn, spawnSync, execFile, execFileSync, execa and
 #                  their Async forms with "go" as the command, an argv array that starts "go" and
-#                  a subcommand, Bun's $`go ...` and exec("go ...")
+#                  a subcommand (or "-C", a directory and a subcommand), Bun's $`go ...` and
+#                  exec("go ...")
 #      Python      an argv list or tuple that starts "go", and subprocess's string form
-#      shell       `go <subcommand>`, or a path ending /go, as a command: outside a quoted string
-#                  (a $(...) inside double quotes is a command) and outside a heredoc's body
+#      shell       `go <subcommand>` or `go -C <directory> <subcommand>`, the directory quoted
+#                  or not, or a path ending /go, as a command: outside a quoted string (a $(...)
+#                  inside double quotes is a command) and outside a heredoc's body
 #    Comments and the text of string literals are not read for sites, so a fixture or a message
 #    that spells a go command starts nothing here. A site passes when it carries one of:
 #      the offline rule in its own text: "GOPROXY=off" (Go, Python, shell), GOPROXY: "off"
@@ -48,13 +50,16 @@
 #    a step that runs go test of a package whose tests call testbuild.EnvoyBinary - in its run:
 #    text, or in a script that step runs, or in a file that script sources or runs - must come
 #    after a step that runs `.github/scripts/go-fetch.sh deps` of packages/envoy naming every
-#    command testbuild.EnvoyBinary is called with. A `go test -c -o /dev/null` compiles and runs
-#    nothing, and a `go test -list` runs no test: neither is such a step.
+#    command testbuild.EnvoyBinary is called with. The package's module is the directory `go -C
+#    DIR test` or `go test -C DIR` names, or a `cd DIR` earlier on the line moved to, else the
+#    step's. A `go test -c -o /dev/null` compiles and runs nothing, and a `go test -list` runs no
+#    test: neither is such a step.
 #
 # It is a presence check: whether a reason is true, and whether a fetch step fetches into the
 # cache the test reads, is the reviewer's to judge, as check-fireevent-reasons.sh says of its own.
-# A scan that read no file of a language, or found no testbuild caller where testbuild exists,
-# reports UNKNOWN and exits 2: a scan that cannot see must not read as a clean one.
+# A scan that read no file of a language, found no testbuild caller where testbuild exists, or saw
+# no step run those callers' tests, reports UNKNOWN and exits 2: a scan that cannot see must not
+# read as a clean one.
 #
 # Run from anywhere: .github/scripts/check-go-offline.sh
 # CI runs it in ci.yaml's lint job.
@@ -86,13 +91,15 @@ SITE = {
         r'|\bfilepath\.Join\([^)]*"bin"\s*,\s*"go"\s*\)'),
     "ts": re.compile(
         r"\b(?:Bun\.spawn(?:Sync)?|spawn(?:Sync)?|execFile(?:Sync|Async)?|execa(?:Sync)?)\s*\(\s*\[?\s*([\"'`])go\1"
-        r"|\[\s*([\"'`])go\2\s*,\s*([\"'`])" + SUBCOMMANDS + r"\3"
+        r"|\[\s*([\"'`])go\2\s*,\s*(?:([\"'`])-C\3\s*,\s*[^,\]]+,\s*)?([\"'`])" + SUBCOMMANDS + r"\4"
         r"|\$`\s*go\s+" + SUBCOMMANDS + r"\b"
         r"|\bexec(?:Sync)?\(\s*([\"'`])go\s+" + SUBCOMMANDS + r"\b"),
     "py": re.compile(
         r"[\[(]\s*([\"'])go\1\s*[,\])]"
         r"|\bsubprocess\.\w+\(\s*([\"'])go\s+" + SUBCOMMANDS + r"\b"),
-    "sh": re.compile(r"(?<![\w./$-])(?:go|[\w./${}-]*/go)(?=\s+(?:-C\s+\S+\s+)?" + SUBCOMMANDS + r"\b)"),
+    # A quoted -C directory is blanked to spaces by shell_code, so the directory's word may be absent.
+    "sh": re.compile(r"(?<![\w./$-])(?:go|[\w./${}-]*/go)(?=\s+(?:-C(?:=\S*\s+|\s+(?:\S+\s+)?))?"
+                     + SUBCOMMANDS + r"\b)"),
 }
 OFFLINE = {
     "go": (re.compile(r'"GOPROXY=off"'), 4),
@@ -425,14 +432,28 @@ def words(raw_line):
 
 def go_tests(raw_line, workdir):
     """The (module directory, package arguments, listed) of each go test of a line that runs
-    tests: a -c build that is not to /dev/null runs them later, a -list runs none."""
+    tests: a -c build that is not to /dev/null runs them later, a -list runs none. The module is
+    the directory a `-C DIR` names, before `test` or right after it, else the one a `cd DIR` at a
+    command position earlier on the line moved to (until the end of the ( ) group it is in), else
+    the step's."""
     tokens, found = words(raw_line), []
+    here, groups, command = workdir, [], True
     for k, token in enumerate(tokens):
+        if token in ("(", "$("):
+            groups.append(here)
+        elif token == ")" and groups:
+            here = groups.pop()
+        if token in SEPARATORS:
+            command = True
+            continue
+        if command and token == "cd" and k + 1 < len(tokens) and tokens[k + 1] not in SEPARATORS:
+            here = repo_path(tokens[k + 1], here)
+        command = False
         if token != "go" and not token.endswith("/go"):
             continue
-        rest, module = tokens[k + 1:], workdir
+        rest, module = tokens[k + 1:], here
         if rest[:1] == ["-C"] and len(rest) > 1:
-            module, rest = repo_path(rest[1], workdir), rest[2:]
+            module, rest = repo_path(rest[1], here), rest[2:]
         if rest[:1] != ["test"]:
             continue
         args = []
@@ -440,6 +461,8 @@ def go_tests(raw_line, workdir):
             if t in SEPARATORS:
                 break
             args.append(t)
+        if args[:1] == ["-C"] and len(args) > 1:
+            module, args = repo_path(args[1], here), args[2:]
         if "-list" in args or ("-c" in args and any(a == "/dev/null" for a in args)):
             continue
         packages = [a for a in args if a.startswith("./") or a == "."]
@@ -547,6 +570,12 @@ if os.path.isfile(TESTBUILD):
                                        f"packages/envoy {' '.join(sorted(built))}` before it"))
                 if fetches(run, workdir):
                     fetched = True
+    # A tree where tests call testbuild and no step of any workflow runs them is one whose steps
+    # this reading cannot follow (a go test, cd or script it does not see), not a clean one.
+    if jobs_checked == 0:
+        print(f"UNKNOWN: {', '.join(sorted(users))} call testbuild.EnvoyBinary and no step of any workflow was "
+              "seen to run their tests, so the jobs that run one are unseen", file=sys.stderr)
+        sys.exit(2)
 
 total = sum(counts.values())
 summary = (f"{total} go commands of {sum(read.values())} files read (Go {counts['go']}, TypeScript {counts['ts']}, "

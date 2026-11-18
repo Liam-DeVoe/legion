@@ -323,6 +323,8 @@ class Session:
         rather than which download it could not make.
         """
         if workdir not in self.toolchains:
+            # go-offline: go env GOROOT reads no module; in CI setup-go has installed the go that
+            # go.mod names, so it fetches no toolchain either.
             root = subprocess.run(["go", "env", "GOROOT"], cwd=REPO / workdir,
                                   capture_output=True, text=True).stdout.strip()
             exe = Path(root) / "bin" / "go" if root else None
@@ -1014,6 +1016,7 @@ def reduce_line(line: str) -> tuple:
     if len(words) > 1 and words[1] == "-C":
         if len(words) < 3 or words[2].startswith("-"):
             return *unreduced, "`go -C` names no directory"
+        # go-offline: the words of a go command a step runs, rebuilt to be read; nothing starts it.
         chdir, words = words[2], ["go", *words[3:]]
     if len(words) < 2 or words[1] not in ("test", "vet", "build"):
         return *unreduced, f"`{' '.join(words[:2])}` is not go test, vet or build"

@@ -48,6 +48,8 @@ case "${1:-}" in
   "")
     report="$work/report.json"
     go_test_exit=0
+    # go-offline: the go test of envoy-go's step that runs this script, as a `go test` on a step's
+    # own line is: the step's run of its tests, which no test starts.
     go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-15m}" ./internal/broker/... >"$report" 2>"$work/stderr" || go_test_exit=$?
     ;;
   *)

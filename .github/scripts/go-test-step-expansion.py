@@ -328,7 +328,7 @@ AUDITED_SCRIPTS = {
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
         command="go test -json -count=1 -timeout 15m ./internal/broker/...",
-        sha256="6e12e18c93e264884b9de33e3ce66de956a5f5b31d6270cbac52a383c1e9146d",
+        sha256="46e2a842a26ea317fa570648eb39d21126eccb28e2d00a10b3b73393f4878cae",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
@@ -665,6 +665,8 @@ def build_flags(command: GoTest) -> list[str]:
 
 def resolve(command: GoTest) -> None:
     """The import path of each package argument, with ./... expanded under the step's flags."""
+    # go-offline: a person runs this script by hand (the module's docstring); its test calls no
+    # function of it that starts go.
     out = go(["go", "list", "-f", "{{.ImportPath}}", *build_flags(command), *command.packages],
              command.step.directory, f"{command.step.label}: go list of `{command.text}`")
     command.resolved = out.split()
@@ -675,6 +677,8 @@ def resolve(command: GoTest) -> None:
 def listing(command: GoTest, pattern: str) -> dict[str, list[str]]:
     """The names each package of one command prints for one `go test -list` pattern, under the
     command's own build flags."""
+    # go-offline: a person runs this script by hand (the module's docstring); its test calls no
+    # function of it that starts go.
     out = go(["go", "test", "-count=1", "-list", pattern, *build_flags(command), *command.resolved],
              command.step.directory,
              f"{command.step.label}: go test -list {pattern} of `{command.text}`")

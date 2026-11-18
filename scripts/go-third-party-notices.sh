@@ -27,6 +27,7 @@ fi
 # runs with its own GOROOT: a GOROOT the environment exports (a version manager's, for an older Go
 # that switched to this toolchain because go.mod asks for a newer one) would have it compile with
 # that older release's tools, which refuse ("compile: version ... does not match go tool version").
+# go-offline: go env GOROOT names the toolchain and reads no module.
 goroot="$(go env GOROOT)"
 export GOROOT="$goroot"
 go_cmd="$goroot/bin/go"

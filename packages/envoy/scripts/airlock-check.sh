@@ -4,6 +4,7 @@
 # Runs one before_merge check of the airlock's verification document
 # (dispatch://INFRA-1352/artifact/verification-md) end to end and says whether it passed, so
 # that the implementer and the tester run the same command and read the same evidence.
+# go-offline-file: a person runs each check against a local stack; no CI job runs this script.
 #
 # What one run proves is the check's own sentence and nothing wider. The script starts the
 # local stack the check needs (scripts/dev-airlock.sh, with the options that check's negative

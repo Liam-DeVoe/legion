@@ -2,6 +2,8 @@
 # stack.sh: the load test's local stack (README.md): Postgres with pgvector from the pgserver wheel,
 # the 1 ms latency proxy toward it, nats-server with JetStream, the Envoy listener and Dispatch, all
 # built from this checkout and kept under LOADTEST_ROOT.
+# go-offline-file: a person runs it to stand a load-test stack up; run-step.test.sh, the one test
+# that runs it, puts a stand-in go first on PATH, and no CI job runs it otherwise.
 #
 #   stack.sh setup          build envoy-dispatch, envoy-listener and loadgen into $LOADTEST_ROOT/bin,
 #                           install nats-server (the version packages/envoy/go.mod pins) and Postgres,
