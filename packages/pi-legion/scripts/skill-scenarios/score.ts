@@ -8,6 +8,9 @@
 //     newline, whether the result spilled to an artifact, and so whether the file arrived whole;
 //     then the plugin paths Oh My Pi's log says it loaded.
 //   score.ts runs <runs dir> [<scenario>]
+//     <runs dir> holds each run under its name: rig.sh's <work>/maps/runs, whose links point at
+//     the runs' own directories (rig.sh's header, "the map"), with the label links beside it in
+//     <work>/maps/profiles.
 //     One row per run, then counts per scenario and label (for askgate and reviewer-own-head, per
 //     case and label), and a legend saying what each count is. Each scenario's rule is on the
 //     function that scores it: askOnMessage, measureBeforeAsk, testerProof, brainstormSurface,
@@ -16,7 +19,7 @@
 //     could not score is a rig error, printed with its reason and left out of the counts
 //     (unscored, below). A run SKILL_SCENARIOS_FIXTURE_ONLY stopped before its agent is listed
 //     and not scored.
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
@@ -482,11 +485,11 @@ function resultOf(entries: SessionEntry[], id: string): { text: string; isError:
   };
 }
 
-/** An askgate run's directory, askgate-<case>-<label>-<n>: the case comes before the label, so the
- * cases' batches of one label, each numbered from 1, never share a directory. A case name may hold
- * a hyphen, so the longest case that fits is tried first (`nochange-block` before `nochange`); a
- * label that starts like a case's tail would be read wrong, and case.txt then refuses the run. */
-const ASKGATE_RUN = new RegExp(
+/** An askgate run's name in the map, askgate-<case>-<label>-<n>: the case comes before the label,
+ * so the cases' batches of one label, each numbered from 1, never share a name. A case name may
+ * hold a hyphen, so the longest case that fits is tried first (`nochange-block` before
+ * `nochange`); a label that starts like a case's tail would be read wrong. */
+export const ASKGATE_RUN = new RegExp(
   `^askgate-(${ASKGATE_CASES.toSorted((a, b) => b.length - a.length).join("|")})-(.+)-\\d+$`
 );
 /** AskGate's content failure 12, "a fact the reader does not need", as a reason names it by gate
@@ -499,8 +502,8 @@ const NOT_REVIEWS = ["unreadable", "unmarked"];
 /** askgate: AskGate (the pi-envoy plugin's review of each Dispatch write) on a seeded issue whose
  * one comment is the person's. The run's label is its profile: `off` was built with
  * `{"askgate":{"enabled":false}}` in its envoy.json, every other label leaves the gate on. The
- * run's directory names its case, and `case.txt` names the prompt rig.sh gave, which must be the
- * same case. The row's scenario is `askgate:<case>`, so the counts are per case. A gate entry with
+ * run's name names its case (its agent sees no file that does). The row's scenario is
+ * `askgate:<case>`, so the counts are per case. A gate entry with
  * outcome `unreadable` is a refusal before any model call, of a command the gate cannot read (a
  * pipe, a `;`, an unquoted here-document), and one with outcome `unmarked` is the `dispatch` CLI's
  * refusal or warning for a gated write that carried no AskGate marker, so no rule counts either as
@@ -526,12 +529,7 @@ const NOT_REVIEWS = ["unreadable", "unmarked"];
  *   - off, facts: an ask is on the issue, and the transcript holds no gate entry.
  * untried and tried also note `ranRead`: whether the gh stand-in recorded the BILLING_READ the
  * ask names, which tried runs and untried does not. Any other pair is a rig error naming why. */
-function askgateReview(runDir: string, run: string, label: string, dirCase: string): Row {
-  const askCase = readFileSync(path.join(runDir, "case.txt"), "utf8").trim();
-  if (!ASKGATE_CASES.includes(askCase))
-    throw new Error(`askgate case.txt names '${askCase}', not one of ${ASKGATE_CASES.join(", ")}`);
-  if (askCase !== dirCase)
-    throw new Error(`case.txt names '${askCase}', but the run's directory names ${dirCase}`);
+function askgateReview(runDir: string, run: string, label: string, askCase: string): Row {
   const on = label !== "off";
   if (!on && askCase !== "facts")
     throw new Error(`askgate scores off only with case facts, not ${askCase}`);
@@ -810,7 +808,9 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
 const OWN_HEAD_CASES = ["sibling-fails", "ci-only", "no-implementer", "no-tester"];
 /** A reviewer-own-head run's directory, reviewer-own-head-<case>-<label>-<n>, as an askgate run's
  * names its case (ASKGATE_RUN). */
-const OWN_HEAD_RUN = new RegExp(`^reviewer-own-head-(${OWN_HEAD_CASES.join("|")})-(.+)-\\d+$`);
+export const OWN_HEAD_RUN = new RegExp(
+  `^reviewer-own-head-(${OWN_HEAD_CASES.join("|")})-(.+)-\\d+$`
+);
 /** The scenarios whose world rig.sh's heads_world builds, each with its results-before.txt. */
 const HEADS_SCENARIOS = ["reviewer-own-head", "reviewer-pass-and-fail", "architect-pass-and-fail"];
 /** The line `dispatch results` prints for #702's head under a check (fixture_heads waits for it). */
@@ -921,9 +921,9 @@ function waitingLines(entries: SessionEntry[], before?: string): string[] {
 /** reviewer-own-head and reviewer-pass-and-fail: a reviewer, started on a tester's pass, reviews
  * #702 of an issue (world.json) whose results seed.ts heads-events recorded. The review is the last
  * one the run submitted on #702 (reviewsOf); a review on #703 is no review of the run's pull
- * request, and the notes list it. A reviewer-own-head run's case is in its directory and in
- * case.txt, which must agree, and its row's scenario is `reviewer-own-head:<case>`, so the counts
- * are per case and label, as askgateReview's are. A pass:
+ * request, and the notes list it. A reviewer-own-head run's case is in its name, and its row's
+ * scenario is `reviewer-own-head:<case>`, so the counts are per case and label, as askgateReview's
+ * are. A pass:
  *   - sibling-fails and ci-only, where #702's line reads yes (from both roles, or from CI): the
  *     review approves #702 at #702's head (`event` APPROVE, `commit_id` the head). A `gh pr review
  *     --approve` names no commit, so it approves no head the score can read;
@@ -941,14 +941,7 @@ function headsReview(
   dirCase: string,
   scenario: "reviewer-own-head" | "reviewer-pass-and-fail"
 ): Row {
-  let world: string = scenario;
-  if (scenario === "reviewer-own-head") {
-    world = readFileSync(path.join(runDir, "case.txt"), "utf8").trim();
-    if (!OWN_HEAD_CASES.includes(world))
-      throw new Error(`case.txt names '${world}', not one of ${OWN_HEAD_CASES.join(", ")}`);
-    if (world !== dirCase)
-      throw new Error(`case.txt names '${world}', but the run's directory names ${dirCase}`);
-  }
+  const world = scenario === "reviewer-own-head" ? dirCase : scenario;
   const { pr, head } = json(path.join(runDir, "world.json"), World);
   const reviews = reviewsOf(parsed(path.join(runDir, "calls.jsonl"), Call));
   const review = reviews.filter((r) => r.pr === pr).at(-1);
@@ -3520,8 +3513,9 @@ function flagOf(name: string, reaches: Reach[], note: string): { inline: string;
 
 /** The directory a run had when it ran. rig.sh starts every agent in `<run dir>/cwd`, and its
  * session's header records that cwd, so a run scored from a copy (another work directory) still
- * reads its own paths as its own. A header whose cwd is not `…/runs/<this run's name>/cwd`, or no
- * header, gives `dir` itself. */
+ * reads its own paths as its own. `dir` is the run's own directory, the target of its link in the
+ * map. A header whose cwd is not `…/runs/<that directory's name>/cwd`, or no header, gives `dir`
+ * itself. */
 function ranAt(dir: string, entries: SessionEntry[]): string {
   const cwd = entries.find((entry) => entry.type === "session")?.cwd;
   return typeof cwd === "string" && cwd.endsWith(`/runs/${path.basename(dir)}/cwd`)
@@ -3608,10 +3602,20 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       const dispatch = dispatchOf(dir);
       const calls = runCalls(dir);
       // The paths the run had when it ran, which its transcripts name, never those of a copy
-      // scored elsewhere (ranAt).
-      const ran = ranAt(dir, session(dir));
+      // scored elsewhere (ranAt), from the run's own directory: the map's link resolved (a link to
+      // no directory is this run's rig error).
+      const ran = ranAt(lstatSync(dir).isSymbolicLink() ? realpathSync(dir) : dir, session(dir));
       const work = path.dirname(path.dirname(ran));
-      const profile = path.join(work, "profiles", label);
+      // The label's profile under the run's own work directory: its directory's name is the one the
+      // map's link names, and the label's own where the profiles are named by label.
+      const link = path.join(profiles, label);
+      const profile = path.join(
+        work,
+        "profiles",
+        existsSync(link) && lstatSync(link).isSymbolicLink()
+          ? path.basename(realpathSync(link))
+          : label
+      );
       // The run's own skills: its HOME (in its directory), its label's profile and checkout.
       const own = [ran, profile, labels.get(label) ?? profile].map((place) => `${place}/`);
       reason = unscored(dir, scenario, dispatch, label, labels, sharing, calls, own);

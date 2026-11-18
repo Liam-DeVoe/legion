@@ -28,6 +28,21 @@
 # in epoch seconds, and <case> a reviewer-own-head run's case. One run on its own is
 # `rig.sh batch <scenario> 1 <label>`.
 #
+# A run's agent must not learn its scenario, its case or its label: a reviewer whose path read
+# `reviewer-own-head-sibling-fails-ablate-head-1` was told the rule the ablate label had removed.
+# So every directory an agent sees has a random name, and the names live in the map, <work>/maps,
+# which no agent sees (launch):
+#   <work>/runs/<id>                 a run's directory, <id> 16 random hex digits
+#   <work>/profiles/<id>             a label's profile, <id> 16 random hex digits
+#   <work>/maps/runs/<run>           a link to the run's directory, <run> its name,
+#                                    <scenario>-<label>-<n> (<scenario>-<case>-<label>-<n> for
+#                                    askgate and reviewer-own-head); score.ts reads runs here
+#   <work>/maps/profiles/<label>     a link to the label's profile
+#   <work>/maps/built-from/<run>     the run's label's built-from, as the run started
+# A run's Dispatch database (run_<id>), its Legion project (p<12 hex digits of id>), its tmux
+# session (<tag>-<id>) and its Oh My Pi profile (`skills`, the same for every label) name nothing
+# either. visible-world.ts lists each place in a run's world that still names one.
+#
 # The tools of this directory (each one's header has its own usage):
 #   seed.ts               seeds a batch's scratch Dispatch and each run's issue, and reads back what
 #                         the run left there (rig.sh runs it)
@@ -92,8 +107,8 @@
 #                   stand-in's error). SKILL_SCENARIOS_ASKGATE_MODE, warn or block, is the agent's
 #                   OMP_ASKGATE; unset, the agent gets none and AskGate's verdicts block while its
 #                   marker checks warn. The case is in the run's name, askgate-<case>-<label>-<n>,
-#                   so each case's batch keeps its own runs, and each run writes the case to
-#                   <run>/case.txt and a set mode to <run>/mode.txt (run_askgate). Scored by
+#                   so each case's batch keeps its own runs, and each run writes a set mode to
+#                   <run>/mode.txt, its agent's own OMP_ASKGATE (run_askgate). Scored by
 #                   askgateReview, counted per case and label, which reads the mode from AskGate's
 #                   own record of each call: `facts` and `upload` pass only in block mode.
 #   spec-writing    A plain session is told that the people's messages on its Dispatch issue
@@ -114,7 +129,7 @@
 #                   seed.ts publishes each pull request's opened event, from which the run's
 #                   Dispatch learns its head, and records the case's results at the heads
 #                   (heads_world). The case is in the run's name,
-#                   reviewer-own-head-<case>-<label>-<n>, and in <run>/case.txt, and a batch runs
+#                   reviewer-own-head-<case>-<label>-<n>, and a batch runs
 #                   each of the four: sibling-fails (both roles' passes at #702, the tester's fail
 #                   at #703), ci-only (k1 carries ci_check, and CI's run passed at #702),
 #                   no-implementer and no-tester (one role's pass alone at #702). Scored by
@@ -141,8 +156,8 @@
 # sentence of the label's rule in each text that its role reads, to the closure of their links.
 #
 # A batch's services are a Postgres container, a NATS container, and the Envoy listener built from
-# this checkout. Each run gets a Dispatch of its own (own_dispatch): a database named after the run
-# in the batch's Postgres, and the e2e harness's real Go Dispatch server
+# this checkout. Each run gets a Dispatch of its own (own_dispatch): a database named after the
+# run's directory (run_<id>) in the batch's Postgres, and the e2e harness's real Go Dispatch server
 # (packages/dispatch/e2e/run-server.sh) on that database, seeded and read back through its API
 # (seed.ts) and stopped when the run ends. A `dispatch search` searches every project of its
 # server, and a Dispatch bearer cannot be limited to one project, so a shared server would show
@@ -203,18 +218,19 @@
 #   - Its profile's settings set extensionHandlers.toolCallTimeoutMs to 120000 or more, as the model
 #     route installers write them, so AskGate's review fits inside Oh My Pi's handler limit
 #     (load_label refuses a profile that does not).
-#   - It runs in the tmux session skill-scenarios-<digest>-<run> on the work directory's own tmux
-#     server (<work>/tmux.sock), <run> being <scenario>-<label>-<n> (<scenario>-<case>-<label>-<n>
-#     for askgate and reviewer-own-head). The pane shows nothing: omp's output goes to
-#     <work>/runs/<run>/out.txt, and the transcript, which grows as the agent works, to the .jsonl
-#     under <work>/runs/<run>/sessions.
+#   - It runs in the tmux session skill-scenarios-<digest>-<id> on the work directory's own tmux
+#     server (<work>/tmux.sock). The pane shows nothing: omp's output goes to
+#     <work>/runs/<id>/out.txt, and the transcript, which grows as the agent works, to the .jsonl
+#     under <work>/runs/<id>/sessions.
 #   - `gh` and `bun` stand-ins are first on its PATH (standins): no run reaches GitHub, and a bun
 #     it reaches through PATH is the bun this script runs on, recorded. A bun named by its path or
 #     run through `mise exec` bypasses the stand-in and goes unrecorded. Every container and tmux
 #     session a work directory starts carries the directory's digest in its name.
-#   - Its agent can still read the whole filesystem, the operator's home included, and write the
-#     machine's /tmp, which nothing here cleans: a namespace sandbox needs user namespaces, which
-#     Ubuntu's AppArmor policy denies unprivileged users. score.ts does not score a run that reads
+#   - Its agent runs under bubblewrap (launch), in a PID namespace of its own, so it sees no other
+#     process, and with an empty <work> but for its run's directory, its label's plugins and the
+#     batch's services, so it sees neither the map nor another run or label. It can still read the
+#     rest of the filesystem, the operator's home included, and write the machine's /tmp, which
+#     nothing here cleans. score.ts does not score a run that reads
 #     a skill file outside its own label or a file of another label's checkout, or whose PR body
 #     carries another run's line (unscored, testerProof). It flags, and still scores, a run whose
 #     tool calls only name such a skill file or checkout (skillReaches), or name a path outside its
@@ -315,6 +331,7 @@ timeout_hook=
 
 tag=skill-scenarios-$(printf '%s' "$work" | sha256sum | cut -c1-8)
 tmux_socket=$work/tmux.sock
+maps=$work/maps
 tmux() { command tmux -S "$tmux_socket" "$@"; }
 
 # What a command started, for its exit trap: the run directory and its agent's tmux session, the
@@ -324,16 +341,18 @@ R='' session='' daemon_pid='' listener_pid='' dispatch_pid='' runs_pid='' batch_
 natsd_pid='' fake_github_pid=''
 S='' envoy_port='' dispatch_port='' pg_port='' nats_port='' github_port='' run_nats_url=''
 
+# label_dir LABEL prints the profile directory the map's link <work>/maps/profiles/LABEL points at,
+# or nothing when the link or the directory is missing.
 label_dir() {
   [[ $1 =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "label '$1' is not lower-case letters, digits and hyphens"
-  printf '%s\n' "$work/profiles/$1"
+  realpath -e -- "$maps/profiles/$1" 2>/dev/null || true
 }
 
 # The label's checkout, pin and profile name, recorded by `profile`, as the globals P (the label's
 # directory), co, pin and profile that every command and helper below reads.
 load_label() {
   P=$(label_dir "$1")
-  [ -f "$P/ready" ] || fail "no profile for label $1: run \`rig.sh profile $1 <checkout>\` first"
+  [ -n "$P" ] && [ -f "$P/ready" ] || fail "no profile for label $1: run \`rig.sh profile $1 <checkout>\` first"
   co=$(<"$P/checkout")
   pin=$(<"$P/pin")
   profile=$(<"$P/profile")
@@ -477,17 +496,23 @@ checkout_commit() {
 cmd_profile() {
   local usage="usage: rig.sh profile <label> <checkout> [--envoy-json <file>]"
   [ $# = 2 ] || [ $# = 4 ] || fail "$usage"
-  local label=$1 P co profile=skills-$1 envoy_json=''
+  # Every label's Oh My Pi profile has the one name `skills`: the name is in each agent's
+  # environment (OMP_PROFILE) and its HOME's paths, so a name per label would tell it its label.
+  local label=$1 P co profile=skills envoy_json=''
   if [ $# = 4 ]; then
     [ "$3" = --envoy-json ] || fail "$usage"
     envoy_json=$(realpath -e -- "$4") || fail "--envoy-json $4 does not exist"
     jq -e 'type == "object"' "$envoy_json" >/dev/null 2>&1 || fail "--envoy-json $4 is not a JSON object"
   fi
   P=$(label_dir "$label")
-  [ ! -e "$P" ] || fail "$P exists; remove it to rebuild label $label"
+  [ -z "$P" ] || fail "$P, label $label's profile, exists; remove it to rebuild label $label"
   co=$(cd "$2" && pwd -P)
   [ -f "$co/scripts/e2e/lib/install-plugin-profile.sh" ] || fail "$co is not a Legion checkout"
-  mkdir -p "$P"
+  # A directory of a random name, which every agent of the label sees (its plugins live there), and
+  # the map's link that names it.
+  P=$work/profiles/$(openssl rand -hex 8)
+  mkdir -p "$P" "$maps/profiles"
+  ln -sfn -- "../../profiles/${P##*/}" "$maps/profiles/$label"
   on_exit "$(printf 'drop_unready_keys %q %q' "$P/ready" "$P/model-key")"
   printf '%s\n' "$co" >"$P/checkout"
   printf '%s\n' "$profile" >"$P/profile"
@@ -634,28 +659,38 @@ EOF
   [ -f "$R/fixtures.json" ] || printf '{"routes":[]}\n' >"$R/fixtures.json"
 }
 
-# launch NAME [OMP_ARG]... runs `omp -p "$(cat $R/prompt.txt)"` and then each OMP_ARG in $R/cwd
-# under $R/pane.env, followed by $R/system-args (one --append-system-prompt argument, as shell text)
-# when it exists, as the tmux session <tag>-<name>. It waits for the session to exit or time out. A
-# timeout is the run's result (`exit=timeout`), not a rig failure, so this wait is not an
-# until_true. A spec run's later turn passes --continue. Each launch starts out.txt again, so its
-# wait reads only its own exit line.
+# launch [OMP_ARG]... runs `omp -p "$(cat $R/prompt.txt)"` and then each OMP_ARG in $R/cwd under
+# $R/pane.env, followed by $R/system-args (one --append-system-prompt argument, as shell text) when
+# it exists, as the tmux session <tag>-<id>, <id> the name of the run's directory. It waits for the
+# session to exit or time out. A timeout is the run's result (`exit=timeout`), not a rig failure,
+# so this wait is not an until_true. A spec run's later turn passes --continue. Each launch starts
+# out.txt again, so its wait reads only its own exit line.
 launch() {
-  local system='' extra='' omp scope memory_max=${SKILL_SCENARIOS_MEMORY_MAX:-8G}
+  local system='' extra='' omp scope bwrap memory_max=${SKILL_SCENARIOS_MEMORY_MAX:-8G} view dir
   omp=$(pinned_omp "$pin") || exit 1
   # The agent runs in a systemd user scope of its own, capped at SKILL_SCENARIOS_MEMORY_MAX (8G)
   # with no swap: an agent that grows past it is killed alone (exit 137 in out.txt), and never
   # the caller's session, whose scope a run's processes would otherwise share.
   scope=$(command -v systemd-run) || fail "systemd-run is not on PATH: a run's agent runs in a capped user scope"
-  session=$tag-$1
-  shift
+  # And under bubblewrap, in a PID namespace of its own, where it sees no process but its own (not
+  # the batch's command line, which names its labels), and with <work> an empty tmpfs but for the
+  # run's directory, the label's plugins and model key, and the batch's services: no map, no other
+  # run, and none of the profile's own records (checkout, built-from), which name the label's
+  # checkout. bwrap reaches the namespaces through the user namespace AppArmor lets it make.
+  bwrap=$(command -v bwrap) || fail "bwrap is not on PATH: a run's agent runs in a PID namespace and a view of <work> of its own"
+  view=(--dev-bind / / --tmpfs "$work" --bind "$R" "$R")
+  for dir in "$P/pi-envoy" "$P/pi-legion" "$P/model-key" "$P/key" "$work/services"; do
+    [ ! -e "$dir" ] || view+=(--ro-bind "$dir" "$dir")
+  done
+  view+=(--unshare-pid --proc /proc --die-with-parent --chdir "$R/cwd")
+  session=$tag-${R##*/}
   [ $# = 0 ] || extra=" $(printf '%q ' "$@")" extra=${extra% }
   [ ! -f "$R/system-args" ] || system=" $(<"$R/system-args")"
   cat >"$R/launch.sh" <<EOF
 #!/usr/bin/env bash
 cd $(printf %q "$R/cwd")
 mapfile -t vars <$(printf %q "$R/pane.env")
-exec $(printf %q "$scope") --user --scope --quiet -p MemoryMax=$(printf %q "$memory_max") -p MemorySwapMax=0 -- env -i "\${vars[@]}" mise x $(printf %q "$pin") -- $(printf %q "$omp") -p "\$(cat $(printf %q "$R/prompt.txt"))"$extra$system --session-dir $(printf %q "$R/sessions") >$(printf %q "$R/out.txt") 2>&1
+exec $(printf %q "$scope") --user --scope --quiet -p MemoryMax=$(printf %q "$memory_max") -p MemorySwapMax=0 -- $(printf %q "$bwrap") $(printf '%q ' "${view[@]}")-- env -i "\${vars[@]}" mise x $(printf %q "$pin") -- $(printf %q "$omp") -p "\$(cat $(printf %q "$R/prompt.txt"))"$extra$system --session-dir $(printf %q "$R/sessions") >$(printf %q "$R/out.txt") 2>&1
 EOF
   chmod +x "$R/launch.sh"
   : >"$R/out.txt"
@@ -763,7 +798,7 @@ cmd_live_read() {
   standins
   # No Dispatch, and an Envoy address nothing listens on: the session reads files and nothing else.
   echo "ENVOY_URL=http://127.0.0.1:1" >>"$R/pane.env"
-  launch "live-read-${P##*/}"
+  launch
   bun "$here/score.ts" live-read "$R" "$co/skills" "$R/home/.omp/profiles/$profile/logs"
 }
 
@@ -849,8 +884,8 @@ services_down() {
 }
 
 # own_dispatch SEED gives the run a Dispatch of its own and seeds it with `seed.ts SEED`, the world
-# the scenario needs (project, or brainstorm): a database named after the run in the batch's
-# Postgres, and a Dispatch server on it, which stop_run stops. It records the container, the
+# the scenario needs (project, or brainstorm): a database named after the run's directory in the
+# batch's Postgres, and a Dispatch server on it, which stop_run stops. It records the container, the
 # database and the server in $R/dispatch.json, which score.ts reads, and sets dispatch_port.
 own_dispatch() {
   local seed=$1 database=run_${R##*/} pg_port postgres
@@ -900,13 +935,13 @@ seed_dispatch() {
   message=$(jq -r '.message // empty' "$R/fixture.json")
 }
 
-# dispatch_session NAME [CAPTURE [VAR=VALUE...]] runs $R/prompt.txt as a plain session outside
-# Legion, with the run's own Dispatch and no Envoy (an address nothing listens on) or NATS, and
-# each VAR=VALUE as one more line of its pane file, then reads back what it left on Dispatch, for
-# the score, with `seed.ts CAPTURE` (default `capture`).
+# dispatch_session [CAPTURE [VAR=VALUE...]] runs $R/prompt.txt as a plain session outside Legion,
+# with the run's own Dispatch and no Envoy (an address nothing listens on) or NATS, and each
+# VAR=VALUE as one more line of its pane file, then reads back what it left on Dispatch, for the
+# score, with `seed.ts CAPTURE` (default `capture`).
 dispatch_session() {
-  local name=$1 capture=${2:-capture}
-  shift $(($# < 2 ? $# : 2))
+  local capture=${1:-capture}
+  shift $(($# < 1 ? $# : 1))
   base_env
   standins
   {
@@ -915,25 +950,25 @@ dispatch_session() {
     echo "ENVOY_URL=http://127.0.0.1:1"
   } >>"$R/pane.env"
   [ $# = 0 ] || printf '%s\n' "$@" >>"$R/pane.env"
-  launch "$name"
+  launch
   (cd "$root/packages/dispatch" && DISPATCH_E2E_PORT=$dispatch_port bun "$here/seed.ts" "$capture" "$R/fixture.json" "$R") \
     >>"$R/fixture.log" 2>&1 || fail "the capture failed; see $R/fixture.log"
 }
 
 run_ask_on_message() {
-  local name=$1 issue message
+  local issue message
   own_dispatch project
   seed_dispatch ask-on-message
   printf 'On Dispatch issue %s, the Dispatch owner session posted its plan for the rest of the work in this message: dispatch://%s/message/%s. Open an ask on %s asking Sami whether to go ahead with that plan. Do nothing else.\n' \
     "$issue" "$issue" "$message" "$issue" >"$R/prompt.txt"
-  dispatch_session "$name"
+  dispatch_session
 }
 
 # The export the owner's message names, in the agent's working directory: 430 stranded issues, of
 # which only every 23rd (18) has the owner option A needs. Its example.invalid addresses give an
 # agent a second reason to drop A; measureBeforeAsk says how the first runs split on it.
 run_measure_before_ask() {
-  local name=$1 issue message
+  local issue message
   own_dispatch project
   seed_dispatch measure-before-ask
   awk 'BEGIN { print "key,title,component,owner"
@@ -941,7 +976,7 @@ run_measure_before_ask() {
     >"$R/cwd/stranded.csv"
   printf 'On Dispatch issue %s, the Dispatch owner session posted three ways to finish its work in this message: dispatch://%s/message/%s. The export it names, stranded.csv, is in your working directory. Open an ask on %s asking Sami which way to go. Change nothing else.\n' \
     "$issue" "$issue" "$message" "$issue" >"$R/prompt.txt"
-  dispatch_session "$name"
+  dispatch_session
 }
 
 # The person's words are one comment on the run's own issue, and AskGate reviews each Dispatch
@@ -962,9 +997,8 @@ run_measure_before_ask() {
 # SKILL_SCENARIOS_ASKGATE_MODE is the pane's OMP_ASKGATE and <run>/mode.txt; unset, the pane gets
 # no OMP_ASKGATE, so AskGate's verdicts block and its marker checks warn.
 run_askgate() {
-  local name=$1 askCase=${SKILL_SCENARIOS_ASKGATE_CASE:-} mode=${SKILL_SCENARIOS_ASKGATE_MODE:-} issue message ref ask billing one
+  local askCase=${SKILL_SCENARIOS_ASKGATE_CASE:-} mode=${SKILL_SCENARIOS_ASKGATE_MODE:-} issue message ref ask billing one
   case $mode in '' | warn | block) ;; *) fail "SKILL_SCENARIOS_ASKGATE_MODE is '$mode', not warn or block" ;; esac
-  printf '%s\n' "$askCase" >"$R/case.txt"
   [ -z "$mode" ] || printf '%s\n' "$mode" >"$R/mode.txt"
   own_dispatch project
   seed_dispatch askgate
@@ -987,7 +1021,7 @@ run_askgate() {
   tried) printf 'First run %s yourself. It will fail. Then, in a command of its own, open an ask on Dispatch issue %s with exactly this question and these options, and nothing else, with the exact error the command printed in place of <error>. %s Question: "I ran %s and it failed with <error>. Can you run it with your access and paste its output here? Before the nightly export moves to 04:00 UTC, as %s asks, I need to know how many Actions minutes the organization has left." Options: "Done", "Cannot run it".\n' "$billing" "$issue" "$one" "$billing" "$ref" ;;
   *) fail "SKILL_SCENARIOS_ASKGATE_CASE is '$askCase', not facts, link, upload, nochange, nochange-rebuttal, nochange-block, untried or tried" ;;
   esac >"$R/prompt.txt"
-  dispatch_session "$name" capture-askgate ${mode:+"OMP_ASKGATE=$mode"}
+  dispatch_session capture-askgate ${mode:+"OMP_ASKGATE=$mode"}
 }
 
 # A tiny to-do CLI in a scratch git repository with no Dispatch configuration and no word of due
@@ -996,7 +1030,6 @@ run_askgate() {
 # `seed.ts capture-brainstorm` reads back the issue this run's own transcript created, for
 # brainstormSurface.
 run_brainstorm() {
-  local name=$1
   own_dispatch brainstorm
   cat >"$R/cwd/todo.py" <<'PYEOF'
 """A tiny command-line to-do list that keeps its tasks in tasks.json next to this file."""
@@ -1063,7 +1096,7 @@ MDEOF
   # shellcheck disable=SC2016 # the backticks are the prompt's own, a command name for the agent
   printf '/brainstorming a small feature: let a task in this to-do CLI carry an optional due date, and have `list` show overdue tasks first.\n' \
     >"$R/prompt.txt"
-  dispatch_session "$name" capture-brainstorm
+  dispatch_session capture-brainstorm
 }
 
 # seed_ts MODE ARG... runs `seed.ts MODE ARG...` against the run's own Dispatch (own_dispatch), and
@@ -1082,11 +1115,11 @@ judge_ts() {
     fail "judge.ts $1 failed; see $R/judge.log"
 }
 
-# next_run SCENARIO LABEL prints one above the highest <n> of a run directory
-# $work/runs/<SCENARIO>-<LABEL>-<n>, or 1 when there is none.
+# next_run SCENARIO LABEL prints one above the highest <n> of a run the map names
+# $maps/runs/<SCENARIO>-<LABEL>-<n>, or 1 when there is none.
 next_run() {
   local dir n highest=0
-  for dir in "$work/runs/$1-$2-"*; do
+  for dir in "$maps/runs/$1-$2-"*; do
     [ -d "$dir" ] || continue
     n=${dir##*/"$1-$2-"}
     [[ $n =~ ^[0-9]+$ ]] || continue
@@ -1111,10 +1144,11 @@ source_dir() {
   printf '%s\n' "$dir"
 }
 
-# require_superpowers SCENARIO fails unless the label (P) was built with SKILL_SCENARIOS_SUPERPOWERS.
+# require_superpowers SCENARIO LABEL fails unless LABEL's profile (P) was built with
+# SKILL_SCENARIOS_SUPERPOWERS.
 require_superpowers() {
   [ -f "$P/superpowers" ] ||
-    fail "$1 needs a label built with SKILL_SCENARIOS_SUPERPOWERS (the superpowers plugin's directory): remove $P and run \`rig.sh profile ${P##*/} <checkout>\` again with it set"
+    fail "$1 needs a label built with SKILL_SCENARIOS_SUPERPOWERS (the superpowers plugin's directory): remove $P and run \`rig.sh profile $2 <checkout>\` again with it set"
 }
 
 # spec_turns NAME ISSUE PROMPT runs a spec run's conversation (the header's "A spec run"): the turn
@@ -1129,7 +1163,7 @@ spec_turns() {
   : >"$R/turns.txt"
   while :; do
     turn=$((turn + 1))
-    if [ "$turn" = 1 ]; then launch "$name"; else launch "$name" --continue; fi
+    if [ "$turn" = 1 ]; then launch; else launch --continue; fi
     cp "$R/out.txt" "$R/out-$turn.txt"
     last=$(tail -n 1 "$R/out.txt")
     printf '%s %s %s\n' "$turn" "$kind" "$last" >>"$R/turns.txt"
@@ -1154,14 +1188,14 @@ spec_turns() {
   note "$name: $turn turns, the last $last"
 }
 
-# run_spec SCENARIO NAME: a spec-writing or spec-rewrite run on the source SKILL_SCENARIOS_SOURCE
-# names. The source goes to $R/source/ and its name to $R/source.txt. seed.ts seeds the run's issue
-# from it, spec_turns runs the conversation, and `seed.ts capture-spec` reads back what the run
-# wrote. The prompts name no skill.
+# run_spec SCENARIO NAME LABEL: a spec-writing or spec-rewrite run on the source
+# SKILL_SCENARIOS_SOURCE names. The source goes to $R/source/ and its name to $R/source.txt. seed.ts
+# seeds the run's issue from it, spec_turns runs the conversation, and `seed.ts capture-spec` reads
+# back what the run wrote. The prompts name no skill.
 run_spec() {
-  local scenario=$1 name=$2 source issue prompt
+  local scenario=$1 name=$2 label=$3 source issue prompt
   source=$(source_dir "$scenario" "${SKILL_SCENARIOS_SOURCE:-}") || exit 1
-  require_superpowers "$scenario"
+  require_superpowers "$scenario" "$label"
   cp -R "$source" "$R/source"
   printf '%s\n' "${source##*/}" >"$R/source.txt"
   own_dispatch project
@@ -1531,18 +1565,19 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
     '{key:$key, repo:$repo, pr:$pr, branch:("legion/" + $key), head:$head}' >"$R/world.json"
 }
 
-# legion_session NAME N ROLE [PHASE] runs $R/prompt.txt as the Legion worker ROLE of the run's
-# issue (worker_key), in the pane the label checkout's daemon would give it, against a daemon
-# stand-in. PHASE is the issue's phase for a role that works none (the architect, whose stand-in
-# state document carries it); a phase worker's is the one its role works.
+# legion_session ROLE [PHASE] runs $R/prompt.txt as the Legion worker ROLE of the run's issue
+# (worker_key), in the pane the label checkout's daemon would give it, against a daemon stand-in.
+# PHASE is the issue's phase for a role that works none (the architect, whose stand-in state
+# document carries it); a phase worker's is the one its role works.
 legion_session() {
-  local name=$1 n=$2 role=$3 phase=${4:-} state project port
+  local role=$1 phase=${2:-} state project port
   state=$R/state
   # Each run its own Legion project, so concurrent runs claim distinct role tokens on one listener.
-  # A project token is lower-case letters and digits only (isLegionProjectToken), so the label's
-  # hyphens go and `r` separates it from the run number.
-  project=skills${P##*/}r$n
-  project=${project//-/}
+  # A project token is lower-case letters and digits only (isLegionProjectToken); this one is the
+  # run directory's own random name, cut to 12 digits: the token is in the agent's environment, its
+  # role topics and its state paths, so it names neither the label nor the run's number.
+  project=p${R##*/}
+  project=${project:0:13}
   mkdir -p "$state/gh" "$state/secrets"
   chmod 0700 "$state/secrets"
   (umask 077 && openssl rand -hex 16 >"$state/secrets/boot")
@@ -1567,11 +1602,11 @@ legion_session() {
     echo "JJ_CONFIG=$R/jj.toml"
     echo "GH_REPO=$worker_repo"
   } >"$R/pane.env"
-  launch "$name"
+  launch
 }
 
 run_tester_proof() {
-  local name=$1 n=$2 index=$3 start=$4 pr head version
+  local index=$1 start=$2 pr head version
   # The run's own Dispatch, and its own issue on it, whose newest implement record the tester
   # reads and whose newest test record it writes.
   own_dispatch project
@@ -1586,7 +1621,7 @@ run_tester_proof() {
   # record in (packages/daemon/internal/workflow/effects.go).
   printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s. Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). Test it and finish your phase.\n' \
     "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$version" "$worker_key" "$version" >"$R/prompt.txt"
-  legion_session "$name" "$n" tester
+  legion_session tester
   # What the run left on its issue: every handoff record, each with its body, for testerProof.
   seed_ts capture-handoffs "$R/fixture.json" "$R"
 }
@@ -1771,27 +1806,25 @@ reviewer_prompt() {
 }
 
 # reviewer-own-head: a reviewer reviews #702 of an issue whose #703 is open too, with the case's
-# results recorded at the two heads (seed.ts heads-events). It writes the case to $R/case.txt.
-# Scored by headsReview.
+# results recorded at the two heads (seed.ts heads-events). Scored by headsReview.
 run_reviewer_own_head() {
-  local name=$1 n=$2 index=$3 start=$4 scenario_case=$5
-  printf '%s\n' "$scenario_case" >"$R/case.txt"
+  local index=$1 start=$2 scenario_case=$3
   heads_world reviewer-own-head "$index" "$start" "$scenario_case"
   [ ! -e "$R/fixture-only" ] || return 0
   heads_routes reviewer-own-head "$scenario_case"
   reviewer_prompt
-  legion_session "$name" "$n" reviewer
+  legion_session reviewer
 }
 
 # reviewer-pass-and-fail: a reviewer reviews #702, at whose head the tester recorded a pass, its
 # test record, and then a fail. Scored by headsReview.
 run_reviewer_pass_and_fail() {
-  local name=$1 n=$2 index=$3 start=$4
+  local index=$1 start=$2
   heads_world reviewer-pass-and-fail "$index" "$start"
   [ ! -e "$R/fixture-only" ] || return 0
   heads_routes reviewer-pass-and-fail
   reviewer_prompt
-  legion_session "$name" "$n" reviewer
+  legion_session reviewer
 }
 
 # architect-pass-and-fail: the tree's root architect, in a session of the daemon's catch-up of a tree
@@ -1800,21 +1833,21 @@ run_reviewer_pass_and_fail() {
 # a pass, its test record and then a fail, and the reviewer its review record. Its stand-in daemon
 # serves its sign_off and request_backward_move. Scored by headsArchitect.
 run_architect_pass_and_fail() {
-  local name=$1 n=$2 index=$3 start=$4 version
+  local index=$1 start=$2 version
   heads_world architect-pass-and-fail "$index" "$start"
   [ ! -e "$R/fixture-only" ] || return 0
   heads_routes architect-pass-and-fail
   version=$(jq -r .review.version "$R/fixture.json")
   printf 'the tree of %s at generation 1 as the daemon records it now; start or resume it as your role says; in accepting, waiting for your acceptance, which no worker gives: %s (read the evidence, then sign_off or request_backward_move). Handoff: review version %s (dispatch handoff-read --issue %s --phase review --version %s). Pull request: #702.\n' \
     "$worker_key" "$worker_key" "$version" "$worker_key" "$version" >"$R/prompt.txt"
-  legion_session "$name" "$n" architect accepting
+  legion_session architect accepting
 }
 
 cmd_run() {
   local usage="usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail> <label> <n> <index> <start> [<case>]"
   [ $# = 5 ] || { [ $# = 6 ] && [ "$1" = reviewer-own-head ]; } || fail "$usage"
-  local scenario=$1 n=$3 index=$4 start=$5 scenario_case=${6:-} name
-  load_label "$2"
+  local scenario=$1 label=$2 n=$3 index=$4 start=$5 scenario_case=${6:-} name old
+  load_label "$label"
   [[ $n =~ ^[0-9]+$ ]] || fail "run number '$n' is not a number"
   [[ $index =~ ^[0-9]+$ && $start =~ ^[0-9]+$ ]] || fail "run index '$index' or batch start '$start' is not a number"
   [ -f "$services_env" ] || fail "a run needs its batch's services: run \`rig.sh batch $scenario 1 $2\`"
@@ -1823,37 +1856,45 @@ cmd_run() {
   if [ "$scenario" = askgate ]; then
     case ${SKILL_SCENARIOS_ASKGATE_CASE:-} in
     facts | link | upload | nochange | nochange-rebuttal | nochange-block | untried | tried)
-      name=$scenario-$SKILL_SCENARIOS_ASKGATE_CASE-${P##*/}-$n
+      name=$scenario-$SKILL_SCENARIOS_ASKGATE_CASE-$label-$n
       ;;
     *) fail "SKILL_SCENARIOS_ASKGATE_CASE is '${SKILL_SCENARIOS_ASKGATE_CASE:-}', not facts, link, upload, nochange, nochange-rebuttal, nochange-block, untried or tried" ;;
     esac
   elif [ "$scenario" = reviewer-own-head ]; then
     case $scenario_case in
-    sibling-fails | ci-only | no-implementer | no-tester) name=$scenario-$scenario_case-${P##*/}-$n ;;
+    sibling-fails | ci-only | no-implementer | no-tester) name=$scenario-$scenario_case-$label-$n ;;
     *) fail "the reviewer-own-head case '$scenario_case' is not sibling-fails, ci-only, no-implementer or no-tester" ;;
     esac
   else
-    name=$scenario-${P##*/}-$n
+    name=$scenario-$label-$n
   fi
-  R=$work/runs/$name
+  # The run's directory has a random name and the map's link names the run (the header's map), so
+  # no path its agent sees names its scenario, case or label. A run of the name replaces the earlier
+  # one: its directory and its link.
+  if [ -L "$maps/runs/$name" ]; then
+    old=$(readlink -f -- "$maps/runs/$name")
+    [ "${old%/*}" != "$work/runs" ] || rm -rf -- "$old"
+    rm -f -- "$maps/runs/$name"
+  fi
+  R=$work/runs/$(openssl rand -hex 8)
   evidence=$R
   on_exit stop_run
-  rm -rf "$R"
-  mkdir -p "$R/bin" "$R/sessions" "$R/cwd" "$R/logs"
-  cp "$P/built-from" "$R/built-from"
+  mkdir -p "$R/bin" "$R/sessions" "$R/cwd" "$R/logs" "$maps/runs" "$maps/built-from"
+  ln -s -- "../../runs/${R##*/}" "$maps/runs/$name"
+  cp "$P/built-from" "$maps/built-from/$name"
   case $scenario in
-  ask-on-message) run_ask_on_message "$name" ;;
-  measure-before-ask) run_measure_before_ask "$name" ;;
-  tester-proof) run_tester_proof "$name" "$n" "$index" "$start" ;;
-  brainstorm) run_brainstorm "$name" ;;
-  askgate) run_askgate "$name" ;;
-  spec-writing | spec-rewrite) run_spec "$scenario" "$name" ;;
-  reviewer-own-head) run_reviewer_own_head "$name" "$n" "$index" "$start" "$scenario_case" ;;
-  reviewer-pass-and-fail) run_reviewer_pass_and_fail "$name" "$n" "$index" "$start" ;;
-  architect-pass-and-fail) run_architect_pass_and_fail "$name" "$n" "$index" "$start" ;;
+  ask-on-message) run_ask_on_message ;;
+  measure-before-ask) run_measure_before_ask ;;
+  tester-proof) run_tester_proof "$index" "$start" ;;
+  brainstorm) run_brainstorm ;;
+  askgate) run_askgate ;;
+  spec-writing | spec-rewrite) run_spec "$scenario" "$name" "$label" ;;
+  reviewer-own-head) run_reviewer_own_head "$index" "$start" "$scenario_case" ;;
+  reviewer-pass-and-fail) run_reviewer_pass_and_fail "$index" "$start" ;;
+  architect-pass-and-fail) run_architect_pass_and_fail "$index" "$start" ;;
   *) fail "unknown scenario $scenario" ;;
   esac
-  if [ -e "$R/fixture-only" ]; then echo "$name: fixture only"; else echo "$name: $(tail -n 1 "$R/out.txt")"; fi
+  if [ -e "$R/fixture-only" ]; then echo "$name (${R##*/}): fixture only"; else echo "$name (${R##*/}): $(tail -n 1 "$R/out.txt")"; fi
 }
 
 # A batch's exit: its runs (each run's shell, daemon stand-in and fixture commands), the agents they
@@ -1862,8 +1903,10 @@ cmd_run() {
 stop_batch() {
   local s sessions=()
   stop_tree "${runs_pid:-}"
+  # The batch holds the work directory's lock, so each run session on its tmux server, named after
+  # a run directory, is one of its own.
   for s in $(tmux list-sessions -F '#{session_name}' 2>/dev/null || true); do
-    case $s in "$tag-$batch_scenario"-*) sessions+=("$s") ;; esac
+    case $s in "$tag"-*) [ ! -d "$work/runs/${s#"$tag"-}" ] || sessions+=("$s") ;; esac
   done
   for s in "${sessions[@]}"; do stop_panes "$s"; done
   stop_env_processes "$work/runs"
@@ -1901,7 +1944,7 @@ cmd_batch() {
   local first=1
   case $batch_scenario in spec-writing | spec-rewrite)
     source_dir "$batch_scenario" "${SKILL_SCENARIOS_SOURCE:-}" >/dev/null
-    require_superpowers "$batch_scenario"
+    require_superpowers "$batch_scenario" "$1"
     first=$(next_run "$batch_scenario" "$1")
     ;;
   esac
@@ -1936,7 +1979,7 @@ profile) shift && cmd_profile "$@" ;;
 live-read) shift && cmd_live_read "$@" ;;
 batch) shift && cmd_batch "$@" ;;
 run) shift && cmd_run "$@" ;;
-score) shift && bun "$here/score.ts" runs "$work/runs" "$@" ;;
+score) shift && bun "$here/score.ts" runs "$maps/runs" "$@" ;;
 judge) shift && cmd_judge "$@" ;;
 judge-omp) shift && cmd_judge_omp "$@" ;;
 *) sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//' && exit 2 ;;

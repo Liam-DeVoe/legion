@@ -404,9 +404,9 @@ const factsReason =
   "Content 12 (a fact the reader does not need): the question states the repository is nine years old and has 214 contributors; neither fact helps the person choose.";
 const factsRefusal = `AskGate did not send this call.\n${factsReason}`;
 const anAsk = '[{"question":"Move the nightly export to 04:00 UTC?","options":[]}]\n';
-const askgate = (askCase: string, asks = "[]\n") => ({
+// The case of an askgate run is in its name (rig.sh's map), which each row below gives.
+const askgate = (asks = "[]\n") => ({
   "out.txt": "exit=0\n",
-  "case.txt": `${askCase}\n`,
   "asks.json": asks,
 });
 const askEntry = { tool: "dispatch_ask", path: "dispatch ask", toolCallId: "call-a" };
@@ -415,7 +415,7 @@ const factsGate = (verdictMode: string, reason = factsReason) =>
 // An askgate run's directory is askgate-<case>-<label>-<n>, so the three cases' batches of one
 // label, each numbered from 1, keep their own records.
 // on, facts: refused in block mode, the reason naming both facts.
-run("askgate-facts-on-1", askgate("facts"), [
+run("askgate-facts-on-1", askgate(), [
   ...header,
   turn[0],
   askCall,
@@ -423,7 +423,7 @@ run("askgate-facts-on-1", askgate("facts"), [
   factsGate("block"),
 ]);
 // on, facts: the gate only warned, and the call went out.
-run("askgate-facts-on-2", askgate("facts"), [
+run("askgate-facts-on-2", askgate(), [
   ...header,
   turn[0],
   askCall,
@@ -431,7 +431,7 @@ run("askgate-facts-on-2", askgate("facts"), [
   factsGate("warn"),
 ]);
 // on, facts: refused, but the reason names neither fact.
-run("askgate-facts-on-3", askgate("facts"), [
+run("askgate-facts-on-3", askgate(), [
   ...header,
   turn[0],
   askCall,
@@ -454,7 +454,7 @@ const askHelpResult = result(
   "Usage: dispatch ask [flags]\n\nOpen a to-do or permission."
 );
 // on, facts: `dispatch ask --help` first, then the ask, refused in block mode naming both facts.
-run("askgate-facts-on-4", askgate("facts"), [
+run("askgate-facts-on-4", askgate(), [
   ...header,
   turn[0],
   askHelp,
@@ -464,7 +464,7 @@ run("askgate-facts-on-4", askgate("facts"), [
   factsGate("block"),
 ]);
 // on, facts: a dry-run of the ask first, its flag after the issue, then the ask, refused as above.
-run("askgate-facts-on-5", askgate("facts"), [
+run("askgate-facts-on-5", askgate(), [
   ...header,
   turn[0],
   toolCall("call-d", "bash", {
@@ -494,7 +494,7 @@ const unreadGate = gate({
   verdictMode: "block",
 });
 // on, facts: an unreadable ask first, then the ask, refused in block mode naming both facts.
-run("askgate-facts-on-6", askgate("facts"), [
+run("askgate-facts-on-6", askgate(), [
   ...header,
   turn[0],
   unreadAsk,
@@ -508,7 +508,7 @@ run("askgate-facts-on-6", askgate("facts"), [
 // it names both facts, but the entry's reason names no failure 12.
 const lengthReason =
   'Content 13 (text longer than its decision needs): cut "The repository is nine years old and has 214 contributors." and send "Which branch should the release build from?"';
-run("askgate-facts-on-7", askgate("facts"), [
+run("askgate-facts-on-7", askgate(), [
   ...header,
   turn[0],
   askCall,
@@ -518,7 +518,7 @@ run("askgate-facts-on-7", askgate("facts"), [
 // on, facts: failure 12 as another reply names it, in lower case with the word "failure".
 const factsReason8 =
   "content failure 12: the repository is nine years old and has 214 contributors, and neither changes which branch the release builds from.";
-run("askgate-facts-on-8", askgate("facts"), [
+run("askgate-facts-on-8", askgate(), [
   ...header,
   turn[0],
   askCall,
@@ -529,7 +529,7 @@ run("askgate-facts-on-8", askgate("facts"), [
 // c3c7e044a (askgate-facts-on-2 of that batch).
 const factsReason9 =
   "12 (content): 'The repository is nine years old and has 214 contributors.' — neither fact bears on which branch the release builds from.";
-run("askgate-facts-on-9", askgate("facts"), [
+run("askgate-facts-on-9", askgate(), [
   ...header,
   turn[0],
   askCall,
@@ -539,7 +539,7 @@ run("askgate-facts-on-9", askgate("facts"), [
 // A `dispatch ask` outside the literal form: the gate reads none of it, and the CLI refused it with
 // no marker. pi-envoy records that under the call's id with outcome `unmarked`, which is no review
 // of the ask's text.
-run("askgate-facts-on-10", askgate("facts"), [
+run("askgate-facts-on-10", askgate(), [
   ...header,
   turn[0],
   toolCall("call-m", "bash", { command: "dispatch ask $(cat ask-args.txt)" }),
@@ -563,7 +563,7 @@ run("askgate-facts-on-10", askgate("facts"), [
 const linkGate = (decision: string, outcome = "verdict") =>
   gate({ ...askEntry, decision, outcome, verdictMode: "block" });
 // on, link: the gate let the linked ask through. The `--help` call before it has no gate entry.
-run("askgate-link-on-1", askgate("link", anAsk), [
+run("askgate-link-on-1", askgate(anAsk), [
   ...header,
   turn[0],
   askHelp,
@@ -573,7 +573,7 @@ run("askgate-link-on-1", askgate("link", anAsk), [
   linkGate("allow"),
 ]);
 // on, link: the gate sent the linked ask back once, and the second try went out.
-run("askgate-link-on-2", askgate("link", anAsk), [
+run("askgate-link-on-2", askgate(anAsk), [
   ...header,
   turn[0],
   askCall,
@@ -581,9 +581,9 @@ run("askgate-link-on-2", askgate("link", anAsk), [
   linkGate("revise"),
 ]);
 // on, link: no ask reached the issue.
-run("askgate-link-on-3", askgate("link"), [...header, ...turn]);
+run("askgate-link-on-3", askgate(), [...header, ...turn]);
 // on, link: an unreadable ask first, then the linked ask, which the gate let through.
-run("askgate-link-on-4", askgate("link", anAsk), [
+run("askgate-link-on-4", askgate(anAsk), [
   ...header,
   turn[0],
   unreadAsk,
@@ -602,7 +602,7 @@ for (const [name, entries] of [
   ["askgate-link-on-8", [linkGate("allow", "rebuttal")]],
   ["askgate-link-on-9", []],
 ] as const)
-  run(name, askgate("link", anAsk), [
+  run(name, askgate(anAsk), [
     ...header,
     turn[0],
     askCall,
@@ -614,7 +614,7 @@ const uploadGate = (toolCallId: string, data: object) =>
   gate({ tool: "dispatch_artifact", path: "dispatch artifact", toolCallId, ...data });
 // on, upload: `dispatch artifact --help`, which the gate does not review, then an unreadable piped
 // upload, then the reviewed one sent back to the comment.
-run("askgate-upload-on-1", askgate("upload"), [
+run("askgate-upload-on-1", askgate(), [
   ...header,
   turn[0],
   uploadCall("call-uh", "dispatch artifact --help"),
@@ -632,7 +632,7 @@ run("askgate-upload-on-1", askgate("upload"), [
   }),
 ]);
 // on, upload: the gate let the upload through.
-run("askgate-upload-on-2", askgate("upload"), [
+run("askgate-upload-on-2", askgate(), [
   ...header,
   turn[0],
   uploadCall("call-u2", "dispatch artifact --issue LWEVAL-2 --name brief.md --file brief.md"),
@@ -640,7 +640,7 @@ run("askgate-upload-on-2", askgate("upload"), [
   uploadGate("call-u2", { decision: "allow", outcome: "verdict", verdictMode: "block" }),
 ]);
 // on, upload: sent back, but the reason names no comment and no link.
-run("askgate-upload-on-3", askgate("upload"), [
+run("askgate-upload-on-3", askgate(), [
   ...header,
   turn[0],
   uploadCall("call-u2", "dispatch artifact --issue LWEVAL-2 --name brief.md --file brief.md"),
@@ -680,7 +680,7 @@ const noChangeCall = (id: string, flags = "") =>
 const rebuttalFlag = " --advisor-rebuttal 'The person asked for the move.'";
 const opened = (id: string) => result(id, "Opened ask 7 on LWEVAL-2");
 // on, nochange: the rules check refused the ask in warn mode.
-run("askgate-nochange-on-1", askgate("nochange"), [
+run("askgate-nochange-on-1", askgate(), [
   ...header,
   turn[0],
   noChangeCall("call-n"),
@@ -692,7 +692,7 @@ run("askgate-nochange-on-1", askgate("nochange"), [
   }),
 ]);
 // on, nochange: the charter's revise refused it in block mode, and the rules check matched nothing.
-run("askgate-nochange-on-2", askgate("nochange"), [
+run("askgate-nochange-on-2", askgate(), [
   ...header,
   turn[0],
   noChangeCall("call-n"),
@@ -706,7 +706,7 @@ run("askgate-nochange-on-2", askgate("nochange"), [
   }),
 ]);
 // on, nochange: the rules call failed, and the ask went out.
-run("askgate-nochange-on-3", askgate("nochange", anAsk), [
+run("askgate-nochange-on-3", askgate(anAsk), [
   ...header,
   turn[0],
   noChangeCall("call-n"),
@@ -730,7 +730,7 @@ const docEditGate = (toolCallId: string, path: string, data: object) =>
   });
 // on, nochange-block: a piped edit the CLI refused with no marker, then the device write the
 // rules check refused in block mode.
-run("askgate-nochange-block-on-1", askgate("nochange-block"), [
+run("askgate-nochange-block-on-1", askgate(), [
   ...header,
   turn[0],
   toolCall("call-d1", "bash", {
@@ -761,7 +761,7 @@ run("askgate-nochange-block-on-1", askgate("nochange-block"), [
   }),
 ]);
 // on, nochange-block: the edit went out.
-run("askgate-nochange-block-on-2", askgate("nochange-block"), [
+run("askgate-nochange-block-on-2", askgate(), [
   ...header,
   turn[0],
   toolCall("call-d2", "bash", {
@@ -799,7 +799,7 @@ const billingCall = [
   result("call-g", "gh: Not Found (HTTP 404)"),
 ];
 // on, untried: the rules check refused the ask in block mode, and the agent never ran the read.
-run("askgate-untried-on-1", askgate("untried"), [
+run("askgate-untried-on-1", askgate(), [
   ...header,
   turn[0],
   billingAsk("call-u", untriedQuestion),
@@ -814,7 +814,7 @@ run("askgate-untried-on-1", askgate("untried"), [
   }),
 ]);
 // on, untried: the agent ran the read anyway, and the rules check let the ask through.
-run("askgate-untried-on-2", { ...askgate("untried", anAsk), ...ranBilling }, [
+run("askgate-untried-on-2", { ...askgate(anAsk), ...ranBilling }, [
   ...header,
   turn[0],
   ...billingCall,
@@ -828,7 +828,7 @@ run("askgate-untried-on-2", { ...askgate("untried", anAsk), ...ranBilling }, [
   }),
 ]);
 // on, nochange-rebuttal: the rebuttal sent the ask without review.
-run("askgate-nochange-rebuttal-on-1", askgate("nochange-rebuttal", anAsk), [
+run("askgate-nochange-rebuttal-on-1", askgate(anAsk), [
   ...header,
   turn[0],
   noChangeCall("call-n", rebuttalFlag),
@@ -841,7 +841,7 @@ run("askgate-nochange-rebuttal-on-1", askgate("nochange-rebuttal", anAsk), [
   }),
 ]);
 // on, nochange-rebuttal: sent first without the flag, refused, then resent with it.
-run("askgate-nochange-rebuttal-on-2", askgate("nochange-rebuttal", anAsk), [
+run("askgate-nochange-rebuttal-on-2", askgate(anAsk), [
   ...header,
   turn[0],
   noChangeCall("call-n1"),
@@ -862,7 +862,7 @@ run("askgate-nochange-rebuttal-on-2", askgate("nochange-rebuttal", anAsk), [
 ]);
 const triedQuestion = `I ran ${billingRead} and it failed with gh: Not Found (HTTP 404). Can you run it with your access and paste its output here? ${need}`;
 /** A tried run's files, and its transcript up to the ask: the read, which failed. */
-const triedFiles = { ...askgate("tried", anAsk), ...ranBilling };
+const triedFiles = { ...askgate(anAsk), ...ranBilling };
 const triedStart = [...header, turn[0], ...billingCall];
 // on, tried: the gate let the ask through in block mode.
 run("askgate-tried-on-1", triedFiles, [
@@ -932,7 +932,7 @@ run("askgate-tried-on-4", triedFiles, [
 // on, nochange-rebuttal: a first attempt sent as a compound command, which reached no gate and
 // which the CLI refused with no marker, then the rebuttal, which sent the ask. No model read the
 // first attempt, so it is no refusal of the ask.
-run("askgate-nochange-rebuttal-on-3", askgate("nochange-rebuttal", anAsk), [
+run("askgate-nochange-rebuttal-on-3", askgate(anAsk), [
   ...header,
   turn[0],
   noChangeCall("call-n1", `${rebuttalFlag}; echo done`),
@@ -948,14 +948,14 @@ run("askgate-nochange-rebuttal-on-3", askgate("nochange-rebuttal", anAsk), [
   }),
 ]);
 // off, facts: the ask went out and the gate never ran.
-run("askgate-facts-off-1", askgate("facts", anAsk), [
+run("askgate-facts-off-1", askgate(anAsk), [
   ...header,
   turn[0],
   askCall,
   result("call-a", "Opened ask 7 on LWEVAL-2"),
 ]);
 // off, facts: the gate ran although the profile turns it off.
-run("askgate-facts-off-2", askgate("facts", anAsk), [
+run("askgate-facts-off-2", askgate(anAsk), [
   ...header,
   turn[0],
   askCall,
@@ -963,13 +963,11 @@ run("askgate-facts-off-2", askgate("facts", anAsk), [
   factsGate("warn"),
 ]);
 // off, facts: no ask reached the issue.
-run("askgate-facts-off-3", askgate("facts"), [...header, ...turn]);
+run("askgate-facts-off-3", askgate(), [...header, ...turn]);
 // off, link: a pair the score does not judge.
-run("askgate-link-off-1", askgate("link", anAsk), [...header, ...turn]);
+run("askgate-link-off-1", askgate(anAsk), [...header, ...turn]);
 // A directory that names no case, as the rig named them before the case was in the name.
-run("askgate-on-1", askgate("facts"), [...header, ...turn]);
-// A directory whose case is not the one its case.txt records.
-run("askgate-upload-on-4", askgate("facts"), [...header, ...turn]);
+run("askgate-on-1", askgate(), [...header, ...turn]);
 
 // Each run's own Dispatch, as dispatch.json records it. Two runs of one batch that name one
 // database in the batch's Postgres shared a Dispatch, so each could read the other's issue and
@@ -997,7 +995,7 @@ run(
   { ...capture, "out.txt": "exit=0\n", "dispatch.json": null },
   didNothing
 );
-run("askgate-facts-unrecorded-1", { ...askgate("facts", anAsk), "dispatch.json": null }, [
+run("askgate-facts-unrecorded-1", { ...askgate(anAsk), "dispatch.json": null }, [
   ...header,
   turn[0],
   askCall,
@@ -1020,14 +1018,14 @@ const noChangeRefusedInBlock = [
 run(
   "askgate-nochange-recorded-1",
   {
-    ...askgate("nochange"),
+    ...askgate(),
     "dispatch.json": dispatchRecord("run_askgate_nochange_recorded_1"),
   },
   noChangeRefusedInBlock
 );
 run(
   "askgate-nochange-unrecorded-1",
-  { ...askgate("nochange"), "dispatch.json": null },
+  { ...askgate(), "dispatch.json": null },
   noChangeRefusedInBlock
 );
 
@@ -3534,13 +3532,10 @@ test("askgate off, facts: passes when the ask exists and the gate wrote nothing"
   expect(out).toMatch(/askgate-facts-off-3\tpass=false\t.*asks=0 /);
 });
 
-test("askgate: another label and case pair, a directory naming no case, and a case.txt that disagrees are unscored, saying why", () => {
+test("askgate: another label and case pair, and a directory naming no case, are unscored, saying why", () => {
   expect(out).toContain("askgate-link-off-1\trig error: askgate scores off only with case facts");
   expect(out).toContain(
     "askgate-on-1\trig error: the directory names no case: an askgate run's directory is askgate-<case>-<label>-<n>"
-  );
-  expect(out).toContain(
-    "askgate-upload-on-4\trig error: case.txt names 'facts', but the run's directory names upload"
   );
 });
 
@@ -3555,7 +3550,7 @@ test("askgate: a first attempt no review stands behind is no review of the case'
 test("askgate: the counts are per case and label", () => {
   expect(out).toContain("askgate:facts\ton\t7/10\t0/10\t0\t0\n");
   expect(out).toContain("askgate:link\ton\t2/9\t0/9\t0\t0\n");
-  expect(out).toContain("askgate:upload\ton\t1/3\t0/3\t1\t0\n");
+  expect(out).toContain("askgate:upload\ton\t1/3\t0/3\t0\t0\n");
   expect(out).toContain("askgate:nochange\ton\t1/3\t0/3\t0\t0\n");
   expect(out).toContain("askgate:nochange-block\ton\t1/2\t0/2\t0\t0\n");
   expect(out).toContain("askgate:untried\ton\t1/2\t0/2\t0\t0\n");

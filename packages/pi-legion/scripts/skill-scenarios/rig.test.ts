@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -288,7 +289,7 @@ describe("a setup that fails after install_model_route", () => {
       ].map(fn),
       "checkout_commit() { printf 'fixture parents=base\\n'; }",
       "install_superpowers() { fail 'the superpowers probe failed'; }",
-      'work=$1; cmd_profile probe "$2"',
+      'work=$1 maps=$1/maps; cmd_profile probe "$2"',
     ].join("\n");
     const failed = bash(script, [work, checkout()], {
       ...routeEnv(),
@@ -296,8 +297,10 @@ describe("a setup that fails after install_model_route", () => {
     });
     expect(failed.code).toBe(1);
     expect(failed.stderr).toContain("the superpowers probe failed");
-    const P = path.join(work, "profiles/probe");
-    expect(existsSync(path.join(P, "home/.omp/profiles/skills-probe/agent/models.yml"))).toBe(true);
+    // The profile's directory has a random name, and the map's link names the label.
+    const P = realpathSync(path.join(work, "maps/profiles/probe"));
+    expect(path.relative(realpathSync(work), P)).toMatch(/^profiles\/[0-9a-f]{16}$/);
+    expect(existsSync(path.join(P, "home/.omp/profiles/skills/agent/models.yml"))).toBe(true);
     expect(existsSync(path.join(P, "model-key"))).toBe(false);
     expect(existsSync(path.join(P, "ready"))).toBe(false);
 
@@ -312,8 +315,9 @@ describe("a setup that fails after install_model_route", () => {
       }
     );
     expect({ code: ok.code, stderr: ok.stderr }).toEqual({ code: 0, stderr: "" });
-    expect(existsSync(path.join(kept, "profiles/probe/model-key/anthropic-key"))).toBe(true);
-    expect(existsSync(path.join(kept, "profiles/probe/ready"))).toBe(true);
+    const keptProfile = realpathSync(path.join(kept, "maps/profiles/probe"));
+    expect(existsSync(path.join(keptProfile, "model-key/anthropic-key"))).toBe(true);
+    expect(existsSync(path.join(keptProfile, "ready"))).toBe(true);
   });
 
   // Catches: a judge-profile build that fails at its second profile and keeps the first one's key
@@ -510,10 +514,11 @@ describe("omp_ancestor", () => {
 });
 
 // A spec-writing or spec-rewrite batch takes one run, numbered one above the highest run of its
-// scenario and label, so a later batch never removes an earlier run (cmd_run starts from rm -rf).
+// scenario and label in the map, so a later batch never replaces an earlier run (cmd_run replaces a
+// run of its name).
 describe("next_run", () => {
   const next = (work: string, scenario: string, label: string) =>
-    bash(`${fn("next_run")}\nwork=$1\nnext_run "$2" "$3"`, [work, scenario, label]);
+    bash(`${fn("next_run")}\nwork=$1 maps=$1/maps\nnext_run "$2" "$3"`, [work, scenario, label]);
 
   // Catches: numbering that starts over at 1 and so overwrites run 1, or that counts directories
   // instead of reading their numbers.
@@ -527,12 +532,12 @@ describe("next_run", () => {
       "spec-rewrite-s1-30",
       "spec-writing-main-40",
     ])
-      mkdirSync(path.join(work, "runs", run), { recursive: true });
-    writeFileSync(path.join(work, "runs", "spec-writing-s1-99"), "");
+      mkdirSync(path.join(work, "maps", "runs", run), { recursive: true });
+    writeFileSync(path.join(work, "maps", "runs", "spec-writing-s1-99"), "");
     expect(next(work, "spec-writing", "s1")).toEqual({ code: 0, stdout: "11\n", stderr: "" });
   });
 
-  // Catches: a first batch that fails because $work/runs does not exist yet.
+  // Catches: a first batch that fails because $work/maps/runs does not exist yet.
   test("1 when the label has no run of the scenario", () => {
     expect(next(freshDir("numbering-empty"), "spec-rewrite", "s1").stdout).toBe("1\n");
   });
@@ -619,12 +624,12 @@ describe("spec_turns", () => {
     });
     const standIns = `
 launch() {
-  printf 'launch %s | %s\\n' "$*" "$(<"$R/prompt.txt")" >>"$R/calls"
-  [ -n "\${SECOND:-}" ] && [ $# -gt 1 ] && : >"$R/sessions/fresh.jsonl"
+  printf 'launch%s | %s\\n' "\${*:+ $*}" "$(<"$R/prompt.txt")" >>"$R/calls"
+  [ -n "\${SECOND:-}" ] && [ $# -gt 0 ] && : >"$R/sessions/fresh.jsonl"
   printf x >>"$R/launches"
   status=0
   [ "$(wc -c <"$R/launches")" != "\${FAIL_AT:-0}" ] || status=1
-  printf 'output of %s\\nexit=%s\\n' "$*" "$status" >"$R/out.txt"
+  printf 'output of turn %s%s\\nexit=%s\\n' "$(wc -c <"$R/launches")" "\${*:+ $*}" "$status" >"$R/out.txt"
   printf '{}\\n' >>"$R/sessions/run.jsonl"
 }
 seed_ts() {
@@ -661,19 +666,19 @@ judge_ts() {
     const { code, calls, read } = conversation([{ asks: 2 }, { approval: true }, {}]);
     expect(code).toBe(0);
     expect(calls).toEqual([
-      "launch spec-writing-s1-1 | Design it.",
+      "launch | Design it.",
       "seed state <R>/fixture.json 1 <R>",
       "judge answer <R> 1",
       "seed answer <R>/fixture.json <R>/answers-1.jsonl",
-      `launch spec-writing-s1-1 --continue | ${answered}`,
+      `launch --continue | ${answered}`,
       "seed state <R>/fixture.json 2 <R>",
       "seed approve <R>/fixture.json",
-      `launch spec-writing-s1-1 --continue | ${approved}`,
+      `launch --continue | ${approved}`,
       "seed state <R>/fixture.json 3 <R>",
     ]);
     expect(read("turns.txt")).toBe("1 first exit=0\n2 answered exit=0\n3 approved exit=0\n");
     expect(read("answers.jsonl")).toBe(read("answers-1.jsonl"));
-    expect(read("out-2.txt")).toBe("output of spec-writing-s1-1 --continue\nexit=0\n");
+    expect(read("out-2.txt")).toBe("output of turn 2 --continue\nexit=0\n");
   });
 
   // Catches: a loop that answers the open asks when an approval request is open too (the rig.sh
@@ -691,10 +696,7 @@ judge_ts() {
   test("no open ask and no approval request ends the run after its turn", () => {
     const { code, calls, read } = conversation([{}]);
     expect(code).toBe(0);
-    expect(calls).toEqual([
-      "launch spec-writing-s1-1 | Design it.",
-      "seed state <R>/fixture.json 1 <R>",
-    ]);
+    expect(calls).toEqual(["launch | Design it.", "seed state <R>/fixture.json 1 <R>"]);
     expect(read("turns.txt")).toBe("1 first exit=0\n");
   });
 
@@ -1224,14 +1226,23 @@ describe("require_superpowers", () => {
   });
 });
 
-// launch with a stand-in tmux that starts the pane's command a moment later, as a real tmux server
-// does, a stand-in systemd-run that records the scope it was asked for and runs the command after
-// `--`, and a stand-in mise that prints the omp command line it was given.
+// launch with a stand-in tmux that records its session's name and starts the pane's command a
+// moment later, as a real tmux server does, a stand-in systemd-run that records the scope it was
+// asked for and runs the command after `--`, a stand-in bwrap that records its arguments and runs
+// the command after `--`, and a stand-in mise that prints the omp command line it was given. The
+// run's directory and the label's profile sit in a work directory, as rig.sh lays them out.
 describe("launch", () => {
   function launchRun(args: string, env: Record<string, string> = {}) {
-    const run = freshDir("launch-run");
+    const work = freshDir("launch-work");
+    const run = path.join(work, "runs", "0123456789abcdef");
+    const profile = path.join(work, "profiles", "fedcba9876543210");
     const bin = freshDir("launch-bin");
-    for (const dir of ["cwd", "sessions"]) mkdirSync(path.join(run, dir));
+    for (const dir of ["cwd", "sessions"]) mkdirSync(path.join(run, dir), { recursive: true });
+    for (const dir of ["pi-envoy", "pi-legion"])
+      mkdirSync(path.join(profile, dir), { recursive: true });
+    writeFileSync(path.join(profile, "checkout"), "/checkouts/ablate-head\n");
+    mkdirSync(path.join(work, "services"));
+    mkdirSync(path.join(work, "maps"));
     writeFileSync(path.join(run, "prompt.txt"), "The person answered your asks on LWEVAL-2.\n");
     writeFileSync(path.join(run, "pane.env"), `PATH=${bin}:${process.env.PATH ?? ""}\n`);
     writeFileSync(path.join(run, "out.txt"), "the first turn\nexit=0\n");
@@ -1247,16 +1258,21 @@ describe("launch", () => {
       `#!/bin/bash\nscope=()\nwhile [ "$1" != -- ]; do scope+=("$1"); shift; done\nshift\necho "\${scope[*]}" >"${run}/scope"\nexec "$@"\n`,
       { mode: 0o755 }
     );
+    writeFileSync(
+      path.join(bin, "bwrap"),
+      `#!/bin/bash\n: >"${run}/view"\nwhile [ "$1" != -- ]; do printf '%s\\n' "$1" >>"${run}/view"; shift; done\nshift\nexec "$@"\n`,
+      { mode: 0o755 }
+    );
     const standIns = `
-tmux() { case $1 in new-session) (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
+tmux() { case $1 in new-session) printf '%s\\n' "$4" >"$R/session"; (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
 sleep() { command sleep 0.05; }`;
     const result = bash(
-      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("launch")}\n${standIns}\nR=$1 tag=t pin=omp@pin\nlaunch spec-writing-s1-1${args}\ncp "$R/out.txt" "$R/seen"`,
-      [run],
+      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("launch")}\n${standIns}\nR=$1 P=$2 work=$3 tag=t pin=omp@pin\nlaunch${args}\ncp "$R/out.txt" "$R/seen"`,
+      [run, profile, work],
       { PATH: `${bin}:${childEnv.PATH}`, ...env }
     );
     const read = (name: string) => readFileSync(path.join(run, name), "utf8");
-    return { ...result, run, bin, read };
+    return { ...result, run, bin, read, work, profile };
   }
 
   // Catches: a later turn that reads the previous turn's `exit=` line as its own and returns at
@@ -1281,6 +1297,22 @@ sleep() { command sleep 0.05; }`;
     );
     const named = launchRun("", { SKILL_SCENARIOS_MEMORY_MAX: "2G" });
     expect(named.read("scope")).toBe("--user --scope --quiet -p MemoryMax=2G -p MemorySwapMax=0\n");
+  });
+
+  // Catches: an agent that can learn its label or case from what it sees: the map (<work>/maps),
+  // another run's directory, the profile's records (its checkout's path names the label), or the
+  // batch's command line in the process table; and a tmux session named after the run.
+  test("the agent runs under bwrap, in a PID namespace of its own, with <work> empty but for its run, its label's plugins and the services", () => {
+    const { code, read, run, work, profile } = launchRun("");
+    expect(code).toBe(0);
+    expect(read("view").split("\n").filter(Boolean)).toEqual([
+      ...["--dev-bind", "/", "/", "--tmpfs", work, "--bind", run, run],
+      ...["--ro-bind", `${profile}/pi-envoy`, `${profile}/pi-envoy`],
+      ...["--ro-bind", `${profile}/pi-legion`, `${profile}/pi-legion`],
+      ...["--ro-bind", `${work}/services`, `${work}/services`],
+      ...["--unshare-pid", "--proc", "/proc", "--die-with-parent", "--chdir", `${run}/cwd`],
+    ]);
+    expect(read("session")).toBe("t-0123456789abcdef\n");
   });
 });
 
@@ -1409,27 +1441,41 @@ describe("cmd_batch", () => {
     );
   });
 
-  // Catches: a run whose directory leaves out its case, so the cases' batches of one label, each
-  // numbered from 1, remove each other's runs, and a case outside the four.
-  test("cmd_run names a reviewer-own-head run by its case, and refuses another case", () => {
-    const rigWork = freshDir("run-work");
+  // Catches: a run whose name leaves out its case, so the cases' batches of one label, each
+  // numbered from 1, replace each other's runs; a case outside the four; and a run directory whose
+  // own name tells its agent the scenario, the case or the label (each is in the map alone).
+  test("cmd_run names a reviewer-own-head run by its case in the map, in a directory of a random name, and refuses another case", () => {
+    // rig.sh resolves its work directory's path once (realpath), as this does.
+    const rigWork = realpathSync(freshDir("run-work"));
     mkdirSync(path.join(rigWork, "services"), { recursive: true });
     writeFileSync(path.join(rigWork, "services", "env"), "");
     const script = [
       fn("fail"),
       fn("cmd_run"),
-      'load_label() { P=$work/profiles/$1; mkdir -p "$P"; : >"$P/built-from"; }',
+      'load_label() { P=$work/profiles/0000000000000001; mkdir -p "$P"; echo "checkout /c/$1" >"$P/built-from"; }',
       "on_exit() { :; }",
       `run_reviewer_own_head() { printf '%s\\n' "$*" >"$R/ran"; echo exit=0 >"$R/out.txt"; }`,
-      "work=$1 services_env=$1/services/env",
+      "work=$1 maps=$1/maps services_env=$1/services/env",
       'cmd_run reviewer-own-head head 1 3 1700000000 "$2"',
     ].join("\n");
+    const link = path.join(rigWork, "maps", "runs", "reviewer-own-head-ci-only-head-1");
     const ran = bash(script, [rigWork, "ci-only"]);
     expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
-    const run = path.join(rigWork, "runs", "reviewer-own-head-ci-only-head-1");
-    expect(readFileSync(path.join(run, "ran"), "utf8")).toBe(
-      "reviewer-own-head-ci-only-head-1 1 3 1700000000 ci-only\n"
-    );
+    const first = realpathSync(link);
+    expect(path.relative(rigWork, first)).toMatch(/^runs\/[0-9a-f]{16}$/);
+    expect(readFileSync(path.join(first, "ran"), "utf8")).toBe("3 1700000000 ci-only\n");
+    expect(existsSync(path.join(first, "case.txt"))).toBe(false);
+    expect(existsSync(path.join(first, "built-from"))).toBe(false);
+    expect(
+      readFileSync(
+        path.join(rigWork, "maps", "built-from", "reviewer-own-head-ci-only-head-1"),
+        "utf8"
+      )
+    ).toBe("checkout /c/head\n");
+    // A second run of the name replaces the first: its directory and its link.
+    expect(bash(script, [rigWork, "ci-only"]).code).toBe(0);
+    expect(realpathSync(link)).not.toBe(first);
+    expect(existsSync(first)).toBe(false);
     const refused = bash(script, [rigWork, "frobnicate"]);
     expect(refused.code).toBe(1);
     expect(refused.stderr).toContain(

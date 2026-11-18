@@ -5,6 +5,8 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -19,6 +21,8 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 //     its DATABASE_URL names;
 //   - seed.ts: records the Dispatch that each seed reached, and writes the fixture;
 //   - tmux: runs the pane's command at once;
+//   - systemd-run and bwrap: run the command after their `--` (launch's own scope and view are
+//     rig.test.ts's rows; a user scope needs a user bus, which a CI runner has not got);
 //   - mise: answers `mise where <pin>` with a pin whose bin/omp is the agent, which records the
 //     Dispatch variables of its environment, and runs `mise x <pin> -- <command>` as the command
 //     (a run names its pin's omp by path).
@@ -161,6 +165,14 @@ put(
   ].join("\n"),
   0o755
 );
+for (const name of ["systemd-run", "bwrap"])
+  put(
+    path.join(bin, name),
+    ["#!/usr/bin/env bash", 'while [ "$1" != -- ]; do shift; done', 'shift && exec "$@"', ""].join(
+      "\n"
+    ),
+    0o755
+  );
 put(
   path.join(bin, "pin", "bin", "omp"),
   [
@@ -173,19 +185,24 @@ put(
 
 // The work directory: the label's profile, and the batch's services file and Dispatch token.
 const work = path.join(scratch, "work");
-/** A label's built profile, with its Oh My Pi settings `settings` (the model route installers'). */
+/** A label's built profile, with its Oh My Pi settings `settings` (the model route installers'):
+ * a directory under <work>/profiles whose name, 16 hex digits, names nothing of the label, and the
+ * map's link that names the label. */
 function label(name: string, settings: string) {
-  const dir = path.join(work, "profiles", name);
-  put(path.join(dir, `home/.omp/profiles/skills-${name}/agent/config.yml`), settings);
+  const id = new Bun.CryptoHasher("sha256").update(name).digest("hex").slice(0, 16);
+  const dir = path.join(work, "profiles", id);
+  put(path.join(dir, "home/.omp/profiles/skills/agent/config.yml"), settings);
   stagings.push(() => {
     for (const [file, text] of [
       ["checkout", co],
       ["pin", "omp@stub"],
-      ["profile", `skills-${name}`],
+      ["profile", "skills"],
       ["built-from", `checkout ${co}`],
       ["ready", ""],
     ])
       writeFileSync(path.join(dir, file), `${text}\n`);
+    mkdirSync(path.join(work, "maps", "profiles"), { recursive: true });
+    symlinkSync(`../../profiles/${id}`, path.join(work, "maps", "profiles", name));
   });
 }
 label(
@@ -320,7 +337,7 @@ beforeAll(async () => {
   runs = await Promise.all(
     [1, 2].map(async (n) => {
       const { code, stderr } = await runRig(["run", "askgate", "on", String(n), String(n), start]);
-      return { n, code, stderr, dir: path.join(work, "runs", `askgate-facts-on-${n}`) };
+      return { n, code, stderr, dir: path.join(work, "maps", "runs", `askgate-facts-on-${n}`) };
     })
   );
   servers = lines(path.join(stub, "servers.log")).map((line) => {
@@ -333,24 +350,25 @@ test.skipIf(withoutPython)("both runs finish", () => {
   for (const { code, stderr } of runs) expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
 });
 
+/** A run's database: run_<the name of its directory>, which names nothing of the run. */
+const databaseOf = (dir: string) => `run_${path.basename(realpathSync(dir))}`;
 test.skipIf(withoutPython)("each run makes a database of its own in the batch's Postgres", () => {
   const made = lines(path.join(stub, "docker.log")).filter((line) =>
     line.includes("CREATE DATABASE")
   );
   for (const line of made) expect(line).toStartWith(`exec ${tag}-pg psql `);
-  expect(made.map((line) => /CREATE DATABASE (\w+)/.exec(line)?.[1]).sort()).toEqual([
-    "run_askgate_facts_on_1",
-    "run_askgate_facts_on_2",
-  ]);
+  expect(made.map((line) => /CREATE DATABASE (\w+)/.exec(line)?.[1]).sort()).toEqual(
+    runs.map(({ dir }) => databaseOf(dir)).sort()
+  );
+  for (const { dir } of runs) expect(databaseOf(dir)).toMatch(/^run_[0-9a-f]{16}$/);
 });
 
 test.skipIf(withoutPython)(
   "each run starts a Dispatch server of its own, on its own database and port",
   () => {
-    expect(servers.map((server) => server.database).sort()).toEqual([
-      "run_askgate_facts_on_1",
-      "run_askgate_facts_on_2",
-    ]);
+    expect(servers.map((server) => server.database).sort()).toEqual(
+      runs.map(({ dir }) => databaseOf(dir)).sort()
+    );
     expect(new Set(servers.map((server) => server.port)).size).toBe(2);
   }
 );
@@ -360,8 +378,8 @@ test.skipIf(withoutPython)(
   () => {
     const seeds = lines(path.join(stub, "seeds.log")).map((line) => JSON.parse(line));
     const urls = new Set<string>();
-    for (const { n, dir } of runs) {
-      const database = `run_askgate_facts_on_${n}`;
+    for (const { dir } of runs) {
+      const database = databaseOf(dir);
       const server = servers.find((s) => s.database === database);
       const url = `http://127.0.0.1:${server?.port}`;
       urls.add(url);
@@ -406,7 +424,7 @@ test.skipIf(withoutPython)(
     const { code, stderr } = await runRig(["run", "askgate", "stale", "1", "3", start]);
     expect(code).toBe(1);
     expect(stderr).toContain("extensionHandlers.toolCallTimeoutMs to 120000 or more");
-    expect(existsSync(path.join(work, "runs", "askgate-facts-stale-1"))).toBe(false);
+    expect(existsSync(path.join(work, "maps", "runs", "askgate-facts-stale-1"))).toBe(false);
     expect(lines(path.join(stub, "docker.log")).join("\n")).not.toContain("stale");
   }
 );
@@ -421,7 +439,7 @@ test.skipIf(withoutPython)(
       SKILL_SCENARIOS_ASKGATE_CASE: "link",
     });
     expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
-    const dir = path.join(work, "runs", "askgate-link-on-1");
+    const dir = path.join(work, "maps", "runs", "askgate-link-on-1");
     const prompt = readFileSync(path.join(dir, "prompt.txt"), "utf8");
     const quoted = /export-host\.crontab runs .*\(its line (\d+): `([^`]+)`\)/.exec(prompt);
     const [, line = "", text = ""] = quoted ?? [];
