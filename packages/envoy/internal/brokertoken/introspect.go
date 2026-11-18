@@ -112,9 +112,11 @@ func (v *Verifier) introspect(ctx context.Context, token string) (Introspection,
 	request.Header.Set("Authorization", "Bearer "+account)
 	response, err := v.http.Do(request)
 	if err != nil {
-		// The error carries the request's URL, which is the broker's and never the token: the
-		// token is in the body, which http.Client puts in no error.
-		return Introspection{}, fmt.Errorf("%w: %w", ErrBrokerUnreachable, err)
+		// The error carries the request's URL, the broker's, which may carry a user and a password:
+		// net/http masks a password and keeps the user, and a token written as the whole user part
+		// is printed whole. redact.Error prints only the failure's class then. The token is in the
+		// body, which http.Client puts in no error.
+		return Introspection{}, fmt.Errorf("%w: %w", ErrBrokerUnreachable, redact.Error(err, v.brokerURL))
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxIntrospectionBytes))

@@ -86,6 +86,19 @@ describe("shownSettingUrl", () => {
     expect(shownSettingUrl(value)).toBeUndefined();
   });
 
+  // The parser drops a tab and a line feed where it reads them, so a value that holds one, or any
+  // other control character, would carry it into a line that showed the value as written.
+  test.each([
+    ["https://host.example/a\tb"],
+    ["https://host.example/a\nb"],
+    ["https://host.example\r/a"],
+    ["https://host.example/a\u0000"],
+    ["https://host.example/a\u007f"],
+    ["\thttps://host.example/a"],
+  ])("%p, which holds a control character, is shown not at all", (value) => {
+    expect(shownSettingUrl(value)).toBeUndefined();
+  });
+
   // A caller whose setting names a URL of another scheme (a NATS server, a Postgres database)
   // says which schemes it takes, and the same rule holds for each: no user and no password, and
   // a value that still holds a raw `@` once its user part is taken out is shown not at all. Such

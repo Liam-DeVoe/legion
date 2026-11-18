@@ -20,6 +20,10 @@
  * still naming the same server, and no `/` added after a bare origin. Each line that names such a
  * setting's value, or a URL made from it, asks this first; it is the one function that decides.
  *
+ * A value that holds a control character (a tab, a line feed, any byte below a space, or DEL) is
+ * shown not at all: the parser drops a tab and a line feed where it reads them, so a line that
+ * showed the value as written would carry them into the line.
+ *
  * A caller whose setting names a URL of another scheme (a NATS server, a Postgres database) passes
  * the `schemes` it takes, as the parser writes them (`nats:`), and the same rule holds for each.
  * Such a value comes back as the parser writes it and without its query and fragment: this
@@ -30,6 +34,10 @@ export function shownSettingUrl(
   value: string,
   schemes: readonly string[] = ["http:", "https:"]
 ): string | undefined {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return undefined;
+  }
   let parsed: URL;
   try {
     parsed = new URL(value);

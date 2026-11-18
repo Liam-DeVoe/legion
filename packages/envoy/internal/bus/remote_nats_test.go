@@ -2,6 +2,7 @@ package bus_test
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"os"
@@ -112,6 +113,73 @@ func TestConnectRefusesANATSServerThatIsNotThisMachines(t *testing.T) {
 		t.Fatalf("connect to %s = %v, want a %v", remote, err, bus.ErrRemoteNATS)
 	}
 	checkRefusal(t, err, remote)
+}
+
+// A NATS URL nats.go cannot read apart from its user part is refused before any connect, named by
+// its length, whatever the run allows: nats.go's parse error quotes the URL whole, user part and
+// all, and the Dispatch server logs it at boot; a value that parses with an @ left after the user
+// part has a piece of the user part read as its host. Connect, ConnectOwningStream and Dial each
+// refuse it. The control is the same value with the user part percent-encoded, which parses and is
+// dialled in the background. Each password is made for this test.
+func TestANATSURLItsClientCannotReadIsRefusedByItsLength(t *testing.T) {
+	const (
+		user     = "made-up-user-6a0f"
+		password = "not-a-secret-8d3c71"
+	)
+	allow := func(key string) (string, bool) {
+		if key == bus.AllowRemoteEnvVar {
+			return "1", true
+		}
+		return "", false
+	}
+	for _, tc := range []struct{ name, raw, encoded string }{
+		{"a / in the password", "nats://" + user + ":ab/" + password + "@127.0.0.1:1", "nats://" + user + ":ab%2F" + password + "@127.0.0.1:1"},
+		{"a mistyped port", "nats://" + user + ":" + password + "@127.0.0.1:1x2", ""},
+		{"a token with a # as the user part", "nats://" + user + "#" + password + "@127.0.0.1:1", "nats://" + user + "%23" + password + "@127.0.0.1:1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			connects := map[string]func(string) error{
+				"Connect": func(raw string) error {
+					client, err := bus.Connect([]string{raw}, bus.WithEnvironment(allow), bus.WithConnectInBackground())
+					if err == nil {
+						client.Close()
+					}
+					return err
+				},
+				"ConnectOwningStream": func(raw string) error {
+					client, err := bus.ConnectOwningStream([]string{raw}, bus.WithEnvironment(allow), bus.WithConnectInBackground())
+					if err == nil {
+						client.Close()
+					}
+					return err
+				},
+				"Dial": func(raw string) error {
+					conn, err := bus.Dial("relay", []string{raw}, allow, bus.WithConnectInBackground())
+					if err == nil {
+						conn.Close()
+					}
+					return err
+				},
+			}
+			for name, connect := range connects {
+				err := connect(tc.raw)
+				want := fmt.Sprintf("a NATS URL of %d characters", len(tc.raw))
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Errorf("%s: err = %v, want a refusal that names %q", name, err, want)
+					continue
+				}
+				if strings.Contains(err.Error(), password) || strings.Contains(err.Error(), user) {
+					t.Errorf("%s: the refusal holds a part of the user part: %q", name, err)
+				}
+				if tc.encoded == "" {
+					continue
+				}
+				if err := connect(tc.encoded); err != nil {
+					t.Errorf("%s: the control %s: %v, want it dialled in the background", name, tc.encoded, err)
+				}
+			}
+		})
+	}
 }
 
 // Reaching another machine's NATS is a run saying so, and is still no reason to write the stream

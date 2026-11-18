@@ -28,12 +28,19 @@ const AllowRemoteEnvVar = "ENVOY_ALLOW_REMOTE_NATS"
 // ErrRemoteNATS is what a connect refuses a NATS server this machine does not run with.
 var ErrRemoteNATS = errors.New("bus: refusing a NATS server that is not this machine's")
 
-// refuseRemoteNATS reports the first url naming another machine, unless the run opted in through
-// lookup (the connect's environment, WithEnvironment). An empty urls is nats.go's own default,
-// this machine's server, and passes. A set SOCKS5ProxyEnvVar is remote reach whatever the URLs
-// say: the proxy chooses the server a connection reaches, so a loopback URL no longer names this
-// machine's.
+// refuseRemoteNATS reports the first url that nats.go cannot read apart from its user part
+// (misreadNATSURL), whatever the run allows, and then the first url naming another machine, unless
+// the run opted in through lookup (the connect's environment, WithEnvironment). An empty urls is
+// nats.go's own default, this machine's server, and passes. A set SOCKS5ProxyEnvVar is remote reach
+// whatever the URLs say: the proxy chooses the server a connection reaches, so a loopback URL no
+// longer names this machine's.
 func refuseRemoteNATS(urls []string, lookup func(string) (string, bool)) error {
+	for _, raw := range urls {
+		if misreadNATSURL(raw) {
+			// By its length only: any piece of the value may be the password.
+			return fmt.Errorf("bus: a NATS URL of %d characters has a user part nats.go cannot read apart from the rest of it; write each @, /, ?, # and \\ in that part percent-encoded (@ as %%40, / as %%2F), or remove the user part", len(raw))
+		}
+	}
 	if allow, _ := lookup(AllowRemoteEnvVar); allow == "1" {
 		return nil
 	}
@@ -70,6 +77,34 @@ func LocalNATSURL(raw string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// misreadNATSURL reports whether nats.go cannot parse raw, and so fails with net/url's error,
+// which quotes the URL whole, user part and all, or would read a piece of its user part as its host:
+// an @ is left once net/url takes out the user part it found (the part held a /, ?, # or \, which
+// end the authority). raw is read as nats.go reads a server URL (parseServerURL): trimmed, with a
+// scheme put before it when it names none, and parsed again with a port after it when it names
+// none.
+func misreadNATSURL(raw string) bool {
+	withScheme := strings.TrimSpace(raw)
+	if !strings.Contains(withScheme, "://") {
+		withScheme = "nats://" + withScheme
+	}
+	parsed, err := url.Parse(withScheme)
+	if err != nil {
+		return true
+	}
+	if parsed.Port() == "" {
+		withPort := withScheme
+		if !strings.HasSuffix(withPort, ":") {
+			withPort += ":"
+		}
+		if _, err := url.Parse(withPort + "4222"); err != nil {
+			return true
+		}
+	}
+	parsed.User = nil
+	return strings.Contains(parsed.String(), "@")
 }
 
 // natsURLWithoutUserinfo renders raw, a configured NATS server URL, for a log line or an error

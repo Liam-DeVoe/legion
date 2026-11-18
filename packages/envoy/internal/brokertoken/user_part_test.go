@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,6 +51,66 @@ func TestARefusalNamesNoUserPartOfTheBrokerOrTheOrigin(t *testing.T) {
 			t.Errorf("user part %q: New err = %v, want a refusal of the origin", userPart, err)
 		} else if holds(err) {
 			t.Errorf("New's refusal holds the user part: %q", err)
+		}
+	}
+}
+
+// The acceptance test's red test of the broker's transport error, kept as it ran. The Dispatch
+// server's boot admits a broker URL (DISPATCH_AGENT_SECRETS_URL) with a user part, and the verifier
+// introspects a presented DPoP token before it checks the proof, so any caller that sends
+// `Authorization: DPoP <anything>` while the broker cannot be reached gets the introspection's
+// transport error, which internal/dispatch/api/broker_token.go logs whole at WARN. Go's http.Client
+// puts the request's URL in that error with only the password masked: the user is printed, and a
+// token written as the whole user part is printed whole. The control inside the test: the same URL
+// with no user part is named, so the error line is reached. The user part's values are made for this
+// test.
+func TestTheBrokersTransportErrorNamesNoPartOfItsUserPart(t *testing.T) {
+	const (
+		user     = "made-up-user-6b1d"
+		password = "made-up-pw-not-a-secret-91e2"
+		token    = "not-a-secret-madeuptoken0c4f"
+	)
+	file := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(file, []byte("made-up-account-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	verify := func(broker string) string {
+		v, err := New(Options{
+			BrokerURL: broker,
+			Account:   NewAccountToken(file),
+			Replay:    noReplay{},
+			Address:   func(*http.Request) string { return "192.0.2.1" },
+			Origin:    "https://dispatch.test",
+		})
+		if err != nil {
+			t.Fatalf("New(%q): %v", broker, err)
+		}
+		r := httptest.NewRequest(http.MethodGet, "https://dispatch.test/api/v1/issues", nil)
+		r.Header.Set("Authorization", "DPoP made-up-access-token")
+		r.Header.Set("DPoP", "made.up.proof")
+		_, err = v.Verify(context.Background(), r)
+		if err == nil {
+			t.Fatalf("Verify against %q passed", broker)
+		}
+		return err.Error()
+	}
+	control := verify("http://127.0.0.1:1")
+	t.Logf("control (no user part): %s", control)
+	if !strings.Contains(control, "127.0.0.1:1") {
+		t.Fatalf("UNKNOWN: the control's error names no broker, so this test saw nothing: %q", control)
+	}
+	for name, broker := range map[string]string{
+		"user and password": "http://" + user + ":" + password + "@127.0.0.1:1",
+		"token as the user": "http://" + token + "@127.0.0.1:1",
+	} {
+		text := verify(broker)
+		shown := strings.NewReplacer(user, "<USER>", password, "<PASSWORD>", token, "<TOKEN>").Replace(text)
+		t.Logf("%s: %s", name, shown)
+		for _, part := range []string{user, password, token} {
+			if strings.Contains(text, part) {
+				t.Errorf("RED %s: the error Dispatch logs holds a part of the broker URL's user part: %s", name, shown)
+				break
+			}
 		}
 	}
 }

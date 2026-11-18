@@ -1550,16 +1550,23 @@ func TestDevSignInLoadedFenceRefusesAPublicOrigin(t *testing.T) {
 }
 
 // The WARN line that says the dev sign-in route is mounted names the dashboard origin the fence
-// accepted. An origin with a user and a password prints neither, and an origin whose path holds an
-// @ still names its host and port. The user and the password are made for this test.
+// accepted. An origin with a user and a password names its host and port and neither of them. An
+// origin with an @ left once net/url takes out its user part names nothing of it: it cannot be told
+// apart from a user part that holds a /, whose password's first characters net/url reads as the
+// port (http://localhost:4821/<rest>@127.0.0.1:8766). The user and the password are made for this
+// test.
 func TestDevSignInMountedLineNamesTheHostAndNoUserPart(t *testing.T) {
 	const (
 		user     = "made-up-user"
 		password = "not-a-secret-91d2e8"
 	)
-	for _, tc := range []struct{ name, origin, host string }{
-		{name: "user and password", origin: "http://" + user + ":" + password + "@127.0.0.1:8766", host: "127.0.0.1:8766"},
-		{name: "@ in the path", origin: "http://localhost:8766/a@b", host: "localhost:8766"},
+	for _, tc := range []struct {
+		name, origin, host string
+		hidden             []string
+	}{
+		{name: "user and password", origin: "http://" + user + ":" + password + "@127.0.0.1:8766", host: "127.0.0.1:8766", hidden: []string{user, password}},
+		{name: "@ in the path", origin: "http://localhost:8766/a@b", host: redact.NotPrinted, hidden: []string{"localhost:8766"}},
+		{name: "a / in the password, its digits read as the port", origin: "http://localhost:4821/" + password + "@127.0.0.1:8766", host: redact.NotPrinted, hidden: []string{"4821", password}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			boot := devSignInBoot(t, nil)
@@ -1573,11 +1580,13 @@ func TestDevSignInMountedLineNamesTheHostAndNoUserPart(t *testing.T) {
 			if !strings.Contains(line, "dev sign-in mounted") {
 				t.Fatalf("logged %q, want the dev sign-in WARN line", line)
 			}
-			if strings.Contains(line, password) || strings.Contains(line, user) {
-				t.Errorf("the line holds the user part: %q", line)
+			for _, part := range tc.hidden {
+				if strings.Contains(line, part) {
+					t.Errorf("the line holds %q: %q", part, line)
+				}
 			}
 			if !strings.Contains(line, tc.host) {
-				t.Errorf("the line %q does not name the host %s", line, tc.host)
+				t.Errorf("the line %q does not name the host as %s", line, tc.host)
 			}
 		})
 	}
