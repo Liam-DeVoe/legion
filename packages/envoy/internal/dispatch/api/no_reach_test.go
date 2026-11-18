@@ -662,6 +662,7 @@ func threeBadRequests(t *testing.T) {
 var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/github/app-installation/{owner}/{repo}":                 "a GitHub App private key",
 	"GET /api/v1/projects/{key}/architecture":                            "an architecture source configured for the project",
+	"GET /api/v1/projects/{key}/legion/board":                            "a Legion daemon set for the project",
 	"GET /api/v1/delivery/timeline":                                      "delivery settings",
 	"GET /api/v1/delivery/measures":                                      "delivery settings",
 	"GET /api/v1/delivery/pipeline":                                      "delivery settings",
@@ -1178,9 +1179,16 @@ func olderBuildReadsTheGraph(t *testing.T) {
 // holds it: a read that gained a join, lost an index or started reading the store would name a
 // different set. They are pinned rather than derived, because a derivation from the same
 // statement would move with it.
+//
+// Beside the tables each read read before this child, the issue tree's branch adds three by its
+// design: every issue is born converted, so a document's live text is read out of its issue room
+// (document_rooms resolves the document to the room, docs' roomOf), whose history is that room's
+// updates and its checkpoints (doc_checkpoints, beside doc_updates); and a document's role is read
+// beside the query node it may be (graph_nodes, graphstore.ArtifactQueryRoleSQL), which the
+// document read's columns carry.
 var readRelations = map[string][]string{
-	"GET /api/v1/comments/{id}":         {"comment_deliveries", "comment_mentions", "comments", "doc_updates"},
-	"GET /api/v1/artifacts/{id}/blocks": {"artifacts", "asks", "comments", "doc_updates", "embeddings"},
+	"GET /api/v1/comments/{id}":         {"comment_deliveries", "comment_mentions", "comments", "doc_checkpoints", "doc_updates", "document_rooms"},
+	"GET /api/v1/artifacts/{id}/blocks": {"artifacts", "asks", "comments", "doc_checkpoints", "doc_updates", "document_rooms", "embeddings", "graph_nodes"},
 }
 
 // readsUnchanged reads one comment and one document block through the reads the table already

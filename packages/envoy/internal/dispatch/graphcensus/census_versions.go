@@ -24,13 +24,15 @@ import (
 // ref_key and its number address (graphstore.VersionID), so a version whose node is missing reads
 // as a row naming a node the store does not hold. A document or a version a removal took out of the
 // tree is a node the store holds gone, which no row projects (api's removedDocumentNodes), so it is
-// no difference either way.
+// no difference either way; and so is a retired document, whose row stays as the record of what it
+// held while its node is stated gone in the transaction that retires it (docs.RetireDocument), so
+// its row projects no node.
 var versionProjections = []projection{{
 	name:     "artifact",
 	nodeKind: graphstore.KindArtifact,
 	table:    "artifacts",
-	note: "one node per row, a document's or a query's, documents past the address bound aside; the digest is the" +
-		" row's ref_key, the issue artifacts.issue_key names as the node's part_of, and for an image or a file its" +
+	note: "one node per row, a document's or a query's, documents past the address bound and retired documents aside;" +
+		" the digest is the row's ref_key, the issue artifacts.issue_key names as the node's part_of, and for an image or a file its" +
 		" newest version's mime, size and sha256, against the node's supertag, the part_of tuples it states now and" +
 		" its current mime, size and sha256 values",
 	rows: `
@@ -43,7 +45,7 @@ var versionProjections = []projection{{
 			select v.mime, v.size, v.sha256 from artifact_versions v
 			where v.artifact_id = a.id order by v.number desc limit 1
 		) newest on a.kind <> 'doc'
-		where octet_length(a.ref_key) <= ` + addressBound,
+		where octet_length(a.ref_key) <= ` + addressBound + ` and a.retired_at is null`,
 	nodes: `
 		select n.id, md5(n.id || '|' || case when n.supertag in ('` + graphstore.SupertagDocument + `', '` +
 		graphstore.SupertagQuery + `') then '` + graphstore.SupertagDocument + `' else n.supertag end || '|' || ` +

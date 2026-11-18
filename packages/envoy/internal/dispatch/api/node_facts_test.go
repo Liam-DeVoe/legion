@@ -686,10 +686,10 @@ func TestABlockAskBelongsToTheVersionThatAddedIt(t *testing.T) {
 		t.Fatalf("read the block ask: %v", err)
 	}
 	askRef := "dispatch://" + issue.Key + "/ask/" + askID
-	// The block is a node of the issue's room, keyed under its tree artifact, whose reference
-	// reads it; a reference written as the spec's own (`spec#b-…`) reaches a block of the room
-	// through T17 of this branch's plan.
-	blockRef := "dispatch://" + issue.Key + "/artifact/tree#b-decide"
+	// The block is a node of the issue's room, keyed under its tree artifact, which the spec's own
+	// reference reaches (T17 of this branch's plan: an address resolves through its document's
+	// room).
+	blockRef := "dispatch://" + issue.Key + "/spec#b-decide"
 	want := func(what string) {
 		t.Helper()
 		node := readNode(t, handler, askRef)

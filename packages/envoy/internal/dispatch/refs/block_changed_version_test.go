@@ -2,7 +2,10 @@ package refs
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +13,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // writeStoredVersion writes version number of the document as the version write stores it: its
@@ -258,6 +263,175 @@ func TestARoomBlocksNodeReadsAsABlockOfItsOwnDocument(t *testing.T) {
 		}
 		if !slices.Equal(array, want) && !(len(array) == 0 && len(want) == 0) {
 			t.Errorf("the block array of %s is %v, want %v", document, array, want)
+		}
+	}
+}
+
+// A reference names `<document ref_key>#<block>`, and a block of an issue room is the node
+// `<tree ref_key>#<block>` (T12a of this branch's plan). Every reader and writer of a reference
+// resolves it in one order (T17): the address's current moved_to tuple first, followed hop by
+// hop; then the room its document's document_rooms row names; then the address itself. On issue
+// WIND-1, born converted, the Verification document's check k1 serves the spec's requirement r1,
+// written at the spec's own address. The pointer validation takes it (BlockTargets, naming the
+// spec as the block's document, never the tree); the pointer writer stores its block_refs row and
+// its serves tuple at the room's node and hangs the check under it (placeAuthored); and the three
+// resolvers reach that node: graphstore.MovedTo (blockReferenceNode's), BlockLinks and Closure.
+// Two planted moved_to tuples show the order. The spec's old address `old` moved to the spec's r1,
+// so a citation of it takes one hop and then the room. The Verification document's own address of
+// r1 moved to its block r1v, as a re-mint writes one: the move comes before the room, so a
+// citation of that address reaches r1v and never the spec's r1, which the room holds under the
+// same id.
+func TestAReferenceResolvesThroughMovedToBeforeTheRoom(t *testing.T) {
+	ctx := context.Background()
+	tx := windowFixture(t)
+	spec, specRef, verification, tree, treeRef := roomFixture(t, tx)
+	var verificationRef string
+	if err := tx.QueryRow(ctx, `select ref_key from artifacts where id = $1::uuid`, verification).Scan(&verificationRef); err != nil {
+		t.Fatalf("read the Verification document's ref_key: %v", err)
+	}
+	treeAt := writeStoredVersion(t, tx, tree, 1, "")
+	specAt := writeStoredVersion(t, tx, spec, 1, "One.")
+	verificationAt := writeStoredVersion(t, tx, verification, 1, "Checks one.")
+	serves := "dispatch://WIND-1/artifact/spec-md#b-r1"
+	cite := "Per dispatch://WIND-1/artifact/verification-md#b-r1."
+	markdown, blocks := documentOf([]part{
+		{"r1", "requirement", "One."}, {"k1", "check", "Checks one."}, {"r1v", "paragraph", "Verified one."}, {"cite", "paragraph", cite},
+	})
+	blocks[0].Document, blocks[1].Document, blocks[2].Document, blocks[3].Document = spec, verification, verification, verification
+	target, ok := text.ParseRef(serves, windowServer)
+	if !ok || target.Kind != BlockNodeKind {
+		t.Fatalf("parse the check's serves %s: %#v", serves, target)
+	}
+	at := time.Now().UTC()
+	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{
+		{FromKind: BlockNodeKind, FromID: specRef + "#old", Kind: graphstore.TupleMovedTo, ToKind: BlockNodeKind, ToID: specRef + "#r1",
+			At: at, Who: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: graphstore.NoEvent, Asserted: true},
+		{FromKind: BlockNodeKind, FromID: verificationRef + "#r1", Kind: graphstore.TupleMovedTo, ToKind: BlockNodeKind, ToID: treeRef + "#r1v",
+			At: at, Who: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: graphstore.NoEvent, Asserted: true},
+	}); err != nil {
+		t.Fatalf("plant the moves: %v", err)
+	}
+
+	// The pointer validation of the Verification document's write.
+	check := func(reference string) error {
+		t.Helper()
+		written, err := pmdoc.Parse(":::check{#k1 serves=\"" + reference + "\"}\nChecks one.\n:::\n")
+		if err != nil {
+			t.Fatalf("parse a check serving %s: %v", reference, err)
+		}
+		return pmdoc.CheckBlockPointers(written, nil, func(targets []text.Ref) (pmdoc.BlockWriting, map[string]pmdoc.BlockTarget, error) {
+			return BlockTargets(ctx, tx, verification, nil, targets)
+		})
+	}
+	// The room's index, which the version write runs over every fragment of the room.
+	_, won, write, _, err := IndexBlocks(ctx, tx, tree, Versions{
+		tree: {Number: 1, At: treeAt}, spec: {Number: 1, At: specAt}, verification: {Number: 1, At: verificationAt},
+	}, markdown, blocks, text.ExtractAt(markdown, windowServer),
+		[]Pointer{{Block: "k1", BlockType: "check", Kind: "serves", Target: target, Targets: []string{"requirement"}}}, TypedFacts{})
+	if err != nil || !won {
+		t.Fatalf("index the room: won %t, %v", won, err)
+	}
+	if err := graphstore.Caused(ctx, tx, write, graphstore.NoEvent); err != nil {
+		t.Fatalf("append what the room's index stated: %v", err)
+	}
+	if err := check(serves); err != nil {
+		t.Errorf("a check serving the spec's r1 at the spec's address = %v, want it taken", err)
+	}
+	if err := check("dispatch://WIND-1/artifact/spec-md#b-r9"); !errors.Is(err, pmdoc.ErrBlockPointer) || !strings.Contains(err.Error(), "which no document holds") {
+		t.Errorf("a check serving a block no document holds = %v, want it refused", err)
+	}
+	_, found, err := BlockTargets(ctx, tx, verification, nil, []text.Ref{target})
+	if err != nil {
+		t.Fatalf("read the targets of the check's serves: %v", err)
+	}
+	if got, want := found[specRef+"#r1"], (pmdoc.BlockTarget{Types: []string{"requirement"}, Document: specRef, Issue: "WIND-1"}); !reflect.DeepEqual(got, want) {
+		t.Errorf("the check's serves reads the target %+v, want %+v: the room's node, in the document whose fragment holds it", got, want)
+	}
+
+	// The pointer writer: the row, its tuple and the check's place.
+	var rowTarget string
+	if err := tx.QueryRow(ctx, `
+		select to_id from block_refs where artifact_id = $1::uuid and block_id = 'k1' and kind = 'serves'
+	`, tree).Scan(&rowTarget); err != nil {
+		t.Fatalf("read the check's serves row: %v", err)
+	}
+	var tupleTargets []string
+	if err := tx.QueryRow(ctx, `
+		select coalesce(array_agg(to_id order by to_id), '{}') from graph_tuples
+		where from_kind = 'block' and from_id = $1 and kind = 'serves' and asserted
+	`, treeRef+"#k1").Scan(&tupleTargets); err != nil {
+		t.Fatalf("read the check's serves tuples: %v", err)
+	}
+	var parent string
+	if err := tx.QueryRow(ctx, `
+		select to_kind || ':' || to_id from graph_tuples
+		where from_kind = 'block' and from_id = $1 and kind = 'part_of' and asserted order by seq desc limit 1
+	`, treeRef+"#k1").Scan(&parent); err != nil {
+		t.Fatalf("read the check's part_of: %v", err)
+	}
+	if rowTarget != treeRef+"#r1" || !slices.Equal(tupleTargets, []string{treeRef + "#r1"}) || parent != "block:"+treeRef+"#r1" {
+		t.Errorf("the check's serves row reaches %s, its tuples %v and its part_of %s, want the room's node %s for each",
+			rowTarget, tupleTargets, parent, treeRef+"#r1")
+	}
+
+	// graphstore.MovedTo, the reading blockReferenceNode takes.
+	for _, read := range []struct {
+		from, want string
+		reached    bool
+	}{
+		{specRef + "#r1", treeRef + "#r1", true}, {specRef + "#old", treeRef + "#r1", true},
+		{verificationRef + "#r1", treeRef + "#r1v", true}, {treeRef + "#r1", treeRef + "#r1", true},
+		{specRef + "#r9", "", false},
+	} {
+		if reached, ok, err := graphstore.MovedTo(ctx, tx, read.from); err != nil || ok != read.reached || reached != read.want {
+			t.Errorf("MovedTo(%s) = %q, %t (%v), want %q, %t", read.from, reached, ok, err, read.want, read.reached)
+		}
+	}
+
+	// BlockLinks: the serves from the Verification document to the spec, and the citation of the
+	// Verification document's moved address, which reaches its own r1v.
+	linked := func(from, to string) []string {
+		t.Helper()
+		links, err := BlockLinks(ctx, tx, model.Actor{}, from, to)
+		if err != nil {
+			t.Fatalf("read the block links from %s to %s: %v", from, to, err)
+		}
+		var got []string
+		for _, link := range links {
+			got = append(got, link.Kind+" "+link.From.ID+" -> "+link.To.ID)
+		}
+		return got
+	}
+	if got, want := linked(verification, spec), []string{"serves " + treeRef + "#k1 -> " + treeRef + "#r1"}; !slices.Equal(got, want) {
+		t.Errorf("the block links from the Verification document to the spec are %v, want %v", got, want)
+	}
+	if got, want := linked(verification, verification), []string{"mentions " + treeRef + "#cite -> " + treeRef + "#r1v"}; !slices.Equal(got, want) {
+		t.Errorf("the block links inside the Verification document are %v, want %v", got, want)
+	}
+
+	// Closure: a comment of WIND-2 cites the Verification document's moved address, and one of
+	// WIND-3 the spec's old address.
+	cited := map[string]string{"WIND-2": verificationRef + "#r1", "WIND-3": specRef + "#old"}
+	for number, key := range []string{"WIND-2", "WIND-3"} {
+		if _, err := tx.Exec(ctx, `
+			insert into issues (key, project_key, number, title, created_by, rank)
+			values ($1, 'WIND', $2, 'Citing issue', '{"kind":"user","id":"alice"}', 'V')
+		`, key, number+2); err != nil {
+			t.Fatalf("create issue %s: %v", key, err)
+		}
+		insertReference(t, tx, "comment", createReferenceComment(t, tx, key), BlockNodeKind, cited[key])
+	}
+	for key, want := range map[string]string{"WIND-2": verificationRef, "WIND-3": specRef} {
+		members, _, err := Closure(ctx, tx, model.Actor{}, key)
+		if err != nil {
+			t.Fatalf("read the closure of %s: %v", key, err)
+		}
+		var got []string
+		for _, member := range members {
+			got = append(got, member.RefKey)
+		}
+		if !slices.Equal(got, []string{want}) {
+			t.Errorf("the closure of %s, whose comment cites %s, holds %v, want the document %s", key, cited[key], got, want)
 		}
 	}
 }

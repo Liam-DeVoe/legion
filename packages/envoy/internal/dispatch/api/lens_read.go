@@ -566,7 +566,12 @@ func lensChildren(ctx context.Context, q refs.Queryer, viewer any, ids []string)
 // read holds, and every check a risk names.
 func readLenses(ctx context.Context, q refs.Queryer, who model.Actor, address string) (nodeLenses, error) {
 	notFound := errorf(http.StatusNotFound, "NOT_FOUND", "no node %q", address)
-	kind, id, ok := decodeNodeAddress(address)
+	// Only a document block's address is resolved (resolvedNodeAddress), and a block is a kind a
+	// lens stands on, so a kind no lens stands on is still refused before anything is read.
+	kind, id, ok, err := resolvedNodeAddress(ctx, q, address)
+	if err != nil {
+		return nodeLenses{}, err
+	}
 	if !ok || !slices.Contains(lensStandsOnKinds, kind) {
 		return nodeLenses{}, notFound
 	}

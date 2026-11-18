@@ -930,7 +930,10 @@ func pointerEnd(ctx context.Context, q refs.Queryer, who model.Actor, key, kind,
 		node, err := lensKindNamed(ctx, q, who, address)
 		return node, storedEnd{kind: graphstore.KindLensKind, id: node.ID}, err
 	}
-	decoded, id, ok := decodeNodeAddress(address)
+	decoded, id, ok, err := resolvedNodeAddress(ctx, q, address)
+	if err != nil {
+		return model.GraphNode{}, storedEnd{}, err
+	}
 	constraint := kind == graphstore.TupleConstrainedBy && decoded == graphstore.KindConstraint
 	if ok && (kind == graphstore.TuplePreventedBy || constraint) {
 		node, found, err := refs.Node(ctx, q, who, decoded, id, true)

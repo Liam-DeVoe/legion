@@ -31,6 +31,9 @@ import (
 //     `dispatch://lens/<uuid>`), read as GET /api/v1/references reads one (text.ParseRef,
 //     refs.TargetOf). A pin or a version it carries names the same node.
 //
+// A document block's address is the node it resolves to (resolvedNodeAddress), so the spec's own
+// address of a block of an issue born converted names the room's node.
+//
 // A node stands under key when the issue it is located by is key: the issue itself, a document
 // of the issue and each of its blocks, an ask, a comment or a message of the issue and each of
 // their blocks, and a lens, a finding, a risk or a constraint whose part_of walk ends at one of
@@ -39,7 +42,10 @@ import (
 // binds) all answer one 404 NOT_FOUND (nodeNotFound), the same words for each, so the answer says
 // nothing of whether such a node exists.
 func FindNodeUnderIssue(ctx context.Context, q refs.Queryer, who model.Actor, key, id string) (model.GraphNode, error) {
-	kind, address, ok := decodeNodeAddress(id)
+	kind, address, ok, err := resolvedNodeAddress(ctx, q, id)
+	if err != nil {
+		return model.GraphNode{}, err
+	}
 	if !ok {
 		return model.GraphNode{}, nodeNotFound(key, id)
 	}
@@ -57,6 +63,26 @@ func FindNodeUnderIssue(ctx context.Context, q refs.Queryer, who model.Actor, ke
 // under the issue key.
 func nodeNotFound(key, id string) error {
 	return errorf(http.StatusNotFound, "NOT_FOUND", "no node %q under %s", id, key)
+}
+
+// resolvedNodeAddress is the registry kind and the store id the `{id}` segment names
+// (decodeNodeAddress), with a document block's address taken as the node it resolves to
+// (graphstore.MovedTo: its moved_to tuples first, then its document's room, then itself), as every
+// reader of a reference resolves one (T17 of this branch's plan). An address that resolves to no
+// block is answered as decoded, which names no node.
+func resolvedNodeAddress(ctx context.Context, q refs.Queryer, id string) (kind, address string, ok bool, err error) {
+	kind, address, ok = decodeNodeAddress(id)
+	if !ok || kind != refs.BlockNodeKind {
+		return kind, address, ok, nil
+	}
+	reached, resolved, err := graphstore.MovedTo(ctx, q, address)
+	if err != nil {
+		return "", "", false, err
+	}
+	if resolved {
+		address = reached
+	}
+	return kind, address, true, nil
 }
 
 // decodeNodeAddress is the registry kind and the store id the `{id}` segment names, as

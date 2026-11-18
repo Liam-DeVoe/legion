@@ -519,14 +519,17 @@ func checkPremortemMap(ctx context.Context, q refs.Queryer, who model.Actor, doc
 // the read registry with who's visibility (decodeNodeAddress, then refs.Nodes), as the lens read
 // reads its node: a block of any issue's document, since a risk of one issue may be prevented by
 // a check of another; that the check stands in the risk's project is the store's to hold when the
-// conversion writes (refusedPrevention), as it holds the pointer route's. Every address is read at
-// once, in one read of the registry and one read of the blocks' types, however many entries name
-// it. An address that decodes to no document block, a block no current version holds, one who may
-// not see, one that is gone and one that is no check are all absent, alike, so the answer tells
-// nothing of a node who may not see.
+// conversion writes (refusedPrevention), as it holds the pointer route's. Each address is the
+// node it resolves to (refs.ResolveFarEnds: its moved_to tuples first, then its document's room,
+// then itself), as the pointer route reads one (resolvedNodeAddress), so a check of an issue born
+// converted, written at its document's own address, is its room's node. Every address is read at
+// once, in one resolution, one read of the registry and one read of the blocks' types, however
+// many entries name it. An address that decodes to no document block, a block no current version
+// holds, one who may not see, one that is gone and one that is no check are all absent, alike, so
+// the answer tells nothing of a node who may not see.
 func premortemChecks(ctx context.Context, q refs.Queryer, who model.Actor, entries []PremortemEntry) (map[string]premortemCheck, error) {
 	named := map[string]refs.Target{}
-	var targets []refs.Target
+	var addresses []string
 	for _, entry := range entries {
 		for _, address := range entry.Checks {
 			if _, read := named[address]; read {
@@ -536,16 +539,27 @@ func premortemChecks(ctx context.Context, q refs.Queryer, who model.Actor, entri
 			if !ok || kind != refs.BlockNodeKind {
 				continue
 			}
-			target := refs.Target{Kind: kind, ID: id}
-			named[address] = target
-			if !slices.Contains(targets, target) {
-				targets = append(targets, target)
-			}
+			named[address] = refs.Target{Kind: kind, ID: id}
+			addresses = append(addresses, id)
 		}
 	}
 	checks := make(map[string]premortemCheck, len(named))
-	if len(targets) == 0 {
+	if len(named) == 0 {
 		return checks, nil
+	}
+	resolved, err := refs.ResolveFarEnds(ctx, q, addresses)
+	if err != nil {
+		return nil, err
+	}
+	var targets []refs.Target
+	for address, target := range named {
+		if node, moved := resolved[target.ID]; moved {
+			target.ID = node
+			named[address] = target
+		}
+		if !slices.Contains(targets, target) {
+			targets = append(targets, target)
+		}
 	}
 	nodes, err := refs.Nodes(ctx, q, who, true, targets)
 	if err != nil {

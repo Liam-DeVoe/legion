@@ -262,6 +262,55 @@ func DocumentRoomSQL(document string) string {
 	return `coalesce((select moved.room from document_rooms moved where moved.artifact_id = ` + document + `), ` + document + `)`
 }
 
+// ResolvedBlockSQL is the node a block far end of a reference resolves to, as SQL text answering a
+// node id, null where it resolves to none; address is the far end, a text SQL expression holding
+// a node id (text.TargetID). The one resolution is block_moved_to's (migration
+// 20261118165901_issue_tree_block_moved_to_room, T17 of this branch's plan): the address's current
+// moved_to tuple first, followed hop by hop, then the room its document's document_rooms row
+// names, then the address itself. A probe in front of it answers an address a document_blocks row
+// holds where no moved_to tuple runs from it and its document has no room, which is what the
+// function answers there, so a block that stands in a document that is its own room costs three
+// index probes and no call of the function, and a statement reading it reaches document_blocks
+// through document_blocks_node_id. Every statement that resolves a far end reads it from here
+// (BlockLinks, Closure, BlockTargets, ResolveFarEnds), and graphstore.MovedTo calls the function
+// alone.
+func ResolvedBlockSQL(address string) string {
+	return `coalesce((select held.node_id from document_blocks held
+		where held.node_id = ` + address + `
+		  and not exists (select 1 from document_rooms room where room.artifact_id = held.artifact_id)
+		  and not exists (select 1 from graph_tuples moved where moved.from_kind = '` + BlockNodeKind + `'
+		    and moved.from_id = ` + address + ` and moved.kind = '` + graphstore.TupleMovedTo + `')
+		limit 1), block_moved_to(` + address + `))`
+}
+
+// ResolveFarEnds reads, in one statement, the node each of addresses (block far ends, node ids)
+// resolves to (ResolvedBlockSQL), keyed by the address, for each that resolves to another node
+// than itself: an address that resolves to itself or to no block is absent.
+func ResolveFarEnds(ctx context.Context, q Queryer, addresses []string) (map[string]string, error) {
+	if len(addresses) == 0 {
+		return nil, nil
+	}
+	rows, err := q.Query(ctx, `
+		select p.address, resolved.node_id
+		from unnest($1::text[]) as p (address)
+		cross join lateral (select `+ResolvedBlockSQL("p.address")+` as node_id) resolved
+		where resolved.node_id <> p.address
+	`, addresses)
+	if err != nil {
+		return nil, fmt.Errorf("resolve the far ends %v: %w", addresses, err)
+	}
+	defer rows.Close()
+	resolved := make(map[string]string)
+	for rows.Next() {
+		var address, node string
+		if err := rows.Scan(&address, &node); err != nil {
+			return nil, fmt.Errorf("scan a resolved far end: %w", err)
+		}
+		resolved[address] = node
+	}
+	return resolved, rows.Err()
+}
+
 // MovedRoomBlockSQL is true of the block block (SQL text) of the artifact artifact (SQL text
 // answering a uuid) while that artifact is an issue's tree and the block's node has stood in more
 // than one document of its room: its in_document tuples, asserted at any time, name more than one
@@ -935,18 +984,55 @@ func heldAuthoredBlocks(ctx context.Context, tx pgx.Tx, refKey string, ids []str
 }
 
 // writtenParent is the far end the parent attribute of block id names in sources, as
-// replaceBlockRefs states its tuple, the zero far end where it names none or names a target the
-// store cannot key, of which no tuple is stated either.
-func writtenParent(sources authoredSources, id string) blockFarEnd {
+// replaceBlockRefs states its tuple: a block resolved through farEnds (authoredFarEnds), as that
+// write resolves a pointer's far end, and the zero far end where it names none or names a target
+// the store cannot key, of which no tuple is stated either.
+func writtenParent(sources authoredSources, farEnds map[string]string, id string) blockFarEnd {
 	ref, written := sources.parent[id]
 	if !written {
 		return blockFarEnd{}
 	}
 	target, ok := TargetOf(ref)
-	if !ok || !graphstore.AddressFits(target.ID) {
+	if !ok {
 		return blockFarEnd{}
 	}
+	far := resolvedFarEnd(target, farEnds)
+	if !graphstore.AddressFits(far.id) {
+		return blockFarEnd{}
+	}
+	return far
+}
+
+// resolvedFarEnd is target as a far end, a block's address taken as farEnds resolves it
+// (ResolveFarEnds) and every other target as it is.
+func resolvedFarEnd(target Target, farEnds map[string]string) blockFarEnd {
+	if node, moved := farEnds[target.ID]; moved && target.Kind == BlockNodeKind {
+		return blockFarEnd{kind: target.Kind, id: node}
+	}
 	return blockFarEnd{kind: target.Kind, id: target.ID}
+}
+
+// authoredFarEnds resolves, in one statement (ResolveFarEnds), each block far end the parent
+// attribute and the serves pointer of the authored nodes ids name in sources, as replaceBlockRefs
+// resolves the far ends of the same pointers when it writes their tuples: so a node is placed
+// under the node its pointer's tuple reaches, and its parent attribute compared with the parent
+// value the store holds in the same terms (placeAuthored).
+func authoredFarEnds(ctx context.Context, tx pgx.Tx, ids []string, sources authoredSources) (map[string]string, error) {
+	var addresses []string
+	add := func(ref text.Ref) {
+		if target, ok := TargetOf(ref); ok && target.Kind == BlockNodeKind {
+			addresses = append(addresses, target.ID)
+		}
+	}
+	for _, id := range ids {
+		if ref, written := sources.parent[id]; written {
+			add(ref)
+		}
+		for _, ref := range sources.serves[id] {
+			add(ref)
+		}
+	}
+	return ResolveFarEnds(ctx, tx, addresses)
 }
 
 // placeAuthored places the authored nodes of placement (D4 of dispatch://INFRA-1253's plan),
@@ -1003,6 +1089,10 @@ func placeAuthored(ctx context.Context, tx pgx.Tx, document indexedDocument, nod
 	if err != nil {
 		return nil, err
 	}
+	farEnds, err := authoredFarEnds(ctx, tx, ids, sources)
+	if err != nil {
+		return nil, err
+	}
 	places := authoredPlaces{document: document, nodes: nodes, placement: placement, parentIDs: parentIDs}
 	kept := make([]bool, len(placement.ids))
 	var placing []int
@@ -1012,7 +1102,7 @@ func placeAuthored(ctx context.Context, tx pgx.Tx, document indexedDocument, nod
 	for position, index := range authored {
 		stored := held[position]
 		if stored.placement == PlacementAuthored && stored.parent.kind != "" &&
-			stored.pointer == writtenParent(sources, ids[position]) {
+			stored.pointer == writtenParent(sources, farEnds, ids[position]) {
 			kept[index] = true
 			places.set(index, stored.parent)
 			if _, inVersion := places.ownBlock(stored.parent); stored.parent.kind == BlockNodeKind && inVersion < 0 {
@@ -1025,7 +1115,7 @@ func placeAuthored(ctx context.Context, tx pgx.Tx, document indexedDocument, nod
 	if len(placing) == 0 {
 		return kept, nil
 	}
-	resolved, err := resolveAuthored(ctx, tx, document, placement, placing, sources, keptEnds)
+	resolved, err := resolveAuthored(ctx, tx, document, placement, placing, sources, keptEnds, farEnds)
 	if err != nil {
 		return nil, err
 	}
@@ -1044,15 +1134,18 @@ func placeAuthored(ctx context.Context, tx pgx.Tx, document indexedDocument, nod
 }
 
 // authoredResolution is what the store says of the targets the authored nodes a pass places name
-// (resolveAuthored): each ask, comment or message, or block of one, by node id, with its item's
-// own issue and whether it is a conversation node at the pass's time (conversationTargets); each
-// block of another document that is a node of the store, by node id, with its document's issue,
-// "" for a document no issue holds; the chain of far ends the part_of of each such block, and of
-// each block no version of the pass holds that a kept node hangs under, climbs through as the
-// store holds it now, nearest first, at most authoredChainDepth long (PartOfChains, which the
-// cycle walk climbs, authoredPlaces.cycles); and the issues above the indexed document's own,
-// read only where a parent attribute names something of another issue.
+// (resolveAuthored): each block far end, by its address, resolved to another node than itself
+// (authoredFarEnds), which every read below takes in the address's place; each ask, comment or
+// message, or block of one, by node id, with its item's own issue and whether it is a
+// conversation node at the pass's time (conversationTargets); each block of another document that
+// is a node of the store, by node id, with its document's issue, "" for a document no issue holds;
+// the chain of far ends the part_of of each such block, and of each block no version of the pass
+// holds that a kept node hangs under, climbs through as the store holds it now, nearest first, at
+// most authoredChainDepth long (PartOfChains, which the cycle walk climbs,
+// authoredPlaces.cycles); and the issues above the indexed document's own, read only where a
+// parent attribute names something of another issue.
 type authoredResolution struct {
+	farEnds   map[string]string
 	items     map[string]pmdoc.BlockTarget
 	blocks    map[string]string
 	chains    map[string][]Target
@@ -1067,8 +1160,8 @@ const authoredChainDepth = 64
 
 // resolveAuthored reads authoredResolution for the authored nodes of placement at placing, and
 // the chains of keptEnds besides, in at most four statements however many nodes name however
-// many targets.
-func resolveAuthored(ctx context.Context, tx pgx.Tx, document indexedDocument, placement *blockPlacement, placing []int, sources authoredSources, keptEnds []string) (authoredResolution, error) {
+// many targets, beside the one that resolved farEnds.
+func resolveAuthored(ctx context.Context, tx pgx.Tx, document indexedDocument, placement *blockPlacement, placing []int, sources authoredSources, keptEnds []string, farEnds map[string]string) (authoredResolution, error) {
 	var items []text.Ref
 	var blocks []string
 	own := document.refKey + "#"
@@ -1079,7 +1172,8 @@ func resolveAuthored(ctx context.Context, tx pgx.Tx, document indexedDocument, p
 				items = append(items, ref)
 			}
 		case block && ref.Kind == BlockNodeKind:
-			if id := text.TargetID(ref); !strings.HasPrefix(id, own) && !slices.Contains(blocks, id) {
+			target, _ := TargetOf(ref)
+			if id := resolvedFarEnd(target, farEnds).id; !strings.HasPrefix(id, own) && !slices.Contains(blocks, id) {
 				blocks = append(blocks, id)
 			}
 		}
@@ -1096,7 +1190,7 @@ func resolveAuthored(ctx context.Context, tx pgx.Tx, document indexedDocument, p
 			add(ref, true, false)
 		}
 	}
-	var resolved authoredResolution
+	resolved := authoredResolution{farEnds: farEnds}
 	if len(items) > 0 {
 		var err error
 		if resolved.items, err = conversationTargets(ctx, tx, items, document.at); err != nil {
@@ -1144,7 +1238,7 @@ func resolveAuthored(ctx context.Context, tx pgx.Tx, document indexedDocument, p
 			continue
 		}
 		target, _ := TargetOf(ref)
-		issue, known := resolved.blocks[target.ID]
+		issue, known := resolved.blocks[resolvedFarEnd(target, farEnds).id]
 		if item, found := resolved.items[target.ID]; found {
 			issue, known = item.Issue, true
 		}
@@ -1355,14 +1449,18 @@ func (p *authoredPlaces) candidates(index int, sources authoredSources, resolved
 
 // target is the far end ref names where an authored node may hang under it: for its parent
 // attribute (above), a conversation node, or a block of a document, of the node's own issue or of
-// an issue above it; for a serves target, a block of a document of its own issue. A block of the
-// indexed artifact is one only where the version holds it, since the pass places no other.
+// an issue above it; for a serves target, a block of a document of its own issue. A block is the
+// node its address resolves to (resolved.farEnds). A block of the indexed artifact is one only
+// where the version holds it, since the pass places no other.
 func (p *authoredPlaces) target(ref text.Ref, resolved authoredResolution, above bool) (blockFarEnd, bool) {
 	target, ok := TargetOf(ref)
-	if !ok || !graphstore.AddressFits(target.ID) {
+	if !ok {
 		return blockFarEnd{}, false
 	}
-	far := blockFarEnd{kind: target.Kind, id: target.ID}
+	far := resolvedFarEnd(target, resolved.farEnds)
+	if !graphstore.AddressFits(far.id) {
+		return blockFarEnd{}, false
+	}
 	var issue string
 	switch {
 	case pmdoc.ItemKindOf(ref) != "":
@@ -1375,7 +1473,7 @@ func (p *authoredPlaces) target(ref text.Ref, resolved authoredResolution, above
 		if block, held := p.ownBlock(far); block != "" {
 			return far, held >= 0
 		}
-		held, found := resolved.blocks[target.ID]
+		held, found := resolved.blocks[far.id]
 		if !found {
 			return blockFarEnd{}, false
 		}

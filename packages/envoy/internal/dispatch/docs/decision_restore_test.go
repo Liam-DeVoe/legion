@@ -300,10 +300,13 @@ func TestTheConversionTurnsEachSectionIntoANodeOrARuleDeletesIt(t *testing.T) {
 	if err := issue.database.Pool.QueryRow(context.Background(), `select retired_at is not null, role from artifacts where id = $1`, decisions).Scan(&retired, &role); err != nil || !retired || role != nil {
 		t.Errorf("the decisions document reads retired %v role %v (%v), want retired with no role", retired, role, err)
 	}
+	// The readings' alone: the block index states an authored_by of every authored node too (the
+	// requirement r1 alice wrote, the issue tree's branch), which is no reading.
 	var authored int
 	if err := issue.database.Pool.QueryRow(context.Background(), `
-		select count(*) from graph_tuples
-		where kind = $1 and from_kind = $2 and starts_with(from_id, $3) and to_kind = $4 and to_id = 'alice' and asserted
+		select count(*) from graph_tuples t
+		where t.kind = $1 and t.from_kind = $2 and starts_with(t.from_id, $3) and t.to_kind = $4 and t.to_id = 'alice' and t.asserted
+		  and exists (select 1 from graph_nodes n where n.kind = t.from_kind and n.id = t.from_id and n.supertag = 'reading')
 	`, graphstore.TupleAuthoredBy, refs.BlockNodeKind, issue.refKey(issue.spec)+"#", graphstore.KindPerson).Scan(&authored); err != nil || authored != 1 {
 		t.Errorf("the spec's readings hold %d authored_by tuples to alice (%v), want the one reading's: the author of its section's newest version", authored, err)
 	}

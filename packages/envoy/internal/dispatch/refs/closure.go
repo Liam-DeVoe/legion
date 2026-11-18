@@ -25,34 +25,43 @@ type Member struct {
 	Via    model.ReferenceVia
 }
 
-// documentTarget is true of a refs row r whose target is a document, or a block a current
-// version of its document holds, or a block address that no longer stands whose moved_to tuples
-// reach one (graphstore.MovedTo); documentOfTarget is that document's ref_key, which never holds
-// a '#': the document of the block the target resolved to, so a citation of a block that moved
-// reaches the document it moved into (dispatch://INFRA-1150 R8). documentBlockHeld is the join
-// that answers the block a block target resolves to, block_target.node_id, and documentTarget
-// reads its answer rather than an `exists` probe of its own: inside the recursive walk below the
-// probe sits under an OR, which no semijoin can carry, so the planner plans it as a hashed subplan
-// and reads all of document_blocks to build the hash — 800,000 rows and 45,915 buffers of a
-// 122,128-buffer read, once for each place the predicate is spliced into. A lateral whose probe
-// stops at its first row is a nested loop keyed through document_blocks_node_id, the hash index on
-// exactly node_id, and it runs at all only for a block target, because its own to_kind test is a
-// one-time filter the planner re-reads on each loop. Only a target that probe finds no row for is
-// followed through block_moved_to, the SQL function every resolver reads a move through, so a
-// block that stands costs the probe alone.
+// documentTarget is true of a refs row r whose target is a document, or a block address that
+// resolves to a block a current version of its document holds (ResolvedBlockSQL: its moved_to
+// tuples first, then its document's room, then the address itself); documentOfTarget is that
+// document's ref_key, which never holds a '#': the document holding the block the target resolved
+// to, so a citation of a block that moved reaches the document it moved into (through the
+// moved_to tuple an earlier branch's restore writes), and a citation of a block of a document
+// converted into its issue's room, at the document's own address, reaches that document, whose
+// fragment of the room holds the block, never the room's tree, whose ref_key the node's own
+// address carries. documentBlockHeld is the join that answers the block a block target resolves
+// to, block_target.node_id, with that document's ref_key,
+// block_target.ref_key, and documentTarget reads its answer rather than an `exists` probe of its
+// own: inside the recursive walk below the probe sits under an OR, which no semijoin can carry, so
+// the planner plans it as a hashed subplan and reads all of document_blocks to build the hash —
+// 800,000 rows and 45,915 buffers of a 122,128-buffer read, once for each place the predicate is
+// spliced into. A lateral whose probe stops at its first row is a nested loop keyed through
+// document_blocks_node_id, the hash index on exactly node_id, and it runs at all only for a block
+// target, because its own to_kind test is a one-time filter the planner re-reads on each loop.
+// Only a target that probe does not answer is resolved through block_moved_to, so a block that
+// stands costs the probe alone.
 //
 // documentTarget states the two target kinds the scan must read in a clause of their own as
 // well. The kinds are implied by its disjunction, but that disjunction now reads a column of a
 // join, so the planner can no longer derive the restriction from it and would read refs whole.
-const (
-	documentBlockHeld = `left join lateral (
-				select coalesce(
-					(select d.node_id from document_blocks d where d.node_id = r.to_id limit 1),
-					block_moved_to(r.to_id)) as node_id
+var documentBlockHeld = `left join lateral (
+				select resolved.node_id, coalesce(
+					(select owner.ref_key from document_blocks held
+					 join issue_room_blocks room_block on room_block.tree_artifact_id = held.artifact_id and room_block.block_id = held.block_id
+					 join artifacts owner on owner.id = room_block.document_id
+					 where held.node_id = resolved.node_id limit 1),
+					split_part(resolved.node_id, '#', 1)) as ref_key
+				from (select ` + ResolvedBlockSQL("r.to_id") + ` as node_id) resolved
 				where r.to_kind = 'block'
 			) block_target on true`
+
+const (
 	documentTarget   = `(r.to_kind in ('artifact', 'block') and (r.to_kind = 'artifact' or block_target.node_id is not null))`
-	documentOfTarget = `case when r.to_kind = 'block' then split_part(block_target.node_id, '#', 1) else r.to_id end`
+	documentOfTarget = `case when r.to_kind = 'block' then block_target.ref_key else r.to_id end`
 )
 
 // documentMovedTo is the join that answers, for a refs row r whose target is a document, the lens

@@ -130,9 +130,26 @@ type premortemRig struct {
 	// documentID the id of its artifacts row.
 	slug, refKey, address, documentID string
 	// otherIssueCheck is a check of the second issue, a dispatch:// address, and each node id the
-	// id a prevented_by tuple names its check by.
+	// id a prevented_by tuple names its check by: the node its address resolves to, its issue's
+	// room's node, every issue being born converted (nodeOf).
 	otherIssueCheck                                 string
 	checkNode, secondCheckNode, otherIssueCheckNode string
+}
+
+// nodeOf is the node id the check at the dispatch:// address resolves to (graphstore.MovedTo: on
+// an issue born converted, its room's node, `<tree ref_key>#<block>`), which the conversion's and
+// the pointer route's prevented_by name it by.
+func (r premortemRig) nodeOf(address string) string {
+	r.t.Helper()
+	_, id, ok := decodeNodeAddress(address)
+	if !ok {
+		r.t.Fatalf("%s decodes to no node", address)
+	}
+	node, resolved, err := graphstore.MovedTo(context.Background(), r.database.Pool, id)
+	if err != nil || !resolved {
+		r.t.Fatalf("resolve the check %s: resolved %t, %v", address, resolved, err)
+	}
+	return node
 }
 
 func newPremortemRig(t *testing.T) premortemRig {
@@ -149,12 +166,10 @@ func newPremortemRig(t *testing.T) premortemRig {
 	rig.otherIssue = decodeBody[struct {
 		Key string `json:"key"`
 	}](t, other).Key
-	_, rig.checkNode, _ = decodeNodeAddress(rig.check)
-	_, rig.secondCheckNode, _ = decodeNodeAddress(rig.secondCheck)
 	otherVerification := uploadDocument(t, rig.handler, "/api/v1/issues/"+rig.otherIssue, "verification.md",
 		checkServing("k9", refs.BlockRef("dispatch://"+rig.otherIssue+"/spec", "r9")))
 	rig.otherIssueCheck = refs.BlockRef("dispatch://"+rig.otherIssue+"/artifact/"+otherVerification.Artifact.Slug, "k9")
-	rig.otherIssueCheckNode = otherVerification.Artifact.RefKey + "#k9"
+	rig.checkNode, rig.secondCheckNode, rig.otherIssueCheckNode = rig.nodeOf(rig.check), rig.nodeOf(rig.secondCheck), rig.nodeOf(rig.otherIssueCheck)
 	premortem := uploadDocument(t, rig.handler, "/api/v1/issues/"+rig.issue, "graph-premortem.md", rig.capture.Document.Markdown)
 	rig.slug, rig.refKey, rig.documentID = premortem.Artifact.Slug, premortem.Artifact.RefKey, premortem.Artifact.ID
 	rig.address = "dispatch://" + rig.issue + "/artifact/" + rig.slug
@@ -169,7 +184,8 @@ func (r premortemRig) otherProjectCheck() (address, node string) {
 		":::requirement{#r7}\nEvery project keeps its own checks.\n:::\n")
 	verification := uploadDocument(r.t, r.handler, "/api/v1/issues/"+issue.Key, "verification.md",
 		checkServing("k7", refs.BlockRef("dispatch://"+issue.Key+"/spec", "r7")))
-	return refs.BlockRef("dispatch://"+issue.Key+"/artifact/"+verification.Artifact.Slug, "k7"), verification.Artifact.RefKey + "#k7"
+	address = refs.BlockRef("dispatch://"+issue.Key+"/artifact/"+verification.Artifact.Slug, "k7")
+	return address, r.nodeOf(address)
 }
 
 // premortemMap is a map of each of the document's eleven risks: risk 0 to both checks of the

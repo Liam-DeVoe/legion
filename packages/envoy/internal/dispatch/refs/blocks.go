@@ -1568,6 +1568,11 @@ func pointerPairs(nodes []model.ArtifactBlock, pointers []Pointer) ([]blockPair,
 // that time. It is the one version a pass over a document indexes, and for an issue room the
 // version of the block's own document (IndexBlocks), so a reader keying a pair's version by the
 // block's document (BlockDocumentSQL) finds that document's.
+//
+// Before it writes, it resolves the far end of every pair a pointer holds (resolvePointerPairs),
+// in one statement, and rewrites that pair in pairs, the caller's slice, to the node it resolves
+// to: the row, its tuple and the targets it answers name that node, and so does every read the
+// caller makes of pairs after it, such as the links it retracts beside them (unheldLinks).
 func replaceBlockRefs(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -1578,6 +1583,10 @@ func replaceBlockRefs(
 	pairs []blockPair,
 	scope *pairScope,
 ) ([]Target, []graphstore.UncausedTuple, error) {
+	pairs, err := resolvePointerPairs(ctx, tx, artifactID, pairs)
+	if err != nil {
+		return nil, nil, err
+	}
 	blockIDs := make([]string, len(pairs))
 	kinds := make([]string, len(pairs))
 	toKinds := make([]string, len(pairs))
@@ -1705,6 +1714,90 @@ func replaceBlockRefs(
 	return moved, tuples, nil
 }
 
+// resolvePointerPairs rewrites, in place, the far end of each of pairs a pointer holds - every
+// pair but a block's mention whose target is a block: a `block[]` attribute's, a decision's or an
+// ask block's tie (pointerPairs) - to the node it resolves to now (ResolvedBlockSQL), read in one
+// statement. A far end that resolves to no block - its block deleted - takes the address the
+// resolution's two steps name without asking for a row (block_address_walk, then
+// block_room_address), where a block_refs row of document artifactID holds that address: so the
+// pair keeps the far end its row and its tuple already name, and its row stays, as the row of a
+// pointer at a deleted block of a document that is its own room stays; a later version that drops
+// the pointer retracts that tuple. Any other far end stays as written. Two pointers of one block
+// and one kind that name two addresses of one node are one link once resolved, so it answers
+// pairs with each such repeat after the first left out, a slice of its own where there is one and
+// pairs itself where there is none.
+func resolvePointerPairs(ctx context.Context, q Queryer, artifactID string, pairs []blockPair) ([]blockPair, error) {
+	pointer := func(pair blockPair) bool { return pair.kind != "mentions" && pair.target.Kind == BlockNodeKind }
+	var addresses []string
+	for _, pair := range pairs {
+		if pointer(pair) {
+			addresses = append(addresses, pair.target.ID)
+		}
+	}
+	if len(addresses) == 0 {
+		return pairs, nil
+	}
+	rows, err := q.Query(ctx, `
+		select p.address, resolved.node_id
+		from (select distinct unnest($2::text[]) as address) p
+		cross join lateral (
+			select coalesce(`+ResolvedBlockSQL("p.address")+`, (
+				select named.address from (
+					select coalesce(block_room_address(walked.reached), walked.reached) as address
+					from (select block_address_walk(p.address) as reached) walked
+				) named
+				where exists (select 1 from block_refs held
+					where held.artifact_id = $1::uuid and held.to_kind = '`+BlockNodeKind+`' and held.to_id = named.address)
+			)) as node_id
+		) resolved
+		where resolved.node_id <> p.address
+	`, artifactID, addresses)
+	if err != nil {
+		return nil, fmt.Errorf("resolve the far ends of the pointers of %s: %w", artifactID, err)
+	}
+	resolved := make(map[string]string)
+	for rows.Next() {
+		var address, node string
+		if err := rows.Scan(&address, &node); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan a resolved far end of %s: %w", artifactID, err)
+		}
+		resolved[address] = node
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil || len(resolved) == 0 {
+		return pairs, err
+	}
+	for index, pair := range pairs {
+		if node, moved := resolved[pair.target.ID]; moved && pointer(pair) {
+			pairs[index].target.ID = node
+		}
+	}
+	type pairKey struct {
+		blockID, kind string
+		target        Target
+	}
+	seen := make(map[pairKey]struct{}, len(pairs))
+	var unique []blockPair
+	for index, pair := range pairs {
+		key := pairKey{pair.blockID, pair.kind, pair.target}
+		if _, repeated := seen[key]; repeated {
+			if unique == nil {
+				unique = slices.Clone(pairs[:index])
+			}
+			continue
+		}
+		seen[key] = struct{}{}
+		if unique != nil {
+			unique = append(unique, pair)
+		}
+	}
+	if unique == nil {
+		return pairs, nil
+	}
+	return unique, nil
+}
+
 // pairScope is the rows of a document's block_refs one reconcile may delete (replaceBlockRefs):
 // those of the tuple kinds kinds held by the blocks blocks.
 type pairScope struct {
@@ -1770,31 +1863,32 @@ func scanBlockRefRows(rows pgx.Rows, err error) ([]blockRefRow, error) {
 // toArtifact (artifact uuids; the two may be one document), newest first, then by the source
 // block's node id, then by the target's. A link counts only while both of its blocks are current
 // blocks of their documents: a deleted block's links drop out, and its stored mentions bring them
-// back when a version holds its id again. A link whose target no current version holds but whose
-// moved_to tuples reach a block of toArtifact (graphstore.MovedTo) counts as a link to that block,
-// which it names, so a citation written before its target moved still reaches it
-// (dispatch://INFRA-1150 R8); only a target no row holds is followed through block_moved_to, so a
-// link to a block that stands costs the probe alone. A pointer's link counts only while the block
-// it reaches has a type the pointer allows, tested as the arm of graph_edges that answers the row
-// tests it (blockRefListed). A link either of whose blocks who may not see drops out the same
-// way, since neither end resolves to a node.
+// back when a version holds its id again. A link's target is the node its far end resolves to
+// (ResolvedBlockSQL: its moved_to tuples first, then its document's room, then itself), which it
+// names: so a citation written before its target moved still reaches it (the moved_to tuple an
+// earlier branch's restore writes), and a citation of a block of a document converted into its
+// issue's room, written at the document's own address, reaches the room's node. A pointer's link
+// counts only while the block it reaches has a type the pointer allows, tested as the arm of
+// graph_edges that answers the row tests it (blockRefListed). A link either of whose blocks who
+// may not see drops out the same way, since neither end resolves to a node.
 //
 // It reads no document's address and follows no document's move: it takes the two documents by
 // uuid, and a document the pre-mortem conversion retired, whose address moved to a lens
 // (api.ConvertPremortem), keeps its row, its uuid, its versions and its blocks, so the links to its
-// blocks from a third document read as they did before it was retired.
+// blocks from a third document read as they did before it was retired. A document's blocks are
+// the rows of the room it is edited in (DocumentRoomSQL) that are its own (BlockDocumentSQL): a
+// converted document's are the rows of its fragment, which its issue room's tree artifact keys,
+// with their links.
 func BlockLinks(ctx context.Context, q Queryer, who model.Actor, fromArtifact, toArtifact string) ([]model.BlockLink, error) {
 	rows, err := q.Query(ctx, `
 		select r.kind, r.from_node, t.node_id, r.created_at, r.created_version
 		from block_refs r
 		join document_blocks f on f.artifact_id = r.artifact_id and f.block_id = r.block_id
-		cross join lateral (
-			select coalesce(
-				(select held.node_id from document_blocks held where held.node_id = r.to_id limit 1),
-				block_moved_to(r.to_id)) as node_id
-		) target
-		join document_blocks t on t.node_id = target.node_id and t.artifact_id = $2::uuid
-		where r.artifact_id = $1::uuid and r.to_kind = 'block' and `+blockRefListed("r", "t.node_id")+`
+		cross join lateral (select `+ResolvedBlockSQL("r.to_id")+` as node_id) target
+		join document_blocks t on t.node_id = target.node_id and t.artifact_id = `+DocumentRoomSQL("$2::uuid")+`
+		where r.artifact_id = `+DocumentRoomSQL("$1::uuid")+` and r.to_kind = 'block'
+		  and `+BlockDocumentSQL("f")+` = $1::uuid and `+BlockDocumentSQL("t")+` = $2::uuid
+		  and `+blockRefListed("r", "t.node_id")+`
 		order by r.created_at desc, r.from_node, t.node_id`, fromArtifact, toArtifact)
 	if err != nil {
 		return nil, fmt.Errorf("list the block links from %s to %s: %w", fromArtifact, toArtifact, err)
@@ -1881,10 +1975,12 @@ func BlockChanges(ctx context.Context, q Queryer, artifactID string) (map[string
 // names, by node id (text.TargetID), as the block index would hold it once that write, leaving the
 // blocks written (rendered, in document order, each parent before its children), is indexed, read
 // through q: a block of that document as written's node for its id (uniqueBlocks: the first
-// holder of a repeated id, and no id the index cannot key), any other block of a document as its
-// document's current blocks (document_blocks) hold it, with one query for every such target; an
-// ask, a comment or a message, or a current block of one, as conversationTargets reads it, with
-// its item's own issue and R2's test at the write's time; and an issue by its key. A target no row
+// holder of a repeated id, and no id the index cannot key); any other block as the node its
+// address resolves to (ResolvedBlockSQL: its moved_to tuples, then its document's room, then
+// itself) is held, with the type that node has and the document holding it (BlockDocumentSQL: a
+// converted document's, never its room's tree), with one query for every such target; an ask, a
+// comment or a message, or a current block of one, as conversationTargets reads it, with its
+// item's own issue and R2's test at the write's time; and an issue by its key. A target no row
 // has is absent. The write lands in the document's own issue, or in none when a project holds
 // it; that issue's ancestors are read only once a target turns out to sit in another document or
 // in another issue's item (IssueAncestors), since a pointer inside the writing document - a plan
@@ -1927,9 +2023,11 @@ func BlockTargets(ctx context.Context, q Queryer, artifactID string, written []m
 	}
 	if len(elsewhere) > 0 {
 		rows, err := q.Query(ctx, `
-			select d.node_id, d.type, a.ref_key, coalesce(a.issue_key, '')
-			from document_blocks d join artifacts a on a.id = d.artifact_id
-			where d.node_id = any($1)
+			select p.address, d.type, a.ref_key, coalesce(a.issue_key, '')
+			from (select distinct unnest($1::text[]) as address) p
+			cross join lateral (select `+ResolvedBlockSQL("p.address")+` as node_id) resolved
+			join document_blocks d on d.node_id = resolved.node_id
+			join artifacts a on a.id = `+BlockDocumentSQL("d")+`
 		`, elsewhere)
 		if err != nil {
 			return pmdoc.BlockWriting{}, nil, fmt.Errorf("read the blocks %s points at: %w", artifactID, err)

@@ -189,31 +189,32 @@ func requirementsSpec(ids []string) string {
 // r-one-tree, the first of its six serves targets that is a node of its own issue.
 func TestPlacementAndCoverageAreTwoRelations(t *testing.T) {
 	handler, database := blockIndexHandler(t)
-	// The issues are created as before the issue room: the blocks are read at their documents' own
-	// addresses, `<issue>/<slug>#<block>`, where an issue born converted keys its blocks by its
-	// tree artifact.
-	holdIssuesUnconverted(t, database)
 	createReferenceAPIProject(t, handler, "CORE")
 	if issue := createSpecIssue(t, handler, "CORE", placementSpec); issue.Key != "CORE-1" {
 		t.Fatalf("the seeded issue is %s, want CORE-1, which its spec's references name", issue.Key)
 	}
-	spec := func(id string) string { return "CORE-1/spec#" + id }
+	// Each issue is born converted: its documents' blocks are its room's nodes, `<tree ref_key>#<block>`,
+	// which a serves written at the spec's own address reaches (T17 of this branch's plan).
+	core := readDecisionDocument(t, database, "CORE-1", "spec")
+	spec := core.address
 	ref := func(id string) string { return "dispatch://CORE-1/spec#b-" + id }
 	for _, requirement := range []struct{ id, criterion string }{{"r1", "k1"}, {"r2", "k1"}, {"r3", "k2"}, {"r4", "k2"}} {
 		requirePlaced(t, database, "requirement "+requirement.id, spec(requirement.id),
 			refs.BlockNodeKind, spec(requirement.criterion), requirement.criterion, refs.PlacementAuthored)
 	}
 
-	for _, node := range []struct{ what, upload, typ, id, slug string }{
-		{"the check", "checks.md", "check", "c1", "checks-md"},
-		{"the plan node", "plan.md", "plan_task", "t1", "plan-md"},
+	for _, node := range []struct{ what, upload, typ, id string }{
+		{"the check", "checks.md", "check", "c1"},
+		{"the plan node", "plan.md", "plan_task", "t1"},
 	} {
-		address := "CORE-1/" + node.slug + "#" + node.id
+		address := core.address(node.id)
 		uploadDocument(t, handler, "/api/v1/issues/CORE-1", node.upload, servingNode(node.typ, node.id, ref("r1"), ref("r2"), ref("r3")))
 		if nodes := blockNodesNamed(t, database, node.id); nodes != 1 {
 			t.Errorf("%s serving three requirements is %d node(s), want one with one id", node.what, nodes)
 		}
-		requirePlaced(t, database, node.what, address, refs.BlockNodeKind, spec("r1"), "", refs.PlacementAuthored)
+		// The check's document and the spec are fragments of one room, whose rows its tree keys,
+		// so the row projects its parent requirement by its block id.
+		requirePlaced(t, database, node.what, address, refs.BlockNodeKind, spec("r1"), "r1", refs.PlacementAuthored)
 		if ranks := valuesHeld(t, database, address, refs.AttributeRank); ranks != 1 {
 			t.Errorf("%s holds %d rank(s), want one", node.what, ranks)
 		}
@@ -241,18 +242,18 @@ func TestPlacementAndCoverageAreTwoRelations(t *testing.T) {
 		}
 		// Both facts read back: the parent it was first given, a requirement it no longer serves,
 		// and the three it serves now. No read moves it back.
-		requirePlaced(t, database, node.what+" after its retarget", address, refs.BlockNodeKind, spec("r1"), "", refs.PlacementAuthored)
+		requirePlaced(t, database, node.what+" after its retarget", address, refs.BlockNodeKind, spec("r1"), "r1", refs.PlacementAuthored)
 		requireServes(t, database, node.what+" after its retarget", address, spec("r2"), spec("r3"), spec("r4"))
 	}
 
 	// A child's check and plan node serving the parent's first requirement alone serve no
 	// requirement of their own issue, so each hangs from the child issue.
 	child := createChildIssue(t, handler, "CORE", "CORE-1", "The child's spec.\n")
-	for _, node := range []struct{ what, upload, typ, id, slug string }{
-		{"the child's check", "checks.md", "check", "cc1", "checks-md"},
-		{"the child's plan node", "plan.md", "plan_task", "ct1", "plan-md"},
+	for _, node := range []struct{ what, upload, typ, id string }{
+		{"the child's check", "checks.md", "check", "cc1"},
+		{"the child's plan node", "plan.md", "plan_task", "ct1"},
 	} {
-		address := child.Key + "/" + node.slug + "#" + node.id
+		address := readDecisionDocument(t, database, child.Key, "spec").address(node.id)
 		uploadDocument(t, handler, "/api/v1/issues/"+child.Key, node.upload, servingNode(node.typ, node.id, ref("r1")))
 		requirePlaced(t, database, node.what, address, graphstore.KindIssue, child.Key, "", refs.PlacementAuthored)
 		requireServes(t, database, node.what, address, spec("r1"))
@@ -286,11 +287,12 @@ func TestPlacementAndCoverageAreTwoRelations(t *testing.T) {
 	if uploaded.Version.Number != 1 {
 		t.Fatalf("the copy's upload stored version %d, want 1", uploaded.Version.Number)
 	}
-	census := "TREE-2/verification-md#c-tree-census"
+	treeOne, treeTwo := readDecisionDocument(t, database, "TREE-1", "spec"), readDecisionDocument(t, database, "TREE-2", "spec")
+	census := treeTwo.address("c-tree-census")
 	if nodes := blockNodesNamed(t, database, "c-tree-census"); nodes != 1 {
 		t.Errorf("c-tree-census is %d node(s), want one with one id", nodes)
 	}
-	requirePlaced(t, database, "c-tree-census", census, refs.BlockNodeKind, "TREE-2/spec#r-one-tree", "", refs.PlacementAuthored)
-	requireServes(t, database, "c-tree-census", census, "TREE-2/spec#r-one-tree", "TREE-2/spec#r-queries",
-		"TREE-2/spec#r-artifacts-in-tree", "TREE-2/spec#r-result-node", "TREE-2/spec#r-issue-relations", "TREE-1/spec#r-document-tree")
+	requirePlaced(t, database, "c-tree-census", census, refs.BlockNodeKind, treeTwo.address("r-one-tree"), "r-one-tree", refs.PlacementAuthored)
+	requireServes(t, database, "c-tree-census", census, treeTwo.address("r-one-tree"), treeTwo.address("r-queries"),
+		treeTwo.address("r-artifacts-in-tree"), treeTwo.address("r-result-node"), treeTwo.address("r-issue-relations"), treeOne.address("r-document-tree"))
 }

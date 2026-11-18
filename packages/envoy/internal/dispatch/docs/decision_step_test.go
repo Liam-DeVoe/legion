@@ -731,6 +731,16 @@ func TestABootWaitsForNoPassOfTheThirdPhase(t *testing.T) {
 	issue := newRestoreIssue(t, "# Spec\n\n:::ask{#q-boot urgency=\"med\" multiple=\"false\"}\nWhich build writes the corpus?\n:::\n")
 	issue.answer(issue.spec, "q-boot", "The base release.")
 	issue.replace(issue.spec, "# Spec\n\nThe corpus.\n")
+	// The fixture writes the issue and its documents as the release before writes them, naming no
+	// node, which phase 1 owes since the issue tree's branch marks them (graphcensus.AsksOwed): a
+	// boot runs phase 1 over them first, as every process does before it serves, so the tick below
+	// owes phase 1 nothing and its one pass is phase 3's.
+	if err := NewDecisionStep(issue.database, catchUpCommit, nil).Boot(ctx); err != nil {
+		t.Fatalf("boot over the fixture's rows: %v", err)
+	}
+	if owed, err := graphcensus.AsksOwed(ctx, issue.database.Pool); err != nil || owed {
+		t.Fatalf("phase 1 owes a row %t (%v) after the boot, want none, so the tick's one pass is phase 3's", owed, err)
+	}
 	holder, err := issue.database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the transaction that holds the issue: %v", err)

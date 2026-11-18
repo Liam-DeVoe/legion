@@ -192,11 +192,16 @@ var readsWithoutAViewer = map[string]string{
 	"NewReader":        serverWork + " - the index-time resolver acts for no person, and every edge it lets a write store is held to the predicates of both its ends when it is read",
 	"NextExcerptRetry": serverWork,
 	"OwedItemBlocks":   serverWork,
+	"PartOfChains": serverWork + " - the block index climbs the part_of chain of each block an authored node may hang under, " +
+		"to keep a cycle out of where it places that node (placeAuthored), and the chain reaches no reader",
 	"QueueAskPartIDs":  nodeDetail,
 	"RecordExcerpts":   serverWork,
 	"RemovedBlockNode": nodeDetail,
-	"ScopeSources":     serverWork,
-	"SourceText":       serverWork,
+	"ResolveFarEnds": "it answers node ids and nothing of any node: the block index resolves the far ends of the pointers it " +
+		"places a node by, and the pre-mortem conversion the checks its map names, whose nodes it then reads through Nodes, " +
+		"which binds each one's predicate, so a node who may not see is absent from what a reader is shown",
+	"ScopeSources": serverWork,
+	"SourceText":   serverWork,
 }
 
 // SeedStoreThroughItsWriters writes the people and agents a running deployment's store holds, as
