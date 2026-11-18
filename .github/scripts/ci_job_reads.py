@@ -461,7 +461,7 @@ REFGEN_REFUSALS = tuple(f"{ENVOY}/internal/broker/{d}" for d in ("api", "approva
 MODULE_SOURCES = [Read(path, "internal/dispatch/api/module_source_test.go:76 walks packages/envoy (infra, testdata "
                              "and all) and :83 parses every .go file it finds but the test files (:80), for "
                              "the tests that ask it for the module's sources: lock_level_test.go:89, "
-                             "event_insert_guard_test.go:77 and :326, review_order_guard_test.go:49, "
+                             "event_insert_guard_test.go:77 and :329, review_order_guard_test.go:49, "
                              "review_write_guard_test.go:51, one_expression_guard_test.go:66")
                   for path in files_but_tests(ENVOY, tree=True)]
 
@@ -774,7 +774,7 @@ RULES = {
     # The id guard also reads the migrations' guard, to hold its sequence pattern to its own.
     f"{ENVOY}/internal/dispatch/api/event_insert_guard_test.go": MODULE_SOURCES + reads(
         (f"{ENVOY}/internal/dispatch/store/migration_event_id_guard_test.go",
-         "internal/dispatch/api/event_insert_guard_test.go:315 parses it under ../../.. (moduleRoot, "
+         "internal/dispatch/api/event_insert_guard_test.go:318 parses it under ../../.. (moduleRoot, "
          "migrationPattern at :202) and holds its migrationEventIDSequence binding to eventIDSequence")),
     f"{ENVOY}/internal/dispatch/api/review_write_guard_test.go": MODULE_SOURCES,
     # main's #3429 put this check in who_waits_test.go, a behaviour file of this package, where

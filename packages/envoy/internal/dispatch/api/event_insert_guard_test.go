@@ -121,13 +121,13 @@ var eventInsertColumns = regexp.MustCompile(`\binsert into (?:"?public"? ?\. ?)?
 var eventIDSequence = regexp.MustCompile(`\bevents_id_seq\b|pg_get_serial_sequence\(\s*'\s*(?:"?public"?\s*\.\s*)?"?events"?\s*'|pg_get_serial_sequence\(\s*[^'\s]`)
 
 // eventDerivedTable is a table made from events: one that inherits from it (inherits (...), or
-// alter table ... inherit events) or is a partition of it (partition of events), whose rows are
-// rows of events written under a lock on that table and not on events, or one made like events,
-// alone or after other columns, which can take events' id default. Any attach partition is one
-// too: the scan reads no parent there, and the module attaches none. The migrations' schema is
-// held to the same by store.TestOnlyTheEventsIDDefaultDrawsFromItsSequence, which reads the
-// catalog.
-var eventDerivedTable = regexp.MustCompile(`\binherits ?\([^)]*\bevents\b|\binherit (?:"?public"? ?\. ?)?"?events\b|\bpartition of (?:"?public"? ?\. ?)?"?events\b|\battach partition\b|[(,] ?like (?:"?public"? ?\. ?)?"?events\b`)
+// alter table ... inherit events) or is a partition of it (partition of events, or alter table
+// events attach partition ...), whose rows are rows of events written under a lock on that table
+// and not on events, or one made like events, alone or after other columns, which can take
+// events' id default. An attach partition names its parent, so another table's attach is no
+// offence. The migrations' schema is held to the same by
+// store.TestOnlyTheEventsIDDefaultDrawsFromItsSequence, which reads the catalog.
+var eventDerivedTable = regexp.MustCompile(`\binherits ?\([^)]*\bevents\b|\binherit (?:"?public"? ?\. ?)?"?events\b|\bpartition of (?:"?public"? ?\. ?)?"?events\b|\balter table (?:if exists )?(?:"?public"? ?\. ?)?"?events\b"? attach partition\b|[(,] ?like (?:"?public"? ?\. ?)?"?events\b`)
 
 // migrationEventIDGuard is store.TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault's file: the
 // server runs its embedded migrations too, and that test holds their SQL to eventIDSequence.
@@ -297,6 +297,9 @@ func TestOnlyAnEventInsertsDefaultDrawsAnEventID(t *testing.T) {
 			{"a.go", `alter table rt_x inherit "public"."events"`, []string{"makes a table from events"}},
 			{"a.go", "create table rt_x (note text, like events including defaults)", []string{"makes a table from events"}},
 			{"a.go", "alter table events attach partition rt_x for values from (1) to (2)", []string{"makes a table from events"}},
+			{"a.go", `alter table "public"."events" attach partition rt_x for values from (1) to (2)`, []string{"makes a table from events"}},
+			{"a.go", "alter table if exists events attach partition rt_x for values from (1) to (2)", []string{"makes a table from events"}},
+			{"a.go", "alter table delivery_log attach partition delivery_log_2027 for values from (1) to (2)", nil},
 			{"a.go", "alter table rt_x no inherit events_archive", nil},
 		} {
 			offences, _ := eventIDOffences(row.path, row.statement)
