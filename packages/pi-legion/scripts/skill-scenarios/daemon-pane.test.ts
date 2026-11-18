@@ -18,6 +18,7 @@ import {
   DAEMON_MODULE,
   labelDaemon,
   labelRoutes,
+  postRefusal,
   RIG_GH_TOKEN,
   runDaemonPane,
   serves,
@@ -313,6 +314,42 @@ test.skipIf(skip)(
     expect(() => runDaemonPane(DAEMON_MODULE, ["phase", "nobody"])).toThrow(
       '"nobody" works no phase'
     );
+  },
+  600_000
+);
+
+// Dispatch's refusal of a message the daemon posts, as the daemon decides it before it records a
+// move whose sentence it posts (workflow's `backwardReasonRefusal`): the longest post its outbox
+// could make of the body, the body under the marker of the largest row id, read by Dispatch's
+// own reader (daemon-pane.go's `post-check`). daemon-standin.ts refuses a backward move by it.
+// Catches: a reading of the body alone, which takes a body of as many blocks as Dispatch holds
+// one to, where the marker's block puts the post past it (the daemon's own
+// TestABackwardReasonIsMeasuredAsItsPost), and a body ending in an open fence, whose code block
+// the marker lengthens; a decision block read as a bound, or as no refusal; and a body Dispatch
+// takes read as refused.
+test.skipIf(skip)(
+  "post-check reads the longest post the daemon could make of a body as Dispatch reads it",
+  () => {
+    const checkout = path.resolve(DAEMON_MODULE, "../..");
+    const blocks = (count: number) => Array.from({ length: count }, () => "y").join("\n\n");
+    expect(postRefusal(checkout, "the fix needs code.")).toBeUndefined();
+    expect(postRefusal(checkout, blocks(32_767))).toBeUndefined();
+    expect(postRefusal(checkout, blocks(32_768))).toEqual({
+      decision: false,
+      sentence: "body is 1 blocks over the 32768-block limit (32769/32768)",
+    });
+    expect(postRefusal(checkout, `\`\`\`\n${"y".repeat(31_970)}`)).toEqual({
+      decision: false,
+      sentence:
+        "body block 1 (code_block) is 18 characters over the 32000-character block limit (32018/32000)",
+    });
+    expect(
+      postRefusal(checkout, 'The plan is wrong.\n\n:::ask{urgency="med"}\nWhich table?\n:::')
+    ).toEqual({
+      decision: true,
+      sentence:
+        "body block 2 (ask) holds a decision block, which nobody can answer where it stands: ask the question in the issue's own document, as a decision block there, or open an ask with `dispatch ask`; to show a decision block as an example, put it in a fenced code block",
+    });
   },
   600_000
 );

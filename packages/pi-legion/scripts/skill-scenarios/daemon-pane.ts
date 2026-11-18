@@ -490,6 +490,32 @@ export function claimRefusal(checkout: string, name: string): ClaimRefusal {
   return { status: Number(status), message };
 }
 
+/** Dispatch's refusal of a message the daemon posts (`postRefusal`): whether it is the refusal of
+ * a decision block, rather than of a bound, and Dispatch's own sentence for it. */
+export interface PostRefusal {
+  readonly decision: boolean;
+  readonly sentence: string;
+}
+
+/** Dispatch's refusal of a message the daemon of `checkout` posts with `body`, as that daemon
+ * decides it before it records a move whose reason it posts, or undefined where Dispatch takes it:
+ * daemon-pane.go's `post-check`, which runs that checkout's own reading (the longest post of the
+ * body its outbox could make, read by Dispatch's reader) and so runs inside its module, as `phase`
+ * does. The daemon stand-in asks it of a backward move's reason at the move, so a run reads it
+ * through its label's build (`daemonPaneBuild`) in milliseconds; nothing is kept, since the
+ * answer turns on the body and on the whole of Dispatch's reader. Throws what the program
+ * refused, and for a printout that is neither nothing nor a kind and a sentence. */
+export function postRefusal(checkout: string, body: string): PostRefusal | undefined {
+  const printed = runDaemonPane(daemonOf(checkout), ["post-check"], body);
+  if (printed === "") return undefined;
+  const [kind = "", sentence = "", ...rest] = printed.split("\n");
+  if (!["decision", "bound"].includes(kind) || sentence === "" || rest.join("") !== "")
+    throw new Error(
+      `daemon-pane post-check printed ${JSON.stringify(printed)}, which is no refusal's kind and sentence`
+    );
+  return { decision: kind === "decision", sentence };
+}
+
 /** Stands in for the phase the issue stands in, in the refusal `standinFacts` reads: the
  * stand-in replaces it with the phase it serves when it sends the refusal. */
 export const PHASE_SLOT = "PHASESLOTOFTHEISSUE";

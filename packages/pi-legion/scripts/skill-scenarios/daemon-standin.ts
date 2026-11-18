@@ -17,7 +17,8 @@
  * grant file: a pane's `gh` and
  * `git` read the rig's token from the gh files under its `GH_CONFIG_DIR`, which `daemon-pane.go`
  * writes, and no agent runs `legion` from bash. A route the label's daemon does not register is
- * answered 404 whatever this has a handler for, as that daemon's catch-all answers it; a route
+ * answered 404 whatever this has a handler for, as that daemon's catch-all answers it, in its
+ * body (`{"error":"no route"}`, packages/daemon/internal/api/server.go's mux remainder); a route
  * it registers and this does not answer is answered 404 too, which `rig.sh health` reads as a
  * world the daemon would not have served (health.ts's `routes` rule).
  *
@@ -102,12 +103,19 @@
  * (`ISSUE_NOT_GRANTS`, 400, the daemon's refusal of a worker that moves another issue), and is
  * refused 409 BACKWARD_REFUSED, in the engine's own sentence, for a phase no backward row of the
  * issue's phase serves — any but an earlier one of the workflow's line (phase.go's `Order`) —
- * and for a role that does not run the issue's phase (phase.go's `RoleFor`). Taken, it answers
- * `{}` and moves the issue to that phase, clearing the completion of the role the move starts
- * there (engine.go's `transition` and `clearHandoff`), so every later read of the record and
- * every later completion read the phase it moved to; it answered `{}` for any `to` and moved
- * nothing, a success the daemon gives no move it refuses. The tree's linger (`TREE_LINGERING`)
- * is not modelled, since no tree of the rig leaves the workflow.
+ * and for a role that does not run the issue's phase (phase.go's `RoleFor`). Then, where the
+ * label's workflow holds the refusals (`REASON_REFUSALS`), the move's reason is held to the
+ * message the move posts on the issue, its sentence (`backwardMoveReason`) read by Dispatch's
+ * own reader as the daemon reads it (effects.go's `backwardReasonRefusal`, through the label's
+ * own build: daemon-pane.ts's `postRefusal`), and refused 409 BACKWARD_REASON_DECISION_BLOCK for
+ * a message holding a decision block and 409 BACKWARD_REASON_TOO_LONG for one past Dispatch's
+ * bounds, each in the engine's sentence and moving nothing. Taken, it answers `{}` and moves the
+ * issue to that phase, clearing the completion of the role the move starts there (engine.go's
+ * `transition` and `clearHandoff`), so every later read of the record and every later completion
+ * read the phase it moved to, and it posts its sentence on the run's Dispatch (`enter`); it
+ * answered `{}` for any `to` and moved nothing, a success the daemon gives no move it refuses,
+ * and then took a reason the daemon refuses and posted nothing. The tree's linger
+ * (`TREE_LINGERING`) is not modelled, since no tree of the rig leaves the workflow.
  *
  * The state document's record of the issue is production's (standin-record.ts, which says what
  * each member is): the tree's architect and a row for each role the world's history ran and
@@ -116,10 +124,23 @@
  * this stand-in's own claim as its agent registers, readies and ends its turn (`OWN`); the pull
  * request as the world's gh answers it at the read (`worldPull`); the design gate as the run's
  * Dispatch holds the spec at the read (`gateNow`); and the slot, the entries and the counts of
- * the moves. Every move of the record — the round's, a backward move — is one `enter`: the
- * phase, the implementer's pass, pair and round, the start of the role that works the phase,
- * and the status that phase shows, written to the run's Dispatch as the daemon's own session
- * before the request is answered (`writeStatuses`).
+ * the moves. Every move of the record — the round's, a head that conflicts with its base, a
+ * backward move — is one `enter`: the phase, the implementer's pass, pair and round, the start of
+ * the role that works the phase, and the status that phase shows, written to the run's Dispatch as
+ * the daemon's own session before the request is answered, after the move's reason where the move
+ * posts one (`runOutbox`).
+ *
+ * The session holding each live role of the issue is published to the run's own Dispatch as the
+ * daemon publishes it (`PUT /api/v1/issues/{key}/role-holders`: packages/daemon/internal/daemon/
+ * outbox.go's `publishRoleHolders`, `queueHolders` here): at the stand-in's boot, at the agent's
+ * registration, at its ready that carries no capability report, and at a turn outcome that fails
+ * its claim, each the whole live set read when the write runs, so the run's Dispatch holds the
+ * tree's architect, each role the world's history ran and each agent the run booted, as
+ * production's does; it published nothing. A label whose daemon publishes none, or whose Dispatch
+ * serves no such route, is published nothing (`PUBLISHES_HOLDERS`); both labels' checkouts, at
+ * main `0b2769e5` or after, serve and publish it. Each move's sentence (a backward move's, a
+ * conflict's) is posted only where the label's workflow posts one (`POSTS_BACKWARD`,
+ * `POSTS_CONFLICT`), in the words its source holds.
  *
  * Every request appends one JSON line to the log file: `{at, method, path, status, role, code?,
  * grantId?, sessionId?, mintedGrantId?, handoffId?, handoffVersion?, to?, reason?, phase?,
@@ -138,9 +159,12 @@
  * Usage: `bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <run dir>
  * <role> [phase] [completed]`. The daemon whose routes it answers is the one of the checkout
  * <run dir>/built-from names (`ROUTES`). The run's own Dispatch, which the world's history, the
- * spec's approval and a completion's handoff record are read back from and a move's status is
- * written to, is the one DISPATCH_URL names, reached with the bearer in the file
- * DISPATCH_TOKEN_FILE names (rig.sh's worker_boot gives both, the ones the run's panes read).
+ * spec's approval and a completion's handoff record are read back from and a move's status and
+ * sentence and the issue's role holders are written to, is the one DISPATCH_URL names, reached
+ * with the bearer in the file DISPATCH_TOKEN_FILE names (rig.sh's worker_boot gives both, the ones
+ * the run's panes read). A backward move's reason is read as the label's daemon reads it by that
+ * label's build of daemon-pane.go, the one SKILL_SCENARIOS_DAEMON_PANE names (worker_boot gives it),
+ * or `go run` of it in the label's checkout where it names none.
  * The state document holds that one issue, on the repository and default branch of the run's own
  * world, which it reads from <run dir>/world.json, as the gh stand-in does: a record naming
  * another repository sends the agent's review to one the world has not got, and a record naming
@@ -159,7 +183,7 @@
  * pick).
  */
 import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { isLegionRole, roleToken } from "@legion/contracts";
 import {
@@ -176,6 +200,8 @@ import {
   ISSUE_SLOT,
   labelCheckout,
   PHASE_SLOT,
+  type PostRefusal,
+  postRefusal,
   RECORD_PHASES,
   serves,
   standinFacts,
@@ -184,6 +210,7 @@ import { worldOf } from "./gh-call";
 import {
   DECIDES,
   heldPullRequest,
+  mergeableOf,
   mergeStateOf,
   recordedCalls,
   submittedReviews,
@@ -317,6 +344,94 @@ const COMPLETION_SOURCE = bootRead(() =>
 function daemonAnswers(code: string): boolean {
   return COMPLETION_SOURCE.includes(`"${code}"`);
 }
+/** The label's workflow package, every source of it but its tests, which the sentences its moves
+ * post on the issue and its refusals of a backward move's reason are read out of (`labelHolds`). */
+const WORKFLOW_SOURCE = bootRead(() => {
+  const dir = `${CHECKOUT}/packages/daemon/internal/workflow`;
+  return readdirSync(dir)
+    .filter((name) => name.endsWith(".go") && !name.endsWith("_test.go"))
+    .sort()
+    .map((name) => readFileSync(`${dir}/${name}`, "utf8"))
+    .join("\n");
+});
+/** Whether the label's workflow writes what `marker` names in its source, in the words `literals`
+ * restate here, each a Go string literal of its source: false for a workflow whose source holds no
+ * `marker`, which writes none of it, and a failed boot, naming `what`, for one that holds the
+ * marker and words some literal otherwise, which this would answer in another daemon's words. */
+function labelHolds(marker: string, literals: readonly string[], what: string): boolean {
+  if (!WORKFLOW_SOURCE.includes(marker)) return false;
+  const unheld = literals.find((literal) => !WORKFLOW_SOURCE.includes(JSON.stringify(literal)));
+  if (unheld !== undefined)
+    throw new Error(
+      `the workflow of ${CHECKOUT} ${what} (${marker}) and holds no ${JSON.stringify(unheld)}, so the words it writes are not the ones this stand-in answers in`
+    );
+  return true;
+}
+/** `format` with each verb (`%s`, `%d`) given the next of `values`, as Go's Sprintf fills them. */
+function filled(format: string, ...values: readonly (string | number)[]): string {
+  let at = 0;
+  return format.replace(/%[sd]/g, () => String(values[at++] ?? ""));
+}
+/** The sentence a worker's backward move posts on the issue (effects.go's `backwardMoveReason`):
+ * the phase it left, the one it went to, the role that asked, and that role's own words, or that
+ * it gave none. */
+const BACKWARD_ASKED = "Legion moved this issue from %s back to %s at the %s's request";
+const BACKWARD_UNGIVEN = ", which gave no reason.";
+/** Whether the label's daemon posts a worker's backward move on the issue at all (main's since
+ * #4309, 26f27a997a). */
+const POSTS_BACKWARD = bootRead(() =>
+  labelHolds(
+    "func backwardMoveReason(",
+    [BACKWARD_ASKED, BACKWARD_UNGIVEN],
+    "posts a backward move's reason"
+  )
+);
+/** The sentence the move of a head that conflicts with its base posts on the issue (effects.go's
+ * `moveReason` for `TriggerConflict`), built from the pull request: two literals of the source,
+ * which Go joins, then the pull request's own words. */
+const CONFLICT_SAID = [
+  "Legion moved this issue from %s back to %s, because %s conflicts with %s. ",
+  "GitHub runs no checks on a head that conflicts with its base, so the implementer merges %s forward.",
+] as const;
+const CONFLICT_PULL = "pull request #%d";
+const CONFLICT_HEAD = " at head ";
+/** Whether the label's daemon posts a conflict's move on the issue at all (main's since #4291,
+ * 34f0d8c801). */
+const POSTS_CONFLICT = bootRead(() =>
+  labelHolds(
+    "func moveReason(",
+    [...CONFLICT_SAID, CONFLICT_PULL, CONFLICT_HEAD],
+    "posts a conflict's move"
+  )
+);
+/** The engine's refusals of a backward move whose posted sentence Dispatch would refuse
+ * (effects.go's `backwardReasonRefusal`): a decision block, and a message past Dispatch's bounds,
+ * each filled with Dispatch's own sentence for it. */
+const REASON_DECISION = {
+  code: "BACKWARD_REASON_DECISION_BLOCK",
+  format:
+    "the reason holds a decision block, and the move posts the reason on the issue as a message, where nobody can answer one: %s; the move was not applied, so ask again with a reason that states what is wrong rather than asking a question",
+} as const;
+const REASON_TOO_LONG = {
+  code: "BACKWARD_REASON_TOO_LONG",
+  format:
+    "the reason makes a message Dispatch refuses: %s; the move was not applied, so ask again with a shorter reason",
+} as const;
+/** Whether the label's workflow refuses a backward move's reason (main's since #4309). It reads
+ * the sentence the move posts, so a workflow that refuses a reason and posts no sentence is no
+ * daemon this stand-in has the words of. */
+const REASON_REFUSALS = bootRead(() => {
+  const refuses = labelHolds(
+    `"${REASON_TOO_LONG.code}"`,
+    [REASON_DECISION.code, REASON_DECISION.format, REASON_TOO_LONG.format],
+    "refuses a backward move's reason"
+  );
+  if (refuses && !POSTS_BACKWARD)
+    throw new Error(
+      `the workflow of ${CHECKOUT} refuses a backward move's reason and posts no sentence of the move (func backwardMoveReason), which this stand-in reads the reason through`
+    );
+  return refuses;
+});
 /** The answer of a claim refusal read at boot, in the daemon's shape (claim.Refusal marshals as
  * `{error}`). */
 function refuse(refusal: { status: number; message: string }): Response {
@@ -343,9 +458,20 @@ function authenticates(secret: string | undefined): boolean {
 const startedAt = new Date().toISOString();
 
 /** The phase the stand-in serves now, which starts as the phase it was started for and moves as
- * main's engine moves it: `reviewRound` (`packages/daemon/internal/workflow/review.go`), and the
- * transitions its outcomes take (`workflow/table.go`). Only `reviewing` moves: the rig's run ends
+ * main's engine moves it: `reviewRound` and `mergeability` (`packages/daemon/internal/workflow/
+ * review.go`), and the transitions their outcomes take (`workflow/table.go`). Only `reviewing`
+ * moves on its round, and every phase after the implementer's on a conflict: the rig's run ends
  * with any other phase's completion, and no scenario reads the record after it.
+ *
+ * A head GitHub reports conflicting with its base (its `mergeable` false, `CONFLICTING`, which the
+ * world reports of a `DIRTY` head: gh-threads.ts's `mergeableOf`) moves the issue from `testing`,
+ * `reviewing`, `accepting`, `retro` or `merging` back to `implementing` (`TriggerConflict`, read
+ * at each state read as the daemon decides the merge state each read of the pull request
+ * returns), before any round is decided on that head, since GitHub runs no checks on it: the
+ * implementer's pass rises and no pair nor round does, the record holding that head as
+ * conflicting (`classify.ConflictRound`), and the move posts its sentence on the issue before its
+ * status (`conflictMoveReason`, where the label's daemon posts one). It left a `DIRTY` head in
+ * `reviewing`, where production's daemon has the implementer merge the base forward.
  *
  * The review decides the round and the completion does not, so this moves on what the run's
  * world reports and never on a completion (`roundOutcome`, read at each state read): the head is
@@ -363,16 +489,17 @@ const startedAt = new Date().toISOString();
  *     reports the head `CLEAN`, `UNSTABLE` or `HAS_HOOKS` (`record.MergeState.Mergeable`), and the
  *     issue moves to `accepting` (`TriggerReviewApproved`), on the approval alone
  *     (`review_test.go`'s "after the review alone"). Any other state — `BLOCKED`, which a check
- *     the base requires holds the head in while it runs, `BEHIND`, `DIRTY`, `UNKNOWN` — leaves
- *     the issue in `reviewing`, where the engine waits on GitHub's answer or reports the round
- *     stuck, and neither moves the record;
+ *     the base requires holds the head in while it runs, `BEHIND`, `UNKNOWN` — leaves the issue
+ *     in `reviewing`, where the engine waits on GitHub's answer or reports the round stuck, and
+ *     neither moves the record; a `DIRTY` one is a conflict, above;
  *   - an approval of another head is set aside (`classify.ApprovalSetAside`, the round
  *     `stuckApprovedOtherCode`), which is what a push while the record is `reviewing` leaves, and
  *     the issue stays in `reviewing` until a review of the new head decides the round.
- * Once the record has moved it stays where it moved to: a push in `accepting` lands outside any
- * round (`review.go`'s `issue.Phase != phase.Reviewing`, `review_test.go`'s "the approval of the
- * head, then a push"). A reviewer's completion after its decision is a late one, answered as the
- * run's label's engine answers it (`handle`'s `handoff/complete`).
+ * Once the record has moved on its round it stays where it moved to: a push in `accepting` lands
+ * outside any round (`review.go`'s `issue.Phase != phase.Reviewing`, `review_test.go`'s "the
+ * approval of the head, then a push"), and only a conflict moves it on. A reviewer's completion
+ * after its decision is a late one, answered as the run's label's engine answers it (`handle`'s
+ * `handoff/complete`).
  *
  * The check runs of a head move nothing of their own, as they are none of `reviewRound`'s but for
  * the report of a stuck round (`classify.ChecksConcludedOnHead`): a check the base requires holds
@@ -459,6 +586,10 @@ function roundOutcome(pull: PullRequestFacts): "accepting" | "implementing" | un
     : undefined;
 }
 
+/** The phases a head that conflicts with its base sends back to `implementing` (table.go's
+ * `TriggerConflict` rows): every phase after the implementer's own. */
+const CONFLICT_PHASES = ["testing", "reviewing", "accepting", "retro", "merging"];
+
 interface LogLine {
   readonly at: string;
   readonly method: string;
@@ -509,13 +640,27 @@ let decided: PullRequestFacts["decision"];
 let decisionRead = false;
 
 /** The pull request the record holds on `read` of the world, after moving the record where the
- * round sends the issue the first time a read finds the round over while it is `reviewing`
- * (`roundOutcome`, `enter`). */
+ * world sends the issue the first time a read finds it there: back to `implementing` where GitHub
+ * reports the open pull request conflicting with its base at its head in a phase that moves on it
+ * (classify's `HeadConflicts`), and otherwise where the round sends it once a read finds the round
+ * over while it is `reviewing` (`roundOutcome`, `enter`). */
 function settled(read = worldPull()): PullRequestFacts {
   if (servedPhase === "reviewing" || !decisionRead) {
     decided = read.pull.decision;
     decisionRead = true;
   }
+  const { pull } = read;
+  if (
+    read.round &&
+    CONFLICT_PHASES.includes(servedPhase) &&
+    pull.state === "OPEN" &&
+    mergeableOf(pull.mergeState ?? "") === "CONFLICTING"
+  )
+    enter(
+      "implementing",
+      "conflict",
+      POSTS_CONFLICT ? conflictMoveReason(servedPhase, "implementing", pull) : ""
+    );
   const outcome = servedPhase === "reviewing" && read.round ? roundOutcome(read.pull) : undefined;
   if (outcome !== undefined) enter(outcome, outcome === "implementing" ? "review" : undefined);
   return { ...read.pull, decision: decided };
@@ -624,6 +769,37 @@ function backwardRefusal(phase: string, to: string): string | undefined {
   return undefined;
 }
 
+/** `text` with the white space Go's `strings.TrimSpace` trims (`unicode.IsSpace`) cut from both
+ * ends, which is not JavaScript's `trim`: Go trims U+0085 and keeps U+FEFF, and JavaScript the
+ * other way about. */
+function goTrimSpace(text: string): string {
+  return text.replace(
+    /^[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+|[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/g,
+    ""
+  );
+}
+
+/** What this role's backward move of the issue from `from` to `to` posts on the issue, as
+ * effects.go's `backwardMoveReason` writes it (`BACKWARD_ASKED`): the role that asked is the role
+ * running `from`, which the engine's guard holds the requester to, then its words, closed with a
+ * full stop where they end with none of `.`, `!` and `?`. */
+function backwardMoveReason(from: string, to: string, reason: string): string {
+  const asked = filled(BACKWARD_ASKED, from, to, roleFor(from));
+  const words = goTrimSpace(reason);
+  if (words === "") return `${asked}${BACKWARD_UNGIVEN}`;
+  return /[.!?]$/.test(words) ? `${asked}: ${words}` : `${asked}: ${words}.`;
+}
+
+/** What the move of the issue from `from` to `to` posts on the issue when GitHub reports the head
+ * of `pull` conflicting with the base (effects.go's `moveReason`, `CONFLICT_SAID`): the pull
+ * request by its number and the first 12 characters of its head, and the base the world's pull
+ * request is open against, which GitHub's read names (review.go's `mergeability`, `fact.Base`). */
+function conflictMoveReason(from: string, to: string, pull: PullRequestFacts): string {
+  const head = pull.head.slice(0, 12);
+  const what = filled(CONFLICT_PULL, pull.number) + (head === "" ? "" : `${CONFLICT_HEAD}${head}`);
+  return filled(CONFLICT_SAID.join(""), from, to, what, base, base);
+}
+
 /** The run's own Dispatch (rig.sh's worker_boot names it) and the file holding the bearer the
  * run reads it with, which a completion's handoff record is read back from (`handoffRecord`). */
 const DISPATCH_URL = process.env.DISPATCH_URL ?? "";
@@ -639,8 +815,38 @@ const HandoffRecord = z.looseObject({
 /** A refusal Dispatch answers in its error body, `{code, error}` (dispatch/api's `errorBody`). */
 const DispatchError = z.looseObject({ code: z.string().optional(), error: z.string().optional() });
 
-/** `GET route` of the run's own Dispatch as the run's agent bearer, its JSON answer. Throws naming
- * the route and what Dispatch answered, or that the run names no Dispatch. */
+/** An answer the run's own Dispatch refused: its status, the code its body carried ("" for none),
+ * its message, and, as the error's own, what it answered. */
+class DispatchRefusal extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    readonly refusal: string,
+    answered: string
+  ) {
+    super(answered);
+  }
+  /** The refusal of `method route` Dispatch answered `status` with `text`, its error body
+   * (`{code, error}`) read where it is one. */
+  static of(method: string, route: string, status: number, text: string): DispatchRefusal {
+    let refusal: z.infer<typeof DispatchError> = {};
+    try {
+      refusal = DispatchError.parse(JSON.parse(text));
+    } catch {
+      refusal = { error: text };
+    }
+    return new DispatchRefusal(
+      status,
+      refusal.code ?? "",
+      refusal.error ?? "",
+      `Dispatch answered ${method} ${route} ${status}: ${text}`
+    );
+  }
+}
+
+/** `GET route` of the run's own Dispatch as the run's agent bearer, its JSON answer. Throws a
+ * DispatchRefusal for an answer Dispatch refused, naming the route and what Dispatch answered,
+ * and an error for none at all or a run that names no Dispatch. */
 async function dispatchRead(route: string): Promise<unknown> {
   if (DISPATCH_URL === "") throw new Error("the run names no Dispatch (DISPATCH_URL)");
   const token =
@@ -649,9 +855,39 @@ async function dispatchRead(route: string): Promise<unknown> {
     headers: { Authorization: `Bearer ${token}` },
   });
   const text = await answer.text();
-  if (!answer.ok)
-    throw new Error(`Dispatch answered GET ${route} ${answer.status}: ${text.trim()}`);
+  if (!answer.ok) throw DispatchRefusal.of("GET", route, answer.status, text.trim());
   return JSON.parse(text);
+}
+
+/** Whether a Dispatch answer of `status` carrying `code` is one Dispatch gives the same write
+ * every time (dispatch.PermanentRefusal): a 4xx carrying a code of Dispatch's own, but
+ * ISSUE_CHANGED, a credential's 401 and 403, a 408, a 429 and a contended parent. */
+function permanentRefusal(status: number, code: string): boolean {
+  return (
+    code !== "" &&
+    code !== "ISSUE_CHANGED" &&
+    status >= 400 &&
+    status < 500 &&
+    ![401, 403, 408, 429].includes(status) &&
+    !(status === 409 && code === "PARENT_CONTENDED")
+  );
+}
+
+/** `method route` of the run's own Dispatch with `body` as the daemon's own session writes it
+ * (`actor`, dispatch/client.go's `daemonActor`). Throws a DispatchRefusal for an answer Dispatch
+ * refused, naming the route and what Dispatch answered, and an error for none at all or a run
+ * that names no Dispatch. */
+async function dispatchWrite(method: string, route: string, body: object): Promise<void> {
+  if (DISPATCH_URL === "") throw new Error("the run names no Dispatch (DISPATCH_URL)");
+  const token =
+    DISPATCH_TOKEN_FILE === "" ? "" : (await Bun.file(DISPATCH_TOKEN_FILE).text()).trim();
+  const answer = await fetch(`${DISPATCH_URL}${route}`, {
+    method,
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ ...body, actor: { kind: "session", id: DAEMON_SESSION } }),
+  });
+  if (!answer.ok)
+    throw DispatchRefusal.of(method, route, answer.status, (await answer.text()).trim());
 }
 
 /** The run's seeds, <run>/fixture.json (seed-handoffs.ts's TesterFixture, which rig.sh's
@@ -969,31 +1205,111 @@ let movedAt = startedAt;
 /** The Dispatch status the record holds: the one its phase shows, and for a stand-in started in
  * a phase with none of its own the hand-over's `in_progress` (`phaseStatus`). */
 let shownStatus = phaseStatus(PHASE) || "in_progress";
-/** The status writes the record's moves owe the run's Dispatch and have not finished, oldest
- * first (`writeStatuses`). */
-const OWED: { status: string; observed: string; attempts: number; lastError?: string }[] = [];
+/** A row the record's moves and the claims' changes owe the run's Dispatch, as the daemon's
+ * outbox holds one (`record.OutboxRow`), numbered as the outbox numbers its rows (a posted
+ * message's marker names its row): a status a move gives the issue, with the sentence the move
+ * posts before it where the move posts one (`record.StatusWrite`, a `dispatch_status` row); that
+ * sentence alone, for a move into a phase that shows the status the issue already shows
+ * (`record.MessagePost`, a `dispatch_message` row, as `Engine.status` queues it); and the
+ * publication of the issue's role holders (`record.RoleHoldersPublish`), one row for the issue,
+ * which reads the live set when it runs (`queueHolders`). Each keeps when it was queued, which
+ * bounds the outbox's search for a message it posted (`postMessage`), the attempts it made and
+ * why the last failed. */
+type OutboxRow = {
+  readonly id: number;
+  readonly createdAt: number;
+  attempts: number;
+  lastError?: string;
+} & (
+  | {
+      readonly kind: "status";
+      readonly status: string;
+      readonly observed: string;
+      readonly reason: string;
+    }
+  | { readonly kind: "message"; readonly body: string }
+  | { readonly kind: "holders" }
+);
+/** The rows the run's Dispatch is owed and has not taken, oldest first (`runOutbox`). */
+const OUTBOX: OutboxRow[] = [];
+let outboxRows = 0;
+/** A row as its queue site gives it: its kind's fields, before the outbox numbers it. */
+type Unqueued<Row> = Row extends unknown ? Omit<Row, "id" | "createdAt" | "attempts"> : never;
+/** Queues `row` as the next row of the outbox, numbered after the last and queued now. */
+function queueRow(row: Unqueued<OutboxRow>): void {
+  outboxRows += 1;
+  OUTBOX.push({ ...row, id: outboxRows, createdAt: Date.now(), attempts: 0 } as OutboxRow);
+}
+/** How many changes of a claim have asked for the role holders' publication: the row is
+ * finished only by a write that began after the last of them, as the daemon's queue rotates the
+ * lease of a row in flight so that it runs again with the newer set (store's
+ * `EnqueueRoleHolders`). */
+let holdersAsked = 0;
+/** Whether the label's daemon publishes the issue's role holders at all, and the label's
+ * Dispatch, the one the run's Dispatch is built from (rig.sh's services_up), serves the route it
+ * publishes to: main's daemon and Dispatch since #4228 (5a2d1f0637), its client's
+ * `PutRoleHolders` and the route's row in Dispatch's table. A daemon that publishes none
+ * publishes nothing here, and one whose Dispatch serves no such route would wait on its router's
+ * 404 for ever (`publishRoleHolders`' wait), which this does not model: it publishes only where
+ * both hold. */
+const PUBLISHES_HOLDERS = bootRead(() =>
+  [
+    ["daemon/internal/dispatch/client.go", '"/role-holders"'],
+    ["envoy/internal/dispatch/api/routes_table.go", '"/api/v1/issues/{key}/role-holders"'],
+  ].every(([file, marker]) => {
+    const source = `${CHECKOUT}/packages/${file}`;
+    return existsSync(source) && readFileSync(source, "utf8").includes(marker ?? "");
+  })
+);
+/** Queues the publication of the issue's role holders, where the daemon queues one: at its boot
+ * (`queueRoleHoldersPublish`), at a claim write that changes the session holding a role — an
+ * agent's registration, a claim the daemon fails (store's `putClaim`) — and at a ready that
+ * carries no capability report (api's `ready`, `roleHoldersChanged`). The issue has one such row,
+ * made due again by a second change. A run that names no Dispatch queues none, as a daemon with
+ * no `dispatch_url` runs no outbox and queues no row (store's `PublishRoleHolders`), and neither
+ * does a label that publishes none (`PUBLISHES_HOLDERS`). */
+function queueHolders(): void {
+  if (DISPATCH_URL === "" || !PUBLISHES_HOLDERS) return;
+  holdersAsked += 1;
+  if (!OUTBOX.some((row) => row.kind === "holders")) queueRow({ kind: "holders" });
+}
+/** The claim states in which a claim's session holds its role (`supervise.HoldsCapability`,
+ * record's `liveClaimStates`): a registered agent with a running process. */
+const LIVE_STATES = ["registered", "ready", "working", "idle"];
+/** The session of each live claim of the issue, by role, in the order the daemon's read lists
+ * them (record's `LiveRoleHolders`, `order by role`): the set a publication sends whole. */
+function liveHolders(): { role: string; session: string }[] {
+  return [...CLAIMS]
+    .filter(([, claim]) => claim.session !== "" && LIVE_STATES.includes(claim.state))
+    .map(([named, claim]) => ({ role: named, session: claim.session }))
+    .sort((one, other) => (one.role < other.role ? -1 : one.role > other.role ? 1 : 0));
+}
 
 /** Moves the record to `to`, as the engine's transition writes it (engine.go's `transition`):
  * the phase and, where the phase it enters shows another status than the record holds, that
- * status, queued for the run's Dispatch as the engine queues its outbox row (`Engine.status`);
- * for a move back (`back`), the implementer's pass and the move's pair, and its
+ * status, queued for the run's Dispatch as the engine queues its outbox row (`Engine.status`),
+ * with `reason`, the sentence the move posts on the issue before the status (effects.go's
+ * `moveReason`: a backward move's and a conflict's), which a move that writes no status posts
+ * alone; for a move back (`back`), the implementer's pass, the move's pair but for a conflict's
+ * (`recordPass`: the record holds that head as conflicting, `classify.ConflictRound`), and its
  * round where a review requested the changes; and the start of the role that works
  * `to` — its handoff cleared (`clearHandoff`), its entry raised, and the task of that entry
  * queued to its claim, which the start makes where the role held none. The slot follows the
  * phase (`keepsSlot`, at each read). */
-function enter(to: string, back: "review" | "move" | undefined): void {
+function enter(to: string, back: "review" | "move" | "conflict" | undefined, reason = ""): void {
   const from = servedPhase;
   const now = new Date().toISOString();
   servedPhase = to;
   movedAt = now;
   const shown = phaseStatus(to);
   if (shown !== "" && shown !== shownStatus) {
-    OWED.push({ status: shown, observed: shownStatus, attempts: 0 });
+    queueRow({ kind: "status", status: shown, observed: shownStatus, reason });
     shownStatus = shown;
-  }
+  } else if (reason !== "") queueRow({ kind: "message", body: reason });
   if (back !== undefined) {
     pass += 1;
-    backwardMoves[`${from}-${to}`] = (backwardMoves[`${from}-${to}`] ?? 0) + 1;
+    if (back !== "conflict")
+      backwardMoves[`${from}-${to}`] = (backwardMoves[`${from}-${to}`] ?? 0) + 1;
     if (back === "review") rounds += 1;
   }
   const starts = roleFor(to);
@@ -1007,48 +1323,183 @@ function enter(to: string, back: "review" | "move" | undefined): void {
 
 /** The run's issue as its Dispatch answers it, as far as a status write reads it. */
 const ShownIssue = z.looseObject({ status: z.string() });
-/** Writes each status the record's moves owe the run's Dispatch, in the order they were queued,
- * as the daemon's outbox runs a `dispatch_status` row (packages/daemon/internal/daemon/
- * outbox.go's `writeStatus`): it reads the issue, writes nothing where Dispatch already shows
- * the status or shows another than the one the move observed — a change someone made since,
- * which stands — and otherwise writes it through `PATCH /api/v1/issues/{key}` as the daemon's
- * own session, `legion-daemon:<PROJECT>` (dispatch/client.go's `SetStatus`, the session the
- * world's seeds write each status as: seed-handoffs.ts's DAEMON). So a `dispatch read` after a
- * move shows the status the record names; the record moved and Dispatch kept the status of the
- * phase it had left. Each request this stand-in answers runs the writes before its answer, and a
- * write the run's Dispatch does not take stays owed, with why, for the next (the state's
- * `pendingStatusWrites`), where the outbox waits out a backoff. The write carries no
- * `expected_sequence`, as the outbox's does: the read above it is of the same moment, and a
- * fenced write refused for an agent's own write of that moment would stand in the run's
- * Dispatch log as a refusal of that agent's (health.ts's rule 16). */
-async function writeStatuses(): Promise<void> {
-  for (let owed = OWED[0]; owed !== undefined; owed = OWED[0]) {
-    try {
-      const route = `/api/v1/issues/${encodeURIComponent(String(issue))}`;
-      const shown = ShownIssue.parse(await dispatchRead(route)).status;
-      if (shown === owed.observed) {
-        const token =
-          DISPATCH_TOKEN_FILE === "" ? "" : (await Bun.file(DISPATCH_TOKEN_FILE).text()).trim();
-        const answer = await fetch(`${DISPATCH_URL}${route}`, {
-          method: "PATCH",
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            status: owed.status,
-            actor: { kind: "session", id: DAEMON_SESSION },
-          }),
-        });
-        if (!answer.ok)
-          throw new Error(
-            `Dispatch answered PATCH ${route} ${answer.status}: ${(await answer.text()).trim()}`
-          );
-      }
-      OWED.shift();
-    } catch (error) {
-      owed.attempts += 1;
-      owed.lastError = error instanceof Error ? error.message : String(error);
-      return;
+/** An event of the issue as `GET /api/v1/issues/{key}/events` answers it, and a message.created
+ * event's payload, as far as the daemon reads them (dispatch/client.go's `issueEventResponse`
+ * and `MessageBodiesSince`). */
+const IssueEvent = z.looseObject({
+  seq: z.number(),
+  type: z.string(),
+  created_at: z.string(),
+  payload: z.unknown(),
+});
+const MessageCreated = z.looseObject({
+  id: z.string().optional(),
+  body: z.string().optional(),
+  body_truncated: z.boolean().optional(),
+});
+/** The events the daemon reads in one page (dispatch/client.go's `eventPageLimit`). */
+const EVENT_PAGE = 200;
+/** How far before a row was queued the outbox looks for its message (outbox.go's
+ * `messageReadSkew`). */
+const MESSAGE_READ_SKEW_MS = 5_000;
+/** The body of every message posted on the run's issue at or after `since` (ms since the epoch),
+ * as the daemon reads them (dispatch/client.go's `MessageBodiesSince`): the issue's events
+ * newest first, a page of EVENT_PAGE at a time, `before` the last page's last sequence, until one
+ * older than `since`; each message.created event's body, read whole from `GET
+ * /api/v1/issues/{key}/messages/{id}` where the event carries its first part alone. Throws what
+ * the daemon's read throws. */
+async function messageBodiesSince(since: number): Promise<string[]> {
+  const route = `/api/v1/issues/${encodeURIComponent(issue)}`;
+  const bodies: string[] = [];
+  for (let before = 0; ; ) {
+    // Go's `url.Values.Encode` writes the keys in byte order.
+    const query = `${before === 0 ? "" : `before=${before}&`}limit=${EVENT_PAGE}&order=desc`;
+    const events = z.array(IssueEvent).parse(await dispatchRead(`${route}/events?${query}`));
+    for (const event of events) {
+      // Read to the millisecond: Go's RFC 3339 carries up to nine digits of a second.
+      const at = Date.parse(event.created_at.replace(/(\.\d{3})\d+/, "$1"));
+      if (at < since) return bodies;
+      if (event.type !== "message.created") continue;
+      const message = MessageCreated.parse(event.payload);
+      if (message.body === undefined || message.body === "")
+        throw new Error(
+          `decode message.created event ${event.seq} for ${issue}: payload body is required`
+        );
+      bodies.push(
+        message.body_truncated === true
+          ? z
+              .looseObject({ message: z.looseObject({ body: z.string().min(1) }) })
+              .parse(
+                await dispatchRead(`${route}/messages/${encodeURIComponent(message.id ?? "")}`)
+              ).message.body
+          : message.body
+      );
     }
+    const next = events.at(-1)?.seq ?? 0;
+    if (events.length < EVENT_PAGE) return bodies;
+    if (next <= 0 || (before !== 0 && next >= before))
+      throw new Error(`page issue events for ${issue}: non-descending sequence ${next}`);
+    before = next;
   }
+}
+/** Posts `body` on the run's issue as the outbox posts the message of `row`, once
+ * (outbox.go's `message`): it reads the issue's messages since a little before the row was
+ * queued and posts nothing where one carries the row's marker, a post an earlier attempt made;
+ * otherwise it posts the body, then the marker (record's `MessagePost.Posted`), as the daemon's
+ * own session (dispatch/client.go's `PostMessage`). */
+async function postMessage(row: OutboxRow, body: string): Promise<void> {
+  const marker = `<!-- legion-outbox:${row.id} -->`;
+  const posted = await messageBodiesSince(row.createdAt - MESSAGE_READ_SKEW_MS);
+  if (posted.some((text) => text.includes(marker))) return;
+  await dispatchWrite("POST", `/api/v1/issues/${encodeURIComponent(issue)}/messages`, {
+    body: `${body}\n\n${marker}`,
+  });
+}
+/** Whether `error` is a refusal the outbox finishes `kind`'s row on rather than retries
+ * (outbox.go's `permanentRefusal`): a status write's and a message's, Dispatch's permanent
+ * refusal (`permanentRefusal`); a role-holder publication's, a coded 400, which refuses the set
+ * it read, and the route's own 404 ISSUE_NOT_FOUND, while the router's 404 of a Dispatch older
+ * than the route is a wait. */
+function finishes(kind: OutboxRow["kind"], error: unknown): error is DispatchRefusal {
+  if (!(error instanceof DispatchRefusal)) return false;
+  if (kind !== "holders") return permanentRefusal(error.status, error.code);
+  return (
+    error.code !== "" &&
+    (error.status === 400 || (error.status === 404 && error.code === "ISSUE_NOT_FOUND"))
+  );
+}
+/** Runs `row` as the daemon's outbox runs its kind (packages/daemon/internal/daemon/outbox.go),
+ * and answers whether it is finished. A status (`status`): it reads the issue and writes nothing
+ * where Dispatch shows neither the status the move observed nor the one it carries — a change
+ * someone made since, which stands (`statusMoved`); it posts the move's sentence first where the
+ * row carries one (`postMessage`), then reads the issue again, and writes the status through
+ * `PATCH /api/v1/issues/{key}` unless Dispatch shows it already (`writeStatus`). A sentence
+ * Dispatch refuses for good costs the issue no status: the status is written all the same. A read
+ * or a write of the status Dispatch refuses for good — the issue's coded 404 among them — finishes
+ * the row refused, writing nothing more (`permanentRefusal`, `finishRefused`), where the daemon
+ * notifies the architect, whom no run boots. The write carries no `expected_sequence`, as the
+ * outbox's does: the read before it is of the same moment, and a fenced write refused for an
+ * agent's own write of that moment would stand in the run's Dispatch log as a refusal of that
+ * agent's (health.ts's rule 16). A message (`message`) is posted (`postMessage`), and dropped when
+ * Dispatch refuses it for good. A publication (`holders`) puts the live set (`liveHolders`)
+ * through `PUT /api/v1/issues/{key}/role-holders` (`publishRoleHolders`), and is dropped when
+ * Dispatch refuses that set. Each drop writes the daemon's line on stderr. Each write is the
+ * daemon's own session's, `legion-daemon:<PROJECT>` (the session the world's seeds write each
+ * status as: seed-handoffs.ts's DAEMON). Throws why a row that is not finished failed. */
+async function runRow(row: OutboxRow): Promise<boolean> {
+  const route = `/api/v1/issues/${encodeURIComponent(issue)}`;
+  switch (row.kind) {
+    case "message":
+      try {
+        await postMessage(row, row.body);
+      } catch (error) {
+        if (!finishes(row.kind, error)) throw error;
+        console.error(
+          `daemon-standin: the run's Dispatch refused message row ${row.id} of ${issue} for good, and it is dropped: ${error.message}`
+        );
+      }
+      return true;
+    case "holders": {
+      const asked = holdersAsked;
+      try {
+        await dispatchWrite("PUT", `${route}/role-holders`, { holders: liveHolders() });
+      } catch (error) {
+        if (!finishes(row.kind, error)) throw error;
+        console.error(
+          `daemon-standin: the run's Dispatch refused the role-holders publication of ${issue}, and it is dropped; the set it holds is the last one it took: ${error.message}`
+        );
+      }
+      return asked === holdersAsked;
+    }
+    case "status":
+      try {
+        let shown = ShownIssue.parse(await dispatchRead(route)).status;
+        if (shown !== row.observed && shown !== row.status) return true;
+        if (row.reason !== "") {
+          try {
+            await postMessage(row, row.reason);
+          } catch (error) {
+            if (!finishes(row.kind, error)) throw error;
+            console.error(
+              `daemon-standin: the run's Dispatch refused the reason of status row ${row.id} of ${issue} for good; the status is written all the same: ${error.message}`
+            );
+          }
+          shown = ShownIssue.parse(await dispatchRead(route)).status;
+        }
+        if (shown !== row.status) await dispatchWrite("PATCH", route, { status: row.status });
+      } catch (error) {
+        if (!finishes(row.kind, error)) throw error;
+        console.error(
+          `daemon-standin: the run's Dispatch refused status row ${row.id} of ${issue} (${row.status}) for good, and it is finished refused: ${error.message}`
+        );
+      }
+      return true;
+  }
+}
+/** Runs every row the run's Dispatch is owed, oldest first, as the daemon's outbox runs its lanes:
+ * a status or a message that fails holds every later one behind it, as the issue's writes run in
+ * the order they were made, and the role-holder publication runs on a lane of its own. A row not
+ * finished stays owed, with why, for the next run, where the outbox waits out a backoff: the
+ * state's `pendingStatusWrites` lists each status so owed. Each request this stand-in answers
+ * runs the outbox before its answer, so a `dispatch read` after a move shows the status the
+ * record names: the record moved and Dispatch kept the status of the phase it had left. One run
+ * at a time, so no row is run twice at once. */
+let outboxTurn: Promise<void> = Promise.resolve();
+function runOutbox(): Promise<void> {
+  outboxTurn = outboxTurn.then(async () => {
+    let held = false;
+    for (const row of [...OUTBOX]) {
+      if (held && row.kind !== "holders") continue;
+      try {
+        if (await runRow(row)) OUTBOX.splice(OUTBOX.indexOf(row), 1);
+      } catch (error) {
+        row.attempts += 1;
+        row.lastError = error instanceof Error ? error.message : String(error);
+        if (row.kind !== "holders") held = true;
+      }
+    }
+  });
+  return outboxTurn;
 }
 
 /** The contract the label's plugin declares at its registration (`pluginContract`, the
@@ -1115,7 +1566,7 @@ async function gateNow(): Promise<GateFacts | undefined> {
 const stateAnswer = async (): Promise<Response> => {
   try {
     const pullRequest = settled();
-    await writeStatuses();
+    await runOutbox();
     const workers: Record<string, RowFacts> = {};
     for (const [named, claim] of CLAIMS) {
       if (named === "architect") continue;
@@ -1128,7 +1579,7 @@ const stateAnswer = async (): Promise<Response> => {
         issue,
         phase: servedPhase,
         status: shownStatus,
-        statusWrites: OWED,
+        statusWrites: OUTBOX.flatMap((row) => (row.kind === "status" ? [row] : [])),
         repo,
         defaultBranch: base,
         pluginContract,
@@ -1200,15 +1651,7 @@ async function handoffRecord(
     const code = refusal.code ?? "";
     const message = refusal.error || answer.statusText;
     const why = code === "" ? message : `${code}: ${message}`;
-    const { status } = answer;
-    const permanent =
-      code !== "" &&
-      code !== "ISSUE_CHANGED" &&
-      status >= 400 &&
-      status < 500 &&
-      ![401, 403, 408, 429].includes(status) &&
-      !(status === 409 && code === "PARENT_CONTENDED");
-    if (!permanent && status !== 404) return unanswered(why);
+    if (!permanentRefusal(answer.status, code) && answer.status !== 404) return unanswered(why);
     return failure(
       404,
       "HANDOFF_RECORD_NOT_FOUND",
@@ -1301,6 +1744,9 @@ function turnOutcome(body: unknown): Response {
   const failed = refusedRun >= TURN_OUTCOME_LIMIT;
   if (failed) capabilityHeld = false;
   endTurn(OWN, new Date().toISOString(), failed);
+  // The claim the daemon fails holds its role no longer, a change of the role's holder its write
+  // publishes (store's `putClaim`).
+  if (failed) queueHolders();
   return json(200, { refusedRun, failed });
 }
 
@@ -1336,9 +1782,11 @@ async function handle(
         return { response: refuse(INVALID_BOOT_TOKEN) };
       }
       // The claim is the registering session's from here, under the contract its plugin
-      // declares (`register`, `pluginContract`).
+      // declares (`register`, `pluginContract`), and the session holds the claim's role, which
+      // the write of the claim publishes (store's `putClaim`).
       register(OWN, stringField(body, "sessionId"));
       pluginContract = numberField(body, "pluginContract") ?? pluginContract;
+      queueHolders();
       return {
         response: json(200, {
           claimToken: ROLE_TOKEN,
@@ -1356,9 +1804,12 @@ async function handle(
         return { response: refuse(INVALID_SECRET) };
       }
       // The agent can be prompted, and its turn begins (`ready`); a ready of the session's own
-      // carries its capability report, which the claim keeps (`ReadyReport`).
-      ready(OWN, new Date().toISOString());
+      // carries its capability report, which the claim keeps (`ReadyReport`), and a ready that
+      // carries none, a boot's, first queues the publication of the issue's role holders (api's
+      // `ready`, `roleHoldersChanged`).
       const report = ReadyReport.safeParse(body).data?.capabilities;
+      if (report === undefined) queueHolders();
+      ready(OWN, new Date().toISOString());
       if (report !== undefined)
         OWN.capabilities = {
           measuredAt: report.measuredAt,
@@ -1561,17 +2012,46 @@ async function handle(
       // The workflow (engine.go's `backward`): a move it refuses changes nothing; one it takes
       // moves the issue to the phase it names, counts the move on the implementer's row and
       // starts the role that works that phase, clearing its completion (`enter`), so that role's
-      // next completion is of that phase.
-      const { to } = parsed.data;
-      const why = backwardRefusal(served(), to);
+      // next completion is of that phase. The move posts its sentence on the issue, so where the
+      // label's workflow refuses a reason (`REASON_REFUSALS`) the sentence is read by Dispatch's
+      // own reader through the label's own build, and a sentence Dispatch would refuse is refused
+      // before anything moves (effects.go's `backwardReasonRefusal`).
+      const { to, reason } = parsed.data;
+      const from = served();
+      const why = backwardRefusal(from, to);
       if (why !== undefined) return { response: failure(409, "BACKWARD_REFUSED", why) };
-      enter(to, "move");
+      const posted = POSTS_BACKWARD ? backwardMoveReason(from, to, reason) : "";
+      let over: PostRefusal | undefined;
+      try {
+        over = REASON_REFUSALS ? postRefusal(CHECKOUT, posted) : undefined;
+      } catch (error) {
+        // The label's own reading did not answer: a rig that cannot read the reason never
+        // answers the move as some other daemon would.
+        return {
+          response: json(500, {
+            error: `the move's reason could not be read as the daemon reads it: ${error instanceof Error ? error.message : String(error)}`,
+          }),
+        };
+      }
+      if (over !== undefined) {
+        const refusal = over.decision ? REASON_DECISION : REASON_TOO_LONG;
+        return {
+          response: failure(409, refusal.code, filled(refusal.format, over.sentence)),
+        };
+      }
+      enter(to, "move", posted);
       return { response: json(200, {}) };
     }
     default:
-      return { response: json(404, { error: `no route for ${path}` }) };
+      return { response: json(404, { error: "no route" }) };
   }
 }
+
+// The daemon's boot publishes the role holders of every issue with a live claim or a claim that
+// changed lately (`queueRoleHoldersPublish`), which this issue is: the world's history and the
+// agents before this one hold their roles on the run's Dispatch before this one's agent boots.
+queueHolders();
+await runOutbox();
 
 const server = Bun.serve({
   hostname: "127.0.0.1",
@@ -1586,21 +2066,21 @@ const server = Bun.serve({
         body = undefined;
       }
     }
-    // A route the label's daemon registers none of is answered as its catch-all answers it, 404,
-    // whatever case `handle` has for it (`ROUTES`).
+    // A route the label's daemon registers none of is answered as its catch-all answers it, 404
+    // `{"error":"no route"}`, whatever case `handle` has for it (`ROUTES`).
     const { response, mintedGrantId, phase } = !serves(ROUTES, request.method, path)
-      ? { response: json(404, { error: `no route for ${request.method} ${path}` }) }
+      ? { response: json(404, { error: "no route" }) }
       : request.method === "POST"
         ? await handle(path, body)
         : request.method === "GET" && path === "/legion/v1/state"
           ? { response: await stateAnswer() }
-          : { response: json(404, { error: `no route for ${request.method} ${path}` }) };
+          : { response: json(404, { error: "no route" }) };
     // What the daemon last saw of the issue's tree move (`treeMovedAt`): a request of the
     // claim's that it took.
     if (request.method === "POST" && response.status < 300) movedAt = new Date().toISOString();
-    // A move this request made owes the run's Dispatch its status, written before the answer
-    // (`writeStatuses`); a state read has written its own before it built the state.
-    if (request.method === "POST") await writeStatuses();
+    // A move or a claim change this request made owes the run's Dispatch its rows, written before
+    // the answer (`runOutbox`); a state read has written them before it built the state.
+    if (request.method === "POST") await runOutbox();
     // A refusal's line carries its code, the daemon's `Failure` code where the answer has one, so
     // a reader of the log can tell the daemon's own answer to a run (HANDOFF_NOT_CURRENT_PHASE)
     // from a body this stand-in could not take at all, whose 400 has none (score.ts's

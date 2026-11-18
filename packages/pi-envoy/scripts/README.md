@@ -832,14 +832,17 @@ keeps every reading that succeeded, and the process keeps each refusal, so a run
 cannot be read costs no more than the first run that asked.
 
 The rig's tests hold both shapes of each file to sources they write themselves, so they need no
-older checkout on the host. One row also reads an older daemon's own source where one is given:
+older checkout on the host. Two rows also read an older daemon's own source where one is given:
 `SKILL_SCENARIOS_OLDER_CHECKOUT` names a whole checkout of main `ff2a10ef` (2026-11-07), for
-instance `git worktree add <dir> ff2a10ef`, and `daemon-standin.test.ts`'s "an older daemon's
-late completion is refused in that daemon's own sentence" reads its `engine.go` and `handoff.go`
-as the older shapes and boots the daemon stand-in on it. That boot needs go and runs `go run
--overlay` of `daemon-pane.go` in the checkout's `packages/daemon`, with its `packages/envoy` beside
-it (its `go.mod` replaces that module), so the older module's dependencies must be in the Go module
-cache or fetchable. With the variable unset the row skips and says so. It is a test input only:
+instance `git worktree add <dir> ff2a10ef` or an extract of `git archive ff2a10ef`, and
+`daemon-standin.test.ts`'s "an older daemon's late completion is refused in that daemon's own
+sentence" reads its `engine.go` and `handoff.go` as the older shapes and boots the daemon
+stand-in on it, and its "an older daemon refuses no backward move's reason, posts no sentence and
+publishes no role holder" reads a post with `daemon-pane.go`'s `post-check` built in that
+checkout's module and boots the stand-in on it. Those reads need go and run `go run -overlay` of
+`daemon-pane.go` in the checkout's `packages/daemon`, with its `packages/envoy` beside it (its
+`go.mod` replaces that module), so the older module's dependencies must be in the Go module
+cache or fetchable. With the variable unset the rows skip and say so. It is a test input only:
 no batch reads it, and it is not the base label's checkout, which `SKILL_SCENARIOS_BASE_CHECKOUT`
 names for the rows that read the base label's own contract.
 
@@ -1050,15 +1053,41 @@ The record moves as the stand-in's served phase moves: a request for changes sen
 `implementing`, raises the implementer's `pass` and `rounds`, counts
 `backwardMoves["reviewing-implementing"]`, clears its handoff and queues its task; a worker's own
 move back counts its pair and no round; an approval of a mergeable head moves the issue to
-`accepting`, gives up the slot and queues the architect's task; and a completion the stand-in
-takes is written on its role's row. Each move into a phase that shows another status writes
-that status to the run's own Dispatch before the request that made the move is answered, as
-the daemon's outbox runs a `dispatch_status` row: under the daemon's own session,
+`accepting`, gives up the slot and queues the architect's task; a head GitHub reports conflicting
+with its base (`DIRTY`, `mergeable` `CONFLICTING`) sends the issue from `testing`, `reviewing`,
+`accepting`, `retro` or `merging` back to `implementing`, approved or not, raising the
+implementer's `pass` and no pair and no round, as main's engine moves a conflict (the stand-in
+left a `DIRTY` head in `reviewing` before); and a completion the stand-in takes is written on
+its role's row. Each move into a phase that shows another status
+writes that status to the run's own Dispatch before the request that made the move is answered,
+as the daemon's outbox runs a `dispatch_status` row: under the daemon's own session,
 `legion-daemon:<PROJECT>` (the session the seeds write each status as), and only while
 Dispatch still shows the status the move observed, so `dispatch read` and `read_record` name
-one status and a status someone else gave the issue since stands. A write the run's Dispatch
-does not take stays owed and is tried again at the stand-in's next request; the state's
-`pendingStatusWrites` lists it with why.
+one status and a status someone else gave the issue since stands. A conflict's move and a
+worker's backward move post the daemon's sentence of the move on the issue as a message first
+(`Legion moved this issue from <from> back to <to> at the <role>'s request: <reason>`, and the
+conflict's sentence naming the pull request, its head and its base), with the outbox's marker
+of the row, and a move into a phase that shows the status the issue already shows posts that
+sentence alone; each is posted only where the label's own workflow source holds that sentence.
+A write the run's Dispatch does not take stays owed and is tried again at the stand-in's next
+request; the state's `pendingStatusWrites` lists it with why and with the sentence it posts.
+Each attempt reads the issue's messages since the row was queued, as the outbox does, and posts
+no sentence an earlier attempt already posted under the row's marker. A write Dispatch refuses
+for good (a coded 4xx: an issue it holds none of, say) is finished refused, as the outbox
+finishes it, where the stand-in owed it for ever before.
+
+The run's Dispatch also holds the session of each live role of the issue, as the daemon
+publishes it (`PUT /api/v1/issues/{key}/role-holders`, as the daemon's own session): at the
+stand-in's boot, at the agent's registration, at its ready that carries no capability report,
+and when a turn outcome fails its claim, each the whole set of claims registered, ready,
+working or idle that record a session. So the world's Dispatch holds the tree's architect, each
+role the world's history ran, each agent the run booted before this one and the agent booting
+now, as production's does, where it held none before. The `dispatch` CLI reads no
+role holder, so `dispatch read` shows none in production either: `GET
+/api/v1/issues/{key}/role-holders` answers the set, which `rig.test.ts` holds to the record's
+live claims on a world built against a real Dispatch. A label whose daemon publishes no role
+holder, or whose Dispatch serves no such route (main before #4228), is published nothing; both
+labels are built from main `0b2769e5` or after, whose daemon and Dispatch publish and serve it.
 
 Its shape is held to production's: `production-shapes.json`'s `legion read_record` is the shape
 of one issue's record as the tool answered it in a Legion issue pod at 2026-11-17T16:49Z, the
@@ -1185,8 +1214,16 @@ which `rig.sh health` names. Until INFRA-764 round 25, one route answered every 
 no route above it took with `{id:6001}` and exit 0 and changed nothing, and a reviewer's update of
 its review's body read back unchanged with no rule seeing it. The daemon stand-in's writes follow
 the daemon the same way: a backward move the workflow has no row for, or by a role not running the
-issue's phase, is refused `BACKWARD_REFUSED` in the engine's sentence and one it takes moves the
-issue; a completion naming a handoff record reads it back from the run's own Dispatch and is
+issue's phase, is refused `BACKWARD_REFUSED` in the engine's sentence; one whose sentence, the
+message the move posts on the issue, Dispatch would refuse is refused before anything moves,
+`BACKWARD_REASON_DECISION_BLOCK` for a decision block in it and `BACKWARD_REASON_TOO_LONG` for one
+past Dispatch's bounds, in the engine's sentence around Dispatch's own, as the label's daemon
+reads it: the longest post its outbox could make of the sentence, read by the label's own
+Dispatch reader through the label's build of `daemon-pane.go` (`post-check`), and only where the
+label's workflow source holds those refusals; and one it takes moves the issue and posts its
+sentence (above). A request of a route the label's daemon does not register is answered as its
+catch-all answers it, 404 `{"error":"no route"}`. A completion naming a handoff record reads it
+back from the run's own Dispatch and is
 refused `HANDOFF_RECORD_NOT_FOUND` or `HANDOFF_RECORD_MISMATCH` as the daemon refuses it, and
 `HANDOFF_SESSION_MISMATCH` where another session than the claim's wrote it (measured on round
 25's 40 worker runs: each of the 31 records an agent wrote names the session that agent

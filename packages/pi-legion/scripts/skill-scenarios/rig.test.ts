@@ -10324,10 +10324,12 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
       planRead: string;
       verification: string;
       results: string;
-      /** The state the daemon stand-in served the booted agent, and `dispatch read` of the
-       * issue after it, each "" for a world no stand-in was booted on. */
+      /** The state the daemon stand-in served the booted agent, `dispatch read` of the issue after
+       * it, and the issue's role holders its Dispatch held then, each "" for a world no stand-in
+       * was booted on. */
       state: string;
       readAfter: string;
+      holders: string;
     }
 
     /** The session the agent booted on a world registers under: a UUIDv7, as a session's is. */
@@ -10446,6 +10448,7 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
         '  curl -fsS -o /dev/null -d "{\\"secret\\":\\"$secret\\"}" "$at/legion/v1/claims/ready"',
         '  curl -fsS -o "$R/state.json" "$at/legion/v1/state"',
         '  cli read --issue "$worker_key" >"$R/read-after.txt"',
+        '  curl -fsS -H "Authorization: Bearer e2e-token" "http://127.0.0.1:$dispatch_port/api/v1/issues/$worker_key/role-holders" >"$R/holders.json"',
         "fi",
       ].join("\n");
       const seeded = spawnChecked(
@@ -10494,6 +10497,7 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
         results: read("results.txt"),
         state: read("state.json"),
         readAfter: read("read-after.txt"),
+        holders: read("holders.json"),
       };
     }
 
@@ -10758,6 +10762,44 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
       if (record === undefined) throw new Error(`the state holds no record of ${world.issue}`);
       return record;
     }
+    /** The role holders the world's Dispatch held after the boot (`GET /api/v1/issues/{key}/
+     * role-holders`, in the workflow's order, as Dispatch answers them), and the ones the record
+     * the stand-in served names in that order: the session of each live claim, a registered,
+     * ready, working or idle one that records a session (record's `LiveRoleHolders`). */
+    function roleHolders(world: SeededWorld) {
+      const Holder = z.looseObject({ role: z.string(), session: z.string() });
+      const held = z
+        .looseObject({ issue: z.literal(world.issue), holders: z.array(Holder) })
+        .parse(JSON.parse(world.holders))
+        .holders.map(({ role, session }) => ({ role, session }));
+      const Claim = z.looseObject({ session: z.string(), state: z.string() });
+      const issue = z
+        .looseObject({
+          issues: z.record(
+            z.string(),
+            z.looseObject({
+              architect: Claim,
+              workers: z.record(z.string(), z.looseObject({ claim: Claim })),
+            })
+          ),
+        })
+        .parse(JSON.parse(world.state)).issues[world.issue];
+      const claims = new Map([
+        ["architect", issue?.architect],
+        ...Object.entries(issue?.workers ?? {}).map(([role, row]) => [role, row.claim] as const),
+      ]);
+      const named = ["architect", "planner", "implementer", "tester", "reviewer", "merger"].flatMap(
+        (role) => {
+          const claim = claims.get(role);
+          return claim !== undefined &&
+            claim.session !== "" &&
+            ["registered", "ready", "working", "idle"].includes(claim.state)
+            ? [{ role, session: claim.session }]
+            : [];
+        }
+      );
+      return { held, named };
+    }
     /** The handoff records the world's seeds wrote, as the run keeps them (fixture.json): each
      * the id and version the run's Dispatch holds it under. */
     function seededRecords(world: SeededWorld) {
@@ -10802,8 +10844,10 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
     // round 25: `workers: {}` in every counted threads-closed run, read before any write), a
     // handoff record under another id or version than the run's Dispatch holds, a pull request
     // other than the one gh answers, a design gate the spec's approval does not give, or a
-    // status the run's Dispatch does not show; and a stand-in that writes a status to the run's
-    // Dispatch at a read that moved nothing.
+    // status the run's Dispatch does not show; a stand-in that writes a status to the run's
+    // Dispatch at a read that moved nothing; and a world whose Dispatch holds no session of a role
+    // the record names live (the daemon's role-holder publication: daemon-standin.ts's
+    // `queueHolders`), which the real Dispatch of the world refuses or the stand-in never sent.
     test("threads-closed's text-fixes world: the record its implementer reads holds each seeded round, gh's pull request and the approved spec", () => {
       const world = seededWorld("text-fixes", false, {
         role: "implementer",
@@ -10846,6 +10890,15 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
       expect(issueState({ ...world, issueRead: world.readAfter }).status).toBe(
         `Status: ${record.status}`
       );
+      const holders = roleHolders(world);
+      expect(holders.held).toEqual(holders.named);
+      expect(holders.named.map(({ role }) => role)).toEqual([
+        "architect",
+        "planner",
+        "implementer",
+        "tester",
+        "reviewer",
+      ]);
     }, 300_000);
 
     test("reviewer-text-findings' text-only world: the record its reviewer reads holds the rounds before its own, its own task and no decision", () => {
@@ -10881,6 +10934,15 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
       expect(issueState({ ...world, issueRead: world.readAfter }).status).toBe(
         `Status: ${record.status}`
       );
+      const holders = roleHolders(world);
+      expect(holders.held).toEqual(holders.named);
+      expect(holders.named.map(({ role }) => role)).toEqual([
+        "architect",
+        "planner",
+        "implementer",
+        "tester",
+        "reviewer",
+      ]);
     }, 300_000);
   }
 );

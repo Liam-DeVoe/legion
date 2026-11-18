@@ -110,11 +110,13 @@ export interface RecordFacts {
    * it (`phaseStatus`). */
   readonly status: string;
   /** The status writes the record's moves owe the run's Dispatch and have not finished, oldest
-   * first: the status, the one Dispatch showed when the move queued it, the attempts made, and
+   * first: the status, the one Dispatch showed when the move queued it, the sentence the move
+   * posts on the issue before the status ("" for a move that posts none), the attempts made, and
    * why the last failed. */
   readonly statusWrites: readonly {
     readonly status: string;
     readonly observed: string;
+    readonly reason: string;
     readonly attempts: number;
     readonly lastError?: string | undefined;
   }[];
@@ -401,7 +403,13 @@ export function stateBody(facts: RecordFacts, startedAt: string): Record<string,
     issues: { [facts.issue]: issueRecord(facts) },
     pendingStatusWrites: facts.statusWrites.map((owed) => ({
       issue: facts.issue,
-      payload: { kind: "ordinary", status: owed.status, observedStatus: owed.observed },
+      // `record.StatusWrite` as Go marshals it: `reason` is omitted where it is empty.
+      payload: {
+        kind: "ordinary",
+        status: owed.status,
+        observedStatus: owed.observed,
+        ...(owed.reason === "" ? {} : { reason: owed.reason }),
+      },
       attempts: owed.attempts,
       nextAt: facts.now,
       ...(owed.lastError === undefined ? {} : { lastError: owed.lastError }),
@@ -542,10 +550,18 @@ export function sampleFacts(): { name: string; facts: RecordFacts }[] {
           ...history,
           phase,
           status: phaseStatus(phase),
-          // A move's status write that has not run, once with the reason its last attempt gave.
+          // A move's status write that has not run, once with the sentence its move posts and the
+          // reason its last attempt gave.
           statusWrites: [
-            { status: phaseStatus(phase), observed: "needs_review", attempts: 0 },
-            { status: "in_progress", observed: "testing", attempts: 2, lastError: "no answer" },
+            { status: phaseStatus(phase), observed: "needs_review", reason: "", attempts: 0 },
+            {
+              status: "in_progress",
+              observed: "testing",
+              reason:
+                "Legion moved this issue from testing back to implementing at the tester's request: the fix needs code.",
+              attempts: 2,
+              lastError: "no answer",
+            },
           ].slice(0, which % 3),
           pullRequest,
           gate: gates[(index + which) % gates.length],

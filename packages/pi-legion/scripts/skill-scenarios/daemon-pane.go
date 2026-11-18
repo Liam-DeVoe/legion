@@ -23,6 +23,10 @@
 //	                         prints the status of the claim refusal `name` (claim.InvalidSecret,
 //	                         claim.StaleGeneration, …), then on a second line its message, read out
 //	                         of the daemon's source (claimRefusal)
+//	post-check               reads a message body on stdin and prints nothing where Dispatch takes
+//	                         the longest post the daemon's outbox could make of it, else the kind of
+//	                         Dispatch's refusal (`decision` or `bound`), then on a second line the
+//	                         refusal's own sentence: the daemon's own reading (postCheck)
 //	pane                     reads a paneRequest (JSON) on stdin, writes the claim's gh bundle
 //	                         under its LEGION_GH_OWNERS_DIR, and prints its paneResponse (JSON)
 package main
@@ -44,12 +48,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/dispatchbody"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/daemon"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
@@ -58,7 +64,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-const usage = "usage: daemon-pane phase <role> | refusal not-current-phase <role> <phase> <issue> [<engine source> [<intake package dir>]] | count-default <key> [<config package dir>] | claim-refusal <name> [<claim package dir>] | pane < request.json"
+const usage = "usage: daemon-pane phase <role> | refusal not-current-phase <role> <phase> <issue> [<engine source> [<intake package dir>]] | count-default <key> [<config package dir>] | claim-refusal <name> [<claim package dir>] | post-check < body | pane < request.json"
 
 func main() {
 	args := os.Args[1:]
@@ -95,6 +101,8 @@ func main() {
 			dir = args[2]
 		}
 		err = printClaimRefusal(args[1], dir)
+	case len(args) == 1 && args[0] == "post-check":
+		err = postCheck()
 	case len(args) == 1 && args[0] == "pane":
 		err = pane()
 	default:
@@ -128,6 +136,35 @@ func printPhase(role claim.Role) error {
 		return nil
 	}
 	return fmt.Errorf("%q works no phase", role)
+}
+
+// postCheck prints whether Dispatch takes a message the daemon posts with the body read on stdin,
+// as the daemon decides it before it records a move whose reason it posts (workflow's
+// backwardReasonRefusal, api's closeRoot): the longest post its outbox could make of the body,
+// the body under the marker of the largest row id (record.LongestPost), read by Dispatch's own
+// reader (dispatchbody.Check). Nothing is printed for a post Dispatch takes; a refusal prints its
+// kind, `decision` for a body holding a decision block and `bound` for one past a bound, then the
+// refusal's sentence, which the daemon quotes in its own. The kind is read off the refusal's type,
+// the *itemblocks.DecisionBlock Check returns unwrapped, rather than through
+// dispatchbody.IsDecisionBlock, which main ff2a10ef's envoy module has not got: the rig builds
+// this program in that checkout's module too, whose daemon refuses no reason (daemon-pane.ts's
+// postRefusal says who asks).
+func postCheck() error {
+	body, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return fmt.Errorf("read the body: %w", err)
+	}
+	over := dispatchbody.Check(record.LongestPost(string(body)))
+	if over == nil {
+		return nil
+	}
+	kind := "bound"
+	if strings.HasSuffix(fmt.Sprintf("%T", over), ".DecisionBlock") {
+		kind = "decision"
+	}
+	fmt.Println(kind)
+	fmt.Println(over.Error())
+	return nil
 }
 
 // defaultConfigDir is the package the daemon reads legion.yaml in and keeps each setting's default

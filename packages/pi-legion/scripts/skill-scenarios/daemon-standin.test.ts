@@ -6,7 +6,14 @@ import { LegionActivityRequest, LegionStateResponse } from "@legion/contracts/le
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
-import { claimRefusal, countDefault, labelDaemon, notCurrentPhase, refusalIn } from "./daemon-pane";
+import {
+  claimRefusal,
+  countDefault,
+  labelDaemon,
+  notCurrentPhase,
+  postRefusal,
+  refusalIn,
+} from "./daemon-pane";
 import { pinnedRead, RECORD_READ, rolesListed, shapeDiff, shapeOf } from "./production-shapes";
 import { contractRefusal, issueRecord, sampleFacts } from "./standin-record";
 import { bundled, spawnChecked, writeGhSelectors } from "./test-programs";
@@ -50,34 +57,135 @@ const HANDOFF_WORDS: Record<string, string> = {
 };
 
 /** What a run's seeds leave on its own Dispatch, as far as the stand-in reads it back for the
- * record (daemon-standin.ts's `seededHistory` and `gateNow`) and writes it (`writeStatuses`):
- * the run's issue as `GET /api/v1/issues/{key}` answers it — when it was filed, the session
- * that filed it, its spec — with the status it shows now, which a `PATCH` of the issue moves and
- * `statusWrites` keeps the body of; and the spec's approval as `GET /api/v1/artifacts/{id}`
+ * record (daemon-standin.ts's `seededHistory` and `gateNow`) and writes it (`runOutbox`): the
+ * run's issue as `GET /api/v1/issues/{key}` answers it — when it was filed, the session that
+ * filed it, its spec — with the status it shows now, which a `PATCH` of the issue moves and
+ * `statusWrites` keeps the body of, and `outages`, how many of the next `PATCH`es of it Dispatch
+ * answers 503 before it takes one; and the spec's approval as `GET /api/v1/artifacts/{id}`
  * carries it, which a row moves as a person's review or a new version of the spec moves it. */
 interface SeededWorld {
   readonly issue: { created_at: string; created_by: object | null; primary_artifact_id: string };
   status: string;
   readonly statusWrites: unknown[];
   approval: object | undefined;
+  outages?: number;
+}
+
+/** A write the stand-in made of the run's Dispatch, as the Dispatch received it. */
+interface DispatchWrite {
+  readonly method: string;
+  readonly route: string;
+  readonly body: unknown;
+}
+
+/** The session the daemon writes every Dispatch write of the run's issue as
+ * (dispatch/client.go's `daemonActor`). */
+const DAEMON_ACTOR = { kind: "session", id: "legion-daemon:LWEVAL" };
+/** A write of the issue's status or a message, as the daemon sends it. */
+const IssueWrite = z.strictObject({
+  status: z.string().optional(),
+  body: z.string().optional(),
+  actor: z.unknown(),
+});
+
+/** The writes of `writes` to the run's issue but its role holders, each `[method, route, what]`,
+ * `what` a status write's status or a message's body, its outbox marker held to the outbox's
+ * shape (`<!-- legion-outbox:<row> -->` after a blank line: record's `MessagePost.Posted`) and
+ * cut; each is held to the daemon's own session. */
+function issueWrites(writes: readonly DispatchWrite[]): [string, string, string | undefined][] {
+  return writes
+    .filter((write) => !write.route.endsWith("/role-holders"))
+    .map(({ method, route, body }) => {
+      const write = IssueWrite.parse(body);
+      expect(write.actor).toEqual(DAEMON_ACTOR);
+      if (write.body === undefined) return [method, route, write.status];
+      const marked = /^([\s\S]*)\n\n<!-- legion-outbox:[1-9]\d* -->$/.exec(write.body);
+      expect(marked?.[0]).toBe(write.body);
+      return [method, route, marked?.[1]];
+    });
+}
+
+/** Each set of role holders `writes` published, in the order it published them, each write held
+ * to the route and the daemon's own session. */
+function published(writes: readonly DispatchWrite[]): unknown[] {
+  return writes
+    .filter((write) => write.route.endsWith("/role-holders"))
+    .map(({ method, route, body }) => {
+      expect([method, route]).toEqual(["PUT", "/api/v1/issues/LWEVAL-1/role-holders"]);
+      const write = z
+        .strictObject({ holders: z.array(z.unknown()), actor: z.unknown() })
+        .parse(body);
+      expect(write.actor).toEqual(DAEMON_ACTOR);
+      return write.holders;
+    });
 }
 
 /** The run's own Dispatch as the daemon stand-in reads it: `GET /api/v1/handoffs/{id}` answered
  * from `records`, as Dispatch answers it, and Dispatch's own 404 HANDOFF_NOT_FOUND for an id it
  * holds none of (dispatch/api's `getHandoff`), and, for a run with seeds, its issue, read and
- * written, and its spec (`seeded`), each behind the bearer in `token`. A request with another
- * bearer is Dispatch's 401, and any other route its 404. */
-function dispatchOf(records: Record<string, object>, token: string, seeded?: SeededWorld) {
+ * written, its messages posted (`POST …/messages`, answered 201) and read back as its events do
+ * (`GET …/events?order=desc`, each a `message.created` event carrying the body, paged by `limit`
+ * and `before`), its role holders written (`PUT …/role-holders`, answered with the set, as
+ * `putIssueRoleHolders` answers it) and its spec (`seeded`); a run with none holds no issue,
+ * whose routes are each Dispatch's 404 ISSUE_NOT_FOUND. Each is behind the bearer in `token`: a
+ * request with another bearer is Dispatch's 401, and any other route its 404. Every write it is
+ * sent, taken or not, is kept in `writes`, in the order it came. */
+function dispatchOf(
+  records: Record<string, object>,
+  token: string,
+  seeded?: SeededWorld,
+  writes: DispatchWrite[] = []
+) {
+  const messages: { seq: number; body: string; at: string }[] = [];
   return Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     async fetch(request) {
       if (request.headers.get("authorization") !== `Bearer ${token}`)
         return Response.json({ code: "UNAUTHORIZED", error: "no bearer" }, { status: 401 });
-      const route = new URL(request.url).pathname;
+      const url = new URL(request.url);
+      const route = url.pathname;
+      const body: unknown = request.method === "GET" ? undefined : await request.json();
+      if (request.method !== "GET") writes.push({ method: request.method, route, body });
+      const sub = /^\/api\/v1\/issues\/LWEVAL-1(?:\/(messages|role-holders|events))?$/.exec(route);
+      if (sub !== null && seeded === undefined)
+        return Response.json(
+          { code: "ISSUE_NOT_FOUND", error: "no issue LWEVAL-1" },
+          { status: 404 }
+        );
+      if (sub?.[1] === "messages" && request.method === "POST") {
+        const posted = z.object({ body: z.string(), actor: z.unknown() }).parse(body).body;
+        messages.push({ seq: messages.length + 1, body: posted, at: new Date().toISOString() });
+        return Response.json({ id: `message-${messages.length}` }, { status: 201 });
+      }
+      if (sub?.[1] === "events") {
+        const before = Number(url.searchParams.get("before") ?? "0");
+        const limit = Number(url.searchParams.get("limit") ?? "50");
+        return Response.json(
+          messages
+            .filter((message) => before === 0 || message.seq < before)
+            .reverse()
+            .slice(0, limit)
+            .map((message) => ({
+              seq: message.seq,
+              type: "message.created",
+              created_at: message.at,
+              payload: { id: `message-${message.seq}`, body: message.body },
+            }))
+        );
+      }
+      if (sub?.[1] === "role-holders" && request.method === "PUT")
+        return Response.json({
+          issue: "LWEVAL-1",
+          holders: z.object({ holders: z.array(z.unknown()) }).parse(body).holders,
+        });
       if (seeded !== undefined && route === "/api/v1/issues/LWEVAL-1") {
+        if (request.method === "PATCH" && (seeded.outages ?? 0) > 0) {
+          seeded.outages = (seeded.outages ?? 0) - 1;
+          return Response.json({ code: "UNAVAILABLE", error: "Dispatch is down" }, { status: 503 });
+        }
         if (request.method === "PATCH") {
-          const write = z.looseObject({ status: z.string() }).parse(await request.json());
+          const write = z.looseObject({ status: z.string() }).parse(body);
           seeded.statusWrites.push(write);
           seeded.status = write.status;
         }
@@ -194,6 +302,8 @@ async function standin(
         ...Object.fromEntries(seeds.map((word) => [word, seededRecord(word)])),
       })
     );
+  /** Every write the stand-in made of the run's Dispatch, in the order it made them. */
+  const writes: DispatchWrite[] = [];
   const dispatch = dispatchOf(
     // A row's own record of a seeded id stands in the seed's place: one its agent's session
     // wrote, where the seed's is another session's.
@@ -212,7 +322,8 @@ async function standin(
       ...records,
     },
     "the-run's-dispatch-token",
-    seeded
+    seeded,
+    writes
   );
   // The world the run keeps, in the shape fixture_write writes it: the stand-in reads the
   // repository its record names, and the branch it gives as the default, out of this file.
@@ -317,6 +428,7 @@ async function standin(
     logged,
     stop,
     seeded,
+    writes,
     dispatchDown,
   };
 }
@@ -424,16 +536,66 @@ test.skipIf(skip)(
 // The engine moves an approval only on a merge state the issue may advance on
 // (`record.MergeState.Mergeable`), and waits in `reviewing` on every other: `BLOCKED`, which a
 // check the base requires holds the head in while it runs — the normal case while CI runs at the
-// approved head — and `DIRTY`, a head that conflicts with its base.
+// approved head — and `BEHIND`, a head behind its base. `DIRTY`, a head that conflicts with its
+// base, is no wait: the row below moves it.
 test.skipIf(skip)(
-  "an approval of a head GitHub reports BLOCKED or DIRTY leaves the issue in reviewing",
+  "an approval of a head GitHub reports BLOCKED or BEHIND leaves the issue in reviewing",
   async () => {
-    for (const state of ["BLOCKED", "DIRTY"]) {
+    for (const state of ["BLOCKED", "BEHIND"]) {
       const daemon = await standin("reviewer");
       try {
         pullRequest(daemon.dir, state).approve();
         expect((await daemon.complete(true)).status).toBe(200);
         expect([state, await daemon.phase()]).toEqual([state, "reviewing"]);
+      } finally {
+        daemon.stop();
+      }
+    }
+  },
+  600_000
+);
+
+// A head GitHub reports conflicting with its base (`DIRTY`, whose `mergeable` is `CONFLICTING`:
+// gh-threads.ts's `mergeableOf`) moves the issue from every phase after the implementer's back
+// to `implementing`, approved or not (review.go's `mergeability`, table.go's `TriggerConflict`
+// rows): the implementer's pass rises, and no pair and no round (`recordPass` on a conflict
+// round), its task is queued, and the move posts its sentence on the issue before its status
+// (effects.go's `moveReason`). Catches: a stand-in that leaves a conflicting head in `reviewing`
+// or `testing` (it did, and read the approval of it as a wait), where production's daemon has the
+// implementer merge the base forward; one that counts the move as a move of a pair or a review
+// round; and one that writes the status with no sentence before it.
+test.skipIf(skip)(
+  "a head that conflicts with its base moves the issue back to implementing, posting why before the status",
+  async () => {
+    /** The sentence the move from `from` posts for the pull request at `head`. */
+    const said = (from: string, head: string) =>
+      `Legion moved this issue from ${from} back to implementing, because pull request #1001 at head ${head.slice(0, 12)} conflicts with main. GitHub runs no checks on a head that conflicts with its base, so the implementer merges main forward.`;
+    for (const [role, seeds, from] of [
+      ["reviewer", ["plan", "implement", "test"], "reviewing"],
+      ["tester", ["plan", "implement"], "testing"],
+    ] as const) {
+      const daemon = await standin(role, "", undefined, { seeds });
+      try {
+        const world = pullRequest(daemon.dir, "DIRTY");
+        if (role === "reviewer") world.approve();
+        expect([role, await daemon.phase()]).toEqual([role, "implementing"]);
+        const implementer = (await daemon.record()).issue?.workers.implementer;
+        expect(implementer).toMatchObject({
+          pass: 1,
+          rounds: 0,
+          claim: { pendingTask: { phase: "implementing" } },
+        });
+        expect(implementer !== undefined && "backwardMoves" in implementer).toBe(false);
+        expect([daemon.seeded?.status, issueWrites(daemon.writes)]).toEqual([
+          "in_progress",
+          [
+            ["POST", "/api/v1/issues/LWEVAL-1/messages", said(from, world.head)],
+            ["PATCH", "/api/v1/issues/LWEVAL-1", "in_progress"],
+          ],
+        ]);
+        // A later read moves nothing more.
+        expect(await daemon.phase()).toBe("implementing");
+        expect(issueWrites(daemon.writes)).toHaveLength(2);
       } finally {
         daemon.stop();
       }
@@ -1359,18 +1521,25 @@ test.skipIf(skip)(
 // run's label's daemon registers it. An older daemon, main `ff2a10ef`, registers no
 // `claims/turn-outcome`, so its runs' plugin never posts one and a daemon of its would answer one
 // 404; a daemon registering no such route, read out of its own source, gets that 404 here, and
-// the routes it does register are answered.
+// the routes it does register are answered. Each 404 carries the body the daemon's catch-all
+// writes (`{"error":"no route"}`, api/server.go's mux remainder), where the stand-in wrote a
+// sentence of its own naming the route.
 test.skipIf(skip)(
   "a route the label's daemon does not register is answered 404, whatever the stand-in has a case for",
   async () => {
     const daemon = await standin("reviewer", "", undefined, { checkout: olderCheckout() });
     try {
+      const answered = async (answer: Response) => [answer.status, await answer.json()];
+      const noRoute = [404, { error: "no route" }];
       expect(
-        (await daemon.post("/legion/v1/claims/turn-outcome", turn("reviewer", 1, "clean"))).status
-      ).toBe(404);
-      expect((await daemon.post("/legion/v1/claims/activity", { secret: SECRET })).status).toBe(
-        404
-      );
+        await answered(
+          await daemon.post("/legion/v1/claims/turn-outcome", turn("reviewer", 1, "clean"))
+        )
+      ).toEqual(noRoute);
+      expect(
+        await answered(await daemon.post("/legion/v1/claims/activity", { secret: SECRET }))
+      ).toEqual(noRoute);
+      expect(await answered(await fetch(`${daemon.url}/legion/v1/claims`))).toEqual(noRoute);
       expect(await daemon.phase()).toBe("reviewing");
       expect(
         daemon
@@ -1380,6 +1549,7 @@ test.skipIf(skip)(
       ).toEqual([
         ["POST", "/legion/v1/claims/turn-outcome"],
         ["POST", "/legion/v1/claims/activity"],
+        ["GET", "/legion/v1/claims"],
       ]);
     } finally {
       daemon.stop();
@@ -1476,7 +1646,7 @@ test.skipIf(skip)(
 const olderHost = process.env.SKILL_SCENARIOS_OLDER_CHECKOUT;
 if (olderHost === undefined)
   console.warn(
-    `Skipped the older daemon's own-sentence row in ${import.meta.path}. ` +
+    `Skipped the older daemon's own-sentence and own-moves rows in ${import.meta.path}. ` +
       "SKILL_SCENARIOS_OLDER_CHECKOUT names no checkout of main ff2a10ef to read its " +
       "packages/daemon from. Name one and run the tests again."
   );
@@ -1506,6 +1676,39 @@ test.skipIf(skip || olderHost === undefined)(
           format
         ),
       });
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Against main `ff2a10ef`'s own daemon, where the host has a checkout of it
+// (SKILL_SCENARIOS_OLDER_CHECKOUT): daemon-pane.go's `post-check` builds in that checkout's
+// module, as rig.sh's build of each label is made, and reads a post with that checkout's own
+// Dispatch reader, which refuses a block past its bound and knows no decision block; and that
+// daemon, whose workflow refuses no reason, posts no move's sentence and publishes no role holder
+// (each came to main later, #4309 and #4228), takes a move this checkout's daemon refuses and
+// writes nothing of it on the run's Dispatch. Catches: a stand-in that answers an older label
+// with this checkout's refusals, sentences or publications, which that label's daemon never
+// gave, and a post-check that no longer builds against an older daemon module.
+test.skipIf(skip || olderHost === undefined)(
+  "an older daemon refuses no backward move's reason, posts no sentence and publishes no role holder",
+  async () => {
+    const checkout = olderHost ?? "";
+    expect(postRefusal(checkout, "y".repeat(32_001))).toEqual({
+      decision: false,
+      sentence:
+        "body block 1 (text) is 1 characters over the 32000-character block limit (32001/32000)",
+    });
+    const decision = 'The plan is wrong.\n\n:::ask{urgency="med"}\nWhich table?\n:::';
+    expect(postRefusal(checkout, decision)).toBeUndefined();
+    expect(postRefusal(CHECKOUT, decision)?.decision).toBe(true);
+    const daemon = await standin("reviewer", "", undefined, { checkout });
+    try {
+      expect(await askedBack(daemon.post, "implementing", decision)).toEqual([200, {}]);
+      expect(await daemon.phase()).toBe("implementing");
+      expect(daemon.writes).toEqual([]);
     } finally {
       daemon.stop();
     }
@@ -1779,6 +1982,155 @@ test.skipIf(skip)(
       expect(await reviewer.phase()).toBe("implementing");
     } finally {
       reviewer.stop();
+    }
+  },
+  600_000
+);
+
+/** A move of the issue back to `to` for `reason` through the stand-in `post` reaches, on a grant
+ * minted for it, as the tool's `request_backward_move` makes one: the answer's status and body. */
+async function askedBack(
+  post: (route: string, payload: unknown) => Promise<Response>,
+  to: string,
+  reason: string
+): Promise<[number, unknown]> {
+  const minted = await (
+    await post("/legion/v1/grants", {
+      sessionId: AGENT,
+      secret: SECRET,
+      tree: "LWEVAL-1",
+      issue: "LWEVAL-1",
+    })
+  ).json();
+  const { grantId } = z.object({ grantId: z.string() }).parse(minted);
+  const moved = await post("/legion/v1/phase/backward", { grantId, to, reason });
+  return [moved.status, await moved.json()];
+}
+
+// A backward move posts its sentence on the issue (effects.go's `backwardMoveReason`), so the
+// engine refuses a sentence Dispatch would refuse there before anything moves
+// (`backwardReasonRefusal`): the longest post the outbox could make of it, read by Dispatch's own
+// reader, holding a decision block is 409 BACKWARD_REASON_DECISION_BLOCK and one past Dispatch's
+// bounds 409 BACKWARD_REASON_TOO_LONG, each in the engine's sentence around Dispatch's. The
+// reasons are the daemon's own test's (backward_reason_test.go): a reason of as many blocks as
+// Dispatch holds a body to is refused for the block the marker adds. A move the engine takes posts
+// its sentence, the role that asked and its words, trimmed and closed with a full stop where they
+// end with none, before its status, or alone where the phase it enters shows the status the issue
+// already shows; a status the run's Dispatch has not taken is listed with that sentence. Catches:
+// a stand-in that takes every reason (it did: 200 `{}` and the issue moved where production
+// refused the move and moved nothing) or names one refusal for the other; one that posts no
+// sentence, posts it after the status or under another session; an owed write that drops it; and
+// one that posts the sentence again at each attempt of a status write Dispatch did not take.
+test.skipIf(skip)(
+  "a backward move whose sentence Dispatch would refuse is refused in the engine's words, and one it takes posts its sentence before its status",
+  async () => {
+    const decision =
+      ':::ask{urgency="med"}\nWhich table should the plan name?\n\n- users: the old one\n- accounts: the new one\n:::';
+    const blocks = Array.from({ length: 32_768 }, () => "y").join("\n\n");
+    const asked = (from: string, to: string, by: string, words: string) =>
+      `Legion moved this issue from ${from} back to ${to} at the ${by}'s request: ${words}`;
+    const reviewer = await standin("reviewer", "", undefined, {
+      seeds: ["plan", "implement", "test"],
+    });
+    try {
+      expect(
+        await askedBack(reviewer.post, "implementing", `The plan is wrong.\n\n${decision}`)
+      ).toEqual([
+        409,
+        {
+          code: "BACKWARD_REASON_DECISION_BLOCK",
+          error:
+            "the reason holds a decision block, and the move posts the reason on the issue as a message, where nobody can answer one: body block 2 (ask) holds a decision block, which nobody can answer where it stands: ask the question in the issue's own document, as a decision block there, or open an ask with `dispatch ask`; to show a decision block as an example, put it in a fenced code block; the move was not applied, so ask again with a reason that states what is wrong rather than asking a question",
+        },
+      ]);
+      expect(await askedBack(reviewer.post, "implementing", blocks)).toEqual([
+        409,
+        {
+          code: "BACKWARD_REASON_TOO_LONG",
+          error:
+            "the reason makes a message Dispatch refuses: body is 1 blocks over the 32768-block limit (32769/32768); the move was not applied, so ask again with a shorter reason",
+        },
+      ]);
+      expect(await reviewer.phase()).toBe("reviewing");
+      expect(issueWrites(reviewer.writes)).toEqual([]);
+      expect(await askedBack(reviewer.post, "implementing", "  the guard needs code  ")).toEqual([
+        200,
+        {},
+      ]);
+      expect(await reviewer.phase()).toBe("implementing");
+      expect([reviewer.seeded?.status, issueWrites(reviewer.writes)]).toEqual([
+        "in_progress",
+        [
+          [
+            "POST",
+            "/api/v1/issues/LWEVAL-1/messages",
+            asked("reviewing", "implementing", "reviewer", "the guard needs code."),
+          ],
+          ["PATCH", "/api/v1/issues/LWEVAL-1", "in_progress"],
+        ],
+      ]);
+    } finally {
+      reviewer.stop();
+    }
+    // Implementing and planning show one status, so the move's sentence is posted alone.
+    const implementer = await standin("implementer", "implementing", undefined, {
+      seeds: ["plan"],
+    });
+    try {
+      const words = "the plan names the wrong table?";
+      expect(await askedBack(implementer.post, "planning", words)).toEqual([200, {}]);
+      expect(issueWrites(implementer.writes)).toEqual([
+        [
+          "POST",
+          "/api/v1/issues/LWEVAL-1/messages",
+          asked("implementing", "planning", "implementer", words),
+        ],
+      ]);
+    } finally {
+      implementer.stop();
+    }
+    // A status the run's Dispatch has not taken is owed, and the state lists it with the sentence
+    // its write posts first (`record.StatusWrite`'s `reason`); each attempt after the one that
+    // posted the sentence finds it on the issue by its marker and posts it no second time
+    // (outbox.go's `message`, `MessageBodiesSince`).
+    const owed = await standin("reviewer", "", undefined, { seeds: ["plan", "implement", "test"] });
+    try {
+      if (owed.seeded !== undefined) owed.seeded.outages = 2;
+      expect(await askedBack(owed.post, "implementing", "the fix needs code")).toEqual([200, {}]);
+      const { pendingStatusWrites } = z
+        .looseObject({ pendingStatusWrites: z.array(z.unknown()) })
+        .parse(await owed.body());
+      expect(pendingStatusWrites).toEqual([
+        {
+          issue: "LWEVAL-1",
+          payload: {
+            kind: "ordinary",
+            status: "in_progress",
+            observedStatus: "needs_review",
+            reason: asked("reviewing", "implementing", "reviewer", "the fix needs code."),
+          },
+          attempts: 2,
+          nextAt: expect.any(String),
+          lastError:
+            'Dispatch answered PATCH /api/v1/issues/LWEVAL-1 503: {"code":"UNAVAILABLE","error":"Dispatch is down"}',
+        },
+      ]);
+      expect(await owed.phase()).toBe("implementing");
+      expect([owed.seeded?.status, issueWrites(owed.writes)]).toEqual([
+        "in_progress",
+        [
+          [
+            "POST",
+            "/api/v1/issues/LWEVAL-1/messages",
+            asked("reviewing", "implementing", "reviewer", "the fix needs code."),
+          ],
+          ["PATCH", "/api/v1/issues/LWEVAL-1", "in_progress"],
+          ["PATCH", "/api/v1/issues/LWEVAL-1", "in_progress"],
+          ["PATCH", "/api/v1/issues/LWEVAL-1", "in_progress"],
+        ],
+      ]);
+    } finally {
+      owed.stop();
     }
   },
   600_000
@@ -2481,9 +2833,11 @@ test.skipIf(skip)(
 // daemon's, or for a move into a phase that shows the status the record already holds (an
 // approval's move to `accepting`); a write over a status someone else gave the issue since the
 // move (the outbox's row writes only while Dispatch still shows the status the move observed);
-// and a write the run's Dispatch did not take that is forgotten rather than owed.
+// a write the run's Dispatch did not take that is forgotten rather than owed; and a write
+// Dispatch refused for good, of an issue it holds none of, owed for ever where the outbox
+// finishes it refused (outbox.go's `permanentRefusal`), as this owed it.
 test.skipIf(skip)(
-  "a move of the record writes its phase's status to the run's Dispatch as the daemon's session, once, and owes one Dispatch did not take",
+  "a move of the record writes its phase's status to the run's Dispatch as the daemon's session, once, owes one Dispatch did not take, and finishes one Dispatch refused for good",
   async () => {
     const seeds = ["plan", "implement", "test"] as const;
     const pending = async (daemon: { body: () => Promise<unknown> }) =>
@@ -2559,22 +2913,34 @@ test.skipIf(skip)(
     } finally {
       tester.stop();
     }
-    // A run with no seeds reads no gate, so its state shows the write it owes.
+    // A run whose Dispatch holds no issue: Dispatch refuses the status's read for good, 404
+    // ISSUE_NOT_FOUND, so the row is finished refused and owed no more.
     const unseeded = await standin("reviewer");
     try {
       pullRequest(unseeded.dir, "BLOCKED").requestChanges();
       expect(await unseeded.phase()).toBe("implementing");
-      expect(await pending(unseeded)).toEqual([
+      expect(await pending(unseeded)).toEqual([]);
+    } finally {
+      unseeded.stop();
+    }
+    // A run with no seeds reads no gate, so with its Dispatch down its state shows the write it
+    // owes.
+    const down = await standin("reviewer");
+    try {
+      pullRequest(down.dir, "BLOCKED").requestChanges();
+      down.dispatchDown();
+      expect(await down.phase()).toBe("implementing");
+      expect(await pending(down)).toEqual([
         {
           issue: "LWEVAL-1",
           payload: { kind: "ordinary", status: "in_progress", observedStatus: "needs_review" },
           attempts: 2,
           nextAt: expect.any(String),
-          lastError: expect.stringContaining("Dispatch answered GET /api/v1/issues/LWEVAL-1 404"),
+          lastError: expect.any(String),
         },
       ]);
     } finally {
-      unseeded.stop();
+      down.stop();
     }
   },
   600_000
@@ -2635,6 +3001,86 @@ test.skipIf(skip)(
       expect([at("ready"), at("turn-outcome")].map((time) => typeof time)).toEqual([
         "string",
         "string",
+      ]);
+    } finally {
+      second.stop();
+    }
+  },
+  600_000
+);
+
+// The daemon publishes the session holding each live role of the issue to Dispatch (`PUT
+// /api/v1/issues/{key}/role-holders`, outbox.go's `publishRoleHolders`): at its boot, at a
+// registration and at a claim it fails (the claim writes that change a role's holder, store's
+// `putClaim`), and at a ready that carries no capability report (api's `ready`), each the whole
+// live set — a claim registered, ready, working or idle that records a session — by role, as the
+// daemon's own session. So the run's Dispatch holds the tree's architect, each role the world's
+// history ran and each agent the run booted before this one, and the booted agent from its
+// registration until its claim fails. Catches: a stand-in that publishes nothing (it published
+// nothing), so a world's Dispatch holds no role production's does; one that publishes at no boot,
+// or not at a registration, a boot's ready or a failure; one that publishes at a ready of the
+// session's own, which changes no holder; and one that leaves out the history's idle claims or
+// keeps a claim it failed.
+test.skipIf(skip)(
+  "the session holding each live role of the issue is published to the run's Dispatch as the daemon publishes it",
+  async () => {
+    const limit = countDefault(CHECKOUT, "launch_failure_limit");
+    const seeds = ["plan", "implement", "test"] as const;
+    const history = [
+      { role: "architect", session: SEEDED_SESSIONS.architect },
+      { role: "implementer", session: SEEDED_SESSIONS.implement },
+      { role: "planner", session: SEEDED_SESSIONS.plan },
+      { role: "tester", session: SEEDED_SESSIONS.test },
+    ];
+    const booted = [...history.slice(0, 3), { role: "reviewer", session: AGENT }, history[3]];
+    const reviewer = await standin("reviewer", "", undefined, { seeds });
+    try {
+      expect(published(reviewer.writes)).toEqual([history]);
+      await boots(reviewer.post);
+      expect(published(reviewer.writes)).toEqual([history, booted, booted]);
+      // A ready of the session's own carries its capability report and changes no holder.
+      const own = await reviewer.post("/legion/v1/claims/ready", {
+        secret: SECRET,
+        capabilities: REPORT,
+      });
+      expect(own.status).toBe(204);
+      expect(published(reviewer.writes)).toHaveLength(3);
+      for (let sequence = 1; sequence <= limit; sequence += 1)
+        await reviewer.post(
+          "/legion/v1/claims/turn-outcome",
+          turn("reviewer", sequence, "refused")
+        );
+      expect(published(reviewer.writes)).toEqual([history, booted, booted, history]);
+    } finally {
+      reviewer.stop();
+    }
+    // The second agent of a run: the first agent's claim, idle, holds its role, and the role of
+    // the agent booting now is held by nobody until it registers, its claim launching.
+    const first = await standin("implementer", "reviewing", undefined, {
+      completed: "implementer",
+      seeds: [...seeds, "review"],
+    });
+    const fixer = "01a2d000-0000-7000-8000-00000000f007";
+    try {
+      await boots(first.post, fixer);
+      expect(published(first.writes).at(-1)).toEqual([
+        history[0],
+        { role: "implementer", session: fixer },
+        history[2],
+        { role: "reviewer", session: SEEDED_SESSIONS.review },
+        history[3],
+      ]);
+    } finally {
+      first.stop();
+    }
+    const second = await standin("reviewer", "reviewing", undefined, {
+      completed: "implementer",
+      seeds: [...seeds, "review"],
+      dir: first.dir,
+    });
+    try {
+      expect(published(second.writes)).toEqual([
+        [history[0], { role: "implementer", session: fixer }, history[2], history[3]],
       ]);
     } finally {
       second.stop();
