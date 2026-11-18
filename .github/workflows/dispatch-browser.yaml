@@ -335,6 +335,13 @@ jobs:
     # budget at 219 - 5 - 45 + 355 = 524 s: 1,304 s, 21 min 44 s, rounded up to the 22 minutes
     # below. The browser step's own budget is unchanged, and it still fires before the job's.
     #
+    # THE FILE STORE'S TWO STEPS, AFTER THAT READING. "Wait for the S3-compatible server" runs
+    # one-collection.sh's prepare and check around its readiness object, and took 17.9 to 24.3 s
+    # on a dev box, against the 24 s above. "Check that no write grew the file store", after the
+    # browser step, is one `weed shell` command and a read of the store's log: 0.09 to 0.27 s
+    # there, and no row above. The second they can add is inside the 16 s between the 1,304 s
+    # above and the 22 minutes below.
+    #
     # The rows behind those seconds were the suite of the head those runs measured. Listed
     # again at this change's head, the suite holds 1,427 rows in 194 files, which is two
     # listings rather than one: the three `-alone` projects are out of the default selection
