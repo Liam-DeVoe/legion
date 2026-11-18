@@ -70,7 +70,7 @@ not reach them:
 
 | File | What it is |
 | --- | --- |
-| `src/collab-cursor-plugin.ts` | The peer-cursor plugin: y-prosemirror's, except that a peer's caret is not drawn while it sits on the focused local caret, where Chromium and WebKit otherwise drop or misplace typing (LEGION-289), and that a peer's name label hangs back toward its line's start (`.proof-collab-cursor__label--inward`, in `src/lib.css`) where hanging toward the line's end would pass the end of the nearest box that clips or scrolls it and hanging back still fits, so a row editor's box does not scroll sideways for it; it decides once a frame after an update or a resize, and reads no layout while it draws; it is also biome-checked |
+| `src/collab-cursor-plugin.ts` | The peer-cursor plugin: y-prosemirror's, except that a peer's caret is not drawn while it sits on the focused local caret, where Chromium and WebKit otherwise drop or misplace typing (LEGION-289); it is also biome-checked |
 | `src/editor/schema/dom-attributes.ts` | `withDomAttributes`, the DOM-output-spec helper lifted out of `block-ids.ts` so the typed-block schema can use it too |
 | `src/editor-highlights.ts` | Presentation-only active and pulse highlights for marks and blocks, and the marks a host draws on blocks (`setBlockMarks`: a class each and an optional `title`, the whole set in one call, which replaces the last), drawn as a cached ProseMirror `DecorationSet`, because a host class write on editor DOM is read back as an edit (LEGION-458). The set is mapped through edits inside one node and rebuilt when the active, pulsed or marked set changes, or an edit can change which nodes carry a highlighted id or where a highlighted block ends: a mark or attribute step, inserted content that holds a highlighted target (a collaborator's update replaces the whole document), and, while a block is highlighted or marked, a replace across a node boundary; it is also biome-checked |
 | `src/editor-change-decorations.ts` | Presentation-only change marks a host draws over a read-only document, as a ProseMirror `DecorationSet`, for the same reason `src/editor-highlights.ts` is one (INFRA-575): one `setChangeDecorations({ text, widgets })` carries the whole set and replaces the last one, since its one caller computes both lists from one `ChangeMarks`. A text entry draws a class over a run of a block's own text, by a `range` of character offsets into that text (the block's inline content is walked, counting each leaf node the characters its type's `leafText` draws, a `hardbreak`'s newline among them, exactly as `textContent` counts them, so an offset after an inline atom or a hard break still lands on its character) or over the whole block where it names no range - the two ends are one optional field, so an entry with only one end cannot be written - and a widget entry draws a piece of text beside the document, before the top-level block it names or at the end of it. An entry names its block by index among the document's top-level blocks, and one naming a block the document does not hold, or text it does not reach, is dropped. The editor this serves is read-only and `setMarkdown` replaces its whole document, so a document change rebuilds the set from the entries rather than mapping stale positions; it is also biome-checked |
@@ -95,7 +95,7 @@ not reach them:
 | `src/html-blocks.ts` | How this package reads a block of HTML: `strictHtmlFlowSyntax`, which registers `htmlFlowStrict` from `./html-flow` under `<` and disables micromark's `htmlFlow` by name, and `remarkHtmlBlockParagraphs`, which draws each block of HTML as a paragraph holding the same text as one inline `html` node, since the Proof schema has no node for a block of HTML and Milkdown drew one as a thrown parse or a dropped container. `remarkStrictHtmlFlow`, `libraryRemarkHtmlFlowPlugin` and `libraryRemarkHtmlBlockPlugin` install them on the headless parse processor and on the editor: the construct beside the directive construct, the transform after the mark plugins, whose own block-level span is a pair of blocks of HTML until they have paired it, and before the typed-block transforms, which read the drawn paragraph as the block's content (#2507); it is also biome-checked |
 | `src/tests/harness.ts` | The `bun test` registration the copied suites call instead of their own `test()` tally |
 
-Twenty-seven kinds of edit are allowed in the copied files, and no others: the import specifiers of
+Twenty-six kinds of edit are allowed in the copied files, and no others: the import specifiers of
 upstream modules; `bun test` registration in the suites (`src/tests/harness.ts` replaces each
 file's own `test()` tally and its `process.exit` tail); `src/tests/headless-no-dom.test.ts`,
 whose entry named the fork's built `dist/headless.js` and now names `../lib-headless.js` — its
@@ -126,9 +126,7 @@ handle's new `setChangeDecorations` through `./editor-change-decorations`, whose
 `setReferences` through `./reference-decorations`, whose `EditorReferences`,
 `ReferenceCandidate` and `ReferenceTarget` it re-exports, with `src/lib.css` holding the rules
 that draw a reference's title on one line, cut with an ellipsis, and hide the stored text under
-it (INFRA-869); `src/lib.css` holding the one rule that hangs a peer's caret label back toward
-its line's start, `.proof-collab-cursor__label.proof-collab-cursor__label--inward`, which
-`./collab-cursor-plugin` sets on a label that would otherwise pass the end of its box;
+it (INFRA-869);
 `src/dispatch-marks.ts`'s `dispatchAsk` schema declaring `excludes: ''`,
 so two readers' asks may cover the same text, with `removeAskMark` removing that mark's instance
 by id rather than every `dispatchAsk` over its range and the parse runner closing its own span of
@@ -218,7 +216,7 @@ each of which erases before runtime (below).
 To audit a copied file, diff it against `jj --ignore-working-copy -R <proof-sdk> file show -r
 24a5fc94 root:src/<file>`; every file in the copied-files table but `src/directive-factories.ts`
 and `src/html-flow.ts` has that counterpart, and the only lines that differ should be the
-twenty-seven kinds.
+twenty-six kinds.
 `src/directive-factories.ts`'s counterparts are those three files of micromark-extension-directive
 4.0.0 (`node_modules/.bun/micromark-extension-directive@4.0.0` at the repository root, or the
 package's npm tarball); each function there differs from its source by the join and the type
