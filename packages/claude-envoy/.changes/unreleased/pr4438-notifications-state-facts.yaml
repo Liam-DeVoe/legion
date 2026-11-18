@@ -1,0 +1,4 @@
+kind: Changed
+body: |-
+  The Claude Code plugin's notices state the fields of their kind, as the Oh My Pi plugins' do, and
+  its cards carry no reply procedure.

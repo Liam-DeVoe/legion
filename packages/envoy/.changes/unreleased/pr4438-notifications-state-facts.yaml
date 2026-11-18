@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The listener raises no wake for a `low` publish of the Legion daemon to a role with no live holder.
+  Dispatch sends the events of the daemon's own session at `low`, and an ask's events at the default
+  urgency. A person's reply in a thread whose session is live or unresponsive no longer also goes to
+  the sessions that only a document credits.
