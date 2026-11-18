@@ -17,6 +17,7 @@ import (
 const (
 	ruleSentences     Rule = "sentences"
 	ruleSentenceWords Rule = "sentence-words"
+	ruleInstructions  Rule = "instructions"
 	ruleDispatchLink  Rule = "dispatch-link"
 	ruleIncident      Rule = "incident"
 	rulePullRequest   Rule = "pull-request"
@@ -173,12 +174,49 @@ const (
 // bracket, a closing curly quote and ",", ";", "!" and "?".
 const addressEnd = `\s\v\x{85}\p{Z}\p{Pe}\p{Pf},;!?`
 
-// broken is one rule a text breaks, the detail of the break, and the record of Dispatch that a
-// break of the rule dispatch-link names, so that one link gives one finding (heldBreaks).
+// broken is one rule a text breaks, the detail of the break, and for a break of the rule
+// dispatch-link the record of Dispatch that it names and how the text names it (named), so that
+// one link gives one finding (heldBreaks) and that finding's detail says each form from its parts.
 type broken struct {
 	rule   Rule
 	detail string
 	record text.Ref
+	named  naming
+}
+
+// naming is how a text names a record of Dispatch: by a link to it, or by its key or its id
+// (form), and the characters that do so (value).
+type naming struct {
+	form, value string
+}
+
+// The forms in which a text names a record of Dispatch (naming).
+const (
+	byLink = "link"
+	byKey  = "key"
+	byID   = "id"
+)
+
+// recordBreak is the break of the rule dispatch-link of a text that names record in form, by
+// value.
+func recordBreak(form, value string, record text.Ref) broken {
+	named := naming{form: form, value: value}
+	return broken{rule: ruleDispatchLink, detail: named.said("it"), record: record, named: named}
+}
+
+// said is the naming as the detail of the rule dispatch-link says it of subject: "it", the text,
+// or "its words", the words of the page of a text whose link names the same record. It is the one
+// place that writes those words, so the detail of one finding that holds both forms is made from
+// the parts of each, never from the words of another detail.
+func (n naming) said(subject string) string {
+	links, names := "links", "names"
+	if subject != "it" {
+		links, names = "link", "name"
+	}
+	if n.form == byLink {
+		return fmt.Sprintf("%s %s to a record of Dispatch: %q", subject, links, n.value)
+	}
+	return fmt.Sprintf("%s %s a record of Dispatch by its %s: %q", subject, names, n.form, n.value)
 }
 
 // kindFootnote is the kind that a footnote is judged as (footnoteJudge.judgment): prose, which is
@@ -224,21 +262,24 @@ func breaks(c Context, people [][]string, text Text, notes *footnoteJudge) []bro
 // words exactly as the page shows them (held.Shown, or body for a text that a caller writes with
 // no Shown), each title as words, and each address as an address (addressBreaks). A record of
 // Dispatch that the address of a link names, and the words of the page name too, gives one
-// finding, the address's: so one link gives one finding, and two links to two records give two.
-// The words name the record of an address also by a part of what the address names (namedBy): the
+// finding, the address's: so one link gives one finding, and two links to two records give two,
+// also when one record is a part of the other, such as the spec of an issue and the issue. The
+// words name the record of an address also by a part of what the address names (namedBy): the
 // key of its issue, or its id. Where the words name it in another form, the address's finding
-// names that form too.
+// names that form too, said from the parts of each naming.
 func heldBreaks(c Context, people [][]string, body string, held Held) []broken {
 	var addressed []broken
-	// linked is the finding of the address of each record that an address links to, by each form
-	// in which the words can name that record.
+	// gave is each record whose finding an address gave, and linked the finding of the address of
+	// each record that an address links to, by each form in which the words can name that record.
+	gave := map[text.Ref]bool{}
 	linked := map[text.Ref]int{}
 	for _, address := range held.Addresses {
 		for _, each := range addressBreaks(c, people, address) {
 			if each.rule == ruleDispatchLink {
-				if _, ok := linked[each.record]; ok {
+				if gave[each.record] {
 					continue
 				}
+				gave[each.record] = true
 				for _, name := range namedBy(each.record) {
 					if _, ok := linked[name]; !ok {
 						linked[name] = len(addressed)
@@ -255,7 +296,7 @@ func heldBreaks(c Context, people [][]string, body string, held Held) []broken {
 	var found []broken
 	type also struct {
 		finding int
-		detail  string
+		named   naming
 	}
 	var named map[also]bool
 	for _, each := range referenceBreaks(c, people, oneLine(shown), false) {
@@ -264,12 +305,12 @@ func heldBreaks(c Context, people [][]string, body string, held Held) []broken {
 			found = append(found, each)
 			continue
 		}
-		if key := (also{index, each.detail}); each.detail != addressed[index].detail && !named[key] {
+		if key := (also{index, each.named}); each.named != addressed[index].named && !named[key] {
 			if named == nil {
 				named = map[also]bool{}
 			}
 			named[key] = true
-			addressed[index].detail += alsoInTheWords(each.detail)
+			addressed[index].detail += ", and " + each.named.said("its words")
 		}
 	}
 	for _, title := range held.Titles {
@@ -295,28 +336,16 @@ func namedBy(record text.Ref) []text.Ref {
 	return names
 }
 
-// alsoInTheWords is the end of the detail of the address's finding of a record, for detail, the
-// detail of the finding of the same record that the words of the page give (linkDetail,
-// recordNameDetail).
-func alsoInTheWords(detail string) string {
-	for _, verb := range []string{"names", "links"} {
-		if rest, ok := strings.CutPrefix(detail, "it "+verb+" "); ok {
-			return ", and its words " + strings.TrimSuffix(verb, "s") + " " + rest
-		}
-	}
-	return ", and its words: " + detail
-}
-
 // addressBreaks is each break of the reference rules in address, the address of a link or an
-// image. An address with no scheme opens a page of the server that shows the document, so it
-// links to a record when that page is the page of a record (serverPage), as the whole address of
-// the page does, and that one finding holds each key and id that the path writes.
+// image. An address with no scheme opens a page of the server, so it links to a record when that
+// page is the page of a record (serverPage), as the whole address of the page does, and that one
+// finding holds each key and id that the path writes.
 func addressBreaks(c Context, people [][]string, address string) []broken {
-	record, page := serverPage(c.ServerURL, address)
+	record, page := serverPage(c, address)
 	if !page {
 		return referenceBreaks(c, people, address, true)
 	}
-	found := []broken{{rule: ruleDispatchLink, detail: linkDetail(address), record: record}}
+	found := []broken{recordBreak(byLink, address, record)}
 	for _, each := range referenceBreaks(c, people, address, true) {
 		if each.rule != ruleDispatchLink {
 			found = append(found, each)
@@ -330,17 +359,23 @@ func addressBreaks(c Context, people [][]string, address string) []broken {
 const standInServer = "https://dispatch.invalid"
 
 // serverPage is the record of Dispatch whose page address opens, an address with no scheme (a
-// path, or "//" and a host), by the server's one reading of the address of a page (text.ParseRef):
-// an issue, its documents, its asks, comments and messages, a document of a project or of an
-// agent, and a block of each. It reads address as the dashboard reads the address of a link that
-// an author wrote (nodeRouteFromHref): each "\" as "/", as a browser reads an address of http, and
-// the address against the origin of the server. So "/projects/ACME/documents/terms-md",
-// "projects/ACME/documents/terms-md" and "../../projects/ACME/documents/terms-md" name the same
-// document. A path that names no such page, and an address of another host, name none.
-func serverPage(serverURL, address string) (text.Ref, bool) {
+// path, a fragment, or "//" and a host), by the server's one reading of the address of a page
+// (text.ParseRef): an issue, its documents, its asks, comments and messages, a document of a
+// project or of an agent, and a block of each. It reads address with each "\" as "/", as a browser
+// reads an address of http, and in the two ways that the dashboard reads it. A component's prose
+// on a page of its own reads it against the origin of the server (nodeRouteFromHref), and the page
+// of the document that holds it reads it against that page (c.Page), as the editor and the browser
+// do. The address links to a record when either reading opens the page of one. So
+// "/projects/ACME/documents/terms-md", "projects/ACME/documents/terms-md" and
+// "../../projects/ACME/documents/terms-md" name the same document, and from the spec of ACME-1,
+// "artifacts/notes-md", "decisions" and "#b-x1" name a document of ACME-1, its decisions and a
+// block of the spec. A path that names no such page from either base, and an address of another
+// host, name none.
+func serverPage(c Context, address string) (text.Ref, bool) {
 	if written, err := url.Parse(address); err != nil || written.Scheme != "" {
 		return text.Ref{}, false
 	}
+	serverURL := c.ServerURL
 	if serverURL == "" {
 		serverURL = standInServer
 	}
@@ -353,18 +388,26 @@ func serverPage(serverURL, address string) (text.Ref, bool) {
 		return text.Ref{}, false
 	}
 	origin := &url.URL{Scheme: base.Scheme, Host: base.Host}
-	return text.ParseRef(origin.ResolveReference(relative).String(), serverURL)
+	if record, ok := text.ParseRef(origin.ResolveReference(relative).String(), serverURL); ok || c.Page == "" {
+		return record, ok
+	}
+	page, err := url.Parse(strings.TrimSuffix(serverURL, "/") + c.Page)
+	if err != nil {
+		return text.Ref{}, false
+	}
+	return text.ParseRef(page.ResolveReference(relative).String(), serverURL)
 }
 
 // formBreaks is each word that holds a stop with no space after it (stopsWithNoSpace), the
 // sentence count of a statement, with the sentences of its footnotes (noted), and each sentence
-// over maxWords, as sentencesOf reads the line, and each hard finding of ste-lint, by its own rule
-// name. The verbs of the footnotes that a text holds stand beside the line's in the rule
-// synonym-rotation where no one footnote that it refers to holds them all (ste.Rotations): two
-// verbs for one action that the words of a footnote hold, or that it holds with the footnotes that
-// it refers to, are the footnote's one finding (footnoteJudge.rotations), however many texts refer
-// to it. It also answers how many sentences the line has, and the verbs of the synonym groups that
-// it uses.
+// over maxWords, or over maxProcedureWords in a procedure, as sentencesOf reads the line, each
+// sentence of a procedure that gives two instructions (instructionBreaks), and each hard finding of
+// ste-lint, by its own rule name. The verbs of the footnotes that a text holds stand beside the
+// line's in the rule synonym-rotation where no one footnote that it refers to holds them all
+// (ste.Rotations): two verbs for one action that the words of a footnote hold, or that it holds
+// with the footnotes that it refers to, are the footnote's one finding (footnoteJudge.rotations),
+// however many texts refer to it. It also answers how many sentences the line has, and the verbs
+// of the synonym groups that it uses.
 func formBreaks(kind Kind, line string, noted footnotesHeld) ([]broken, int, ste.Verbs) {
 	var found []broken
 	for _, word := range stopsWithNoSpace(line) {
@@ -374,11 +417,18 @@ func formBreaks(kind Kind, line string, noted footnotesHeld) ([]broken, int, ste
 	if count := len(sentences) + noted.count; kind == KindStatement && (count < 1 || count > maxSentences) {
 		found = append(found, broken{rule: ruleSentences, detail: sentencesDetail(count, noted)})
 	}
+	bound, of := maxWords, "a sentence"
+	if kind == KindProcedure {
+		bound, of = maxProcedureWords, "a sentence of a procedure"
+	}
 	for _, sentence := range sentences {
-		if len(sentence) > maxWords {
-			found = append(found, broken{rule: ruleSentenceWords, detail: fmt.Sprintf("a sentence has %d words, and a sentence has at most %d: %q",
-				len(sentence), maxWords, strings.Join(sentence[:8], " "))})
+		if len(sentence) > bound {
+			found = append(found, broken{rule: ruleSentenceWords, detail: fmt.Sprintf("a sentence has %d words, and %s has at most %d: %q",
+				len(sentence), of, bound, strings.Join(sentence[:8], " "))})
 		}
+	}
+	if kind == KindProcedure {
+		found = append(found, instructionBreaks(line)...)
 	}
 	lint, verbs := ste.LintVerbs(line)
 	for _, finding := range lint {
@@ -487,7 +537,7 @@ func referenceBreaks(c Context, people [][]string, line string, address bool) []
 		raw := referenceAt(line, located.Offset)
 		references.mark(span{start: located.Offset, end: located.Offset + len(raw)})
 		if located.Kind != "url" {
-			links = append(links, span{located.Offset, located.Offset + len(raw), broken{ruleDispatchLink, linkDetail(raw), located.Ref}})
+			links = append(links, span{located.Offset, located.Offset + len(raw), recordBreak(byLink, raw, located.Ref)})
 		}
 	}
 	for _, each := range bareKey.find(line) {
@@ -495,13 +545,13 @@ func referenceBreaks(c Context, people [][]string, line string, address bool) []
 		project := key[:strings.LastIndexByte(key, '-')]
 		ref, ok := text.ParseRef("dispatch://"+key, "")
 		if !references.holds(each.start) && ok && ref.Kind == "issue" && c.IsProjectKey != nil && c.IsProjectKey(project) {
-			links = append(links, span{each.start, each.end, broken{ruleDispatchLink, recordNameDetail("key", key), ref}})
+			links = append(links, span{each.start, each.end, recordBreak(byKey, key, ref)})
 		}
 	}
 	for _, each := range recordID.find(line) {
 		if !references.holds(each.start) {
 			id := line[each.start:each.end]
-			links = append(links, span{each.start, each.end, broken{ruleDispatchLink, recordNameDetail("id", id), text.Ref{Kind: "id", ID: strings.ToLower(id)}}})
+			links = append(links, span{each.start, each.end, recordBreak(byID, id, text.Ref{Kind: "id", ID: strings.ToLower(id)})})
 		}
 	}
 	sort.SliceStable(links, func(a, b int) bool { return links[a].start < links[b].start })
@@ -560,16 +610,6 @@ func personDetail(name string) string {
 	return fmt.Sprintf("it names a person: %q. Dispatch reads an address user@host with no path after it as the address of a person. "+
 		"For a remote path, write the path after the colon, such as %s:~/ or %s:./?.log, or write the user and the host apart, such as ssh -l %s %s",
 		name, name, name, user, host)
-}
-
-func linkDetail(reference string) string {
-	return fmt.Sprintf("it links to a record of Dispatch: %q", reference)
-}
-
-// recordNameDetail is the detail of a bare key or id of a record of Dispatch, which names the
-// record by its key or its id and links to none.
-func recordNameDetail(by, name string) string {
-	return fmt.Sprintf("it names a record of Dispatch by its %s: %q", by, name)
 }
 
 // referenceAt is the reference that starts at offset of line, as the server's reference grammar

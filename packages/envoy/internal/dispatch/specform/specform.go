@@ -125,13 +125,17 @@ type Term struct {
 }
 
 // Context is what Check knows of the system: which project keys exist, the email of each person
-// who signed in, the names of the system's components and interfaces that a person approved, and
-// the server's address.
+// who signed in, the names of the system's components and interfaces that a person approved, the
+// server's address, and the page of the server that shows the document whose texts Check judges.
 type Context struct {
 	IsProjectKey func(key string) bool
 	PersonNames  []string // emails of signed-in people (people.email)
 	SystemNames  []string // approved component and interface names, which are nouns of the system
 	ServerURL    string
+	// Page is the path of the dashboard's page of the document, under ServerURL, such as
+	// "/issues/ACME-1/spec": that page reads an address with no scheme against itself. It is ""
+	// for texts of no one document of the server, such as the files of a tree.
+	Page string
 }
 
 // Input is the texts to judge, the definitions a request proposes, and the approved list.

@@ -4625,6 +4625,7 @@ Each item below names a path with its method and identity, then its purpose.
     With no request open, these are the documents that the request names.
     With a request open, they are the documents that the open request names.
     These texts break the form: a statement of no sentence or of more than two, and a sentence of more than 25 words.
+    A sentence of the procedure of a check breaks it with more than 20 words, or with two instructions (rule `instructions`), since ASD-STE100 writes a procedure as instructions.
     Each hard finding of the ASD-STE100 program `ste-lint` also breaks it, with the rule `ste100-` and the name that `ste-lint` gives the rule.
     R49 leaves what these rules cannot refuse to the reviewer of R25.
 
@@ -4640,7 +4641,7 @@ Each item below names a path with its method and identity, then its purpose.
       A block in a code block or in a table cell is no block.
       A heading opens or closes a part of `Terms` only among the blocks of its own block quote, list item, callout or footnote.
       Each text is the text that a person reads: a character reference is its character, and a hard break is a space between two words.
-      A link is its words, and an image is its alternative text, so a stop or a `#` in an address breaks no rule.
+      A link is its words, and an image is its alternative text, so a stop or a `#` in an address breaks no rule of a sentence or of a name.
       The rules that count sentences and words, and `ste-lint`, read code in code font, as `ste-lint` reads it.
       The rules of links, of records and of people read the words as the page shows them, with no mark of code font.
       So code font hides no name or link, also when it holds the whole name or a part of it.
@@ -4652,14 +4653,19 @@ Each item below names a path with its method and identity, then its purpose.
       Dispatch stores an email address in the words as such a link, such as the host in `git@github.com:owner/repo.git`.
       So it reads that address in the words of the page, beside the words before and after it.
       A `mailto:` link with other words, such as `[dispatch://ACME-1](mailto:dispatch://ACME-1)`, is read in its address too.
-      An address with no scheme opens a page of the server that shows the document.
-      Dispatch reads it as the dashboard reads the address of a link: against the origin of the server, with each `\` read as `/`.
-      So `/projects/ACME/documents/terms-md`, `projects/ACME/documents/terms-md` and `../../projects/ACME/documents/terms-md` link to that document.
+      An address with no scheme opens a page of the server.
+      Dispatch reads it in the two ways that the dashboard reads it, with each `\` read as `/`.
+      Against the origin of the server, as the dashboard reads a link in a component's prose, `/projects/ACME/documents/terms-md`, `projects/ACME/documents/terms-md` and `../../projects/ACME/documents/terms-md` link to that document.
+      Against the page of the document that holds it, as the editor and the browser read it, `artifacts/notes-md`, `decisions` and `#b-x1` in the spec of ACME-1 link to a document of ACME-1, to its decisions and to a block of the spec.
+      And `terms-md` in the Verification document of ACME-1 links to the document `terms-md` of ACME-1.
+      The page of a document is `/issues/<KEY>/spec` for a spec, `/issues/<KEY>/artifacts/<slug>` for another document of an issue, and `/projects/<PROJECT>/documents/<slug>` for a document of a project.
+      The address links to a record when either reading opens the page of one.
+      So a fragment alone, such as `#s-form`, opens the document that holds it, which is a record, and breaks the form.
       The server's own reading of the address of its pages decides which paths are pages of a record: an issue, a document of an issue, of a project or of an agent, an ask, a comment, a message and a block.
-      A path of another page, such as `/docs/guide` or `../documents/terms-md`, and an address of another host link to no record.
+      A path that opens no such page from either base, such as `docs/guide` or `terms-md` in a spec, and an address of another host link to no record.
       Where the address of a link and the words of the page name one record, the text has one finding for it, the address's.
-      The words name the record also by the key of its issue or by its id, as in `[ACME-1](dispatch://ACME-1/spec)`, and the finding names the words too.
-      So one link gives one finding, and two links to two records give two.
+      The words name the record also by the key of its issue or by its id, wherever they stand in the text, as in `[ACME-1](dispatch://ACME-1/spec)`, and the finding names the words too.
+      So one link gives one finding, and two links to two records give two, also when one record is a part of the other, such as the spec of an issue and the issue.
       A digit right after an autolink, as in `<dispatch://ACME-1>5`, makes the words name another record, so that text gives two findings.
 
     - How Dispatch reads a footnote: a footnote that a text refers to is part of that text, and so is a footnote that such a footnote refers to.
@@ -4694,6 +4700,19 @@ Each item below names a path with its method and identity, then its purpose.
       A numbered list inside one sentence, as in `1. it claims the issue, 2. it writes the plan`, counts a sentence at each number.
       So write the steps with words.
       The rules that count sentences and words read English text, and a text in another language is the reviewer's to name.
+
+    - How the rules read the procedure of a check: each of its sentences has at most 20 words and gives one instruction, as ASD-STE100 writes a procedure.
+      A sentence gives an instruction when it starts with a verb in its base form, with no comma after it, and then the first word of the verb's object.
+      That word is `the`, `a`, `an`, `each`, `every`, `all`, `any`, `both`, `no`, `its`, `their`, `this`, `these`, `those`, `it`, `them` or a span in code font.
+      After a condition at the start of the sentence, such as `If the run fails,`, the instruction starts after the comma that ends the condition.
+      A second instruction is the same two words after `and`, `or`, `then` or a comma, as in `Read each request and record its version`, which breaks the form (rule `instructions`).
+      Two verbs of one object, as in `Push and hold the switch`, are one instruction, as ASD-STE100 lets two actions at the same time be.
+      An adverb, a preposition or a question word is no verb, so `Open an ask on the root issue, never a child` gives one instruction.
+      A procedure that describes a program, such as `A test against a Dispatch server`, gives no instruction, and only its words are counted.
+      Three forms are stated limits.
+      A verb that ends in `-s`, `-ed` or `-ing` is no base form, so `Seed the database and run the test` breaks no rule.
+      A second instruction after a relative clause, as in `Read each request that Dispatch opens and record its version`, breaks no rule, and R49 leaves it to the reviewer of R25.
+      A condition ends at its first comma, so a list of verbs in it, as in `Before you plan, file an issue or post a finding, run the search`, reads as two instructions: write the condition as a sentence of its own.
 
     A link to a record of Dispatch, and the name of an incident, a pull request or a person, also break it.
 

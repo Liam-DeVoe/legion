@@ -33,30 +33,31 @@ const (
 // statements, term lines, component rows and purpose lines that refer to one long footnote, to one
 // footnote of many links, or to one chain of footnotes, many claims that refer to one long footnote
 // of two verbs for one action, which is one finding of the footnote, one statement that refers to a
-// chain of footnotes, and one statement that refers to many footnotes. The footnotes of the chains
-// hold a verb of a synonym group, which Dispatch carries into each text that holds them, as it
-// carries their sentences. The reader refuses a link definition, which many links could share,
-// and a link and an image hold their own address and title. Each row judges a text of n units and
-// one of workScale times n, and the work of the larger grows less than workBound times (Growth):
-// the smaller text is judged workScale times in one window and the larger once, so that both
-// windows last about as long. The work is the user CPU time of the thread that judges: the work of
-// the judgment's own code. A wait for a core is not in it, and nor is the kernel's work for the
-// thread, such as the reclaim of memory when the machine is short of it; work that allocates
-// nothing is in it. The smaller window of each row lasts cputest.MinWindow or more, which Growth
-// holds, so that the kernel's split of the thread's time into user and system time, the
-// collector's work and a cold cache are a small part of it. A row whose judgment finds no finding
-// of its rule at either size reads nothing, so it fails; a row of a rule "" is a shape that breaks
-// no rule. A text of n units is 16 KB or more: Go's regexp reads a shorter text by a faster way,
-// and the port's work for each byte grew 1.3 times from a text of 8 KB to one of 32 KB for that
-// reason alone. Each row's n is large enough that the walk it is for, made a walk for each pair
-// (ste-lint's count of a column from the start of the line, a scan of the addresses, the texts of a
-// node, the footnote definitions read so far, or the footnotes that hold a footnote's sentences
-// and verbs), is most of the work of the larger text, so the row fails it. A walk for each pair
-// whose step is a comparison of a few nanoseconds needs units that cost little else: so the
-// footnotes of the rows "many footnotes" and "one statement that refers to many footnotes", and the
-// statements of the first, hold a word or two each, and the row of purpose lines of one id times
-// the reader alone (read), since the walk that it is for is the reader's, and the judgment of each
-// line costs several times the reading of it.
+// chain of footnotes, and one statement that refers to many footnotes, also built with no store at
+// a size that no store holds, where the count of its sentences stops once it passes two. The
+// footnotes of the chains hold a verb of a synonym group, which Dispatch carries into each text
+// that holds them, as it carries their sentences. The reader refuses a link definition, which many
+// links could share, and a link and an image hold their own address and title. Each row judges a
+// text of n units and one of workScale times n, and the work of the larger grows less than
+// workBound times (Growth): the smaller text is judged workScale times in one window and the
+// larger once, so that both windows last about as long. The work is the user CPU time of the
+// thread that judges: the work of the judgment's own code. A wait for a core is not in it, and nor
+// is the kernel's work for the thread, such as the reclaim of memory when the machine is short of
+// it; work that allocates nothing is in it. The smaller window of each row lasts cputest.MinWindow
+// or more, which Growth holds, so that the kernel's split of the thread's time into user and system
+// time, the collector's work and a cold cache are a small part of it. A row whose judgment finds
+// no finding of its rule at either size reads nothing, so it fails; a row of a rule "" is a shape
+// that breaks no rule. A text of n units is 16 KB or more: Go's regexp reads a shorter text by a
+// faster way, and the port's work for each byte grew 1.3 times from a text of 8 KB to one of 32 KB
+// for that reason alone. Each row's n is large enough that the walk it is for, made a walk for each
+// pair (ste-lint's count of a column from the start of the line, a scan of the addresses, the texts
+// of a node, the footnote definitions read so far, the footnotes that hold a footnote's sentences
+// and verbs, or the footnotes that a statement's count has passed), is most of the work of the
+// larger text, so the row fails it. A walk for each pair whose step is a comparison of a few
+// nanoseconds needs units that cost little else: so the footnotes of the rows "many footnotes" and
+// "one statement that refers to many footnotes", and the statements of the first, hold a word or two
+// each, and the row of purpose lines of one id times the reader alone (read), since the walk that
+// it is for is the reader's, and the judgment of each line costs several times the reading of it.
 func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 	context := planted("ada.lovelace@example.com")
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
@@ -137,6 +138,18 @@ func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 		}
 		return markdown.String()
 	}
+	// noted is one statement that refers to n footnotes of one short sentence each, which a caller
+	// that reads no store builds, such as a check of the files of a tree: no limit of the store
+	// holds n. The count of the statement's sentences stops once it passes maxSentences, so the
+	// work of the count does not grow with the footnotes that it has passed.
+	noted := func(_ *testing.T, n int) func() []Finding {
+		notes := make([]*Footnote, n)
+		for index := range notes {
+			notes[index] = &Footnote{Label: fmt.Sprint(index + 1), Body: "It."}
+		}
+		in := Input{Texts: []Text{{Node: "s", Kind: KindStatement, Body: "Dispatch keeps it.", Where: where, Notes: notes}}}
+		return func() []Finding { return Check(context, in) }
+	}
 	const requirement, end = ":::requirement{#r}\nDispatch keeps", "\n:::\n"
 	const statementUnit = ":::requirement{#s-%d}\nDispatch keeps record %[1]d[^shared].\n:::\n\n"
 	for _, row := range []struct {
@@ -197,6 +210,7 @@ func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 			extracted(func(n int) string {
 				return units(":::requirement{#s}\nDispatch keeps it", "[^%d]", ".\n:::\n\n")(n) + units("", "[^%d]: It.\n\n", "")(n)
 			})},
+		{"one statement that refers to many footnotes, with no store", ruleSentences, 8_000, noted},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			sizes := []int{row.n, workScale * row.n}

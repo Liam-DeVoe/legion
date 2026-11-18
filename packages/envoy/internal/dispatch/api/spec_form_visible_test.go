@@ -76,6 +76,64 @@ func TestTheRequestJudgesTheWordsAndTheAddressesOfALink(t *testing.T) {
 	})
 }
 
+// The deep audit's four addresses with no scheme, through the approval request route: the
+// document's page reads such an address against itself, so from a spec, a path of another
+// document of its issue, of its Verification document and of its decisions, and a block of the
+// spec itself, each opens the page of a record, and the request is refused. From a Verification
+// document, the name of another document of its issue opens that document. The control opens no
+// record from either base, the document's page or the server's origin.
+func TestTheRequestReadsAnAddressAgainstThePageOfItsDocument(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	requireFormRows(t, tree, []formRow{
+		{name: "a document of the issue, from its spec", spec: formRequirement("notes", "Dispatch keeps [the notes](artifacts/notes-md)."),
+			want: []string{"statement notes dispatch-link"}},
+		{name: "the Verification document of the issue, from its spec", spec: formRequirement("checks", "Dispatch keeps [the checks](artifacts/verification-md)."),
+			want: []string{"statement checks dispatch-link"}},
+		{name: "the decisions of the issue, from its spec", spec: formRequirement("decisions", "Dispatch keeps [the decisions](decisions)."),
+			want: []string{"statement decisions dispatch-link"}},
+		{name: "a block of the spec, from the spec", spec: formRequirement("block", "Dispatch keeps [the part](#b-x1)."),
+			want: []string{"statement block dispatch-link"}},
+		{name: "the control: a page that is no record from either base", spec: formRequirement("guide", "Dispatch keeps [the guide](docs/guide)."),
+			reads: specform.KindStatement},
+		{name: "the control: the name of a document alone, from a spec", spec: formRequirement("slug", "Dispatch keeps [the terms](terms-md)."),
+			reads: specform.KindStatement},
+	})
+	for _, test := range []struct {
+		name, address string
+		refused       bool
+	}{
+		{"another document of the issue, by its name alone", "terms-md", true},
+		{"the control: a page that is no record from either base", "docs/guide", false},
+	} {
+		t.Run("from a Verification document: "+test.name, func(t *testing.T) {
+			issue := createFormIssue(t, tree.handler, tree.root, test.name, "# Spec\n\n"+formRequirement("spec", "Dispatch keeps each check."))
+			checks := uploadFormDocument(t, tree.handler, issue.Key, "verification.md",
+				"# Verification\n\n"+formRequirement("verified", "Dispatch keeps [the terms]("+test.address+")."))
+			response := requestFormApproval(t, tree.handler, checks.ID, nil)
+			if !test.refused {
+				requireFormRequestOpened(t, response)
+				return
+			}
+			var got []string
+			for _, finding := range decodeBody[specFormError](t, response).Findings {
+				got = append(got, fmt.Sprintf("%s %s %s %s", finding.Document, finding.Kind, finding.Node, finding.Rule))
+			}
+			if want := []string{"verification.md statement verified dispatch-link"}; response.Code != http.StatusConflict || strings.Join(got, "|") != strings.Join(want, "|") {
+				t.Fatalf("status=%d, the refusal names %q, want 409 naming %q: %s", response.Code, got, want, response.Body.String())
+			}
+		})
+	}
+}
+
+// The control of the two texts of a procedure (procedureFaults): a procedure of one instruction
+// in 20 words opens the request.
+func TestTheRequestTakesAProcedureOfOneInstructionInTwentyWords(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	procedure := formFault{node: "run-merge", kind: specform.KindProcedure}
+	requireFormRows(t, tree, []formRow{{name: "a procedure of one instruction in 20 words",
+		spec: strings.TrimPrefix(procedure.document(twentyWords), "# Spec\n\n"), reads: specform.KindProcedure}})
+}
+
 // The red team's two inputs of a part of Terms and a container, through the approval request
 // route: a heading in a block quote does not close the part around it, and a part in a block quote
 // or a callout ends with it.

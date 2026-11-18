@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -484,6 +485,7 @@ func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument) e
 	if err != nil {
 		return err
 	}
+	context.Page = documentPage(document.artifact)
 	document.texts = extracted.Counts
 	if document.root != nil {
 		document.unread = append(document.unread, j.unread[*document.root]...)
@@ -494,6 +496,22 @@ func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument) e
 		})
 	}
 	return nil
+}
+
+// documentPage is the path of the dashboard's page of artifact under the server's address: the
+// Spec tab of its issue or its own Artifacts route (issueDocumentHref), the route of a document of
+// a project, or of an artifact of an agent's conversation. The form reads an address with no
+// scheme of the document's texts against it, as that page does.
+func documentPage(artifact model.Artifact) string {
+	switch {
+	case artifact.IssueKey != nil:
+		return issueDocumentHref("/issues/"+*artifact.IssueKey, artifact.Slug, artifact.Primary)
+	case artifact.SessionID != nil:
+		return "/agents/" + url.PathEscape(*artifact.SessionID) + "/artifacts/" + url.PathEscape(artifact.Slug)
+	case artifact.Project != "":
+		return projectDocumentHref(artifact.Project, artifact.Slug)
+	}
+	return ""
 }
 
 // contextFor is what Check knows of the system for a document under root (nil for none).

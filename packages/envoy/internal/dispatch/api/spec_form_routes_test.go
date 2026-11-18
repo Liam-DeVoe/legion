@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -152,10 +153,10 @@ func answerFormApproval(t *testing.T, handler http.Handler, ask, selected, text 
 	return dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+ask+"/answer", body, "alice")
 }
 
-// formFault is one of the seven fixture texts of v-form, with a clean text of the same node that
-// an edit can break, and the rule and detail its finding names. A text that ste-lint reads as a
-// sentence of more than 25 words has a second finding, ste-lint's long-sentence, whose detail is
-// steLong.
+// formFault is one of the seven fixture texts of v-form (formFaults), or of the two texts of a
+// procedure (procedureFaults), with a clean text of the same node that a new version can break, and
+// the rule and detail its finding names. A text that ste-lint reads as a sentence of more than 25
+// words has a second finding, ste-lint's long-sentence, whose detail is steLong.
 type formFault struct {
 	name, node    string
 	kind          specform.Kind
@@ -196,14 +197,46 @@ var formFaults = []formFault{
 		rule:   "person", detail: `it names a person: "Ada Lovelace"`},
 }
 
+// procedureFaults are the two texts of the procedure of a check that R49 refuses beside the seven
+// of v-form, as ASD-STE100 writes an instruction: a sentence of 21 words, and a sentence of two
+// instructions. Each stands in the run of a check.
+var procedureFaults = []formFault{
+	{name: "a procedure of 21 words", node: "run-merge", kind: specform.KindProcedure,
+		clean:  "Run the merge test.",
+		broken: "Run the merge test against a fixture server that holds two approved specs of the same issue and three open requests.",
+		rule:   "sentence-words", detail: `a sentence has 21 words, and a sentence of a procedure has at most 20: "Run the merge test against a fixture server"`},
+	{name: "a procedure of two instructions", node: "read-requests", kind: specform.KindProcedure,
+		clean:  "Read each open approval request.",
+		broken: "Read each open approval request and record its version.",
+		rule:   "instructions", detail: `a sentence gives two instructions, and a sentence of a procedure gives one: "record its version". Write each instruction in a sentence of its own`},
+}
+
+// twentyWords is the control of the procedure faults: a procedure of one instruction in 20 words.
+const twentyWords = "Run the merge test against a fixture server that holds two approved specs of the same issue and three requests."
+
 // document is a spec that holds the fault's node with body: a requirement block for a statement,
-// a check block for a claim.
+// a check block for a claim, and a check block whose run is body for a procedure.
 func (f formFault) document(body string) string {
-	block := "requirement"
-	if f.kind == specform.KindClaim {
-		block = "check"
+	switch f.kind {
+	case specform.KindClaim:
+		return fmt.Sprintf("# Spec\n\n:::check{#%s}\n%s\n:::\n", f.node, body)
+	case specform.KindProcedure:
+		return fmt.Sprintf("# Spec\n\n:::check{#%s run=%q}\nDispatch keeps each record.\n:::\n", f.node, body)
 	}
-	return fmt.Sprintf("# Spec\n\n:::%s{#%s}\n%s\n:::\n", block, f.node, body)
+	return fmt.Sprintf("# Spec\n\n:::requirement{#%s}\n%s\n:::\n", f.node, body)
+}
+
+// revise writes the broken text over the clean text of the issue's spec as its second version,
+// as the asking agent: an edit of the text, or for a procedure, which no edit reaches in the run
+// of its check, an upload of the whole spec.
+func (f formFault) revise(t *testing.T, handler http.Handler, issue formIssue) {
+	t.Helper()
+	if f.kind != specform.KindProcedure {
+		reviseDocument(t, handler, issue.PrimaryArtifactID, f.clean, f.broken, 2)
+		return
+	}
+	uploadFormDocument(t, handler, issue.Key, "spec.md", f.document(f.broken))
+	waitForArtifactVersion(t, handler, issue.PrimaryArtifactID, 2)
 }
 
 // lines is the refusal's line of each finding of the broken text at version of spec.md.
@@ -378,15 +411,16 @@ func requireLeftResolved(t *testing.T, handler http.Handler, database *store.Sto
 	}
 }
 
-// Each of the seven fixture texts of v-form, on each of the six paths to a person's approval, is
-// refused with its node and rule, and leaves nothing written: (1) open a request; (2) hand a moved
-// request back; (3) approve from the header and (4) approve a named version, each with no request
-// open and on a request an edit moved to the broken version; (5) approve from the Inbox, on that
-// moved request and on one opened outside the root and then moved under it; and (6) reopen the
-// issue, which leaves the request resolved with the findings and opens every other ask.
+// Each of the seven fixture texts of v-form, and each of the two texts of a procedure, on each of
+// the six paths to a person's approval, is refused with its node and rule, and leaves nothing
+// written: (1) open a request; (2) hand a moved request back; (3) approve from the header and (4)
+// approve a named version, each with no request open and on a request a new version moved to the
+// broken text; (5) approve from the Inbox, on that moved request and on one opened outside the
+// root and then moved under it; and (6) reopen the issue, which leaves the request resolved with
+// the findings and opens every other ask.
 func TestEveryApprovalRouteRefusesABreakOfTheForm(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
-	for _, fault := range formFaults {
+	for _, fault := range append(slices.Clone(formFaults), procedureFaults...) {
 		t.Run(fault.name, func(t *testing.T) {
 			// The broken text in the spec's first version, with no request open: paths 1, 3 and 4.
 			first := createFormIssue(t, tree.handler, tree.root, "Broken at first: "+fault.name, fault.document(fault.broken))
@@ -403,11 +437,11 @@ func TestEveryApprovalRouteRefusesABreakOfTheForm(t *testing.T) {
 				t.Fatalf("the refused writes on the first version changed %+v to %+v", before, after)
 			}
 
-			// A request on a clean first version, which an edit moves to the broken second: paths 2,
-			// 3, 4 and 5.
+			// A request on a clean first version, which a new version moves to the broken second:
+			// paths 2, 3, 4 and 5.
 			moved := createFormIssue(t, tree.handler, tree.root, "Broken by an edit: "+fault.name, fault.document(fault.clean))
 			ask := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, moved.PrimaryArtifactID, nil)).Ask.ID
-			reviseDocument(t, tree.handler, moved.PrimaryArtifactID, fault.clean, fault.broken, 2)
+			fault.revise(t, tree.handler, moved)
 			awaitSettled(t, tree.database, moved.PrimaryArtifactID)
 			before = readFormState(t, tree.database, moved.Key)
 			lines = fault.lines(2)
@@ -481,11 +515,12 @@ func TestEveryApprovalRouteRefusesABreakOfTheForm(t *testing.T) {
 
 // The repair pass, which restores the asks of an issue an older release reopened, leaves a broken
 // approval request resolved with the findings, as a reopen does, and a second pass finds nothing
-// left. Each of the seven fixture texts of v-form is sent through it one at a time, with the
-// assertions of the six other paths: the reason names the node and the rule, the request is not
-// opened again, no review is written, and the person's Approve of it is refused. The control of
-// v-form, a statement of two sentences of 25 words each, is restored open, and the person's
-// Approve of it is taken.
+// left. Each of the seven fixture texts of v-form, and each of the two texts of a procedure, is
+// sent through it one at a time, with the assertions of the six other paths: the reason names the
+// node and the rule, the request is not opened again, no review is written, and the person's
+// Approve of it is refused. The control of v-form, a statement of two sentences of 25 words each,
+// beside a procedure of one instruction in 20 words, is restored open, and the person's Approve of
+// it is taken.
 func TestTheRepairPassDoesNotOpenABrokenRequestAgain(t *testing.T) {
 	f := newRepairFixtureFrom(t, 20*time.Millisecond, "ACME-1")
 	tree := seedSpecFormTree(t, f.handler, f.database, f.deps)
@@ -502,7 +537,7 @@ func TestTheRepairPassDoesNotOpenABrokenRequestAgain(t *testing.T) {
 		seq := lastIssueSeq(t, f.database, issue.Key)
 		return issue, request, seq, repairNow(t, f)
 	}
-	for _, fault := range formFaults {
+	for _, fault := range append(slices.Clone(formFaults), procedureFaults...) {
 		t.Run(fault.name, func(t *testing.T) {
 			issue, request, seq, repair := repaired(t, fault.name, fault.document(fault.broken))
 			if repair.Restored != 0 || repair.LeftResolved != 1 {
@@ -525,7 +560,9 @@ func TestTheRepairPassDoesNotOpenABrokenRequestAgain(t *testing.T) {
 	}
 	t.Run("control: a statement of two sentences of 25 words each", func(t *testing.T) {
 		statement := formFault{node: "show-person", kind: specform.KindStatement}
-		issue, request, seq, repair := repaired(t, "the control", statement.document(twentyFiveWords))
+		procedure := formFault{node: "run-merge", kind: specform.KindProcedure}
+		document := statement.document(twentyFiveWords) + strings.TrimPrefix(procedure.document(twentyWords), "# Spec\n")
+		issue, request, seq, repair := repaired(t, "the control", document)
 		if repair.Restored != 1 || repair.LeftResolved != 0 {
 			t.Fatalf("repair = %+v, want 1 restored and none left resolved", repair)
 		}

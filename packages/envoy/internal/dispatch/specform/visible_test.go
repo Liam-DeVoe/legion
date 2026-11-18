@@ -235,6 +235,14 @@ func TestOneLinkGivesOneFinding(t *testing.T) {
 			[]string{"statement ask dispatch-link"}, "", "", ""},
 		{"two links to two records", requirement("two", "Dispatch stores each comment, as <dispatch://ACME-1> and <dispatch://ACME-2> show."),
 			[]string{"statement two dispatch-link", "statement two dispatch-link"}, "", "", ""},
+		{"a link of the spec of an issue, then a link of the issue", requirement("spec-issue", "Dispatch keeps [the spec](dispatch://ACME-1/spec) and [the issue](dispatch://ACME-1)."),
+			[]string{"statement spec-issue dispatch-link", "statement spec-issue dispatch-link"}, "", "", ""},
+		{"a link of an ask of an issue, then a link of the issue", requirement("ask-issue", "Dispatch keeps [the ask](dispatch://ACME-1/ask/"+id+") and [the issue](dispatch://ACME-1)."),
+			[]string{"statement ask-issue dispatch-link", "statement ask-issue dispatch-link"}, "", "", ""},
+		{"a path of the spec of an issue, then a path of the issue", requirement("paths", "Dispatch keeps [the spec](/issues/ACME-1/spec) and [the issue](/issues/ACME-1)."),
+			[]string{"statement paths dispatch-link", "statement paths dispatch-link"}, "", "", ""},
+		{"the control: a link of the issue, then a link of its spec", requirement("issue-spec", "Dispatch keeps [the issue](dispatch://ACME-1) and [the spec](dispatch://ACME-1/spec)."),
+			[]string{"statement issue-spec dispatch-link", "statement issue-spec dispatch-link"}, "", "", ""},
 		{"the control: a link of the spec of one issue whose words are the key of another", requirement("other", "Dispatch keeps [ACME-2](dispatch://ACME-1/spec)."),
 			[]string{"statement other dispatch-link", "statement other dispatch-link"}, "", "", ""},
 		{"the stated scope: a digit after an autolink names another record", requirement("digit", "Dispatch stores each comment, as <dispatch://ACME-1>5 shows."),
@@ -265,11 +273,12 @@ func TestOneLinkGivesOneFinding(t *testing.T) {
 // A link whose address is a path of a page of a record of Dispatch, on the server that shows the
 // document, links to that record, as the whole address of the page does: an issue, a document of
 // an issue, of a project or of an agent, an ask, a comment, a message and a block, as the server
-// reads the address of its pages. An address with no scheme is read as the dashboard reads the
-// address of a link: against the origin of the server, with each "\" read as "/". So a path that
-// starts with "/", "./" or "../" or with none of them names the same page. A path of another page,
-// and an address of another host, link to no record. A context that names no server still reads a
-// path, which names one page on each server.
+// reads the address of its pages. An address with no scheme is read against the origin of the
+// server, as the dashboard reads the address of a link in a component's prose, with each "\" read
+// as "/". So a path that starts with "/", "./" or "../" or with none of them names the same page.
+// A path of another page, and an address of another host, link to no record. A context that names
+// no server still reads a path, which names one page on each server. These rows name no page of a
+// document, which TestAnAddressIsReadAgainstThePageOfItsDocumentToo reads.
 func TestARelativeLinkToARecordLinksToTheRecord(t *testing.T) {
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
 	requireJudged(t, []judgedRow{
@@ -317,9 +326,9 @@ func TestARelativeLinkToARecordLinksToTheRecord(t *testing.T) {
 			nil, "", "", ""},
 		{"the control: a path with no / of a page that is no record", requirement("bare-guide", "Dispatch keeps [the guide](docs/guide)."),
 			nil, "", "", ""},
-		{"the control: a path from ../ that the origin reads as no record", requirement("near", "Dispatch keeps [the terms](../documents/terms-md)."),
+		{"the control, with no page: a path from ../ that the origin reads as no record", requirement("near", "Dispatch keeps [the terms](../documents/terms-md)."),
 			nil, "", "", ""},
-		{"the control: a name of a document alone", requirement("slug", "Dispatch keeps [the terms](terms-md)."),
+		{"the control, with no page: a name of a document alone", requirement("slug", "Dispatch keeps [the terms](terms-md)."),
 			nil, "", "", ""},
 		{"the control: a path of a project", requirement("projects", "Dispatch keeps [the projects](/projects/ACME)."),
 			nil, "", "", ""},
@@ -331,6 +340,47 @@ func TestARelativeLinkToARecordLinksToTheRecord(t *testing.T) {
 		want := []Finding{finding(text, "dispatch-link", fmt.Sprintf("it links to a record of Dispatch: %q", address))}
 		if got := Check(Context{}, Input{Texts: []Text{text}}); !sameFindings(got, want) {
 			t.Errorf("%s with no server: Check = %#v, want %#v", address, got, want)
+		}
+	}
+}
+
+// The page of a document reads an address with no scheme against itself, as the editor and the
+// browser do, and the origin reads it as the dashboard reads a component's prose. An address links
+// to a record when either reading opens the page of one: from a spec, a document of its issue, its
+// Verification document, its decisions and a block or a part of the spec itself; from a
+// Verification document, another document of its issue by its name alone; from a document of a
+// project, another document of the project. A path that opens no record from either base links to
+// none, and with no page the origin's reading alone decides.
+func TestAnAddressIsReadAgainstThePageOfItsDocumentToo(t *testing.T) {
+	const spec, checks, project = "/issues/ACME-1/spec", "/issues/ACME-1/artifacts/verification-md", "/projects/ACME/documents/notes-md"
+	for _, test := range []struct {
+		page, address string
+		want          []string
+	}{
+		{spec, "artifacts/notes-md", []string{`it links to a record of Dispatch: "artifacts/notes-md"`}},
+		{spec, "artifacts/verification-md", []string{`it links to a record of Dispatch: "artifacts/verification-md"`}},
+		{spec, "decisions", []string{`it links to a record of Dispatch: "decisions"`}},
+		{spec, "#b-x1", []string{`it links to a record of Dispatch: "#b-x1"`}},
+		{spec, "#s-form", []string{`it links to a record of Dispatch: "#s-form"`}},
+		{checks, "terms-md", []string{`it links to a record of Dispatch: "terms-md"`}},
+		{project, "../documents/terms-md", []string{`it links to a record of Dispatch: "../documents/terms-md"`}},
+		{project, "terms-md", []string{`it links to a record of Dispatch: "terms-md"`}},
+		{spec, "docs/guide", []string{}},
+		{checks, "docs/guide", []string{}},
+		{project, "docs/guide", []string{}},
+		{spec, "terms-md", []string{}},
+		{spec, "../documents/terms-md", []string{}},
+		{"", "artifacts/notes-md", []string{}},
+	} {
+		context := planted()
+		context.Page = test.page
+		text := Text{Node: "planted", Kind: KindStatement, Body: "Dispatch keeps the record.", Where: where, Held: Held{Addresses: []string{test.address}}}
+		got := []string{}
+		for _, finding := range Check(context, Input{Texts: []Text{text}}) {
+			got = append(got, finding.Detail)
+		}
+		if !slices.Equal(got, test.want) {
+			t.Errorf("%q from the page %q: the details %q, want %q", test.address, test.page, got, test.want)
 		}
 	}
 }
@@ -406,6 +456,9 @@ func TestAFootnoteIsJudgedOnceAndGivesEachFindingOnce(t *testing.T) {
 			[]string{`claim c1 ste100-synonym-rotation: in its footnote [^n] (1 other text also refers to it): with the words of the footnotes that it refers to: ASD-STE100 does not permit two verbs for one action: "check" and "confirm"`}},
 		{"two verbs for one action in two footnotes that refer to each other", claims(2, "It checks the size.[^b]") + "\n[^b]: It confirms the type.[^n]\n", 0,
 			[]string{`claim c1 ste100-synonym-rotation: in its footnote [^n] (1 other text also refers to it): with the words of the footnotes that it refers to: ASD-STE100 does not permit two verbs for one action: "check" and "confirm"`}},
+		{"two verbs for one action in a footnote that a footnote with no verb refers to", ":::check{#top}\nDispatch keeps it.[^a]\n:::\n\n" +
+			"[^a]: The note.[^b]\n\n[^b]: It checks the size.[^c]\n\n[^c]: It confirms the type.\n", 0,
+			[]string{`claim top ste100-synonym-rotation: in the footnote [^b], which its footnote [^a] refers to: with the words of the footnotes that it refers to: ASD-STE100 does not permit two verbs for one action: "check" and "confirm"`}},
 		{"a claim that adds a third verb for one action to its footnote's two", ":::check{#more}\nValidate the file.[^n]\n:::\n\n[^n]: It checks the size and confirms the type.\n", 0,
 			[]string{`claim more ste100-synonym-rotation: with the words of its footnotes: ASD-STE100 does not permit two verbs for one action: "check", "confirm" and "validate"`,
 				`claim more ste100-synonym-rotation: in its footnote [^n]: ASD-STE100 does not permit two verbs for one action: "confirms"`}},

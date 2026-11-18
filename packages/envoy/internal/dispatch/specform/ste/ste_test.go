@@ -129,17 +129,14 @@ func TestLintSplitsLinesAsPythonDoes(t *testing.T) {
 }
 
 // TestRotationsJoinTheVerbsOfTexts holds the carry of the rule synonym-rotation from the texts that
-// a text holds into it: LintVerbs gives the verbs of the synonym groups that a text uses, by the
-// same reading as Lint, and Rotations gives each group whose verbs the texts use two of together,
-// with every verb of the group that one of them uses, where neither the text nor one text that it
-// holds uses them all. A group that one text alone rotates is that text's own finding (Lint), and
-// the same verb in two texts is no rotation.
+// a text holds into it: LintVerbs gives the verbs of the synonym groups that a text uses, and
+// Rotations gives each group whose verbs the texts use two of together, with every verb of the
+// group that one of them uses, where neither the text nor one text that it holds uses them all. A
+// group that one text alone rotates is that text's own finding (Lint, which TestLintFindsEachHardRule
+// holds), and the same verb in two texts is no rotation.
 func TestRotationsJoinTheVerbsOfTexts(t *testing.T) {
 	verbs := func(text string) Verbs {
-		findings, used := LintVerbs(text)
-		if want := Lint(text); !sameFindings(findings, want) {
-			t.Fatalf("LintVerbs(%q) gives the findings %v, and Lint %v", text, findings, want)
-		}
+		_, used := LintVerbs(text)
 		return used
 	}
 	for _, test := range []struct {
