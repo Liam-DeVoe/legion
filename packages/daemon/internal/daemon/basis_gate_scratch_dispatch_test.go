@@ -1060,7 +1060,11 @@ func TestBasisGateRefusals(t *testing.T) {
 	pv = r.approve(parent.PrimaryArtifactID).Version
 	cases.refused("P's primary document with no requirement block", call(), http.StatusConflict, "BASIS_NO_REQUIREMENTS",
 		fmt.Sprintf("at version %d marks no requirement block", pv))
-	// The daemon's record of P in merging, written as mergeClosesTheIssue writes one.
+	// The daemon's record of P in merging, written as mergeClosesTheIssue writes one, once the
+	// daemon has applied every event of P made so far: a close of P applied after the write
+	// (the "P set done" case's) leaves the tree and writes P's record at done (workflow's leave),
+	// so the case would read a P the daemon no longer records as accepted.
+	r.quiet(parent.Key)
 	putOutboxIssue(t, r.pool, record.NewStore(), record.Issue{Key: parent.Key, Repo: "acme/widgets", DefaultBranch: "main",
 		GitHubRepo: "acme/widgets", Tree: parent.Key, Project: r.cfg.Project, Title: parent.Key, Phase: phase.Merging, Generation: 1,
 		Status: "in_progress", DispatchStatus: "in_progress", HandedOver: true, Rank: "U"})
