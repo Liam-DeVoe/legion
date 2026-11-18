@@ -71,7 +71,9 @@ export interface InboxSelection {
   /** The thread rows a **Dismiss** press names, each with what the page drew in it, which is
    *  what the bar counts for that press. */
   readonly selectedThreads: readonly InboxDismissRow[];
-  readonly snoozePick: (until: string) => void;
+  /** One pick over the marked asks the view is drawing; resolves with the ids the server took,
+   *  once the whole pick has settled. */
+  readonly snoozePick: (until: string) => Promise<readonly string[]>;
   /** What the reader is told about the last bulk snooze the server refused in part. */
   readonly snoozeRefusal: string | undefined;
   /** How many asks the snooze now in flight covers, 0 when none is: the optimistic fold empties
@@ -186,16 +188,17 @@ export function useInboxSelection({
     const ids = [...selectedAsks];
     setSnoozeRefusal(undefined);
     setSnoozing(ids.length);
-    void bulkWrite.submit(ids, until).then(({ failed }) => {
+    return bulkWrite.submit(ids, until).then(({ failed }) => {
       setSnoozing(0);
       setSnoozeRefusal(snoozeRefusalText(failed, ids.length));
       const refused = new Set(failed.map(({ askId }) => askId));
-      const taken = new Set(ids.filter((id) => !refused.has(id)));
+      const taken = ids.filter((id) => !refused.has(id));
       setMarked((current) => {
-        const next = new Set([...current].filter((id) => !taken.has(id)));
+        const next = new Set([...current].filter((id) => !taken.includes(id)));
         for (const id of refused) next.add(id);
         return next;
       });
+      return taken;
     });
   };
   /** One press of the reader's, from a row's own control, from `e`, or from the bar: the ids go

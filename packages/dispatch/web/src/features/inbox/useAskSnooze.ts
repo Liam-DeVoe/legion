@@ -12,16 +12,30 @@ export interface AskSnoozeWrite {
   error: string | undefined;
   /** True after a save failed until the next attempt starts. */
   failed: boolean;
+  /** What the failed save asked for while `failed` holds - the moment of a snooze, or `null`
+   *  for an un-snooze - which `retry` sends again; `undefined` otherwise. */
+  failedUntil: string | null | undefined;
   pending: boolean;
   /** What the in-flight write is doing, and `undefined` when none is: the moment a snooze is
    *  saving, or `null` for an un-snooze. The optimistic update has already moved the row by
    *  the time it renders, so this - not the row's own `snoozed_until` - is what the reader
    *  just asked for. */
   pendingUntil: string | null | undefined;
-  /** Repeats the failed save. */
-  retry: () => void;
-  /** Snoozes the row until `until` (RFC3339), or brings it back with null. */
-  submit: (until: string | null) => void;
+  /** Repeats the failed save; `onSettled` hears whether the server took it. */
+  retry: (onSettled?: SnoozeSettled) => void;
+  /** Snoozes the row until `until` (RFC3339), or brings it back with null; `onSettled` hears
+   *  whether the server took this press. */
+  submit: (until: string | null, onSettled?: SnoozeSettled) => void;
+}
+
+/** Told once a press settles: true where the server took it, false where it refused it. */
+export type SnoozeSettled = (landed: boolean) => void;
+
+/** The callbacks one press's settling calls, for `mutate`: none where nobody listens. */
+function settledBy(onSettled: SnoozeSettled | undefined) {
+  return onSettled === undefined
+    ? undefined
+    : { onError: () => onSettled(false), onSuccess: () => onSettled(true) };
 }
 
 /**
@@ -61,12 +75,15 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
   return {
     error: mutation.error?.message,
     failed: mutation.isError,
+    failedUntil: mutation.isError ? mutation.variables : undefined,
     pending: mutation.isPending,
     pendingUntil: mutation.isPending ? mutation.variables : undefined,
-    retry: () => {
-      if (mutation.variables !== undefined) mutation.mutate(mutation.variables);
+    retry: (onSettled) => {
+      if (mutation.variables !== undefined) {
+        mutation.mutate(mutation.variables, settledBy(onSettled));
+      }
     },
-    submit: (until) => mutation.mutate(until),
+    submit: (until, onSettled) => mutation.mutate(until, settledBy(onSettled)),
   };
 }
 

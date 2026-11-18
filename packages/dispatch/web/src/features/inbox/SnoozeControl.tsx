@@ -1,12 +1,13 @@
-import { type ReactNode, useEffect } from "react";
+import { type ReactNode, useContext, useEffect } from "react";
 import { ChoiceMenu } from "../../components/ChoiceMenu";
 import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, secondaryButtonCompact, textMutedOnCanvas } from "../../theme/classes";
 import { badgeMenuTrigger, badgeSelectBadge } from "../issue/badge-select";
 import { Timestamp } from "../refs/Timestamp";
+import { InboxHandOffContext } from "./pane-selection";
 import { isIndefinite, snoozeChoices, snoozeOf } from "./snooze";
-import { useAskSnooze } from "./useAskSnooze";
+import { type SnoozeSettled, useAskSnooze } from "./useAskSnooze";
 
 /**
  * The per-row defer control: the "Snooze" badge, whose press opens the Snooze menu
@@ -20,9 +21,10 @@ import { useAskSnooze } from "./useAskSnooze";
  * `Snoozing…` and its refusal with it - so, exactly as `AssignToMe` does for the optimistic
  * assignment that can drop a row out of the assignee filter, it tells the Inbox while its write
  * is live and the Inbox keeps the row rendered until it settles. The fold is the feedback for a
- * snooze that lands; a snooze the
- * server refuses rolls the row back with the reason still attached to it. Un-snooze is held
- * while its write is out (`heldPress`).
+ * snooze that lands, and the Inbox then hands the reader on to the item after the row
+ * (`InboxHandOffContext`, R8); a snooze the server refuses rolls the row back with the reason
+ * still attached to it, and leaves the reader on it. Un-snooze is held while its write is out
+ * (`heldPress`) and moves nobody.
  *
  * `label` names the row for assistive tech; the Inbox passes the issue key or the document.
  */
@@ -41,19 +43,28 @@ export function SnoozeControl({
   snoozedUntil: string | null;
 }): ReactNode {
   const write = useAskSnooze(askId);
+  const handOff = useContext(InboxHandOffContext);
   const live = write.pending || write.failed;
   useEffect(() => {
     if (!live) return;
     onLive(askId, true);
     return () => onLive(askId, false);
   }, [askId, live, onLive]);
+  /** Begins the hand-off a snooze press makes, at the press, before its optimistic write moves
+   *  the row, and says what its settling tells the Inbox: a landing hands the reader on, a
+   *  refusal drops it. An un-snooze, and a control outside an Inbox, hand nothing on. */
+  const handingOn = (until: string | null | undefined): SnoozeSettled | undefined => {
+    if (until === null || until === undefined || handOff === undefined) return undefined;
+    handOff.beginHandOff([askId]);
+    return (landed) => (landed ? handOff.landHandOff([askId]) : handOff.dropHandOff([askId]));
+  };
   // `basis-full` inside the header's wrapping row: a refusal is wider than the badge it
   // replaces, so it takes a line of its own rather than drawing over the issue key.
   const failure = write.failed ? (
     <div className="basis-full">
       <QueryError
         message={write.error ?? `Could not snooze ${label}.`}
-        onRetry={write.retry}
+        onRetry={() => write.retry(handingOn(write.failedUntil))}
         retrying={write.pending}
       />
     </div>
@@ -102,7 +113,10 @@ export function SnoozeControl({
         choices={snoozeChoices(snoozedUntil !== null)}
         label={`Snooze ${label}`}
         marks={{ "data-inbox-snooze": "" }}
-        onChoose={(choice) => write.submit(snoozeOf(choice, new Date()))}
+        onChoose={(choice) => {
+          const until = snoozeOf(choice, new Date());
+          write.submit(until, handingOn(until));
+        }}
         triggerClassName={badgeMenuTrigger}
       >
         <span className={`${badgeSelectBadge} ${badgeLow.bg} ${badgeLow.text}`}>

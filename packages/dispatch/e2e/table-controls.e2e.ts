@@ -798,7 +798,7 @@ test("a chip taken off from the keyboard hands the focus to the next chip, then 
 });
 
 // SLOW(>=2s): two pages at two widths, each page's selection bar taken away from the keyboard.
-test("the selection bar gone from the keyboard hands the focus to the row marked last, then the first row, never the body, on the Inbox and the project List", async ({
+test("the selection bar gone from the keyboard hands the focus to the row marked last, or after a snooze to the row after the snoozed rows, never the body, on the Inbox and the project List", async ({
   page,
 }) => {
   await seedLongInbox();
@@ -922,10 +922,13 @@ test("the selection bar gone from the keyboard hands the focus to the row marked
       (await inboxBox(3).getAttribute("aria-label")) ?? ""
     );
     // A snooze picked in the bar folds every marked row into Later, the row marked last with
-    // them, and the bar goes once the write lands: the focus goes to the first row. The pick is
-    // the keyboard's: Enter on the bar's Snooze opens its menu on Later today, and Enter writes it.
+    // them, and the bar goes once the write lands: the focus goes to the row of the item after
+    // the last of them in the list (dispatch://INFRA-2160, R8), whose row the hand-off brings
+    // into view. The pick is the keyboard's: Enter on the bar's Snooze opens its menu on Later
+    // today, and Enter writes it.
     await mark(inboxBox(2));
     await mark(inboxBox(1));
+    const afterMarked = (await rows.nth(3).getAttribute("data-inbox-row")) ?? "";
     const picker = inboxBar.getByRole("button", { exact: true, name: "Snooze selected asks" });
     await picker.focus();
     await page.keyboard.press("Enter");
@@ -935,11 +938,32 @@ test("the selection bar gone from the keyboard hands the focus to the row marked
     ).toBeFocused();
     await page.keyboard.press("Enter");
     await expect(inboxBar, `${where}: the snooze left the bar up`).toHaveCount(0);
-    await focusOn(
-      where,
-      "a snooze took the marked rows away",
-      (await inboxBox(0).getAttribute("aria-label")) ?? ""
-    );
+    // The row is read by its id rather than its name: a row's text holds its age, which moves.
+    // Its top is what must be in sight, since a card row at 390 px can be taller than the window.
+    const handedTo = () =>
+      page.evaluate(() => {
+        const focused = document.activeElement;
+        const top = focused?.getBoundingClientRect().top ?? -1;
+        return {
+          row: focused?.getAttribute("data-inbox-row") ?? focused?.tagName ?? "nothing",
+          seen: top >= 0 && top < window.innerHeight,
+        };
+      });
+    const landed = await expect
+      .poll(async () => (await handedTo()).row, { timeout: 2_000 })
+      .toBe(afterMarked)
+      .then(() => true)
+      .catch(() => false);
+    const handed = await handedTo();
+    if (!landed) {
+      wrong.push(
+        `${where}: after a snooze took the marked rows away the focus is on ${handed.row}, not on the row after them`
+      );
+    } else if (!handed.seen) {
+      wrong.push(
+        `${where}: after a snooze took the marked rows away their next row is not in view`
+      );
+    }
     // The bar never held the focus, so it is not the bar's to move: on a control of the page's
     // own, Escape clears the selection and leaves the focus there.
     const trigger = control(controlRow(main), CONTROL.panelTrigger).first();
@@ -954,14 +978,20 @@ test("the selection bar gone from the keyboard hands the focus to the row marked
       );
     }
     // And on a row: `x` takes the one mark off the row in hand, the bar goes, and the focus stays
-    // on the row. Escape is not this case: on a row it steps off the row first.
-    await rows.nth(0).focus();
+    // on the row. Escape is not this case: on a row it steps off the row first. The row in hand
+    // is the one the snooze above handed the reader to (R8), which beside the column is also
+    // the selected row, the one `x` marks there.
+    const handRow = page.locator(`[data-inbox-row="${afterMarked}"]`);
+    await handRow.focus();
     await page.keyboard.press("x");
-    await expect(inboxBox(0), `${where}: x marked another row than the focused one`).toBeChecked();
+    await expect(
+      handRow.getByRole("checkbox").first(),
+      `${where}: x marked another row than the focused one`
+    ).toBeChecked();
     await expect(inboxBar).toContainText("1 selected");
     await page.keyboard.press("x");
     await expect(inboxBar, `${where}: x on the only marked row left the bar up`).toHaveCount(0);
-    if (!(await rows.nth(0).evaluate((node) => node === document.activeElement))) {
+    if (!(await handRow.evaluate((node) => node === document.activeElement))) {
       const focus = await focusNow();
       wrong.push(`${where}: x on the focused row moved the focus to ${focus.label}, off the row`);
     }
@@ -1026,7 +1056,7 @@ test("the selection bar gone from the keyboard hands the focus to the row marked
 });
 
 // SLOW(>=2s): two widths, a thread dismissed from the bar and moved back to the Inbox from it.
-test("a thread dismissed from the selection bar, or moved back to the Inbox from it, hands the focus to the first row or the search box, never the body", async ({
+test("a thread dismissed from the selection bar, or moved back to the Inbox from it, hands the focus to the item after it or to the view's empty message, never the body", async ({
   page,
 }) => {
   await seedLongInbox();
@@ -1041,14 +1071,20 @@ test("a thread dismissed from the selection bar, or moved back to the Inbox from
   const bar = main.locator(`[data-control="${CONTROL.selectionBar}"]`);
   const threads = main.locator('[data-inbox-row^="reply:"]');
   const wrong: string[] = [];
-  /** The focused element's name, or the tag of what holds the focus when it is no control. */
+  /** The focused row's id, else the focused element's name, else the tag of what holds the
+   *  focus when it is no control. A row is read by its id: its text holds its age, which moves. */
   const focused = () =>
     page.evaluate(() => {
       const element = document.activeElement;
       if (!(element instanceof HTMLElement) || element === document.body) {
         return element?.tagName ?? "nothing";
       }
-      return element.getAttribute("aria-label") ?? element.textContent?.trim() ?? element.tagName;
+      return (
+        element.getAttribute("data-inbox-row") ??
+        element.getAttribute("aria-label") ??
+        element.textContent?.trim() ??
+        element.tagName
+      );
     });
   /** The focus once it lands on `wanted` within two seconds, or wherever it is then. */
   const settled = async (wanted: string) =>
@@ -1057,6 +1093,16 @@ test("a thread dismissed from the selection bar, or moved back to the Inbox from
       .toBe(wanted)
       .then(() => wanted)
       .catch(() => focused());
+  /** The item after `id` in the list as it is drawn now, else the item before it: where a press
+   *  on `id` hands the reader on to (dispatch://INFRA-2160, R8), or "Inbox empty state", the
+   *  name of the list's empty message, where `id` is all the list holds. */
+  const handOffFrom = async (id: string) => {
+    const drawn = await rows.evaluateAll((all) =>
+      all.map((row) => row.getAttribute("data-inbox-row") ?? "")
+    );
+    const at = drawn.indexOf(id);
+    return drawn[at + 1] ?? drawn[at - 1] ?? "Inbox empty state";
+  };
   for (const size of [
     { height: 900, width: 1440 },
     { height: 664, width: 390 },
@@ -1064,31 +1110,32 @@ test("a thread dismissed from the selection bar, or moved back to the Inbox from
     await page.setViewportSize(size);
     const where = `Inbox at ${size.width}x${size.height}`;
 
-    // Dismiss: the marked thread leaves this view with the bar, so the focus goes to the first
-    // row's checkbox - the row marked last is gone.
+    // Dismiss: the marked thread leaves this view with the bar, so the focus goes to the row of
+    // the item after it in the list.
     await page.goto("/");
     await expect(threads, `${where}: no thread row is listed`).toHaveCount(2);
-    const thread = await threads.first().getAttribute("data-inbox-row");
+    const thread = (await threads.first().getAttribute("data-inbox-row")) ?? "";
+    const next = await handOffFrom(thread);
     await threads.first().getByRole("checkbox").first().check();
     const dismiss = bar.getByRole("button", { exact: true, name: "Dismiss selected threads" });
     await dismiss.focus();
     await page.keyboard.press("Enter");
     await expect(main.locator(`[data-inbox-row="${thread}"]`)).toHaveCount(0);
     await expect(bar, `${where}: Dismiss left the bar up`).toHaveCount(0);
-    const first = await rows.first().getByRole("checkbox").first().getAttribute("aria-label");
     // The hand-off may land a moment after the bar goes, so the focus is read until it settles.
-    const afterDismiss = await settled(first ?? "");
-    if (afterDismiss !== first) {
+    const afterDismiss = await settled(next);
+    if (afterDismiss !== next) {
       wrong.push(
-        `${where}: after Enter on Dismiss the focus is on ${afterDismiss}, not on "${first}"`
+        `${where}: after Enter on Dismiss the focus is on ${afterDismiss}, not on "${next}"`
       );
     }
 
     // Move to Inbox, from the dismissed view: the thread leaves that view with the bar, so the
-    // focus goes to the first row left there, or to the search box when none is.
+    // focus goes to the item after it there, or to the view's empty message when none is left.
     await page.goto("/?show=dismissed");
     const back = main.locator(`[data-inbox-row="${thread}"]`);
     await expect(back, `${where}: the dismissed thread is not listed`).toHaveCount(1);
+    const target = await handOffFrom(thread);
     await back.getByRole("checkbox").first().check();
     const restore = bar.getByRole("button", {
       exact: true,
@@ -1098,11 +1145,6 @@ test("a thread dismissed from the selection bar, or moved back to the Inbox from
     await page.keyboard.press("Enter");
     await expect(back).toHaveCount(0);
     await expect(bar, `${where}: Move to Inbox left the bar up`).toHaveCount(0);
-    const left = await rows.count();
-    const target =
-      left > 0
-        ? ((await rows.first().getByRole("checkbox").first().getAttribute("aria-label")) ?? "")
-        : "Search asks";
     const afterRestore = await settled(target);
     if (afterRestore !== target) {
       wrong.push(
@@ -1110,8 +1152,8 @@ test("a thread dismissed from the selection bar, or moved back to the Inbox from
       );
     }
   }
-  // The ruling the bar's hand-off is built to: a focus the bar held goes to the row marked last,
-  // then the first row, then the search box, and never to the body.
+  // The ruling the bar's hand-off is built to: a press of the bar hands the focus to the item
+  // after the rows it took (R8), or to the view's empty message, and never to the body.
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
 

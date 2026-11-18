@@ -116,7 +116,7 @@ import { useMotionHold } from "./motion-hold";
 import { OptionDigitsContext } from "./option-digits";
 import { PaneDivider, usePaneWidth } from "./PaneDivider";
 import { PANE_READER_MOVE } from "./pane-placement";
-import { type PlacedRow, usePaneSelection } from "./pane-selection";
+import { InboxHandOffContext, type PlacedRow, usePaneSelection } from "./pane-selection";
 import { useFoldedGroups } from "./preferences";
 import { questionLine } from "./question-line";
 import { ReadingPane } from "./ReadingPane";
@@ -815,6 +815,10 @@ export function Inbox({
   /** The reading column, where `h`, `o`, `y`, Enter and `1`-`9` act while it is on. Written by
    *  `holdPane` below rather than handed to the wrapper, so the column's unmount is seen. */
   const paneRef = useRef<HTMLDivElement | null>(null);
+  /** Everything this Inbox draws below the bar of selected rows - the header, the list or its
+   *  empty message, and the column - where the row a hand-off sends the reader to is looked up
+   *  (`usePaneSelection`), so the drawer's list never reaches into the page under it. */
+  const regionRef = useRef<HTMLDivElement>(null);
   /** The grid the list, the divider and the reading column share, whose width a drag of the
    *  divider is measured against. */
   const columnsRef = useRef<HTMLDivElement>(null);
@@ -1082,26 +1086,36 @@ export function Inbox({
     showDismissed,
   });
   const paneSelection = usePaneSelection({
-    bulkSnoozing,
     filter,
     listRef,
     openFoldedBand: useCallback(() => openFoldedBand(LATER_GROUP_KEY), [openFoldedBand]),
     paneShown,
     presented,
-    snoozing,
+    region: regionRef,
   });
   // The refetch a recorded answer triggers returns the list the optimistic removal already
-  // produced, so it re-renders nothing on its own; release explicitly. The reader's own answer
-  // is one of the ways the selection is handed on, and only while it is still the selected
-  // question: the column holds the question here until the server decides their answer, but a
-  // selection that moved on meanwhile - an approval reviewed from the head, a row they walked
-  // off - must not be pulled back off the row that took its place.
+  // produced, so it re-renders nothing on its own; release explicitly. The reader's own answer -
+  // an answer, an approval, a request for changes, a decline - hands the reader on to the item
+  // after it (R8) once the server has recorded it, not at the press: the column holds the
+  // question here until the server decides their answer, so a refusal shows on its own card. A
+  // reader who moved on meanwhile - an approval reviewed from the head while they walked off -
+  // is not pulled back (`landHandOff`).
   const recordAnswered = (id: string) => {
     answered.current = id;
-    if (paneShown && paneSelection.selectedNow.current === id) {
-      paneSelection.select(paneSelection.nextAfterSelected());
-    }
+    paneSelection.landHandOff([id]);
     release();
+  };
+  /** One dismiss, or Move to Inbox, of the rows `named` - the bar's own press is `dismissPick`:
+   *  its optimistic removal is immediate and a refusal shows above the list, so the reader is
+   *  handed on to the item after them at once (R8). */
+  const dismissNow = (
+    named: readonly InboxDismissRow[],
+    dismiss: () => void = () => dismissRows(named)
+  ) => {
+    const ids = named.map(({ id }) => id);
+    paneSelection.beginHandOff(ids);
+    dismiss();
+    paneSelection.landHandOff(ids);
   };
   const rows = () => [...(listRef.current?.querySelectorAll<HTMLElement>(ROW_SELECTOR) ?? [])];
   const step = (delta: 1 | -1) => roveFocus(rows(), rowAround(document.activeElement), delta);
@@ -1651,13 +1665,13 @@ export function Inbox({
       when: () => markableRow() !== undefined,
     },
     {
-      // The row goes out of the Inbox, and in the Dismissed view back into it; the selection then
-      // moves to the next row, as it does after a snooze. An Ask or an Approval row has no
-      // Dismiss, so the key does nothing on one.
+      // The row goes out of the Inbox, and in the Dismissed view back into it; the reader is then
+      // handed on to the item after it (R8). An Ask or an Approval row has no Dismiss, so the key
+      // does nothing on one.
       action: "inbox.dismiss",
       run: () => {
         const named = dismissableRow();
-        if (named !== undefined) dismissRows([named]);
+        if (named !== undefined) dismissNow([named]);
       },
       // Not from inside an ask the reader is answering, the rule `h` holds to: the card's own
       // controls are not the list's, and a typed `e` belongs to whatever holds the focus.
@@ -2119,18 +2133,21 @@ export function Inbox({
       count={bulkBarShown ? selectedCount : 0}
       label="Selected rows"
       notice={snoozeRefusal}
-      // The bar gone with the focus, or the control in it that held the focus: the checkbox of
-      // the row the reader marked last, else of the first row in list order, else the search
-      // box. A row a Dismiss or a Move to Inbox press is taking off this view is passed over: it
-      // is still drawn until the write's optimistic apply lands, and a focus handed to it would
-      // drop with it. `dismissedHere` names every such row - each id the dismiss write's
-      // `pending` holds, and the ids of a press made under the narrowing, which `pending` leaves
-      // out. A Move to Inbox that empties the Dismissed view leaves no other row, so the focus
-      // goes to the search box.
+      // The bar gone with the focus, or the control in it that held the focus: the row a press
+      // of the bar hands the reader on to (R8), else the checkbox of the row the reader marked
+      // last, else of the first row in list order, else the search box. A row a Dismiss or a
+      // Move to Inbox press is taking off this view is passed over: it is still drawn until the
+      // write's optimistic apply lands, and a focus handed to it would drop with it.
+      // `dismissedHere` names every such row - each id the dismiss write's `pending` holds, and
+      // the ids of a press made under the narrowing, which `pending` leaves out. A Move to Inbox
+      // that empties the Dismissed view leaves no other row, so the focus goes to the search box
+      // until the view's empty message is drawn.
       returnFocus={() =>
+        paneSelection.handOffTarget() ??
         [originRow(lastMarked()), ...rows()]
           .find((row) => row !== null && !dismissedHere(row.dataset.inboxRow ?? ""))
-          ?.querySelector<HTMLElement>(MARK_SELECTOR) ?? searchRef.current
+          ?.querySelector<HTMLElement>(MARK_SELECTOR) ??
+        searchRef.current
       }
       state={barState}
     >
@@ -2150,7 +2167,14 @@ export function Inbox({
           marks={{ "data-inbox-bulk-snooze": "" }}
           onChoose={(choice) => {
             const until = snoozeOf(choice, new Date());
-            if (until !== null) snoozePick(until);
+            if (until === null) return;
+            // The reader is handed on to the item after the last of the asks once the server
+            // has taken them (R8); a pick it refused whole sends nobody anywhere.
+            const ids = [...selectedAsks];
+            paneSelection.beginHandOff(ids);
+            void snoozePick(until).then((taken) =>
+              taken.length === 0 ? paneSelection.dropHandOff(ids) : paneSelection.landHandOff(taken)
+            );
           }}
           triggerClassName={badgeMenuTrigger}
         >
@@ -2162,7 +2186,7 @@ export function Inbox({
           aria-label={`${dismissLabel} selected threads`}
           className={BAR_ACTION_CLASS}
           data-inbox-bulk-dismiss=""
-          onClick={dismissPick}
+          onClick={() => dismissNow(selectedThreads, dismissPick)}
           type="button"
         >
           {dismissLabel}
@@ -2248,70 +2272,77 @@ export function Inbox({
           own Dismiss from here (`DismissControl`). */}
       <RowDismissContext
         value={{
-          dismiss: (named) => dismissRows([named]),
+          dismiss: (named) => dismissNow([named]),
           pending: dismissWrite.pending,
           show,
         }}
       >
-        {/* Every card this list draws shows the digits that pick its options while it is the
+        {/* Every Snooze this list draws - on a row, and in the column's head - hands the reader on
+            to the item after the one it snoozed once the server has taken it (R8). */}
+        <InboxHandOffContext value={paneSelection}>
+          {/* Every card this list draws shows the digits that pick its options while it is the
             item in hand (R17, `option-digits.ts`): beside the column, the selected question's
             card; below its width, the card of the row the reader holds. */}
-        <OptionDigitsContext
-          value={
-            paneShown ? { askId: paneSelection.id, kind: "selected" } : { kind: "focused-row" }
-          }
-        >
-          {/* Outside the layout box above, because it is `fixed`: the bar is drawn over the list
+          <OptionDigitsContext
+            value={
+              paneShown ? { askId: paneSelection.id, kind: "selected" } : { kind: "focused-row" }
+            }
+          >
+            {/* Outside the layout box above, because it is `fixed`: the bar is drawn over the list
               rather than in it, so the first mark moves no row (INFRA-3135, R4). */}
-          {selectionBar}
-          <div className={paneShown ? "flex min-h-0 flex-1 flex-col gap-4" : "space-y-4"}>
-            {header}
-            {paneShown ? (
-              // The two columns are a grid of two fractions, so the share the reader dragged the
-              // divider to is exactly the share the pane takes, at any width; the divider is the
-              // column between them and takes its own.
-              //
-              // One row, `minmax(0, 1fr)`: an implicit `auto` row is as tall as the taller
-              // column, so a long document in the pane would make the row - and with it both
-              // columns' boxes - taller than the page, and neither column would scroll in itself.
-              // The page would scroll instead, which is how the pane came to show a document's
-              // top however far down it the reader's section sat.
-              <div
-                className="grid min-h-0 flex-1"
-                ref={columnsRef}
-                style={{
-                  gridTemplateColumns:
-                    subject === undefined
-                      ? "minmax(0, 1fr)"
-                      : `minmax(0, ${1 - paneWidth}fr) auto minmax(0, ${paneWidth}fr)`,
-                  gridTemplateRows: "minmax(0, 1fr)",
-                }}
-              >
-                {listColumn}
-                {subject === undefined ? null : (
-                  <>
-                    <PaneDivider
-                      columns={columnsRef}
-                      onWidthChange={setPaneWidth}
-                      width={paneWidth}
-                    />
-                    {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only reads where the focus has already gone, so the column needs no role of its own. */}
-                    <div className="min-h-0 min-w-0" onBlur={forgetPaneReturn} ref={holdPane}>
-                      <ReadingPane
-                        onAnswered={recordAnswered}
-                        onSnoozeLive={onSnoozeLive}
-                        row={subject}
-                        viewer={viewer}
+            {selectionBar}
+            <div
+              className={paneShown ? "flex min-h-0 flex-1 flex-col gap-4" : "space-y-4"}
+              ref={regionRef}
+            >
+              {header}
+              {paneShown ? (
+                // The two columns are a grid of two fractions, so the share the reader dragged the
+                // divider to is exactly the share the pane takes, at any width; the divider is the
+                // column between them and takes its own.
+                //
+                // One row, `minmax(0, 1fr)`: an implicit `auto` row is as tall as the taller
+                // column, so a long document in the pane would make the row - and with it both
+                // columns' boxes - taller than the page, and neither column would scroll in itself.
+                // The page would scroll instead, which is how the pane came to show a document's
+                // top however far down it the reader's section sat.
+                <div
+                  className="grid min-h-0 flex-1"
+                  ref={columnsRef}
+                  style={{
+                    gridTemplateColumns:
+                      subject === undefined
+                        ? "minmax(0, 1fr)"
+                        : `minmax(0, ${1 - paneWidth}fr) auto minmax(0, ${paneWidth}fr)`,
+                    gridTemplateRows: "minmax(0, 1fr)",
+                  }}
+                >
+                  {listColumn}
+                  {subject === undefined ? null : (
+                    <>
+                      <PaneDivider
+                        columns={columnsRef}
+                        onWidthChange={setPaneWidth}
+                        width={paneWidth}
                       />
-                    </div>
-                  </>
-                )}
-              </div>
-            ) : (
-              listColumn
-            )}
-          </div>
-        </OptionDigitsContext>
+                      {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only reads where the focus has already gone, so the column needs no role of its own. */}
+                      <div className="min-h-0 min-w-0" onBlur={forgetPaneReturn} ref={holdPane}>
+                        <ReadingPane
+                          onAnswered={recordAnswered}
+                          onSnoozeLive={onSnoozeLive}
+                          row={subject}
+                          viewer={viewer}
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
+              ) : (
+                listColumn
+              )}
+            </div>
+          </OptionDigitsContext>
+        </InboxHandOffContext>
       </RowDismissContext>
     </AskHandOnLiveContext>
   );
@@ -2328,15 +2359,23 @@ export function Inbox({
     });
     // Nothing to read, so nothing to select and no column beside the list. The one question that
     // outlives every row is the one the column is keeping for an unsent answer, and it keeps
-    // its column here too: the reader's text is in it.
+    // its column here too: the reader's text is in it. The message takes the keyboard focus a
+    // hand-off gives it (R8), so the Inbox's keys still work from there; where there is no
+    // message to say yet, the empty list itself does.
     presented.current = [];
-    const empty = (
-      <div data-testid="inbox-list">
-        {emptyMessage === undefined ? null : (
-          <EmptyState label="Inbox empty state" message={emptyMessage} />
-        )}
-      </div>
-    );
+    const empty =
+      emptyMessage === undefined ? (
+        <div data-inbox-empty="" data-testid="inbox-list" tabIndex={-1} />
+      ) : (
+        <div data-testid="inbox-list">
+          <EmptyState
+            label="Inbox empty state"
+            marks={{ "data-inbox-empty": "" }}
+            message={emptyMessage}
+            tabIndex={-1}
+          />
+        </div>
+      );
     return page(empty, paneSelection.showing([]));
   }
 

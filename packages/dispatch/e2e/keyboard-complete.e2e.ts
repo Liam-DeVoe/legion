@@ -55,6 +55,8 @@ import {
   answerWrites,
   asker,
   contrastOf,
+  dismissThread,
+  dismissWrites,
   handOnControl,
   handOnWrites,
   holdWrites,
@@ -2267,8 +2269,10 @@ test("k-answer-box: Enter puts the caret in the answer box from the row, the bod
         .id
     );
   }
-  const [firstAsk, , thirdAsk] = asks;
-  if (firstAsk === undefined || thirdAsk === undefined) throw new Error("three asks were seeded");
+  const [firstAsk, secondAsk, thirdAsk] = asks;
+  if (firstAsk === undefined || secondAsk === undefined || thirdAsk === undefined) {
+    throw new Error("three asks were seeded");
+  }
   const threadIssue = await createIssue({ force: true, project: "CORE", title: "Replay budget" });
   const thread = await seedCommentThread(
     threadIssue.key,
@@ -2333,9 +2337,35 @@ test("k-answer-box: Enter puts the caret in the answer box from the row, the bod
   await expect(copy, "k-answer-box: the focus stays on Copy reference").toBeFocused();
   await expect(box, "k-answer-box: the caret is not in the answer box").not.toBeFocused();
 
-  // t9: the step that answers the first question (`1`, Enter, Ctrl+Enter) and reads that the
-  // second question's row has the focus and that Enter puts the caret in its answer box goes
-  // here; the focus after an answer is R8's (t9).
+  // The first question, answered with 1, Enter and Ctrl+Enter: the second question's row has the
+  // focus (R8) - it is the item after the first question in the list, or the item before it
+  // where the first is the last - and Enter from there puts the caret in its answer box.
+  const listed = await page
+    .locator("[data-inbox-row]")
+    .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-inbox-row") ?? ""));
+  const answeredAt = listed.indexOf(firstAsk);
+  expect(
+    listed[answeredAt + 1] ?? listed[answeredAt - 1],
+    "k-answer-box: the second question is the item after the first, or the one before it"
+  ).toBe(secondAsk);
+  const answers = answerWrites(page, firstAsk);
+  await row.focus();
+  await page.keyboard.press("1");
+  await page.keyboard.press("Enter");
+  await expect(box, "k-answer-box: 1 then Enter puts the caret in the answer box").toBeFocused();
+  await page.keyboard.press("Control+Enter");
+  await expect(
+    page.locator(`[data-inbox-row="${secondAsk}"]`),
+    "k-answer-box: after the answer the second question's row has the focus"
+  ).toBeFocused();
+  expect(answers, "k-answer-box: Ctrl+Enter sends one answer").toHaveLength(1);
+  const secondBox = pane.getByTestId(`ask-${secondAsk}`).locator("[data-ask-answer]");
+  await expect(secondBox, "k-answer-box: the column shows the second question").toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect(
+    secondBox,
+    "k-answer-box: Enter from the second question's row puts the caret in its answer box"
+  ).toBeFocused();
 
   // In card mode, after a click on an option of the third card.
   await page.setViewportSize(NARROW);
@@ -2696,6 +2726,466 @@ test("k-approval-keys: in the drawer a approves the request in hand with one pre
 // t11: the issue-page steps of k-approval-keys go here - `a` on the header's Approve of an issue
 // whose spec waits on the reader, Shift+R opening its Request changes, nothing from a turn of the
 // Conversation tab, and nothing on an issue whose Verification document alone waits.
+
+// ---------------------------------------------------------------------------
+// k-next-item (R8): after the reader snoozes, dismisses, moves back to the Inbox, approves,
+// requests changes on or answers the item in hand, the item after it in the list is selected and
+// its row has the keyboard focus - the item before it where none came after, and the list's empty
+// message where none is left - with the Later band folded and open, beside the reading pane, in
+// card mode and in the drawer.
+// ---------------------------------------------------------------------------
+
+/** The word a search narrows k-next-item's list by: the title of the second thread's issue
+ *  holds it, and nothing else the list draws does. */
+const NARROWING_WORD = "zephyr";
+
+/** The reason k-next-item's request for changes gives. */
+const NEXT_ITEM_REASON = "Name the lease owner.";
+
+/** k-next-item's list, by row id, top to bottom as the Inbox draws it. */
+interface NextItemSeed {
+  /** Two approval requests, each of its own issue's spec at version 2: the first two items. */
+  readonly approvals: readonly [SeededApproval, SeededApproval];
+  /** A question with two options, after them. */
+  readonly question: string;
+  /** Asks A, B, C, D and E, in that order, after the question. */
+  readonly asks: readonly [string, string, string, string, string];
+  /** Two reply threads, the last two items; only the second one's issue says `NARROWING_WORD`. */
+  readonly threads: readonly [string, string];
+  /** A reply thread the reader has dismissed: in the Dismissed view alone. */
+  readonly dismissed: string;
+  /** Every row the Inbox lists, top to bottom. */
+  readonly order: readonly string[];
+}
+
+/** Seeds k-next-item's list bottom first. Every item is on an issue at no priority, so one band
+ *  holds them all, newest first: the item made last is the first row. The dismissed thread is
+ *  made first, so the Move to Inbox puts it back as the last row. */
+async function seedNextItem(): Promise<NextItemSeed> {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "CORE", name: "Core" });
+  const thread = async (title: string, root: string): Promise<string> => {
+    const issue = await createIssue({ force: true, project: "CORE", title });
+    return replyRowId(await seedCommentThread(issue.key, root, "Noted, I will look."));
+  };
+  const dismissed = await thread("Mirror window", "Which mirror window holds?");
+  await dismissThread(dismissed);
+  const secondThread = await thread("Zephyr budget", "How far back does a replay go?");
+  const firstThread = await thread("Ledger cutover", "How long does a lease last?");
+  const asks: string[] = [];
+  for (const name of ["Echo", "Delta", "Charlie", "Bravo", "Alpha"]) {
+    const issue = await createIssue({ force: true, project: "CORE", title: `${name} rollout` });
+    const ask = await createAsk(issue.key, { question: `Ship the ${name} rollout?` }, asker);
+    asks.unshift(ask.id);
+  }
+  const questionIssue = await createIssue({ force: true, project: "CORE", title: "Clock audit" });
+  const question = (
+    await createAsk(
+      questionIssue.key,
+      { options: SHIP_OR_HOLD, question: "Ship the clock audit?" },
+      asker
+    )
+  ).id;
+  const secondApproval = await seedApprovalAtVersionTwo("CORE", "Quota review");
+  const firstApproval = await seedApprovalAtVersionTwo("CORE", "Lease handover");
+  const [a, b, c, d, e] = asks;
+  if (a === undefined || b === undefined || c === undefined || d === undefined || e === undefined) {
+    throw new Error("five asks were seeded");
+  }
+  return {
+    approvals: [firstApproval, secondApproval],
+    asks: [a, b, c, d, e],
+    dismissed,
+    order: [
+      firstApproval.askId,
+      secondApproval.askId,
+      question,
+      ...asks,
+      firstThread,
+      secondThread,
+    ],
+    question,
+    threads: [firstThread, secondThread],
+  };
+}
+
+/** Opens k-next-item's list where `place` draws it, and holds the list to the order seeded, so
+ *  every "the item after" below names the row that came after. */
+async function openNextItem(page: Page, place: InboxPlace): Promise<[InboxAt, NextItemSeed]> {
+  const seed = await seedNextItem();
+  const inbox = await openInboxAt(page, place, seed.order.length);
+  expect(inbox.order, `k-next-item: ${place}: the Inbox lists the items as seeded`).toEqual(
+    seed.order
+  );
+  return [inbox, seed];
+}
+
+/** Puts the reader on the item `id` (`goTo`), then takes the pointer off every row: the list
+ *  holds a row under the pointer where the list moves it, and each step reads where the list
+ *  hands the reader once the row they acted on goes. */
+async function putOn(inbox: InboxAt, id: string): Promise<void> {
+  await goTo(inbox, id);
+  await inbox.outside.hover();
+}
+
+/** Reads that the item `id` is in hand, for the step `step`: beside the reading column its row
+ *  is the one `aria-current` row, in card mode and in the drawer no row is, and in every place
+ *  its row holds the keyboard focus (`document.activeElement`). */
+async function expectInHand(inbox: InboxAt, id: string, step: string): Promise<void> {
+  const current = inbox.scope.locator('[data-inbox-row][aria-current="true"]');
+  if (inbox.place === "the reading pane") {
+    await expect(rowOf(inbox, id), `${step}: the item is selected`).toHaveAttribute(
+      "aria-current",
+      "true"
+    );
+    await expect(current, `${step}: no other item is selected`).toHaveCount(1);
+  } else {
+    await expect(current, `${step}: no row is selected here`).toHaveCount(0);
+  }
+  await expect(rowOf(inbox, id), `${step}: the item's row has the focus`).toBeFocused();
+}
+
+/** Shows the view `label` names, Inbox or Dismissed: from the address on the Inbox page, and from
+ *  the drawer's own View menu, since the drawer writes nothing to the address of the page it is
+ *  over. */
+async function showView(page: Page, inbox: InboxAt, label: "Inbox" | "Dismissed"): Promise<void> {
+  if (inbox.place !== "the drawer") {
+    await page.goto(label === "Dismissed" ? "/?show=dismissed" : "/");
+    return;
+  }
+  const view = inbox.scope.getByRole("button", { exact: true, name: "View" });
+  const menu = page.getByRole("dialog", { name: "View" });
+  await view.click();
+  await menu.getByRole("group", { name: "Show" }).getByRole("radio", { name: label }).click();
+  if ((await menu.count()) !== 0) await view.click();
+  await expect(menu).toHaveCount(0);
+}
+
+/** k-next-item's snoozes where `place` draws the Inbox: one with the Later band folded, one with
+ *  it open, and one of two selected asks. */
+async function nextItemSnoozeSteps(page: Page, place: InboxPlace): Promise<void> {
+  const [inbox, seed] = await openNextItem(page, place);
+  const [, b, c, d, e] = seed.asks;
+  const [firstThread] = seed.threads;
+  const step = (text: string) => `k-next-item: ${place}: ${text}`;
+  const menu = page.getByRole("menu");
+
+  // With the Later band folded: B, snoozed with b and 1, hands the reader on to C.
+  await putOn(inbox, b);
+  await page.keyboard.press("b");
+  await expect(menu, step("b opens B's Snooze menu")).toBeVisible();
+  await page.keyboard.press("1");
+  await expectInHand(inbox, c, step("with the Later band folded, a snooze of B hands on to C"));
+  await expect(rowOf(inbox, b), step("B folds into Later")).toHaveCount(0);
+
+  // With the Later band open: C, snoozed, hands the reader on to D, and C, drawn in the band, is
+  // not the item in hand.
+  await laterBand(inbox, 1).click();
+  await expect(rowOf(inbox, b), step("the Later band opens on B")).toBeVisible();
+  await putOn(inbox, c);
+  await page.keyboard.press("b");
+  await expect(menu, step("b opens C's Snooze menu")).toBeVisible();
+  await page.keyboard.press("1");
+  await expectInHand(inbox, d, step("with the Later band open, a snooze of C hands on to D"));
+  await expect(rowOf(inbox, c), step("the snoozed C is drawn in Later")).toHaveAttribute(
+    "data-inbox-section",
+    "later"
+  );
+  await expect(rowOf(inbox, c), step("the snoozed C is not selected")).not.toHaveAttribute(
+    "aria-current",
+    "true"
+  );
+
+  // D and E selected with x, both snoozed: the item after E, the first thread, is in hand.
+  for (const id of [d, e]) {
+    await putOn(inbox, id);
+    await page.keyboard.press("x");
+  }
+  const bar = inbox.scope.getByRole("toolbar", { name: "Selected rows" });
+  await expect(bar, step("x selects D and E")).toContainText("2 selected");
+  await page.keyboard.press("b");
+  await expect(menu, step("b opens the bar's Snooze menu")).toHaveAccessibleName(
+    "Snooze selected asks"
+  );
+  await page.keyboard.press("1");
+  await expectInHand(
+    inbox,
+    firstThread,
+    step("a snooze of D and E, selected, hands on to the item after E")
+  );
+  await expect(bar, step("the bulk snooze lands and the bar goes")).toHaveCount(0);
+}
+
+/** k-next-item's dismissals where `place` draws the Inbox: the Dismissed view's Move to Inbox of
+ *  its only thread, a dismiss of the first thread, and a dismiss of the last item. */
+async function nextItemDismissSteps(page: Page, place: InboxPlace): Promise<void> {
+  const [inbox, seed] = await openNextItem(page, place);
+  const [firstThread, secondThread] = seed.threads;
+  const step = (text: string) => `k-next-item: ${place}: ${text}`;
+  const dismissals = dismissWrites(page);
+  const empty = inbox.scope.getByRole("region", { name: "Inbox empty state" });
+
+  // In the Dismissed view, e on its one thread moves it back to the Inbox: no item is left in
+  // the view, so its empty message has the focus.
+  await showView(page, inbox, "Dismissed");
+  await expect(
+    inbox.scope.locator("[data-inbox-row]"),
+    step("the Dismissed view lists the dismissed thread alone")
+  ).toHaveCount(1);
+  await putOn(inbox, seed.dismissed);
+  await page.keyboard.press("e");
+  await expect(empty, step("e in the Dismissed view leaves its empty message")).toHaveText(
+    "Nothing dismissed"
+  );
+  await expect(empty, step("the Dismissed view's empty message has the focus")).toBeFocused();
+  expect(dismissals, step("e sends one Move to Inbox")).toHaveLength(1);
+
+  // Back in the Inbox, the moved thread is the last item. e on the first thread hands the reader
+  // on to the item after it.
+  await showView(page, inbox, "Inbox");
+  await expect(rowOf(inbox, seed.dismissed), step("the thread is back in the Inbox")).toHaveCount(
+    1
+  );
+  await putOn(inbox, firstThread);
+  await page.keyboard.press("e");
+  await expectInHand(
+    inbox,
+    secondThread,
+    step("a dismiss of the first thread hands on to the next")
+  );
+
+  // The last item of the list: the item before it is in hand.
+  await putOn(inbox, seed.dismissed);
+  await page.keyboard.press("e");
+  await expectInHand(
+    inbox,
+    secondThread,
+    step("a dismiss of the last item hands on to the item before it")
+  );
+  await expect.poll(() => dismissals.length, { message: step("each e sends one write") }).toBe(3);
+}
+
+/** k-next-item's reviews and answer where `place` draws the Inbox - `a` on the first approval
+ *  request, Shift+R on the second, an answer to the question - and the only item a search leaves,
+ *  dismissed. */
+async function nextItemReviewSteps(page: Page, place: InboxPlace): Promise<void> {
+  const [inbox, seed] = await openNextItem(page, place);
+  const [firstApproval, secondApproval] = seed.approvals;
+  const [a] = seed.asks;
+  const [, secondThread] = seed.threads;
+  const step = (text: string) => `k-next-item: ${place}: ${text}`;
+  const reviews = watchReviews(page, seed.approvals);
+  const answers = answerWrites(page, seed.question);
+  const pane = place === "the reading pane";
+  const head = inboxPane(page).locator("header").first();
+
+  // `a` approves the first request once its document is read beside the column; a card draws
+  // its Approve at once.
+  await putOn(inbox, firstApproval.askId);
+  await expect(
+    pane
+      ? head.getByRole("button", { exact: true, name: "Approve" })
+      : rowOf(inbox, firstApproval.askId).getByRole("radio", { name: /^Approve/ }),
+    step("the first request draws its Approve")
+  ).toBeVisible();
+  await page.keyboard.press("a");
+  await expectInHand(
+    inbox,
+    secondApproval.askId,
+    step("a on the first request hands on to the second")
+  );
+  expect(reviewCount(reviews), step("a sends one review")).toBe(1);
+
+  // Shift+R on the second, a reason, and Ctrl+Enter.
+  await expect(
+    pane
+      ? head.getByRole("button", { exact: true, name: "Request changes" })
+      : rowOf(inbox, secondApproval.askId).getByRole("radio", { name: /^Request changes/ }),
+    step("the second request draws its Request changes")
+  ).toBeVisible();
+  await page.keyboard.press("Shift+R");
+  await expect(
+    pane
+      ? page.getByRole("dialog", { name: "Request changes" }).getByLabel("Reason")
+      : rowOf(inbox, secondApproval.askId).locator("[data-ask-answer]"),
+    step("Shift+R puts the focus in the reason")
+  ).toBeFocused();
+  await page.keyboard.type(NEXT_ITEM_REASON);
+  await page.keyboard.press("Control+Enter");
+  await expectInHand(
+    inbox,
+    seed.question,
+    step("a request for changes on the second request hands on to the question")
+  );
+  expect(reviewCount(reviews), step("Ctrl+Enter sends one review more")).toBe(2);
+
+  // The question, answered with 1, Enter and Ctrl+Enter.
+  const card = (pane ? inboxPane(page) : rowOf(inbox, seed.question)).getByTestId(
+    `ask-${seed.question}`
+  );
+  await expect(
+    card.locator("[data-ask-answer]"),
+    step("the question's card is drawn")
+  ).toBeVisible();
+  await page.keyboard.press("1");
+  await expect(card.getByRole("radio", { name: "Ship" }), step("1 picks Ship")).toBeChecked();
+  await page.keyboard.press("Enter");
+  await expect(
+    card.locator("[data-ask-answer]"),
+    step("Enter puts the caret in the answer box")
+  ).toBeFocused();
+  await page.keyboard.press("Control+Enter");
+  await expectInHand(inbox, a, step("an answer to the question hands on to A"));
+  expect(answers, step("Ctrl+Enter sends one answer")).toHaveLength(1);
+
+  // A search that leaves one item, the second thread, which e dismisses: the list's empty message
+  // has the focus, and the Inbox's keys work from it.
+  await page.keyboard.press("f");
+  await page.keyboard.type(NARROWING_WORD);
+  await expect(
+    inbox.scope.locator("[data-inbox-row]"),
+    step("the search leaves the second thread alone")
+  ).toHaveCount(1);
+  await page.keyboard.press("Escape");
+  await expect(rowOf(inbox, secondThread), step("Escape puts the focus on its row")).toBeFocused();
+  await page.keyboard.press("e");
+  const empty = inbox.scope.getByRole("region", { name: "Inbox empty state" });
+  await expect(empty, step("e on the only item leaves the empty message")).toHaveText(
+    "Nothing matches this text"
+  );
+  await expect(empty, step("the empty message has the focus")).toBeFocused();
+  if (place === "the drawer") {
+    // The drawer is a dialog, whose scope is the only one a key is read through, so the page's
+    // `?` is not one of its keys: its own `f` is.
+    await page.keyboard.press("f");
+    await expect(
+      inbox.scope.getByRole("searchbox", { name: "Search asks" }),
+      step("f from the empty message puts the focus in the search box")
+    ).toBeFocused();
+    return;
+  }
+  await page.keyboard.press("?");
+  await expect(
+    page.getByRole("dialog", { name: "Keyboard shortcuts" }),
+    step("? from the empty message opens the help")
+  ).toBeVisible();
+}
+
+/** Snoozes the item in hand until later today with `h`, by whichever control the build draws, so
+ *  the row below reaches its case on the merge base too: this tree's `h` opens the Snooze menu,
+ *  where `1` picks Later today; the merge base's `h` puts the focus on the column head's native
+ *  snooze select, whose Later today is picked as a select's option is. */
+async function snoozeLaterToday(page: Page, step: string): Promise<void> {
+  await page.keyboard.press("h");
+  const menu = page.getByRole("menu");
+  const select = page.locator("select:focus");
+  await expect(
+    menu.or(select),
+    `${step}: h opens the Snooze menu, or puts the focus on the snooze select`
+  ).toHaveCount(1);
+  if ((await menu.count()) === 0) {
+    await select.selectOption({ label: "Later today" });
+    return;
+  }
+  await page.keyboard.press("1");
+}
+
+// The check's negative control: at the merge base, with the Later band open, a snooze of the
+// selected ask leaves the selection on that ask, now in Later. The case stands first in a row of
+// its own, and its snooze takes either build's control, so the base fails it by name.
+// SLOW(>=2s): ten items seeded, one snoozed by the API, and one snoozed beside the reading pane.
+test("k-next-item: beside the reading pane, with the Later band open, a snooze of the selected ask selects and focuses the item after it, and not the ask now in Later", async ({
+  page,
+}) => {
+  const seed = await seedNextItem();
+  const [, b, c, d] = seed.asks;
+  const step = (text: string) => `k-next-item: the reading pane: ${text}`;
+  // B is in Later before the page opens, so the band is there to open.
+  await snoozeAsk(b, new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString());
+  const listed = seed.order.filter((id) => id !== b);
+  const inbox = await openInboxAt(page, "the reading pane", listed.length);
+  expect(
+    inbox.order,
+    step("the Inbox lists the items as seeded, B in the folded Later band")
+  ).toEqual(listed);
+  await laterBand(inbox, 1).click();
+  await expect(rowOf(inbox, b), step("the Later band opens on B")).toBeVisible();
+
+  await putOn(inbox, c);
+  await snoozeLaterToday(page, step("C's snooze"));
+  await expectInHand(inbox, d, step("with the Later band open, a snooze of C hands on to D"));
+  await expect(rowOf(inbox, c), step("the snoozed C is drawn in Later")).toHaveAttribute(
+    "data-inbox-section",
+    "later"
+  );
+  await expect(rowOf(inbox, c), step("the snoozed C is not selected")).not.toHaveAttribute(
+    "aria-current",
+    "true"
+  );
+});
+
+// SLOW(>=2s): ten items seeded, three snoozes written and read back beside the reading pane.
+test("k-next-item: beside the reading pane a snooze, with the Later band folded and open, and of two selected asks, selects and focuses the item after", async ({
+  page,
+}) => {
+  await nextItemSnoozeSteps(page, "the reading pane");
+});
+
+// SLOW(>=2s): ten items seeded, three snoozes written and read back on the cards.
+test("k-next-item: in card mode a snooze, with the Later band folded and open, and of two selected asks, focuses the row of the item after", async ({
+  page,
+}) => {
+  await nextItemSnoozeSteps(page, "card mode");
+});
+
+// SLOW(>=2s): ten items seeded, three snoozes written and read back in the drawer.
+test("k-next-item: in the drawer a snooze, with the Later band folded and open, and of two selected asks, focuses the row of the item after", async ({
+  page,
+}) => {
+  await nextItemSnoozeSteps(page, "the drawer");
+});
+
+// SLOW(>=2s): ten items seeded, a thread moved back and two dismissed beside the reading pane.
+test("k-next-item: beside the reading pane a dismiss selects and focuses the item after, the item before at the end, and the Dismissed view's empty message once it is empty", async ({
+  page,
+}) => {
+  await nextItemDismissSteps(page, "the reading pane");
+});
+
+// SLOW(>=2s): ten items seeded, a thread moved back and two dismissed on the cards.
+test("k-next-item: in card mode a dismiss focuses the item after, the item before at the end, and the Dismissed view's empty message once it is empty", async ({
+  page,
+}) => {
+  await nextItemDismissSteps(page, "card mode");
+});
+
+// SLOW(>=2s): ten items seeded, a thread moved back and two dismissed in the drawer.
+test("k-next-item: in the drawer a dismiss focuses the item after, the item before at the end, and the Dismissed view's empty message once it is empty", async ({
+  page,
+}) => {
+  await nextItemDismissSteps(page, "the drawer");
+});
+
+// SLOW(>=2s): ten items seeded, two reviews and an answer written, and a search beside the pane.
+test("k-next-item: beside the reading pane an approval, a request for changes and an answer select and focus the item after, and the only item a search leaves hands the focus to the empty message", async ({
+  page,
+}) => {
+  await nextItemReviewSteps(page, "the reading pane");
+});
+
+// SLOW(>=2s): ten items seeded, two reviews and an answer written, and a search on the cards.
+test("k-next-item: in card mode an approval, a request for changes and an answer focus the item after, and the only item a search leaves hands the focus to the empty message", async ({
+  page,
+}) => {
+  await nextItemReviewSteps(page, "card mode");
+});
+
+// SLOW(>=2s): ten items seeded, two reviews and an answer written, and a search in the drawer.
+test("k-next-item: in the drawer an approval, a request for changes and an answer focus the item after, and the only item a search leaves hands the focus to the empty message", async ({
+  page,
+}) => {
+  await nextItemReviewSteps(page, "the drawer");
+});
 
 // ---------------------------------------------------------------------------
 // k-every-action (R11), a first form for the Inbox: every button and menu trigger the Inbox draws

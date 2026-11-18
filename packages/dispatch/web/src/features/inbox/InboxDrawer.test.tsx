@@ -124,15 +124,21 @@ test("picking an assignee inside the drawer lists that person there, writes noth
   }
 });
 
-test("Snooze inside the drawer folds the row into Later, same as the Inbox page", async () => {
+test("Snooze inside the drawer folds the row into Later and gives the next row the focus, same as the Inbox page", async () => {
   const user = userEvent.setup();
-  let served: InboxRow[] = [issueAsk()];
+  const second = issueAsk({
+    id: "ask-b",
+    issue: { assignee: "alice", key: "CORE-2", title: "Other issue" },
+    issue_key: "CORE-2",
+    question: "Which format?",
+  });
+  let served: InboxRow[] = [issueAsk(), second];
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
   const snoozeAsk = spyOn(api, "snoozeAsk").mockImplementation(async (id, until) => {
     served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
     return { snoozed_until: until };
   });
-  const getAsk = mockAskReads([issueAsk()]);
+  const getAsk = mockAskReads([issueAsk(), second]);
   const view = renderDrawer();
   try {
     await user.click(screen.getByRole("button", { name: "Open inbox" }));
@@ -151,6 +157,10 @@ test("Snooze inside the drawer folds the row into Later, same as the Inbox page"
       expect(within(dialog).queryByText("Which approach?")).not.toBeInTheDocument()
     );
     expect(snoozeAsk).toHaveBeenCalledTimes(1);
+    // R8: the row after the snoozed one has the keyboard focus, inside the drawer.
+    await waitFor(() =>
+      expect(within(dialog).getByTestId("ask-ask-b").closest("[data-inbox-row]")).toHaveFocus()
+    );
   } finally {
     view.unmount();
     getAsk.mockRestore();
@@ -159,7 +169,7 @@ test("Snooze inside the drawer folds the row into Later, same as the Inbox page"
   }
 });
 
-test("Answering an ask inside the drawer submits and removes it from the list, same as the Inbox page", async () => {
+test("Answering the only ask inside the drawer submits it, removes it from the list and gives the empty message the focus, same as the Inbox page", async () => {
   const user = userEvent.setup();
   const withOptions = issueAsk({ options: [{ label: "Ship" }, { label: "Hold" }] });
   let served = [withOptions];
@@ -183,6 +193,9 @@ test("Answering an ask inside the drawer submits and removes it from the list, s
 
     await waitFor(() => expect(within(dialog).queryByTestId("ask-ask-a")).not.toBeInTheDocument());
     expect(answerAsk).toHaveBeenCalledTimes(1);
+    // R8: no item is left, so the drawer's empty message has the keyboard focus.
+    const empty = within(dialog).getByRole("region", { name: "Inbox empty state" });
+    await waitFor(() => expect(empty).toHaveFocus());
   } finally {
     view.unmount();
     answerAsk.mockRestore();
