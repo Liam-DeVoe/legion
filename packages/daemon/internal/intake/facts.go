@@ -914,6 +914,12 @@ type BackwardMove struct {
 	Requester claim.Role
 	To        phase.Phase
 	Reason    string
+	// ReturnTo is the step of the issue's running task the move names as the one it returns to
+	// (ruling 11): its place in the task, 1 for its first. A move that names one goes to that
+	// place, judged as a failed step's returnTo is (workflow's returnStep), and its To must be the
+	// phase that step runs as. 0 names none, and the move goes to the one earlier place of its
+	// task that runs as To.
+	ReturnTo int
 }
 
 func (BackwardMove) isFact() {}

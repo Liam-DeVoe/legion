@@ -1,0 +1,67 @@
+package api
+
+import (
+	"net/http"
+	"reflect"
+	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+)
+
+// request_backward_move takes a role the deployment defines as a phase worker of its own issue, and
+// takes returnTo, the step the move names by its place: the checker's move with returnTo 1 is the
+// one fact BackwardMove with the checker as requester and returnTo 1, and the owner's move with
+// returnTo 2 carries it as well. A returnTo below 1 names no step and is refused before anything
+// is recorded.
+func TestTheBackwardRouteTakesADeploymentRoleAndReturnTo(t *testing.T) {
+	const key = "LEGION-208"
+	one, two, zero := 1, 2, 0
+	t.Run("the checker's move", func(t *testing.T) {
+		h, facts, _ := newArchitectHarness(t, nil, nil)
+		seedIssueAt(t, h, key, phase.Step)
+		checker := newLiveClaim(t, h, key, "checker")
+
+		answer := h.request(http.MethodPost, "/legion/v1/phase/backward", PhaseBackwardRequest{GrantID: checker.grant(t), To: phase.Implementing,
+			Reason: "the build is broken", ReturnTo: &one}, nil)
+
+		if answer.Code != http.StatusOK {
+			t.Fatalf("the checker's move = %d %s, want 200", answer.Code, answer.Body)
+		}
+		want := []intake.Fact{intake.BackwardMove{Issue: key, Requester: "checker", To: phase.Implementing, Reason: "the build is broken", ReturnTo: 1}}
+		if got := facts.recorded(); !reflect.DeepEqual(got, want) {
+			t.Fatalf("facts = %#v, want %#v", got, want)
+		}
+	})
+	t.Run("the owner's move", func(t *testing.T) {
+		h, facts, _ := newArchitectHarness(t, nil, nil)
+		seedIssueAt(t, h, key, phase.Accepting)
+		architect := newLiveClaim(t, h, key, claim.RoleArchitect)
+
+		answer := h.request(http.MethodPost, "/legion/v1/phase/backward", PhaseBackwardRequest{GrantID: architect.grant(t), Issue: key, To: phase.Step,
+			Reason: "the check missed a case", ReturnTo: &two}, nil)
+
+		if answer.Code != http.StatusOK {
+			t.Fatalf("the owner's move = %d %s, want 200", answer.Code, answer.Body)
+		}
+		want := []intake.Fact{intake.BackwardMove{Issue: key, Requester: claim.RoleArchitect, To: phase.Step, Reason: "the check missed a case", ReturnTo: 2}}
+		if got := facts.recorded(); !reflect.DeepEqual(got, want) {
+			t.Fatalf("facts = %#v, want %#v", got, want)
+		}
+	})
+	t.Run("returnTo 0", func(t *testing.T) {
+		h, facts, _ := newArchitectHarness(t, nil, nil)
+		seedIssueAt(t, h, key, phase.Step)
+		checker := newLiveClaim(t, h, key, "checker")
+
+		answer := h.request(http.MethodPost, "/legion/v1/phase/backward", PhaseBackwardRequest{GrantID: checker.grant(t), To: phase.Implementing,
+			Reason: "the build is broken", ReturnTo: &zero}, nil)
+
+		assertFailureText(t, answer, http.StatusBadRequest, "INVALID_RETURN_TO",
+			"returnTo is 0, and it names a step of the task by its place, 1 for its first; nothing was recorded")
+		if got := facts.recorded(); len(got) != 0 {
+			t.Fatalf("a refused move recorded %#v, want nothing", got)
+		}
+	})
+}

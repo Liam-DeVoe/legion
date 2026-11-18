@@ -1522,11 +1522,32 @@ func backwardRefusal(issue record.Issue, w Walk, fact intake.BackwardMove, serve
 	case !served:
 		return fmt.Sprintf("a backward move reaches an earlier phase, and no backward row of %s serves %s; the %s's move of %s changed nothing",
 			issue.Phase, fact.To, fact.Requester, issue.Key)
-	case phase.RoleFor(issue.Phase) != fact.Requester:
+	case issue.RoleAt(issue.Phase) != fact.Requester:
 		return fmt.Sprintf("a backward move is the role running the issue's phase: %s of %s is the %s's, so the %s's move to %s changed nothing",
-			issue.Phase, issue.Key, phase.RoleFor(issue.Phase), fact.Requester, fact.To)
+			issue.Phase, issue.Key, issue.RoleAt(issue.Phase), fact.Requester, fact.To)
 	}
 	return ""
+}
+
+// backwardReturn is the place a move back that names returnTo reaches (ruling 11), or why it is
+// refused, which changes nothing: returnTo is judged by the one judge of a named place, the one a
+// failed step's returnTo meets (returnStep, with the move's own words), against the step the task
+// stands at, and the move's to must be the phase the named step runs as. A task that stands at its
+// retro or its merge stands at no step, so a move from there names none.
+func backwardReturn(issue record.Issue, w Walk, fact intake.BackwardMove) (record.TaskPlace, string, error) {
+	if w.Stored && w.Place.Kind != record.PlaceStep {
+		return record.TaskPlace{}, fmt.Sprintf("returnTo is %d, and task %s of %s stands at its %s, not at a step; send the move again without returnTo; nothing was recorded",
+			fact.ReturnTo, w.Task, issue.Key, w.Place.Kind), nil
+	}
+	place, why, err := returnStep(issue, w, w.Place, fact.ReturnTo, backwardMove)
+	if err != nil || why != "" {
+		return record.TaskPlace{}, why, err
+	}
+	if runs := issuePhaseOf(w, place, record.TaskRunning); runs != fact.To {
+		return record.TaskPlace{}, fmt.Sprintf("returnTo %d names step %d (%s) of task %s, which runs as %s, and to names %s; this move changed nothing.",
+			fact.ReturnTo, place.Position, w.Steps[place.Position-1].Role, w.Task, runs, fact.To), nil
+	}
+	return place, "", nil
 }
 
 // phaseNow is the phase issue stands in now, read back after a move wrote it (retryPhase, and
@@ -1563,8 +1584,21 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 		return intake.Result{}, err
 	}
 	// The move reaches the one earlier place of its task that runs as its target (backwardPlace);
-	// where none or more than one does, no row serves it.
+	// where none or more than one does, no row serves it. A move that names its place (returnTo,
+	// ruling 11) goes there instead, judged by the one judge of a named place a failed step's
+	// returnTo meets (returnStep), and its target must be the phase that place runs as. A move that
+	// names no target is refused first, below, whatever it names.
 	target, found, two := w.backwardPlace(fact.To)
+	if fact.ReturnTo > 0 && fact.To != "" {
+		place, why, err := backwardReturn(*issue, w, fact)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		if why != "" {
+			return refused("BACKWARD_REFUSED", why), nil
+		}
+		target, found, two = place, true, nil
+	}
 	served := false
 	if found {
 		_, served = w.row(issue.Phase, TriggerBackward, target, Snapshot{Phase: issue.Phase})

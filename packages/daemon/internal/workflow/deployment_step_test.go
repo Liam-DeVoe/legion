@@ -374,6 +374,74 @@ func TestTheStartOfADeploymentStepNamesItsAgent(t *testing.T) {
 	}
 }
 
+// A move back that names returnTo goes to the place it names (ruling 11), judged by the one judge
+// of a named place the fail path uses (returnStep): in `implementer checker linter
+// acceptance:owner` at accepting, the owner's move to step with returnTo 2 starts the checker, and
+// with returnTo 3 the linter; a to that is not the phase the named step runs as is refused, and so
+// is returnTo 4, the step that moves back, with the judge's own sentence; a refused move moves
+// nothing.
+func TestABackwardMoveNamesItsPlaceWithReturnTo(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		to       phase.Phase
+		returnTo int
+		starts   claim.Role
+		refusal  string
+	}{
+		{"to step, returnTo 2", phase.Step, 2, "checker", ""},
+		{"to step, returnTo 3", phase.Step, 3, "linter", ""},
+		{"to implementing, returnTo 2", phase.Implementing, 2, "",
+			"returnTo 2 names step 2 (checker) of task a, which runs as step, and to names implementing; this move changed nothing."},
+		{"to step, returnTo 4", phase.Step, 4, "",
+			"returnTo is 4, and step 4 (acceptance) of task a of LEGION-208 is not before step 4 (acceptance), the step that moves back; " +
+				"send the move again naming an earlier step, or without returnTo; nothing was recorded"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := deploymentEngine()
+			root := stepRoot(t, pool, phase.Accepting)
+			seedStepsAt(t, pool, root.Key, root.Generation, 4, map[string]string{"checker": "testing", "linter": "testing"},
+				"implementer", "checker", "linter", "acceptance:owner")
+
+			result := applyFacts(t, pool, engine)("move-back", intake.BackwardMove{Issue: root.Key, Requester: claim.RoleArchitect, To: tc.to,
+				ReturnTo: tc.returnTo, Reason: "the check missed a case"})
+
+			if tc.refusal != "" {
+				if result.Refusal == nil || result.Refusal.Code != "BACKWARD_REFUSED" || result.Refusal.Message != tc.refusal {
+					t.Fatalf("the move = %+v, want BACKWARD_REFUSED %q", result.Refusal, tc.refusal)
+				}
+				assertWalksAt(t, pool, engine, root.Key, phase.Accepting, stepPlace(4))
+				return
+			}
+			if result.Refusal != nil {
+				t.Fatalf("the move to step %d was refused: %+v", tc.returnTo, result.Refusal)
+			}
+			assertWalksAt(t, pool, engine, root.Key, phase.Step, stepPlace(tc.returnTo))
+			if starts := startsOf(t, pool, root.Key, tc.starts); len(starts) != 1 {
+				t.Fatalf("the %s's starts = %+v, want one", tc.starts, starts)
+			}
+		})
+	}
+}
+
+// A role the deployment defines moves its own task back: the checker at step 2 of `implementer
+// checker` asks to go back to implementing, and the task goes to step 1 and starts the implementer.
+func TestADeploymentRoleMovesItsTaskBack(t *testing.T) {
+	pool := migratedPool(t)
+	engine := deploymentEngine()
+	root := checkerAtStep2(t, pool)
+
+	if result := applyFacts(t, pool, engine)("checker-back", intake.BackwardMove{Issue: root.Key, Requester: "checker", To: phase.Implementing,
+		Reason: "the build is broken"}); result.Refusal != nil {
+		t.Fatalf("the checker's move back was refused: %+v", result.Refusal)
+	}
+
+	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(1))
+	if starts := startsOf(t, pool, root.Key, claim.RoleImplementer); len(starts) != 1 {
+		t.Fatalf("the implementer's starts = %+v, want one", starts)
+	}
+}
+
 // phaseEndsOf is every phase-ended message key's outbox holds, oldest first.
 func phaseEndsOf(t *testing.T, pool *pgxpool.Pool, key string) []record.PhaseEnded {
 	t.Helper()

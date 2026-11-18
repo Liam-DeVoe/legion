@@ -97,12 +97,15 @@ type HeldChild = record.BlockedIssue
 // PhaseBackwardRequest asks a phase worker to return its own issue to an earlier phase, or the
 // tree's architect to return an issue it owns from accepting. An architect's grant serves its
 // whole tree, so it names the issue; a phase worker's names its own, so issue may be left out and,
-// when given, must be the grant's.
+// when given, must be the grant's. ReturnTo names the step of the task the move returns to by its
+// place, 1 for its first (ruling 11): the workflow judges it as it judges a failed step's, and to
+// must be the phase that step runs as.
 type PhaseBackwardRequest struct {
-	GrantID string      `json:"grantId"`
-	To      phase.Phase `json:"to"`
-	Reason  string      `json:"reason"`
-	Issue   string      `json:"issue,omitempty"`
+	GrantID  string      `json:"grantId"`
+	To       phase.Phase `json:"to"`
+	Reason   string      `json:"reason"`
+	Issue    string      `json:"issue,omitempty"`
+	ReturnTo *int        `json:"returnTo,omitempty"`
 }
 
 // PhaseBackwardResponse confirms the phase-backward fact committed.
@@ -172,13 +175,11 @@ func (s *server) phaseWorkerGrant(w http.ResponseWriter, r *http.Request, id str
 	return grant, true
 }
 
+// isPhaseWorker says whether role works a phase of an issue: every role but the architect, Legion's
+// five workers and each role the deployment defines, which works the issue's step. It reads the
+// role, never the settings.
 func isPhaseWorker(role claim.Role) bool {
-	switch role {
-	case claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger:
-		return true
-	default:
-		return false
-	}
+	return claim.IsRole(role) && role != claim.RoleArchitect
 }
 
 // recordedIssue reads the issue record, whose tree root is the single source of tree membership
@@ -1261,6 +1262,16 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, http.StatusBadRequest, "INVALID_PHASE", "to is not a phase")
 		return
 	}
+	// returnTo names a step by its place (ruling 11); which step it may name is the workflow's to
+	// judge against the task's steps, as for a failed step's returnTo.
+	returnTo := 0
+	if req.ReturnTo != nil {
+		if returnTo = *req.ReturnTo; returnTo < 1 {
+			writeFailure(w, http.StatusBadRequest, "INVALID_RETURN_TO", fmt.Sprintf(
+				"returnTo is %d, and it names a step of the task by its place, 1 for its first; nothing was recorded", returnTo))
+			return
+		}
+	}
 	if req.Issue != "" && !claim.IsIssueKey(req.Issue) {
 		writeFailure(w, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
 		return
@@ -1278,7 +1289,7 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.applyFact(w, r, requestFactID("phase/backward"),
-			intake.BackwardMove{Issue: req.Issue, Requester: claim.RoleArchitect, To: req.To, Reason: req.Reason}, PhaseBackwardResponse{})
+			intake.BackwardMove{Issue: req.Issue, Requester: claim.RoleArchitect, To: req.To, Reason: req.Reason, ReturnTo: returnTo}, PhaseBackwardResponse{})
 		return
 	}
 	grant, ok = s.phaseWorkerGrant(w, r, req.GrantID)
@@ -1290,7 +1301,7 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.applyFact(w, r, requestFactID("phase/backward"),
-		intake.BackwardMove{Issue: grant.Issue, Requester: grant.Role, To: req.To, Reason: req.Reason}, PhaseBackwardResponse{})
+		intake.BackwardMove{Issue: grant.Issue, Requester: grant.Role, To: req.To, Reason: req.Reason, ReturnTo: returnTo}, PhaseBackwardResponse{})
 }
 
 func (s *server) phaseRetry(w http.ResponseWriter, r *http.Request) {
