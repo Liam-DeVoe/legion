@@ -146,8 +146,8 @@ const (
 //     across the refused commit is the question of the ties and the history (R8: "A result at one
 //     commit also counts at another commit when no code that the check runs changed between the
 //     two"). A query or an agent of production or of the graph has no commit of a result, so only
-//     CI's refusal at S.Commit counts for it. A run of the job is no result, and no refusal takes
-//     one out.
+//     CI's refusal at S.Commit counts for it, whatever commit a result's TestCommit names. A run of
+//     the job is no result, and no refusal takes one out.
 //  3. The candidates are C's results of kind run or failing_example that carry the digest of C's
 //     current text (R7: a result counts "only for the procedure that ran it"), a run of a program
 //     check only when the check's job reported it (R6: "only the reports of that job count"), and
@@ -568,8 +568,14 @@ func (j *checkJudge) carries(check, commit string) bool {
 // count nowhere, at it or where R8 would carry them. The results of each other commit stay,
 // whatever CI refused elsewhere (R7, R8). refused is whether a result taken out would have counted
 // at the subject, and rule the least rule, by its name, of those refusals, so that the order of
-// the results, which says nothing, does not choose the rule that the state names.
+// the results, which says nothing, does not choose the rule that the state names. A check whose
+// results count at no commit (countsAtACommit), a query or an agent of production or of the graph,
+// has no result of a commit, so it keeps each candidate, whatever commit a result's TestCommit
+// names: only CI's refusal at S.Commit counts for it, before its results are read.
 func (j *checkJudge) withoutRefused(c Check, runs, faults []Result) (rule string, refused bool, keptRuns, keptFaults []Result) {
+	if !countsAtACommit(c) {
+		return "", false, runs, faults
+	}
 	kept := func(r Result) bool {
 		commit := resultCommit(r)
 		other, at := j.in.Uncited[commit][c.ID]

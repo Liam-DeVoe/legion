@@ -101,7 +101,7 @@ func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 }
 
 // sweepBases is each base that the sweeps read, by its name: each scenario of testdata/scenarios,
-// and six shapes that no scenario holds. silent-leg with the job's matrix dropped after c1, one
+// and ten shapes that no scenario holds. silent-leg with the job's matrix dropped after c1, one
 // run of no matrix at m2 that ended with no result: there a run result of the leg "" at c1, where
 // the job had legs, would answer that run, and the check would read true (legFault refuses it).
 // Three of carry where a failure and a later pass count at one subject, so the check reads unknown
@@ -117,7 +117,13 @@ func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 // statement, so a failing check that reads as a check of no statement would leave that statement
 // met: envoy-delivers-messages, with its own check false and the check of
 // a-message-survives-a-restart true (its two outcomes swapped); and a-message-survives-a-restart,
-// with a second check that passes beside its failing one.
+// with a second check that passes beside its failing one. And four of production-and-graph, two
+// with its query of the graph and two with that check written as an agent: a result of either
+// belongs to no commit, so CI's refusal at the commit that its test_commit names takes out nothing
+// of it (CheckStates, step 2), and R7 decides. Of each two, one holds test_commit c1 on the check's
+// failing run and the other CI's refusal of the check at c1: the refusal sweep adds the refusal to
+// the one and the member sweep the test_commit to the other, so an input of each holds both facts,
+// and a rule by which such a refusal took out that run would read the check's earlier pass true.
 func sweepBases(t *testing.T) map[string]fstest.MapFS {
 	t.Helper()
 	dirs, err := filepath.Glob(filepath.Join("testdata", "scenarios", "*"))
@@ -202,6 +208,44 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 	})
 	bases["wait-cycle with the outcomes of its two first runs swapped"] = swapped
 	bases["wait-cycle with a second, passing check of a-message-survives-a-restart"] = withSecondCheck(t, bases["wait-cycle"])
+	const graph = "the-graph-holds-a-delivery-of-each-message"
+	agent := maps.Clone(bases["production-and-graph"])
+	asAgent := strings.NewReplacer(`procedure="query"`, `procedure="agent"`, "Procedure: The query reads", "Procedure: An agent reads")
+	editTree(t, agent, "approved.json", func(v any) any {
+		for _, n := range v.(map[string]any)["nodes"].([]any) {
+			if n := n.(map[string]any); n["id"] == graph {
+				for _, version := range n["versions"].([]any) {
+					version := version.(map[string]any)
+					version["block"] = asAgent.Replace(version["block"].(string))
+				}
+			}
+		}
+		return v
+	})
+	agent["files/m2/spec.md"] = &fstest.MapFile{Data: []byte(asAgent.Replace(string(agent["files/m2/spec.md"].Data)))}
+	isAgent := func(c Check) bool { return c.ID == graph && c.Procedure == ProcedureAgent }
+	s, err := ReadScenario(agent)
+	if err != nil {
+		t.Fatalf("production-and-graph with %s written as an agent: %v", graph, err)
+	}
+	if current, _ := s.Approved.Current(); !slices.ContainsFunc(s.Files["m2"].Checks, isAgent) || !slices.ContainsFunc(current.Checks, isAgent) {
+		t.Fatalf("production-and-graph with %s written as an agent: the files at m2 or the approved spec do not read it as an agent", graph)
+	}
+	for what, base := range map[string]fstest.MapFS{"its query of the graph": bases["production-and-graph"], "its check of the graph as an agent": agent} {
+		withTestCommit := maps.Clone(base)
+		editTree(t, withTestCommit, "results.json", func(v any) any {
+			for _, r := range v.([]any) {
+				if r := r.(map[string]any); r["check"] == graph && r["kind"] == "run" && r["outcome"] == "fail" {
+					r["test_commit"] = "c1"
+				}
+			}
+			return v
+		})
+		bases["production-and-graph with test_commit c1 on the failing run of "+what] = withTestCommit
+		refused := maps.Clone(base)
+		refused["uncited.json"] = &fstest.MapFile{Data: []byte(`{"c1": {"` + graph + `": "test-not-in-code"}}`)}
+		bases["production-and-graph with CI's refusal at c1 of "+what] = refused
+	}
 	return bases
 }
 
@@ -316,9 +360,11 @@ func sweepAgainst(t *testing.T, whole map[string]string, inputs []sweepInput) sw
 // decide, and they can read true (refusedCommitsResults). The right covers each place of a subject
 // at another commit than A where the input reads what the base reads with each result of the check
 // whose commit is A (resultCommit) taken out of results.json, and no place at A, where R48 gives
-// none. The sweep adds one refusal at a time to uncited.json of each base (sweepBases), at each
-// commit that a record of the base names, for each check of its approved spec that the base does
-// not refuse there.
+// none. A query or an agent of production or of the graph has no result of a commit
+// (countsAtACommit), so a refusal of it at another commit than the subject's takes out nothing,
+// whatever commit a result's test_commit names, and it has no right. The sweep adds one refusal at
+// a time to uncited.json of each base (sweepBases), at each commit that a record of the base names,
+// for each check of its approved spec that the base does not refuse there.
 func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
@@ -349,7 +395,7 @@ func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults
 						return uncited
 					})
 					in := sweepInput{what: fmt.Sprintf("uncited.json: a refusal of %s at %s", c.ID, commit), fsys: fsys}
-					if slices.ContainsFunc(s.Results, func(r Result) bool { return r.Check == c.ID && resultCommit(r) == commit }) {
+					if countsAtACommit(c) && slices.ContainsFunc(s.Results, func(r Result) bool { return r.Check == c.ID && resultCommit(r) == commit }) {
 						in.right, in.allowed = refusedCommitsResults, withoutResultsOf(t, base, s, c.ID, commit)
 					}
 					inputs = append(inputs, in)
@@ -413,8 +459,9 @@ var addableMembers = map[string]struct {
 // (sweepBases) that leaves it out, one at a time, with each value of its kind that a record of the
 // base names and one that none names. A test_commit on a result of a check of the code moves
 // nothing, since the commit of a result has one reading, its commit (resultCommit), for the judge
-// and for the leg rule alike, and a commit on a result of a check of production or of the graph is
-// refused.
+// and for the leg rule alike; one on a result of a query or an agent of production or of the graph
+// moves nothing, also where CI refused the check at that commit, since such a check reads no commit
+// (countsAtACommit); and a commit on a result of a check of production or of the graph is refused.
 func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)

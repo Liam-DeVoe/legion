@@ -421,6 +421,29 @@ func TestCheckState(t *testing.T) {
 				Result{Check: checkStateProduction.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, At: checkStateRun.Add(125 * time.Minute)})
 			c.Uncited = map[string]map[string]string{"c8": {checkStateProduction.ID: "test-not-in-code"}}
 		}, want: CheckState{ID: checkStateProduction.ID, State: "true", Reason: "passed", From: "d2"}},
+		// A result of a query or an agent of production or of the graph belongs to no commit, so a
+		// refusal at the commit that its test_commit names takes out nothing of it, and R7 decides: "a
+		// later failure cancels an earlier pass", and a newest failing example that missed its fault
+		// reads unknown.
+		{name: "R48, a query of production whose newest run fails and names test_commit c1, where CI refused the query", change: func(c *checkCase) {
+			c.add(checkStateProduction)
+			c.Subject = Point{Commit: "c9", Deploy: "d2"}
+			fail := productionRun(checkStateProduction, "d2", OutcomeFail, checkStateRun.Add(3*time.Hour))
+			fail.TestCommit = "c1"
+			c.Results = append(c.Results,
+				productionRun(checkStateProduction, "d2", OutcomePass, checkStateRun.Add(2*time.Hour)), fail,
+				Result{Check: checkStateProduction.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, At: checkStateRun.Add(125 * time.Minute)})
+			c.Uncited = map[string]map[string]string{"c1": {checkStateProduction.ID: "test-not-in-code"}}
+		}, want: CheckState{ID: checkStateProduction.ID, State: "false", Reason: "failed", From: "d2"}},
+		{name: "R48, a query of production whose newest failing example missed its fault and names test_commit c1, where CI refused the query", change: func(c *checkCase) {
+			c.add(checkStateProduction)
+			c.Subject = Point{Commit: "c9", Deploy: "d2"}
+			c.Results = append(c.Results,
+				productionRun(checkStateProduction, "d2", OutcomePass, checkStateRun.Add(2*time.Hour)),
+				Result{Check: checkStateProduction.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, At: checkStateRun.Add(125 * time.Minute)},
+				Result{Check: checkStateProduction.ID, Kind: ResultFailingExample, Outcome: OutcomePass, TestCommit: "c1", At: checkStateRun.Add(130 * time.Minute)})
+			c.Uncited = map[string]map[string]string{"c1": {checkStateProduction.ID: "test-not-in-code"}}
+		}, want: CheckState{ID: checkStateProduction.ID, State: "unknown", Reason: "failing_example_missed"}},
 		{name: "production on a branch head is not judged", change: func(c *checkCase) {
 			c.add(checkStateProduction)
 			c.Subject = Point{Commit: "c9", Branch: "b"}
