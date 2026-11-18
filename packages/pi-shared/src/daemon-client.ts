@@ -68,6 +68,34 @@ export interface RegisterInput {
   readonly pluginContract: number;
 }
 
+/** The agent form a claim route names its caller in (`claim.AgentCaller`): the claim the
+ * registration issued, the session that registered it, the registration's secret and its launch
+ * generation. The ready, the three task routes and the turn-outcome report each speak for the
+ * claim in it. */
+export interface ClaimCaller {
+  readonly claimToken: string;
+  readonly sessionId: string;
+  readonly secret: string;
+  readonly generation: number;
+}
+
+/** The caller `registration` makes `sessionId`: the one way every host builds it. */
+export function claimCaller(
+  registration: {
+    readonly claimToken: string;
+    readonly secret: string;
+    readonly generation: number;
+  },
+  sessionId: string
+): ClaimCaller {
+  return {
+    claimToken: registration.claimToken,
+    sessionId,
+    secret: registration.secret,
+    generation: registration.generation,
+  };
+}
+
 /** `claim.ReadyRequest`: the claim the registration issued, authenticated by its secret, and the
  * session's report of the six live capability rows (`src/capability-report.ts`, contract 21); the
  * controller's ready carries none. */
@@ -110,14 +138,19 @@ export interface LegionDaemonClient {
   readonly exit: (input: ExitInput) => Promise<void>;
   /** `claim.TurnOutcomeRequest`: how one of the claim's turns ended, under the sequence the
    * reporting plugin counted itself (`packages/pi-legion/src/turn-outcome.ts`). The answer is the
-   * trailing run of refused turns the daemon derived and whether this report failed the claim. */
+   * trailing run of refused turns the daemon derived and whether this report failed the claim.
+   * `signal` aborts the request, as a sender that bounds each attempt does
+   * (`sendUntilAnswered`). */
   readonly turnOutcome: (
-    input: z.input<typeof LegionTurnOutcomeRequest>
+    input: z.input<typeof LegionTurnOutcomeRequest>,
+    options?: { readonly signal?: AbortSignal }
   ) => Promise<z.output<typeof LegionTurnOutcomeResponse>>;
   /** `claim.TaskRequest`: the claim's task value as the task bucket holds it now, null where it
-   * holds none, and the number of the last task the claim finished. The worker reads it when its
-   * relay begins a new epoch and when it gains its role again, since a value relayed while the
-   * session was not subscribed is lost (`src/task-take.ts`). */
+   * holds none, and the number of the last task the claim finished. The claim's boot reads it
+   * once its ready has answered and before it claims its role, since the ready decision itself
+   * may write the value (`src/legion-claim-core.ts`); the worker reads it again when its relay
+   * begins a new epoch and when it gains its role again, since a value relayed while the session
+   * was not subscribed is lost (`src/task-take.ts`). */
   readonly task: (input: z.input<typeof LegionTaskRequest>) => Promise<LegionTask>;
   /** `claim.TaskSeenRequest`: the worker's report of a task value it was handed, whether or not
    * its host is idle; it answers 204. `signal` aborts the request, as a sender that bounds each
@@ -258,8 +291,9 @@ function isNetworkOrTimeoutError(error: unknown): boolean {
 
 /** Runs a ready request, retrying only one that can pass on its own: a 5xx or a network failure.
  * Each Legion host's claim (pi-legion's claim session, claude-envoy's Legion claim) sends its boot's
- * `claims/ready` through it; a regain of the role sends no ready, and reads the claim's task value
- * again instead (`claims/task`, `legion-claim-core.ts`). */
+ * `claims/ready` through it, and the boot then reads the claim's task value (`claims/task`)
+ * before it claims the role, since the ready decision may write that value; a regain of the role
+ * sends no ready, and reads the value again instead (`legion-claim-core.ts`). */
 export async function callReadyWithRetry(label: string, call: () => Promise<void>): Promise<void> {
   for (let attempt = 1; ; attempt++) {
     try {
@@ -329,11 +363,9 @@ export function daemonUnreachable(error: unknown): "refused" | "dropped" | undef
  * applies at most once however often it arrives may run through it: `handoff_complete` (a repeat
  * is answered HANDOFF_ALREADY_RECORDED, or, once the completion moved the issue, refused as no
  * longer the role's phase), `sign_off` (a repeat finds the issue out of accepting and changes
- * nothing), `register_gate` (its fact is keyed by the gate's issue, generation, document,
+ * nothing) and `register_gate` (its fact is keyed by the gate's issue, generation, document,
  * version and Dispatch sequence; a repeat after the sequence moved is a new fact, which the gate
- * takes as a re-registration of the same document and tells no one again) and
- * `claims/turn-outcome` (one outcome per claim, generation and sequence, so a repeat writes the
- * cell its first attempt wrote). `call` is the whole
+ * takes as a re-registration of the same document and tells no one again). `call` is the whole
  * operation, grant mint included, since grants live in the daemon's memory and do not survive
  * its restart. `onRetrying` is told once. A daemon refusal after a dropped attempt is told that
  * the dropped one may have been applied.
@@ -399,6 +431,122 @@ export async function retryWhileDaemonRestarts<T>(
       if (!signal?.aborted) await sleep(Math.min(delay, remaining), signal);
       delay = Math.min(delay * 2, DAEMON_RESTART_MAX_DELAY_MS);
     }
+  }
+}
+
+/** How long one attempt sent through `sendUntilAnswered` waits for the daemon's answer before the
+ * same request is sent again. */
+export const DAEMON_ANSWER_TIMEOUT_MS = 5 * 60_000;
+
+/** The first wait before `sendUntilAnswered` sends a request again; each wait after it doubles,
+ * up to `DAEMON_RESEND_MAX_DELAY_MS`, and nothing limits the attempts. */
+export const DAEMON_RESEND_FIRST_DELAY_MS = 500;
+export const DAEMON_RESEND_MAX_DELAY_MS = 30_000;
+
+/** An attempt the daemon did not answer within `DAEMON_ANSWER_TIMEOUT_MS`. */
+class DaemonAnswerTimeout extends Error {
+  constructor(what: string) {
+    super(`${what} had no answer within ${DAEMON_ANSWER_TIMEOUT_MS / 60_000} minutes`);
+    this.name = "DaemonAnswerTimeout";
+  }
+}
+
+/**
+ * Whether `error` is an attempt the daemon gave no answer to (dispatch://INFRA-2811, the plan's
+ * departure 7): a refused, reset or closed connection, a DNS failure, no answer within
+ * `DAEMON_ANSWER_TIMEOUT_MS`, or a 502, 503 or 504 that names no Legion error code, which a proxy
+ * in front of the daemon answers. Every refusal the daemon itself gives names a code or is a 4xx,
+ * and is an answer.
+ */
+export function daemonGaveNoAnswer(error: unknown): boolean {
+  if (error instanceof DaemonAnswerTimeout || daemonUnreachable(error) !== undefined) return true;
+  if (error instanceof LegionDaemonApiError) {
+    return error.status === 504 && error.code === undefined;
+  }
+  if (!(error instanceof Error)) return false;
+  const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
+  return code === "ENOTFOUND" || code === "EAI_AGAIN";
+}
+
+/** Resolves `true` once `ms` have passed, or `false` as soon as `signal` aborts: a timer that
+ * keeps no process alive. */
+export function timerWait(ms: number, signal: AbortSignal): Promise<boolean> {
+  const { promise, resolve } = Promise.withResolvers<boolean>();
+  if (signal.aborted) {
+    resolve(false);
+    return promise;
+  }
+  const stop = () => {
+    clearTimeout(timer);
+    resolve(false);
+  };
+  const timer = setTimeout(() => {
+    signal.removeEventListener("abort", stop);
+    resolve(true);
+  }, ms);
+  timer.unref?.();
+  signal.addEventListener("abort", stop, { once: true });
+  return promise;
+}
+
+/** How `sendUntilAnswered` sends one request. */
+export interface SendUntilAnswered {
+  /** Ends the sending: the running attempt is aborted and no attempt follows. */
+  readonly stop: AbortSignal;
+  /** A failure sent again beyond those `daemonGaveNoAnswer` names: the turn-outcome report's
+   * 500, which a store write the daemon could not make answers. */
+  readonly alsoSendAgain?: (error: unknown) => boolean;
+  /** Told once, at the first failure that is sent again. */
+  readonly warn: (message: string, fields: Record<string, unknown>) => void;
+  /** The wait between attempts, and each attempt's bound: `timerWait` by default; a test passes
+   * its own clock. */
+  readonly wait?: (ms: number, signal: AbortSignal) => Promise<boolean>;
+}
+
+/**
+ * Sends `call` until the daemon answers it, the policy every request the daemon applies once
+ * however often it arrives is sent by (the plan's departure 7 and decision 8): a take and a seen
+ * report (`src/task-take.ts`) and the turn-outcome report (`packages/pi-legion/src/turn-outcome.ts`,
+ * which also sends a 500 again, `alsoSendAgain`). Each attempt is bounded by
+ * `DAEMON_ANSWER_TIMEOUT_MS` and gets its own abort signal; a failure `daemonGaveNoAnswer` names is
+ * sent again, the same request, after a wait that doubles from `DAEMON_RESEND_FIRST_DELAY_MS` to
+ * `DAEMON_RESEND_MAX_DELAY_MS`, with no attempt limit, until the daemon answers or `stop` aborts.
+ * It resolves the daemon's answer; a failure the daemon answered, and the stop, reject.
+ */
+export async function sendUntilAnswered<T>(
+  what: string,
+  call: (signal: AbortSignal) => Promise<T>,
+  options: SendUntilAnswered
+): Promise<T> {
+  const { stop } = options;
+  const wait = options.wait ?? timerWait;
+  let delay = DAEMON_RESEND_FIRST_DELAY_MS;
+  let told = false;
+  for (;;) {
+    stop.throwIfAborted();
+    const attempt = new AbortController();
+    const forward = () => attempt.abort(stop.reason);
+    stop.addEventListener("abort", forward, { once: true });
+    void wait(DAEMON_ANSWER_TIMEOUT_MS, attempt.signal).then((passed) => {
+      if (passed) attempt.abort(new DaemonAnswerTimeout(what));
+    });
+    try {
+      return await call(attempt.signal);
+    } catch (error) {
+      stop.throwIfAborted();
+      if (!daemonGaveNoAnswer(error) && options.alsoSendAgain?.(error) !== true) throw error;
+      if (!told) {
+        told = true;
+        options.warn(`legion: ${what} failed; it is sent again until the daemon answers it`, {
+          error: messageFor(error),
+        });
+      }
+    } finally {
+      stop.removeEventListener("abort", forward);
+      attempt.abort();
+    }
+    await wait(delay, stop);
+    delay = Math.min(delay * 2, DAEMON_RESEND_MAX_DELAY_MS);
   }
 }
 

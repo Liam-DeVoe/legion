@@ -1,45 +1,60 @@
 import { expect, test } from "bun:test";
-import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client";
-import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
+import {
+  createLegionDaemonClient,
+  DAEMON_ANSWER_TIMEOUT_MS,
+  DAEMON_RESEND_FIRST_DELAY_MS,
+} from "@legion/pi-shared/daemon-client";
 import type { AgentEndEvent } from "@legion/pi-shared/pi-types";
-import { createTurnOutcomeReporter, type TurnOutcomeLog } from "./turn-outcome";
+import { taskStandIn } from "@legion/pi-shared/test/task-stand-in";
+import { createTurnOutcomeReporter, type ReportedClaim, type TurnOutcomeLog } from "./turn-outcome";
 
 const SESSION = "ses_implementer_208";
 
-const implementer: ClaimCapability = {
-  sessionID: SESSION,
-  tree: "LEGION-208",
-  issue: "LEGION-208",
+const implementer: ReportedClaim = {
+  caller: {
+    claimToken: "legion-legion-legion-208-implementer",
+    sessionId: SESSION,
+    secret: "U2VjcmV0",
+    generation: 3,
+  },
   role: "implementer",
-  secret: "U2VjcmV0",
-  claimToken: "legion-legion-legion-208-implementer",
-  generation: 3,
+  issue: "LEGION-208",
 };
 
 interface Rig {
   readonly report: (sessionID: string, event: AgentEndEvent, task?: number) => Promise<void>;
+  readonly sessionEnded: (sessionID: string) => void;
   readonly posted: Record<string, unknown>[];
   readonly debugged: string[];
   readonly warned: string[];
+  /** Every wait between two attempts of a report, in the order they were made. */
+  readonly waits: number[];
 }
 
-/** The reporter over a daemon that answers `answer` to every report, or refuses it. */
+/**
+ * The reporter over a daemon that answers `answer` to every report (a throw is a request that got
+ * no answer), or answers each one as the daemon applies it. The clock is the test's own: a wait
+ * between attempts passes at once, and an attempt's bound never passes, so an attempt waits for
+ * its answer.
+ */
 function rig(
   options: {
-    readonly claim?: (sessionID: string) => ClaimCapability | undefined;
-    readonly answer?: (attempt: number) => Response;
+    readonly claim?: (sessionID: string) => ReportedClaim | undefined;
+    readonly answer?: (attempt: number, body: Record<string, unknown>) => Response;
   } = {}
 ): Rig {
   const posted: Record<string, unknown>[] = [];
   const debugged: string[] = [];
   const warned: string[] = [];
+  const waits: number[] = [];
   const stub = (async (input, init) => {
     const path = new URL(input.toString()).pathname;
     if (path !== "/legion/v1/claims/turn-outcome") throw new Error(`unexpected route ${path}`);
-    posted.push(JSON.parse(String(init?.body)));
+    const body = JSON.parse(String(init?.body));
+    posted.push(body);
     return options.answer === undefined
       ? Response.json({ refusedRun: 0, failed: false })
-      : options.answer(posted.length);
+      : options.answer(posted.length, body);
   }) as typeof fetch;
   const log: TurnOutcomeLog = {
     debug: (message) => debugged.push(message),
@@ -50,8 +65,24 @@ function rig(
     daemon: () => client,
     claim: options.claim ?? ((sessionID) => (sessionID === SESSION ? implementer : undefined)),
     log,
+    wait: (ms, signal) => {
+      if (ms === DAEMON_ANSWER_TIMEOUT_MS) {
+        const bound = Promise.withResolvers<boolean>();
+        signal.addEventListener("abort", () => bound.resolve(false), { once: true });
+        return bound.promise;
+      }
+      waits.push(ms);
+      return Promise.resolve(!signal.aborted);
+    },
   });
-  return { report: reporter.report, posted, debugged, warned };
+  return {
+    report: reporter.report,
+    sessionEnded: reporter.sessionEnded,
+    posted,
+    debugged,
+    warned,
+    waits,
+  };
 }
 
 /** A run whose last assistant message settled normally. */
@@ -222,4 +253,87 @@ test("a report the daemon refuses is warned about, and the next turn still repor
 
   expect(warned).toEqual(["legion: a turn's outcome did not reach the daemon"]);
   expect(posted.map((body) => body.sequence)).toEqual([1, 2]);
+});
+
+/** A request that reached no daemon, as Bun's fetch raises it, carrying `code`. */
+const transport = (code: string): Error =>
+  Object.assign(new TypeError(`${code}: the request reached no daemon`), { code });
+
+// Finding 2 of review round 1: only the report finishes a current worker's task, so it is sent
+// until the daemon answers, by the take's own policy. An uncoded 504 (a proxy's timeout) and a DNS
+// failure are two of the failures the earlier retry gave up on at once.
+test("a report whose first two attempts meet an uncoded 504 and a DNS failure is sent again, the same report, and delivered on the third", async () => {
+  const { report, posted, debugged, warned, waits } = rig({
+    answer: (attempt) => {
+      if (attempt === 1) return new Response("upstream request timeout", { status: 504 });
+      if (attempt === 2) throw transport("ENOTFOUND");
+      return Response.json({ refusedRun: 0, failed: false });
+    },
+  });
+
+  await report(SESSION, clean, 4);
+
+  expect(posted).toHaveLength(3);
+  expect(posted[0]).toMatchObject({ sequence: 1, outcome: "clean", task: 4 });
+  expect(posted[1]).toEqual(posted[0]);
+  expect(posted[2]).toEqual(posted[0]);
+  expect(waits).toEqual([DAEMON_RESEND_FIRST_DELAY_MS, DAEMON_RESEND_FIRST_DELAY_MS * 2]);
+  expect(debugged).toEqual(["legion: reported a turn's outcome"]);
+  expect(warned).toEqual([
+    "legion: claims/turn-outcome failed; it is sent again until the daemon answers it",
+  ]);
+});
+
+// The daemon answers a report whose store write it could not make with a 500 that names no code,
+// and applies a repeated report once. Here the first attempt is that 500, the second is applied
+// but its answer is lost to a reset connection, and the third is answered: the task the report
+// names finishes, once.
+test("the first end report dropped, then the task finishes once", async () => {
+  const tasks = taskStandIn();
+  const value = tasks.give("Implement LEGION-208 on its branch.");
+  let finishes = 0;
+  const { report, posted, debugged } = rig({
+    answer: (attempt, body) => {
+      if (attempt === 1) {
+        return Response.json(
+          { error: "turn outcome failed: the daemon could not record it" },
+          { status: 500 }
+        );
+      }
+      const before = tasks.registered().finished;
+      tasks.answer("/legion/v1/claims/turn-outcome", body);
+      if (tasks.registered().finished !== before) finishes += 1;
+      if (attempt === 2) throw transport("ECONNRESET");
+      return Response.json({ refusedRun: 0, failed: false });
+    },
+  });
+
+  await report(SESSION, clean, value.number);
+
+  expect(posted).toHaveLength(3);
+  expect(posted[0]).toMatchObject({ sequence: 1, task: value.number });
+  expect(posted[1]).toEqual(posted[0]);
+  expect(posted[2]).toEqual(posted[0]);
+  expect(finishes).toBe(1);
+  expect(tasks.registered()).toEqual({ task: null, finished: value.number });
+  expect(debugged).toEqual(["legion: reported a turn's outcome"]);
+});
+
+test("a report still being sent when its session ends sends nothing more, and says it did not reach the daemon", async () => {
+  const { report, sessionEnded, posted, warned } = rig({
+    answer: () => {
+      throw transport("ECONNREFUSED");
+    },
+  });
+
+  const sending = report(SESSION, clean, 4);
+  for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+  sessionEnded(SESSION);
+  await sending;
+  const attempts = posted.length;
+  for (let turn = 0; turn < 50; turn += 1) await Promise.resolve();
+
+  expect(attempts).toBeGreaterThan(0);
+  expect(posted).toHaveLength(attempts);
+  expect(warned.at(-1)).toBe("legion: a turn's outcome did not reach the daemon");
 });

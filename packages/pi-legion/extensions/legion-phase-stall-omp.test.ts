@@ -363,7 +363,8 @@ test.skipIf(skip)(
     ]);
 
     // The worker registered through the daemon's routes and took its task: the registration's
-    // value reported seen, the ready, and the take once the host was idle. The reminder's record
+    // value reported seen, the ready, the value read again once the ready answered, and the take
+    // once the host was idle. The reminder's record
     // check read the issue's record before it was sent, and the handoff_complete read it again,
     // read the newest implement record from the pane's Dispatch, held the head that record names
     // to the commit the pane's workspace stands on, pushed to legion/STALL-2@origin, with the
@@ -375,6 +376,7 @@ test.skipIf(skip)(
       "/legion/v1/claims/register",
       "/legion/v1/claims/task-seen",
       "/legion/v1/claims/ready",
+      "/legion/v1/claims/task",
       "/legion/v1/claims/take",
       "/legion/v1/state",
       "/legion/v1/claims/turn-outcome",

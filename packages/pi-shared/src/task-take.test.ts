@@ -7,14 +7,14 @@ import {
   LegionTaskResponse,
 } from "@legion/contracts/legion-api";
 import type { RelayTaskValue } from "@legion/envoy-client/consumer-delivery";
-import { LegionDaemonApiError } from "./daemon-client";
 import {
-  createTaskTake,
-  TASK_ANSWER_TIMEOUT_MS,
-  TASK_RESEND_FIRST_DELAY_MS,
-  TASK_RESEND_MAX_DELAY_MS,
-  type TaskTakeCaller,
-} from "./task-take";
+  type ClaimCaller,
+  DAEMON_ANSWER_TIMEOUT_MS,
+  DAEMON_RESEND_FIRST_DELAY_MS,
+  DAEMON_RESEND_MAX_DELAY_MS,
+  LegionDaemonApiError,
+} from "./daemon-client";
+import { createTaskTake } from "./task-take";
 
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
 function daemonFixture(name: string): unknown {
@@ -30,7 +30,7 @@ const DROPPED = LegionTakeResponse.parse(daemonFixture("take-dropped.json"));
 const NOTHING_HELD = LegionTaskResponse.parse(daemonFixture("task.json"));
 const TEXT = ACCEPTED.outcome === "accepted" ? ACCEPTED.text : "";
 
-const caller: TaskTakeCaller = {
+const caller: ClaimCaller = {
   claimToken: "legion-legion-legion-209-implementer",
   sessionId: "ses_implementer_209",
   secret: "U2VjcmV0",
@@ -119,7 +119,7 @@ function rig() {
         resolve(false);
         return promise;
       }
-      if (ms !== TASK_ANSWER_TIMEOUT_MS) waits.push(ms);
+      if (ms !== DAEMON_ANSWER_TIMEOUT_MS) waits.push(ms);
       const stop = () => {
         timers.splice(timers.indexOf(timer), 1);
         resolve(false);
@@ -176,7 +176,7 @@ test("reports a value seen while the host is busy, and asks only once the run en
   expect(routed("take")).toEqual([]);
 
   takes.push({ answer: ACCEPTED });
-  expect(take.runEnded()).toBeUndefined();
+  expect(take.runEnded(false)).toBeUndefined();
   await advance(0);
   expect(routed("take")).toEqual([body(4, 12)]);
 });
@@ -231,7 +231,7 @@ test("asks nothing again for the same value relayed after a refusal, and once at
   expect(marks).toEqual([true, false, true]);
   take.runStarted();
   expect(marks).toEqual([true, false, true, false]);
-  expect(take.runEnded()).toBe(4);
+  expect(take.runEnded(false)).toBe(4);
 });
 
 test("holds the task-turn mark from the registration's value, before the ready and the role claim, until the task's turn starts", async () => {
@@ -253,7 +253,7 @@ test("takes during a compaction, which leaves the host idle, and the first run a
   // A run ends, and the host compacts in its idle maintenance: no run is going, so the host is
   // idle for the take, and the text waits for the compaction (the host's own form, `run`).
   take.runStarted();
-  take.runEnded();
+  take.runEnded(false);
   takes.push({ answer: ACCEPTED });
   take.relayed(put(4, 12));
   await advance(0);
@@ -261,10 +261,10 @@ test("takes during a compaction, which leaves the host idle, and the first run a
   expect(ran).toEqual([TEXT]);
 
   take.runStarted();
-  expect(take.runEnded()).toBe(4);
+  expect(take.runEnded(false)).toBe(4);
   // A run after the task's names no task.
   take.runStarted();
-  expect(take.runEnded()).toBeUndefined();
+  expect(take.runEnded(false)).toBeUndefined();
 });
 
 test("a provider error's end, the wait's end, and exactly one new take at the value the daemon writes again", async () => {
@@ -276,7 +276,7 @@ test("a provider error's end, the wait's end, and exactly one new take at the va
   take.runStarted();
   // The turn ended in a provider error, which its report names beside the number: the daemon
   // keeps the task under its number and waits before it writes the value again.
-  expect(take.runEnded()).toBe(4);
+  expect(take.runEnded(true)).toBe(4);
 
   // Nothing new while the wait runs: the same value read or relayed again asks nothing.
   take.relayed(put(4, 12));
@@ -292,28 +292,119 @@ test("a provider error's end, the wait's end, and exactly one new take at the va
   expect(routed("take")).toEqual([body(4, 12), body(4, 13)]);
   expect(ran).toEqual([TEXT, TEXT]);
   take.runStarted();
-  expect(take.runEnded()).toBe(4);
+  expect(take.runEnded(false)).toBe(4);
 });
 
-// Oh My Pi folds a follow-up sent during a run into that run (its agent loop reads the follow-up
-// queue at the run's end and goes on with no `agent_end` between), so a text the daemon accepted
-// while a run went on is held for that run's end, and starts the run that is the task's turn.
-test("the text of a take accepted while a run is going is sent at that run's end, and the run it starts is the task's turn", async () => {
-  const { take, takes, ran, advance, marks } = rig();
+// The daemon finishes a current claim's task on a report naming its number with no provider
+// error, but it may write the same number's value again before that report lands (a daemon
+// start writes every owed value again), and it answers a take of the accepted, unfinished number
+// with the same text. The take holds the number finished from the end of the run whose report
+// carries no provider error, so that newer revision is owed nothing: no take, no second run.
+test("a task's turn whose report carries no provider error finishes it at the run's end: a newer revision of its number, written before the report lands, is neither taken nor run again", async () => {
+  const { take, routed, takes, ran, advance, marks } = rig();
   take.ready();
   takes.push({ answer: ACCEPTED });
   take.relayed(put(4, 12));
-  // A run starts before the take's answer comes back: the daemon had not yet heard of it.
-  take.runStarted();
   await advance(0);
+  take.runStarted();
+  expect(take.runEnded(false)).toBe(4);
+
+  // The daemon would answer a take of the newer revision with the same text.
+  takes.push({ answer: ACCEPTED });
+  take.relayed(put(4, 13));
+  take.read({ task: value(4, 13), finished: 3 });
+  await advance(0);
+
+  expect(routed("take")).toEqual([body(4, 12)]);
+  expect(ran).toEqual([TEXT]);
+  expect(marks.at(-1)).toBe(false);
+});
+
+// A report with a provider error finishes nothing: the daemon takes the task back, and the worker
+// takes the number again at the revision the daemon writes, and runs it once more.
+test("a task's turn whose report carries a provider error leaves it owed: the newer revision of its number is taken and runs once", async () => {
+  const { take, routed, takes, ran, advance } = rig();
+  take.ready();
+  takes.push({ answer: ACCEPTED });
+  take.relayed(put(4, 12));
+  await advance(0);
+  take.runStarted();
+  expect(take.runEnded(true)).toBe(4);
+
+  takes.push({ answer: ACCEPTED });
+  take.relayed(put(4, 13));
+  await advance(0);
+
+  expect(routed("take")).toEqual([body(4, 12), body(4, 13)]);
+  expect(ran).toEqual([TEXT, TEXT]);
+  take.runStarted();
+  expect(take.runEnded(false)).toBe(4);
+  take.relayed(put(4, 14));
+  await advance(0);
+  expect(routed("take")).toEqual([body(4, 12), body(4, 13)]);
+  expect(ran).toEqual([TEXT, TEXT]);
+});
+
+// Finding 1 of review round 1, the race: the take is asked on an idle host and the daemon accepts
+// it, but a run no take started (a background job's result, a reminder) begins before the answer
+// comes back. The daemon gives that run to the take, as the first to start after its accept; the
+// worker holds the text, since nothing is sent into a busy worker and a follow-up sent now would
+// run inside that run, and reports the run's end with no number, which gives the take its turn
+// back on the daemon. The held text then starts the next run, the task's turn on both sides, and
+// that run's end names the number.
+test("a take accepted while a run it did not start is going holds its text: that run's end names no task, and the text starts the next run, whose end names the task", async () => {
+  const { take, takes, ran, advance, marks } = rig();
+  take.ready();
+  const answer = Promise.withResolvers<LegionTake>();
+  takes.push({ late: answer.promise });
+  take.relayed(put(4, 12));
+  await advance(0);
+  // A run starts after the daemon decided the take and before its answer arrives.
+  take.runStarted();
+  answer.resolve(ACCEPTED);
+  await advance(0);
+  // The text is held: no follow-up goes into the running run, and the turn is still pending.
   expect(ran).toEqual([]);
   expect(marks).toEqual([true]);
 
-  expect(take.runEnded()).toBeUndefined();
+  // That run's end names no task, and the text goes to the now idle host.
+  expect(take.runEnded(false)).toBeUndefined();
   expect(ran).toEqual([TEXT]);
+  // The run it starts is the task's turn, and only it names the number.
   take.runStarted();
   expect(marks).toEqual([true, false]);
-  expect(take.runEnded()).toBe(4);
+  expect(take.runEnded(false)).toBe(4);
+  take.runStarted();
+  expect(take.runEnded(false)).toBeUndefined();
+  expect(ran).toEqual([TEXT]);
+});
+
+// The lost-answer variant: the daemon accepted the take, but its answer was lost (here a reset
+// connection), and a run started while the take waited to be sent again. The daemon answers a
+// take repeated for the number it accepted with the same text, also after it gave that run to the
+// take, so the re-sent take is answered `accepted` during the run: the text is held, that run's
+// end names no task, and the text runs as the next run, once.
+test("a take whose accepted answer was lost is answered again during a run that started meanwhile: the text is held, and runs next, once", async () => {
+  const { take, takes, ran, advance, routed } = rig();
+  take.ready();
+  takes.push({ fail: transport("ECONNRESET") }, { answer: ACCEPTED });
+  take.relayed(put(4, 12));
+  await advance(0);
+  expect(routed("take")).toEqual([body(4, 12)]);
+
+  // A run starts while the take waits to be sent again, and the re-sent take is answered then.
+  take.runStarted();
+  await advance(DAEMON_RESEND_FIRST_DELAY_MS);
+  expect(routed("take")).toEqual([body(4, 12), body(4, 12)]);
+  expect(ran).toEqual([]);
+
+  expect(take.runEnded(false)).toBeUndefined();
+  expect(ran).toEqual([TEXT]);
+  take.runStarted();
+  expect(take.runEnded(false)).toBe(4);
+  take.runStarted();
+  expect(take.runEnded(false)).toBeUndefined();
+  expect(ran).toEqual([TEXT]);
 });
 
 test("a take sent again for a number already accepted runs the text once", async () => {
@@ -327,6 +418,34 @@ test("a take sent again for a number already accepted runs the text once", async
   takes.push({ answer: ACCEPTED });
   take.relayed(put(4, 13));
   await advance(0);
+  expect(ran).toEqual([TEXT]);
+});
+
+// The daemon answers a take of the number it accepted with the same text until that task
+// finishes, also once the task's turn has started: a newer revision of the same number, asked
+// before the turn and answered during it, is that same task, which is already running.
+test("a take of a newer revision of the accepted number, answered during that task's own turn, runs nothing more", async () => {
+  const { take, takes, ran, advance, routed } = rig();
+  take.ready();
+  takes.push({ answer: ACCEPTED });
+  take.relayed(put(4, 12));
+  await advance(0);
+  expect(ran).toEqual([TEXT]);
+
+  const again = Promise.withResolvers<LegionTake>();
+  takes.push({ late: again.promise });
+  take.relayed(put(4, 13));
+  await advance(0);
+  expect(routed("take")).toEqual([body(4, 12), body(4, 13)]);
+  // The task's turn starts, and the repeated take's answer arrives during it.
+  take.runStarted();
+  again.resolve(ACCEPTED);
+  await advance(0);
+
+  expect(take.runEnded(false)).toBe(4);
+  expect(ran).toEqual([TEXT]);
+  take.runStarted();
+  expect(take.runEnded(false)).toBeUndefined();
   expect(ran).toEqual([TEXT]);
 });
 
@@ -394,12 +513,12 @@ for (const [name, attempt] of [
     takes.push({ answer: ACCEPTED });
     take.relayed(put(4, 12));
     // Long enough for every attempt's bound and every wait between them.
-    for (let n = 0; n <= failures; n += 1) await advance(TASK_ANSWER_TIMEOUT_MS);
+    for (let n = 0; n <= failures; n += 1) await advance(DAEMON_ANSWER_TIMEOUT_MS);
 
     expect(routed("take")).toEqual(Array(failures + 1).fill(body(4, 12)));
     expect(waits).toEqual(
       Array.from({ length: failures }, (_, n) =>
-        Math.min(TASK_RESEND_FIRST_DELAY_MS * 2 ** n, TASK_RESEND_MAX_DELAY_MS)
+        Math.min(DAEMON_RESEND_FIRST_DELAY_MS * 2 ** n, DAEMON_RESEND_MAX_DELAY_MS)
       )
     );
     expect(ran).toEqual([TEXT]);
@@ -411,7 +530,7 @@ for (const [name, attempt] of [
     const { take, routed, seens, advance } = rig();
     seens.push(attempt, attempt, attempt);
     take.relayed(put(4, 12));
-    for (let n = 0; n <= 3; n += 1) await advance(TASK_ANSWER_TIMEOUT_MS);
+    for (let n = 0; n <= 3; n += 1) await advance(DAEMON_ANSWER_TIMEOUT_MS);
 
     expect(routed("task-seen")).toEqual(Array(4).fill(body(4, 12)));
   });
@@ -428,7 +547,7 @@ for (const [name, refusal] of [
     takes.push({ fail: refusal });
     seens.push({ fail: refusal });
     take.relayed(put(4, 12));
-    await advance(10 * TASK_ANSWER_TIMEOUT_MS);
+    await advance(10 * DAEMON_ANSWER_TIMEOUT_MS);
 
     expect(routed("take")).toEqual([body(4, 12)]);
     expect(routed("task-seen")).toEqual([body(4, 12)]);
@@ -449,7 +568,7 @@ test("a newer revision ends the re-sending of the older take and seen report, an
   takes.push({ answer: ACCEPTED });
   seens.splice(0);
   take.relayed(put(4, 13));
-  await advance(10 * TASK_RESEND_MAX_DELAY_MS);
+  await advance(10 * DAEMON_RESEND_MAX_DELAY_MS);
 
   expect(routed("take")).toEqual([body(4, 12), body(4, 13)]);
   expect(routed("task-seen")).toEqual([body(4, 12), body(4, 13)]);
@@ -463,7 +582,7 @@ test("a deleted value ends the re-sending of its take", async () => {
   take.relayed(put(4, 12));
   await advance(0);
   take.relayed({ claim: caller.claimToken, epoch: EPOCH, revision: 13, op: "delete" });
-  await advance(10 * TASK_RESEND_MAX_DELAY_MS);
+  await advance(10 * DAEMON_RESEND_MAX_DELAY_MS);
 
   expect(routed("take")).toEqual([body(4, 12)]);
   expect(marks).toEqual([true, false]);
@@ -488,7 +607,7 @@ test("a closed take sends nothing more, drops an answer that still arrives, clea
   expect(marks).toEqual([true, false]);
   // The seen report's re-sending stops, and the take's answer, arriving now, runs nothing.
   late.resolve(ACCEPTED);
-  await advance(10 * TASK_RESEND_MAX_DELAY_MS);
+  await advance(10 * DAEMON_RESEND_MAX_DELAY_MS);
   expect(routed("task-seen")).toEqual([body(4, 12)]);
   expect(ran).toEqual([]);
 
@@ -497,7 +616,7 @@ test("a closed take sends nothing more, drops an answer that still arrives, clea
   take.read({ task: value(5, 13), finished: 4 });
   take.ready();
   take.runStarted();
-  expect(take.runEnded()).toBeUndefined();
+  expect(take.runEnded(false)).toBeUndefined();
   await advance(0);
   expect(routed("take")).toEqual([body(4, 12)]);
   expect(routed("task-seen")).toEqual([body(4, 12)]);

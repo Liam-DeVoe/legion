@@ -1,17 +1,16 @@
-import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client";
+import { claimCaller, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import {
   exportJjSessionAttribution,
   type PaneAttribution,
   paneAttributionOptions,
   sessionIdFromTranscript,
 } from "@legion/pi-shared/jj-attribution";
-import { bootLegionClaim, type LegionClaimBoot } from "@legion/pi-shared/legion-claim-core";
+import { bootLegionClaim } from "@legion/pi-shared/legion-claim-core";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import type { SessionContext } from "@legion/pi-shared/pi-types";
 import { claimEnvoyRole, onEnvoyRoleRegained } from "@legion/pi-shared/role-claim-bridge";
 import { recordBootstrappedSession } from "@legion/pi-shared/subagent-session";
-import { createTaskTake, type TaskTake } from "@legion/pi-shared/task-take";
-import { takeTaskSignals, taskTurnMark } from "@legion/pi-shared/task-values";
+import { type ClaimTaskTake, takeClaimTask } from "@legion/pi-shared/task-take";
 import { logger } from "@oh-my-pi/pi-utils";
 import pkg from "../package.json";
 import { requiredEnvironment, requiredSecret } from "./classify";
@@ -30,8 +29,10 @@ export interface ClaimSession {
    * before the claim is registered. */
   readonly runStarted: () => void;
   /** That run ended (`agent_end`): the number of the task whose turn it was, which the turn's
-   * outcome report names, or undefined for a run of no task or a session with no claim. */
-  readonly runEnded: () => number | undefined;
+   * outcome report names, or undefined for a run of no task or a session with no claim.
+   * `providerError` is whether that report carries the provider's failure; without one the take
+   * holds the task finished (`TaskTake.runEnded`). */
+  readonly runEnded: (providerError: boolean) => number | undefined;
 }
 
 /**
@@ -58,18 +59,19 @@ export function attributionInputs(
 /**
  * Owns a root architect's or a phase worker's claim: the boot, through the claim boot every
  * harness shares (`bootLegionClaim`, `@legion/pi-shared/legion-claim-core`), the capability it
- * registered, and the take of the claim's task (`createTaskTake`, `@legion/pi-shared/task-take`).
+ * registered, and the take of the claim's task (`takeClaimTask`, `@legion/pi-shared/task-take`).
  * A Legion pane boots as its own Oh My Pi process and holds exactly one claim for its whole
  * lifetime, so both are plain closure state, set before `claims/ready`. The ready carries no
  * capability report: the session's capability rows are measured later, on its own interval.
  *
  * The take holds the claim's value from the registration's answer on, which is also when it sets
- * the task-turn mark, before the role is claimed; it takes each value the Envoy entry hands over
- * from a task frame the listener relayed, and reads the value again from the daemon whenever the
- * session's relay begins a new epoch and whenever the heartbeat regains the role
- * (`takeTaskSignals`, `readTask`). The Envoy name is taken right after `claims/ready` has
- * answered, so the session is addressable from its ready on, and the lane the listener kept for
- * the role arrives while the mark holds its cards back.
+ * the task-turn mark, and takes the value the boot reads again once the ready has answered, which
+ * holds any value the ready decision wrote, both before the role is claimed; it takes each value
+ * the Envoy entry hands over from a task frame the listener relayed, and reads the value again
+ * from the daemon whenever the session's relay begins a new epoch and whenever the heartbeat
+ * regains the role. The Envoy name is taken right after that read, so the session is addressable
+ * from its ready on, and the lane the listener kept for the role arrives while the mark holds its
+ * cards back.
  *
  * The take asks only from a timer that fires once `session_start` has returned: Oh My Pi holds a
  * send made from `session_start` until its startup is over, and runs a send made while its
@@ -94,7 +96,7 @@ export function createClaimSession(deps: {
 }): ClaimSession {
   let capability: ClaimCapability | undefined;
   let booting: Promise<void> | undefined;
-  let take: TaskTake | undefined;
+  let taking: ClaimTaskTake | undefined;
 
   const boot = async (
     context: SessionContext,
@@ -104,15 +106,7 @@ export function createClaimSession(deps: {
   ): Promise<void> => {
     const { sessionFile, agentId } = await deps.persistedTranscript(context);
     recordBootstrappedSession(sessionFile);
-    // Set before the registration: a value relayed before the take exists is one the
-    // registration's answer carries anyway.
-    let claimBoot: LegionClaimBoot | undefined;
-    takeTaskSignals((signal) => {
-      if (signal.session !== sessionID) return;
-      if (signal.kind === "value") take?.relayed(signal.value);
-      else void claimBoot?.readTask();
-    });
-    claimBoot = await bootLegionClaim({
+    const claimBoot = await bootLegionClaim({
       daemon,
       registration: {
         bootToken,
@@ -122,19 +116,13 @@ export function createClaimSession(deps: {
         pluginContract: pkg.legion.daemonApiVersion,
       },
       afterRegister: async (claim) => {
-        take = createTaskTake({
+        taking = takeClaimTask({
           daemon,
-          caller: {
-            claimToken: claim.claimToken,
-            sessionId: sessionID,
-            secret: claim.secret,
-            generation: claim.generation,
-          },
+          caller: claimCaller(claim, sessionID),
           run: deps.runTask,
-          setPending: taskTurnMark(sessionID),
           log: logger,
         });
-        take.read(claim);
+        taking.take.read(claim);
         const { sessionId, stateDir, ...pane } = attributionInputs(sessionFile, process.env);
         if (sessionId) await exportJjSessionAttribution(sessionId, stateDir, pane);
       },
@@ -145,15 +133,15 @@ export function createClaimSession(deps: {
       // notice executor, packages/daemon/internal/daemon/outbox.go), and where the listener
       // relays the claim's task value: no issue topic carries one, so no claim subscribes to one.
       claimRole: (role) => claimEnvoyRole(sessionID, role, context),
-      taskValue: (reading) => take?.read(reading),
+      taskValue: (reading) => taking?.take.read(reading),
       onRoleRegained: onEnvoyRoleRegained,
       log: (line) => console.error(`[legion] ${line}`),
       stopping: "exiting so the daemon launches it again",
       stop: () => deps.exitProcess(1),
     });
     if (claimBoot === undefined) return;
-    const taking = take;
-    setImmediate(() => taking?.ready());
+    const take = taking?.take;
+    setImmediate(() => take?.ready());
   };
 
   const bootstrap = async (context: SessionContext): Promise<void> => {
@@ -174,7 +162,7 @@ export function createClaimSession(deps: {
   return {
     bootstrap,
     capability: (sessionID) => (capability?.sessionID === sessionID ? capability : undefined),
-    runStarted: () => take?.runStarted(),
-    runEnded: () => take?.runEnded(),
+    runStarted: () => taking?.take.runStarted(),
+    runEnded: (providerError) => taking?.take.runEnded(providerError),
   };
 }

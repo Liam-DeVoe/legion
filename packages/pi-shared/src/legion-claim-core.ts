@@ -2,6 +2,7 @@ import type { LegionRegistration, LegionTask } from "@legion/contracts/legion-ap
 import { messageFor } from "@legion/envoy-client/errors";
 import {
   callReadyWithRetry,
+  claimCaller,
   LegionDaemonApiError,
   type LegionDaemonClient,
   type RegisterInput,
@@ -24,17 +25,19 @@ export interface LegionClaimHost {
    * capability, and a take is answered only once the ready is in. */
   readonly setCapability: (capability: ClaimCapability) => void;
   /** Claims `role`, the claim token, on Envoy for this session: the topic the listener relays the
-   * claim's task value and every notice on. It runs right after `claims/ready` has answered: the
-   * task is a value the session takes once its host is idle, so nothing the role's kept lane
-   * hands over can take the task's turn, and the session holds its name from its ready on. Throws
-   * when the role cannot be held, which is logged and stops the session. */
+   * claim's task value and every notice on. It runs right after `claims/ready` has answered and
+   * the claim's value has been read again (`taskValue`): the task is a value the session takes
+   * once its host is idle, so nothing the role's kept lane hands over can take the task's turn,
+   * and the session holds its name from its ready on. Throws when the role cannot be held, which
+   * is logged and stops the session. */
   readonly claimRole: (role: string) => Promise<void>;
   /**
-   * Takes the claim's task value as the daemon reads it now (`claims/task`): at each regain of
-   * the role, and at each read the host asks for (`LegionClaimBoot.readTask`) when its relay
-   * begins a new epoch — a value the listener relayed while the session did not hold its role,
-   * or was not subscribed, is lost, so it is read rather than waited for. Oh My Pi's claim hands
-   * it to its take (`src/task-take.ts`), and claude-envoy's to the Claude bridge.
+   * Takes the claim's task value as the daemon reads it now (`claims/task`): once the ready has
+   * answered, before the role claim; at each regain of the role; and at each read the host asks
+   * for (`LegionClaimBoot.readTask`) when its relay begins a new epoch — a value the listener
+   * relayed while the session did not hold its role, or was not subscribed, is lost, so it is
+   * read rather than waited for. Oh My Pi's claim hands it to its take (`src/task-take.ts`), and
+   * claude-envoy's to the Claude bridge.
    */
   readonly taskValue: (reading: LegionTask) => void;
   /** Sets the one hook the Envoy heartbeat runs after it re-establishes this session as a role's
@@ -59,18 +62,26 @@ export interface LegionClaimBoot {
 /**
  * Boots a claim on `/legion/v1/claims/*`, the same on every harness: `claims/register`;
  * `afterRegister`, where the host takes the registration's task value; the capability recorded;
- * `claims/ready`, retried on a 5xx or transport failure (`callReadyWithRetry`); the Envoy role
- * claimed right after it; and the regain listener, which reads the claim's task value again each
- * time the heartbeat regains the role. It answers the claim it booted, through which the host
- * reads that value again at a new epoch of its relay, or undefined for a boot that stopped.
+ * `claims/ready`, retried on a 5xx or transport failure (`callReadyWithRetry`); the claim's task
+ * value read again (`claims/task`) into the host's `taskValue`; the Envoy role claimed right after
+ * that; and the regain listener, which reads the claim's task value again each time the heartbeat
+ * regains the role. It answers the claim it booted, through which the host reads that value
+ * again at a new epoch of its relay, or undefined for a boot that stopped.
  *
  * The daemon writes the number of the task a claim is owed as the claim's value, which the
  * listener relays to the session holding the role, and the session takes it once its host is idle
- * (`src/task-take.ts`). So the role is claimed as soon as the ready has answered, and the lane the
- * listener kept for the role arrives while the take's mark holds its cards back
- * (`packages/pi-envoy/src/card-wake.ts`); nothing of a message is held, delayed, reordered or read
- * here. A regain reads the value rather than sending the ready again, since a ready makes the
- * daemon send nothing.
+ * (`src/task-take.ts`). The registration's answer carries the value the daemon held then, but the
+ * ready decision can write one of its own (the relaunch record's task), and the listener relays a
+ * value only when its watch of the role's holder fires, after the role claim has handed the
+ * role's kept lane over. So the value is read once the ready has answered and before the role is
+ * claimed, and the host holds it, with its take's mark, when the lane the listener kept for the
+ * role arrives (`packages/pi-envoy/src/card-wake.ts`): every value the ready decision wrote is
+ * ahead of every card. A value written later — the resume the daemon's outbox queues after the
+ * ready, a task queued later still — reaches the session as the listener relays it, and a card
+ * that arrives before it may take a turn first, which the take then waits behind. A read that
+ * fails is logged and the boot goes on: the daemon's next write of the value reaches the session
+ * as well. Nothing of a message is held, delayed, reordered or read here. A regain reads the value
+ * rather than sending the ready again, since a ready makes the daemon send nothing.
  *
  * The ready carries no capability report. The session measures its capability rows later, on the
  * interval it runs while it is idle (`packages/pi-legion/src/capability-schedule.ts`).
@@ -96,12 +107,7 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
   }
   const { taskValue } = host;
   // The claim in the agent form its ready and its task reads speak for.
-  const caller = {
-    claimToken: claim.claimToken,
-    sessionId: host.registration.sessionId,
-    secret: claim.secret,
-    generation: claim.generation,
-  };
+  const caller = claimCaller(claim, host.registration.sessionId);
   // The claim's value read now and handed to the host; whether the read answered.
   const readTask = async (why: string): Promise<boolean> => {
     try {
@@ -127,6 +133,7 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
       promptAgents: claim.promptAgents,
     });
     await callReadyWithRetry("claims/ready", () => daemon.ready(caller));
+    await readTask("after claims/ready");
     await host.claimRole(claim.claimToken);
   } catch (error) {
     host.log(

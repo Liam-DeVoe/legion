@@ -116,9 +116,10 @@ function valueAt(number: number, revision: number): InboxTaskValue {
   return { number, epoch: EPOCH, revision }
 }
 
-test("registers once the transcript exists, says ready, hands the bridge the registration's value and claims the role soft right after, and reads the value again on a regain", async () => {
+test("registers once the transcript exists, says ready, reads the value, hands the bridge the newest and claims the role soft right after, and reads the value again on a regain", async () => {
   const configDir = await tempDir()
   const registered = await daemonFixture("register.json")
+  // What `claims/task` answers: a value newer than the registration's, as one the ready wrote.
   const reading = { task: valueAt(5, 13), finished: 3 }
   // The daemon's requests and the claim's own steps, in the one order they happened in.
   const steps: string[] = []
@@ -195,17 +196,19 @@ test("registers once the transcript exists, says ready, hands the bridge the reg
       },
     },
     { path: "/legion/v1/claims/ready", body: caller },
+    { path: "/legion/v1/claims/task", body: caller },
   ])
-  // The registration's value goes to the bridge once the ready has answered — the daemon refuses
-  // a take before it — and before the role is claimed, so every card the role's kept lane hands
-  // over waits behind the take.
+  // The shared core reads the claim's value once the ready has answered — the daemon refuses a
+  // take before it — and the newest of it and the registration's goes to the bridge before the
+  // role is claimed, so every card the role's kept lane hands over waits behind the take.
   expect(steps).toEqual([
     "/legion/v1/claims/register",
     "/legion/v1/claims/ready",
-    "task 4 at 12",
+    "/legion/v1/claims/task",
+    "task 5 at 13",
     `setRole ${token}`,
   ])
-  expect(handed).toEqual([valueAt(4, 12)])
+  expect(handed).toEqual([valueAt(5, 13)])
   // Soft, and naming this process: the listener holds the claim for this channel server alone,
   // so a second `claude` on the same session id neither takes nor releases it.
   expect(setRoles).toEqual([
@@ -234,8 +237,8 @@ test("registers once the transcript exists, says ready, hands the bridge the reg
   // and sends no second ready: a ready makes the daemon send nothing.
   await regain?.("some-other-role", "reclaimed")
   await regain?.(token, "reregistered")
-  expect(posted.slice(2)).toEqual([{ path: "/legion/v1/claims/task", body: caller }])
-  expect(handed).toEqual([valueAt(4, 12), valueAt(5, 13)])
+  expect(posted.slice(3)).toEqual([{ path: "/legion/v1/claims/task", body: caller }])
+  expect(handed).toEqual([valueAt(5, 13), valueAt(5, 13)])
   expect(lines).toEqual([`read claims/task after role ${token} was reregistered`])
 })
 
@@ -246,9 +249,11 @@ test("hands the bridge each value relayed for its own claim, the newest held unt
   const registered = await daemonFixture("register.json")
   const token = String(registered["claimToken"])
   const ready = Promise.withResolvers<void>()
-  // What `claims/task` answers at the relay's two new epochs below: task 7, written after the
-  // relayed task 6, and then the same value once the daemon recorded task 7 finished.
+  // What `claims/task` answers: at the boot's read once the ready answered, the relayed task 5
+  // the bucket holds then; at the relay's two new epochs below, task 7, written after the relayed
+  // task 6, and then the same value once the daemon recorded task 7 finished.
   const readings = [
+    { task: valueAt(5, 13), finished: 3 },
     { task: valueAt(7, 18), finished: 6 },
     { task: valueAt(7, 18), finished: 7 },
   ]
@@ -348,11 +353,11 @@ test("a role another live session holds stops the pane after it has said it is r
   await mkdir(join(configDir, "projects", "p"), { recursive: true })
   await writeFile(join(configDir, "projects", "p", `${SESSION}.jsonl`), "{}\n")
   const registered = await daemonFixture("register.json")
-  const { posted, fetch } = daemonAnswering((path) =>
-    path.endsWith("/claims/register")
-      ? Response.json(registered)
-      : new Response(null, { status: 204 }),
-  )
+  const { posted, fetch } = daemonAnswering((path) => {
+    if (path.endsWith("/claims/register")) return Response.json(registered)
+    if (path.endsWith("/claims/task")) return Response.json({ task: null, finished: 0 })
+    return new Response(null, { status: 204 })
+  })
   const lines: string[] = []
   let stops = 0
   const claim = startLegionClaim({
@@ -376,6 +381,7 @@ test("a role another live session holds stops the pane after it has said it is r
   expect(posted.map(({ path }) => path)).toEqual([
     "/legion/v1/claims/register",
     "/legion/v1/claims/ready",
+    "/legion/v1/claims/task",
   ])
   expect(lines).toEqual([
     `claim boot failed after claims/register registered ${registered["claimToken"]}; stopping the pane so the daemon launches it again: Envoy role ${registered["claimToken"]} is held by live session ses_other`,
@@ -393,11 +399,11 @@ test("a claim refused by a standing claim under this session's own id is asked a
   await mkdir(join(configDir, "projects", "p"), { recursive: true })
   await writeFile(join(configDir, "projects", "p", `${SESSION}.jsonl`), "{}\n")
   const registered = await daemonFixture("register.json")
-  const { posted, fetch } = daemonAnswering((path) =>
-    path.endsWith("/claims/register")
-      ? Response.json(registered)
-      : new Response(null, { status: 204 }),
-  )
+  const { posted, fetch } = daemonAnswering((path) => {
+    if (path.endsWith("/claims/register")) return Response.json(registered)
+    if (path.endsWith("/claims/task")) return Response.json({ task: null, finished: 0 })
+    return new Response(null, { status: 204 })
+  })
   const setRoles: SetRoleInput[] = []
   const remembered: string[] = []
   const lines: string[] = []
@@ -450,6 +456,7 @@ test("a claim refused by a standing claim under this session's own id is asked a
   expect(posted.map(({ path }) => path)).toEqual([
     "/legion/v1/claims/register",
     "/legion/v1/claims/ready",
+    "/legion/v1/claims/task",
   ])
   expect(stops).toBe(0)
   // Said once, however many times the claim is pressed: the state is normal and self-resolving.
@@ -473,11 +480,11 @@ test("the wait asks on its own interval until the live window passes, and the gr
   await mkdir(join(configDir, "projects", "p"), { recursive: true })
   await writeFile(join(configDir, "projects", "p", `${SESSION}.jsonl`), "{}\n")
   const registered = await daemonFixture("register.json")
-  const { posted, fetch } = daemonAnswering((path) =>
-    path.endsWith("/claims/register")
-      ? Response.json(registered)
-      : new Response(null, { status: 204 }),
-  )
+  const { posted, fetch } = daemonAnswering((path) => {
+    if (path.endsWith("/claims/register")) return Response.json(registered)
+    if (path.endsWith("/claims/task")) return Response.json({ task: null, finished: 0 })
+    return new Response(null, { status: 204 })
+  })
   const setRoles: SetRoleInput[] = []
   let grantedAt: number | undefined
   /** What the pane had posted to the daemon when it first asked for its role. */
@@ -516,9 +523,14 @@ test("the wait asks on its own interval until the live window passes, and the gr
   })
   await claim.booted
 
-  // Ready was said before the asking began, and the schedule says when the grant came: the first
-  // attempt past the live window, 31 attempts in, 300,000 ms after the first.
-  expect(postedWhenAsked).toEqual(["/legion/v1/claims/register", "/legion/v1/claims/ready"])
+  // Ready was said, and the claim's value read, before the asking began, and the schedule says
+  // when the grant came: the first attempt past the live window, 31 attempts in, 300,000 ms after
+  // the first.
+  expect(postedWhenAsked).toEqual([
+    "/legion/v1/claims/register",
+    "/legion/v1/claims/ready",
+    "/legion/v1/claims/task",
+  ])
   expect(stops).toBe(0)
   expect(setRoles).toHaveLength(SESSION_LIVE_WINDOW_MS / ROLE_CLAIM_RETRY_MS + 1)
   expect(grantedAt).toBe(SESSION_LIVE_WINDOW_MS)
@@ -544,11 +556,11 @@ test("a claim under this session's own id that is never granted stops the pane o
   await mkdir(join(configDir, "projects", "p"), { recursive: true })
   await writeFile(join(configDir, "projects", "p", `${SESSION}.jsonl`), "{}\n")
   const registered = await daemonFixture("register.json")
-  const { posted, fetch } = daemonAnswering((path) =>
-    path.endsWith("/claims/register")
-      ? Response.json(registered)
-      : new Response(null, { status: 204 }),
-  )
+  const { posted, fetch } = daemonAnswering((path) => {
+    if (path.endsWith("/claims/register")) return Response.json(registered)
+    if (path.endsWith("/claims/task")) return Response.json({ task: null, finished: 0 })
+    return new Response(null, { status: 204 })
+  })
   const setRoles: SetRoleInput[] = []
   const lines: string[] = []
   let stops = 0
@@ -580,6 +592,7 @@ test("a claim under this session's own id that is never granted stops the pane o
   expect(posted.map(({ path }) => path)).toEqual([
     "/legion/v1/claims/register",
     "/legion/v1/claims/ready",
+    "/legion/v1/claims/task",
   ])
   expect(setRoles.length).toBeGreaterThan(1)
   expect(lines.at(-1)).toBe(
@@ -640,11 +653,11 @@ async function bootOn(env: Record<string, string>): Promise<{
   await mkdir(join(configDir, "projects", "-work"), { recursive: true })
   await writeFile(transcript, "{}\n")
   const registered = await daemonFixture("register.json")
-  const { posted, fetch } = daemonAnswering((path) =>
-    path.endsWith("/claims/register")
-      ? Response.json(registered)
-      : new Response(null, { status: 204 }),
-  )
+  const { posted, fetch } = daemonAnswering((path) => {
+    if (path.endsWith("/claims/register")) return Response.json(registered)
+    if (path.endsWith("/claims/task")) return Response.json({ task: null, finished: 0 })
+    return new Response(null, { status: 204 })
+  })
   const claim = startLegionClaim({
     pane,
     sessionID: SESSION,
@@ -678,6 +691,7 @@ test("in a pod whose launcher keeps the transcript, the registration waits for t
   expect(posted.map(({ path }) => path)).toEqual([
     "/legion/v1/claims/register",
     "/legion/v1/claims/ready",
+    "/legion/v1/claims/task",
   ])
   expect(posted[0]?.body["ompSessionFile"]).toBe(transcript)
 })
@@ -688,6 +702,7 @@ test("a pane no launcher keeps registers once the transcript exists, waiting for
   expect(posted.map(({ path }) => path)).toEqual([
     "/legion/v1/claims/register",
     "/legion/v1/claims/ready",
+    "/legion/v1/claims/task",
   ])
   expect(posted[0]?.body["ompSessionFile"]).toBe(transcript)
 })

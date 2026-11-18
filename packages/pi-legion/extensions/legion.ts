@@ -12,7 +12,11 @@ import {
   sessionEnvoySettings,
 } from "@legion/envoy-client/session-settings";
 import { createEnvoyClient } from "@legion/envoy-client/transport";
-import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
+import {
+  claimCaller,
+  createLegionDaemonClient,
+  type LegionDaemonClient,
+} from "@legion/pi-shared/daemon-client";
 import { currentSessionID } from "@legion/pi-shared/dispatch-session-id";
 import { nextFallbackModel } from "@legion/pi-shared/fallback-chain";
 import {
@@ -77,7 +81,7 @@ import { createStallTeller } from "../src/stall-evidence";
 import { createStallExits } from "../src/stall-exits";
 import { createStallProcesses, type StallProcessesDeps } from "../src/stall-recovery";
 import { createLegionTool } from "../src/tools";
-import { createTurnOutcomeReporter } from "../src/turn-outcome";
+import { createTurnOutcomeReporter, reportsProviderError } from "../src/turn-outcome";
 import {
   branchHoldsWorkspaceRecreatedNotice,
   type WorkspaceRecreatedNotice,
@@ -369,22 +373,33 @@ export default function legionExtension(pi: PiApi): void {
   };
 
   // Reports every turn this pane's claim ends to the daemon, refused or not (`src/turn-outcome.ts`).
-  // It runs for an architect's claim as well as a phase worker's: a provider that refuses turn
-  // after turn ends either of them the same way, and a `task` subagent, whose instance registers
-  // no claim of its own, reports nothing.
+  // It runs for an architect's claim as well as a phase worker's, and for the daemon-launched
+  // controller's: a provider that refuses turn after turn ends any of them the same way, and the
+  // report of a task's turn is what finishes that task. A `task` subagent, whose instance
+  // registers no claim of its own, reports nothing, and neither does an operator's controller,
+  // which takes no task.
   const turnOutcomes = createTurnOutcomeReporter({
     daemon: roleDaemon,
-    claim: (sessionID) => claimSession.capability(sessionID),
+    claim: (sessionID) => {
+      const claim = claimSession.capability(sessionID);
+      if (claim === undefined) return controllerSession.reportedClaim(sessionID);
+      return { caller: claimCaller(claim, claim.sessionID), role: claim.role, issue: claim.issue };
+    },
     log: logger,
   });
 
   // An accepted take's text, sent as the turn's user message (dispatch://INFRA-2811 R2): it is no
   // turn the Envoy entry sent in, so the phase-stall check reads it as the assignment
-  // (`inboundKind`). The take sends it only while no run of the session is going
-  // (`@legion/pi-shared/task-take`). On an idle host a plain send starts its turn, and while a
-  // compaction runs Oh My Pi holds the prompt until it ends; on a host setting a prompt up, a
-  // follow-up joins the run that setup starts, the first run after the take, which is the task's
-  // turn as both the take and the daemon count it.
+  // (`inboundKind`). The take sends it only while no run of the session is going, as its
+  // `agent_start` and `agent_end` count runs: when its answer finds no run going, or at the end of
+  // the run that was going when the take was accepted, which the take held the text for
+  // (`@legion/pi-shared/task-take`); a task is never sent into a run. On an idle host a plain send
+  // starts the task's turn, and while a compaction runs Oh My Pi holds the prompt until it ends.
+  // The follow-up is for one case alone: an answer that finds no run going on a host that is not
+  // idle, one setting up a prompt it already took (a card's turn or a person's input, between its
+  // `prompt` and its `agent_start`). The follow-up joins the run that setup starts, the first run
+  // to start after the accept, which the take counts as the task's turn (`runStarted`), as the
+  // daemon does, so its end names the task's number.
   const runTask = (text: string): void => {
     if (paneContext?.isIdle?.() === false) pi.sendUserMessage(text, { deliverAs: "followUp" });
     else pi.sendUserMessage(text);
@@ -767,9 +782,12 @@ export default function legionExtension(pi: PiApi): void {
     }
   });
   pi.on("session_shutdown", async (_event, context) => {
-    clearStartupTurn(context.sessionManager.getSessionId());
+    const sessionID = context.sessionManager.getSessionId();
+    clearStartupTurn(sessionID);
     // Whatever this session had open is not this watch's business any more.
     stallWatch?.sessionChanged();
+    // A turn report still being sent for this session stops with it (`src/turn-outcome.ts`).
+    turnOutcomes.sessionEnded(sessionID);
   });
   // Every provider request of this session passes here, so this is where the session goes back
   // on the model it fell back from: the host checks its own restore only when a new prompt
@@ -871,16 +889,22 @@ export default function legionExtension(pi: PiApi): void {
 
   // Every turn this pane's claim ends, as the daemon counts them: `agent_end` is the one event
   // that says how a turn ended, so it is where the outcome is reported (`src/turn-outcome.ts`),
-  // naming the task whose turn it was. The host does not await this handler and nothing of the
-  // turn waits on the report, but the report is awaited inside it all the same, so its failure
-  // is the handler's own promise rather than a floating one, and the reporter never rejects. The
-  // takes hear the end before the report goes: a take the end of the run allows is asked at once.
+  // naming the task whose turn it was, the claim's or the daemon-launched controller's. The host
+  // does not await this handler and nothing of the turn waits on the report, which is sent until
+  // the daemon answers it, but the report is awaited inside it all the same, so its failure is the
+  // handler's own promise rather than a floating one, and the reporter never rejects. The takes
+  // hear the end before the report goes, with whether the report carries a provider error
+  // (`reportsProviderError`): a task's turn reported without one is finished by that report, so
+  // its take holds the number finished from here on; a take the end of the run allows is asked at
+  // once, and a text a take held for the end of this run is sent now, to start the task's own turn.
   pi.on("agent_end", async (event, context) => {
     const sessionID = context.sessionManager.getSessionId();
     let task: number | undefined;
     if (!subagentEvent(context)) {
-      task = claimSession.runEnded();
-      controllerSession.runEnded(sessionID);
+      const providerError = reportsProviderError(event);
+      const claimed = claimSession.runEnded(providerError);
+      const controlled = controllerSession.runEnded(sessionID, providerError);
+      task = claimed ?? controlled;
     }
     await turnOutcomes.report(sessionID, event, task);
   });

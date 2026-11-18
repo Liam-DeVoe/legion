@@ -155,8 +155,8 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     await mkdir(join(configDir, "projects", "-work"), { recursive: true })
     await writeFile(transcript, "{}\n")
     await waitFor(
-      async () => daemonCalls.some(({ path }) => path === "/legion/v1/claims/ready"),
-      "the pane to say it is ready",
+      async () => daemonCalls.some(({ path }) => path === "/legion/v1/claims/task"),
+      "the pane to say it is ready and read its task value",
     )
     expect(daemonCalls).toEqual([
       {
@@ -171,6 +171,15 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
       },
       {
         path: "/legion/v1/claims/ready",
+        body: {
+          claimToken,
+          sessionId: SESSION,
+          secret: registered["secret"],
+          generation: registered["generation"],
+        },
+      },
+      {
+        path: "/legion/v1/claims/task",
         body: {
           claimToken,
           sessionId: SESSION,

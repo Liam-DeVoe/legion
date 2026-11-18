@@ -6,7 +6,12 @@ import {
 } from "@legion/contracts";
 import type { LegionGrant } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
-import { LegionDaemonApiError, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
+import {
+  type ClaimCaller,
+  claimCaller,
+  LegionDaemonApiError,
+  type LegionDaemonClient,
+} from "@legion/pi-shared/daemon-client";
 import type { CommandContext, PiApi, SessionContext } from "@legion/pi-shared/pi-types";
 import { claimEnvoyRole, subscribeLegionNotice } from "@legion/pi-shared/role-claim-bridge";
 import {
@@ -15,8 +20,7 @@ import {
   markStartupTurnSent,
 } from "@legion/pi-shared/startup-turn";
 import { recordBootstrappedSession } from "@legion/pi-shared/subagent-session";
-import { createTaskTake, type TaskTake, type TaskTakeCaller } from "@legion/pi-shared/task-take";
-import { takeTaskSignals, taskTurnMark } from "@legion/pi-shared/task-values";
+import { type ClaimTaskTake, takeClaimTask } from "@legion/pi-shared/task-take";
 import { logger } from "@oh-my-pi/pi-utils";
 import pkg from "../package.json";
 import {
@@ -26,17 +30,16 @@ import {
   requiredSecret,
 } from "./classify";
 import { daemonControllerSlackChannels, daemonLaunchedController } from "./slack-channels";
+import type { ReportedClaim } from "./turn-outcome";
 
 type PersistedTranscript = (
   context: CommandContext | SessionContext
 ) => Promise<{ readonly sessionFile: string; readonly agentId: string }>;
 
-/** The daemon-launched controller's take of its claim's task: the session it takes for, the take
- * (`@legion/pi-shared/task-take`), and its read of the claim's value from the daemon. */
-interface Taking {
-  readonly session: string;
-  readonly take: TaskTake;
-  readonly read: () => Promise<void>;
+/** The daemon-launched controller's take of its claim's task (`@legion/pi-shared/task-take`): the
+ * take, its read of the claim's value from the daemon, and the claim it takes for. */
+interface Taking extends ClaimTaskTake {
+  readonly caller: ClaimCaller;
 }
 
 /** How far one claim got, which its caller's notice reports. */
@@ -57,8 +60,17 @@ export interface ControllerSession {
    * start task no longer finds the host idle, and the first run after its accepted take is the
    * start task's turn. Another session's run changes nothing. */
   readonly runStarted: (sessionID: string) => void;
-  /** That run ended (`agent_end`). */
-  readonly runEnded: (sessionID: string) => void;
+  /** That run ended (`agent_end`): the number of the task whose turn it was, which the turn's
+   * outcome report names, or undefined for a run of no task, another session's, or an
+   * operator's controller, which takes no task. `providerError` is whether that report carries
+   * the provider's failure; without one the take holds the task finished (`TaskTake.runEnded`). */
+  readonly runEnded: (sessionID: string, providerError: boolean) => number | undefined;
+  /** The claim whose turns `sessionID` reports (`src/turn-outcome.ts`): the daemon-launched
+   * controller's, for the session its take was made for, so the end of its start task's turn
+   * names that task's number, which is what finishes it, and a provider error on it reaches the
+   * daemon's provider-error wait. Undefined for any other session, and for an operator's
+   * controller, which takes no task. */
+  readonly reportedClaim: (sessionID: string) => ReportedClaim | undefined;
 }
 
 /** The host widget a session change's re-claim shows its outcome in (`reclaimAfterSessionChange`). */
@@ -125,40 +137,20 @@ export function createControllerSession(deps: {
   /**
    * The take of the daemon-launched controller's task for the claim `caller` names, replacing any
    * earlier one: the daemon writes the value of the controller's start task at each ready, and the
-   * session takes it as any claim takes its task. The values the Envoy entry hands over reach it
-   * from here on (`takeTaskSignals`), and each new epoch of the session's relay reads the value
-   * from the daemon again. The task-turn mark it keeps names the caller's session. The replaced
+   * session takes it as any claim takes its task (`takeClaimTask`): the values the Envoy entry
+   * hands over reach it from here on, each new epoch of the session's relay reads the value from
+   * the daemon again, and the task-turn mark it keeps names the caller's session. The replaced
    * take is closed: what it was still sending stops, an answer that still arrives for it changes
    * nothing, and its mark is cleared, so a late answer for a registration this claim replaced can
    * neither run a text nor take down the mark of the take that replaces it.
    */
-  const takeFor = (client: LegionDaemonClient, caller: TaskTakeCaller): Taking => {
+  const takeFor = (client: LegionDaemonClient, caller: ClaimCaller): Taking => {
     taking?.take.close();
-    const take = createTaskTake({
-      daemon: client,
+    const entry = {
+      ...takeClaimTask({ daemon: client, caller, run: deps.runTask, log: logger }),
       caller,
-      run: deps.runTask,
-      setPending: taskTurnMark(caller.sessionId),
-      log: logger,
-    });
-    const read = async (): Promise<void> => {
-      try {
-        take.read(await client.task(caller));
-      } catch (error) {
-        logger.warn(
-          "legion: the controller's claims/task read failed; its value reaches this session with the daemon's next write of it",
-          { error: messageFor(error) }
-        );
-      }
     };
-    const entry = { session: caller.sessionId, take, read };
     taking = entry;
-    takeTaskSignals((signal) => {
-      const current = taking;
-      if (current === undefined || signal.session !== current.session) return;
-      if (signal.kind === "value") current.take.relayed(signal.value);
-      else void current.read();
-    });
     return entry;
   };
 
@@ -241,11 +233,12 @@ export function createControllerSession(deps: {
    * a capability: it claims at `session_start` (`handleSessionStart`), registers with that token,
    * as every pane does, subscribes to each Slack channel its launch names
    * (`daemonControllerSlackChannels`) for as long as it holds the role, and once it holds the role
-   * and the topics it reports ready on `claims/ready`, at which the daemon writes the value of its
-   * start task; the session takes that task as any claim takes its task, and the take's text is
-   * its first turn. It marks `startupTurn` as sent right before that report. Any step of its claim
-   * that fails exits Oh My Pi, so the daemon relaunches it, as a pane's failed boot does. A root
-   * architect's or phase worker's pane carries a boot token too, its own claim's:
+   * and the topics it reports ready on `claims/ready`, marking `startupTurn` as sent right before
+   * that ready, at which the daemon writes the value of its start task; the session takes that
+   * task as any claim takes its task, the take's text is its first turn, and that turn's end is
+   * reported naming the task's number, as any claim's is (`reportedClaim`, `runEnded`). Any step
+   * of its claim that fails exits Oh My Pi, so the daemon relaunches it, as a pane's failed boot
+   * does. A root architect's or phase worker's pane carries a boot token too, its own claim's:
    * `/legion-claim-controller` run there is a takeover by hand like any other, which needs the
    * capability and stops before any daemon call without it.
    *
@@ -397,12 +390,7 @@ export function createControllerSession(deps: {
       startMessageSent = true;
     }
     // Before the role claim, so a value the listener relays when the role is claimed reaches it.
-    const caller: TaskTakeCaller = {
-      claimToken: registration.claimToken,
-      sessionId: sessionID,
-      secret: registration.secret,
-      generation: registration.generation,
-    };
+    const caller = claimCaller(registration, sessionID);
     const taken = supervised ? takeFor(client, caller) : undefined;
     await claimEnvoyRole(sessionID, registration.claimToken, envoyContext);
     await subscribeLegionNotice(
@@ -665,10 +653,13 @@ export function createControllerSession(deps: {
     isClaimedSession,
     mintGrant,
     runStarted: (sessionID) => {
-      if (taking?.session === sessionID) taking.take.runStarted();
+      if (taking?.caller.sessionId === sessionID) taking.take.runStarted();
     },
-    runEnded: (sessionID) => {
-      if (taking?.session === sessionID) taking.take.runEnded();
-    },
+    runEnded: (sessionID, providerError) =>
+      taking?.caller.sessionId === sessionID ? taking.take.runEnded(providerError) : undefined,
+    reportedClaim: (sessionID) =>
+      taking?.caller.sessionId === sessionID
+        ? { caller: taking.caller, role: "controller" }
+        : undefined,
   };
 }

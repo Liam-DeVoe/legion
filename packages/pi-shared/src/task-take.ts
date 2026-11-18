@@ -1,7 +1,8 @@
 import type { LegionTake, LegionTask } from "@legion/contracts/legion-api";
 import type { RelayTaskValue } from "@legion/envoy-client/consumer-delivery";
 import { messageFor } from "@legion/envoy-client/errors";
-import { daemonUnreachable, LegionDaemonApiError, type LegionDaemonClient } from "./daemon-client";
+import { type ClaimCaller, type LegionDaemonClient, sendUntilAnswered } from "./daemon-client";
+import { takeTaskSignals, taskTurnMark } from "./task-values";
 
 /**
  * A worker's take of its claim's task (dispatch://INFRA-2811 R2). The daemon writes the number of
@@ -22,51 +23,41 @@ import { daemonUnreachable, LegionDaemonApiError, type LegionDaemonClient } from
  * From the moment it holds a value it will ask about until the task's turn starts, or the take is
  * refused or dropped, the take holds the task-turn mark (`setPending`), which keeps a card that
  * finds the session idle from starting the turn the take goes into
- * (`packages/pi-envoy/src/card-wake.ts`). The first run that starts after an accepted take is that
- * task's turn, as the daemon counts it, and its end is reported naming the task's number
- * (`runEnded`).
+ * (`packages/pi-envoy/src/card-wake.ts`). The first run that starts after an accepted take's text
+ * was sent is that task's turn, as the daemon counts it, and its end is reported naming the
+ * task's number (`runEnded`); for a worker on the current contract that report alone finishes
+ * the task, so from the end of a turn whose report carries no provider error the take holds the
+ * number finished, and a newer revision of it is owed nothing.
  *
- * A take the daemon accepts while a run is going — the run started before the daemon heard of it
- * — has its text held until that run's `agent_end`, and sent then, so it starts a run of its own.
- * Oh My Pi folds a follow-up sent during a run into that run: its agent loop reads the follow-up
- * queue once the run's last step has stopped (`getFollowUpMessages`) and goes on in the same run,
- * with no `agent_end` or `agent_start` between, so a text sent then would run inside a run that
- * started before the take and is labelled as no task's.
+ * Nothing sends a task into a busy worker (R5). A take the daemon accepts while a run is going —
+ * the run started after the daemon decided the take and before its answer came back, or while a
+ * take sent again after a lost answer waited — has its text held until that run's `agent_end`,
+ * and sent then, so it starts a run of its own. The daemon gave the run that was going to the
+ * take, as the first to start after its accept; that run's end is reported naming no task, which
+ * puts the take back to awaiting its turn on the daemon (the plan's decisions 8 and 9), and the
+ * run the held text starts is then the task's turn on both sides, its end the report that names
+ * the number. The text is never sent as a follow-up into the running run: Oh My Pi folds a
+ * follow-up sent during a run into that run (its agent loop reads the follow-up queue once the
+ * run's last step has stopped, `getFollowUpMessages`, and goes on with no `agent_end` or
+ * `agent_start` between), so the task would run inside a run whose end names no task.
  *
- * A seen report or a take that got no answer — a refused, reset or closed connection, a DNS
- * failure, no answer within `TASK_ANSWER_TIMEOUT_MS`, or a 502, 503 or 504 that names no Legion
- * error code — is sent again, the same request, after a wait that doubles from
- * `TASK_RESEND_FIRST_DELAY_MS` to `TASK_RESEND_MAX_DELAY_MS`, with no attempt limit, until the
- * daemon answers it or a newer value replaces it: a take the daemon never received would
- * otherwise be lost, since the worker asks once per revision. Such a re-send is the same ask, not
- * a second one, and the daemon answers a take repeated for a number it accepted with the same
- * text. Every refusal of these routes names a code, so a coded refusal is an answer and is not
- * sent again.
+ * A seen report or a take is sent through `sendUntilAnswered` (`./daemon-client`): one the daemon
+ * gave no answer to — a refused, reset or closed connection, a DNS failure, no answer within
+ * `DAEMON_ANSWER_TIMEOUT_MS`, or a 502, 503 or 504 that names no Legion error code — is sent
+ * again, the same request, after a doubling wait with no attempt limit, until the daemon answers
+ * it or a newer value replaces it: a take the daemon never received would otherwise be lost, since
+ * the worker asks once per revision. Such a re-send is the same ask, not a second one, and the
+ * daemon answers a take repeated for the number it accepted with the same text until that task
+ * finishes, whether or not its turn has started. Every refusal of these routes names a code, so a
+ * coded refusal is an answer and is not sent again.
  *
  * A take its host replaced (`close`) does nothing more: what it was sending stops, an answer that
  * still arrives for it is dropped, and its task-turn mark is cleared.
  */
 
-/** How long one attempt of a seen report or a take waits for the daemon's answer before the same
- * request is sent again. */
-export const TASK_ANSWER_TIMEOUT_MS = 5 * 60_000;
-
-/** The first wait before a seen report or a take with no answer is sent again; each wait after it
- * doubles, up to `TASK_RESEND_MAX_DELAY_MS`, and nothing limits the attempts. */
-export const TASK_RESEND_FIRST_DELAY_MS = 500;
-export const TASK_RESEND_MAX_DELAY_MS = 30_000;
-
 /** A claim's task value: the task's number, and the bucket's epoch and revision of the write that
  * put it there. */
 export type TaskValue = NonNullable<LegionTask["task"]>;
-
-/** The claim a take speaks for, in the agent form of the task routes. */
-export interface TaskTakeCaller {
-  readonly claimToken: string;
-  readonly sessionId: string;
-  readonly secret: string;
-  readonly generation: number;
-}
 
 export interface TaskTakeLog {
   readonly info: (message: string, fields?: Record<string, unknown>) => void;
@@ -75,7 +66,7 @@ export interface TaskTakeLog {
 
 export interface TaskTakeDeps {
   readonly daemon: Pick<LegionDaemonClient, "taskSeen" | "take">;
-  readonly caller: TaskTakeCaller;
+  readonly caller: ClaimCaller;
   /** Runs an accepted take's text as the turn's user message, in the form that starts a turn on
    * an idle host and waits behind a setup or a compaction that runs. */
   readonly run: (text: string) => void;
@@ -101,52 +92,23 @@ export interface TaskTake {
   readonly ready: () => void;
   /** A run of the claim's session started (its `agent_start`). */
   readonly runStarted: () => void;
-  /** That run ended (its `agent_end`): the number of the task whose turn it was, which the turn's
-   * report names, or undefined for a run of no task. */
-  readonly runEnded: () => number | undefined;
+  /**
+   * That run ended (its `agent_end`): the number of the task whose turn it was, which the turn's
+   * report names, or undefined for a run of no task. `providerError` is whether that report
+   * carries the provider's failure (`reportsProviderError` in `packages/pi-legion/src/turn-outcome.ts`).
+   * The daemon finishes a current claim's task on a report naming its number with no provider
+   * error, so from such a run's end the take holds that number finished, as a reading's
+   * `finished` does: a newer revision of the same number, which the daemon may write before the
+   * report lands (a daemon start writes every owed value again) and would answer with the same
+   * text while the task is unfinished, is owed nothing and runs nothing a second time. A report
+   * with a provider error finishes nothing: the daemon takes the task back, and the take takes
+   * that number again at the revision the daemon writes after its wait.
+   */
+  readonly runEnded: (providerError: boolean) => number | undefined;
   /** The take is replaced by another of the same host: every request it is sending stops, an
    * answer that still arrives for one changes nothing, its task-turn mark is cleared, and every
    * call after this one does nothing. */
   readonly close: () => void;
-}
-
-/** An attempt the daemon did not answer within `TASK_ANSWER_TIMEOUT_MS`. */
-class TaskAnswerTimeout extends Error {
-  constructor(what: string) {
-    super(`${what} had no answer within ${TASK_ANSWER_TIMEOUT_MS / 60_000} minutes`);
-    this.name = "TaskAnswerTimeout";
-  }
-}
-
-/** Whether `error` is an attempt the daemon gave no answer to, which is sent again: every
- * failure the module's comment names, and nothing the daemon itself answered. */
-function unanswered(error: unknown): boolean {
-  if (error instanceof TaskAnswerTimeout || daemonUnreachable(error) !== undefined) return true;
-  if (error instanceof LegionDaemonApiError) {
-    return error.status === 504 && error.code === undefined;
-  }
-  if (!(error instanceof Error)) return false;
-  const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
-  return code === "ENOTFOUND" || code === "EAI_AGAIN";
-}
-
-function timerWait(ms: number, signal: AbortSignal): Promise<boolean> {
-  const { promise, resolve } = Promise.withResolvers<boolean>();
-  if (signal.aborted) {
-    resolve(false);
-    return promise;
-  }
-  const stop = () => {
-    clearTimeout(timer);
-    resolve(false);
-  };
-  const timer = setTimeout(() => {
-    signal.removeEventListener("abort", stop);
-    resolve(true);
-  }, ms);
-  timer.unref?.();
-  signal.addEventListener("abort", stop, { once: true });
-  return promise;
 }
 
 /** One request being sent until it is answered: the pair it names, and what replaces it. */
@@ -160,7 +122,6 @@ const keyOf = (value: { readonly epoch: string; readonly revision: number }): st
 
 export function createTaskTake(deps: TaskTakeDeps): TaskTake {
   const { caller, log } = deps;
-  const wait = deps.wait ?? timerWait;
   // The newest value this process was handed, and the number of the last task the daemon said
   // the claim finished: a value naming that number or a lower one is owed nothing.
   let held: TaskValue | undefined;
@@ -184,49 +145,6 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
   const owed = (value: TaskValue | undefined): value is TaskValue =>
     value !== undefined && value.number > finished;
 
-  /**
-   * Sends `call` until the daemon answers it, or `stop` aborts: each attempt bounded by
-   * `TASK_ANSWER_TIMEOUT_MS`, and one the daemon did not answer sent again after a doubling wait.
-   * A failure the daemon answered, and the stop, reject.
-   */
-  const untilAnswered = async <T>(
-    what: string,
-    stop: AbortSignal,
-    call: (signal: AbortSignal) => Promise<T>
-  ): Promise<T> => {
-    let delay = TASK_RESEND_FIRST_DELAY_MS;
-    let told = false;
-    for (;;) {
-      stop.throwIfAborted();
-      const attempt = new AbortController();
-      const forward = () => attempt.abort(stop.reason);
-      stop.addEventListener("abort", forward, { once: true });
-      void wait(TASK_ANSWER_TIMEOUT_MS, attempt.signal).then((passed) => {
-        if (passed) attempt.abort(new TaskAnswerTimeout(what));
-      });
-      try {
-        return await call(attempt.signal);
-      } catch (error) {
-        stop.throwIfAborted();
-        if (!unanswered(error)) throw error;
-        if (!told) {
-          told = true;
-          log.warn(
-            `legion: ${what} got no answer from the daemon; it is sent again until it does`,
-            {
-              error: messageFor(error),
-            }
-          );
-        }
-      } finally {
-        stop.removeEventListener("abort", forward);
-        attempt.abort();
-      }
-      await wait(delay, stop);
-      delay = Math.min(delay * 2, TASK_RESEND_MAX_DELAY_MS);
-    }
-  };
-
   const request = (value: TaskValue) => ({
     ...caller,
     number: value.number,
@@ -240,8 +158,10 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
     seen.add(key);
     const sending: Sending = { key, stop: new AbortController() };
     seeing = sending;
-    untilAnswered("claims/task-seen", sending.stop.signal, (signal) =>
-      deps.daemon.taskSeen(request(value), { signal })
+    sendUntilAnswered(
+      "claims/task-seen",
+      (signal) => deps.daemon.taskSeen(request(value), { signal }),
+      { stop: sending.stop.signal, warn: log.warn, wait: deps.wait }
     ).then(
       () => {
         if (seeing === sending) seeing = undefined;
@@ -267,12 +187,15 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
     });
     switch (answer.outcome) {
       case "accepted":
-        // A take sent again for a number already accepted, whose turn has not started, is
-        // answered the same text: the text that went for the first one runs once.
-        if (accepted === value.number) return;
+        // The daemon answers a take of the number it accepted with the same text until that task
+        // finishes, whether or not its turn has started: a take sent again at a newer revision
+        // of the same number, before the task's turn, during it, or after its end was reported
+        // with no provider error (`runEnded`), runs nothing more.
+        if (!owed(value) || accepted === value.number || running === value.number) return;
         accepted = value.number;
-        // A follow-up sent during a run is folded into that run, so the text waits for its end
-        // and starts a run of its own then (`runEnded`).
+        // Nothing goes into a busy worker: a text accepted while a run is going waits for that
+        // run's end and starts a run of its own then (`runEnded`), and that run is the task's
+        // turn. Sent now, it goes to an idle host (`run`).
         if (busy) heldText = answer.text;
         else deps.run(answer.text);
         return;
@@ -287,9 +210,11 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
   const ask = (value: TaskValue, key: string): void => {
     const sending: Sending = { key, stop: new AbortController() };
     taking = sending;
-    untilAnswered("claims/take", sending.stop.signal, (signal) =>
-      deps.daemon.take(request(value), { signal })
-    ).then(
+    sendUntilAnswered("claims/take", (signal) => deps.daemon.take(request(value), { signal }), {
+      stop: sending.stop.signal,
+      warn: log.warn,
+      wait: deps.wait,
+    }).then(
       (answer) => {
         if (taking !== sending) return;
         taking = undefined;
@@ -379,17 +304,25 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
     runStarted: () => {
       if (closed) return;
       busy = true;
+      // The first run that starts after an accepted take's text was sent is the task's turn. A
+      // text still held waits for the end of a run that started before it was accepted, so a run
+      // that starts before that end is not its turn.
       if (accepted !== undefined && heldText === undefined) {
         running = accepted;
         accepted = undefined;
       }
       settle();
     },
-    runEnded: () => {
+    runEnded: (providerError) => {
       if (closed) return undefined;
       busy = false;
       const ended = running;
       running = undefined;
+      // That run's report names the task with no provider error, which finishes it on the
+      // daemon: the number is owed nothing from here on, before the report has even landed.
+      if (ended !== undefined && !providerError) finished = Math.max(finished, ended);
+      // A text accepted during the run that just ended: that run was not the task's turn, so its
+      // end names no task (`ended` is undefined), and the text starts the next run, the task's.
       if (heldText !== undefined) {
         const text = heldText;
         heldText = undefined;
@@ -407,4 +340,55 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       deps.setPending(false);
     },
   };
+}
+
+/** A claim's take as a host runs it (`takeClaimTask`): the take, and its read of the claim's value
+ * from the daemon. */
+export interface ClaimTaskTake {
+  readonly take: TaskTake;
+  /** Reads the claim's value from the daemon (`claims/task`) and hands it to the take. A read that
+   * fails is logged and asks nothing again, since the daemon's next write of the value reaches
+   * the session as well. Never rejects. */
+  readonly read: () => Promise<void>;
+}
+
+/**
+ * The take of the claim `caller` names, as an Oh My Pi host runs it, the one way pi-legion's claim
+ * session and its daemon-launched controller build it: the take (`createTaskTake`), whose
+ * task-turn mark names the caller's session (`taskTurnMark`); its read of the claim's value; and
+ * the one taker of the task signals the Envoy entry hands over (`takeTaskSignals`), which hands
+ * the take every value relayed for that session and reads the value again at each new epoch of
+ * the session's relay. A later call replaces this one's taker: a host that replaces its take
+ * closes the one it replaced (`TaskTake.close`).
+ */
+export function takeClaimTask(deps: {
+  readonly daemon: Pick<LegionDaemonClient, "task" | "taskSeen" | "take">;
+  readonly caller: ClaimCaller;
+  readonly run: (text: string) => void;
+  readonly log: TaskTakeLog;
+}): ClaimTaskTake {
+  const { daemon, caller, log } = deps;
+  const take = createTaskTake({
+    daemon,
+    caller,
+    run: deps.run,
+    setPending: taskTurnMark(caller.sessionId),
+    log,
+  });
+  const read = async (): Promise<void> => {
+    try {
+      take.read(await daemon.task(caller));
+    } catch (error) {
+      log.warn(
+        "legion: a claims/task read failed; the claim's value reaches this session with the daemon's next write of it",
+        { error: messageFor(error) }
+      );
+    }
+  };
+  takeTaskSignals((signal) => {
+    if (signal.session !== caller.sessionId) return;
+    if (signal.kind === "value") take.relayed(signal.value);
+    else void read();
+  });
+  return { take, read };
 }

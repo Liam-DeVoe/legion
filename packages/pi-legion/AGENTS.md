@@ -411,17 +411,21 @@ stale `pluginContract` is one such 4xx, so a pane that registers on an old contr
 daemon-side claim is already being relaunched onto the current plugin, under Kubernetes through a
 kept-pod install (docs/kubernetes.md "Contract discipline"), never a new pod; jj session
 attribution, before the capability is set; `claims/ready`, retried three times a second apart on
-a 5xx or transport failure only; and right after it the Envoy role, which is the claim token,
+a 5xx or transport failure only; the claim's task value read again (`claims/task`), since the
+ready decision can write one (the relaunch record's task) that the registration's answer did not
+carry; and right after that read the Envoy role, which is the claim token,
 the topic the daemon sends an architect every notice on (no claim subscribes to an issue's notice
 topic, so no phase worker is woken by an architect's notice), and the key the listener relays the
 claim's task value for (dispatch://INFRA-2811). The daemon pushes no task: the claim
-holds its value from the registration's answer on (`@legion/pi-shared/task-take`), sets the
-task-turn mark before the role is claimed, so the lane the listener kept for the role and hands
-over at the claim starts no turn ahead of the task, and takes the task once its ready has
+holds its value from the registration's answer and that read on (`@legion/pi-shared/task-take`),
+sets the task-turn mark before the role is claimed, so the lane the listener kept for the role and
+hands over at the claim starts no turn ahead of the task, and takes the task once its ready has
 answered and its host is idle, from a timer that fires after `session_start` has returned. The
 accepted take's text is sent as the session's user message (`runTask` in `extensions/legion.ts`,
-plain on an idle host, a follow-up on one setting a prompt up), which no record of Envoy's names,
-so it is the assignment. A regain of the role reads the claim's value again (`claims/task`), and
+plain on an idle host, a follow-up on one setting a prompt up that no run of it has started),
+which no record of Envoy's names, so it is the assignment. It is never sent into a run: a text
+accepted while a run goes on waits for that run's end, which is reported naming no task, and then
+starts the task's own turn. A regain of the role reads the claim's value again (`claims/task`), and
 so does each new epoch of the session's relay, which the Envoy entry signals through the
 interface. The boot measures no capability rows, and its `claims/ready` carries no report. The
 session measures its rows afterwards instead, on the 5 s interval
@@ -798,11 +802,16 @@ counts toward no launch failure: on a task's turn it is the provider-error ladde
 (dispatch://INFRA-956), which keeps the task and gives it to the same session again after a
 wait, and tells the project's controller after six such turns in a row. Only a refusal that
 carries none counts toward the trailing run of refusals that fails the claim once it reaches
-`launch_failure_limit`. A report that cannot be sent is retried only while the daemon is
-restarting and otherwise warned about once: a turn the daemon never hears of is counted neither
-way. The reporter runs for an architect's
-claim as well as a phase worker's, and for a `task` subagent, whose instance registers no claim,
-not at all.
+`launch_failure_limit`. The report of a task's turn names its number, and for a worker on the
+current contract it is the only thing that finishes the task, so a report is sent until the
+daemon answers it, by the policy a take is sent by (`sendUntilAnswered` in
+`@legion/pi-shared/daemon-client`): a refused, reset or closed connection, a DNS failure, no answer
+within five minutes, a 502, 503 or 504 with no Legion error code, and any 500 (the daemon's own
+failure to record it) are sent again, the same report, with backoff and no attempt limit, until a
+2xx or a refusal, which is warned about once; the session's end (`session_shutdown`) stops it. The
+reporter runs for an architect's claim as well as a phase worker's, and for the daemon-launched
+controller's, whose start task's turn names that task's number; for an operator's controller,
+which takes no task, and a `task` subagent, whose instance registers no claim, not at all.
 
 Four variables tune it, read from the worker's own environment (`@legion/pi-shared/stall-limits`;
 the daemon passes on whichever its own environment holds, to a pane and to a pod alike):

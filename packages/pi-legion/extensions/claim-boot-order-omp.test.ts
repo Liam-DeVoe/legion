@@ -125,9 +125,13 @@ interface Worker {
  * Starts one phase worker against its stand-in: the daemon's claim and task routes, the Envoy
  * listener that keeps one message for the worker's role, and the model gateway. `task` is the
  * task the daemon owes the claim, which its registration answers; none for a role brought back
- * with nothing owed.
+ * with nothing owed. `atReady` is a task the daemon's ready decision writes, as it writes the
+ * relaunch record's task, after the registration answered with none.
  */
-async function startWorker(options: { readonly task: string | undefined }): Promise<Worker> {
+async function startWorker(options: {
+  readonly task: string | undefined;
+  readonly atReady?: string;
+}): Promise<Worker> {
   const { binary, nats } = setup();
   const { root, home, workspace, sessions } = await ompRoot(
     binary,
@@ -221,7 +225,10 @@ async function startWorker(options: { readonly task: string | undefined }): Prom
     if (url.pathname === "/legion/v1/claims/ready") {
       // The boot's own, right after which the role is claimed; a capability report later in the
       // session's life is a ready of its own and moves nothing.
-      if (!bootOrder.includes("ready")) bootOrder.push("ready");
+      if (!bootOrder.includes("ready")) {
+        bootOrder.push("ready");
+        if (options.atReady !== undefined) tasks.give(options.atReady);
+      }
       return new Response(null, { status: 204 });
     }
     if (url.pathname === "/legion/v1/grants") {
@@ -401,6 +408,33 @@ test.skipIf(skip)(
     expect(worker.turns).toHaveLength(1);
     expect(worker.takes()).toEqual([]);
     woken.reply("Read the message.");
+  },
+  CASE_TIMEOUT_MS
+);
+
+// The third state (finding 11 of review round 1): the registration answers no task, and the
+// daemon's ready decision writes one, as it writes the relaunch record's task. The listener would
+// relay that value only once the role claim changed the role's holder, after it handed the kept
+// message over, so the boot reads the value once the ready has answered and before it claims the
+// role: the take holds the task-turn mark when the kept message arrives, and the task is the
+// session's first turn, as in the first state.
+test.skipIf(skip)(
+  "a task the ready decision writes is the session's first turn, and the message kept for its role is held for it",
+  async () => {
+    const worker = await startWorker({ task: undefined, atReady: TASK });
+    await worker.handedOver("the session to take the message kept for its role");
+
+    const task = await worker.nextTurn("the task's model request");
+    expect(conversation(task.request)).toContain(TASK);
+    expect(conversation(task.request)).not.toContain("arrived with no turn to read");
+    expect(worker.takes()).toHaveLength(1);
+    expect(worker.bootOrder()).toEqual(["ready", "role claim"]);
+    expect(await worker.handOverOf(worker.kept)).toBe("task-pending");
+    task.reply("WAITING on the review of the change.");
+
+    const wake = await worker.nextTurn("the held message's wake");
+    expect(conversation(wake.request)).toContain(worker.kept);
+    wake.reply("Read the message.");
   },
   CASE_TIMEOUT_MS
 );

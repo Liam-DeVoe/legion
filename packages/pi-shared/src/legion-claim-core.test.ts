@@ -79,7 +79,7 @@ const caller = () => ({
 });
 const readyBody = () => JSON.stringify(caller());
 
-test("registers, hands the registration to afterRegister, records the capability, readies without a capability report, claims the role right after, and reads the task value again on a regain of its role", async () => {
+test("registers, hands the registration to afterRegister, records the capability, readies without a capability report, reads the task value, claims the role right after, and reads the value again on a regain of its role", async () => {
   const { host, steps, lines, capabilities, values, regain } = claimHost({
     overrides: {
       afterRegister: async (claim) => {
@@ -91,13 +91,16 @@ test("registers, hands the registration to afterRegister, records the capability
   const boot = await bootLegionClaim(host);
 
   expect(boot).toBeDefined();
-  // The registration's value goes to the host before the ready and the role claim: the take's
-  // mark stands before the role's kept lane is handed over.
+  // The registration's value goes to the host before the ready, and the value read once the
+  // ready has answered goes to it before the role claim: the take's mark stands before the
+  // role's kept lane is handed over.
   expect(steps).toEqual([
     `claims/register ${JSON.stringify(registration)}`,
     `afterRegister ${claimToken} task 4`,
     "setCapability",
     `claims/ready ${readyBody()}`,
+    `claims/task ${JSON.stringify(caller())}`,
+    "taskValue",
     `claimRole ${claimToken}`,
     "onRoleRegained",
   ]);
@@ -117,23 +120,73 @@ test("registers, hands the registration to afterRegister, records the capability
   // Another role's regain reads nothing; this claim's reads its value, and sends no ready.
   await regain()?.("some-other-role", "reclaimed");
   await regain()?.(claimToken, "reregistered");
-  expect(steps.slice(6)).toEqual([`claims/task ${JSON.stringify(caller())}`, "taskValue"]);
-  expect(values).toEqual([current as LegionTask]);
+  expect(steps.slice(8)).toEqual([`claims/task ${JSON.stringify(caller())}`, "taskValue"]);
+  expect(values).toEqual([current as LegionTask, current as LegionTask]);
   expect(lines).toEqual([`read claims/task after role ${claimToken} was reregistered`]);
 });
 
-test("reads the claim's value at the host's ask, at a new epoch of its relay, and a failed read is logged and never rejects", async () => {
-  let answer = Response.json(current);
-  const { host, steps, lines, values } = claimHost({ task: () => answer });
-  const boot = await bootLegionClaim(host);
+// Finding 11 of review round 1: the ready decision itself can write the claim's value (the
+// relaunch record's task), after the registration answered with none, and the listener relays a
+// value only once the role claim has changed the role's holder, after it handed the kept lane
+// over. So the boot reads the value once the ready has answered and hands it to the host before
+// it claims the role: the host's take holds it, and its mark, ahead of every card the lane brings.
+test("hands the host the value the ready decision wrote, read once the ready answered, before the role is claimed", async () => {
+  const written = { task: { number: 5, epoch: "2026-11-13T16:21:44.123456789Z", revision: 13 } };
+  const { host, steps, values, lines } = claimHost({
+    register: () => Response.json({ ...registered, task: null, finished: 4 }),
+    task: () => Response.json({ ...written, finished: 4 }),
+    overrides: {
+      afterRegister: async (claim) => {
+        steps.push(`afterRegister task ${claim.task?.number ?? "none"}`);
+      },
+    },
+  });
 
-  await boot?.readTask();
+  await bootLegionClaim(host);
+
+  expect(steps).toEqual([
+    `claims/register ${JSON.stringify(registration)}`,
+    "afterRegister task none",
+    "setCapability",
+    `claims/ready ${readyBody()}`,
+    `claims/task ${JSON.stringify(caller())}`,
+    "taskValue",
+    `claimRole ${claimToken}`,
+    "onRoleRegained",
+  ]);
+  expect(values).toEqual([{ ...written, finished: 4 } as LegionTask]);
+  expect(lines).toEqual([]);
+});
+
+test("a value read after the ready that fails is logged, and the role is claimed all the same", async () => {
+  const { host, steps, values, lines } = claimHost({
+    task: () => Response.json({ error: "the daemon is restarting" }, { status: 503 }),
+  });
+
+  await expect(bootLegionClaim(host)).resolves.toBeDefined();
+
+  expect(values).toEqual([]);
+  expect(steps.slice(-2)).toEqual([`claimRole ${claimToken}`, "onRoleRegained"]);
+  expect(steps).not.toContain("stop");
+  expect(lines).toEqual([
+    "claims/task after claims/ready failed; the claim's value reaches this session with the daemon's next write of it: POST /legion/v1/claims/task failed with 503: the daemon is restarting",
+  ]);
+});
+
+test("reads the claim's value at the host's ask, at a new epoch of its relay, and a failed read is logged and never rejects", async () => {
+  let answer = () => Response.json(current);
+  const { host, steps, lines, values } = claimHost({ task: () => answer() });
+  const boot = await bootLegionClaim(host);
+  // The boot's own read, once its ready answered.
   expect(values).toEqual([current as LegionTask]);
 
-  answer = Response.json({ error: "the daemon is restarting" }, { status: 503 });
+  await boot?.readTask();
+  expect(values).toEqual([current as LegionTask, current as LegionTask]);
+
+  answer = () => Response.json({ error: "the daemon is restarting" }, { status: 503 });
   await expect(boot?.readTask()).resolves.toBeUndefined();
-  expect(values).toHaveLength(1);
-  expect(steps.filter((step) => step.startsWith("claims/task"))).toHaveLength(2);
+  expect(values).toHaveLength(2);
+  expect(steps.filter((step) => step.startsWith("claims/task"))).toHaveLength(3);
   expect(lines).toEqual([
     "claims/task at the relay's new epoch failed; the claim's value reaches this session with the daemon's next write of it: POST /legion/v1/claims/task failed with 503: the daemon is restarting",
   ]);
@@ -188,6 +241,8 @@ test("a claim the listener refuses is logged naming the claim token and what sto
     `claims/register ${JSON.stringify(registration)}`,
     "setCapability",
     `claims/ready ${readyBody()}`,
+    `claims/task ${JSON.stringify(caller())}`,
+    "taskValue",
     `claimRole ${claimToken}`,
     "stop",
   ]);
@@ -207,7 +262,7 @@ test("a 4xx at claims/ready is not retried: one ready, then the agent stops, wit
   expect(steps.some((step) => step.startsWith("claimRole"))).toBe(false);
 });
 
-test("a ready retried after a 503 claims the role as soon as it answers", async () => {
+test("a ready retried after a 503 reads the value and claims the role as soon as it answers", async () => {
   let readies = 0;
   const { host, steps } = claimHost({
     ready: () => {
@@ -224,6 +279,8 @@ test("a ready retried after a 503 claims the role as soon as it answers", async 
     "setCapability",
     `claims/ready ${readyBody()}`,
     `claims/ready ${readyBody()}`,
+    `claims/task ${JSON.stringify(caller())}`,
+    "taskValue",
     `claimRole ${claimToken}`,
     "onRoleRegained",
   ]);

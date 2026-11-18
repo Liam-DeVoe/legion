@@ -1,7 +1,11 @@
 import type { LegionTurnOutcomeRequestBody } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
-import { type LegionDaemonClient, retryWhileDaemonRestarts } from "@legion/pi-shared/daemon-client";
-import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
+import {
+  type ClaimCaller,
+  LegionDaemonApiError,
+  type LegionDaemonClient,
+  sendUntilAnswered,
+} from "@legion/pi-shared/daemon-client";
 import { assistantRefusal } from "@legion/pi-shared/phase-stall";
 import type { AgentEndEvent, AgentEndMessage } from "@legion/pi-shared/pi-types";
 
@@ -23,11 +27,25 @@ import type { AgentEndEvent, AgentEndMessage } from "@legion/pi-shared/pi-types"
  * refusals afresh, so a late report lands in its own place and nothing is ever recounted.
  *
  * The report of a task's turn — the first run after an accepted take (`@legion/pi-shared/task-take`)
- * — names the task's number (`task`), which is what finishes the task on the daemon. A turn the
- * provider failed also carries the failure (`providerError`): the HTTP status of the request it
- * failed on, the provider and model it went to, and the provider's message, with which the
- * daemon keeps the task under its number and writes its value again after a wait instead of
- * finishing it (dispatch://INFRA-2811 R2).
+ * — names the task's number (`task`), which is what finishes the task on the daemon: for a worker
+ * on the current contract nothing else does (the plan's decision 8). A turn the provider failed
+ * also carries the failure (`providerError`): the HTTP status of the request it failed on, the
+ * provider and model it went to, and the provider's message, with which the daemon keeps the task
+ * under its number and writes its value again after a wait instead of finishing it
+ * (dispatch://INFRA-2811 R2). The daemon-launched controller's turns are reported the same way,
+ * its start task's naming that task's number.
+ *
+ * Because only the report finishes the task, a report is sent until the daemon answers it
+ * (`sendUntilAnswered`, the policy a take is sent by): a refused, reset or closed connection, a
+ * DNS failure, no answer within five minutes, and a 502, 503 or 504 that names no Legion error
+ * code are sent again, the same request, after a doubling wait with no attempt limit, and so is
+ * any 500 the route answers, which is the daemon's own failure to record the report (`turn outcome
+ * failed: the daemon could not record it`). The daemon stores one outcome per `(generation,
+ * sequence)` and applies a repeat once, so a report sent again whose first attempt landed changes
+ * nothing, and one whose write failed is applied. A 2xx ends the sending, and so does a refusal
+ * (a 4xx, or any other answer the daemon names a code for), which is warned about once: nothing
+ * this pane can do changes it. The session's end stops what is still being sent for it
+ * (`sessionEnded`).
  *
  * Claude Code's half of the same report is `packages/daemon/internal/claudebridge`: neither half
  * is a shimwire frame, because a plugin cannot put one on the shim stream and `shimwire.AgentEnd`
@@ -39,24 +57,38 @@ export interface TurnOutcomeLog {
   readonly warn: (message: string, context?: Record<string, unknown>) => void;
 }
 
+/** The claim a turn's report speaks for: the agent form the report names it in, and the role and
+ * issue its lines name it by (the controller's claim is on no issue). */
+export interface ReportedClaim {
+  readonly caller: ClaimCaller;
+  readonly role: string;
+  readonly issue?: string;
+}
+
 export interface TurnOutcomeReporterDeps {
   /** The pane's daemon client, built lazily by the entry that owns it. */
   readonly daemon: () => LegionDaemonClient;
-  /** The claim the session with that id registered, or undefined: a session before its
-   * registration, the controller, a person's own pane, and a `task` subagent, which loads an
-   * instance of its own and registers nothing. */
-  readonly claim: (sessionID: string) => ClaimCapability | undefined;
+  /** The claim the session with that id reports for, or undefined: a session before its
+   * registration, an operator's controller, a person's own pane, and a `task` subagent, which
+   * loads an instance of its own and registers nothing. */
+  readonly claim: (sessionID: string) => ReportedClaim | undefined;
   readonly log: TurnOutcomeLog;
+  /** The wait between a report's attempts, and each attempt's bound: a timer by default; a test
+   * passes its own clock. */
+  readonly wait?: (ms: number, signal: AbortSignal) => Promise<boolean>;
 }
 
 export interface TurnOutcomeReporter {
   /**
    * Reports the turn that `agent_end` just ended, for the claim the session holds; `task` is the
-   * number of the task whose turn it was, undefined for a turn of no task. Never rejects: Oh My Pi
-   * does not await an `agent_end` handler, so a rejection here would be an unhandled one, and
-   * nothing of the turn waits on the report either way.
+   * number of the task whose turn it was, undefined for a turn of no task. Resolves once the
+   * daemon answered, refused, or the session ended. Never rejects: Oh My Pi does not await an
+   * `agent_end` handler, so a rejection here would be an unhandled one, and nothing of the turn
+   * waits on the report either way.
    */
   readonly report: (sessionID: string, event: AgentEndEvent, task?: number) => Promise<void>;
+  /** The session ended (`session_shutdown`): every report of it still being sent stops. */
+  readonly sessionEnded: (sessionID: string) => void;
 }
 
 /**
@@ -80,33 +112,57 @@ function providerError(
   };
 }
 
+/** The run's last assistant message, and the provider's refusal it ended in, if any. */
+function endOf(event: AgentEndEvent): {
+  readonly last: AgentEndMessage | undefined;
+  readonly refusal: string | undefined;
+} {
+  const last = event.messages?.findLast((message) => message.role === "assistant");
+  return { last, refusal: assistantRefusal(last) };
+}
+
+/**
+ * Whether the report of the run `event` ended carries the provider's failure (`providerError`).
+ * The daemon finishes a current claim's task on a report naming its number only without one, so
+ * the claim's take reads this at the run's end (`TaskTake.runEnded`) to know whether that number
+ * is finished.
+ */
+export function reportsProviderError(event: AgentEndEvent): boolean {
+  const { last, refusal } = endOf(event);
+  return last !== undefined && refusal !== undefined;
+}
+
+/** The turn-outcome route's own failure to record a report (`claimFailure` in
+ * `packages/daemon/internal/api/claims.go`): a 500, sent again as decision 8 asks. */
+const recordFailed = (error: unknown): boolean =>
+  error instanceof LegionDaemonApiError && error.status === 500;
+
 export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOutcomeReporter {
   /** The generation the sequence below counts within, and the last number it gave out. */
   let counting: number | undefined;
   let sequence = 0;
+  /** What stops the reports each session is still sending, until that session ends. */
+  const stops = new Map<string, AbortController>();
 
   return {
     report: async (sessionID, event, task) => {
       const claim = deps.claim(sessionID);
       if (claim === undefined) return;
+      const { caller } = claim;
       // Taken before the first await, so two turns can never take the same number nor take them
       // out of the order they ended in. A generation this producer has not counted within starts
       // the count again, as a fresh launch's does.
-      if (claim.generation !== counting) {
-        counting = claim.generation;
+      if (caller.generation !== counting) {
+        counting = caller.generation;
         sequence = 0;
       }
       sequence += 1;
       // The number this report owns: `sequence` moves on as the next turn ends, and the lines
       // below are written after an await.
       const mine = sequence;
-      const last = event.messages?.findLast((message) => message.role === "assistant");
-      const refusal = assistantRefusal(last);
+      const { last, refusal } = endOf(event);
       const request = {
-        claimToken: claim.claimToken,
-        sessionId: claim.sessionID,
-        secret: claim.secret,
-        generation: claim.generation,
+        ...caller,
         sequence: mine,
         outcome: refusal === undefined ? ("clean" as const) : ("refused" as const),
         ...(refusal === undefined ? {} : { message: refusal }),
@@ -115,35 +171,39 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
           ? {}
           : { providerError: providerError(last, refusal) }),
       };
+      let stop = stops.get(sessionID);
+      if (stop === undefined) {
+        stop = new AbortController();
+        stops.set(sessionID, stop);
+      }
+      const lines = {
+        ...(claim.issue === undefined ? {} : { issue: claim.issue }),
+        role: claim.role,
+        sequence: mine,
+        outcome: request.outcome,
+        ...(task === undefined ? {} : { task }),
+      };
       try {
-        // A send that fails on nothing but a restarting daemon is retried until it lands: the
-        // daemon stores one outcome per `(generation, sequence)`, so a repeat of this report
-        // writes the same cell and changes no count, and a turn that goes unreported is a turn
-        // the daemon counts neither way — a refusal silently dropped is a claim that never
-        // fails. A refusal the daemon itself gives (a 4xx) will not pass on retry: it is warned
-        // about once and the turn goes uncounted, since nothing this pane can do fixes it.
-        const outcome = await retryWhileDaemonRestarts("claims/turn-outcome", () =>
-          deps.daemon().turnOutcome(request)
+        const outcome = await sendUntilAnswered(
+          "claims/turn-outcome",
+          (signal) => deps.daemon().turnOutcome(request, { signal }),
+          { stop: stop.signal, alsoSendAgain: recordFailed, warn: deps.log.warn, wait: deps.wait }
         );
         deps.log.debug("legion: reported a turn's outcome", {
-          issue: claim.issue,
-          role: claim.role,
-          sequence: mine,
-          outcome: request.outcome,
-          ...(task === undefined ? {} : { task }),
+          ...lines,
           refusedRun: outcome.refusedRun,
           failed: outcome.failed,
         });
       } catch (error) {
         deps.log.warn("legion: a turn's outcome did not reach the daemon", {
-          issue: claim.issue,
-          role: claim.role,
-          sequence: mine,
-          outcome: request.outcome,
-          ...(task === undefined ? {} : { task }),
+          ...lines,
           error: messageFor(error),
         });
       }
+    },
+    sessionEnded: (sessionID) => {
+      stops.get(sessionID)?.abort();
+      stops.delete(sessionID);
     },
   };
 }
