@@ -318,8 +318,6 @@ var (
 	RankInput                      = both("RANK_INPUT", http.StatusBadRequest)
 	ReasonRequired                 = both("REASON_REQUIRED", http.StatusBadRequest)
 	ReplyForbidden                 = both("REPLY_FORBIDDEN", http.StatusForbidden)
-	RepoNotMapped                  = both("REPO_NOT_MAPPED", http.StatusBadRequest)
-	RepoProjectInUse               = both("REPO_PROJECT_IN_USE", http.StatusConflict)
 	RequestBodyUnreadable          = both("REQUEST_BODY_UNREADABLE", http.StatusBadRequest)
 	RequestTooLarge                = both("REQUEST_TOO_LARGE", http.StatusRequestEntityTooLarge)
 	ResultCommitUnknown            = both("RESULT_COMMIT_UNKNOWN", http.StatusBadRequest)

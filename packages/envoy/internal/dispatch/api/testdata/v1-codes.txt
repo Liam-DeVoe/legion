@@ -14,7 +14,9 @@
 # TEST_HOOK_UNAVAILABLE 503, which only the test hooks' testHookFailure writes.
 #
 # After them, each pair a later merge on main added, named on its line, added at each forward
-# merge as v1-only-routes.txt is.
+# merge as v1-only-routes.txt is. Last, as comments, each pair of c8a44f97 that a later merge on
+# main stopped answering, named on its line, taken out of the list at the forward merge that
+# brings it.
 ACCEPT_ALREADY_ACCEPTED 409
 ACCEPT_FAILED 409
 ACCEPT_FORBIDDEN 403
@@ -226,8 +228,6 @@ PROJECT_UNMAPPED 400
 RANK_INPUT 400
 REASON_REQUIRED 400
 REPLY_FORBIDDEN 403
-REPO_NOT_MAPPED 400
-REPO_PROJECT_IN_USE 409
 REQUEST_BODY_UNREADABLE 400
 REQUEST_TOO_LARGE 413
 RESULT_COMMIT_UNKNOWN 400
@@ -284,3 +284,7 @@ NEAR_COPY_CHECK_ID_INPUT 400 # #4103, record every answer of the near-copy gate
 NEAR_COPY_CHECK_NOT_FOUND 404 # #4103, record every answer of the near-copy gate
 READ_ONLY_TOKEN 403 # #4113, mint a read-only Dispatch token and serve it on the read list alone
 ROLE_HOLDER_FORBIDDEN 403 # #4228, the Legion daemon publishes the session of each role of an issue
+
+# Answered at c8a44f97 and no longer, since a merge on main dropped the refusal.
+# REPO_NOT_MAPPED 400 # #3730, an issue's own repository needs no mapping of its project
+# REPO_PROJECT_IN_USE 409 # #3730, a mapping issues name as their repository is moved and deleted like any other

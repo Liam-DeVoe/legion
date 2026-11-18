@@ -222,7 +222,9 @@ test("`e` dismisses the thread row in hand and does nothing on an ask", async ()
   await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));
   expect(dismissed.mock.calls[0]?.[0]).toEqual({ items: [dismissal("c1")] });
   expect(rowIds()).not.toContain("reply:c1");
-  settle.resolve({ updated: 1 });
+  await act(async () => {
+    settle.resolve({ updated: 1 });
+  });
 });
 
 test("the bulk bar offers Snooze for the asks among the selection and Dismiss for the threads", async () => {
@@ -252,7 +254,9 @@ test("the bulk bar offers Snooze for the asks among the selection and Dismiss fo
   await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
   await waitFor(() => expect(rowIds()).not.toContain("reply:c1"));
   expect(dismissed.mock.calls[0]?.[0]).toEqual({ items: [dismissal("c1")] });
-  settle.resolve({ updated: 1 });
+  await act(async () => {
+    settle.resolve({ updated: 1 });
+  });
 });
 
 test("Select all over the Inbox's own read names every row of the group by id and drawn version", async () => {

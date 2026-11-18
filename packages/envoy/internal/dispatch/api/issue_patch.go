@@ -298,12 +298,6 @@ func (s *server) patchIssueAs(w http.ResponseWriter, r *http.Request, input upda
 			return
 		}
 	}
-	if repo != nil {
-		if err := checkIssueRepoMapped(r.Context(), tx, *repo, before.Project); err != nil {
-			s.writeHandlerError(w, r, err)
-			return
-		}
-	}
 	// Closing an issue releases whatever claim it held: the work is finished, so nobody is
 	// on it. No other status move touches the claim — a claim is an explicit act
 	// (issue_claim.go), and the status is also how humans track work.

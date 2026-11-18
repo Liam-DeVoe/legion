@@ -269,10 +269,11 @@ func (s *server) v2ProjectRows() []routeRow {
 		{
 			Method: http.MethodDelete, Pattern: "/repositories/{owner}/{repo}", Auth: authAny, Versions: onlyV2,
 			Description: "Remove a repository's mapping to its project, a bearer naming its session in actor, and append " +
-				"settings.repo_project.updated with deleted true on the project. A mapping issues name as their repository " +
-				"is 409 REPO_PROJECT_IN_USE, naming how many. A credential scoped to one project is refused, since a mapping " +
-				"belongs to the deployment. 204. 404 REPOSITORY_NOT_FOUND for a repository no mapping names, a value that " +
-				"is no owner/name among them.",
+				"settings.repo_project.updated with deleted true on the project. An issue's own repository needs no " +
+				"mapping, so an issue that names the repository keeps it; one that resolved to the mapping as its " +
+				"project's default resolves to no repository until the project has another default. A credential scoped " +
+				"to one project is refused, since a mapping belongs to the deployment. 204. 404 REPOSITORY_NOT_FOUND for a " +
+				"repository no mapping names, a value that is no owner/name among them.",
 			Handler:  s.deleteRepositoryV2,
 			Resource: "repositories", Kind: kindItem, Key: "{owner}/{repo}",
 			Body:     requestBody{Kind: bodyJSON, Type: actorInput{}, Optional: true},
@@ -288,12 +289,12 @@ func (s *server) v2ProjectRows() []routeRow {
 				"renamed_to is the owner/name this repository is called today, which every comparison of a repository " +
 				"canonicalises through: absent or null leaves the stored one alone, \"\" clears it, and a pair naming this " +
 				"repository, one naming a repository that is itself renamed, or one on a repository another mapping is " +
-				"already renamed to is 400 INVALID_REPO_PROJECT, as a project that is not a key is. Moving a mapping issues " +
-				"name as their repository to another project is 409 REPO_PROJECT_IN_USE; 404 NOT_FOUND for a project that " +
-				"does not exist. Each mapping the write changes appends settings.repo_project.updated on its project, and a " +
-				"moved one deleted true on the project it left. A mapping records no setter, so a PUT that would leave it " +
-				"exactly as it stands, by any caller, answers it and writes nothing. A credential scoped to one project is " +
-				"refused. Answers 200 the mapping.",
+				"already renamed to is 400 INVALID_REPO_PROJECT, as a project that is not a key is. A mapping issues name " +
+				"as their repository moves like any other, since an issue's own repository needs no mapping; 404 NOT_FOUND " +
+				"for a project that does not exist. Each mapping the write changes appends settings.repo_project.updated on " +
+				"its project, and a moved one deleted true on the project it left. A mapping records no setter, so a PUT " +
+				"that would leave it exactly as it stands, by any caller, answers it and writes nothing. A credential " +
+				"scoped to one project is refused. Answers 200 the mapping.",
 			Handler:  s.putRepositoryV2,
 			Resource: "repositories", Kind: kindItem, Key: "{owner}/{repo}",
 			Body:     requestBody{Kind: bodyJSON, Type: putRepoProjectInput{}},

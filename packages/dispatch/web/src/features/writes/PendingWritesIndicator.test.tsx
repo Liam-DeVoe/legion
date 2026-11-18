@@ -20,9 +20,11 @@ function indicatorWrite(
   label: string,
   write: (bounds: WriteBounds) => Promise<unknown>
 ): void {
-  void writes
-    .run({ detail: null, kind: plainWrite, label, presentation: "indicator", write })
-    .catch(() => undefined);
+  act(() => {
+    void writes
+      .run({ detail: null, kind: plainWrite, label, presentation: "indicator", write })
+      .catch(() => undefined);
+  });
 }
 
 const refusal = new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
@@ -180,16 +182,18 @@ test("a write waiting its turn reads Waiting to send and can be discarded", asyn
   let secondSent = 0;
   try {
     const press = (label: string, answer: () => Promise<unknown>) =>
-      void writes
-        .run({
-          detail: null,
-          kind: plainWrite,
-          label,
-          presentation: "indicator",
-          request: sends.answer({ ...patch }, answer),
-          target: "issue:CORE-1",
-        })
-        .catch(() => undefined);
+      act(() => {
+        void writes
+          .run({
+            detail: null,
+            kind: plainWrite,
+            label,
+            presentation: "indicator",
+            request: sends.answer({ ...patch }, answer),
+            target: "issue:CORE-1",
+          })
+          .catch(() => undefined);
+      });
     press("CORE-1 set to backlog", () => Promise.withResolvers<never>().promise);
     press("CORE-1 set to done", async () => {
       secondSent += 1;
@@ -265,24 +269,26 @@ test("a write whose key has run out says a Retry saves it again, with Retry and 
   let attempts = 0;
 
   try {
-    void writes
-      .run({
-        detail: null,
-        key: spent,
-        kind: plainWrite,
-        label: "CORE-1 set to done",
-        presentation: "indicator",
-        write: (bounds) => {
-          attempts += 1;
-          bounds.sent?.({
-            body: { status: "done" },
-            method: "PATCH",
-            path: "/api/v2/issues/CORE-1",
-          });
-          return Promise.reject(refusal);
-        },
-      })
-      .catch(() => undefined);
+    act(() => {
+      void writes
+        .run({
+          detail: null,
+          key: spent,
+          kind: plainWrite,
+          label: "CORE-1 set to done",
+          presentation: "indicator",
+          write: (bounds) => {
+            attempts += 1;
+            bounds.sent?.({
+              body: { status: "done" },
+              method: "PATCH",
+              path: "/api/v2/issues/CORE-1",
+            });
+            return Promise.reject(refusal);
+          },
+        })
+        .catch(() => undefined);
+    });
     await settle();
     await jump(FIRST_BACKOFF_MS);
     await settle();
@@ -342,7 +348,10 @@ test("a kept /api/v1 write answered 410 reads Not saved, with Discard and no Ret
   const user = userEvent.setup();
   const { client, unmount } = mountIndicator();
   try {
-    writesOf(client).resume("alice");
+    // The reload's resume puts the kept write on the page at once, so it goes inside `act`.
+    act(() => {
+      writesOf(client).resume("alice");
+    });
     const indicator = await screen.findByTestId("pending-writes");
     expect(
       await within(indicator).findByText(`Not saved: CORE-1 set to done — ${API_V1_ENDED_REASON}`)
