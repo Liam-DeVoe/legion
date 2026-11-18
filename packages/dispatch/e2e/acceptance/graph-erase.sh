@@ -552,10 +552,10 @@ readonly planted_sql="select md5(concat_ws('|',
       where split_part(w.id, '#', 1) in ('$other_document', 'comment/$other_comment'))))"
 
 # What a refused run must leave as it was, read whole on both sides of it (E3, E4): every row of
-# the store's two tables and of the five a node is projected onto (grapherase's projectedTables),
-# the versions of both documents and the approvals of the first, and the id and the payload of
-# every event holding the secret. Those are the rows a run that went ahead would delete or
-# rewrite.
+# the store's two tables, of the three a node is projected onto (grapherase's projectedTables) and
+# of asks and ask_followers, the versions of both documents and the approvals of the first, and
+# the id and the payload of every event holding the secret. Those are the rows a run that went
+# ahead would delete or rewrite, and an ask's rows, which project its node.
 unchanged_sql="select md5(concat_ws('|', $(whole graph_nodes), $(whole graph_tuples),
     $(whole comments), $(whole document_blocks), $(whole block_refs), $(whole asks), $(whole ask_followers),
     $(whole artifact_versions "t.artifact_id in ('$document', '$other_document')"),

@@ -795,23 +795,18 @@ func (e *Erasure) ownerRows(ctx context.Context, tx pgx.Tx) (events.OwnerRows, e
 }
 
 // nodeOwners reads the owner row each projection row of the node stands under: an issue's own
-// comment or ask stands under the issue, a follower row under its ask's owner, and every other row
-// under the owner of the document it belongs to, which is that document's issue or, for a document
-// no issue owns, the document's own artifacts row - the owner docs' lockArtifactOwner finds and
-// events.LockOwnerRows takes. A node no row projects stands under none.
+// comment stands under the issue, and every other row under the owner of the document it belongs
+// to, which is that document's issue or, for a document no issue owns, the document's own
+// artifacts row - the owner docs' lockArtifactOwner finds and events.LockOwnerRows takes. A node
+// no row projects stands under none.
 func nodeOwners(ctx context.Context, tx pgx.Tx, kind, id string) (events.OwnerRows, error) {
 	arms := make([]string, len(projectedTables))
 	for index, held := range projectedTables {
-		from, owner := held.Table+` held`, `held`
-		if held.Through != "" {
-			from, owner = from+` join `+held.Through, `owner`
-		}
 		issue := "null::text"
 		if held.Issue != "" {
-			issue = owner + `.` + held.Issue
+			issue = held.Issue
 		}
-		arms[index] = `select ` + issue + `, ` + owner + `.artifact_id from ` + from +
-			` where held.node_kind = $1 and held.node_address = $2`
+		arms[index] = `select ` + issue + `, artifact_id from ` + held.Table + ` where node_kind = $1 and node_address = $2`
 	}
 	rows, err := tx.Query(ctx, `
 		select coalesce(held.issue_key, a.issue_key, ''), coalesce(a.id::text, '')
@@ -880,13 +875,15 @@ func projectionRows(reference referencingColumn, table string) string {
 //
 // Two kinds of row do. A row that points at this node's projection through a nullable reference:
 // a reply whose reply_to names an erased comment is somebody else's words, and an ask handed back
-// through it is the ask's own history, so the erase neither deletes one nor rewrites the other; a
-// comment whose ask_id names an erased ask is a reply in its thread, the same. And a projection
-// row of another live node whose node states a tuple into this one now: a block inside an erased
-// block (its part_of and its parent_block_id), a block that cites it (its mentions or pointer
-// tuple and its block_refs row), a comment or an ask its author is (its authored_by and its
-// author). The erase deletes the tuples into the node, so such a row would go on stating a tuple
-// the store no longer holds, which is a difference `census --store` reads.
+// through it is the ask's own history, so the erase neither deletes one nor rewrites the other.
+// And a projection row of another live node whose node states a tuple into this one now: a block
+// inside an erased block (its part_of and its parent_block_id), a block that cites it (its
+// mentions or pointer tuple and its block_refs row), a comment or an ask its author is (its
+// authored_by and its author). An ask's row is read here beside projectedTables: it is the
+// projection of the ask's node (migration 20261116094058), which the erase never deletes, since
+// it refuses an ask while that row stands (Erasure.read). The erase deletes the tuples into the
+// node, so such a row would go on stating a tuple the store no longer holds, which is a
+// difference `census --store` reads.
 func (e *Erasure) readBlockers(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	for _, held := range projectedTables {
 		references, err := referencesTo(ctx, tx, held.Table)
@@ -908,10 +905,11 @@ func (e *Erasure) readBlockers(ctx context.Context, tx pgx.Tx, read *erasedRead)
 			}
 		}
 	}
-	projected := make([]string, len(projectedTables))
-	for index, held := range projectedTables {
-		projected[index] = `exists (select 1 from ` + held.Table + ` p where p.node_kind = t.from_kind and p.node_address = t.from_id)`
+	projected := make([]string, 0, len(projectedTables)+1)
+	for _, held := range projectedTables {
+		projected = append(projected, `exists (select 1 from `+held.Table+` p where p.node_kind = t.from_kind and p.node_address = t.from_id)`)
 	}
+	projected = append(projected, `exists (select 1 from asks p where p.node_kind = t.from_kind and p.node_address = t.from_id)`)
 	rows, err := tx.Query(ctx, `
 		select t.from_kind, t.from_id, t.kind from (
 			`+graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind`, `t.from_kind, t.from_id, t.kind, t.asserted`,

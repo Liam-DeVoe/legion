@@ -5988,7 +5988,13 @@ func openClosingAskIssue(t *testing.T, pair *dispatchPair, project, title string
 		t.Fatalf("the decision's ask reads %s before the close, want open", ask.State)
 	}
 
-	bob := pair.openSyncedEditor(t, pair.b, "bob", artifactID, pair.b.documentText(t, artifactID))
+	// A's settlement wrote the ask's state into its block (docs' rollWindowAskAttributes), so the
+	// live document bob's tab syncs holds it. The text routes serve that document with none of an
+	// ask block's server-owned attributes, whatever its live tree holds (docs' TextWithAsks), so
+	// the copy the tab is held to is the stored document, which every room loads.
+	pair.waitStoredHolds(t, artifactID, `#ship-it urgency="med" multiple="false" state="open"`, 5*time.Second,
+		"A's settlement's write of the ask block open")
+	bob := pair.openSyncedEditor(t, pair.b, "bob", artifactID, storedText(t, pair, artifactID))
 	if scope := authenticateEditor(t, bob); scope != "read-write" {
 		t.Fatalf("bob's tab on B on an open issue was granted %q, want read-write", scope)
 	}
@@ -6086,7 +6092,8 @@ func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoo
 	}
 	requireAskWithdrawn(t, pair.a, issueKey, askID, "once the closed issue's spec settled")
 	requireAskWithdrawn(t, pair.b, issueKey, askID, "once the closed issue's spec settled")
-	requireClosedText("the stored document", pair.a.documentText(t, artifactID))
+	// The stored document, which the text routes serve with no ask block's state (docs' TextWithAsks).
+	requireClosedText("the stored document", storedText(t, pair, artifactID))
 
 	pair.b.patchIssueStatus(t, issueKey, "todo")
 	if ask := pair.a.readAsk(t, askID); ask.State != "open" || ask.Resolution != nil {

@@ -23,11 +23,13 @@ const (
 )
 
 // An ask a session asked is the only row that names that session: the asks row's author and the
-// follower row its own ask gave it. The erase of the ask deletes both rows with the node, and no
-// erase removes a session (Erase refuses one), so the session's node stands and only the event log
-// still names it: the ask.opened that recorded the ask, which the erase redacts nothing of. The
-// census reads the asking session off that event as it reads a follower off its ask.follower_added,
-// and reads zero differences after the erase as before it, both sessions still counted.
+// follower row its own ask gave it. The erase takes an ask's node once no row stands behind it
+// (removeAskRow), so the asks row goes first, and its follower rows with it, and then the erase
+// deletes the node. No erase removes a session (Erase refuses one), so the session's node stands
+// and only the event log still names it: the ask.opened that recorded the ask, which the erase
+// redacts nothing of. The census reads the asking session off that event as it reads a follower
+// off its ask.follower_added, and reads zero differences after the erase as before it, both
+// sessions still counted.
 func TestTheCensusHoldsTheSessionsOfAnErasedAskToTheirNodes(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -79,6 +81,7 @@ func TestTheCensusHoldsTheSessionsOfAnErasedAskToTheirNodes(t *testing.T) {
 	}
 	requireSessionsCounted(t, database, "before the erase")
 
+	removeAskRow(t, database, ask.ID)
 	requireErased(t, database, graphstore.KindAsk, ask.ID)
 	var rows int64
 	if err := database.Pool.QueryRow(ctx, `

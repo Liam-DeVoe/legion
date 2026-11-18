@@ -721,16 +721,25 @@ func TestATickRunsNoRestoreAfterACatchUpThatFailed(t *testing.T) {
 // owe, one transaction each - holds a lock of its own (decisionRestoreLock) and not the step's,
 // which a tick lets go of once phases 1 and 2 are behind it.
 //
-// A tick's pass of phase 3 queues behind issue DOC-1's row, which the test's own transaction
-// holds. An ask of another issue then stands as the release before writes it, so a second
-// process's boot owes phase 1 and takes the step's lock. That boot answers within ten seconds while
-// the pass still waits, having marked the ask, and once the row is let go the pass restores the
-// issue's answered ask.
+// newRestoreIssue writes issue DOC-1 and its spec as the release before left them, naming no
+// node, and phase 1's pass over documents takes each one's issue row (graphcensus'
+// lockObjectOwners), so phase 1 states them before the test's own transaction takes that row: a
+// tick would otherwise wait on it in phase 1, under the step's lock. A tick's pass of phase 3 then
+// queues behind the row. An ask of another issue then stands as the release before writes it, so
+// a second process's boot owes phase 1 and takes the step's lock. That boot answers within ten
+// seconds while the pass still waits, having marked the ask, and once the row is let go the pass
+// restores the issue's answered ask.
 func TestABootWaitsForNoPassOfTheThirdPhase(t *testing.T) {
 	ctx := context.Background()
 	issue := newRestoreIssue(t, "# Spec\n\n:::ask{#q-boot urgency=\"med\" multiple=\"false\"}\nWhich build writes the corpus?\n:::\n")
 	issue.answer(issue.spec, "q-boot", "The base release.")
 	issue.replace(issue.spec, "# Spec\n\nThe corpus.\n")
+	if _, err := graphcensus.BackfillAsks(ctx, issue.database); err != nil {
+		t.Fatalf("state the issue and its spec on their nodes: %v", err)
+	}
+	if owed, err := graphcensus.AsksOwed(ctx, issue.database.Pool); err != nil || owed {
+		t.Fatalf("phase 1 owes a row %t (%v) after it ran, want none, so the pass the tick waits in on the issue is phase 3's", owed, err)
+	}
 	holder, err := issue.database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the transaction that holds the issue: %v", err)

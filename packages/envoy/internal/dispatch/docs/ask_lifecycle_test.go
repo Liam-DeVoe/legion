@@ -55,11 +55,24 @@ func TestWritingIssueAskStatesReachesTheAsksBlocksAndTheirCopiesAlone(t *testing
 	if count := asksOn(t, service, copied); count != 1 {
 		t.Fatalf("the copy opened %d asks, want one, its own transport question", count)
 	}
-	regionCopy := `:::ask{#region urgency="med" multiple="false" state="%s" ` + copiedFrom(t, service, region.ID, original) + `}`
+	// As an agent reads the copy, its asks member answers each block's state and a copy's source
+	// (requireCopiedStates). While another build serves, settlement keeps the same in each block's
+	// opening line of the live document (rollWindowAskAttributes), which the writes below change.
 	requireCopiedStates(t, service, copied,
+		`#region state="open" `+copiedFrom(t, service, region.ID, original)+"\n",
+		`#ship state="answered" answered_by="alice" answered_at="2026-10-08T12:00:00Z" selected=["Yes"] `+copiedFrom(t, service, ship.ID, original)+"\n",
+		`#transport state="open"`+"\n")
+	regionCopy := `:::ask{#region urgency="med" multiple="false" state="%s" ` + copiedFrom(t, service, region.ID, original) + `}`
+	live := documentText(t, service, copied)
+	for _, opener := range []string{
 		fmt.Sprintf(regionCopy, "open"),
-		`:::ask{#ship urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-08T12:00:00Z" selected="[&#x22;Yes&#x22;]" `+copiedFrom(t, service, ship.ID, original)+`}`,
-		`:::ask{#transport urgency="med" multiple="false" state="open"}`)
+		`:::ask{#ship urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-08T12:00:00Z" selected="[&#x22;Yes&#x22;]" ` + copiedFrom(t, service, ship.ID, original) + `}`,
+		`:::ask{#transport urgency="med" multiple="false" state="open"}`,
+	} {
+		if !strings.Contains(live, opener) {
+			t.Fatalf("the copy's live document lacks %q:\n%s", opener, live)
+		}
+	}
 	asker := model.Actor{Kind: "session", ID: "fresh-asking-session"}
 	writeThroughLedger(t, service, copied, asker, freshBlock, withoutVersion)
 
