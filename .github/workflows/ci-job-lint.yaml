@@ -180,11 +180,12 @@ jobs:
         run: .github/scripts/check-ts-filters.sh
 
       # Beside the filter checks, whose reasons it holds: a line .github/scripts/ci_job_reads.py
-      # cites in a file that imports the read is the line of that import, and a comment of ci.yaml
-      # names a package's test helper by a name, never by a line. An import added above another
-      # moves the line a citation names, and that is a change to the cited file rather than to a CI
-      # file, so the check runs here, on every change.
-      - name: Check each line ci_job_reads.py cites holds the import it means, and ci.yaml cites test helpers by name
+      # cites in a file that imports the read is the line of that import. An import added above
+      # another moves the line a citation names, and that is a change to the cited file rather than
+      # to a CI file, so the check runs here, on every change. The file's other two rules hold the
+      # convention of one pull request's reviews, not of this repository, and run only where a
+      # reader sets CITATIONS_BASE, which this step does not.
+      - name: Check each line ci_job_reads.py cites holds the import it means
         run: bun test ./.github/scripts/ci-citations.test.ts
 
       # The notices step below builds go-licenses and loads every release binary's modules. It

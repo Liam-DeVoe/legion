@@ -3,14 +3,18 @@
 //
 // 1. ci_job_reads.py's own convention, from its docstring: a why cites the step (at()) or the
 //    source line that reads it. Where a why cites a line of a file that imports the read, that
-//    line holds the import. ci_job_reads.py itself lists every Read of GATES and RULES.
+//    line holds the import. ci_job_reads.py itself lists every Read of GATES and RULES. A cited
+//    line that holds another line is wrong whatever the convention, so the lint job runs this rule.
 // 2. A comment of ci.yaml names a helper under a package's test/ directory, which other packages'
-//    tests import, by a name `grep` finds and never by a line number.
+//    tests import, by a name `grep` finds and never by a line number. Each run of consecutive
+//    comment lines is read as one text, so a citation wrapped onto the next line is read whole.
 // 3. With CITATIONS_BASE set to the commit a change starts from (HEAD_REF, the commit it ends at,
 //    is HEAD unless set): no comment line, and no line of a Markdown or text file, that the change
 //    adds cites another file by a line number, but in ci_job_reads.py, whose own convention is
-//    rule 1. A line the change also removes is a move, not an addition. A checkout with no history,
-//    as CI's is, cannot read the change, so this rule runs only where a reader names the base:
+//    rule 1. A line the change also removes is a move, not an addition.
+// Rules 2 and 3 hold the convention of the pull request that added this file
+// (cybermonklabs/legion#4184), which its reviews enforce, and are not a rule of this repository,
+// so they run only where a reader sets the base, and no CI step sets it:
 //    CITATIONS_BASE=<base> bun test ./.github/scripts/ci-citations.test.ts
 import { expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
@@ -23,6 +27,10 @@ const head = process.env.HEAD_REF ?? "HEAD";
 /** A citation by line: `<path>.<ext>:<n>`, `#L<n>`, a bare `:<n>` in backticks, or "line(s) <n>". */
 const CITE =
   /[\w./-]+\.(?:ts|tsx|go|py|yaml|yml|json|md|sh|js|mjs|toml|txt|sql)(?:#L|:)\d+|`:\d+(?:[-,]\d+)*`|\blines? \d+(?:[-,]\d+)*\b/;
+/** A file name, which a bare line number beside it cites. */
+const FILE = /[\w./-]+\.(?:ts|tsx|go|py|yaml|yml|json|md|sh|js|mjs|toml|txt|sql)\b/g;
+/** A helper under a package's test/ directory. */
+const HELPER = /packages\/[^/\s`]+\/test\/[\w./-]+\.tsx?/g;
 
 function lines(spec: string): number[] {
   return spec.split(",").flatMap((part) => {
@@ -102,16 +110,50 @@ test("each line ci_job_reads.py cites in a file that imports the read holds that
   expect(wrong).toEqual([]);
 });
 
-test("a comment of ci.yaml names a package's test helper by a name, not a line", () => {
-  const comments = readFileSync(path.join(root, ".github/workflows/ci.yaml"), "utf8")
-    .split("\n")
-    .map((line, i) => ({ line, n: i + 1 }))
-    .filter(({ line }) => /^\s*#.*packages\/[^/\s]+\/test\/[\w./-]+\.tsx?/.test(line));
-  expect(comments.length).toBeGreaterThan(0);
-  expect(
-    comments.filter(({ line }) => CITE.test(line)).map(({ line, n }) => `${n}: ${line.trim()}`)
-  ).toEqual([]);
-});
+test.skipIf(base === "")(
+  "a comment of ci.yaml names a package's test helper by a name, not a line",
+  () => {
+    const blocks: { n: number; text: string }[] = [];
+    let block: { n: number; text: string } | undefined;
+    const yaml = readFileSync(path.join(root, ".github/workflows/ci.yaml"), "utf8").split("\n");
+    for (const [i, line] of yaml.entries()) {
+      const comment = /^\s*#\s?(.*)$/.exec(line);
+      if (comment === null) {
+        block = undefined;
+        continue;
+      }
+      if (block === undefined) {
+        block = { n: i + 1, text: "" };
+        blocks.push(block);
+      }
+      block.text += ` ${comment[1]}`;
+    }
+    const fileAfter = new RegExp(`^\\s*(?:of|in)\\s+\`?(${FILE.source})`);
+    let named = 0;
+    const wrong: string[] = [];
+    for (const { n, text } of blocks) {
+      const helpers = [...text.matchAll(HELPER)].map((match) => match[0]);
+      if (helpers.length === 0) continue;
+      named += 1;
+      for (const cite of text.matchAll(new RegExp(CITE.source, "g"))) {
+        const at = cite.index ?? 0;
+        // A `<path>:<n>` cites its path. A bare line number cites the file that "of" or "in" names
+        // right after it, or else the file named before it in its sentence.
+        const own = /^(.+)(?:#L|:)\d+$/.exec(cite[0])?.[1];
+        const after = fileAfter.exec(text.slice(at + cite[0].length))?.[1];
+        const before = [...text.slice(0, at).matchAll(FILE)].at(-1);
+        const inSentence =
+          before !== undefined &&
+          !/[.;]\s/.test(text.slice((before.index ?? 0) + before[0].length, at));
+        const cited = own ?? after ?? (inSentence ? before[0] : undefined);
+        if (cited !== undefined && helpers.some((h) => h === cited || h.endsWith(`/${cited}`)))
+          wrong.push(`the comment at line ${n} cites ${cited} by a line: ${cite[0]}`);
+      }
+    }
+    expect(named).toBeGreaterThan(0);
+    expect(wrong).toEqual([]);
+  }
+);
 
 /** Whether `text`, a line of `file`, is a comment or a line of prose: its citation is a text's. */
 function isText(file: string, text: string): boolean {
