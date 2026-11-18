@@ -4966,6 +4966,23 @@ function openDuringAnswerlessWrite(feed: "down" | "up"): RuleWay {
   };
 }
 
+/** The stage mounting as the reader opens the issue while a write of another issue is out, so
+ *  its first tree read waits for the write, and an event of this issue 500 ms into the wait. */
+const OPEN_DURING_WRITE_WITH_EVENT: RuleWay = {
+  words:
+    "the reader opening the issue while a write of another issue is out, an event of the issue 500 ms into the wait, the write then settling",
+  does: async (rig) => {
+    const settleWrite = holdWrite(rig);
+    await tick(10, 10);
+    stageSlot(rig);
+    await tick(500, 10);
+    await commentsEvent(rig);
+    await tick(500, 10);
+    act(() => settleWrite());
+    await tick(50, 10);
+  },
+};
+
 /** The margin's resolve of the comment (`useMarginItems.ts`), answered by Dispatch in `latency`:
  *  its `onMutate` writes the resolve into the comments read before Dispatch holds it, its
  *  `onSuccess` invalidates the comments and the issue once Dispatch answers, and the resolve's
@@ -5126,6 +5143,7 @@ const WAYS = {
   twoAnswerlessDown: twoAnswerlessWrites("down"),
   openDuringAnswerlessUp: openDuringAnswerlessWrite("up"),
   openDuringAnswerlessDown: openDuringAnswerlessWrite("down"),
+  openDuringWriteWithEvent: OPEN_DURING_WRITE_WITH_EVENT,
 } satisfies Record<string, RuleWay>;
 
 /** How many reads of a query a way starts: a count, or the least and the most. */
@@ -5751,6 +5769,16 @@ const READ_RULES: readonly ReadRule[] = [
     state: "never",
     observed: false,
     way: "openDuringAnswerlessDown",
+    now: 1,
+    back: 0,
+  },
+  // The issue opened while a write of another issue is out, with an event of it during the wait:
+  // the read the wait holds answers the event, so the first load is one read.
+  {
+    read: "tree",
+    state: "never",
+    observed: false,
+    way: "openDuringWriteWithEvent",
     now: 1,
     back: 0,
   },
