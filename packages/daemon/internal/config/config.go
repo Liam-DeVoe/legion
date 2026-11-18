@@ -76,9 +76,12 @@ type Config struct {
 	// address on its own.
 	AdvertiseHost string
 	PostgresDSN   string
-	StateDir      string
-	Runtime       Runtime
-	AdmissionCap  int
+	// PostgresDSNSetting is the setting PostgresDSN was read from, as a refusal of it names it:
+	// `postgres_dsn`, the file's key, or LEGION_POSTGRES_DSN when the file names none.
+	PostgresDSNSetting string
+	StateDir           string
+	Runtime            Runtime
+	AdmissionCap       int
 
 	// DaemonURL is the API address every pane is told (`LEGION_DAEMON_URL`), with no trailing
 	// slash; the loopback address on Port unless the file names another.
@@ -994,9 +997,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	}
 	cfg.StateDir = underConfig(*file.StateDir, configDir)
 
-	cfg.PostgresDSN = env("LEGION_POSTGRES_DSN")
+	cfg.PostgresDSN, cfg.PostgresDSNSetting = env("LEGION_POSTGRES_DSN"), "LEGION_POSTGRES_DSN"
 	if file.PostgresDSN != nil {
-		cfg.PostgresDSN = *file.PostgresDSN
+		cfg.PostgresDSN, cfg.PostgresDSNSetting = *file.PostgresDSN, "postgres_dsn"
 	}
 	if strings.TrimSpace(cfg.PostgresDSN) == "" {
 		return Config{}, errors.New("postgres_dsn is required (or set LEGION_POSTGRES_DSN)")

@@ -124,7 +124,8 @@ func Misread(raw string) Misreading {
 
 // Refusal is the refusal of raw, the value of the setting named, for what its check found (why).
 // It names raw by its length alone, since any piece of a value a reader may misread can be its
-// password. Every refusal of a misread setting's URL is made here, so each says the same.
+// password. Every refusal of a setting by its length is made here, a misread URL's and a value of
+// the wrong form's (a metadata host, a sign-in domain, a NATS list) alike, so each says the same.
 func Refusal(setting, raw string, why Misreading) error {
 	return fmt.Errorf("%s, a value of %d characters, %s", setting, len(raw), why)
 }

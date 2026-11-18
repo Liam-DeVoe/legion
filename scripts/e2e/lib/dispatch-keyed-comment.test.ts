@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { proxyTarget } from "./dispatch-keyed-comment";
 
 const check = join(import.meta.dir, "dispatch-keyed-comment.ts");
 const servers: Server<undefined>[] = [];
@@ -257,4 +258,17 @@ test("a check with no issue is a usage error", async () => {
   const { code, stderr } = await run("--url", "http://127.0.0.1:1", "--bearer-file", tokenFile());
   expect(code).toBe(2);
   expect(stderr).toContain("--issue is required");
+});
+
+// The proxy sends each request it forwards to --url's own origin, with the request's path and query
+// written after it, so a path that begins `//` names no other host, and --url's user part is not
+// sent on. The control is the same path read against --url as a base, which names the other host.
+// The password is made for this test.
+test("the proxy forwards a path that begins // to --url's own origin", () => {
+  const url = new URL("http://made-up-user:not-a-secret-pw-6c1d@127.0.0.1:8766/");
+  const incoming = new URL("http://127.0.0.1:1//another.example/api/v1/issues?project=X");
+  expect(new URL(incoming.pathname + incoming.search, url).host).toBe("another.example");
+  expect(proxyTarget(url, incoming)).toBe(
+    "http://127.0.0.1:8766//another.example/api/v1/issues?project=X"
+  );
 });

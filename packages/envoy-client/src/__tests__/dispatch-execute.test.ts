@@ -22,6 +22,7 @@ import {
   DISPATCH_EVENT_BODY_MAX,
   DISPATCH_ITEM_BLOCKS,
 } from "@legion/contracts/dispatch-tools";
+import { unshownSettingUrl } from "@legion/contracts/setting-url";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
 import goUnicodeIsSpace from "../../../contracts/fixtures/go-unicode-isspace.json";
@@ -608,6 +609,56 @@ describe("executeDispatchTool", () => {
     );
     for (const text of [read, answers, offline, summary]) {
       expect(text).not.toContain(user);
+      expect(text).not.toContain(secret);
+    }
+  });
+
+  // A link base that shownSettingUrl would not show is refused, named by its length and the cause,
+  // before any request: by a command's context, for a configured public URL, and by the open-asks
+  // summary, for the base its caller hands it. The URL parser reads such a value apart, so a link
+  // or a message built from it could name a piece of its user part as the host. The row above is
+  // the control: a base whose user part the parser reads right links without it. The password is
+  // made for this test.
+  test("refuses a link base it would not show, by its length and cause, before any request", async () => {
+    const secret = "not-a-secret-pw-5d1e";
+    const unreadable = `https://made-up-user:${secret}/x@host.example`;
+    const requested: string[] = [];
+    const fetchImpl = (async (url: RequestInfo | URL) => {
+      requested.push(String(url));
+      return response({ error: "missing", code: "NOT_FOUND" }, 404);
+    }) as typeof fetch;
+    const command = await executeDispatchTool({
+      tool: "dispatch_answers",
+      args: {},
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-1",
+      config: { ...config, publicUrl: unreadable },
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl,
+    }).then(
+      () => "",
+      (error: Error) => error.message
+    );
+    let summary = "";
+    try {
+      formatOpenAsksSummary(
+        { count: 0, asks: [] } as unknown as Parameters<typeof formatOpenAsksSummary>[0],
+        unreadable
+      );
+    } catch (error) {
+      summary = (error as Error).message;
+    }
+
+    expect(command).toBe(
+      `the Dispatch URL that links name must be an http or https URL: ${unshownSettingUrl(unreadable)}`
+    );
+    expect(summary).toBe(
+      `the Dispatch URL the asks are linked against must be an http or https URL: ${unshownSettingUrl(unreadable)}`
+    );
+    expect(requested).toEqual([]);
+    for (const text of [command, summary]) {
       expect(text).not.toContain(secret);
     }
   });

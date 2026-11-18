@@ -7,7 +7,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
@@ -31,6 +30,11 @@ var domainShape = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.
 
 // maxDomainLength is the longest DNS name, in its dotted text form.
 const maxDomainLength = 253
+
+// notALowercaseDomain is what a refusal of DISPATCH_SIGNIN_DOMAIN names, after the value's length
+// (redact.Refusal): the value is never echoed, so a secret pasted into the wrong variable stays out
+// of the boot log.
+const notALowercaseDomain redact.Misreading = "is not a lowercase domain name such as example.com"
 
 // signInClientSettings are the three settings every Google sign-in takes, each with boot's value:
 // the issuer and Dispatch's confidential client there.
@@ -108,7 +112,7 @@ func checkSignInSettings(boot bootConfig, identityMode string) error {
 			return fmt.Errorf("DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER %s, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is %s", googleIssuer, redact.URL(boot.SignInIssuer))
 		}
 		if len(boot.SignInDomain) > maxDomainLength || !domainShape.MatchString(boot.SignInDomain) {
-			return fmt.Errorf("DISPATCH_SIGNIN_DOMAIN must be a lowercase domain name such as example.com; got a value of %d characters", utf8.RuneCountInString(boot.SignInDomain))
+			return redact.Refusal("DISPATCH_SIGNIN_DOMAIN", boot.SignInDomain, notALowercaseDomain)
 		}
 	}
 	if boot.SignInGroup != "" && boot.SignInIssuer == googleIssuer {

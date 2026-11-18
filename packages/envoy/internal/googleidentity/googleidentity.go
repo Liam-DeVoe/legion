@@ -120,6 +120,9 @@ const (
 	tokenPath = "/computeMetadata/v1/instance/service-accounts/default/token"
 )
 
+// notAHost is what a refusal of MetadataHostVar names, after the value's length (redact.Refusal).
+const notAHost redact.Misreading = "is not a host with an optional port"
+
 // metadataURL is path on the metadata server, honouring MetadataHostVar. The variable names a
 // host, with an optional port, and nothing else: any other value, a user part among them, is
 // refused by its length, so no URL this package asks, and so no error that names one or that
@@ -131,7 +134,7 @@ func metadataURL(path string) (string, error) {
 	}
 	base := "http://" + host
 	if parsed, err := url.Parse(base); err != nil || parsed.Path != "" || !redact.Clean(base) {
-		return "", fmt.Errorf("%s, a value of %d characters, is not a host with an optional port", MetadataHostVar, len(host))
+		return "", redact.Refusal(MetadataHostVar, host, notAHost)
 	}
 	return base + path, nil
 }

@@ -224,6 +224,9 @@ func refuseOpenCodeUserFile(oldPath, userPath string, deviceOf func(string) (uin
 	}
 }
 
+// emptyNATSURL is what a refusal of NATS_URLS names, after the value's length (redact.Refusal).
+const emptyNATSURL redact.Misreading = "holds an empty URL (expected a comma-separated list of NATS URLs)"
+
 // applyEnvironmentOverrides applies DISPATCH_SERVER_URL and NATS_URLS. Either may carry a user and a
 // password, so a refusal names the server URL through redact.URL and the NATS URLs by their length.
 func applyEnvironmentOverrides(cfg *EnvoyConfig, lookup func(string) (string, bool)) error {
@@ -240,7 +243,7 @@ func applyEnvironmentOverrides(cfg *EnvoyConfig, lookup func(string) (string, bo
 	if raw, set := lookup("NATS_URLS"); set {
 		natsURLs, err := natsURLs(raw)
 		if err != nil {
-			return fmt.Errorf("NATS_URLS, a value of %d characters, holds an empty URL (expected a comma-separated list of NATS URLs)", len(raw))
+			return redact.Refusal("NATS_URLS", raw, emptyNATSURL)
 		}
 		cfg.Envoy.NatsURLs = natsURLs
 	}

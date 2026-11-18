@@ -80,12 +80,21 @@ type Store struct {
 // not see it. Such a DSN gets the daemon's value set beside it in the startup packet, and the
 // startup parameter is what the server ends up running with (measured on PostgreSQL 18.6,
 // 2026-11-12). A deployment that wants another value writes it as its own DSN key.
+//
+// A refusal of dsn names it as LEGION_POSTGRES_DSN; OpenSetting names the setting it is given.
 func Open(ctx context.Context, dsn string) (*Store, error) {
+	return OpenSetting(ctx, "LEGION_POSTGRES_DSN", dsn)
+}
+
+// OpenSetting is Open of dsn, the value of the setting named, which a refusal of dsn names: the
+// daemon reads its DSN from the config file's postgres_dsn or from LEGION_POSTGRES_DSN
+// (config.Config.PostgresDSNSetting).
+func OpenSetting(ctx context.Context, setting, dsn string) (*Store, error) {
 	// The DSN is read through pgsetting, as every opener of a Postgres connection string reads it:
 	// one whose user part pgx and net/url read apart, or that pgx cannot parse, is refused by its
 	// length and cause, since the address ConnectError names would be a piece of that user part
 	// and pgx's parse error quotes the user, which can be a token written where the user stands.
-	config, err := pgsetting.ParsePoolConfig("LEGION_POSTGRES_DSN", dsn)
+	config, err := pgsetting.ParsePoolConfig(setting, dsn)
 	if err != nil {
 		return nil, err
 	}

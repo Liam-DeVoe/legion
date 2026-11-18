@@ -204,6 +204,7 @@ func defaultsFor(port int) Config {
 		Port:                                    port,
 		Bind:                                    "127.0.0.1",
 		PostgresDSN:                             "postgres://legion@127.0.0.1:5432/legion",
+		PostgresDSNSetting:                      "postgres_dsn",
 		StateDir:                                "/var/lib/legion",
 		Runtime:                                 Runtime{Name: "tmux"},
 		AdmissionCap:                            4,
@@ -1587,6 +1588,9 @@ func TestLoadRefuses(t *testing.T) {
 	}
 }
 
+// The DSN is read from the file's postgres_dsn when the file names one, and from
+// LEGION_POSTGRES_DSN otherwise, and the config records which, so a refusal of it names the
+// setting the operator wrote.
 func TestLoadReadsPostgresDSNFromTheEnvironment(t *testing.T) {
 	env := envMap(map[string]string{"LEGION_POSTGRES_DSN": "postgres://legion@db:5432/legion"})
 
@@ -1594,16 +1598,16 @@ func TestLoadReadsPostgresDSNFromTheEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if fromEnv.PostgresDSN != "postgres://legion@db:5432/legion" {
-		t.Errorf("PostgresDSN = %q, want the environment's value", fromEnv.PostgresDSN)
+	if fromEnv.PostgresDSN != "postgres://legion@db:5432/legion" || fromEnv.PostgresDSNSetting != "LEGION_POSTGRES_DSN" {
+		t.Errorf("PostgresDSN = %q from %q, want the environment's value from LEGION_POSTGRES_DSN", fromEnv.PostgresDSN, fromEnv.PostgresDSNSetting)
 	}
 
 	fileWins, err := Load(writeConfigFile(t, minimalFile), env)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if fileWins.PostgresDSN != "postgres://legion@127.0.0.1:5432/legion" {
-		t.Errorf("PostgresDSN = %q, want the file's value", fileWins.PostgresDSN)
+	if fileWins.PostgresDSN != "postgres://legion@127.0.0.1:5432/legion" || fileWins.PostgresDSNSetting != "postgres_dsn" {
+		t.Errorf("PostgresDSN = %q from %q, want the file's value from postgres_dsn", fileWins.PostgresDSN, fileWins.PostgresDSNSetting)
 	}
 }
 

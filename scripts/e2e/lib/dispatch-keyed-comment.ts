@@ -172,6 +172,13 @@ async function postTwice(options: Options, key: string, body: string): Promise<v
   }
 }
 
+/** Where the proxy sends a request it was asked at `incoming`: the request's path and query written
+ *  after `url`'s own origin, which holds no user part. Parsed against `url` instead, a path that
+ *  begins `//` would name another host, or fail to parse with an error that prints `url` whole. */
+export function proxyTarget(url: URL, incoming: URL): string {
+  return `${url.origin}${incoming.pathname}${incoming.search}`;
+}
+
 /** Runs this checkout's `dispatch comment` through a proxy that loses the first comment POST's
  *  answer, and checks the command asked again under that POST's key and was answered the replay. */
 async function postThroughCli(options: Options, body: string): Promise<void> {
@@ -180,10 +187,7 @@ async function postThroughCli(options: Options, body: string): Promise<void> {
   const proxy = Bun.serve({
     async fetch(request) {
       const incoming = new URL(request.url);
-      // The request's path and query written after --url's own origin, which holds no user part:
-      // parsed against --url instead, a path that begins `//` would name another host, or fail to
-      // parse with an error that prints --url whole.
-      const target = `${options.url.origin}${incoming.pathname}${incoming.search}`;
+      const target = proxyTarget(options.url, incoming);
       const headers = new Headers(request.headers);
       headers.delete("host");
       // Asked unencoded, so the answer passes on as it came, with no encoding to undo twice.
@@ -315,4 +319,4 @@ async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
-process.exit(await main(Bun.argv.slice(2)));
+if (import.meta.main) process.exit(await main(Bun.argv.slice(2)));
