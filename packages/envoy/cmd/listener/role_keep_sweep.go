@@ -197,9 +197,9 @@ func raiseKeptRoleWake(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 // most roleKeepWakeAge and that wakes its role (wakesItsRole). The read goes forward because the
 // stream reads no message before a sequence; a lane's copies grow younger along it, so the read
 // ends at the first copy that wakes the role. An outbox copy wakes nothing, as the outbox's own
-// keep raises no report; a copy at urgency low with no source_session wakes nothing, as the
-// publish route raised no report for it (roleSend.noHolder); and a copy no read can decode wakes
-// nothing either.
+// keep raises no report; a copy at urgency low with no sender - no source_session and no sender
+// stamp - wakes nothing, as the publish route raised no report for it (roleSend.noHolder); and a
+// copy no read can decode wakes nothing either.
 func keptLaneWakesItsRole(ctx context.Context, client *bus.Client, role string, from uint64, now time.Time) (bool, error) {
 	subject := bus.KeptRoleSubject(role)
 	next := from

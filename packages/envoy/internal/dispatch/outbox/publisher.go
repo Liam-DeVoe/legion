@@ -95,13 +95,13 @@ type Deps struct {
 	RoleClaims roles.ClaimStore
 	Sessions   roles.SessionLookup
 	// Registry is Envoy's session registry, which a person's reply in a thread reads the state
-	// of each of the thread's sessions from (hearThreads): where one is live or unresponsive, the
-	// reply reaches the thread and no session that only a document credits. It is the read an
-	// issue claim makes of its holder (api's fetchHolderLiveness), so the registry's own windows
-	// judge the sessions rather than Dispatch's (Sessions above). cmd/dispatch passes an
-	// envoy.Client on the address and token the API server's client uses. A nil reader is the
-	// registry not answering: the reply reaches the credits as well, as it does when a read
-	// fails.
+	// of each of the thread's sessions from (threadHearing.hear): where one is live or
+	// unresponsive, the reply reaches the thread and no session that only a document credits. It
+	// is the read an issue claim makes of its holder (api's fetchHolderLiveness), so the
+	// registry's own windows judge the sessions rather than Dispatch's (Sessions above).
+	// cmd/dispatch passes an envoy.Client on the address and token the API server's client uses.
+	// A nil reader is the registry not answering: the reply reaches the credits as well, as it
+	// does when a read fails.
 	Registry RegistryReader
 	// KeptLanes is where the handover behind a keep reads the role's kept lane and its drain
 	// cursor, to tell whether the copy just kept is the one that lane's drain would hand over
@@ -264,6 +264,12 @@ func scanBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID) (ba
 // release or leave unrecorded, so it is settled once, there. Whichever way an owner settles, every
 // lane the read took is given back before the batch returns.
 //
+// An owner one of whose events the thread rule reads Envoy's registry for (hearingFor) is resolved
+// and planned once that read answered, on a goroutine of its own (threadHearing.plan), and its
+// chains join the batch's sends then: the batch plans and sends every other owner at once, so a
+// registry that does not answer costs those owners the client's timeout and holds no other event
+// of the batch.
+//
 // What an owner's own settle came to is the batch's too: its published events are counted, and
 // an event it released reports the batch blocked, so the scan stops after it (Outbox.scan,
 // batchResult.blocked). A release settled early is no different from one the final settle
@@ -299,12 +305,24 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 			deps.lanes.release(owner)
 		}
 	}()
-	resolvedRoles, err := resolveDestinations(ctx, deps, events)
+	resolvedRoles, hearing, err := resolveDestinations(ctx, deps, events)
 	if err != nil {
 		return batchResult{}, err
 	}
-	resolveRoleHolders(ctx, deps, events, resolvedRoles)
-	chains := planChains(events)
+	// The owners the thread rule reads Envoy's registry for are planned once the read answered
+	// (threadHearing.plan), and every other owner now, so a registry that does not answer holds
+	// back no event of another owner. Both read one map of the roles the batch resolved, so a
+	// role is resolved once for the batch whichever owners route to it.
+	ready := events
+	if hearing != nil {
+		ready = slices.DeleteFunc(slices.Clone(events), func(event *batchEvent) bool { return hearing.waits(event.owner) })
+		if resolvedRoles == nil {
+			resolvedRoles = map[string]roleResolution{}
+		}
+	}
+	resolveRoleHolders(ctx, deps, ready, resolvedRoles)
+	chains := planChains(ready)
+	heard := hearing.plan(ctx, deps, resolvedRoles)
 
 	changed := deps.Publisher.ConnectionChanged()
 	window := deps.Publisher.WindowUntil(hold.Deadline)
@@ -407,17 +425,19 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 			deps.lanes.releaseEarly(owner)
 		}
 	}
-	// An owner with no chain has no send to wait for, so it settles before the window opens.
+	// An owner with no chain has no send to wait for, so it settles before the window opens. An
+	// owner that waits for Envoy's registry settles as its plan joins the batch's sends instead
+	// (sendChains).
 	sending := map[string]struct{}{}
 	for _, c := range chains {
 		sending[c.owner] = struct{}{}
 	}
 	for _, owner := range owners {
-		if _, ok := sending[owner]; !ok {
+		if _, ok := sending[owner]; !ok && !hearing.waits(owner) {
 			settleOwner(owner)
 		}
 	}
-	sendChains(ctx, deps, window, chains, settleOwner)
+	sendChains(ctx, deps, window, chains, heard, settleOwner)
 
 	connectionFailed := false
 	for _, event := range events {
@@ -882,15 +902,17 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 // refuse, or be refused by, whatever another batch runs beside it (store.ErrNestedAcquire). The
 // first pass, which answers nothing, writes nothing.
 //
-// Between the two passes, with the gate given back and no pooled connection held, the batch reads
-// from Envoy's registry the state of the sessions of each thread a person's reply is in
-// (hearThreads), which decides whether that reply reaches the credits of its documents
-// (routing.threadHeard, creditFilter).
+// After the lookups, with the gate given back and no pooled connection held, the thread rule reads
+// from Envoy's registry the state of the sessions of each thread a person's reply is in, which
+// decides whether that reply reaches the credits of its documents (hearingFor, routing.threadHeard,
+// creditFilter). The events of an owner one of whose events waits for that read are left out here:
+// their destinations are read once the read answered (threadHearing.plan), so that a registry that
+// does not answer holds back those owners alone. It answers that hearing, nil where nothing waits.
 //
 // It answers the roles it resolved for those attempts, which the batch's own role routes read
 // rather than resolving again (resolveRoleHolders): a comment routed to the role it mentions
 // names one role on both roads.
-func resolveDestinations(ctx context.Context, deps Deps, events []*batchEvent) (map[string]roleResolution, error) {
+func resolveDestinations(ctx context.Context, deps Deps, events []*batchEvent) (map[string]roleResolution, *threadHearing, error) {
 	var resolvable []*batchEvent
 	want := newWanted()
 	for _, event := range events {
@@ -919,19 +941,29 @@ func resolveDestinations(ctx context.Context, deps Deps, events []*batchEvent) (
 		found, err = loadLookups(ctx, deps.Store.Pool, want)
 		return err
 	}); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// What the attempts that name no session yet hold back, which the destinations below read
 	// of every session they would send a copy to (unpinnedRoleMentions, mentionHolds).
 	resolved := resolveUnpinnedRoleMentions(ctx, deps, found.readings()...)
-	hearThreads(ctx, deps, resolvable, found)
+	hearing := hearingFor(deps, resolvable, found)
 	for _, event := range resolvable {
-		event.destinationsOf, event.mentionPending, event.resolveErr = eventDestinations(ctx, deps, event, found)
-		event.resolveLost = lostToContextEnd(ctx, event.resolveErr)
-		var unanswered *unansweredRecipients
-		event.incomplete = errors.As(event.resolveErr, &unanswered)
+		if !hearing.waits(event.owner) {
+			readDestinations(ctx, deps, event, found)
+		}
 	}
-	return resolved, nil
+	return resolved, hearing, nil
+}
+
+// readDestinations reads event's destinations with what the batch's lookups found (look), the
+// second pass of eventDestinations, and marks the event as its list ended: resolveLost where a
+// recipient read the process's stop cancelled, and incomplete where the list ends at a recipient
+// read that failed (unansweredRecipients).
+func readDestinations(ctx context.Context, deps Deps, event *batchEvent, look lookup) {
+	event.destinationsOf, event.mentionPending, event.resolveErr = eventDestinations(ctx, deps, event, look)
+	event.resolveLost = lostToContextEnd(ctx, event.resolveErr)
+	var unanswered *unansweredRecipients
+	event.incomplete = errors.As(event.resolveErr, &unanswered)
 }
 
 // destinations collects an event's destinations, each subject once: a subject an earlier route

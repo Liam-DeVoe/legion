@@ -233,10 +233,10 @@ func (s *roleSend) delivered(outcome sendOutcome) {
 // keeps nothing and is still answered 404, so only the wake brings the released pod back to claim
 // the role, drain what was kept for it (drainKeptRole) and take the sender's next attempt. The
 // report names the role and nothing else; which daemon owns it, and whether any claim of that
-// role is released, is for the daemons to decide. A message at urgency low with no
-// source_session raises no report (wakesItsRole): it is a text of the Legion daemon's that its
-// reader acts on at its next turn, so it brings no released pod back. The keep and the 404 are
-// the same for it as for every other message.
+// role is released, is for the daemons to decide. A message at urgency low with no sender raises
+// no report (wakesItsRole): it is a text of the Legion daemon's that its reader acts on at its next
+// turn, so it brings no released pod back. The keep and the 404 are the same for it as for every
+// other message.
 func (s *roleSend) noHolder(result roles.Resolution) {
 	if wakesItsRole(s.item) {
 		reportRoleWake(s.d, s.d.delivery.logger, s.role)
@@ -406,16 +406,18 @@ func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 // the send's 200, since the holder answers nothing and reads the stored copy from its session
 // consumer (startRoleForward). The stream, which captures agent subjects, therefore keeps one copy
 // of the forward however many attempts there are. Every read takes ctx, the send's window, so
-// none outlasts it: a send whose window ends is answered 504. expectsReply is the expects_reply
-// its answers write (expectsReplyAnswer, api.go), the request's own dialect; the envelope this
-// send forwards and keeps carries the envelope's own value.
-func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep bool, arrived time.Time) {
+// none outlasts it: a send whose window ends is answered 504. sender is the session that sends the
+// message (messageSender), which the envelope's sender stamp names. expectsReply is the
+// expects_reply its answers write (expectsReplyAnswer, api.go), the request's own dialect; the
+// envelope this send forwards and keeps carries the envelope's own value.
+func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecord, d *listenerDeps, item contracts.Envelope, sender string, expectsReply json.RawMessage, role string, keep bool, arrived time.Time) {
 	send := &roleSend{w: w, record: record, d: d, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived}
 	// The sender is stamped before the holder is resolved, so the copy a keep stores carries the
 	// sender's title, roles and directory exactly as the forward of a live delivery does: the
 	// envelope is kept as it is here (keepRoleMessage), and the holder that is handed it later
-	// reads the same stamp this send's own 202 names.
-	send.item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
+	// reads the same stamp this send's own 202 names. The sweep reads that stamp of the kept copy
+	// to tell a session's message from the daemon's (keptLaneWakesItsRole, wakesItsRole).
+	send.item.Sender = senderStamp(ctx, d.registry, d.sessions, sender)
 	firstCtx, cancelFirst := context.WithDeadline(ctx, arrived.Add(sendRequestBudget))
 	first, err := roles.ResolveHolder(firstCtx, d.registry, roleHolderSessions{d.sessions}, role)
 	cancelFirst()

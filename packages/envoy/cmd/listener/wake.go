@@ -29,7 +29,7 @@ const (
 	// sweep raises it again while a copy the listener kept on the role's lane has at least twenty
 	// minutes of its hour left and no live session holds the role, at most once for each role in
 	// each roleWakeInterval across every listener (publishSweptRoleWake). A message at urgency
-	// low with no source_session raises it on neither path (wakesItsRole).
+	// low with no sender raises it on neither path (wakesItsRole).
 	wakeKindRole = "role_message"
 	// wakeKindAgent is a message sent to the agent subject of a session nothing can place: an
 	// Envoy direct message, or a person's answer, comment or message a Dispatch claim routes to
@@ -282,15 +282,20 @@ func reportRoleWake(d *listenerDeps, logger *logging.Logger, role string) {
 }
 
 // wakesItsRole reports whether item, a message to a role that no live session holds, raises the
-// role's wake report. Every message does, apart from one at urgency low that carries no
-// source_session. That is how the Legion daemon sends a text its reader can act on at its next
-// turn, and such a text brings no released pod back. A caller other than the daemon that sends
-// low with no session gets no wake either. An agent session always publishes with its session id,
-// so a low message from a session still wakes the role. The publish route (roleSend.noHolder)
-// and the sweep (keptLaneWakesItsRole) both ask it, so a kept copy of such a text wakes nothing
-// later either. The session is read trimmed, as the route's own check of it is (sessionNotBound).
+// role's wake report. Every message does, apart from one at urgency low that has no sender: it
+// names no source_session and carries no sender stamp. That is how the Legion daemon sends a text
+// its reader can act on at its next turn, and such a text brings no released pod back: the daemon
+// names no session, and publishes under the shared listener bearer, which proves none. A caller
+// other than the daemon that sends low with no session and no broker token gets no wake either.
+// The session a broker token proved is the sender of a message whose body names none, and the
+// route stamps it on the envelope as the sender (messageSender, senderStamp), so a low message
+// from an agent session still wakes the role, whether its body names its session or not. The
+// publish route (roleSend.noHolder) and the sweep (keptLaneWakesItsRole) both ask it, and the
+// kept copy carries the stamp, so a kept copy of the daemon's text wakes nothing later either and
+// a session's kept copy wakes its role on the sweep. The session is read trimmed, as the route's
+// own check of it is (sessionNotBound).
 func wakesItsRole(item contracts.Envelope) bool {
-	return item.Urgency != "low" || strings.TrimSpace(item.SourceSession) != ""
+	return item.Urgency != "low" || item.Sender != nil || strings.TrimSpace(item.SourceSession) != ""
 }
 
 // reportAgentWake reports that a message was sent to the agent subject of sessionID and nothing

@@ -276,6 +276,14 @@ func checkSessionRecipientsReading(t *testing.T, database *store.Store, registry
 	if _, err := scanBatch(context.Background(), deps, unfenced{}, holding(t, deps).instance); err != nil {
 		t.Fatalf("scan batch: %v", err)
 	}
+	return checkSentRecipients(t, database, publisher, checks)
+}
+
+// checkSentRecipients checks, after a batch sent through publisher, that each event of checks was
+// published, sent to the topics its row records, and reached the sessions it must reach, and
+// returns every envelope the batch sent.
+func checkSentRecipients(t *testing.T, database *store.Store, publisher *recordingPublisher, checks []recipientCheck) []contracts.Envelope {
+	t.Helper()
 	byEvent := map[string][]string{}
 	for _, item := range publisher.all() {
 		byEvent[item.SourceEventID] = append(byEvent[item.SourceEventID], item.Topic)
@@ -576,8 +584,8 @@ func (issue threadRuleIssue) inEveryThread(t *testing.T, database *store.Store, 
 // reply and its edit reach B and none of the sessions that only a document credits - A and C,
 // which the issue's primary document credits, and D, which the document the thread is anchored on
 // credits - in a thread on the issue, in a thread on D's document and in the thread of an ask B
-// asked and follows (takesThreadRule, hearThreads, creditFilter). The batch reads B once for all
-// six events, and reads no session that only a document credits.
+// asked and follows (takesThreadRule, threadHearing.hear, creditFilter). The batch reads B once
+// for all six events, and reads no session that only a document credits.
 func TestAPersonsReplyInAThreadOfALiveOrUnresponsiveSessionReachesTheThreadAndNotTheCredits(t *testing.T) {
 	for _, state := range []string{envoy.StateLive, envoy.StateUnresponsive} {
 		t.Run("B "+state, func(t *testing.T) {
@@ -677,6 +685,105 @@ func TestAFailedRegistryReadSendsTheCreditCopy(t *testing.T) {
 				[]string{issue.a.ID, issue.c.ID, issue.b.ID, issue.d.ID}))
 		})
 	}
+}
+
+// hungRegistry is Envoy's registry when its listener takes a read and never answers it: every
+// read waits until the test lets it go, or until its own context ends, and then fails as the
+// client's timeout fails it. started is closed at the first read.
+type hungRegistry struct {
+	started chan struct{}
+	once    sync.Once
+	release chan struct{}
+}
+
+func (r *hungRegistry) Session(ctx context.Context, sessionID string) (envoy.Session, error) {
+	r.once.Do(func() { close(r.started) })
+	select {
+	case <-r.release:
+	case <-ctx.Done():
+	}
+	return envoy.Session{}, fmt.Errorf("read session %s: %w", sessionID, context.DeadlineExceeded)
+}
+
+// A registry that does not answer costs the person's reply whose thread it is asked about its
+// wait, and holds no other event of the batch: the issue.released of T-2, in the same batch as the
+// reply and its edit in a thread on T-1 whose session B the batch reads, is published to the
+// session that lost the claim and recorded while the read of B is still open, and the reply waits.
+// Once the read fails, as the client's timeout fails it, the reply and its edit reach the credits
+// of their documents, as they do where the registry does not answer
+// (TestAFailedRegistryReadSendsTheCreditCopy).
+func TestAHungRegistryHoldsNoIssueReleasedOfAnotherIssue(t *testing.T) {
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	issue := seedThreadRuleIssue(t, database)
+	seedSecondIssue(t, database, "T-2")
+	created, edited := issue.inIssueThread(t, database, broker)
+	released := appendEvent(t, database, broker, model.Event{
+		IssueKey: new("T-2"), Type: "issue.released", Actor: model.Actor{Kind: "user", ID: "alice"},
+		Payload: map[string]any{
+			"reason": "released",
+			"previous_claim": map[string]any{
+				"actor": map[string]any{"kind": "session", "id": "session-one"},
+				"at":    "2026-11-18T05:00:00Z",
+			},
+		},
+	})
+	registry := &hungRegistry{started: make(chan struct{}), release: make(chan struct{})}
+	letGo := sync.OnceFunc(func() { close(registry.release) })
+	publisher := &recordingPublisher{}
+	deps := Deps{Store: database, Publisher: publisher, Broker: events.NewBroker(), Registry: registry}
+	holder := holding(t, deps).instance
+	scanned := make(chan struct{})
+	var scanErr error
+	go func() {
+		defer close(scanned)
+		_, scanErr = scanBatch(context.Background(), deps, unfenced{}, holder)
+	}()
+	// However the test ends, the registry lets the read go and the batch ends before the
+	// database it writes to is dropped.
+	t.Cleanup(func() {
+		letGo()
+		select {
+		case <-scanned:
+		case <-time.After(10 * time.Second):
+		}
+	})
+
+	select {
+	case <-registry.started:
+	case <-scanned:
+		t.Fatalf("the batch ended (%v) before it read %s from the registry", scanErr, issue.b.ID)
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the batch did not read %s from the registry", issue.b.ID)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for readEventRow(t, database, released.ID).publishedAt == nil {
+		if time.Now().After(deadline) {
+			t.Fatalf("issue.released of T-2 was not published while the registry read of %s was open", issue.b.ID)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	for _, item := range publisher.all() {
+		if item.SourceEventID == fmt.Sprint(created.ID) || item.SourceEventID == fmt.Sprint(edited.ID) {
+			t.Fatalf("event %s went to %s before the registry answered for %s", item.SourceEventID, item.Topic, issue.b.ID)
+		}
+	}
+
+	letGo()
+	select {
+	case <-scanned:
+		if scanErr != nil {
+			t.Fatalf("scan batch: %v", scanErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the batch did not end once the registry read failed")
+	}
+	credits := []string{issue.a.ID, issue.c.ID, issue.b.ID}
+	checkSentRecipients(t, database, publisher, []recipientCheck{
+		{event: created, want: credits},
+		{event: edited, want: credits},
+		{event: released, want: []string{"session-one"}},
+	})
 }
 
 // The thread rule takes copies away and adds none. B asked an ask and stopped following it, so no

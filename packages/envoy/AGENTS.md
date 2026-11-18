@@ -3724,13 +3724,13 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   While a lane holds a copy the listener kept with at least 20 minutes of its hour left, and no live session holds the role, each sweep raises the role's wake report again on `notifications.legion.wake` (`raiseKeptRoleWake`, `publishSweptRoleWake`).
   The report's message id names the role and the five-minute interval, so the stream holds at most one such report for a role in each interval across every listener.
   A copy of Dispatch's outbox raises no report.
-  A copy at urgency `low` whose publish named no `source_session` raises no report either (`wakesItsRole`), as the publish route raised none for it.
+  A copy at urgency `low` with no sender raises no report either (`wakesItsRole`), as the publish route raised none for it: it names no `source_session` and carries no `sender` stamp.
 
 - A released Legion role gets the copies kept for it when it comes back.
   The release ends the role's process and leaves its claim standing.
   The session's record is gone at most about five minutes after its last heartbeat, or at the stop once the daemon's clean stop runs.
   A message to the role is then kept as `holder_lapsed`, and as `unclaimed` once the role claim reaper releases the claim at its next pass (`internal/store/reaper.go`).
-  Either way it is kept and raises the role's wake report, unless it is at urgency `low` and names no `source_session` (`wakesItsRole`).
+  Either way it is kept and raises the role's wake report, unless it is at urgency `low` and has no sender (`wakesItsRole`).
   That is how the Legion daemon sends a text that its reader can act on at its next turn, and such a text brings no released pod back.
   When the role comes back, its session registers again or claims the role, and either one hands it each copy kept for the role whose hour has not ended, as an Envoy card that carries `kept_at` (`subscribeHandler`, `roleSetHandler`).
   The card can arrive before the task the daemon gives the woken role (`WakeTask`, `packages/daemon/internal/workflow/wake.go`).
@@ -4737,6 +4737,8 @@ Each item below names an endpoint and its method, then its contract, and an item
   The target read, the sender stamp, the connection probe and the publish share one 3.5 s budget (`sendRequestBudget`) taken from the request's own context, so a bus this listener cannot reach is answered inside the caller's attempt instead of spending it, and a publish the bus did not serve is that same 503.
   The envelope's `sender` (on this route and the publish route alike) is stamped from the sender's interest record (`senderStamp`), whose cache miss is read through to the `envoy_interests` bucket within `senderStampReadTimeout` (1 s) of the same budget:
   the stamp is only enrichment, so a read that does not answer leaves it the session id and the title this listener's session cache holds, and the publish that follows meets the silent bus itself and answers that 503.
+  The session it names is the message's sender (`messageSender`): the session a broker token proves, else the body's trimmed `source_session`.
+  So a message of a token's session carries the stamp whether its body names the session or not, and a message with neither carries none.
   Its `machine` and `cwd` are the interest row's, which the session's latest registration wrote, so they name the listener the session is registered through now and the directory that registration sent (dispatch://INFRA-889;
   before it, both named the listener the session first registered through).
   The connection probe (below) runs beside that stamp on a goroutine of its own, under the same second (`connectionProbeTimeout`), so a send that both stamps and probes spends one second on the pair and the budget is unchanged by the probe.
@@ -5184,10 +5186,12 @@ a cleanup that failed is logged at WARN (`registry role claim old holder cleanup
 `urgency` is `low`, `med`, `high`, or `blocking`; `expects_reply` is `false`, `optional`, or `required`, and the ingress also reads the old string `none` as `false`, which the comment at the parser in `internal/contracts/expects_reply.go` says what removes.
 The listener reads `urgency` in three places.
 Its validation refuses a value outside those four (`api.go`).
-A publish at `low` that names no `source_session`, to a role that no live session holds, raises no wake report (`roleSend.noHolder`, `wakesItsRole`), for the 202 kept answer and for the 404 alike.
-The sweep of kept copies raises no report for such a copy either (`role_keep_sweep.go`, `wakesItsRole`).
-The Legion daemon sends a text that its reader can act on at its next turn this way.
-An agent session always names its own session, so a `low` message from a session still wakes the role.
+A publish at `low` that has no sender, to a role that no live session holds, raises no wake report (`roleSend.noHolder`, `wakesItsRole`), for the 202 kept answer and for the 404 alike.
+A message has no sender when its body names no `source_session` and no broker token proves a session (`messageSender`).
+The sweep of kept copies raises no report for such a copy either (`role_keep_sweep.go`, `wakesItsRole`), and it knows such a copy by its missing `sender` stamp.
+The Legion daemon sends a text that its reader can act on at its next turn this way: it names no session, and it publishes under the shared listener bearer, which proves none.
+The session a broker token proves is the sender of a message whose body names none, and the route stamps that session as the envelope's `sender` (`senderStamp`).
+So a `low` message from an agent session still wakes the role, whether its body names the session or not, and so does its kept copy on the sweep.
 Apart from that, the listener orders, holds and delivers no message by `urgency`, and the renderers show it to the reader.
 An Oh My Pi host stores a `low` card of the Legion daemon, one that names no `source_session`, in the session's context with no turn, so the session reads it at its next turn (`packages/pi-envoy/AGENTS.md`).
 Every other card from a session starts a turn, whatever its urgency.
@@ -6045,8 +6049,11 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   The rule takes the events `takesPrimaryAuthors` takes that are a reply under a comment (`reply_to`) or a comment in an ask's thread (`ask_id`).
   The thread's sessions are the sessions that the thread rules reach: those that wrote a comment in the thread (`from_thread`), and for an ask's thread the ask's followers, with the actor left out (`threadSessions`).
   So an asker that stopped following its ask is not one of them.
-  After its lookups, with no statement open and no pooled connection held, a batch reads each of those sessions once from Envoy's registry, all of them at once (`hearThreads`).
+  After its lookups, with no statement open and no pooled connection held, a batch reads each of those sessions once from Envoy's registry, at most `registryReadsAtOnce` (8) at once (`threadHearing.hear`, `countedSessions`).
+  It reads the registry only for the events this rule takes, and only their owners wait for the read: the batch reads the destinations of every event of such an owner, and plans and sends them, once the read answered (`threadHearing.plan`), while it plans and sends every other owner at once (`sendChains`).
+  So a registry that does not answer costs those owners its wait and holds no other event of the batch, an `issue.released` on another issue included.
   The read is the one an issue claim makes of its holder (`GET /v1/registry/<id>?include=unresponsive`, `Deps.Registry`), and the client's own timeout bounds it.
+  A read that fails for any reason but a missing record is the registry not answering: no read starts after it, and the sessions not read yet do not count, so a hung registry costs one timeout however many sessions the threads hold.
   Where one of the thread's sessions reads `live` or `unresponsive` (`routing.threadHeard`), the reply reaches the thread and no session that only a document credits: not the primary document's (`addPrimaryDocumentAuthors`) and not the thread's document's (`addAuthorRoutes`).
   A session that reads `gone`, a stopped one, one the registry holds no record of, and one whose read failed do not count.
   Where none counts, or where the outbox has no registry client (`Deps.Registry` nil), the reply reaches the credits as before.

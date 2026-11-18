@@ -224,7 +224,7 @@ func takesPrimaryAuthors(event model.Event, routing routing) bool {
 // takesThreadRule reports whether the thread rule may leave the credits of a document out of
 // event: takesPrimaryAuthors holds for it, and it is a person's reply in a thread or the edit of
 // one - a reply under a comment (reply_to) or a comment in an ask's thread (ask_id). Whether the
-// rule does is whether a session of that thread counts (routing.threadHeard, hearThreads). A
+// rule does is whether a session of that thread counts (routing.threadHeard, threadHearing.hear). A
 // person's reply answers the thread, so the sessions of the thread hear it, and a session that
 // only wrote or edited a document the reply is about does not. The rule takes copies away and
 // adds none.
@@ -281,49 +281,111 @@ type RegistryReader interface {
 	Session(ctx context.Context, sessionID string) (envoy.Session, error)
 }
 
-// hearThreads decides the thread rule for each of events (takesThreadRule). It reads the state of
-// every session of their threads (threadSessions) from Envoy's registry, and marks each event whose
-// thread has a session the registry reads live or unresponsive (routing.threadHeard). That event's
-// destinations then leave out every session that only a document credits (creditFilter). A session
-// that is gone, stopped or unknown to the registry does not count, and neither does one whose read
-// failed. So a thread none of whose sessions counts reaches the credits as before, and so does
-// every thread where the registry does not answer or deps holds no reader.
-//
-// It reads each session once for the whole batch, every session at once, so the batch waits for
-// one read at most, which the reader's own timeout bounds (envoy.Client's window). It runs after
-// the batch's lookups, with no statement open and no pooled connection held, since the read is a
-// call to another service. Nothing it read is stored: a retried event reads its thread again, so
-// a retry reaches the credits where every session of the thread has gone since, or where the
-// registry does not answer it.
-func hearThreads(ctx context.Context, deps Deps, events []*batchEvent, look lookup) {
+// registryReadsAtOnce is how many reads of Envoy's registry one batch has open at once
+// (countedSessions). A thread holds every session that wrote in it or follows its ask, so a read
+// for each of them at once would open as many requests to the listener as the batch's threads
+// hold sessions.
+const registryReadsAtOnce = 8
+
+// threadHearing is the thread rule's read of Envoy's registry for one batch (hearingFor): each
+// event the rule takes whose thread names a session (takesThreadRule, threadSessions), with those
+// sessions, and every session they name once. The read is made only for those events, and only
+// their owners wait for it: every event of such an owner is resolved, planned and sent once the
+// read answered (plan), so that the owner's events keep their order, while the batch plans and
+// sends every other owner at once (publishBatch, sendChains). A registry that does not answer
+// costs the owners it holds the client's own timeout, and holds no other event of the batch.
+type threadHearing struct {
+	registry RegistryReader
+	look     lookup
+	threads  []heardThread
+	sessions []string
+	// owners holds the owner of each event whose thread is read, and order lists them in the
+	// batch's order. events are the batch's resolvable events of those owners: the events whose
+	// destinations wait for the read.
+	owners map[string]struct{}
+	order  []string
+	events []*batchEvent
+}
+
+// heardThread is one event the thread rule takes and the sessions of its thread.
+type heardThread struct {
+	event    *batchEvent
+	sessions []string
+}
+
+// heardPlan is the plan of the owners that waited for Envoy's registry (threadHearing.plan): their
+// chains, and those owners of them with no chain, which have nothing to send. sendChains takes it
+// on beside the batch's other chains.
+type heardPlan struct {
+	chains []*chain
+	idle   []string
+}
+
+// hearingFor is the thread rule's read for resolvable, the batch's events whose destinations can
+// be read, as look answers their threads (threadSessions): nil, reading nothing and holding no
+// owner, where deps holds no registry reader or no thread of resolvable names a session.
+func hearingFor(deps Deps, resolvable []*batchEvent, look lookup) *threadHearing {
 	if deps.Registry == nil {
-		return
+		return nil
 	}
-	type thread struct {
-		event    *batchEvent
-		sessions []string
-	}
-	var threads []thread
-	var sessionIDs []string
+	hearing := &threadHearing{registry: deps.Registry, look: look, owners: map[string]struct{}{}}
 	asked := map[string]struct{}{}
-	for _, event := range events {
+	for _, event := range resolvable {
 		sessions := threadSessions(event.event, event.routing, look)
 		if len(sessions) == 0 {
 			continue
 		}
-		threads = append(threads, thread{event: event, sessions: sessions})
+		hearing.threads = append(hearing.threads, heardThread{event: event, sessions: sessions})
 		for _, sessionID := range sessions {
 			if _, ok := asked[sessionID]; !ok {
 				asked[sessionID] = struct{}{}
-				sessionIDs = append(sessionIDs, sessionID)
+				hearing.sessions = append(hearing.sessions, sessionID)
 			}
 		}
+		if _, ok := hearing.owners[event.owner]; !ok {
+			hearing.owners[event.owner] = struct{}{}
+			hearing.order = append(hearing.order, event.owner)
+		}
 	}
-	if len(sessionIDs) == 0 {
+	if len(hearing.threads) == 0 {
+		return nil
+	}
+	for _, event := range resolvable {
+		if hearing.waits(event.owner) {
+			hearing.events = append(hearing.events, event)
+		}
+	}
+	return hearing
+}
+
+// waits reports whether owner's events wait for the read. A nil hearing holds no owner.
+func (h *threadHearing) waits(owner string) bool {
+	if h == nil {
+		return false
+	}
+	_, ok := h.owners[owner]
+	return ok
+}
+
+// hear decides the thread rule for each event the hearing reads a thread for (takesThreadRule).
+// It reads the state of every session of those threads from Envoy's registry (countedSessions),
+// and marks each event whose thread has a session the registry reads live or unresponsive
+// (routing.threadHeard). That event's destinations then leave out every session that only a
+// document credits (creditFilter). A session that is gone, stopped or unknown to the registry does
+// not count, and neither does one whose read failed or was never made. So a thread none of whose
+// sessions counts reaches the credits as before, and so does every thread where the registry does
+// not answer or deps holds no reader (a nil hearing, which reads nothing).
+//
+// It reads each session once for the whole batch, after the batch's lookups, with no statement
+// open and no pooled connection held, since the read is a call to another service. Nothing it read
+// is stored: a retried event reads its thread again, so a retry reaches the credits where every
+// session of the thread has gone since, or where the registry does not answer it.
+func (h *threadHearing) hear(ctx context.Context) {
+	if h == nil {
 		return
 	}
-	counted := countedSessions(ctx, deps.Registry, sessionIDs)
-	for _, thread := range threads {
+	counted := countedSessions(ctx, h.registry, h.sessions)
+	for _, thread := range h.threads {
 		thread.event.routing.threadHeard = slices.ContainsFunc(thread.sessions, func(sessionID string) bool {
 			_, ok := counted[sessionID]
 			return ok
@@ -331,18 +393,75 @@ func hearThreads(ctx context.Context, deps Deps, events []*batchEvent, look look
 	}
 }
 
-// countedSessions reads each of sessionIDs from registry, every one at once, and answers the ones
-// it reads live or unresponsive. A read that failed counts nothing, and is logged unless ctx
-// ended; a session the registry holds no record of is no failure.
+// plan reads the hearing's threads (hear) on a goroutine of its own, then reads the destinations
+// of the events that waited for it (readDestinations), resolves their role routes' holders with
+// the roles the batch resolved already (resolveRoleHolders), plans their chains (planChains), and
+// answers that plan on the channel it returns, once. The batch's own goroutine touches none of
+// those events until it takes the plan, and is done with resolved and the hearing's lookups before
+// plan is called. A nil hearing plans nothing and returns a nil channel.
+func (h *threadHearing) plan(ctx context.Context, deps Deps, resolved map[string]roleResolution) <-chan heardPlan {
+	if h == nil {
+		return nil
+	}
+	planned := make(chan heardPlan, 1)
+	go func() {
+		h.hear(ctx)
+		for _, event := range h.events {
+			readDestinations(ctx, deps, event, h.look)
+		}
+		resolveRoleHolders(ctx, deps, h.events, resolved)
+		chains := planChains(h.events)
+		sending := map[string]struct{}{}
+		for _, c := range chains {
+			sending[c.owner] = struct{}{}
+		}
+		var idle []string
+		for _, owner := range h.order {
+			if _, ok := sending[owner]; !ok {
+				idle = append(idle, owner)
+			}
+		}
+		planned <- heardPlan{chains: chains, idle: idle}
+	}()
+	return planned
+}
+
+// countedSessions reads each of sessionIDs from registry, at most registryReadsAtOnce at once, and
+// answers the ones it reads live or unresponsive. A session the registry holds no record of is no
+// failure. Any other error is the registry not answering (RegistryReader): that read counts
+// nothing and is logged unless ctx ended, and no read starts after it, so the sessions not yet read
+// count nothing either, as a registry that does not answer sends the credit copy. A registry that
+// hangs then costs one read's wait, which the reader's own timeout bounds (envoy.Client's window),
+// rather than that wait for every registryReadsAtOnce sessions of the batch's threads.
 func countedSessions(ctx context.Context, registry RegistryReader, sessionIDs []string) map[string]struct{} {
 	counted := map[string]struct{}{}
 	var mu sync.Mutex
+	unanswered := false
 	var wg sync.WaitGroup
-	for _, sessionID := range sessionIDs {
+	slots := make(chan struct{}, registryReadsAtOnce)
+	for index, sessionID := range sessionIDs {
+		slots <- struct{}{}
+		mu.Lock()
+		stop := unanswered
+		mu.Unlock()
+		if stop || ctx.Err() != nil {
+			if stop {
+				slog.Warn("dispatch outbox: Envoy's registry did not answer, so the thread sessions not read yet do not count",
+					"unread", len(sessionIDs)-index)
+			}
+			break
+		}
 		wg.Go(func() {
+			defer func() { <-slots }()
 			session, err := registry.Session(ctx, sessionID)
 			if err != nil {
-				if !errors.Is(err, envoy.ErrNotFound) && ctx.Err() == nil {
+				if errors.Is(err, envoy.ErrNotFound) {
+					return
+				}
+				mu.Lock()
+				unanswered = true
+				mu.Unlock()
+				if ctx.Err() == nil {
 					slog.Warn("dispatch outbox: a thread session's state could not be read from Envoy's registry, so it does not count",
 						"session_id", sessionID, "error", err)
 				}
@@ -383,8 +502,8 @@ type creditFilter struct {
 // which adds no reading of that comment anywhere else. An edit whose payload names no mention can
 // exempt nobody that way, so it asks nothing. The failed mentions are asked wherever the thread
 // rule may apply, whether or not it does: the batch's first pass runs before the registry is read
-// (hearThreads), and it must register every id the second pass reads (wanted). A read that failed
-// ends the event's destinations, as every other lookup does.
+// (threadHearing.hear), and it must register every id the second pass reads (wanted). A read that
+// failed ends the event's destinations, as every other lookup does.
 //
 // It is asked once per route and never per credit row: the first pass answers no row at all
 // (wanted), so an ask made per row would register no id and the second pass would find nothing

@@ -55,9 +55,9 @@ type pendingEvent struct {
 //
 // threadHeard is the thread rule's answer for the event (takesThreadRule): whether a session of
 // the thread a person's reply is in is live or unresponsive, as the batch read Envoy's registry
-// after its lookups (hearThreads). It is false until then, and false for every event the rule
-// does not take. Every batch reads it again too, so a retry reaches the credits of its documents
-// where every session of the thread has gone since.
+// after its lookups (threadHearing.hear). It is false until then, and false for every event the
+// rule does not take. Every batch reads it again too, so a retry reaches the credits of its
+// documents where every session of the thread has gone since.
 type routing struct {
 	route       *string
 	claimant    string
@@ -708,10 +708,17 @@ func planChains(events []*batchEvent) []*chain {
 // sends all answered, or the rest of them held back or never made - so the batch can settle,
 // record and release that owner while the other owners' chains are still sending (publishBatch).
 //
+// heard, nil where no owner waits, answers once the plan of the owners that waited for Envoy's
+// registry (threadHearing.plan). The batch's other chains go meanwhile, and the plan joins them
+// when it is in: each of its owners with no chain is settled at once, and each of its chains
+// starts as the first chains did, or ends with its sends unsent where the batch has stopped.
+// sendChains returns only once it took the plan, ctx's end included, so no event of the batch is
+// still being planned when the batch settles what is left.
+//
 // The keeps this batch makes share one record of what their own handovers delivered to a role's
 // holder (keptHandovers, handOverKept), made here because it is this batch's: a handover writes
 // no cursor, and keptHandovers' doc holds what the record is for.
-func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*chain, settled func(owner string)) {
+func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*chain, heard <-chan heardPlan, settled func(owner string)) {
 	handed := newKeptHandovers()
 	stopped := false
 	var inflight []*chain
@@ -883,13 +890,26 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 			finish(c)
 		}
 	}
+	// join takes on the plan of the owners that waited for Envoy's registry: its owners with no
+	// chain settle at once, and its chains start as the first ones did.
+	join := func(plan heardPlan) {
+		for _, c := range plan.chains {
+			left[c.owner]++
+		}
+		for _, owner := range plan.idle {
+			settled(owner)
+		}
+		for _, c := range plan.chains {
+			issue(c)
+		}
+	}
 	for _, c := range chains {
 		issue(c)
 	}
-	// Each chain has at most one send in flight, so the select's cases are at most every chain's
-	// and ctx's.
-	cases := make([]reflect.SelectCase, 0, len(chains)+1)
-	for len(inflight) > 0 {
+	// Each chain has at most one send in flight, so the select's cases are at most every chain's,
+	// ctx's and the heard plan's.
+	cases := make([]reflect.SelectCase, 0, len(chains)+2)
+	for len(inflight) > 0 || heard != nil {
 		// An answer already in is taken first, in the order the chains were planned, so a batch
 		// whose answers are all in proceeds the same way every time.
 		if index, err, ok := firstAnswered(inflight); ok {
@@ -900,6 +920,10 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 			for len(inflight) > 0 {
 				settle(0, ctx.Err())
 			}
+			// The plan's own reads end with ctx, so it comes in soon; its chains end unsent.
+			if heard != nil {
+				join(<-heard)
+			}
 			break
 		}
 		cases = cases[:0]
@@ -907,8 +931,16 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 			cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(c.sends[c.next].answer)})
 		}
 		cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ctx.Done())})
+		if heard != nil {
+			cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(heard)})
+		}
 		chosen, value, _ := reflect.Select(cases)
-		if chosen == len(inflight) {
+		switch chosen {
+		case len(inflight):
+			continue
+		case len(inflight) + 1:
+			heard = nil
+			join(value.Interface().(heardPlan))
 			continue
 		}
 		var err error
