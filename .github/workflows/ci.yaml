@@ -1,7 +1,8 @@
 name: CI
 
 # The router: every check a pull request or the merge queue runs, in one workflow. How it selects
-# jobs and how a job joins it: .github/ci-budgets.md, "The router"; what it caches: "Caches".
+# jobs and how a job joins it: .github/ci-budgets.md, "The router"; what it caches: "Caches";
+# which runner a job takes: "Runners".
 
 # Retries and budgets: how every download of this workflow retries, and how every step budget
 # and job ceiling below was derived, are the Retries note and the Budgets note of
@@ -5559,7 +5560,7 @@ jobs:
           done <<<"$acts"
 
   # The verdict, and one of the two checks main's ruleset requires of this router. Its shape, its
-  # `always()` and its scope: .github/ci-budgets.md, "The ci-ok job's shape".
+  # `always()`, its runner and its scope: .github/ci-budgets.md, "The ci-ok job's shape".
   ci-ok:
     needs:
       - changes

@@ -22,7 +22,7 @@ on:
 
 jobs:
   dispatch-ui:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # Budget (ci-budgets.md's Budgets note): 900 s, the 15 minutes this job was written with, plus
     # its slowest retried step alone — the setup-bun step's two `ci_tools_fetch` calls,
     # 3416 s, above the workspace install's 5 x 180 + 150 = 1050 s, the zsh install's two apt

@@ -31,7 +31,7 @@ env:
 
 jobs:
   broker-multiprocess:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # Budget (ci-budgets.md's Budgets note): 1800 s, the 30 minutes this job carried, above its
     # 171 s measured maximum and holding the step's own `-timeout 20m` — which is why the
     # carried 30 minutes stay the first term rather than the measurement — plus its slowest

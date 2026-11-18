@@ -31,7 +31,7 @@ env:
 
 jobs:
   typecheck:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job carried, above its 83 s
     # measured maximum, plus its slowest retried step alone — packages/daemon's
     # `go mod download` at 5 x 180 + 150 = 1050 s, below the ci-ok report, 2160 s (ci-budgets.md's Budgets note, "The ci-ok report"), which is this job's slowest
@@ -56,8 +56,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-daemon-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-daemon-{0}-', runner.os) }}
+          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
 
       # The module the vet below compiles, downloaded once and retried before it (ci-budgets.md's
       # Retries note; the retried unit is the download, never the vet). 180 s per attempt, as that

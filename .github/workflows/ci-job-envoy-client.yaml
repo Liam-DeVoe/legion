@@ -22,7 +22,7 @@ on:
 
 jobs:
   envoy-client:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job carried, above its 83 s
     # measured maximum, plus its slowest retried step alone — the setup-bun step's two
     # `ci_tools_fetch` calls, 3416 s, above the workspace install's 5 x 180 + 150 = 1050 s and

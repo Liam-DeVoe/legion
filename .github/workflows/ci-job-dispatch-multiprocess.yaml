@@ -31,7 +31,7 @@ env:
 
 jobs:
   dispatch-multiprocess:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # Budget (ci-budgets.md's Budgets note): 1800 s, the 30 minutes this job carried, above its
     # 1043 s measured maximum and holding the step's own `-timeout 20m`, plus its slowest
     # retried step alone — the ci-ok report, 2160 s (ci-budgets.md's Budgets note, "The ci-ok report"), above

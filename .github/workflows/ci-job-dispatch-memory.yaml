@@ -31,7 +31,7 @@ env:
 
 jobs:
   dispatch-memory:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # Budget (ci-budgets.md's Budgets note): 4500 s, the 75 minutes this job carried, above its
     # 1460 s measured maximum and holding the step's own `-timeout 60m`, plus its slowest
     # retried step alone — the ci-ok report, 2160 s (ci-budgets.md's Budgets note, "The ci-ok report"), above

@@ -31,7 +31,7 @@ env:
 
 jobs:
   envoy-infra-go:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # Budget (ci-budgets.md's Budgets note): 1200 s, the 20 minutes main's #4253 gave this job for
     # its slowest measured runs below, plus its slowest retried step alone — the four `go install`s
     # of the live tests' tools, each 5 x 180 + 150 = 1050 s, so 4200 s, above both
@@ -46,7 +46,8 @@ jobs:
     # older module versions and rebuilds what moved. At worst that is both vets nearly from
     # nothing, and the whole job then took 959 and 1059 s in runs 44013632169 and 43996496498,
     # whose entry was eleven days old and held no darwin objects. With no entry at all, as after an
-    # eviction, the job took 921 s (run 44026580304). Those 20 minutes are for those cases.
+    # eviction, the job took 921 s (run 44026580304). Those 20 minutes are for those cases. Those
+    # four runs ran the job on ubuntu-24.04, before it moved to arm64.
     timeout-minutes: 92
     env:
       TESTCONTAINERS_RYUK_DISABLED: "true"
@@ -60,15 +61,16 @@ jobs:
           go-version-file: packages/envoy/infra/go.mod
           cache: false
       # go-envoy-infra, under the key .github/workflows/ci-caches.yaml's envoy-infra job fills: the
-      # Go version and the hash of the files that choose the module versions, so a run whose
-      # module files main has already filled restores an entry built from the same versions.
+      # runner's architecture, the Go version and the hash of the files that choose the module
+      # versions, so a run whose module files main has already filled restores an entry built from
+      # the same versions.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-infra-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum') }}
-          restore-keys: ${{ format('go-envoy-infra-{0}-', runner.os) }}
+          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum') }}
+          restore-keys: ${{ format('go-envoy-infra-{0}-{1}-', runner.os, runner.arch) }}
       # The infra module's own workspace, downloaded once and retried before the vet and the
       # tests below (ci-budgets.md's Retries note; the retried unit is the download, never the
       # build and never the test). 180 s per attempt: a cold `go mod download` of

@@ -84,8 +84,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-daemon-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-daemon-{0}-', runner.os) }}
+          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
       # The module daemon-pane.test.ts runs `go run -overlay` in, downloaded once and retried
       # before the test step that starts it (ci-budgets.md's Retries note; the retried unit is the
       # download, never the run). 180 s per attempt, as that note derives. The restore above

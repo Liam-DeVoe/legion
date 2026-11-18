@@ -47,7 +47,7 @@ on:
 
 jobs:
   proof-sdk-offline:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # Budget (ci-budgets.md's Budgets note): 900 s, the 15 minutes this job came in with — it is
     # new here, so no run on main has measured it — plus its slowest retried step alone — the
     # setup-bun step's two `ci_tools_fetch` calls, 3416 s, above either frozen install's

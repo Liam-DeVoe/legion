@@ -134,8 +134,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-{1}-', runner.os, runner.arch) || '' }}
       # The browser suite's jobs of these names, at the bounds their own comments derive
       # (.github/ci-budgets.md's Retries note): two `ci_tools_fetch` calls for the Bun install,
       # 2 x 1708 = 3416 s -> 57 min, and one `retry_fetch` call at the 180 s bound every Bun

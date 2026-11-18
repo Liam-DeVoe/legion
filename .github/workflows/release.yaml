@@ -303,8 +303,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-daemon-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: go-daemon-${{ runner.os }}-
+          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: go-daemon-${{ runner.os }}-${{ runner.arch }}-
       # The modules this job's build compiles, downloaded once and retried, so the build itself
       # reads the module cache and never the proxy (dispatch://INFRA-1545, R1 and its D1: the
       # retried unit is the download, never the build). Five bounded attempts through

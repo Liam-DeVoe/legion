@@ -31,7 +31,7 @@ env:
 
 jobs:
   envoy-session-stall:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # Budget (ci-budgets.md's Budgets note): 1200 s, the 20 minutes this job carries since
     # main's #3579 gave it a PostgreSQL service and the live Dispatch-stack suite, plus its
     # slowest retried step alone — the setup-bun step's two `ci_tools_fetch` calls, 3416 s,
@@ -82,8 +82,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The module test/envoy-stack.ts builds the listener and natsd from, downloaded once and

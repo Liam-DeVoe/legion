@@ -119,8 +119,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-docs-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-docs-{0}-', runner.os) || '' }}
+          key: go-docs-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-docs-{0}-{1}-', runner.os, runner.arch) || '' }}
       # The modules this job's Go builds compile — docs/site/scripts/build-binaries.sh builds
       # legion out of packages/daemon and four commands out of packages/envoy, for the generated
       # reference pages and the screenshot harness — downloaded once and retried, so each build
