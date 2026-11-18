@@ -51,6 +51,13 @@ func MachineIdentity(getenv func(string) string) (Source, error) {
 	return internal.MachineIdentity(getenv)
 }
 
+// MachineKey forwards to internal/brokerclient.MachineKey: the key a machine trade proves, which
+// is a pod role's own agent-secrets key where IdentityVar is kubernetes and AGENT_SECRETS_KEY_DIR
+// names that role's directory, and a fresh key of this process's own everywhere else.
+func MachineKey(getenv func(string) string) (*ecdsa.PrivateKey, error) {
+	return internal.MachineKey(getenv)
+}
+
 // TradeSession forwards to internal/brokerclient.TradeSession: the session a trade writes
 // under, the caller's own where it acts as one and SessionVar's otherwise.
 func TradeSession(getenv func(string) string, own string) string {

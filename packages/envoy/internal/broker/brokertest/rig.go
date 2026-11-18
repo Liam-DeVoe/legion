@@ -84,6 +84,28 @@ const (
 // that pod (POST /v1/oauth/exchange/pod-sessions), with the key the registration names.
 const ExchangeRolesAccount = "system:serviceaccount:example-ns:example-roles"
 
+// The third account every Rig's BROKER_EXCHANGE_ACCOUNTS lists: a Legion daemon's own pod, whose
+// entry fixes DaemonExchangeSession, the session a daemon of ExchangeProject writes Dispatch
+// under, and names the Rig's approver (Operator) as its person, since Dispatch refuses every
+// write of a token that names none (SIGN_IN_REQUIRED). It is an account of its own rather than
+// DaemonAccount, which a Rig lists for no exchange: the registration route refuses a pod token of
+// an account the exchange does not list (POD_ACCOUNT_NOT_LISTED), and a test of that refusal
+// presents the daemon's own login token.
+const (
+	DaemonExchangeAccount = "system:serviceaccount:legion-system:legion-daemon-exchange"
+	DaemonExchangeSession = "legion-daemon:" + ExchangeProject
+)
+
+// The fourth account every Rig's BROKER_EXCHANGE_ACCOUNTS lists: a pod of a second project,
+// OtherProject, whose entry fixes OtherProjectSession and names the Rig's approver as its person,
+// so a test holds a token that Dispatch serves for its person and that names a project other
+// than ExchangeProject.
+const (
+	OtherProjectAccount = "system:serviceaccount:other-ns:other-project-worker"
+	OtherProject        = "OTHER"
+	OtherProjectSession = "other-project-worker"
+)
+
 // The one workflow every Rig's BROKER_EXCHANGE_WORKFLOWS lists and what a run of it may write. It
 // fixes no session, so a run names its own.
 const (
@@ -142,9 +164,10 @@ type Rig struct {
 type Option func(*rigConfig)
 
 type rigConfig struct {
-	lease    time.Duration
-	maxConns int
-	minters  map[string]requests.Minter
+	lease          time.Duration
+	maxConns       int
+	minters        map[string]requests.Minter
+	accessLifetime time.Duration
 }
 
 // WithLease sets the enrollment lease the broker grants, an hour by default, for a test whose
@@ -166,6 +189,13 @@ func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }
 }
 
+// WithAccessLifetime sets how long an access token the broker issues lasts, an exchanged one's
+// and a machine login's alike (BROKER_ACCESS_TOKEN_SECONDS), fifteen minutes by default, for a
+// test whose client must renew a token within its own run.
+func WithAccessLifetime(d time.Duration) Option {
+	return func(c *rigConfig) { c.accessLifetime = d }
+}
+
 // NewRig holds two secrets the person ada@example.com owns: TEST_SECRET, human-tier, which a
 // request from any session makes an approval request to her, and TEST_AUTO_SECRET, agent-tier,
 // which her own sessions get at once. It wires a real pod verifier (a local OIDC issuer trusted by
@@ -177,7 +207,7 @@ func WithMinters(minters map[string]requests.Minter) Option {
 // (storetest.Open's own contract).
 func NewRig(t *testing.T, options ...Option) *Rig {
 	t.Helper()
-	config := rigConfig{lease: time.Hour}
+	config := rigConfig{lease: time.Hour, accessLifetime: defaultAccessLifetime}
 	for _, option := range options {
 		option(&config)
 	}
@@ -226,7 +256,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
-	provider := NewOAuthProvider(t, st, issuer)
+	provider := newOAuthProvider(t, st, issuer, config.accessLifetime)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,
 		Audience: srv.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
@@ -283,14 +313,26 @@ func Caller(t *testing.T, name string) api.Account {
 // MachineLoginURL is the rig broker's machine-login page, the device grant's verification_uri.
 const MachineLoginURL = "https://dispatch.example/credentials/machine"
 
+// defaultAccessLifetime is how long an access token a Rig's broker issues lasts unless
+// WithAccessLifetime says otherwise, and how long every one NewOAuthProvider's provider issues
+// lasts.
+const defaultAccessLifetime = 15 * time.Minute
+
 // NewOAuthProvider builds the machine login's OAuth provider on st's database as
 // cmd/broker/main.go does: device codes live as long as a pending machine login, access tokens
 // fifteen minutes, refresh tokens as long as a launcher credential, and verification_uri is
 // MachineLoginURL. Its token exchange reads issuer for both kinds of subject token — a pod's, for
-// exchangeAudience, and a workflow run's, for githubAudience — and lists the two accounts and the
+// exchangeAudience, and a workflow run's, for githubAudience — and lists the four accounts and the
 // one workflow the Rig's constants name, so an exchange test has an identity to be, a registered
-// one, and an unlisted one to be refused as.
+// one, a daemon's fixed session, a second project's, and an unlisted one to be refused as.
 func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *oauth.Provider {
+	t.Helper()
+	return newOAuthProvider(t, st, issuer, defaultAccessLifetime)
+}
+
+// newOAuthProvider is NewOAuthProvider with access tokens that last accessLifetime, the one a Rig
+// builds (WithAccessLifetime).
+func newOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, accessLifetime time.Duration) *oauth.Provider {
 	t.Helper()
 	oauthStore := oauthstore.New(st.Pool)
 	oauthStore.Reused = enroll.RevokeReusedCredential
@@ -302,6 +344,8 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 		[]exchange.AccountEntry{
 			{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession},
 			{Account: ExchangeRolesAccount, Project: ExchangeProject, Person: ExchangePerson},
+			{Account: DaemonExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: DaemonExchangeSession},
+			{Account: OtherProjectAccount, Project: OtherProject, Person: ExchangePerson, Session: OtherProjectSession},
 		},
 		nil,
 		[]exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
@@ -318,7 +362,7 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 		t.Fatalf("oidc.NewKeys: %v", err)
 	}
 	provider, err := oauth.New(oauth.Config{
-		Secret: secret, DeviceLifetime: 15 * time.Minute, AccessLifetime: 15 * time.Minute,
+		Secret: secret, DeviceLifetime: 15 * time.Minute, AccessLifetime: accessLifetime,
 		RefreshLifetime: 7 * 24 * time.Hour, VerificationURL: MachineLoginURL, ProofSkew: time.Minute,
 		Exchange: oauth.ExchangeConfig{
 			Policy:     policy,

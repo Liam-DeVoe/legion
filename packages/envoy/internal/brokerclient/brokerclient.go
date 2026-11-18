@@ -12,8 +12,10 @@
 // rather than once. A person's sign-in trades their own Google identity token with the machine's
 // as the actor token (RFC 8693 Section 2.1), which is the one request that carries two tokens.
 //
-// Each process makes its own key and sends only its public half: the proof embeds the public JWK,
-// and no code here marshals a private member onto the wire.
+// A caller sends only the public half of the key it proves: the proof embeds the public JWK, and
+// no code here marshals a private member onto the wire. That key is one its process makes, a
+// person's sign-in box key, or, for a role in a pod, the role's own agent-secrets key
+// (MachineKey), the key the broker holds a pod session's trade to.
 //
 // What it refuses to do: hand out a token it could not renew. Token answers the held token while
 // that token is live and the broker is merely unreachable, and answers the error once the broker
@@ -171,9 +173,9 @@ type Config struct {
 	// every one of them (WithoutTrailingSlashes), and an address that is nothing but slashes
 	// counts as no broker URL at all.
 	BrokerURL string
-	// Key is this process's own DPoP key, whose public half alone reaches the broker. A person's
-	// sign-in proves the box key `agent-secrets login` made; every other caller proves a key it
-	// made at start.
+	// Key is the DPoP key this client proves, whose public half alone reaches the broker. A
+	// person's sign-in proves the box key `agent-secrets login` made, and a role in a pod its own
+	// agent-secrets key (MachineKey); every other caller proves a key it made at start.
 	Key *ecdsa.PrivateKey
 	// Subject is the identity being traded.
 	Subject Source

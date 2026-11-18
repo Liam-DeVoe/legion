@@ -436,7 +436,8 @@ Only a trade that asks for a credential holds one, and a trade asks unless it sa
 otherwise: a sign-in holds its credential, so a trade of a person's that declined one is refused
 `400 invalid_request`. The clients that
 want a Dispatch token and read no secret — the `dispatch` command, the Oh My Pi and Claude Code
-plugins, `envoy-send` — decline it, since each of them makes a key per process and per session
+plugins, `envoy-send` — decline it, since each of them proves a key of one process, or a pod
+role's own agent-secrets key,
 and a machine-logins list with a row per command run is a list nobody can read. So the machines
 on that list are the boxes that enrol sessions, not every process that ever traded.
 

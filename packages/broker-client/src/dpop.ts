@@ -2,11 +2,12 @@
 //
 // The one RFC 9449 proof signer of this package, mirroring the Go signer in
 // `packages/envoy/internal/brokerclient/dpop.go`. A key is one of two kinds: one a session makes
-// in its own process (`newDpopKey`), or the box key a person's sign-in on this machine keeps
-// (`importDpopKey`), which the broker bound the sign-in to. Either way only its public half ever
-// leaves the process: a proof carries the public JWK in its header, and nothing here can export
-// the private half at all — `jose` makes it a non-extractable `CryptoKey`, so `exportJWK` on it
-// fails rather than writing a `d` member.
+// in its own process (`newDpopKey`), or one read from PKCS#8 PEM (`importDpopKey`), which is the
+// box key a person's sign-in on this machine keeps, which the broker bound the sign-in to, or a
+// pod role's own agent-secrets key, which the role's registration names (`brokerTokenClient`,
+// ./environment.ts). Either way only its public half ever leaves the process: a proof carries the
+// public JWK in its header, and nothing here can export the private half at all — `jose` makes it
+// a non-extractable `CryptoKey`, so `exportJWK` on it fails rather than writing a `d` member.
 
 import { createPrivateKey, createPublicKey } from "node:crypto";
 import { exportJWK, generateKeyPair, importPKCS8, type JWK, SignJWT } from "jose";
@@ -93,7 +94,9 @@ export async function newDpopKey(): Promise<DpopKey> {
 /**
  * The key `pkcs8Pem` holds, as a DPoP key: a person's box key, which `agent-secrets login`
  * wrote as PKCS#8 PEM and the broker bound their sign-in to, so every trade of that sign-in
- * proves this key and no other. `name` says whose key it is, for a refusal to name.
+ * proves this key and no other; or a pod role's own agent-secrets key, which `agent-secrets
+ * keygen` wrote and the role's registration names. `name` says whose key it is, for a refusal to
+ * name.
  *
  * The private half is imported non-extractable for ES256, as {@link newDpopKey}'s is made. The
  * public JWK is derived with `node:crypto` and kept to `kty`, `crv`, `x` and `y`, the members
