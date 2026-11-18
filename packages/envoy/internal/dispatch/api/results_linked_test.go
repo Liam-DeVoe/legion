@@ -164,6 +164,40 @@ func TestABeforeMergeResultAtALinkedCommitIsReadThroughThatRepository(t *testing
 	}
 }
 
+// A `before_merge` result whose commit a linked repository holds is decided by that repository
+// when it heads none of the pull requests compared with, as its record and its read-through are:
+// the read asked acme/tools for the commit's pull requests and GitHub named none, so the result
+// is at another commit. The issue's own repository, which the App cannot read, has nothing to
+// say about a commit of acme/tools, and read through it the result would stand unknown, with the
+// reason that Dispatch cannot read the repository, for good.
+func TestABeforeMergeResultAtALinkedCommitIsDecidedByThatRepository(t *testing.T) {
+	// oldCommit is a commit acme/tools holds that no pull request heads any longer.
+	const oldCommit = "9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e"
+	linked := &linkedGitHub{
+		held:        map[string][]string{"acme/tools": {oldCommit, headCommit}},
+		pulls:       map[string]string{"acme/tools#7": "open"},
+		heads:       map[string]int{},
+		uninstalled: []string{"acme/widgets"},
+	}
+	handler, database := linkedRepositoriesGitHub(t, linked)
+	issue := issueInRepository(t, handler, "RELO", "acme/widgets", "Decided by the linked repository").Key
+	uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", twoChecks)
+	linkPullRequests(t, handler, issue, "https://github.com/acme/tools/pull/7")
+	writeHead(t, database, "acme/tools", 7, headCommit, "open", "")
+
+	result := recordStored(t, handler, issue, "k1", oldCommit)
+	if repo := storedCommitRepo(t, database, result); repo == nil || *repo != "acme/tools" {
+		t.Fatalf("the result at a commit only acme/tools holds stored commit_repo %v, want acme/tools", repo)
+	}
+
+	stands := standsAt(t, readResults(t, handler, issue), "k1", result.ID,
+		"a before_merge result at a commit of the linked repository that heads no pull request",
+		model.CommitOtherCommit, false)
+	if stands.Reason != "" {
+		t.Fatalf("that result stands at another commit with the reason %q, want none", stands.Reason)
+	}
+}
+
 // One record reads at most linkedPullRequestReads linked pull requests, so an issue's links,
 // which nothing bounds, cannot spend a GitHub call each on one record. An issue linking an open
 // pull request in each of one repository more than the bound, the last of which holds the
