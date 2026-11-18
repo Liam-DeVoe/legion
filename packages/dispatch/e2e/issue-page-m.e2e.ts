@@ -1422,6 +1422,7 @@ test("the reader's place in the history holds when a turn above it is cut by mor
       0,
       -(Math.round(view.top - ((whole?.y ?? 0) + (whole?.height ?? 0))) + 60)
     );
+    // Half a second lets the wheel's scroll end, so the long turn is read where the reader sees it.
     await page.waitForTimeout(500);
     await nextFrames(page);
     const shown = await long.boundingBox();
@@ -1474,6 +1475,8 @@ test("the reader's place in the history holds when a turn above it is cut by mor
         message: "the long turn was not cut once it lay wholly above the view",
       })
       .toBeLessThan(400);
+    // A second for the place keeper and the browser's pull-back to finish with the cut, so the
+    // entry is read where they left it.
     await page.waitForTimeout(1_000);
     await nextFrames(page);
     const expected = Math.round((place?.top ?? 0) - away);
@@ -1557,6 +1560,8 @@ test("a control at the foot of a long turn keeps the focus in view when the turn
         message: "the long turn was not cut once it lay wholly above the view",
       })
       .toBeLessThan(400);
+    // A second for the place keeper to finish with the cut, so the focused control is read where
+    // the keeper left it.
     await page.waitForTimeout(1_000);
     await nextFrames(page);
     expect(
@@ -1568,6 +1573,8 @@ test("a control at the foot of a long turn keeps the focus in view when the turn
     ).toBe(true);
     // The reader goes back up to the control the focus is on by the keyboard, a page at a time.
     await page.keyboard.press("PageUp");
+    // Half a second lets the scroll of Page Up end before the focused control is read against the
+    // view.
     await page.waitForTimeout(500);
     await nextFrames(page);
     const focused = await page.evaluate(() => {
@@ -1637,6 +1644,7 @@ test("more pressed by keyboard opens a turn's words in place, its head where it 
     await page.mouse.move((panel?.x ?? 0) + 40, (view.top + view.bottom) / 2);
     await page.mouse.wheel(0, 40);
     await nextFrames(page);
+    // Three tenths of a second let the wheel's scroll of 40 px end before the turn's head is read.
     await page.waitForTimeout(300);
     const before = Math.round((await turn.boundingBox())?.y ?? 0);
     expect(
@@ -1645,6 +1653,8 @@ test("more pressed by keyboard opens a turn's words in place, its head where it 
     ).toBe(true);
     await page.keyboard.press("Enter");
     await expect(more).toContainText(CONTROL_LABELS.read_less);
+    // A second for the opened words to draw and the place keeper to finish with them, before the
+    // turn's head is read again.
     await page.waitForTimeout(1_000);
     await nextFrames(page);
     const after = Math.round((await turn.boundingBox())?.y ?? 0);
