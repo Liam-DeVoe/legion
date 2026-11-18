@@ -394,7 +394,8 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, body)
 		return
 	}
-	checks, err := s.checkBlocksOf(r.Context(), s.deps.Store.Pool, artifact)
+	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	checks, err := s.checkBlocksOf(r.Context(), s.deps.Store.Pool, artifact, trees)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -438,6 +439,7 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	answerCompatibilityCurrency(checks, at)
 	keepFieldsOlderCommandsRead(checks)
 	body.Checks = checks
+	trees.resolve()
 	WriteJSON(w, http.StatusOK, body)
 }
 
@@ -576,7 +578,8 @@ func validCICheck(check model.CheckBlock) bool {
 
 // blockWords is a block's text as a reader sees it: every text node under it, joined by single
 // blanks, with the text of a link and every dispatch:// reference dropped, so the pull-request
-// body line the result implies carries no link and no Dispatch host.
+// body line the result implies carries no link and no Dispatch host. blockContent is the same
+// block with both kept.
 func blockWords(node *pmdoc.Node) string {
 	var words []string
 	pmdoc.Walk(node, func(child *pmdoc.Node) bool {
@@ -597,6 +600,30 @@ func blockWords(node *pmdoc.Node) string {
 		return true
 	})
 	return strings.Join(words, " ")
+}
+
+// blockContent is a typed block's own content as markdown: what stands between its opening line
+// and its closing one, rendered from node as a document of its own, so neither the directive's
+// line nor its attributes are in it and every link and every dispatch:// reference is. Its one
+// use is the content typedBlocksIn hands visit for a block the document's read gives no byte
+// range for. That is every block of a document whose read with blocks failed, which
+// typedBlockMarkdown then reads with Text alone and gives no text for any block. Every other
+// typed block's content is cut from its stored text (blockTextContent). node comes from the
+// parse of the document's live rendering, which writes every typed block's id, so this
+// rendering writes no id that the document does not hold. A block holding nothing has no
+// content and so no tree; one whose content cannot be rendered apart from its document is logged
+// and has none either, since the read's other fields do not depend on it.
+func blockContent(node *pmdoc.Node) string {
+	if len(node.Children) == 0 {
+		return ""
+	}
+	markdown, err := pmdoc.Render(&pmdoc.Node{Type: "doc", Children: node.Children})
+	if err != nil {
+		id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
+		slog.Warn("dispatch: render a typed block's content for its tree", "type", node.Type, "block", id, "error", err)
+		return ""
+	}
+	return markdown
 }
 
 // checkResultLine is the pull-request body line one recorded result implies. Dispatch writes it

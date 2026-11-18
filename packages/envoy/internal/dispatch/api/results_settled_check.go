@@ -195,8 +195,12 @@ func refreshResolvedCheck(ctx context.Context, q queryer, check *resolvedCheck, 
 // that version does not, which its settlement has not indexed away yet, after them by id. A check
 // a browser wrote and its settlement has not indexed is no check of the read until it is, as it is
 // none of the record route (resolveCheck). The reference is built from the document's own slug,
-// which is a property of the artifacts row and not of a block row.
-func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Artifact) ([]model.CheckBlock, error) {
+// which is a property of the artifacts row and not of a block row. trees is the request's own
+// reader, nil for a caller that asked for no tree: each check registers with it, as its
+// text_tree, blockTextContent of that same stored text, the rule GET /api/v1/reference-targets
+// reads the same block by, once the slice has stopped growing, since what is registered is a
+// pointer into the row.
+func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Artifact, trees *displayTreeReader) ([]model.CheckBlock, error) {
 	issueKey := ""
 	if artifact.IssueKey != nil {
 		issueKey = *artifact.IssueKey
@@ -212,6 +216,7 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 	}
 	defer rows.Close()
 	settled := map[string]model.CheckBlock{}
+	contents := map[string]string{}
 	for rows.Next() {
 		var blockID, sum string
 		var version int
@@ -228,6 +233,9 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 		check.IssueKey, check.Version, check.SHA256 = issueKey, version, sum
 		check.Ref, _ = text.FormatBlockRef(text.Ref{Kind: "block", IssueKey: issueKey, ID: artifact.Slug, Block: blockID})
 		settled[blockID] = check
+		if trees != nil {
+			contents[blockID] = blockTextContent(*settledText, true)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the indexed checks of %s: %w", artifact.ID, err)
@@ -250,6 +258,11 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 	slices.Sort(rest)
 	for _, blockID := range rest {
 		checks = append(checks, settled[blockID])
+	}
+	if trees != nil {
+		for index := range checks {
+			trees.text(&checks[index].TextTree, contents[checks[index].BlockID])
+		}
 	}
 	return checks, nil
 }
