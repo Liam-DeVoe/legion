@@ -2519,9 +2519,10 @@ test("outside NoTooltips each shared control sets the title that main sets", asy
 });
 
 // Inside `NoTooltips` no shared control sets a `title` it sets on `main`,
-// the two the source kept (the stale chip and `AgentUnresponsiveNote`) and an open
-// `MultiSelect`'s options among them. `AskCard`'s own elements are read, the asker's name and the
-// submit among them, and its children of other files are not (`askCardChildren`).
+// the two the source kept (the stale chip and `AgentUnresponsiveNote`), an open
+// `MultiSelect`'s options and a repository row's "None" in Details among them. `AskCard`'s own
+// elements are read, the asker's name and the submit among them, and its children of other files
+// are not (`askCardChildren`).
 test("inside NoTooltips no shared control sets a title", async () => {
   const scope = (view: RenderResult) => within(view.baseElement);
   const named = new Map<Mount, (view: RenderResult) => readonly Element[]>([
@@ -2548,6 +2549,12 @@ test("inside NoTooltips no shared control sets a title", async () => {
       (view) => [
         scope(view).getByText("alice"),
         scope(view).getByRole("button", { name: "Answer" }),
+      ],
+    ],
+    [
+      mountNamed("RepoControl, its own repository, an inherited one and none in a row of Details"),
+      (view) => [
+        scope(view).getByRole("button", { name: `${CONTROL_LABELS.none}, Repository of CORE-3` }),
       ],
     ],
   ]);
@@ -3122,7 +3129,7 @@ test("inside NoTooltips the words come from the page's word list and carry their
         ["acme/web", "author-text"],
         [CONTROL_LABELS.repository_inherited, "page-chrome"],
         [`, ${CONTROL_LABELS.repository_inherited}`, "page-chrome"],
-        [CONTROL_LABELS.no_repository, "page-chrome"],
+        [CONTROL_LABELS.none, "page-chrome"],
       ]);
     }
   );
