@@ -111,7 +111,7 @@ func TestEveryDocumentWriteRefusesACICheckThatBreaksARule(t *testing.T) {
 			expectRefusal(t, "a retype setting its attributes", applyOp(t, handler, id, map[string]any{
 				"op": "retype", "block": "c1", "type": "check", "attributes": test.attributes,
 			}), http.StatusBadRequest, "INVALID_CI_CHECK", ciCheckRefusal("c1", test.rule))
-			broken.failNextLoad(id)
+			broken.failNextLoad(t, id)
 			expectRefusal(t, "a rebuild from markdown", dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+id+"/rebuild",
 				map[string]any{"markdown": added}, "alice"), http.StatusBadRequest, "INVALID_CI_CHECK", want)
 			if after := documentMarkdown(t, handler, id); after != before {
@@ -151,7 +151,7 @@ func TestACICheckOnACheckHoldingAResultIsRefused(t *testing.T) {
 		"op": "retype", "block": "c1", "type": "check",
 		"attributes": map[string]any{"negative_control": ciCheckNegativeControl, "ci_check": ciCheckRun},
 	}), http.StatusBadRequest, "INVALID_CI_CHECK", want)
-	broken.failNextLoad(id)
+	broken.failNextLoad(t, id)
 	expectRefusal(t, "a rebuild giving it a ci_check", dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+id+"/rebuild",
 		map[string]any{"markdown": ciCheckBlock("c1", ciCheckKept)}, "alice"), http.StatusBadRequest, "INVALID_CI_CHECK", want)
 	if after := documentMarkdown(t, handler, id); after != before {

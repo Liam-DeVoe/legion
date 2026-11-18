@@ -167,7 +167,7 @@ func TestARebuildFromMarkdownRefusesABlockPointerToADisallowedType(t *testing.T)
 	}
 	saved := readChecks(t, database, issue.Key)
 	rebuild := func(markdown string) *httptest.ResponseRecorder {
-		broken.failNextLoad(saved.ID)
+		broken.failNextLoad(t, saved.ID)
 		return dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+saved.ID+"/rebuild", map[string]any{"markdown": markdown}, "alice")
 	}
 

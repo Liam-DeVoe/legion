@@ -194,7 +194,7 @@ func TestARebuildFromMarkdownHoldingABlockIDPastTheBoundIsWritten(t *testing.T) 
 		Artifact model.Artifact `json:"artifact"`
 	}](t, created).Artifact
 	long := randomBlockID(t, 3200)
-	broken.failNextLoad(artifact.ID)
+	broken.failNextLoad(t, artifact.ID)
 
 	rebuilt := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifact.ID+"/rebuild", map[string]any{
 		"markdown": boundCallout(long) + "\nAfter the note.\n",
