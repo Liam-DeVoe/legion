@@ -84,9 +84,9 @@ func (m *sessionDelivery) deleteAfterAnswer(ctx context.Context, d *listenerDeps
 	// The delete runs after the answer, so the order of the calls does not keep it ahead of the
 	// session's next registration: a plugin's deregistration (DELETE /v1/sessions/<id>,
 	// packages/envoy-client/src/transport.ts) is answered before this goroutine starts, and the
-	// daemon's clean stop of a role (notify.HTTPPublisher.DeleteSession,
-	// packages/daemon/internal/notify/notify.go:404-418) races the relaunch that registers the
-	// same session id from another process. What keeps the delete from taking a consumer the
+	// daemon's clean stop of a role (notify.HTTPPublisher.DeleteSession in
+	// packages/daemon/internal/notify/notify.go) races the relaunch that registers the same
+	// session id from another process. What keeps the delete from taking a consumer the
 	// session created again is, on this pod, the session's lock and the read of the bucket's
 	// leader made under it (deleteConsumer): a registration holding the lock has written its
 	// entry before the read, which then keeps the consumer, and one waiting for it creates its

@@ -104,10 +104,11 @@ func describeSenderLimit(l *senderLimit) string {
 // The sender is the session a secrets-broker token proved, else the request's trimmed
 // source_session: sessionNotBound has already refused a body that names a session the token does
 // not, so a token's session is the sender whether the body names it or not. A message whose source
-// is not agent (messageEnvelope writes agent for an absent one) is another system's delivery,
-// Dispatch's or Envoy's own among them, and a message with no sender is how the Legion daemon
-// sends its notices (packages/daemon/internal/notify): neither is counted, and both answer nil and
-// nil, as no limit does.
+// is not agent (contracts.MessageEnvelope, internal/contracts/message_envelope.go, writes source
+// "agent" for an absent one) is another system's delivery, Dispatch's or Envoy's own among them,
+// and a message with no sender is how the Legion daemon sends its notices
+// (packages/daemon/internal/notify): neither is counted, and both answer nil and nil, as no limit
+// does.
 func (l *senderLimit) take(r *http.Request, item contracts.Envelope) (*senderCharge, *senderRefusal) {
 	if l == nil || item.Source != "agent" {
 		return nil, nil
