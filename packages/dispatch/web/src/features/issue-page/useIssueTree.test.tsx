@@ -4870,10 +4870,10 @@ function focusWhileWriting(words: string, meanwhile?: (rig: Rig) => Promise<void
 /** A write of the issue out for 1.5 s while the tree is asked for again by `refetchQueries`, with
  *  the live feed up: the write holds the tree, so that ask sends nothing during the hold, and
  *  leaves nothing to hear (the app's client skips a disabled query). 200 ms after the write
- *  settles the comments are read, and 200 ms after that an event refreshes them: the tree read
- *  the event asks for begins at once, the tree's last read being past its second, and the
- *  comments read the scheduler owes, begun after it while the event marked it invalid, counts as
- *  newer and reads the tree once more. So the way reads the tree twice, both after the event. */
+ *  settles the comments are read, and 200 ms after that an event refreshes them: the scheduler
+ *  holds the comments read the event owes to a second after the last one began, and the tree
+ *  read the event asks for waits until that read has begun, so the comments read, begun first,
+ *  counts as no newer read. One event, read once. */
 const EVENT_AFTER_WAITED_READ: RuleWay = {
   words:
     "a write out for 1.5 s while the tree is read again, the comments read 200 ms after it settles and an event of the issue 200 ms later",
@@ -6054,15 +6054,15 @@ const READ_RULES: readonly ReadRule[] = [
   { read: "tree", state: "answered", observed: true, way: "landedBlankBesideFeedPart", now: 1 },
   { read: "spec", state: "answered", observed: true, way: "landedBlankBesideFeedPart", now: 1 },
   // A refetchQueries of the tree while a write holds it sends nothing; an event after the write
-  // reads the tree, and the comments read it owes, begun after, once more.
-  { read: "tree", state: "answered", observed: true, way: "eventAfterWaitedRead", now: 2 },
+  // reads the tree once, after the comments read it owes has begun.
+  { read: "tree", state: "answered", observed: true, way: "eventAfterWaitedRead", now: 1 },
   // A refused read sent as the last write settles, after a focus with the live feed down asked for
   // every refused one while the write held them: refused, it is read no second time.
   { read: "tree", state: "refused", observed: true, way: "landedBlankBesideFocus", now: 1 },
   { read: "spec", state: "refused", observed: true, way: "landedBlankBesideFocus", now: 1 },
-  // A write Dispatch refuses with the live feed up: its rollback is no change, and an event that
-  // lands while it is out is read once it settles.
-  { read: "tree", state: "answered", observed: true, way: "resolveRefusedUp", now: 0 },
+  // A write Dispatch refuses with the live feed up: its rollback's invalidation is a trigger, read
+  // once as it settles, and an event that lands while it is out is read in that same one read.
+  { read: "tree", state: "answered", observed: true, way: "resolveRefusedUp", now: 1 },
   { read: "tree", state: "answered", observed: true, way: "resolveRefusedUpPosted", now: 1 },
   // A read out as a window focus with the live feed down, or the feed back whole, asks for every
   // refused one, then refused: owed, and read once more.
