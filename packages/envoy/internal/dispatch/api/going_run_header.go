@@ -67,40 +67,34 @@ func (s *server) withinGoingRun(handler http.HandlerFunc, keyed bool) http.Handl
 			s.writeAuthenticationError(w, err)
 			return
 		}
-		r = r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human}))
+		ctx := context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human})
 		refuse := func() {
-			if keyed {
-				if key, present, err := requestKeyHeader(r); present && err == nil {
-					login := requestKeyLogin(actor, human)
-					answers, err := s.requestKeyAnswersItself(r.Context(), login, key)
-					if err != nil {
-						// As the key layer answers its own failed lookup: under the key, which
-						// nothing has claimed, so the client asks again under it.
-						w.Header().Set(contracts.IdempotencyKeyHeader, key)
-						s.writeHandlerError(w, err)
-						return
-					}
-					if answers {
-						handler(w, r.WithContext(context.WithValue(r.Context(), goingRunRefusedKey{}, goingRunRefused{login: login, key: key})))
-						return
-					}
-				}
+			if !keyed {
+				writeGoingRequestNotFound(w)
+				return
 			}
-			writeGoingRequestNotFound(w)
+			key, present, err := requestKeyHeader(r)
+			if !present || err != nil {
+				writeGoingRequestNotFound(w)
+				return
+			}
+			login := requestKeyLogin(actor, human)
+			answers, failed := s.lookUpRequestKeyAnswers(ctx, w, login, key)
+			if failed {
+				return
+			}
+			if !answers {
+				writeGoingRequestNotFound(w)
+				return
+			}
+			handler(w, r.WithContext(context.WithValue(ctx, goingRunRefusedKey{}, goingRunRefused{login: login, key: key})))
 		}
-		// Decided before the read, as the stream decides it: readLiveGoingRun casts $1::uuid, so
-		// an id that is not a uuid would come back as a Postgres error rather than pgx.ErrNoRows.
-		// What goes on is the parsed uuid's own spelling and never the header's: uuid.Parse also
-		// admits `urn:uuid:<id>`, `{<id>}` and upper case, the URN form of which Postgres refuses
-		// (SQLSTATE 22P02, a 500), and the run on the context is the id every changed_by_run
-		// tuple points at, the lowercase text the interaction node is keyed by.
-		parsed, err := uuid.Parse(named[0])
-		if len(named) != 1 || err != nil {
+		run, ok := goingRunNamed(named)
+		if !ok {
 			refuse()
 			return
 		}
-		run := parsed.String()
-		author, live, err := s.readLiveGoingRun(r.Context(), run)
+		author, live, err := s.readLiveGoingRun(ctx, run)
 		if errors.Is(err, pgx.ErrNoRows) {
 			refuse()
 			return
@@ -113,8 +107,27 @@ func (s *server) withinGoingRun(handler http.HandlerFunc, keyed bool) http.Handl
 			refuse()
 			return
 		}
-		handler(w, r.WithContext(graphstore.WithRun(r.Context(), run)))
+		handler(w, r.WithContext(graphstore.WithRun(ctx, run)))
 	}
+}
+
+// goingRunNamed is the run named, the values of a request's contracts.GoingRunHeader, as
+// withinGoingRun admits it and writeRequestFields digests it: the parsed uuid's own spelling, where
+// the request names exactly one value and it parses. It is decided before any read, as the stream
+// decides it: readLiveGoingRun casts $1::uuid, so an id that is not a uuid would come back as a
+// Postgres error rather than pgx.ErrNoRows. What goes on is never the header's spelling: uuid.Parse
+// also admits `urn:uuid:<id>`, `{<id>}` and upper case, the URN form of which Postgres refuses
+// (SQLSTATE 22P02, a 500), and the run on the context is the id every changed_by_run tuple points
+// at, the lowercase text the interaction node is keyed by.
+func goingRunNamed(named []string) (string, bool) {
+	if len(named) != 1 {
+		return "", false
+	}
+	parsed, err := uuid.Parse(named[0])
+	if err != nil {
+		return "", false
+	}
+	return parsed.String(), true
 }
 
 // goingRunRefused is a request whose run withinGoingRun refused and left to its Idempotency-Key,

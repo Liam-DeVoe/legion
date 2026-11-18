@@ -126,8 +126,9 @@ type premortemRig struct {
 	capture premortemCapture
 	// otherIssue is the second issue's key.
 	otherIssue string
-	// slug is the pre-mortem's slug, refKey its store address and address its dispatch:// one.
-	slug, refKey, address string
+	// slug is the pre-mortem's slug, refKey its store address, address its dispatch:// one and
+	// documentID the id of its artifacts row.
+	slug, refKey, address, documentID string
 	// otherIssueCheck is a check of the second issue, a dispatch:// address, and each node id the
 	// id a prevented_by tuple names its check by.
 	otherIssueCheck                                 string
@@ -155,7 +156,7 @@ func newPremortemRig(t *testing.T) premortemRig {
 	rig.otherIssueCheck = refs.BlockRef("dispatch://"+rig.otherIssue+"/artifact/"+otherVerification.Artifact.Slug, "k9")
 	rig.otherIssueCheckNode = otherVerification.Artifact.RefKey + "#k9"
 	premortem := uploadDocument(t, rig.handler, "/api/v1/issues/"+rig.issue, "graph-premortem.md", rig.capture.Document.Markdown)
-	rig.slug, rig.refKey = premortem.Artifact.Slug, premortem.Artifact.RefKey
+	rig.slug, rig.refKey, rig.documentID = premortem.Artifact.Slug, premortem.Artifact.RefKey, premortem.Artifact.ID
 	rig.address = "dispatch://" + rig.issue + "/artifact/" + rig.slug
 	return rig
 }
@@ -516,10 +517,6 @@ func TestAConversionMapNamingACheckOfAnotherProjectWritesNothing(t *testing.T) {
 	entries[5].Checks, entries[5].Reason = []string{foreign}, "A check of another project."
 	says := "prevented_by entry 6 (risk 5): the prevented_by tuple from a risk of project RSN at the check block " + foreign +
 		" of project FAR breaks its type rule: prevented_by points from a risk at a check block of the same project"
-	documents, err := readStrings(context.Background(), rig.database.Pool, `select id::text from artifacts where ref_key = $1`, rig.refKey)
-	if err != nil || len(documents) != 1 {
-		t.Fatalf("read the pre-mortem's id: %v %v", documents, err)
-	}
 	path := "/api/v1/issues/" + rig.issue + "/artifacts/" + rig.slug + "/premortem-convert"
 	before := rig.storeCounts()
 	unchanged := func(name string) {
@@ -530,8 +527,8 @@ func TestAConversionMapNamingACheckOfAnotherProjectWritesNothing(t *testing.T) {
 		if moved := rig.current(graphstore.KindArtifact, rig.refKey, graphstore.TupleMovedTo); len(moved) != 0 {
 			t.Errorf("after %s the document's address moved to %v, want nowhere", name, moved)
 		}
-		if retirements := rig.retirements(documents[0]); len(retirements) != 0 ||
-			!slices.Contains(issueDocumentIDs(t, rig.handler, rig.issue), documents[0]) {
+		if retirements := rig.retirements(rig.documentID); len(retirements) != 0 ||
+			!slices.Contains(issueDocumentIDs(t, rig.handler, rig.issue), rig.documentID) {
 			t.Errorf("after %s the document holds the document.retired events %v, or left the issue's list; want it listed and none", name, retirements)
 		}
 	}

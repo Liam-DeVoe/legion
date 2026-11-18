@@ -259,15 +259,15 @@ func (e *InvalidPointerError) Unwrap() error { return ErrInvalidPointer }
 // NamedAt is the refusal naming its far end by address, where it refuses a tuple at the node the
 // store keys by kind and id for standing in another project than its near end: the store names
 // that node by the id it keys it by - a block by its document's ref_key and its block id - and a
-// route that read it at its dispatch:// address names it as its caller does. Every other refusal,
-// and an empty address, it answers as it is.
-func (e *InvalidPointerError) NamedAt(kind, id, address string) *InvalidPointerError {
+// route that read it at its dispatch:// address names it as its caller does. named is false, and
+// the refusal nil, for every other refusal and for an empty address.
+func (e *InvalidPointerError) NamedAt(kind, id, address string) (refusal *InvalidPointerError, named bool) {
 	if e.foreign.id == "" || e.foreign.kind != kind || e.foreign.id != id || address == "" {
-		return e
+		return nil, false
 	}
-	named := *e
-	named.To = e.foreign.named(address)
-	return &named
+	at := *e
+	at.To = e.foreign.named(address)
+	return &at, true
 }
 
 // ErrPointerAlreadyAsserted is a write that asserts a pointer its node holds one of already and

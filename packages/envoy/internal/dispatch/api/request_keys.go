@@ -22,7 +22,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -524,15 +523,16 @@ func writeRequestFields(digest hash.Hash, r *http.Request, method, pattern strin
 		io.WriteString(digest, value)
 	}
 	// The run (contracts.GoingRunHeader), so a repeat under the key that names another run, or
-	// none, is the key reused (spec R4), spelled as withinGoingRun admits it where it is a uuid. It
+	// none, is the key reused (spec R4), spelled as withinGoingRun admits it (goingRunNamed) where
+	// it names one, and as sent, its values joined, where it names none withinGoingRun admits. It
 	// comes first, and only where the request names a run: a request that names none is judged by
 	// exactly the fields it always was, so a key a build before this one claimed still answers its
 	// repeat; and a request naming a run cannot run into one naming none, since that would take a
 	// method equal to a route pattern.
 	if runs := r.Header.Values(contracts.GoingRunHeader); len(runs) > 0 {
-		run := strings.Join(runs, ", ")
-		if parsed, err := uuid.Parse(run); err == nil {
-			run = parsed.String()
+		run, ok := goingRunNamed(runs)
+		if !ok {
+			run = strings.Join(runs, ", ")
 		}
 		field(run)
 	}
@@ -789,7 +789,8 @@ func (s *server) requestKeyInFlight(ctx context.Context, login, key string) (boo
 // (KEY_COMMITTED, or its recovery point). A key no row holds, one past its window and one whose
 // holder died with nothing committed report false: a repeat of the first request runs the handler
 // there. It judges no digest, since it runs before the body is spooled. It is how a check ahead of
-// this layer (refuseUploadToAClosedIssue) leaves a repeat to be answered as its first request was.
+// this layer (withinGoingRun, refuseUploadToAClosedIssue) leaves a repeat to be answered as its
+// first request was, through lookUpRequestKeyAnswers.
 func (s *server) requestKeyAnswersItself(ctx context.Context, login, key string) (bool, error) {
 	var answers bool
 	err := s.deps.Store.Pool.QueryRow(ctx, `
@@ -805,6 +806,20 @@ func (s *server) requestKeyAnswersItself(ctx context.Context, login, key string)
 		return false, fmt.Errorf("look up an idempotency key: %w", err)
 	}
 	return answers, nil
+}
+
+// lookUpRequestKeyAnswers is requestKeyAnswersItself for a check ahead of this layer, which
+// answers a lookup that fails as this layer answers its own: under the key, which nothing has
+// claimed, so the client asks again under it. failed reports that it answered so, and that the
+// check must answer nothing more.
+func (s *server) lookUpRequestKeyAnswers(ctx context.Context, w http.ResponseWriter, login, key string) (answers, failed bool) {
+	answers, err := s.requestKeyAnswersItself(ctx, login, key)
+	if err != nil {
+		w.Header().Set(contracts.IdempotencyKeyHeader, key)
+		s.writeHandlerError(w, err)
+		return false, true
+	}
+	return answers, false
 }
 
 // claimRequestKey takes login's key for r, whose digest is digest, and answers whatever the key

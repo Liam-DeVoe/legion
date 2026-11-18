@@ -186,13 +186,20 @@ create_issue() {
   keys+=("$key")
 }
 
-# premortem_convert SECTION WHAT ARGS…: runs `envoy-dispatch premortem-convert ARGS` with
-# DATABASE_URL=$STORE_DSN as a prefix of that one command; it exits 0 and prints its report, which
-# goes to $work/body.
-premortem_convert() {
-  local section="$1" what="$2" code=0
-  shift 2
+# run_convert ARGS…: runs `envoy-dispatch premortem-convert ARGS` with DATABASE_URL=$STORE_DSN as a
+# prefix of that one command, what it prints in $work/command.out and its errors in
+# $work/command.err, and sets code to its exit status.
+run_convert() {
+  code=0
   DATABASE_URL="$database_url" "$server_bin" premortem-convert "$@" >"$work/command.out" 2>"$work/command.err" || code=$?
+}
+
+# premortem_convert SECTION WHAT ARGS…: runs the command (run_convert); it exits 0 and prints its
+# report, which goes to $work/body.
+premortem_convert() {
+  local section="$1" what="$2" code
+  shift 2
+  run_convert "$@"
   [[ "$code" == 0 ]] ||
     fail "$section" "$what" "envoy-dispatch premortem-convert $* exited $code: $(<"$work/command.err") $(head -c 600 "$work/command.out")"
   jq -e 'type == "object"' "$work/command.out" >/dev/null 2>&1 ||
@@ -235,13 +242,13 @@ readonly conversion_census="with lenses as (
     'lenses_and_risks_under_nothing', (select count(*) from graph_nodes n where n.kind in ('lens', 'risk')
       and not exists (select 1 from graph_tuples t where t.from_kind = n.kind and t.from_id = n.id and t.kind = 'part_of')))"
 
-# refused_convert SECTION WHAT ARGS…: runs `envoy-dispatch premortem-convert ARGS` with
-# DATABASE_URL=$STORE_DSN as a prefix of that one command, on the map file $work/far-map.tsv; it
-# exits 1, naming that file's line for risk 5, the risk and the check of another project.
+# refused_convert SECTION WHAT ARGS…: runs the command (run_convert) on the map file
+# $work/far-map.tsv; it exits 1, naming that file's line for risk 5, the risk and the check of
+# another project.
 refused_convert() {
-  local section="$1" what="$2" code=0
+  local section="$1" what="$2" code
   shift 2
-  DATABASE_URL="$database_url" "$server_bin" premortem-convert "$@" >"$work/command.out" 2>"$work/command.err" || code=$?
+  run_convert "$@"
   [[ "$code" == 1 ]] ||
     fail "$section" "$what" "envoy-dispatch premortem-convert $* exited $code: $(<"$work/command.err") $(head -c 600 "$work/command.out")"
   [[ "$(<"$work/command.err")" == *"$work/far-map.tsv:$far_line (risk 5): "*"$far_check"* ]] ||

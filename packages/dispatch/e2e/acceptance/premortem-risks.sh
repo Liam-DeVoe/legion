@@ -73,7 +73,6 @@ keys=()
 cleanup() {
   local code=$?
   local other
-  [[ -z "$key" ]] || close_issue "$key"
   for other in "${keys[@]}"; do
     close_issue "$other"
   done
@@ -182,6 +181,7 @@ send POST /api/v1/issues "$(jq -cn --arg p "$project" --rawfile s "$work/spec.md
   '{project: $p, title: "Pre-mortem risks check", spec: $s, force: true, actor: $a}')"
 want_status 201 setup "create the issue"
 key="$(jq -er '.key' "$work/body")" || fail setup "create the issue" "no key: $(body)"
+keys+=("$key")
 readonly spec="dispatch://$key/spec"
 readonly requirement="$spec#b-r1"
 pass setup "created $key in $project, whose spec holds the requirement $requirement"

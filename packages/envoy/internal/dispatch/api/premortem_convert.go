@@ -475,7 +475,6 @@ func checkPremortemMap(ctx context.Context, q refs.Queryer, who model.Actor, doc
 		return nil, err
 	}
 	resolved := make(map[int]premortemPrevention, len(entries))
-	positions := make(map[int]int, len(entries))
 	for index, entry := range entries {
 		refused := func(format string, args ...any) error {
 			return &PremortemMapError{Entry: index + 1, Risk: entry.Risk, Problem: fmt.Sprintf(format, args...)}
@@ -494,10 +493,9 @@ func checkPremortemMap(ctx context.Context, q refs.Queryer, who model.Actor, doc
 		if _, held := document.risk(entry.Risk); !held {
 			return nil, refused("the document holds no risk %d: it holds risks %s", entry.Risk, document.held())
 		}
-		if first, named := positions[entry.Risk]; named {
-			return nil, refused("risk %d has an entry already, entry %d: a risk takes one entry", entry.Risk, first)
+		if first, named := resolved[entry.Risk]; named {
+			return nil, refused("risk %d has an entry already, entry %d: a risk takes one entry", entry.Risk, first.position)
 		}
-		positions[entry.Risk] = index + 1
 		prevention := premortemPrevention{entry: entry, position: index + 1}
 		for _, address := range entry.Checks {
 			check, found := checks[address]
@@ -759,17 +757,13 @@ func retireConvertedDocument(ctx context.Context, tx pgx.Tx, source premortemSou
 // the PremortemMapError of the entry of the first risk, in the order the conversion writes them,
 // whose entry names that check - the store holds a write's tuples in its order and refuses the
 // first that breaks its rule - wrapping the refusal with the check named by its address
-// (graphstore.InvalidPointerError.NamedAt). Any other err it answers as it is.
+// (farEndNamed). Any other err it answers as it is.
 func refusedPrevention(err error, document premortem, preventions map[int]premortemPrevention) error {
-	var refusal *graphstore.InvalidPointerError
-	if !errors.As(err, &refusal) {
-		return err
-	}
 	for _, risk := range document.risks {
 		prevention := preventions[risk.number]
 		for _, check := range prevention.checks {
-			if named := refusal.NamedAt(check.end.kind, check.end.id, check.node.Ref); named != refusal {
-				return &PremortemMapError{Entry: prevention.position, Risk: risk.number, Problem: named.Error(), refusal: named}
+			if refusal, named := farEndNamed(err, check.end, check.node); named {
+				return &PremortemMapError{Entry: prevention.position, Risk: risk.number, Problem: refusal.Error(), refusal: refusal}
 			}
 		}
 	}

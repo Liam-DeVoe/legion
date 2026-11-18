@@ -145,17 +145,17 @@ func findEndUnderIssue(ctx context.Context, q refs.Queryer, who model.Actor, key
 // farEndNamed is err naming the far end end by node's address, where err is the store's refusal
 // of a tuple at end for standing in another project than the tuple's near end
 // (graphstore.InvalidPointerError.NamedAt): the store keys a block by its document's ref_key and
-// its block id, and the caller read it at its dispatch:// address. Any other err it answers as it
-// is.
-func farEndNamed(err error, end storedEnd, node model.GraphNode) error {
-	var refusal *graphstore.InvalidPointerError
-	if !errors.As(err, &refusal) {
-		return err
+// its block id, and the caller read it at its dispatch:// address. named reports that it is. Any
+// other err it answers as it is.
+func farEndNamed(err error, end storedEnd, node model.GraphNode) (refusal error, named bool) {
+	var invalid *graphstore.InvalidPointerError
+	if !errors.As(err, &invalid) {
+		return err, false
 	}
-	if named := refusal.NamedAt(end.kind, end.id, node.Ref); named != refusal {
-		return named
+	if at, ok := invalid.NamedAt(end.kind, end.id, node.Ref); ok {
+		return at, true
 	}
-	return err
+	return err, false
 }
 
 // farEndOf is the kind and the id a tuple whose far end is node names it by, where address is what
@@ -599,7 +599,8 @@ func (s *server) writeRisk(w http.ResponseWriter, r *http.Request) {
 		reasoningCaller: caller, issue: key, at: at, nodes: []reasoningNode{risk},
 	})
 	if err != nil {
-		s.writeHandlerError(w, farEndNamed(err, checkEnd, check))
+		refusal, _ := farEndNamed(err, checkEnd, check)
+		s.writeHandlerError(w, refusal)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -930,25 +931,16 @@ func pointerEnd(ctx context.Context, q refs.Queryer, who model.Actor, key, kind,
 		return node, storedEnd{kind: graphstore.KindLensKind, id: node.ID}, err
 	}
 	decoded, id, ok := decodeNodeAddress(address)
-	switch {
-	case ok && kind == graphstore.TuplePreventedBy:
+	constraint := kind == graphstore.TupleConstrainedBy && decoded == graphstore.KindConstraint
+	if ok && (kind == graphstore.TuplePreventedBy || constraint) {
 		node, found, err := refs.Node(ctx, q, who, decoded, id, true)
 		if err != nil {
 			return model.GraphNode{}, storedEnd{}, err
 		}
-		if !found {
+		if !found || (constraint && node.IssueKey != nil && *node.IssueKey != key) {
 			return model.GraphNode{}, storedEnd{}, nodeNotFound(key, address)
 		}
 		return node, farEndOf(node, address), nil
-	case ok && kind == graphstore.TupleConstrainedBy && decoded == graphstore.KindConstraint:
-		node, found, err := refs.Node(ctx, q, who, graphstore.KindConstraint, id, true)
-		if err != nil {
-			return model.GraphNode{}, storedEnd{}, err
-		}
-		if !found || (node.IssueKey != nil && *node.IssueKey != key) {
-			return model.GraphNode{}, storedEnd{}, nodeNotFound(key, address)
-		}
-		return node, storedEnd{kind: graphstore.KindConstraint, id: node.ID}, nil
 	}
 	return findEndUnderIssue(ctx, q, who, key, address)
 }
@@ -1036,7 +1028,8 @@ func (s *server) writePointer(w http.ResponseWriter, r *http.Request) {
 		answer.From = &answered
 	}
 	if err := writeReasoningPointer(ctx, tx, write); err != nil {
-		s.writeHandlerError(w, farEndNamed(err, toEnd, to))
+		refusal, _ := farEndNamed(err, toEnd, to)
+		s.writeHandlerError(w, refusal)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {

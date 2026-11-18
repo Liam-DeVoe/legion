@@ -24,7 +24,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -153,9 +152,16 @@ const issueUploadRoute = http.MethodPost + " /api/v1/issues/{key}/artifacts"
 // stored answer, a first upload still running, one that committed and lost its answer - goes on to
 // that layer whatever the issue's state now: an upload that landed before the issue closed is
 // replayed its 201, and one still running is told KEY_IN_FLIGHT, unspooled, until the first
-// answers.
+// answers. A request whose run withinGoingRun refused and left to its key (goingRunRefused) goes on
+// to that layer before anything here is looked at, so the layer answers it from the key alone, and
+// a key that stops answering between the two looks is answered the run's refusal here as on every
+// other route.
 func (s *server) refuseUploadToAClosedIssue(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if _, refused := r.Context().Value(goingRunRefusedKey{}).(goingRunRefused); refused {
+			handler(w, r)
+			return
+		}
 		requestKey, keyed, err := requestKeyHeader(r)
 		if keyed && err != nil {
 			handler(w, r)
@@ -177,12 +183,8 @@ func (s *server) refuseUploadToAClosedIssue(handler http.HandlerFunc) http.Handl
 		// failed is answered as it always was.
 		var ownerRefusal *apiError
 		if keyed && errors.As(refusal, &ownerRefusal) && ownerRefusal.status < http.StatusInternalServerError {
-			answers, err := s.requestKeyAnswersItself(r.Context(), requestKeyLogin(actor, human), requestKey)
-			if err != nil {
-				// As the keyed layer answers its own failed lookup: under the key, which nothing has
-				// claimed, so the client asks again under it.
-				w.Header().Set(contracts.IdempotencyKeyHeader, requestKey)
-				s.writeHandlerError(w, err)
+			answers, failed := s.lookUpRequestKeyAnswers(r.Context(), w, requestKeyLogin(actor, human), requestKey)
+			if failed {
 				return
 			}
 			if answers {
