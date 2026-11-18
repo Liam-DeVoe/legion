@@ -341,7 +341,7 @@ func short(id string) string {
 
 // git is gitFed with nothing of its own in git's environment and nothing on its standard input.
 // Each of its callers reads what git answers as data: git show's identities and message split on
-// zero bytes, the headers of a commit object, and diff-tree's list of a commit's changes.
+// zero bytes, and diff-tree's list of a commit's changes.
 func (g *Guard) git(ctx context.Context, dir string, args ...string) (string, error) {
 	return g.gitFed(ctx, dir, nil, "", args...)
 }

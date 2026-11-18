@@ -23,19 +23,18 @@ import (
 // whole message, as git show formats them. A commit publishes every header it holds, and git show
 // formats no other: a merge of a signed tag holds that whole tag object in its mergetag header, the
 // tag's name, its tagger and its message, and a signed commit holds its signature. So each header
-// is read too, from the commit object as the push's one cat-file --batch answers it (objects,
+// is read too, from the commit object as the push's one cat-file --batch answers it (batch,
 // Guard.pushRecords), a header of more than one line with its every line (objectHeaders), as a
 // record of the whole header, its name with its value (headerRecord), unless the commit's other
 // records hold it already: a tree or a parent line that holds an object id, which names nothing,
 // and an author or a committer line that holds the identity read as that record and its date alone
 // (identityLine). git show formats the last author line and the last committer line of a commit
-// that holds two, so an earlier one that holds anything else is read as a header of its own. The
-// headers are read whole, as the message is.
+// that holds two, so an earlier one that holds anything else is read as a header of its own.
 //
 // A record about a file carries that file's path as its label and the line or the path as its
 // text, so that the engine reads the path as a path: the rule file's one path-scoped allowlist
 // is anchored on a whole path, and a label carrying anything else would take it away.
-func (g *Guard) commitRecords(ctx context.Context, dir, commit string, objects *blobBatch) ([]Record, error) {
+func (g *Guard) commitRecords(ctx context.Context, dir, commit string, batch *blobBatch) ([]Record, error) {
 	// git writes the separator for itself, as %x00 in the format: an argument of this process's
 	// own holding a zero byte is a child that cannot be started at all. %P comes before the
 	// body, which is the one field that can hold a newline, so the parents are read with the
@@ -53,11 +52,7 @@ func (g *Guard) commitRecords(ctx context.Context, dir, commit string, objects *
 	if len(parts) < 5 {
 		return nil, fmt.Errorf("git show %s answered no identity, parents and message", short(commit))
 	}
-	rest, head, err := objects.head(commit, "commit")
-	if err != nil {
-		return nil, err
-	}
-	object, err := objects.whole(head, rest)
+	object, err := batch.object(commit, "commit")
 	if err != nil {
 		return nil, err
 	}

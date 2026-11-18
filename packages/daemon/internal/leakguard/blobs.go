@@ -22,17 +22,18 @@ func binary(head []byte) bool {
 	return bytes.IndexByte(head[:min(len(head), binaryHead)], 0) >= 0
 }
 
-// blobBatch is one git cat-file --batch over the blobs its reader names, read a blob at a time as
-// git writes them, so that what is held is the blob being read and never the batch: one git answers
-// a commit's hundreds of blobs, where a git apiece would be hundreds of processes. The reader names
-// each blob as it reads it, its first binaryHead bytes first (head): its id is written to git's
-// standard input just before its answer is read, so a blob the reader does not name is never asked
-// for, and git neither writes it nor, in a partial clone, fetches it. cat-file --batch flushes its
-// answer to each id before it reads the next unless --buffer is given, which is git's documented
-// interactive use. A blob cat-file does not answer whole is an error, never a file read as empty,
-// and the batch ends with close, which stops git where the reader stopped early. A push reads the
-// commit objects it adds through one batch of its own the same way, each asked as a commit
-// (Guard.pushRecords), where a git apiece would be one more process for each commit.
+// blobBatch is one git cat-file --batch over the objects its reader names, read an object at a time
+// as git writes them, so that what is held is the object being read and never the batch: one git
+// answers a commit's hundreds of blobs, where a git apiece would be hundreds of processes. The
+// reader names each blob as it reads it, its first binaryHead bytes first (head): its id is written
+// to git's standard input just before its answer is read, so a blob the reader does not name is
+// never asked for, and git neither writes it nor, in a partial clone, fetches it. cat-file --batch
+// flushes its answer to each id before it reads the next unless --buffer is given, which is git's
+// documented interactive use. A blob cat-file does not answer whole is an error, never a file read
+// as empty, and the batch ends with close, which stops git where the reader stopped early. A push
+// reads the commit objects it adds through one batch of its own the same way, each asked as a
+// commit (Guard.pushRecords, blobBatch.object), where a git apiece would be one more process for
+// each commit.
 type blobBatch struct {
 	// in is git's standard input, which head writes each id to, and asks the reading end of it,
 	// which this process holds until git has ended (close): a write to in then never fails for a
@@ -47,8 +48,8 @@ type blobBatch struct {
 	// id is the object being read, the one head asked for, and kind the type it was asked as,
 	// which an object cut short is named by (cut).
 	id, kind string
-	// first holds the first bytes of the blob being read (head), one buffer for every blob: each
-	// reader is done with one blob's head before it reads the next.
+	// first holds the first bytes of the object being read (head), one buffer for every object:
+	// each reader is done with one object's head before it reads the next.
 	first [binaryHead]byte
 }
 
@@ -80,10 +81,10 @@ func (g *Guard) readBlobs(ctx context.Context, dir string) (*blobBatch, error) {
 	return batch, nil
 }
 
-// head asks for object id, which must be of type kind ("blob"), and reads its header and its first
-// binaryHead bytes, or all of it where it is shorter, which say whether a blob is binary (binary),
-// and answers how many bytes of it are left. The bytes are the batch's own, good until the next
-// head.
+// head asks for object id, which must be of type kind ("blob" or "commit"), and reads its header
+// and its first binaryHead bytes, or all of it where it is shorter, which say whether a blob is
+// binary (binary), and answers how many bytes of it are left. The bytes are the batch's own, good
+// until the next head.
 func (b *blobBatch) head(id, kind string) (rest int64, head []byte, err error) {
 	b.id, b.kind = id, kind
 	if _, err := io.WriteString(b.in, id+"\n"); err != nil {
@@ -129,6 +130,16 @@ func (b *blobBatch) text(id string, bound int64) (file string, over int64, err e
 	return file, 0, err
 }
 
+// object reads object id, which must be of type kind ("commit"), whole, and answers it: a commit
+// object, which a commit's headers are read from (Guard.commitRecords).
+func (b *blobBatch) object(id, kind string) (string, error) {
+	rest, head, err := b.head(id, kind)
+	if err != nil {
+		return "", err
+	}
+	return b.whole(head, rest)
+}
+
 // whole reads the rest of the object head read, rest bytes of it, and answers the object whole.
 func (b *blobBatch) whole(head []byte, rest int64) (string, error) {
 	var content strings.Builder
@@ -148,7 +159,7 @@ func (b *blobBatch) skip(rest int64) error {
 	return b.end()
 }
 
-// end reads the newline git writes after each blob's content, which is where its size says the
+// end reads the newline git writes after each object's content, which is where its size says the
 // content ends.
 func (b *blobBatch) end() error {
 	end, err := b.out.ReadByte()
@@ -172,7 +183,7 @@ func (b *blobBatch) cut(err error) error {
 
 // close ends the batch and answers how it ended: with failed, the error the reader stopped at,
 // where it stopped at one, after it stops git; and else with git's own failure, where git failed,
-// once git, its standard input closed, has ended and what it wrote after the last blob read is
+// once git, its standard input closed, has ended and what it wrote after the last object read is
 // passed over.
 func (b *blobBatch) close(failed error) error {
 	defer b.stop()
