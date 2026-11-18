@@ -234,16 +234,17 @@ func (d Delivery) StillWorked(generation uint64, p phase.Phase, state ClaimState
 // the daemon's delivery of a relaunch's record among them, is superseded by nothing, and so is a
 // task of no entry: a wake's task (workflow's wakeRow), which is the sentence that says why the
 // pod came back and is no entry's work, and every task a daemon delivered before it numbered
-// entries. A newer task is refused behind such a task while it is untaken, as behind any untaken
-// task, and its value is written again first (queue, offerPending). The exception is the two
-// tasks a newer task replaces whatever they carry (replaceable): the task a provider error took
-// back while the ladder's wait stands for it, and the daemon's own delivery of a relaunch's
-// record while no take of it is accepted. It is the one statement of that comparison, and two
-// readers make it: the claim's machine, before it puts a newer task in the place of the one the
-// claim holds untaken (Machine.supersedes), and the admission sweep, which writes the start of the
-// entry a root architect's phases row names unless the claim holds a task that start would not
-// replace (workflow.ArchitectStartPending). So the sweep and the machine agree on which held task
-// a start of the root's run at that entry replaces.
+// entries. A newer task is refused behind such a task while it is untaken and the record still
+// owes it (Machine.dropUnowed), as behind any untaken task, and its value is written again first
+// (queue, offerPending). The exception is the two tasks a newer task replaces whatever they carry
+// (replaceable): the task a provider error took back while the ladder's wait stands for it, and
+// the daemon's own delivery of a relaunch's record while no take of it is accepted. It is the one
+// statement of that comparison, and two readers make it: the claim's machine, before it puts a
+// newer task in the place of the one the claim holds untaken (Machine.supersedes), and the
+// admission sweep, which writes the start of the entry a root architect's phases row names unless
+// the claim holds a task that start would not replace (workflow.ArchitectStartPending). So the
+// sweep and the machine agree on which held task a start of the root's run at that entry
+// replaces.
 func (d Delivery) SupersededBy(generation uint64, entry int64) bool {
 	if d.Generation == 0 || d.Entry <= 0 {
 		return false
@@ -418,7 +419,7 @@ func pendingID(p *Delivery) string {
 // at the next point the worker's host is idle, once, and no turn is interrupted or started twice.
 //
 // An untaken pending delivery still refuses a second one, as it always has: that task has reached
-// nobody, so accepting over it would lose a task rather than save one. Three untaken deliveries are
+// nobody, so accepting over it would lose a task rather than save one. Four untaken deliveries are
 // not refused. Two of them are replaceable. One is the task a provider error took back, while the
 // ladder's wait stands for it and nothing works it. The next step of the ladder can be ten minutes
 // away and a run of errors has no end of its own, so a refusal would keep every newer task of the
@@ -469,6 +470,22 @@ func pendingID(p *Delivery) string {
 // TestADecisionASupersededTaskNamedIsToldToTheReadmittedArchitect follows one such decision to the
 // catch-up that tells it.
 //
+// The fourth, read before the other three, is a task the record no longer owes: the task a take
+// of it would drop rather than take (dropUnowed, which takeable asks too). Its issue has left the
+// phase it was queued for, it is an ask of an update round an older daemon queued, or it is the
+// daemon's own delivery of a relaunch's record that no longer tells. Nothing of it is owed, so
+// accepting over it loses nothing: it is dropped and its value deleted, under the line a take's
+// drop logs, and the newer task is queued in its place. A refusal held the newer task behind it
+// until a take dropped it. In the case that was measured, a tester holding its testing task was
+// stopped, which took the task back untaken, and the issue then merged and closed; the production
+// check's look that started the tester again was refused on every retry, since with no worker to
+// take nothing dropped the testing task, and with one the look would wait a take behind a task
+// nobody was owed (the daemon's TestAWorkflowStartStartsAStoppedWorkerAgain). The record is asked
+// as a take asks it (phaseHolds), in a read of its own that takes no lock and no claim-write
+// deadline (write), and a read that fails fails the request, which its row retries. No delivery
+// of a relaunch's record follows this drop, as one follows a take's (queueRelaunch): the newer
+// task carries the record's sentence in front of itself while the record tells (message).
+//
 // The replaced task's row ends as any other retirement ends it, on the one path both places a
 // task replaces an owed one take (replaceOwedTask): the delete releases what that task held of a
 // person's decisions for whichever tree is owed them (the claim store's RetireDelivery and
@@ -491,12 +508,12 @@ func pendingID(p *Delivery) string {
 //
 // Of a task an operator gave the claim, which carries no id of its own and no outbox row
 // (operatorDelivery), neither thing accepted above can be true, so the refusal below is exactly
-// a claim that holds a pending delivery its worker has not finished with and that no newer task
-// replaces. runParkedLaunchNow reads the same pending delivery before it runs a parked launch
-// for such a task, so nothing runs for one this refuses; a task that replaces one runs that
-// launch where it arrives, and retires the replaced delivery itself before it does — the launch
-// takes the ladder's wait with the claim's timers (letGo), so the claim reaching here then holds
-// no delivery at all.
+// a claim that holds a pending delivery its worker has not finished with, that the record still
+// owes and that no newer task replaces. runParkedLaunchNow reads the same pending delivery before
+// it runs a parked launch for such a task, so nothing runs for one this refuses; a task that
+// replaces one runs that launch where it arrives, and retires the replaced delivery itself before
+// it does — the launch takes the ladder's wait with the claim's timers (letGo), so the claim
+// reaching here then holds no delivery at all.
 func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	id, task := request.ID, request.Task
 	queued := m.given(request)
@@ -506,6 +523,15 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 		}
 		switch {
 		case !pending.taken():
+			// A task the record no longer owes is dropped, as a take of it would be, and the
+			// newer task is queued in its place.
+			dropped, err := m.dropUnowed(ctx)
+			if err != nil {
+				return err
+			}
+			if dropped {
+				break
+			}
 			owed, attempt, relaunch := pending.Number, pending.ProviderErrorRetries, pending.Relaunch()
 			replaced, err := m.replaceOwedTask(ctx)
 			if err != nil {

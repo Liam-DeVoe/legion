@@ -707,8 +707,8 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 // where a take would be accepted.
 //
 // The claim's own holds come first (claimHold). Then the three drops, which retire the task and
-// delete its value: an ask of an update round that an older daemon queued as a task, whichever
-// round it names; the daemon's own delivery of a relaunch's record (Delivery.Relaunch,
+// delete its value (dropUnowed): an ask of an update round that an older daemon queued as a task,
+// whichever round it names; the daemon's own delivery of a relaunch's record (Delivery.Relaunch,
 // queueRelaunch) whose record no longer tells, since its text is that record's sentence and
 // nothing else; and a task whose issue has left the phase it was queued for. Then a root
 // architect's task of a run, held while its root has no architect to hear it and narrowed to what
@@ -741,33 +741,14 @@ func (m *Machine) takeable(ctx context.Context) (hold string, dropped bool, err 
 	if hold := m.claimHold(); hold != "" {
 		return hold, false, nil
 	}
-	p := m.claim.Pending
-	round, asks := updateRoundOf(p.ID)
-	spent := p.Relaunch() && !m.claim.EndedWork.Tells()
-	holds := !asks && !spent
-	if holds {
-		if holds, err = m.phaseHolds(ctx, *p); err != nil {
-			return "", false, err
-		}
+	dropped, err = m.dropUnowed(ctx)
+	if err != nil {
+		return "", dropped, err
 	}
-	if !holds {
-		switch {
-		case asks:
-			m.log.Info("supervise: this task is an ask an older daemon queued for an update round; it is dropped and never taken",
-				"task", p.Number, "delivery", p.ID, "asked", round, "round", m.claim.UpdateRound, "left", m.claim.UpdateLeftRound)
-		case spent:
-			m.log.Info("supervise: the daemon's own delivery of a relaunch's record has nothing to say, since that record no longer tells; it is dropped rather than taken",
-				"task", p.Number, "delivery", p.ID, "cause", m.claim.EndedWork.Cause, "ended", m.claim.EndedWork.Generation,
-				"toldBy", m.claim.EndedWork.ToldBy)
-		default:
-			m.log.Info("supervise: the issue has left the phase this task was queued for; it is dropped rather than taken",
-				"task", p.Number, "delivery", p.ID, "issue", m.claim.Issue, "queuedFor", p.Phase)
-		}
-		if err := m.dropPending(ctx, valueDeletedDropped); err != nil {
-			return "", true, err
-		}
+	if dropped {
 		return "", true, m.queueRelaunch(ctx)
 	}
+	p := m.claim.Pending
 	if m.asksRoot(*p) {
 		hears, err := m.rootHears(ctx, *p)
 		if err != nil {
@@ -792,6 +773,41 @@ func (m *Machine) takeable(ctx context.Context) (hold string, dropped bool, err 
 		return HoldIssueInTurn, false, nil
 	}
 	return "", false, nil
+}
+
+// dropUnowed drops the pending task, which no take has been accepted for, where the record no
+// longer owes it, and reports whether it did: an ask of an update round that an older daemon
+// queued as a task, the daemon's own delivery of a relaunch's record whose record no longer
+// tells, and a task whose issue has left the phase it was queued for (phaseHolds, a read of the
+// issue's record in a transaction of its own). The task is retired and its value deleted
+// (dropPending), under the line that says which of the three it was. Two places ask it, so the
+// record's answer is one: a take or a hold's end (takeable), once no hold of the claim's stands,
+// which then gives the claim the daemon's own delivery of a record that still tells
+// (queueRelaunch); and a newer task that arrives behind the task (queue), whatever holds stand
+// and before any other case of a held task, which then takes its place and carries that sentence
+// itself. A read of the record that fails drops nothing.
+func (m *Machine) dropUnowed(ctx context.Context) (bool, error) {
+	p := m.claim.Pending
+	round, asks := updateRoundOf(p.ID)
+	spent := p.Relaunch() && !m.claim.EndedWork.Tells()
+	if !asks && !spent {
+		if holds, err := m.phaseHolds(ctx, *p); err != nil || holds {
+			return false, err
+		}
+	}
+	switch {
+	case asks:
+		m.log.Info("supervise: this task is an ask an older daemon queued for an update round; it is dropped and never taken",
+			"task", p.Number, "delivery", p.ID, "asked", round, "round", m.claim.UpdateRound, "left", m.claim.UpdateLeftRound)
+	case spent:
+		m.log.Info("supervise: the daemon's own delivery of a relaunch's record has nothing to say, since that record no longer tells; it is dropped rather than taken",
+			"task", p.Number, "delivery", p.ID, "cause", m.claim.EndedWork.Cause, "ended", m.claim.EndedWork.Generation,
+			"toldBy", m.claim.EndedWork.ToldBy)
+	default:
+		m.log.Info("supervise: the issue has left the phase this task was queued for; it is dropped rather than taken",
+			"task", p.Number, "delivery", p.ID, "issue", m.claim.Issue, "queuedFor", p.Phase)
+	}
+	return true, m.dropPending(ctx, valueDeletedDropped)
 }
 
 // claimHold is the hold the claim's own state puts on a take of its pending task, "" for none:

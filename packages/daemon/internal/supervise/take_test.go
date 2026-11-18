@@ -8,6 +8,7 @@ package supervise
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -199,6 +200,98 @@ func TestTakeDropsATaskTheRecordNoLongerOwesAndDeletesItsValue(t *testing.T) {
 			}
 			if deleted := h.values.deleted(); len(deleted) != 1 || deleted[0] != h.token {
 				t.Fatalf("values deleted = %v, want the claim's one", deleted)
+			}
+		})
+	}
+}
+
+// The drop test a take makes (dropUnowed) runs too when a newer task arrives behind an untaken
+// task, whatever holds stand: a task the record no longer owes is dropped, its value deleted under
+// the line a take's drop logs, and the newer task is queued in its place and its value written.
+// Each claim here has no process, so no worker can take, and only the queue can drop the task.
+// That is the daemon's TestAWorkflowStartStartsAStoppedWorkerAgain ("a production check's look
+// after the issue's merge"): a tester stopped holding its testing task untaken, the issue merged
+// and closed, and the production check's look that started the tester again was refused on every
+// retry behind a task nobody was owed. A task the record still owes refuses the newer one, as
+// before (ErrDeliveryPending).
+//
+// The negative control is the queue's drop removed: each of the three dropped tasks refuses the
+// newer task "a delivery is already pending", and the claim keeps the task nobody is owed.
+func TestTakeDropTestRunsWhenANewerTaskArrives(t *testing.T) {
+	const newer = "look at production after the merge"
+	for _, tc := range []struct {
+		name  string
+		held  Delivery
+		ended EndedWork
+		// holds is the record's answer for the held task's phase (Deps.PhaseHolds).
+		holds bool
+		// dropped is the line the drop logs, and "" for a task the record still owes.
+		dropped string
+	}{
+		{name: "a task whose phase the issue left",
+			held:    Delivery{ID: "outbox:7", Task: "implement the plan", Phase: phase.Implementing, Generation: 7},
+			dropped: "the issue has left the phase this task was queued for; it is dropped rather than taken"},
+		{name: "an older daemon's ask of an update round",
+			held:    Delivery{ID: updateTaskID(testRound), Task: UpdateTask(testRound, testReasons, epoch.Add(time.Hour))},
+			holds:   true,
+			dropped: "this task is an ask an older daemon queued for an update round; it is dropped and never taken"},
+		{name: "the delivery of a relaunch's record that no longer tells",
+			held: Delivery{ID: relaunchTaskID(), Task: "Your previous process ended."},
+			ended: EndedWork{At: epoch, Cause: endDisplaced, Generation: 1, Turn: true, Reported: true,
+				Told: true},
+			holds:   true,
+			dropped: "the daemon's own delivery of a relaunch's record has nothing to say, since that record no longer tells; it is dropped rather than taken"},
+		{name: "a task the record still owes",
+			held:  Delivery{ID: "outbox:7", Task: "implement the plan", Phase: phase.Implementing, Generation: 7},
+			holds: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := queuedClaim()
+			held := tc.held
+			held.Number, held.QueuedAt = 1, epoch
+			c.TaskWritten, c.Pending, c.EndedWork = 1, &held, tc.ended
+			h := newBareHarness(t)
+			h.deps.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) { return tc.holds, nil }
+			h.restore(c)
+			h.manualTakes()
+			if p := h.pending(); p.ID != held.ID || p.taken() {
+				t.Fatalf("the claim holds %+v, want %s untaken: this test proves nothing", p, held.ID)
+			}
+
+			err := h.handle(RequestDeliver{Claim: h.token, Task: newer, ID: "outbox:9", Row: 9})
+
+			if tc.dropped == "" {
+				if !errors.Is(err, ErrDeliveryPending) || err.Error() != "deliver refused: a delivery is already pending" {
+					t.Fatalf("the newer task was answered %v, want the pending-delivery refusal behind a task the record owes", err)
+				}
+				if p := h.pending(); p.ID != held.ID {
+					t.Fatalf("the claim holds %+v, want the owed task %s kept", p, held.ID)
+				}
+				if deleted := h.values.deleted(); len(deleted) != 0 {
+					t.Fatalf("values deleted = %v, want none: the record owes the task", deleted)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("the newer task was answered %v, want it queued in the place of a task nobody is owed", err)
+			}
+			if lines := h.logs.lines(tc.dropped, "task=1", "delivery="+held.ID); len(lines) != 1 {
+				t.Fatalf("logged %v, want the take's drop line once for task 1", lines)
+			}
+			if deleted := h.values.deleted(); len(deleted) != 1 || deleted[0] != h.token {
+				t.Fatalf("values deleted = %v, want the dropped task's value deleted", deleted)
+			}
+			if lines := h.logs.lines(valueDeletedLine, "task=1", "cause="+valueDeletedDropped); len(lines) != 1 {
+				t.Fatalf("logged %v, want task 1's value deleted under the drop's cause", lines)
+			}
+			if p := h.pending(); p.ID != "outbox:9" || p.Task != newer || p.Number != 2 || p.taken() {
+				t.Fatalf("the claim holds %+v, want the newer task pending untaken as task 2", p)
+			}
+			if d, held := h.store.delivery(h.token); !held || d.ID != "outbox:9" {
+				t.Fatalf("the store holds %+v (held %v), want the newer task in the dropped one's place", d, held)
+			}
+			if value, held := h.values.value(h.token); !held || value.Number != 2 {
+				t.Fatalf("the bucket holds %+v (held %v), want the newer task's value, task 2", value, held)
 			}
 		})
 	}
