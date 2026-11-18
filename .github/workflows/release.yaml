@@ -166,8 +166,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-daemon-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: go-daemon-${{ runner.os }}-
+          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: go-daemon-${{ runner.os }}-${{ runner.arch }}-
       # why: .github/ci-notes/release.md#what-the-legion-build-writes-and-why-it-is-static
       - name: Build legion
         if: steps.version.outputs.skip != 'true'

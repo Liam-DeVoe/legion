@@ -50,8 +50,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
       # why: .github/ci-notes/dispatch-browser.md#what-the-binaries-build-writes-and-why-it-is-static
       - name: Build the binaries the browser suite runs
         run: |
@@ -311,8 +311,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-', runner.os) || '' }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-builds-contracts
@@ -384,8 +384,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e
@@ -436,8 +436,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-', runner.os) || '' }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e
