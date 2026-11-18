@@ -911,16 +911,7 @@ test("a priority write another person's change refused leaves no 'Not saved' lin
     await page.reload();
     await expect(title).toHaveValue("Bob's second rename");
     await expect.poll(() => refused.length).toBe(2);
-    const retry = page.getByRole("button", { name: "Retry" });
-    if ((await retry.count()) > 0) {
-      const answered = page.waitForResponse(
-        (answer) =>
-          answer.request().method() === "PATCH" &&
-          answer.url().endsWith(`/api/v1/priorities/${seed.ids[0]}`)
-      );
-      await retry.first().click();
-      await answered;
-    }
+    await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
     expect(new Set(refused).size).toBe(refused.length);
   } finally {
     await context.close();
