@@ -462,7 +462,8 @@ type Claim struct {
 	Step StepRecord
 	// ActivityAt, ActivityBackground, ActivityKinds and ActivityNextReminderAt are what the
 	// process this claim runs now last reported it was doing (POST /legion/v1/claims/activity):
-	// when it read what it was doing, the zero time for a session that has reported nothing;
+	// when the daemon received that report, on its own clock, the zero time for a session that
+	// has reported nothing;
 	// whether that reading found background work of the session's own running, and the kinds it
 	// named; and when the phase reminder armed in that session is due, the zero time for none.
 	// They are written by the store's PutClaimActivity alone and read back with the claim, as
@@ -484,16 +485,27 @@ type Claim struct {
 	ActivityBackground     bool
 	ActivityKinds          []string
 	ActivityNextReminderAt time.Time
+	// LastRelaunch is when a relaunch on the same session last ended the claim's process to start
+	// it again: the relaunch sets it once its stop has ended the process (relaunchUnreachable),
+	// and the claim's next write — its launch's at the latest — carries it, in that write's own
+	// statement (store's putClaim, the relaunched_at column). It is what a second relaunch within
+	// 6 hours is refused by, so a daemon that ends between the launch and the reach keeper's write
+	// of its own record, or a store that refuses that write, loses neither the refusal nor the
+	// episode's relaunch, which the next daemon's keeper takes in from it.
+	//
+	// LastRelaunchGeneration is the launch generation that relaunch's own launch left the claim
+	// at (the relaunch_generation column), which that launch writes in its own statement whether
+	// the relaunch made it or a retry at the probe interval did (launchNow), and 0 for a relaunch
+	// whose launch has not started yet. The keeper counts the claim's later launches from it, so a
+	// daemon that ends before the keeper's own write does not take a later launch — the process
+	// exiting at its Envoy role claim and launched again — for the relaunch's own.
+	LastRelaunch           time.Time
+	LastRelaunchGeneration uint64
 	// Reach is the daemon's record of whether Envoy can reach this claim's session (R5): the mark
 	// of a claim out of reach and what the daemon has told and done about it. It is written by the
 	// store's PutClaimReach and read back with the claim, as Step is: no write a machine makes
-	// carries it, a launch's included, since a relaunch keeps the session the record speaks of. The
-	// one exception is the claim's last relaunch on its same session — its moment,
-	// Reach.LastRelaunch, and the generation its launch left the claim at,
-	// Reach.LastRelaunchGeneration — which only the relaunch sets (relaunchUnreachable) and which
-	// the machine's own write carries, the moment with its launch at the latest and the generation
-	// with the write after it, so that record is durable with the launch. The mark changes no
-	// state, so every rule that reads the state reads it as before.
+	// carries it, a launch's included, since a relaunch keeps the session the record speaks of.
+	// The mark changes no state, so every rule that reads the state reads it as before.
 	Reach Reach
 }
 
@@ -2560,8 +2572,8 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			// probe interval of a launch the relaunch's stop let go (relaunchRefused,
 			// relaunchLater). The generation it left the claim at is written beside the relaunch
 			// in this launch's own write, so the keeper counts the claim's later launches from it.
-			if !m.claim.Reach.LastRelaunch.IsZero() && m.claim.Reach.LastRelaunchGeneration == 0 {
-				m.claim.Reach.LastRelaunchGeneration = m.claim.Generation
+			if !m.claim.LastRelaunch.IsZero() && m.claim.LastRelaunchGeneration == 0 {
+				m.claim.LastRelaunchGeneration = m.claim.Generation
 			}
 			m.leftPodRoundAt(loc)
 			m.armBoot()

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -14,21 +13,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// ClaimReach is one claim's reach record as the store holds it (PutClaimReach's column), with the
-// claim's last relaunch from its own row, as Claims reads them: what the operator routes that
-// answer one claim show (internal/api's operatorAnswer). A machine's own copy is the record as it
-// stood when the machine was built, since the reach keeper writes the record through this narrow
-// column and never into a machine's claim. A token no claim holds answers the zero record, which
-// is a claim not marked.
+// ClaimReach is one claim's reach record as the store holds it (PutClaimReach's column): what the
+// operator routes that answer one claim show (internal/api's operatorAnswer). A machine's own copy
+// is the record as it stood when the machine was built, since the reach keeper writes the record
+// through this narrow column and never into a machine's claim. A token no claim holds answers the
+// zero record, which is a claim not marked.
 func (s *Store) ClaimReach(ctx context.Context, token claim.Token) (supervise.Reach, error) {
 	var (
-		reach        supervise.Reach
-		encoded      []byte
-		relaunchedAt *time.Time
-		relaunchGen  *int64
+		reach   supervise.Reach
+		encoded []byte
 	)
-	err := s.pool.QueryRow(ctx, `select reach, relaunched_at, relaunch_generation from claims where token = $1`,
-		string(token)).Scan(&encoded, &relaunchedAt, &relaunchGen)
+	err := s.pool.QueryRow(ctx, `select reach from claims where token = $1`, string(token)).Scan(&encoded)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return supervise.Reach{}, nil
 	}
@@ -38,8 +33,6 @@ func (s *Store) ClaimReach(ctx context.Context, token claim.Token) (supervise.Re
 	if err := json.Unmarshal(encoded, &reach); err != nil {
 		return supervise.Reach{}, fmt.Errorf("read the reach record of claim %s: decode it: %w", token, err)
 	}
-	reach.LastRelaunch = orZero(relaunchedAt)
-	reach.LastRelaunchGeneration = uint64(orZeroInt(relaunchGen))
 	return reach, nil
 }
 
@@ -50,8 +43,8 @@ func (s *Store) ClaimReach(ctx context.Context, token claim.Token) (supervise.Re
 // step and no activity report. Unlike those it is not of one launch: a relaunch keeps the claim's
 // session, and the record is of that session, so a launch's write leaves it as it stands. The
 // claim's last relaunch is the one fact of it the claim's own write carries instead
-// (Reach.LastRelaunch), which this write never touches. It answers whether the store holds the
-// claim.
+// (supervise.Claim.LastRelaunch), which this write never touches. It answers whether the store
+// holds the claim.
 func (s *Store) PutClaimReach(ctx context.Context, token claim.Token, reach supervise.Reach) (bool, error) {
 	return putClaimReach(ctx, s.pool, token, reach)
 }

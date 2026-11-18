@@ -65,7 +65,7 @@ var (
 // daemon and no refused write between the two can lose one or repeat the other. A notice is
 // written with the record that marks it told — Reported, ArchitectTold, ReadyTold, HeldTold,
 // NotBackTold or ExitTold — in one transaction (reachMark, tell and enqueue). A relaunch is
-// written by the launch it makes, onto the claim's own row (supervise.Reach.LastRelaunch), and
+// written by the launch it makes, onto the claim's own row (supervise.Claim.LastRelaunch), and
 // the keeper takes it into its record from the claim at its next read of it
 // (relaunchTakenIn), whether this daemon or the next made it.
 type reachKeeper struct {
@@ -207,20 +207,18 @@ func (k *reachKeeper) reachWatched(c supervise.Claim) bool {
 }
 
 // recordOf is the keeper's record of c, seeded from the store's on its first sight. The claim's
-// last relaunch is the claim's own (supervise.Reach.LastRelaunch, LastRelaunchGeneration), and no
+// last relaunch is the claim's own (supervise.Claim.LastRelaunch, LastRelaunchGeneration), and no
 // part of the record, which takes it in from the claim (relaunchTakenIn). The caller holds mu.
 func (k *reachKeeper) recordOf(c supervise.Claim) supervise.Reach {
 	if held, ok := k.records[c.Token]; ok {
 		return held
 	}
-	seeded := c.Reach
-	seeded.LastRelaunch, seeded.LastRelaunchGeneration = time.Time{}, 0
-	k.records[c.Token] = seeded
-	return seeded
+	k.records[c.Token] = c.Reach
+	return c.Reach
 }
 
 // relaunchTakenIn is rec once it has taken in c's last relaunch, as c's own row records it
-// (supervise.Reach.LastRelaunch): a relaunch later than the one rec holds is the relaunch of the
+// (supervise.Claim.LastRelaunch): a relaunch later than the one rec holds is the relaunch of the
 // episode rec marks, if it marks one, which the not-back notice counts 20 minutes from and whose
 // own launch is no exit of the claim's (UnreachableExitNotice), and the guard's refusals before
 // it are over. The relaunch's launch wrote it, so it is read here whether this daemon made it or
@@ -229,14 +227,14 @@ func (k *reachKeeper) recordOf(c supervise.Claim) supervise.Reach {
 // made before rec takes the relaunch in, is told as the exit it is; a relaunch whose launch is not
 // recorded counts from the claim's generation as c holds it.
 func relaunchTakenIn(c supervise.Claim, rec supervise.Reach) supervise.Reach {
-	if !c.Reach.LastRelaunch.After(rec.RelaunchedAt) {
+	if !c.LastRelaunch.After(rec.RelaunchedAt) {
 		return rec
 	}
-	rec.RelaunchedAt = c.Reach.LastRelaunch
+	rec.RelaunchedAt = c.LastRelaunch
 	if rec.Unreachable() {
 		launched := c.Generation
-		if c.Reach.LastRelaunchGeneration != 0 {
-			launched = c.Reach.LastRelaunchGeneration
+		if c.LastRelaunchGeneration != 0 {
+			launched = c.LastRelaunchGeneration
 		}
 		rec.Relaunched, rec.Generation, rec.NotBackTold = true, launched, false
 		rec.GuardRefusedAt, rec.ReadyTold, rec.HeldTold = time.Time{}, false, false
@@ -609,7 +607,7 @@ func (k *reachKeeper) tellOf(ctx context.Context, c supervise.Claim, rec supervi
 // did not bring it back within 20 minutes, it is out of reach a second time within the 6 hours,
 // or the guard refused the relaunch or its process outlived the stop. A refused relaunch uses no
 // part of the 6 hours. The relaunch it made is the one the controller's claim records
-// (supervise.Reach.LastRelaunch), which the record has taken in by now (relaunchTakenIn), so a
+// (supervise.Claim.LastRelaunch), which the record has taken in by now (relaunchTakenIn), so a
 // daemon that ended before its own write of the record does not relaunch the controller a second
 // time within the 6 hours.
 //
@@ -768,8 +766,8 @@ func (k *reachKeeper) tellController(ctx context.Context, notice record.Controll
 func (k *reachKeeper) relaunchRefusal(c supervise.Claim, siblings []supervise.Claim, now time.Time) error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	rec := k.recordOf(c)
-	last := latest(rec.RelaunchedAt, c.Reach.LastRelaunch)
+	rec := relaunchTakenIn(c, k.recordOf(c))
+	last := rec.RelaunchedAt
 	switch {
 	case !rec.Unreachable():
 		return supervise.ErrClaimReachable
@@ -806,7 +804,7 @@ func (k *reachKeeper) guardRefused(ctx context.Context, token claim.Token, at ti
 // relaunched takes the relaunch c's machine has just made into the keeper's record of c at once,
 // rather than at the next sweep, so the notices that follow it count from it, and writes the
 // record through. The relaunch's launch has written it onto the claim already
-// (supervise.Reach.LastRelaunch), so the store's refusal, which it answers, costs no part of the
+// (supervise.Claim.LastRelaunch), so the store's refusal, which it answers, costs no part of the
 // 6-hour refusal, and the next sweep writes the record again.
 func (k *reachKeeper) relaunched(ctx context.Context, c supervise.Claim) error {
 	k.mu.Lock()

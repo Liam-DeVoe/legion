@@ -117,7 +117,7 @@ func putReachMarks(ctx context.Context, tx pgx.Tx, marks []reachMark) error {
 // relaunchController): RequestRelaunch to the controller claim's machine, which may replace the
 // controller's pod, with the step the store holds as the guard's freshest durable reading. It
 // answers the claim as the relaunch left it, which records the relaunch
-// (supervise.Reach.LastRelaunch).
+// (supervise.Claim.LastRelaunch).
 func (s *supervision) relaunchOwnController(ctx context.Context, c supervise.Claim, at time.Time) (supervise.Claim, error) {
 	m, ok := s.supervisor.Machine(c.Token)
 	if !ok {
@@ -136,7 +136,7 @@ func (s *supervision) relaunchOwnController(ctx context.Context, c supervise.Cla
 // last relaunch is at least 6 hours old, and its pod holds a claim Envoy can still reach — and
 // then the machine is asked, which checks the guard again under its lock and asks the runtime
 // before it stops anything (supervise.RequestRelaunch). The last relaunch is the one the claim
-// itself records (supervise.Reach.LastRelaunch), which the relaunch's own launch wrote, so a
+// itself records (supervise.Claim.LastRelaunch), which the relaunch's own launch wrote, so a
 // relaunch whose keeper never wrote its record — a daemon that ended first, a store that refused
 // the write — is still refused a second time within the 6 hours.
 //

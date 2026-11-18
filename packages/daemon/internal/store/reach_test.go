@@ -98,7 +98,7 @@ func TestAClaimsLastRelaunchIsWrittenWithItsLaunchAndNoLaterWriteMovesItBack(t *
 	launched := c
 	launched.Generation++
 	launched.BootTokenHash = supervise.HashBootToken("the relaunch's token")
-	launched.Reach.LastRelaunch = at
+	launched.LastRelaunch = at
 	if err := st.PutClaim(ctx, launched); err != nil {
 		t.Fatalf("put the relaunch's launch: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestAClaimsLastRelaunchIsWrittenWithItsLaunchAndNoLaterWriteMovesItBack(t *
 	for _, later := range []time.Time{{}, at.Add(-time.Hour)} {
 		written := launched
 		written.State = supervise.StateReady
-		written.Reach = supervise.Reach{LastRelaunch: later}
+		written.LastRelaunch = later
 		if err := st.PutClaim(ctx, written); err != nil {
 			t.Fatalf("put the claim with relaunch %v: %v", later, err)
 		}
@@ -119,14 +119,11 @@ func TestAClaimsLastRelaunchIsWrittenWithItsLaunchAndNoLaterWriteMovesItBack(t *
 	if err != nil || !found {
 		t.Fatalf("read the claim back after a restart: found %t, %v", found, err)
 	}
-	want := kept
-	want.LastRelaunch = at
-	if !read.Reach.LastRelaunch.Equal(at) {
-		t.Fatalf("the claim's last relaunch read back = %v, want the launch's %v", read.Reach.LastRelaunch, at)
+	if !read.LastRelaunch.Equal(at) {
+		t.Fatalf("the claim's last relaunch read back = %v, want the launch's %v", read.LastRelaunch, at)
 	}
-	read.Reach.LastRelaunch = at
-	if read.Reach != want {
-		t.Fatalf("reach read back = %+v, want the keeper's record beside the launch's relaunch %+v", read.Reach, want)
+	if read.Reach != kept {
+		t.Fatalf("reach read back = %+v, want the keeper's record %+v", read.Reach, kept)
 	}
 }
 
@@ -141,17 +138,17 @@ func TestTheRelaunchGenerationGoesWithItsRelaunch(t *testing.T) {
 		t.Fatalf("put claim: %v", err)
 	}
 	first := time.Date(2026, 11, 12, 15, 51, 1, 0, time.UTC)
-	read := func() supervise.Reach {
+	read := func() supervise.Claim {
 		t.Helper()
 		got, found, err := reopened(t, st).ClaimByBootTokenHash(ctx, c.BootTokenHash)
 		if err != nil || !found {
 			t.Fatalf("read the claim back: found %t, %v", found, err)
 		}
-		return got.Reach
+		return got
 	}
 	write := func(at time.Time, generation uint64) {
 		t.Helper()
-		c.Reach = supervise.Reach{LastRelaunch: at, LastRelaunchGeneration: generation}
+		c.LastRelaunch, c.LastRelaunchGeneration = at, generation
 		if err := st.PutClaim(ctx, c); err != nil {
 			t.Fatalf("put the claim with relaunch %v at generation %d: %v", at, generation, err)
 		}

@@ -68,34 +68,16 @@ type Reach struct {
 	ReadyTold      bool      `json:"readyTold,omitempty"`
 	HeldTold       bool      `json:"heldTold,omitempty"`
 	// Relaunched is whether a relaunch reached the claim in this episode, and NotBackTold whether
-	// the controller has been told it is still out of reach 20 minutes after it (for the daemon's
-	// own controller: whether R6's line has been written for it).
+	// the controller has been told it is still out of reach 20 minutes after it.
 	Relaunched  bool `json:"relaunched,omitempty"`
 	NotBackTold bool `json:"notBackTold,omitempty"`
 	// ExitTold is whether the controller has been told of a marked claim that owes no task and
 	// whose process exits at its Envoy role claim (record.UnreachableExitNotice).
 	ExitTold bool `json:"exitTold,omitempty"`
-	// RelaunchedAt is the claim's last relaunch this record has taken in (LastRelaunch, as the
-	// keeper last read it), whatever the episode: a later LastRelaunch is one the keeper has yet to
-	// take into the episode, which it does at its next read of the claim.
+	// RelaunchedAt is the claim's last relaunch this record has taken in (Claim.LastRelaunch, as
+	// the keeper last read it), whatever the episode: a later Claim.LastRelaunch is one the keeper
+	// has yet to take into the episode, which it does at its next read of the claim.
 	RelaunchedAt time.Time `json:"relaunchedAt,omitzero"`
-	// LastRelaunch is when a relaunch on the same session last ended the claim's process to start
-	// it again, as the claim's own row records it: the relaunch puts it on the machine's claim once
-	// its stop has ended the process (Machine.relaunchUnreachable), and the claim's next write —
-	// its launch's at the latest — carries it, in that write's own statement (store's putClaim, the
-	// relaunched_at column). It is what a second relaunch within 6 hours is refused by, so a daemon
-	// that ends between the launch and the keeper's write of its own record, or a store that
-	// refuses that write, loses neither the refusal nor the episode's relaunch, which the next
-	// daemon's keeper takes in from it. It is never in the keeper's record, whose write leaves it
-	// as it stands.
-	LastRelaunch time.Time `json:"-"`
-	// LastRelaunchGeneration is the launch generation LastRelaunch's own launch left the claim at,
-	// as the claim's own row records it (the relaunch_generation column): the relaunch's write
-	// after that launch carries it, and 0 is a relaunch whose launch is not recorded yet. The
-	// keeper counts the claim's later launches from it, so a daemon that ends before the keeper's
-	// own write does not take a later launch — the process exiting at its Envoy role claim and
-	// launched again — for the relaunch's own. It is never in the keeper's record either.
-	LastRelaunchGeneration uint64 `json:"-"`
 }
 
 // Unreachable is whether the claim is marked out of reach.
@@ -105,8 +87,7 @@ func (r Reach) Unreachable() bool { return !r.Since.IsZero() }
 // registered again, or the claim no longer records that session. What is of the session and of
 // the claim stays.
 func (r Reach) EndEpisode() Reach {
-	return Reach{Session: r.Session, FirstReady: r.FirstReady, RelaunchedAt: r.RelaunchedAt,
-		LastRelaunch: r.LastRelaunch, LastRelaunchGeneration: r.LastRelaunchGeneration}
+	return Reach{Session: r.Session, FirstReady: r.FirstReady, RelaunchedAt: r.RelaunchedAt}
 }
 
 // RelaunchAgainAfter is how long after a relaunch a second one of the same claim is refused (R5):
@@ -222,7 +203,7 @@ func (c Claim) inTurn() bool {
 // behind. MayReplacePod is whether the runtime may replace the claim's pod, which only the daemon's
 // relaunch of its own controller may. At is the moment the daemon asked for the relaunch on its own
 // clock, the one its 6 hours are counted on, which the claim records as its last relaunch once the
-// stop has ended its process (Reach.LastRelaunch); the zero time is the machine's clock.
+// stop has ended its process (Claim.LastRelaunch); the zero time is the machine's clock.
 type RequestRelaunch struct {
 	Claim         claim.Token
 	Step          StepRecord
@@ -250,7 +231,7 @@ type RequestRelaunch struct {
 // tree's close or launched again at the probe interval (relaunchRefused), rather than a claim left
 // recording a process that is gone with nothing to launch it.
 //
-// Once the stop has ended the process the claim records the relaunch (Reach.LastRelaunch), which
+// Once the stop has ended the process the claim records the relaunch (Claim.LastRelaunch), which
 // its next write carries: the take-back's, the launch's own, which moves the generation, or that
 // of the refusal the launch met, at the latest. So the record the next relaunch within 6 hours is
 // refused by is durable with the launch it refuses a repeat of, and a daemon that ends after that
@@ -334,7 +315,7 @@ func (m *Machine) relaunchUnreachable(ctx context.Context, ev RequestRelaunch) e
 	}
 	// A timestamp column holds microseconds, so the moment is recorded as the store reads it back.
 	// Its launch is still to be made, so no generation is recorded beside it yet.
-	m.claim.Reach.LastRelaunch, m.claim.Reach.LastRelaunchGeneration = at.UTC().Truncate(time.Microsecond), 0
+	m.claim.LastRelaunch, m.claim.LastRelaunchGeneration = at.UTC().Truncate(time.Microsecond), 0
 	if err := m.interrupted(ctx, "the claim was relaunched because "+ev.Cause, false); err != nil {
 		return err
 	}

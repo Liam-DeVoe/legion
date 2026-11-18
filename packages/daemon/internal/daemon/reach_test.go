@@ -103,7 +103,7 @@ func newReachRig(t *testing.T, daemonController bool) *reachRig {
 				return c, r.relaunch
 			}
 			c.Generation++
-			c.Reach.LastRelaunch, c.Reach.LastRelaunchGeneration = at, c.Generation
+			c.LastRelaunch, c.LastRelaunchGeneration = at, c.Generation
 			return c, nil
 		},
 	})
@@ -206,9 +206,9 @@ func reachClaim(t *testing.T, tree, issue string, role claim.Role, session strin
 // with is c carrying r's last written reach record, as the store reads it back at the next sweep,
 // beside the last relaunch the claim's own row records.
 func (r *reachRig) with(c supervise.Claim) supervise.Claim {
-	last := c.Reach.LastRelaunch
+	last := c.LastRelaunch
 	c.Reach = r.reach(c.Token)
-	c.Reach.LastRelaunch = last
+	c.LastRelaunch = last
 	return c
 }
 
@@ -567,7 +567,7 @@ func TestAClaimRestoredMidLaunchKeepsItsEpisode(t *testing.T) {
 			// The controller's relaunch at 25 minutes launches generation 4, which its launch
 			// records on the claim's own row.
 			worker.Generation++
-			worker.Reach.LastRelaunch = reachBoot.Add(25 * time.Minute)
+			worker.LastRelaunch = reachBoot.Add(25 * time.Minute)
 			r.at(26 * time.Minute)
 			r.sweep(r.with(worker))
 			if got := r.reach(worker.Token); !got.Reported || !got.Relaunched {
@@ -686,7 +686,7 @@ func TestEachPerClaimNoticeOfAnUnreachableClaimIsSentOnce(t *testing.T) {
 		r.sweep(worker)
 		// The relaunch's launch records it on the claim's own row, which the next sweep reads.
 		worker.Generation++
-		worker.Reach.LastRelaunch = reachBoot.Add(30 * time.Minute)
+		worker.LastRelaunch = reachBoot.Add(30 * time.Minute)
 		for minute := 31; minute <= 55; minute++ {
 			r.at(time.Duration(minute) * time.Minute)
 			r.sweep(r.with(worker))

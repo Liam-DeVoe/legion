@@ -451,9 +451,9 @@ func TestARelaunchTheTreeLifecycleRefusesStopsNothing(t *testing.T) {
 			h.wantCalls("Suspend", 0)
 			h.wantCalls("Resume", 0)
 			h.wantState(StateWorking)
-			if c := h.claim(); c.Generation != before.Generation || c.Locator == nil || *c.Locator != *before.Locator || !c.Reach.LastRelaunch.IsZero() {
+			if c := h.claim(); c.Generation != before.Generation || c.Locator == nil || *c.Locator != *before.Locator || !c.LastRelaunch.IsZero() {
 				t.Fatalf("the refused relaunch left the claim at generation %d on %+v with a relaunch at %v; want it on its process at %d with no relaunch",
-					c.Generation, c.Locator, c.Reach.LastRelaunch, before.Generation)
+					c.Generation, c.Locator, c.LastRelaunch, before.Generation)
 			}
 			if p := h.pending(); p.ID != sent || p.Interrupted {
 				t.Fatalf("pending = %+v, want the task the turn runs left as it was", p)
@@ -525,10 +525,10 @@ func TestARelaunchRefusedAfterItsStopLeavesNoClaimRecordingAStoppedProcess(t *te
 		// The launch the probe interval retried is the relaunch's own, so the generation it left the
 		// claim at is recorded beside the relaunch, in the store as on the claim: the keeper counts
 		// the claim's later launches from it.
-		if got := h.claim().Reach.LastRelaunchGeneration; got != generation+1 {
+		if got := h.claim().LastRelaunchGeneration; got != generation+1 {
 			t.Fatalf("after the retried launch the claim records its relaunch's launch at generation %d, want %d", got, generation+1)
 		}
-		if got := h.store.load(h.token).Reach.LastRelaunchGeneration; got != generation+1 {
+		if got := h.store.load(h.token).LastRelaunchGeneration; got != generation+1 {
 			t.Fatalf("after the retried launch the store records its relaunch's launch at generation %d, want %d", got, generation+1)
 		}
 		h.wantBudgets(Budgets{})
@@ -670,7 +670,7 @@ func TestARelaunchOfAClaimStillLaunchingIsRefused(t *testing.T) {
 }
 
 // The relaunch records itself on the claim once its stop has ended the process, so the write that
-// launches the next process carries it (Reach.LastRelaunch): the 6 hours in which a second
+// launches the next process carries it (Claim.LastRelaunch): the 6 hours in which a second
 // relaunch is refused are durable with the launch, whatever the daemon's keeper writes after it.
 func TestARelaunchIsRecordedByTheWriteOfItsOwnLaunch(t *testing.T) {
 	h := newHarness(t)
@@ -691,10 +691,10 @@ func TestARelaunchIsRecordedByTheWriteOfItsOwnLaunch(t *testing.T) {
 		}
 	}
 	h.store.mu.Unlock()
-	if launch == nil || !launch.Reach.LastRelaunch.Equal(at) || launch.Reach.LastRelaunchGeneration != 0 {
+	if launch == nil || !launch.LastRelaunch.Equal(at) || launch.LastRelaunchGeneration != 0 {
 		t.Fatalf("the first write of generation %d = %+v, want it to carry the relaunch at %v, its generation not yet recorded", generation+1, launch, at)
 	}
-	if stored := h.store.load(h.token).Reach; !stored.LastRelaunch.Equal(at) || stored.LastRelaunchGeneration != generation+1 {
+	if stored := h.store.load(h.token); !stored.LastRelaunch.Equal(at) || stored.LastRelaunchGeneration != generation+1 {
 		t.Fatalf("the store holds the relaunch at %v of generation %d, want %v of generation %d, the launch it made",
 			stored.LastRelaunch, stored.LastRelaunchGeneration, at, generation+1)
 	}
@@ -715,10 +715,10 @@ func TestARefusedRelaunchRecordsNoRelaunch(t *testing.T) {
 	if err := h.handle(ev); !errors.Is(err, ErrRelaunchGuard) {
 		t.Fatalf("relaunch of a claim that stepped 5 minutes ago = %v, want the guard's refusal", err)
 	}
-	if last := h.claim().Reach.LastRelaunch; !last.IsZero() {
+	if last := h.claim().LastRelaunch; !last.IsZero() {
 		t.Fatalf("the claim records a relaunch at %v after the guard refused it, want none", last)
 	}
-	if last := h.store.load(h.token).Reach.LastRelaunch; !last.IsZero() {
+	if last := h.store.load(h.token).LastRelaunch; !last.IsZero() {
 		t.Fatalf("the store holds a relaunch at %v after the guard refused it, want none", last)
 	}
 }

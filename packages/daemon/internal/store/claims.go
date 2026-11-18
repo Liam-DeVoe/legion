@@ -415,7 +415,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 	// (ClaimByPriorBootTokenHash, R3), and so whatever binary writes the launch keeps it, a daemon
 	// a rollback runs included.
 	//
-	// relaunched_at is the claim's last relaunch on its same session (supervise.Reach.LastRelaunch),
+	// relaunched_at is the claim's last relaunch on its same session (supervise.Claim.LastRelaunch),
 	// which the relaunch puts on the machine's claim before the launch it makes, so it is written
 	// by that launch's own statement at the latest and never by a write of the keeper's after it:
 	// the record a second relaunch within 6 hours is refused by is written with the relaunch, or
@@ -423,7 +423,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 	// not carry it — a claim admitted again, a fixture — never moves it back.
 	//
 	// relaunch_generation is the generation that relaunch's launch left the claim at
-	// (Reach.LastRelaunchGeneration), which the relaunch's own write after its launch carries. It
+	// (supervise.Claim.LastRelaunchGeneration), which that launch's own write carries. It
 	// goes with relaunched_at: a write that carries a later relaunch, or the same one, writes it,
 	// null while the relaunch's launch is still to be recorded (0), and a write that carries an
 	// earlier relaunch, or none, leaves the row's own.
@@ -531,7 +531,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
 		string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork,
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
-		instant(c.Reach.LastRelaunch), relaunchGeneration(c.Reach.LastRelaunchGeneration),
+		instant(c.LastRelaunch), relaunchGeneration(c.LastRelaunchGeneration),
 	)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
@@ -899,8 +899,8 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	if err := json.Unmarshal(reach, &c.Reach); err != nil {
 		return supervise.Claim{}, fmt.Errorf("read claim %s: decode its reach record: %w", token, err)
 	}
-	c.Reach.LastRelaunch = orZero(relaunchedAt)
-	c.Reach.LastRelaunchGeneration = uint64(orZeroInt(relaunchGen))
+	c.LastRelaunch = orZero(relaunchedAt)
+	c.LastRelaunchGeneration = uint64(orZeroInt(relaunchGen))
 	// An empty array is a claim no row has given a task, which the supervisor holds as no slice at
 	// all: the two read the same everywhere, and a restored claim equals the one that was written.
 	if len(c.DeliveredRows) == 0 {
