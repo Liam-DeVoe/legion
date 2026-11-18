@@ -419,7 +419,12 @@ claim's task value for (dispatch://INFRA-2811). The daemon pushes no task: the c
 holds its value from the registration's answer and that read on (`@legion/pi-shared/task-take`),
 sets the task-turn mark before the role is claimed, so the lane the listener kept for the role and
 hands over at the claim starts no turn ahead of the task, and takes the task once its ready has
-answered and its host is idle, from a timer that fires after `session_start` has returned. The
+answered and its host is idle, from a timer that fires after `session_start` has returned. From
+the registration until the read after the ready has answered, the take holds the mark whatever
+value it holds (`TaskTake.awaitRead`, ended by the claim boot's `afterReadyRead`): the session's
+agent subject is open from its start, so a card sent to the session itself in that window, its
+own direct message, would otherwise start a turn ahead of a task the ready decision wrote (the
+plan's decision 15). The
 accepted take's text is sent as the session's user message (`runTask` in `extensions/legion.ts`,
 plain on an idle host, a follow-up on one setting a prompt up that no run of it has started),
 which no record of Envoy's names, so it is the assignment. It is never sent into a run: a text
@@ -460,10 +465,15 @@ launcher starts the session's shim and Oh My Pi with `LEGION_CONTROLLER=1` and
 `LEGION_BOOT_TOKEN_FILE`, the generation's boot token it wrote into its private directory from the
 daemon's start command (`controllerSession` in
 `src/controller-session.ts`): the session registers on `claims/register` with that boot
-token in place of a capability, is answered with the same controller registration, claims the role,
-subscribes to the controller topic, sets the interface's `startupTurn` to its session with the
-start sent now (`sentAt`), and then calls `claims/ready`, after which the daemon writes its start
-task's value and the session takes it as any claim takes its task (`@legion/pi-shared/task-take`);
+token in place of a capability, is answered with the same controller registration, sets the
+interface's `startupTurn` to its session with the start sent now (`sentAt`), calls
+`claims/ready`, after which the daemon writes its start task's value, and reads that value
+(`claims/task`), its take holding the task-turn mark until that read has answered; only then does
+it claim the role, subscribe to the controller topic and to its Slack channels, so no card on the
+role's lane, no notice and no Slack mention takes its start turn. The daemon's ready route asks
+nothing of the Envoy role, so it takes that ready before the role claim
+(`packages/daemon/internal/api/claims.go`). The session takes the start task as any claim takes
+its task (`@legion/pi-shared/task-take`);
 the session sends no start message of its own ("The controller's start turn" below). Any step of
 that claim that fails exits Oh My Pi, so the daemon relaunches it;
 the operator's controller logs and stays up instead. Only a session classified as the controller
@@ -613,8 +623,9 @@ sent from the send: that session's first `agent_start` (the start turn) clears i
 message queued behind the operator's turn is never marked sent: that run's one `agent_start` has
 already fired, clearing the unsent mark, and Oh My Pi drains the follow-up inside the same run. The
 daemon-launched controller keeps its whole claim at `session_start`: it sends no start message,
-sets the mark with `sentAt` now right before `claims/ready`, after which the daemon delivers its
-start prompt, and exits on any failure.
+sets the mark with `sentAt` now right before `claims/ready`, after which the daemon writes its
+start task's value, reads that value, claims its role and subscribes its topics only after that
+read, and exits on any failure.
 
 ## Session titles
 

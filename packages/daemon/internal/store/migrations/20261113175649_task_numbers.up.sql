@@ -219,12 +219,14 @@ where (c.serving_generation <> 0 or c.served_entry > 0)
 
 -- A record the release before this one marked told names the delivery whose confirmation told it
 -- (toldBy), and that release gave a delivery a new id at every take-back, so a record naming the
--- row's id was told by the take the row holds now.
+-- row's id was told by the take the row holds now. An empty toldBy names no delivery and matches
+-- nothing.
 update pending_task_deliveries d set take_told = array_remove(array[
     case when c.abandoned_session ->> 'toldBy' = d.delivery_id then 'abandoned' end,
     case when c.ended_work ->> 'toldBy' = d.delivery_id then 'ended' end], null)
 from claims c
 where c.token = d.claim_token
+  and d.delivery_id <> ''
   and d.delivery_id in (c.abandoned_session ->> 'toldBy', c.ended_work ->> 'toldBy');
 
 alter table pending_task_deliveries drop column delivered_at;

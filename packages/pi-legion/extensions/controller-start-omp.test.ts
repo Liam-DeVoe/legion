@@ -340,11 +340,17 @@ interface StandinHooks {
    */
   readonly startupHold?: Hold;
   /**
-   * Holds the daemon-launched controller's `POST /legion/v1/claims/ready`, the last step of its
-   * claim in `session_start`, sent once it holds the role and the controller topic, with the
-   * start-turn mark set sent right before it.
+   * Holds the daemon-launched controller's `POST /legion/v1/claims/ready`, which its claim in
+   * `session_start` sends before it reads its start task and claims the role and the controller
+   * topic, with the start-turn mark set sent right before it.
    */
   readonly ready?: Hold;
+  /**
+   * A start task whose value the stand-in writes at the controller's ready, right before it
+   * answers it, as the daemon writes the start task in the ready's own decision (the controller
+   * keeper's `ready`, `packages/daemon/internal/daemon/controller.go`).
+   */
+  readonly atReady?: string;
   /**
    * Called with the session's id and the topics of each listener registration
    * (`/v1/interests/subscribe`) as it arrives. The Response it answers with, when it gives one,
@@ -453,6 +459,7 @@ async function serveController(
     }
     if (url.pathname === "/legion/v1/claims/ready") {
       await hooks.ready?.wait();
+      if (hooks.atReady !== undefined) tasks.give(hooks.atReady);
       return new Response(null, { status: 204 });
     }
     if (url.pathname === "/legion/v1/grants") {
@@ -1687,42 +1694,44 @@ test.skipIf(skip)(
   CASE_TIMEOUT_MS
 );
 
-// The daemon's controller reports ready once it holds the role and the controller topic, and the
-// daemon writes its start task's value then, which the session takes only once Oh My Pi's startup
-// is over. A card that reached the session during that startup is a follow-up that starts no turn,
-// and the wake for it fired once the host was idle after the startup, which can be before the
-// start task's text arrives, so the wake's turn was the first. The claim marks the start turn sent
-// right before its ready (src/controller-session.ts), which holds the wake behind the start turn.
-// The stand-in holds that ready, inside the claim `session_start` awaits, while the card arrives.
-// RPC mode answers its first command only once its startup drain has returned, when the card's
-// follow-up is in the context and the check its `message_end` armed is on the host's 0 ms timer;
-// the second `get_state`, written after that answer, is read on a later turn of omp's event loop,
-// after that timer ran, so a wake that check sent has started its turn by then. Only then does the
-// case give the start task.
+// The daemon's controller reports ready, at which the daemon writes its start task's value, and
+// reads that value before it claims its role and the controller topic (the plan's decision 15);
+// the session takes the start task only once Oh My Pi's startup is over. A card that reached the
+// session during that startup is a follow-up that starts no turn, and the wake for it fired once
+// the host was idle after the startup, which can be before the start task's text arrives, so the
+// wake's turn was the first. The claim marks the start turn sent right before its ready
+// (src/controller-session.ts), and its take holds the task-turn mark from right before its ready
+// until the read after it has answered, and from that read, which carries the start task the
+// ready decision wrote, until the start turn starts, so the wake waits behind the start turn
+// however long Oh My Pi's startup takes. The stand-in holds that ready, inside the claim
+// `session_start` awaits, while the card arrives on the session's own agent subject: the role is
+// not claimed yet, so it is a card sent to the session itself. The stand-in writes the start
+// task as it answers the ready.
 test.skipIf(skip)(
   "the daemon-launched controller's start task is its first turn, and a startup card's wake runs after it",
   async () => {
     const ready = newHold();
     let sid: string | undefined;
+    let roleClaimed = false;
     const session = await startDaemonController({
       ready,
-      onRoleClaim: (claimed) => {
-        sid = claimed;
+      atReady: START_MESSAGE,
+      onListener: (listened) => {
+        if (listened !== "") sid ??= listened;
+      },
+      onRoleClaim: () => {
+        roleClaimed = true;
       },
     });
     await session.until("the controller's ready", () => (ready.reached() ? true : undefined));
-    const claimed = await session.until("the controller role's claim", () => sid);
+    const claimed = await session.until("the controller's session", () => sid);
     const inbound = await controllerInbound(setup().nats);
     const { card, taken } = inbound.card(claimed, "daemon-startup");
     await taken;
     await inbound.repeat(claimed, card);
     expect(session.turns).toHaveLength(0);
+    expect(roleClaimed).toBe(false);
     ready.release();
-
-    await session.state();
-    expect((await session.state()).isStreaming).toBe(false);
-    expect(session.turns).toHaveLength(0);
-    session.give(START_MESSAGE);
 
     const start = await session.nextTurn("the first model request");
     expect(lastMessage(start.request)).toContain(START_MESSAGE_JSON);
@@ -1751,7 +1760,7 @@ test.skipIf(skip)(
 // no model request after the start turn's, and a probe prompt is the next request, carrying the
 // card and no wake. A `get_state` after the settle is read once the check the start turn's
 // `agent_end` armed has run (as in the case above), so a wake that check sent is under way before
-// the probe goes.
+// the probe goes. The stand-in writes the start task as it answers the ready, as above.
 test.skipIf(skip)(
   "an RPC abort of the daemon-launched controller's start turn leaves its startup card folded, with no wake",
   async () => {
@@ -1759,22 +1768,19 @@ test.skipIf(skip)(
     let sid: string | undefined;
     const session = await startDaemonController({
       ready,
-      onRoleClaim: (claimed) => {
-        sid = claimed;
+      atReady: START_MESSAGE,
+      onListener: (listened) => {
+        if (listened !== "") sid ??= listened;
       },
     });
     await session.until("the controller's ready", () => (ready.reached() ? true : undefined));
-    const claimed = await session.until("the controller role's claim", () => sid);
+    const claimed = await session.until("the controller's session", () => sid);
     const inbound = await controllerInbound(setup().nats);
     const { card, taken } = inbound.card(claimed, "interrupted-start");
     await taken;
     await inbound.repeat(claimed, card);
     ready.release();
 
-    await session.state();
-    expect((await session.state()).isStreaming).toBe(false);
-    expect(session.turns).toHaveLength(0);
-    session.give(START_MESSAGE);
     const start = await session.nextTurn("the start turn's model request");
     expect(lastMessage(start.request)).toContain(START_MESSAGE_JSON);
     expect(conversation(start.request)).toContain(card.summary);

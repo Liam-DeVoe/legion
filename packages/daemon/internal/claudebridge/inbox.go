@@ -29,11 +29,12 @@ const (
 
 // InboxDelivery is one line a client writes to the inbox: an Envoy delivery, already rendered, that
 // becomes a user turn; a task line, the claim's task value; the ready line, claude-envoy's word
-// that the claim's `claims/ready` has answered; or a finished line, a reading of the daemon's that
-// held no value. InboxAnswer is the line the bridge writes back: for a delivery, once Claude Code
-// has taken it, re-emitting it as the user message it reads (--replay-user-messages), or with an
-// error once it never will — the delivery is in the transcript, which is what claude-envoy's
-// `done` says; for the claim's other lines, once the bridge's loop has taken it (take.go).
+// that the claim's `claims/ready` has answered, and the read of claims/task after it too, whose
+// reading line comes ahead of it; or a finished line, a reading of the daemon's that held no value.
+// InboxAnswer is the line the bridge writes back: for a delivery, once Claude Code has taken it,
+// re-emitting it as the user message it reads (--replay-user-messages), or with an error once it
+// never will — the delivery is in the transcript, which is what claude-envoy's `done` says; for
+// the claim's other lines, once the bridge's loop has taken it (take.go).
 type InboxDelivery struct {
 	ID string `json:"id"`
 	// Kind is "" for an Envoy delivery, InboxTask for a task line, InboxReady for the ready line

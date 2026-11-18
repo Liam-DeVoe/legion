@@ -172,7 +172,10 @@ import type {
  * and the turn the take's text starts must come before any card's, the lane the listener kept for
  * the role and handed over at the role's claim included. The Legion entry names the session in the
  * plugin interface's task-turn mark (`EnvoyPluginInterface.taskTurnPending`) from the moment it
- * holds a value it will ask about until that task's turn starts or the take is refused or dropped.
+ * holds a value it will ask about until that task's turn starts or the take is refused or dropped,
+ * and from the claim's registration until the read of its value after `claims/ready` has answered,
+ * whatever value it holds, since the ready decision can write one and a card sent to the session
+ * itself can arrive in that window (the daemon-launched controller from right before its ready).
  * While the mark names this session, whatever the startup phase and `ctx.mode`, a card that finds
  * the host idle goes as the startup phase's cards go, a follow-up with no `triggerTurn`, and is
  * owed its wake as a startup card seen while the start-turn mark holds is: a check that finds the

@@ -260,6 +260,67 @@ test("registers once the transcript exists, hands the bridge the registration's 
   expect(lines).toEqual([`read claims/task after role ${token} was reregistered`])
 })
 
+// The plan's decision 16: the ready line follows the read of the claim's value after the ready,
+// whatever that read did. A read that fails writes no reading line: the failure is logged, and the
+// ready line is written all the same, ahead of the role claim, so the bridge's ready gate opens
+// and no card waits on a reading that is never coming.
+test("a read of the claim's value after the ready that fails is logged and writes no reading line, and the ready line is written all the same before the role claim", async () => {
+  const configDir = await tempDir()
+  await mkdir(join(configDir, "projects", "p"), { recursive: true })
+  await writeFile(join(configDir, "projects", "p", `${SESSION}.jsonl`), "{}\n")
+  const registered = await daemonFixture("register.json")
+  const token = String(registered["claimToken"])
+  // The daemon's requests and what the bridge was handed, in the one order they happened in.
+  const steps: string[] = []
+  const lines: string[] = []
+  const { fetch } = daemonAnswering((path) => {
+    steps.push(path)
+    if (path.endsWith("/claims/register")) {
+      return Response.json({ ...registered, task: null, finished: 3 })
+    }
+    if (path.endsWith("/claims/task")) {
+      return Response.json({ error: "the daemon is restarting" }, { status: 503 })
+    }
+    return new Response(null, { status: 204 })
+  })
+  const claim = startLegionClaim({
+    pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
+    sessionID: SESSION,
+    daemon: createLegionDaemonClient("http://daemon.test", fetch),
+    clientInstanceID: INSTANCE,
+    client: {
+      setRole: async (input): Promise<SetRoleResult> => {
+        steps.push(`setRole ${input.role}`)
+        return {
+          claimed: true,
+          interest: { session_id: SESSION, machine_id: "m", dir: "/w", topics: [] },
+        }
+      },
+    },
+    session: { rememberRole: async () => undefined, onRoleRegained: () => undefined },
+    task: (value) => steps.push(handedStep(value)),
+    ready: () => steps.push("ready"),
+    finished: (finished) => steps.push(`finished ${finished}`),
+    signal: new AbortController().signal,
+    log: (line) => lines.push(line),
+    stop: () => steps.push("stop"),
+    pollMs: 5,
+  })
+  await claim.booted
+
+  expect(steps).toEqual([
+    "/legion/v1/claims/register",
+    "finished 3",
+    "/legion/v1/claims/ready",
+    "/legion/v1/claims/task",
+    "ready",
+    `setRole ${token}`,
+  ])
+  expect(lines).toEqual([
+    "claims/task after claims/ready failed; the claim's value reaches this session with the daemon's next write of it: POST /legion/v1/claims/task failed with 503: the daemon is restarting",
+  ])
+})
+
 test("hands the bridge every value as it is handed it — each one relayed for its own claim, before the ready and after, a deleted one as task 0, one naming a task the claim finished, and each reading's with its finished number, a reading with no value as that number alone — holding none back", async () => {
   const configDir = await tempDir()
   await mkdir(join(configDir, "projects", "p"), { recursive: true })

@@ -5917,7 +5917,7 @@ A claim that is queued, launching, registered but not ready, or suspended has no
 The first sweep after its agent is ready asks it.
 The message can reach a role in the middle of a turn, and it tells the role to act at once.
 A role that no live session holds — one whose pod an idle release took, or one a suspension let go — is not revived to read it, and the round does not wait for that role past its bound.
-A ready session claims its role's topic right after its `claims/ready` is answered, so a message published between that answer and the claim finishes undelivered.
+A ready session claims its role's topic once its `claims/ready`, and the read of its task value after it, have answered, so a message published between the ready's answer and the claim finishes undelivered.
 A `failed` claim is the exception: it runs no turn on the pod, so the round asks it nothing and does not wait for it (`askedClaims`); what it left unpushed goes with the disk, and a retry brings it back into the round as any other claim.
 No claim is left out of a round for the contract its plugin records:
 a role whose `legion` tool has no `ready_for_update` operation is told to push its work and end its turn, since its round ends at the bound whatever it does.
@@ -7609,9 +7609,8 @@ the launch's boot token, which reaches the pod's launcher in the daemon's authen
 The session's pi-legion extension sees `LEGION_BOOT_TOKEN_FILE` beside `LEGION_CONTROLLER=1` and registers on `POST /legion/v1/claims/register` with that token.
 The daemon records the registration on the claim and records the session as the project's controller, under a fresh capability nobody holds (never the boot token), which ends every earlier controller grant;
 the answer is the operator's controller's registration (`{claimToken, role: "controller", generation, secret}`, its generation the launch's).
-The session then takes the controller role, subscribes to the controller topic, and calls `POST /legion/v1/claims/ready`;
-the daemon then delivers the start message `legion controller
-start` passes, so every launch runs the skill's start procedure.
+The session then calls `POST /legion/v1/claims/ready`, at which the daemon writes the value of its start task, the start message `legion controller start` passes, so every launch runs the skill's start procedure;
+it reads that value (`POST /legion/v1/claims/task`) and only then takes the controller role and subscribes to the controller topic and its Slack channels, so no card on the role's lane, no notice and no Slack mention takes the start task's turn, and until that read has answered no card sent to the session itself takes it either.
 A claim step that fails exits Oh My Pi, and the daemon relaunches it.
 No operator token reaches the pod.
 Under `controller: daemon` the claim route registers the controller only from a launch of this claim:

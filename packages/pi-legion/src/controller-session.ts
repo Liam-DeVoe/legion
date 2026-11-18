@@ -236,10 +236,16 @@ export function createControllerSession(deps: {
    * A controller the daemon launched itself (`controller: daemon`) is the controller's own session
    * (`LEGION_CONTROLLER=1`) carrying its launch's boot token (`LEGION_BOOT_TOKEN_FILE`) in place of
    * a capability: it claims at `session_start` (`handleSessionStart`), registers with that token,
-   * as every pane does, subscribes to each Slack channel its launch names
-   * (`daemonControllerSlackChannels`) for as long as it holds the role, and once it holds the role
-   * and the topics it reports ready on `claims/ready`, marking `startupTurn` as sent right before
-   * that ready, at which the daemon writes the value of its start task; the session takes that
+   * as every pane does, reports ready on `claims/ready`, marking `startupTurn` as sent right before
+   * that ready, at which the daemon writes the value of its start task, and reads that value
+   * (`claims/task`); only then does it claim the role, follow the controller topic and subscribe
+   * to each Slack channel its launch names (`daemonControllerSlackChannels`) for as long as it
+   * holds the role, so no card on the role's lane, no notice and no Slack mention can take the
+   * start task's turn (the plan's decision 15). The daemon takes the ready before the role claim:
+   * its ready route asks nothing of the Envoy role (`packages/daemon/internal/api/claims.go`).
+   * From its registration until that read has answered, its take holds the task-turn mark
+   * whatever value it holds (`TaskTake.awaitRead`), since its agent subject is open from its start
+   * and a card sent to the session itself must not take that turn either. The session takes that
    * task as any claim takes its task, the take's text is its first turn, and that turn's end is
    * reported naming the task's number, as any claim's is (`reportedClaim`, `runEnded`). Any step
    * of its claim that fails exits Oh My Pi, so the daemon relaunches it, as a pane's failed boot
@@ -394,9 +400,23 @@ export function createControllerSession(deps: {
       }
       startMessageSent = true;
     }
-    // Before the role claim, so a value the listener relays when the role is claimed reaches it.
     const caller = claimCaller(registration, sessionID);
     const taken = supervised ? takeFor(client, caller) : undefined;
+    if (taken !== undefined) {
+      // The daemon's controller reports ready and reads its start task's value before it claims
+      // its role and its topics, so no card on the role's lane and no notice or Slack mention can
+      // take the turn of the start task the daemon writes at this ready. Its agent subject is open
+      // from its start, so until that read has answered its take holds the task-turn mark
+      // whatever value it holds, and a card sent to the session itself waits too.
+      const readAnswered = taken.take.awaitRead();
+      // The daemon writes the start task's value at this ready, so the start is on its way from
+      // here on.
+      markStartupTurnSent(sessionID);
+      startTurnSession = sessionID;
+      await client.ready(caller);
+      await taken.read();
+      readAnswered();
+    }
     await claimEnvoyRole(sessionID, registration.claimToken, envoyContext);
     await subscribeLegionNotice(
       sessionID,
@@ -416,12 +436,6 @@ export function createControllerSession(deps: {
       );
     }
     if (taken !== undefined) {
-      // The daemon writes the start task's value at this ready, so the start is on its way from
-      // here on.
-      markStartupTurnSent(sessionID);
-      startTurnSession = sessionID;
-      await client.ready(caller);
-      await taken.read();
       // From a timer, once `session_start` has returned: a send made from there, or while Oh My
       // Pi's startup drains its sends, would run the start turn inside that drain, where RPC mode
       // reads no command (`src/claim-session.ts`).
@@ -435,10 +449,10 @@ export function createControllerSession(deps: {
 
   /**
    * Only the controller the daemon launched claims at `session_start`: it has no start message of
-   * its own to queue ahead of its role's lane, and its claim ends in the ready at which the daemon
-   * writes the value of the start task it then takes. The operator-launched controller claims
-   * from `/legion-controller-start` (`startCommand`), after Oh My Pi's startup, and until its
-   * registration is in, its `legion`
+   * its own to queue ahead of its role's lane, and its claim reports ready, at which the daemon
+   * writes the value of the start task it then takes, before it claims that lane. The
+   * operator-launched controller claims from `/legion-controller-start` (`startCommand`), after Oh
+   * My Pi's startup, and until its registration is in, its `legion`
    * tool answers that the session holds no registered claim. With a start message still to send,
    * it marks this session in the Envoy plugin interface's `startupTurn` with the start unsent
    * (`markStartupTurnPending`) and claims nothing: the Envoy entry opens the session's agent

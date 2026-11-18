@@ -132,8 +132,11 @@ the Legion entry's `session_start` has set the unsent mark (inside the Envoy ent
 `session_start`, when Oh My Pi runs that first) finds no mark.
 The task-turn mark (`EnvoyPluginInterface.taskTurnPending`, which `@sjawhar/pi-legion`'s take sets
 from the moment it holds a task value it will ask the daemon about until that task's turn starts or
-the take is refused or dropped) holds an idle card the same way in any phase and any mode: while it
-names this session, an idle card goes as a `followUp` with no turn (`handOver: "task-pending"`),
+the take is refused or dropped, and from the claim's registration until the read of its value after
+`claims/ready` has answered, whatever value it holds, since the ready decision can write one; the
+daemon-launched controller from right before its ready) holds an idle card the same way in any
+phase and any mode: while it names this session, an idle card goes as a `followUp` with no turn
+(`handOver: "task-pending"`),
 an idle check sends no wake and reads the mark again every second (`TASK_TURN_POLL_MS`), and every
 card it held is owed the one wake that check sends once the mark is gone, after the task turn's
 `agent_end` or at the poll after a refused take. It has no cap, since a take the Legion entry sends

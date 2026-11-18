@@ -19,18 +19,31 @@ export interface LegionClaimHost {
   /** Runs once the registration answered, before the capability is recorded, the ready and the
    * role claim. The answer carries the claim's task value (`task`, `finished`), which a host's
    * take holds from here (`src/task-take.ts`), so the mark it keeps while the task's turn is
-   * pending stands before the role's kept lane is handed over at the role claim. */
+   * pending stands before the role's kept lane is handed over at the role claim. Oh My Pi's claim
+   * also holds that mark from here until `afterReadyRead` runs (`TaskTake.awaitRead`), whatever
+   * value the registration carried, since the ready decision can write one. */
   readonly afterRegister?: (claim: LegionRegistration) => Promise<void>;
   /** Records the registered claim, before `claims/ready`: what serves the claim's task reads the
    * capability, and a take is answered only once the ready is in. */
   readonly setCapability: (capability: ClaimCapability) => void;
   /** Claims `role`, the claim token, on Envoy for this session: the topic the listener relays the
-   * claim's task value and every notice on. It runs right after `claims/ready` has answered and
-   * the claim's value has been read again (`taskValue`): the task is a value the session takes
-   * once its host is idle, so nothing the role's kept lane hands over can take the task's turn,
-   * and the session holds its name from its ready on. Throws when the role cannot be held, which
-   * is logged and stops the session. */
+   * claim's task value and every notice on. It runs right after `claims/ready` has answered, the
+   * claim's value has been read again (`taskValue`) and `afterReadyRead` has run: the task is a
+   * value the session takes once its host is idle, so nothing the role's kept lane hands over can
+   * take the task's turn, and the session holds its name from its ready on. Throws when the role
+   * cannot be held, which is logged and stops the session. */
   readonly claimRole: (role: string) => Promise<void>;
+  /**
+   * Runs once the read of the claim's value after `claims/ready` has answered — its reading handed
+   * to `taskValue`, or its failure logged — and before the role claim; never when the ready
+   * failed. Until then no card may start a turn, the session's own direct message included, since
+   * the ready decision can have written a value the host does not hold yet (the plan's decision
+   * 15). Oh My Pi's claim ends there the hold on its take's task-turn mark it took at the
+   * registration (`TaskTake.awaitRead`), leaving the mark to the take's own rule; claude-envoy's
+   * writes the Claude bridge's ready line there, behind the reading's own line, and the bridge
+   * holds every card until that line (decision 16).
+   */
+  readonly afterReadyRead: () => void;
   /**
    * Takes the claim's task value as the daemon reads it now (`claims/task`): once the ready has
    * answered, before the role claim; at each regain of the role; and at each read the host asks
@@ -63,10 +76,11 @@ export interface LegionClaimBoot {
  * Boots a claim on `/legion/v1/claims/*`, the same on every harness: `claims/register`;
  * `afterRegister`, where the host takes the registration's task value; the capability recorded;
  * `claims/ready`, retried on a 5xx or transport failure (`callReadyWithRetry`); the claim's task
- * value read again (`claims/task`) into the host's `taskValue`; the Envoy role claimed right after
- * that; and the regain listener, which reads the claim's task value again each time the heartbeat
- * regains the role. It answers the claim it booted, through which the host reads that value
- * again at a new epoch of its relay, or undefined for a boot that stopped.
+ * value read again (`claims/task`) into the host's `taskValue`; `afterReadyRead` once that read
+ * has answered; the Envoy role claimed right after that; and the regain listener, which reads the
+ * claim's task value again each time the heartbeat regains the role. It answers the claim it
+ * booted, through which the host reads that value again at a new epoch of its relay, or undefined
+ * for a boot that stopped.
  *
  * The daemon writes the number of the task a claim is owed as the claim's value, which the
  * listener relays to the session holding the role, and the session takes it once its host is idle
@@ -76,12 +90,18 @@ export interface LegionClaimBoot {
  * role's kept lane over. So the value is read once the ready has answered and before the role is
  * claimed, and the host holds it, with its take's mark, when the lane the listener kept for the
  * role arrives (`packages/pi-envoy/src/card-wake.ts`): every value the ready decision wrote is
- * ahead of every card. A value written later — the resume the daemon's outbox queues after the
- * ready, a task queued later still — reaches the session as the listener relays it, and a card
- * that arrives before it may take a turn first, which the take then waits behind. A read that
- * fails is logged and the boot goes on: the daemon's next write of the value reaches the session
- * as well. Nothing of a message is held, delayed, reordered or read here. A regain reads the value
- * rather than sending the ready again, since a ready makes the daemon send nothing.
+ * ahead of every card. The session's agent subject is open from its start, though, so a card
+ * addressed to the session itself can arrive while the ready or that read is still on its way:
+ * the host holds every card until that read has answered — Oh My Pi's take from the registration
+ * on, until `afterReadyRead` ends its hold; the Claude bridge until the ready line
+ * `afterReadyRead` writes — so none starts a turn ahead of a task the ready decision wrote. A
+ * value written later — the resume the daemon's outbox queues after the ready, a task queued
+ * later still — reaches the session as the listener relays it, and a card that arrives before it
+ * may take a turn first, which the take then waits behind. A read that fails is logged and the
+ * boot goes on, its hold ended all the same: the daemon's next write of the value reaches the
+ * session as well. Nothing of a message is held, delayed, reordered or read here; the host does
+ * that. A regain reads the value rather than sending the ready again, since a ready makes the
+ * daemon send nothing.
  *
  * The ready carries no capability report. The session measures its capability rows later, on the
  * interval it runs while it is idle (`packages/pi-legion/src/capability-schedule.ts`).
@@ -134,6 +154,7 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
     });
     await callReadyWithRetry("claims/ready", () => daemon.ready(caller));
     await readTask("after claims/ready");
+    host.afterReadyRead();
     await host.claimRole(claim.claimToken);
   } catch (error) {
     host.log(

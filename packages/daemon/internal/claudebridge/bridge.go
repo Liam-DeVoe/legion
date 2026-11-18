@@ -500,9 +500,9 @@ func (b *bridge) fromDaemon(line []byte) {
 
 // deliver queues an Envoy delivery: between turns it starts one at once; during a turn of the
 // bridge's own it is the next step's message, and during one Claude Code started by itself it is
-// the turn the bridge starts when that one ends. While a take of the claim's task is pending it
-// starts nothing: the task's turn goes first, and the delivery is a later step of it (take.go). It
-// is answered once Claude Code has taken it (echoed).
+// the turn the bridge starts when that one ends. While a take of the claim's task is pending, and
+// before the claim's ready line, it starts nothing: the task's turn goes first, and the delivery is
+// a later step of it (take.go). It is answered once Claude Code has taken it (echoed).
 func (b *bridge) deliver(d delivery) {
 	b.queue = append(b.queue, d)
 	switch {
@@ -510,6 +510,8 @@ func (b *bridge) deliver(d delivery) {
 		b.log.Printf("Envoy delivery %s waits for the next step", d.id)
 	case b.takePending():
 		b.log.Printf("Envoy delivery %s waits for the take of the claim's task", d.id)
+	case b.awaitingReady():
+		b.log.Printf("Envoy delivery %s waits for the claim's ready line", d.id)
 	default:
 		b.log.Printf("Envoy delivery %s starts a turn", d.id)
 		b.sendQueued()

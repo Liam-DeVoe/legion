@@ -73,9 +73,12 @@ export function attributionInputs(
  * holds any value the ready decision wrote, both before the role is claimed; it takes each value
  * the Envoy entry hands over from a task frame the listener relayed, and reads the value again
  * from the daemon whenever the session's relay begins a new epoch and whenever the heartbeat
- * regains the role. The Envoy name is taken right after that read, so the session is addressable
- * from its ready on, and the lane the listener kept for the role arrives while the mark holds its
- * cards back.
+ * regains the role. From the registration until the read after the ready has answered, the take
+ * holds the mark whatever value it holds (`TaskTake.awaitRead`): the session's agent subject is
+ * open from its start, and a card addressed to it in that window, which the ready decision's
+ * value may not have reached yet, waits like every other. The Envoy name is taken right after
+ * that read, so the session is addressable from its ready on, and the lane the listener kept for
+ * the role arrives while the mark holds its cards back where a task is owed.
  *
  * The take asks only from a timer that fires once `session_start` has returned: Oh My Pi holds a
  * send made from `session_start` until its startup is over, and runs a send made while its
@@ -101,6 +104,9 @@ export function createClaimSession(deps: {
   let capability: ClaimCapability | undefined;
   let booting: Promise<void> | undefined;
   let taking: ClaimTaskTake | undefined;
+  // Ends the take's hold on its mark, kept until the read after the ready has answered
+  // (`afterReadyRead`).
+  let readAnswered: (() => void) | undefined;
 
   const boot = async (
     context: SessionContext,
@@ -127,6 +133,7 @@ export function createClaimSession(deps: {
           log: logger,
         });
         taking.take.read(claim);
+        readAnswered = taking.take.awaitRead();
         const { sessionId, stateDir, ...pane } = attributionInputs(sessionFile, process.env);
         if (sessionId) await exportJjSessionAttribution(sessionId, stateDir, pane);
       },
@@ -138,6 +145,7 @@ export function createClaimSession(deps: {
       // relays the claim's task value: no issue topic carries one, so no claim subscribes to one.
       claimRole: (role) => claimEnvoyRole(sessionID, role, context),
       taskValue: (reading) => taking?.take.read(reading),
+      afterReadyRead: () => readAnswered?.(),
       onRoleRegained: onEnvoyRoleRegained,
       log: (line) => console.error(`[legion] ${line}`),
       stopping: "exiting so the daemon launches it again",

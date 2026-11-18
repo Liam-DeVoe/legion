@@ -23,17 +23,19 @@ import { takeTaskSignals, taskTurnMark } from "./task-values";
  * From the moment it holds a value it will ask about until the task's turn starts, or the take is
  * refused or dropped, the take holds the task-turn mark (`setPending`), which keeps a card that
  * finds the session idle from starting the turn the take goes into
- * (`packages/pi-envoy/src/card-wake.ts`). The first run that starts after an accepted take's text
- * was sent is that task's turn, as the daemon counts it, and its end is reported naming the
- * task's number (`runEnded`); for a worker on the current contract that report alone finishes
- * the task, so from the end of a turn whose report carries no provider error the take holds the
- * number finished, and a newer revision of it is owed nothing. The report's answer settles that
- * run-end mark: a 2xx finished the number in the record, which deletes its value, so the mark
- * may stay; a 4xx refusal applied nothing and the record still owes the number, so the mark
- * is cleared (`reportRefused`) and a newer revision of it is taken and runs once, as R2's "a
- * number the record owes it". The mark is kept apart from the `finished` a reading says, so its
- * clearing never lowers what a reading said. A value naming the marked number is still reported
- * seen, as every value is; only its take waits.
+ * (`packages/pi-envoy/src/card-wake.ts`). It holds the mark as well while its host awaits a read
+ * that can bring it a value it does not hold yet (`awaitRead`): the read after the claim's ready,
+ * whose decision can write one, so no card starts a turn ahead of that task. The first run that
+ * starts after an accepted take's text was sent is that task's turn, as the daemon counts it, and
+ * its end is reported naming the task's number (`runEnded`); for a worker on the current contract
+ * that report alone finishes the task, so from the end of a turn whose report carries no provider
+ * error the take holds the number finished, and a newer revision of it is owed nothing. The
+ * report's answer settles that run-end mark: a 2xx finished the number in the record, which
+ * deletes its value, so the mark may stay; a 4xx refusal applied nothing and the record still
+ * owes the number, so the mark is cleared (`reportRefused`) and a newer revision of it is taken
+ * and runs once, as R2's "a number the record owes it". The mark is kept apart from the
+ * `finished` a reading says, so its clearing never lowers what a reading said. A value naming the
+ * marked number is still reported seen, as every value is; only its take waits.
  *
  * Nothing sends a task into a busy worker (R5). A take the daemon accepts while a run is going —
  * the run started after the daemon decided the take and before its answer came back, or while a
@@ -96,6 +98,18 @@ export interface TaskTake {
   /** The claim's ready has answered: from now on a take is made once the host is idle. Before
    * it, the daemon refuses a take as not ready. */
   readonly ready: () => void;
+  /**
+   * The host awaits a read of the claim's value that can bring one this take does not hold yet:
+   * the read after the claim's ready, whose decision can write a value (the relaunch record's
+   * task) the registration did not carry (the plan's decision 15). From this call until the
+   * returned function runs, which the host calls once that read has answered — its reading handed
+   * to `read`, or its failure logged —, the take holds the task-turn mark whatever value it holds,
+   * so a card that finds the host idle in that window, the session's own direct message included,
+   * starts no turn ahead of the task's. From then on the mark follows the take's own rule again:
+   * it stays while the take holds a value it will ask about, and is cleared where it holds none.
+   * The returned function does nothing a second time.
+   */
+  readonly awaitRead: () => () => void;
   /** A run of the claim's session started (its `agent_start`). */
   readonly runStarted: () => void;
   /**
@@ -161,6 +175,8 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
   let seeing: Sending | undefined;
   let taking: Sending | undefined;
   let marked = false;
+  // The reads the host awaits (`awaitRead`) that have not answered yet.
+  let reading = 0;
   let closed = false;
 
   const owed = (value: TaskValue | undefined): value is TaskValue =>
@@ -266,6 +282,7 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       ask(held, key);
     }
     const pending =
+      reading > 0 ||
       (owed(held) && key !== undefined && !asked.has(key)) ||
       taking !== undefined ||
       accepted !== undefined;
@@ -321,6 +338,18 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       if (closed) return;
       armed = true;
       settle();
+    },
+    awaitRead: () => {
+      if (closed) return () => undefined;
+      reading += 1;
+      settle();
+      let answered = false;
+      return () => {
+        if (answered) return;
+        answered = true;
+        reading -= 1;
+        if (!closed) settle();
+      };
     },
     runStarted: () => {
       if (closed) return;

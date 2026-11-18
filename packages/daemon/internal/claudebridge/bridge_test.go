@@ -291,7 +291,14 @@ func newRigWithEnv(t *testing.T, extra []string, calls daemonCalls, args ...stri
 	t.Setenv("TMPDIR", testtmp.Dir(t, InboxLongestPath))
 	record, gate := filepath.Join(dir, "record"), filepath.Join(dir, "gate")
 	argv := append([]string{os.Args[0]}, args...)
-	env := append(os.Environ(), fakeClaudeEnv+"=1", fakeClaudeRecordEnv+"="+record, fakeClaudeGateEnv+"="+gate,
+	// The daemon a pane names is the case's to give (newTakingRig, newReportingRig): one the test
+	// process inherited, a Legion pod's own, would make every rig a claim's, whose ready gate holds
+	// its deliveries until a ready line no case writes.
+	inherited := slices.DeleteFunc(os.Environ(), func(kv string) bool {
+		name, _, _ := strings.Cut(kv, "=")
+		return name == "LEGION_DAEMON_URL" || name == "LEGION_BOOT_TOKEN_FILE" || name == "LEGION_GENERATION"
+	})
+	env := append(inherited, fakeClaudeEnv+"=1", fakeClaudeRecordEnv+"="+record, fakeClaudeGateEnv+"="+gate,
 		"CLAUDE_CONFIG_DIR="+dir, "LEGION_ROLE=implementer", "LEGION_ISSUE=ACME-7")
 	env = append(env, extra...)
 	cfg, err := Configure(argv, env)
@@ -1929,38 +1936,97 @@ func TestALostAnswersRepeatAcceptedDuringARunIsHeldAndRunsNextOnce(t *testing.T)
 }
 
 // The daemon refuses a take before the claim's ready has answered, so the bridge asks for none
-// before claude-envoy's ready line: the registration's value, handed before it, is reported seen
-// at once, and an Envoy delivery waits behind it, since the task's turn goes first. Once the ready
-// line comes the task is taken, and runs ahead of the delivery, which is that turn's next step.
+// before claude-envoy's ready line, and its ready gate holds every Envoy delivery until that line,
+// whatever value it holds (the plan's decision 16): claude-envoy writes the reading of claims/task
+// it makes once the ready has answered ahead of the ready line, and the ready decision can write a
+// value the registration did not carry.
+//
+//   - The registration's value, handed before the ready line, is reported seen at once, and an
+//     Envoy delivery waits behind it. Once the ready line comes the task is taken, and runs ahead
+//     of the delivery, which is that turn's next step.
+//   - The registration held no value, and a delivery — the session's own direct message — comes
+//     before the reading of the value the ready decision wrote: it starts no turn, and the task the
+//     reading names runs first, the delivery its next step.
+//   - The read after the ready failed, so no reading line comes, only the ready line: that line
+//     opens the gate all the same, and the delivery starts its turn.
 func TestNothingIsTakenBeforeTheReadyLine(t *testing.T) {
-	d := newTaskDaemon(t)
-	r := newTakingRig(t, d, "", daemonCalls{})
-	inbox := r.dialInbox()
-
-	r.handReading(testTask, 1, testTask-1)
-	r.waitFor("the value to be reported seen", func() bool { return len(d.seenReports()) == 1 })
-	inbox.deliver("ev1", "say the card")
-	r.logged("Envoy delivery ev1 waits for the take of the claim's task")
-	r.quiet()
-	if takes := d.takesMade(); len(takes) != 0 {
-		t.Fatalf("the bridge asked to take %+v before the ready line", takes)
+	// taskRunsAheadOfTheCard takes the ready line and holds that the task is taken once and runs
+	// first, the delivery ev1 the next step of its turn.
+	taskRunsAheadOfTheCard := func(t *testing.T, d *taskDaemon, r *rig, inbox *inboxClient) {
+		t.Helper()
+		r.handReady()
+		r.expect("agent_start", nil)
+		if answer := inbox.answer(); answer != (InboxAnswer{ID: "ev1", OK: true}) {
+			t.Fatalf("the inbox answered %+v, want ev1 taken", answer)
+		}
+		r.expect("agent_end", nil)
+		if report := d.reportOf(1); report.Task != testTask {
+			t.Fatalf("the turn was reported %+v, want the turn of task %d", report, testTask)
+		}
+		if takes := pairsOf(t, d.takesMade()); !slices.Equal(takes, []string{"7 at 1"}) {
+			t.Fatalf("the bridge asked to take %q, want task 7 once", takes)
+		}
+		if texts := r.userTexts(); !slices.Equal(texts, []string{"say the task", "say the card"}) {
+			t.Fatalf("Claude Code read %q, want the task's text and then the card", texts)
+		}
 	}
 
-	r.handReady()
-	r.expect("agent_start", nil)
-	if answer := inbox.answer(); answer != (InboxAnswer{ID: "ev1", OK: true}) {
-		t.Fatalf("the inbox answered %+v, want ev1 taken", answer)
-	}
-	r.expect("agent_end", nil)
-	if report := d.reportOf(1); report.Task != testTask {
-		t.Fatalf("the turn was reported %+v, want the turn of task %d", report, testTask)
-	}
-	if takes := pairsOf(t, d.takesMade()); !slices.Equal(takes, []string{"7 at 1"}) {
-		t.Fatalf("the bridge asked to take %q, want task 7 once", takes)
-	}
-	if texts := r.userTexts(); !slices.Equal(texts, []string{"say the task", "say the card"}) {
-		t.Fatalf("Claude Code read %q, want the task's text and then the card", texts)
-	}
+	t.Run("the registration's value", func(t *testing.T) {
+		d := newTaskDaemon(t)
+		r := newTakingRig(t, d, "", daemonCalls{})
+		inbox := r.dialInbox()
+
+		r.handReading(testTask, 1, testTask-1)
+		r.waitFor("the value to be reported seen", func() bool { return len(d.seenReports()) == 1 })
+		inbox.deliver("ev1", "say the card")
+		r.logged("Envoy delivery ev1 waits for the take of the claim's task")
+		r.quiet()
+		if takes := d.takesMade(); len(takes) != 0 {
+			t.Fatalf("the bridge asked to take %+v before the ready line", takes)
+		}
+		taskRunsAheadOfTheCard(t, d, r, inbox)
+	})
+
+	t.Run("a card ahead of the reading of the value the ready decision wrote", func(t *testing.T) {
+		d := newTaskDaemon(t)
+		r := newTakingRig(t, d, "", daemonCalls{})
+		inbox := r.dialInbox()
+
+		r.handFinished(testTask - 1)
+		inbox.deliver("ev1", "say the card")
+		r.logged("Envoy delivery ev1 waits for the claim's ready line")
+		r.quiet()
+		r.handReading(testTask, 1, testTask-1)
+		r.waitFor("the value to be reported seen", func() bool { return len(d.seenReports()) == 1 })
+		r.quiet()
+		taskRunsAheadOfTheCard(t, d, r, inbox)
+	})
+
+	t.Run("a failed read, with no reading line", func(t *testing.T) {
+		d := newTaskDaemon(t)
+		r := newTakingRig(t, d, "", daemonCalls{})
+		inbox := r.dialInbox()
+
+		r.handFinished(testTask - 1)
+		inbox.deliver("ev1", "say the card")
+		r.logged("Envoy delivery ev1 waits for the claim's ready line")
+		r.quiet()
+		r.handReady()
+		r.expect("agent_start", nil)
+		if answer := inbox.answer(); answer != (InboxAnswer{ID: "ev1", OK: true}) {
+			t.Fatalf("the inbox answered %+v, want ev1 taken", answer)
+		}
+		r.expect("agent_end", nil)
+		if report := d.reportOf(1); report.Task != 0 {
+			t.Fatalf("the card's turn was reported %+v, want a turn of no task", report)
+		}
+		if takes := d.takesMade(); len(takes) != 0 {
+			t.Fatalf("the bridge asked to take %+v with no value held", takes)
+		}
+		if texts := r.userTexts(); !slices.Equal(texts, []string{"say the card"}) {
+			t.Fatalf("Claude Code read %q, want the card", texts)
+		}
+	})
 }
 
 // A value naming a task the daemon's reading says the claim finished is owed nothing: it is
@@ -2090,8 +2156,9 @@ func TestAnOlderShapeTaskLineIsRefusedNamingWhy(t *testing.T) {
 // A reading of the daemon's that holds no value still says which task the claim finished, and
 // the bridge holds that number beside the ones its task lines carried, as Oh My Pi's take raises
 // its own from such a reading: a value it already holds that names that task is owed nothing from
-// then on, so the delivery waiting behind it goes, and the ready line takes nothing. A value
-// naming a later task is taken. A finished line that names no number is refused naming why.
+// then on, so the delivery waiting behind it waits only for the ready gate, and the ready line
+// takes nothing and lets it go. A value naming a later task is taken. A finished line that names
+// no number is refused naming why.
 func TestAFinishedLineOfAReadingWithNoValueIsHeldBesideTheTaskLines(t *testing.T) {
 	d := newTaskDaemon(t)
 	r := newTakingRig(t, d, "", daemonCalls{})
@@ -2107,12 +2174,13 @@ func TestAFinishedLineOfAReadingWithNoValueIsHeldBesideTheTaskLines(t *testing.T
 	r.logged("Envoy delivery ev1 waits for the take of the claim's task")
 
 	r.handFinished(testTask)
+	r.quiet()
+	r.handReady()
 	r.expect("agent_start", nil)
 	if answer := inbox.answer(); answer != (InboxAnswer{ID: "ev1", OK: true}) {
 		t.Fatalf("the inbox answered %+v, want ev1 taken", answer)
 	}
 	r.expect("agent_end", nil)
-	r.handReady()
 	r.quiet()
 	if takes := d.takesMade(); len(takes) != 0 {
 		t.Fatalf("the bridge asked to take %+v, a task the claim finished", takes)

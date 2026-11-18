@@ -208,14 +208,17 @@ export interface LegionClaim {
  * makes once the ready has answered, one at each regain of the role and at each new epoch of the
  * relay (`readTask`), and each one a task frame relays (`relayed`) — each with the number the
  * daemon's reading it came with says the claim finished, 0 for a relayed one; a reading that holds
- * no value hands the bridge that number alone (`finished`, the inbox's finished line); and it
- * writes the ready line (`ready`) once the ready has answered. The bridge, which knows whether
- * Claude Code is in a turn, holds the finished number, the ready gate and the newest value,
- * reports each value seen and takes the task (`packages/daemon/internal/claudebridge/take.go`), as
- * Oh My Pi's take does (`@legion/pi-shared/task-take`). The value read once the ready has answered
- * and the ready line are written before the role is claimed, and the inbox carries every line in
- * the order it is written, so every card the role's kept lane hands over at the claim waits behind
- * the take of each value the ready decision wrote. A value the daemon writes later — the resume
+ * no value hands the bridge that number alone (`finished`, the inbox's finished line). Once that
+ * read after the ready has answered, it writes the ready line (`ready`): behind the reading's own
+ * line, and after a read that failed too (logged, with no reading line), so the bridge never stands
+ * ready without the reading it was given. The bridge, which knows whether Claude Code is in a
+ * turn, holds the finished number, the ready gate and the newest value, reports each value seen
+ * and takes the task (`packages/daemon/internal/claudebridge/take.go`), as Oh My Pi's take does
+ * (`@legion/pi-shared/task-take`), and holds every card until the ready line, the session's own
+ * direct message included. Both lines are written before the role is claimed, and the inbox
+ * carries every line in the order it is written, so every card — one the role's kept lane hands
+ * over at the claim, or one sent to the session before it — waits behind the take of each value
+ * the ready decision wrote (the plan's decision 16). A value the daemon writes later — the resume
  * its outbox queues after the ready, a task queued later still — reaches the bridge as the
  * listener relays it, and a card that arrives before it may start a turn first, which the take
  * then waits behind.
@@ -241,7 +244,8 @@ export function startLegionClaim(deps: {
   readonly session: Pick<ChannelSession, "rememberRole" | "onRoleRegained">
   /** Hands the bridge the claim's task value (`LegionInbox.task`). */
   readonly task: (value: InboxTaskValue) => void
-  /** Tells the bridge the claim's ready has answered (`LegionInbox.ready`). */
+  /** Tells the bridge the claim's ready has answered, and so has the read of the claim's value
+   * after it (`LegionInbox.ready`). */
   readonly ready: () => void
   /** Hands the bridge the finished number of a reading that holds no value
    * (`LegionInbox.finished`). */
@@ -295,14 +299,15 @@ export function startLegionClaim(deps: {
       },
       afterRegister: async (registered) => read(registered),
       taskValue: read,
+      // The read after the ready has answered, and its value or finished number is in the inbox
+      // already, or its failure is logged: the ready line goes behind it and ahead of the role
+      // claim, at which the listener hands the role's kept lane over, and the bridge holds every
+      // card until this line.
+      afterReadyRead: deps.ready,
       setCapability: (registered) => {
         capability = registered
       },
       claimRole: async (role) => {
-        // The ready has answered, and the value read after it is in the inbox already: the
-        // ready line goes behind it and ahead of the role claim, at which the listener hands the
-        // role's kept lane over, so every card of that lane waits behind the take.
-        deps.ready()
         // Soft, so a role another live session holds is left with it, and naming this process,
         // so the listener records the claim as this process's: a second `claude` that resumed
         // this session id can then neither be taken for the holder nor release what it holds.

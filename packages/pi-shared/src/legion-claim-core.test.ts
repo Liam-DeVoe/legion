@@ -1,10 +1,17 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import type { LegionTask } from "@legion/contracts/legion-api";
-import { createLegionDaemonClient } from "./daemon-client";
+import { LegionTakeResponse, type LegionTask } from "@legion/contracts/legion-api";
+import { claimCaller, createLegionDaemonClient } from "./daemon-client";
+import {
+  envoyPluginInterface,
+  publishEnvoyPluginInterface,
+  resetEnvoyPluginInterfaceForTests,
+} from "./interface";
 import { bootLegionClaim, type LegionClaimHost } from "./legion-claim-core";
 import type { ClaimCapability } from "./legion-phase-ops";
+import { createTaskTake, type TaskTake } from "./task-take";
+import { taskTurnMark } from "./task-values";
 
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
 function daemonFixture(name: string): Record<string, unknown> {
@@ -30,7 +37,7 @@ const registration = {
 function claimHost(options: {
   readonly register?: () => Response;
   readonly ready?: () => Response;
-  readonly task?: () => Response;
+  readonly task?: () => Response | Promise<Response>;
   readonly overrides?: Partial<LegionClaimHost>;
 }) {
   const steps: string[] = [];
@@ -59,6 +66,7 @@ function claimHost(options: {
       steps.push("taskValue");
       values.push(reading);
     },
+    afterReadyRead: () => steps.push("afterReadyRead"),
     onRoleRegained: (listener) => {
       steps.push("onRoleRegained");
       regain = listener;
@@ -92,8 +100,8 @@ test("registers, hands the registration to afterRegister, records the capability
 
   expect(boot).toBeDefined();
   // The registration's value goes to the host before the ready, and the value read once the
-  // ready has answered goes to it before the role claim: the take's mark stands before the
-  // role's kept lane is handed over.
+  // ready has answered goes to it before the role claim, and so does the word that the read has
+  // answered: the take's mark stands before the role's kept lane is handed over.
   expect(steps).toEqual([
     `claims/register ${JSON.stringify(registration)}`,
     `afterRegister ${claimToken} task 4`,
@@ -101,6 +109,7 @@ test("registers, hands the registration to afterRegister, records the capability
     `claims/ready ${readyBody()}`,
     `claims/task ${JSON.stringify(caller())}`,
     "taskValue",
+    "afterReadyRead",
     `claimRole ${claimToken}`,
     "onRoleRegained",
   ]);
@@ -117,10 +126,11 @@ test("registers, hands the registration to afterRegister, records the capability
     },
   ]);
 
-  // Another role's regain reads nothing; this claim's reads its value, and sends no ready.
+  // Another role's regain reads nothing; this claim's reads its value, and sends no ready, nor
+  // says again that the read after the ready has answered.
   await regain()?.("some-other-role", "reclaimed");
   await regain()?.(claimToken, "reregistered");
-  expect(steps.slice(8)).toEqual([`claims/task ${JSON.stringify(caller())}`, "taskValue"]);
+  expect(steps.slice(9)).toEqual([`claims/task ${JSON.stringify(caller())}`, "taskValue"]);
   expect(values).toEqual([current as LegionTask, current as LegionTask]);
   expect(lines).toEqual([`read claims/task after role ${claimToken} was reregistered`]);
 });
@@ -151,12 +161,150 @@ test("hands the host the value the ready decision wrote, read once the ready ans
     `claims/ready ${readyBody()}`,
     `claims/task ${JSON.stringify(caller())}`,
     "taskValue",
+    "afterReadyRead",
     `claimRole ${claimToken}`,
     "onRoleRegained",
   ]);
   expect(values).toEqual([{ ...written, finished: 4 } as LegionTask]);
   expect(lines).toEqual([]);
 });
+
+// Finding 11 of review round 1 and the plan's decision 15, at the card: the session's agent
+// subject is open from its start, so a card addressed to the session itself — its own direct
+// message — can reach it while the ready, or the read of the claim's value after it, is still on
+// its way, and here the registration answered no value. Oh My Pi's host holds its take's
+// task-turn mark from the registration until that read has answered (`TaskTake.awaitRead`, ended
+// at `afterReadyRead`), and pi-envoy hands a card that finds the session idle over with no turn
+// while that mark names the session, so the task the ready decision wrote is the first turn.
+
+/** The session of the claim these cases boot. */
+const SESSION = "ses_claim";
+
+/** The daemon's answer to a take of the task the ready decision wrote, as its golden test wrote
+ * it. */
+const ACCEPTED = LegionTakeResponse.parse(daemonFixture("take-accepted.json"));
+const TASK_TEXT = ACCEPTED.outcome === "accepted" ? ACCEPTED.text : "";
+
+/**
+ * An Oh My Pi claim's host over `claimHost`'s stub, wired as `packages/pi-legion/src/claim-session.ts`
+ * wires its take: built at the registration, holding its value and its task-turn mark from there,
+ * the mark the plugin interface's, held whatever value the take holds until the read after the
+ * ready has answered. The Envoy entry has published the interface, as it does before any claim
+ * boots. `turns` is every turn the session starts, in order: the take's text, and a card's own
+ * (`card`).
+ */
+function takingHost(options: Pick<Parameters<typeof claimHost>[0], "register" | "task">) {
+  resetEnvoyPluginInterfaceForTests();
+  publishEnvoyPluginInterface("pi-envoy");
+  const turns: string[] = [];
+  let take: TaskTake | undefined;
+  let readAnswered: (() => void) | undefined;
+  const claim = claimHost({
+    ...options,
+    overrides: {
+      afterRegister: async (registered) => {
+        take = createTaskTake({
+          daemon: { taskSeen: async () => undefined, take: async () => ACCEPTED },
+          caller: claimCaller(registered, SESSION),
+          run: (text) => turns.push(text),
+          setPending: taskTurnMark(SESSION),
+          log: { info: () => undefined, warn: () => undefined },
+        });
+        take.read(registered);
+        readAnswered = take.awaitRead();
+      },
+      taskValue: (reading) => take?.read(reading),
+      afterReadyRead: () => readAnswered?.(),
+    },
+  });
+  return {
+    ...claim,
+    turns,
+    take: () => take,
+    /**
+     * A card that reaches the idle session, as pi-envoy's card wake hands it over
+     * (`CardWake.deliveryFor`, packages/pi-envoy/src/card-wake.ts): with no turn while the
+     * task-turn mark names this session, and otherwise a turn of its own, whose text is `text`.
+     */
+    card: (text: string): void => {
+      if (envoyPluginInterface().taskTurnPending?.session !== SESSION) turns.push(text);
+    },
+  };
+}
+
+/** Lets every promise queued so far settle. */
+async function flush(): Promise<void> {
+  for (let turn = 0; turn < 50; turn += 1) await Promise.resolve();
+}
+
+test("a card that reaches the session between the ready and the answer of the read after it — its own direct message — starts no turn before the task the ready decision wrote", async () => {
+  const written = { number: 5, epoch: "2026-11-13T16:21:44.123456789Z", revision: 13 };
+  const reading = Promise.withResolvers<void>();
+  const answer = Promise.withResolvers<void>();
+  const host = takingHost({
+    register: () => Response.json({ ...registered, task: null, finished: 4 }),
+    task: async () => {
+      reading.resolve();
+      await answer.promise;
+      return Response.json({ task: written, finished: 4 });
+    },
+  });
+
+  const booting = bootLegionClaim(host.host);
+  // The ready has answered, and the read after it waits for the daemon.
+  await reading.promise;
+  host.card("the session's own direct message");
+  answer.resolve();
+  await booting;
+  // The role is claimed, and a card its kept lane hands over finds the task owed.
+  host.card("a card the role's kept lane handed over");
+  // The take asks once the boot is done, and its accepted text starts the session's first turn.
+  host.take()?.ready();
+  await flush();
+  expect(host.turns).toEqual([TASK_TEXT]);
+  expect(envoyPluginInterface().taskTurnPending).toEqual({ session: SESSION });
+  host.take()?.runStarted();
+  expect(envoyPluginInterface().taskTurnPending).toBeUndefined();
+  resetEnvoyPluginInterfaceForTests();
+});
+
+for (const [name, answer, logged] of [
+  ["holds no value", () => Response.json({ task: null, finished: 4 }), []],
+  [
+    "fails",
+    () => Response.json({ error: "the daemon is restarting" }, { status: 503 }),
+    [
+      "claims/task after claims/ready failed; the claim's value reaches this session with the daemon's next write of it: POST /legion/v1/claims/task failed with 503: the daemon is restarting",
+    ],
+  ],
+] as const) {
+  test(`a card that reaches the session while the read after the ready waits starts no turn, and once that read ${name} the hold ends and a card starts its turn`, async () => {
+    const reading = Promise.withResolvers<void>();
+    const answered = Promise.withResolvers<void>();
+    const host = takingHost({
+      register: () => Response.json({ ...registered, task: null, finished: 4 }),
+      task: async () => {
+        reading.resolve();
+        await answered.promise;
+        return answer();
+      },
+    });
+
+    const booting = bootLegionClaim(host.host);
+    await reading.promise;
+    host.card("the session's own direct message");
+    expect(host.turns).toEqual([]);
+    answered.resolve();
+    await booting;
+
+    // Nothing is owed: the mark is down, and a card starts its turn.
+    expect(envoyPluginInterface().taskTurnPending).toBeUndefined();
+    host.card("a card after the read answered");
+    expect(host.turns).toEqual(["a card after the read answered"]);
+    expect(host.lines).toEqual([...logged]);
+    resetEnvoyPluginInterfaceForTests();
+  });
+}
 
 test("a value read after the ready that fails is logged, and the role is claimed all the same", async () => {
   const { host, steps, values, lines } = claimHost({
@@ -166,7 +314,12 @@ test("a value read after the ready that fails is logged, and the role is claimed
   await expect(bootLegionClaim(host)).resolves.toBeDefined();
 
   expect(values).toEqual([]);
-  expect(steps.slice(-2)).toEqual([`claimRole ${claimToken}`, "onRoleRegained"]);
+  expect(steps.slice(-4)).toEqual([
+    `claims/task ${JSON.stringify(caller())}`,
+    "afterReadyRead",
+    `claimRole ${claimToken}`,
+    "onRoleRegained",
+  ]);
   expect(steps).not.toContain("stop");
   expect(lines).toEqual([
     "claims/task after claims/ready failed; the claim's value reaches this session with the daemon's next write of it: POST /legion/v1/claims/task failed with 503: the daemon is restarting",
@@ -243,6 +396,7 @@ test("a claim the listener refuses is logged naming the claim token and what sto
     `claims/ready ${readyBody()}`,
     `claims/task ${JSON.stringify(caller())}`,
     "taskValue",
+    "afterReadyRead",
     `claimRole ${claimToken}`,
     "stop",
   ]);
@@ -258,6 +412,7 @@ test("a 4xx at claims/ready is not retried: one ready, then the agent stops, wit
   await expect(bootLegionClaim(host)).resolves.toBeUndefined();
   expect(steps.filter((step) => step.startsWith("claims/ready"))).toHaveLength(1);
   expect(steps.at(-1)).toBe("stop");
+  expect(steps).not.toContain("afterReadyRead");
   expect(steps).not.toContain("onRoleRegained");
   expect(steps.some((step) => step.startsWith("claimRole"))).toBe(false);
 });
@@ -281,6 +436,7 @@ test("a ready retried after a 503 reads the value and claims the role as soon as
     `claims/ready ${readyBody()}`,
     `claims/task ${JSON.stringify(caller())}`,
     "taskValue",
+    "afterReadyRead",
     `claimRole ${claimToken}`,
     "onRoleRegained",
   ]);

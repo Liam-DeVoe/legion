@@ -16,10 +16,11 @@ import (
 // of its role and at a new epoch of its relay, and each value a task frame relays — carrying the
 // number the daemon's reading it came with says the claim finished (0 for a relayed value); writes
 // that number alone as a finished line for a reading that holds no value; and writes the ready
-// line once `claims/ready` has answered (the plan's decision 16). The bridge, which knows whether
-// Claude Code is in a turn, does the rest, as Oh My Pi's take does
-// (packages/pi-shared/src/task-take.ts, createTaskTake), naming the claim with the launch's boot
-// token (daemonLink):
+// line once `claims/ready` has answered and the read of claims/task after it has answered too,
+// behind that reading's line, or with no reading line after a read that failed (the plan's
+// decision 16). The bridge, which knows whether Claude Code is in a turn, does the rest, as Oh My
+// Pi's take does (packages/pi-shared/src/task-take.ts, createTaskTake), naming the claim with the
+// launch's boot token (daemonLink):
 //
 //   - it holds the newest value, a later revision of the same epoch or any value of another one
 //     (replaces), and the highest finished number any task line or finished line carried. A value
@@ -32,13 +33,18 @@ import (
 //     daemon refuses a take before the ready, so none is asked for before the ready line. The
 //     pairs it asked at are kept in this process's memory alone, so a relaunched bridge asks again
 //     at the value it is handed;
-//   - while it holds an owed value it has not asked about, while that take waits for its answer,
-//     and while an accepted take's text waits for its turn, an Envoy delivery that would start a
-//     turn waits in the queue, since the turn the take goes into must not start with a card
-//     (takePending). claude-envoy writes the value it reads once the ready answered, and the ready
-//     line, before it claims the role, whose kept lane the listener hands over at the claim, so
-//     every card of that lane waits behind the take. A value the daemon writes later — the resume
-//     its outbox queues after the ready, a task queued later still — reaches the inbox as the
+//   - until the ready line, every Envoy delivery waits in the queue, whatever value the bridge
+//     holds, the session's own direct message included: the ready decision can write a value the
+//     registration did not carry, and claude-envoy writes the reading of it ahead of the ready
+//     line on the one inbox connection, so no card starts a turn before the task's (the ready
+//     gate). A failed read writes no reading line and the ready line all the same, which opens
+//     the gate. From the ready line on, while it holds an owed value it has not asked about, while
+//     that take waits for its answer, and while an accepted take's text waits for its turn, an
+//     Envoy delivery that would start a turn waits in the queue, since the turn the take goes into
+//     must not start with a card (takePending). claude-envoy writes the ready line before it
+//     claims the role, whose kept lane the listener hands over at the claim, so every card of
+//     that lane waits behind the take as well. A value the daemon writes later — the resume its
+//     outbox queues after the ready, a task queued later still — reaches the inbox as the
 //     listener relays it, and a card that arrived before it may start a turn first, which the take
 //     then waits behind;
 //   - an accepted take's text starts a turn of its own ahead of every queued delivery, and that
@@ -176,8 +182,10 @@ func (b *bridge) finishedHanded(finished uint64) {
 	b.idle()
 }
 
-// readied takes the ready line: the claim's ready has answered, and the daemon answers a take from
-// then on, so the task an owed value names is asked for once Claude Code is idle (ask).
+// readied takes the ready line: the claim's ready has answered, and so has the read of the claim's
+// value after it, whose reading came ahead of this line on the inbox, if the read answered. The
+// daemon answers a take from then on, so the task an owed value names is asked for once Claude Code
+// is idle (ask), and the ready gate lets the queued deliveries go where no take holds them (idle).
 func (b *bridge) readied() {
 	if b.armed {
 		return
@@ -188,6 +196,12 @@ func (b *bridge) readied() {
 	}
 	b.idle()
 }
+
+// awaitingReady is the ready gate: a pane that names a daemon holds every queued delivery until the
+// ready line, whatever value it holds, since the ready decision can write a value the reading
+// ahead of that line carries and the registration did not. A pane that names none holds no claim,
+// is never written a ready line, and holds nothing back.
+func (b *bridge) awaitingReady() bool { return b.daemon != nil && !b.armed }
 
 // replace stops sending the seen report and the take of any pair but at: a newer value says
 // something new, and a take of an older one would ask about a value the daemon has replaced. Cards
@@ -347,7 +361,7 @@ func (b *bridge) reportRefused(number uint64) {
 // idle runs what waits for Claude Code to be in no turn, whenever it may be: the seed's end, a
 // turn's end, the ready line, a take's answer, a newer task value and a refused report. The text of
 // a take accepted during the turn that ended starts first; then a take of the held value; and only
-// with no take pending, the oldest queued Envoy delivery.
+// with no take pending and the ready gate open (awaitingReady), the oldest queued Envoy delivery.
 func (b *bridge) idle() {
 	if b.inRun || b.seeding {
 		return
@@ -358,7 +372,7 @@ func (b *bridge) idle() {
 		b.startTask(number, text)
 		return
 	}
-	if b.ask() || b.takePending() {
+	if b.ask() || b.takePending() || b.awaitingReady() {
 		return
 	}
 	if len(b.queue) > 0 {

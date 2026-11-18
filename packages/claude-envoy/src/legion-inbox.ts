@@ -61,9 +61,11 @@ export interface LegionInbox extends ChannelNotifier {
    */
   task(value: InboxTaskValue): Promise<void>
   /**
-   * Tells the bridge the claim's `claims/ready` has answered, as one line `{id, kind: "ready"}`,
-   * and resolves once the bridge's loop has taken it. The daemon refuses a take before the ready,
-   * so the bridge takes no task before this line.
+   * Tells the bridge the claim's `claims/ready` has answered, and the read of the claim's value
+   * after it too, as one line `{id, kind: "ready"}` written behind that reading's own line, and
+   * resolves once the bridge's loop has taken it. The daemon refuses a take before the ready, so
+   * the bridge takes no task before this line, and it holds every Envoy delivery until it, so none
+   * starts a turn ahead of a task the ready decision wrote.
    */
   ready(): Promise<void>
   /**

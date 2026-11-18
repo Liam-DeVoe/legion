@@ -15,7 +15,9 @@ import (
 )
 
 // reportingRig is a rig whose pane names a daemon: every turn the bridge ends is reported to the
-// stub, which answers as the daemon's route does.
+// stub, which answers as the daemon's route does. The pane's claim is ready, as claude-envoy says
+// once its ready and the read of its value after it have answered (the ready line): the bridge
+// holds every Envoy delivery until that line.
 type reportingRig struct {
 	*rig
 	reports chan claim.TurnOutcomeRequest
@@ -60,6 +62,7 @@ func newReportingRig(t *testing.T, args ...string) *reportingRig {
 		"LEGION_BOOT_TOKEN_FILE=" + tokenFile,
 		"LEGION_GENERATION=4",
 	}, daemonCalls{}, args...)
+	r.handReady()
 	return r
 }
 
