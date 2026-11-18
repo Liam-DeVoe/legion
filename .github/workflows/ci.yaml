@@ -1008,11 +1008,12 @@ jobs:
               - 'scripts/e2e/lib/built-from.sh'
               # The removal of the Postgres of each test stack that is gone, which the proof's start
               # runs through the Bun .github/actions/setup-bun installs (stage1-skeleton.sh:147),
-              # and the two modules that command imports.
+              # and the modules that command imports.
               - 'scripts/e2e/lib/leftovers.sh'
               - 'packages/dispatch/e2e/postgres-mark.ts'
               - 'packages/dispatch/e2e/harness-postgres-marks.ts'
               - 'packages/dispatch/e2e/harness-postgres-removal.ts'
+              - 'packages/dispatch/e2e/harness-postgres-processes.ts'
               - '.bun-version'
               - '.github/actions/setup-bun/**'
               - 'packages/pi-legion/package.json'
@@ -1761,10 +1762,11 @@ jobs:
               - 'packages/envoy-client/test/fake-dispatch.ts'
               # scripts/e2e/lib/sweep-order.test.ts runs each shell stack's start, the skill
               # scenarios' batch among them, and the mark command that lib/leftovers.sh runs, with
-              # the two modules it imports.
+              # the modules it imports.
               - 'packages/dispatch/e2e/postgres-mark.ts'
               - 'packages/dispatch/e2e/harness-postgres-marks.ts'
               - 'packages/dispatch/e2e/harness-postgres-removal.ts'
+              - 'packages/dispatch/e2e/harness-postgres-processes.ts'
               - 'packages/pi-legion/scripts/skill-scenarios/rig.sh'
               - 'scripts/dispatch/**'
               - 'scripts/github-apps/**'

@@ -2289,6 +2289,7 @@ GATES = [
         ("packages/dispatch/e2e/postgres-mark.ts", "scripts/e2e/lib/leftovers.sh:24,32 runs it with bun"),
         ("packages/dispatch/e2e/harness-postgres-marks.ts", "packages/dispatch/e2e/postgres-mark.ts:21-27 imports it"),
         ("packages/dispatch/e2e/harness-postgres-removal.ts", "packages/dispatch/e2e/postgres-mark.ts:28 imports it"),
+        ("packages/dispatch/e2e/harness-postgres-processes.ts", "packages/dispatch/e2e/harness-postgres-removal.ts:97-102 imports it"),
         ("packages/pi-legion/package.json", "scripts/e2e/stage1-skeleton.sh:237 copies its name, version and legion "
                                             "block with jq into the pi-legion plugin the proof's home holds"),
         ("packages/pi-envoy/package.json", "scripts/e2e/stage1-skeleton.sh:238 copies its name and version with jq "
@@ -2384,6 +2385,7 @@ GATES = [
                                                    "runs it with bun for each driver's mark, as lib/leftovers.sh does (leftovers.sh:24,32)"),
         ("packages/dispatch/e2e/harness-postgres-marks.ts", "packages/dispatch/e2e/postgres-mark.ts:21-27 imports it"),
         ("packages/dispatch/e2e/harness-postgres-removal.ts", "packages/dispatch/e2e/postgres-mark.ts:28 imports it"),
+        ("packages/dispatch/e2e/harness-postgres-processes.ts", "packages/dispatch/e2e/harness-postgres-removal.ts:97-102 imports it"),
         ("packages/pi-legion/scripts/skill-scenarios/rig.sh", "scripts/e2e/lib/sweep-order.test.ts:72,98,443 reads and runs it, a shell stack's start"),
         ("scripts/dispatch/**", f"{at('test', 'Lint the Dispatch census script')}, typecheck and test; "
                                 "scripts/priorities-seed.test.ts:3 imports __tests__/held-deadlines.ts"),
