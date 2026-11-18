@@ -932,7 +932,7 @@ jobs:
             # (internal/api/state_golden_test.go:868, internal/intake/intake_test.go:802), the
             # agents internal/prompts/roles_test.go:261 stats and the tools skill its :689 holds
             # roles/mechanics/headless.md to, the GitHub App helper
-            # internal/api/real_github_test.go:115 sources, and the examples and
+            # internal/api/real_github_test.go:44 sources, and the examples and
             # docs its tests hold to the code (cmd/legion/config_example_test.go:164,
             # internal/config/controller_test.go:214, internal/config/kubernetes_test.go:1474).
             # No bun_install and no skills/** - the one page of skills/ this filter names is all
@@ -2878,10 +2878,10 @@ jobs:
               # at run time, through a path built relative to the test binary; the guard step
               # compiles it with the rest of that package.
               - 'packages/contracts/schemas/dispatch-openapi.json'
-            # `go test -tags memory ./cmd/dispatch`. memory_profile_test.go reads four guides only
-            # when DISPATCH_EDIT_PROFILE_OUT is set (its line 126), which CI never sets, so they are
-            # not here. cmd/dispatch/nats_unreachable_test.go, which carries no tag, starts the
-            # in-process NATS (its line 47).
+            # `go test -tags memory ./cmd/dispatch`. memory_profile_test.go reads three guides only
+            # in its benchmark, and no step passes -bench, so they are not here.
+            # cmd/dispatch/nats_unreachable_test.go, which carries no tag, starts the in-process
+            # NATS (its line 47).
             dispatch_memory:
               - *ci_router
               - '.github/workflows/ci-job-dispatch-memory.yaml'

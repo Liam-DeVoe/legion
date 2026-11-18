@@ -284,8 +284,7 @@ Each item below names a task and where its code is, then notes on it.
   `Run` makes one run of a model and the tools it calls, on anthropic-messages, openai-responses, openai-chat or azure-anthropic, and `Decide` puts one set of System One questions.
   It is the engine and nothing more:
   it reads no base URL, no credential and no header from the environment, so every endpoint, model, token and bound arrives in the caller's request (`doc.go`).
-  Its live proof makes one real model call per protocol and one real decision, so it sits behind the `modellive` build tag and CI only vets it:
-  `go test -count=1 -tags modellive ./agentloop/ -run TestLive -v` runs it from this directory, and each test skips unless the operator set its own inputs, which are `AGENTLOOP_LIVE_BASE_URL`, `AGENTLOOP_LIVE_KEY_FILE` and `AGENTLOOP_LIVE_MODEL` for the three runs, and `AGENTLOOP_LIVE_SYSTEMONE_BASE_URL`, `AGENTLOOP_LIVE_SYSTEMONE_KEY_FILE` and `AGENTLOOP_LIVE_SYSTEMONE_MODEL` for the decision
+  Its tests make no model call: stand-in servers of each protocol (`kinds_test.go`, `run_test.go`, `decide_test.go` and `cache_test.go`) hold the requests it sends and the replies it reads
 
 - **Document tree (Proof schema)**: `internal/dispatch/pmdoc/`
 

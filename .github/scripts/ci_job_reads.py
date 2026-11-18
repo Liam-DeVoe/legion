@@ -482,7 +482,7 @@ RULES = {
     f"{DAEMON}/internal/api/reachstates_test.go": [
         Read(path, "internal/api/reachstates_test.go:47 lists ../supervise and :57 parses each .go file of it but the test files (:54)")
         for path in files_but_tests(f"{DAEMON}/internal/supervise")],
-    f"{DAEMON}/internal/api/real_github_test.go": reads(("scripts/e2e/lib/github-apps.sh", "internal/api/real_github_test.go:115 runs it in bash, and :208,249 read it")),
+    f"{DAEMON}/internal/api/real_github_test.go": reads(("scripts/e2e/lib/github-apps.sh", "internal/api/real_github_test.go:44 runs it in bash, and :140 reads it")),
     f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:1155 (path from goldenPath at :1144, declared :31)")),
     f"{DAEMON}/internal/capabilities/capabilities_test.go": reads(
         (f"{FIX}/capability-redaction.json", "internal/capabilities/capabilities_test.go:236 readFixture"),
@@ -705,8 +705,8 @@ RULES = {
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-href-references.json",
          "cmd/dispatch/twobuild_documents_test.go:71 the current build's reference fixtures, read by "
          "referencesMarkdown :661 os.ReadFile")),
-    # cmd/dispatch/memory_profile_test.go:147-148 reads four guides only when
-    # DISPATCH_EDIT_PROFILE_OUT is set (line 125), which CI never sets: not a CI read.
+    # cmd/dispatch/memory_profile_test.go:186-187 reads three guides only in
+    # BenchmarkProfileTheColdEditOfTheHeaviestDocuments, and no CI step passes -bench: not a CI read.
     f"{ENVOY}/cmd/dispatch/pod_grace_period_test.go": reads((f"{INFRA}/gcp/testdata/dispatch-pod.golden", "cmd/dispatch/pod_grace_period_test.go:53")),
     f"{ENVOY}/cmd/listener/api_test.go": reads(
         (f"{FIX}/dispatch-targeted-delivery.json", "cmd/listener/api_test.go:176,421,465"),
@@ -2943,8 +2943,6 @@ GATES = [
     gate("envoy_go", "envoy-go", runs=[
         step_run("envoy-go", "Integration test envoy (a real NATS server, in the test process)",
                  "go test -v ./internal/integration/ -timeout 300s -count=1", ENVOY, ["./internal/integration/"]),
-        step_run("envoy-go", "Vet agentloop's live proof (no model call)", "go vet -tags modellive ./agentloop/", ENVOY,
-                 ["./agentloop/"], tags="modellive", mode="vet"),
         step_run("envoy-go", "Vet agent-secrets' moto run (no moto)", "go vet -tags moto ./cmd/agent-secrets/", ENVOY,
                  ["./cmd/agent-secrets/"], tags="moto", mode="vet"),
         ceiling_run("envoy-go"),

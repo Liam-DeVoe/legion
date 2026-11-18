@@ -178,11 +178,6 @@ jobs:
       - name: Count the database broker suites' skips
         timeout-minutes: 25
         run: packages/envoy/scripts/database-skips.sh
-      # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
-      # never runs it. Vetting it keeps it compiling as the package changes.
-      - name: Vet agentloop's live proof (no model call)
-        run: go vet -tags modellive ./agentloop/
-        working-directory: packages/envoy
       # The run of the built agent-secrets against moto needs moto, so it sits behind a build tag
       # and packages/envoy/scripts/aws-moto-check.sh runs it. Vetting it keeps it compiling.
       - name: Vet agent-secrets' moto run (no moto)

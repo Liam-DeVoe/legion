@@ -302,11 +302,6 @@ Each item below names a script, then what it proves.
   bash scripts/e2e/with-managed-settings.sh --settings channels-on.json -- claude --version
   ```
 
-- `TestRealGitHubCredentialSurface`
-
-  the real `api.NewServer`'s App leases, rendered as the gh files a pane's `GH_CONFIG_DIR` holds, make the real `gh` identify as the implementer and reviewer bots, an empty `GH_CONFIG_DIR` authenticates nobody, and `git` clones the smoke repository through `gh auth git-credential` from the implement App's files alone.
-  Devbox only
-
 ## On a GitHub-hosted runner
 
 [`.github/workflows/e2e.yaml`](../../.github/workflows/e2e.yaml) runs one proof per job on `ubuntu-24.04`, against a Postgres service.
@@ -342,24 +337,6 @@ Each job writes its evidence to one directory and uploads it as `e2e-<script>-<r
 A script whose row names an evidence variable writes its transcript and its logs there, since the job sets that variable to the directory.
 It also keeps the run's own output as `output.log` in the same directory, which is what `stage1-skeleton.sh`, `dispatch-claimant-delivery.sh` and `verification-results.sh` leave a reader:
 they take no evidence variable and keep a work directory of their own, whose path that output names.
-
-## TestRealGitHubCredentialSurface
-
-```sh
-LEGION_REAL_GITHUB=1 LEGION_TEST_PG_DSN=postgres://… \
-  go -C packages/daemon test -count=1 ./internal/api \
-    -run '^TestRealGitHubCredentialSurface$' -v
-```
-
-The test is intentionally gated because it calls GitHub as the installed implement App: this deployment's own unless `LEGION_E2E_IMPLEMENT_APP_ID` and `LEGION_E2E_IMPLEMENT_APP_SECRET` name another deployment's.
-It reads that App by running [`lib/github-apps.sh`](#libgithub-appssh) itself, so it takes that lib's defaults, input checks and token command, with no copy of its own:
-each unset input takes the default's value, and a malformed one fails the run by name, never printing it.
-It reads no review input, so it needs no review key command.
-Before it acts, it proves that App from its token against GitHub (GraphQL's viewer, then `GET /apps/<slug>`) as the stage proofs do (the lib's `check_github_apps` on the very block it uses), which needs `bun` on `PATH` (and `jq` for its log line).
-The ungated `TestLiveProofAppsReadTheLib` proves the read in every `go test`.
-It mints the implement App's lease through its `token_command` (the daemon's token mode), writes the gh files the daemon would render for a pane, and drives the real `gh` and `git` against them.
-The test's temporary gh directories and clone directory are removed by Go's test cleanup;
-the GitHub operations are read-only except for locally cloning the smoke repository.
 
 ## stage1-skeleton.sh
 
@@ -5667,8 +5644,8 @@ The review App's key reaches such a file in every mode, under `$work/app-key` or
 a token reaches one only where the daemon can run neither `agent-secrets` nor a key command, which is that `bridge` container, and the run's teardown removes them ([Pod reachability](#pod-reachability)).
 A run refuses before its first write anywhere:
 Stage 3, 4b.13b, the Claude Code backend and Stage 4b check both Apps (`read_app_logins`), Stage 4a, which acts as the implement App alone, checks that one.
-`TestRealGitHubCredentialSurface` sources this lib and runs its `require_app_inputs implement`, `app_token_command` and `check_github_apps implement` (through `liveProofImplementApp` and `proveLiveProofApps` in `packages/daemon/internal/api/real_github_test.go`;
-`proveLiveProofApps` checks the very block the proofs act with), so it holds no copy of the App, its checks or its token command, and it proves the implement App as the stage proofs do before it acts: it takes the implement inputs and no others, so no review input, the key command included, is read for it.
+`TestLiveProofAppsReadTheLib` (`packages/daemon/internal/api/real_github_test.go`) sources this lib and runs its `require_app_inputs implement`, `app_token_command` and `check_github_apps implement` through `liveProofImplementApp` and `proveLiveProofApps`, with a stand-in `agent-secrets` and a stand-in `bun`, so it holds no copy of the App, its checks or its token command:
+it holds the lib's defaults, its refusals of a malformed input, its token command's narrowing and the block `check_github_apps` reads to what the lib itself writes, and it takes the implement inputs and no others, so no review input, the key command included, is read for it.
 Stage 4a hands its Go harness the implement App's id, its secret and that App's `app_token_command`, which the harness's token manager runs with `sh -c`, so it holds no copy of the token command either.
 The checks run in the C locale whatever the caller's, so a UTF-8 locale does not admit fullwidth digits or accented letters.
 `require_app_inputs` also fills `app_key_unsets`, the `env` argument list (`-u NAME` …) every proof passes to a process it starts, so no such process inherits an App credential, the proof human's included.

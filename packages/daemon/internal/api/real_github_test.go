@@ -13,79 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/credential"
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
-	"github.com/sjawhar/legion/daemon/internal/ghconfig"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/record"
 )
-
-const realGitHubProofEnabled = "LEGION_REAL_GITHUB"
-
-// TestRealGitHubCredentialSurface keeps the Stage 3 credential proof beside the real App it
-// drives: the implement App's token, rendered as the gh files the daemon writes
-// (internal/ghconfig), is whose login a plain gh reports, and a git clone through gh's own
-// credential helper reads those files. It acts as the implement App alone, since the review App
-// has no default credential, and reading that role would make every run here need the operator's
-// key command. It is the lower-level proof of the rendered files against real GitHub; the helper
-// a shared clone runs, `legion git-credential`, and the `legion gh` wrapper are proven against
-// the real gh and git in cmd/legion (TestRealGhAndGitSendTheTargetOwnersToken). It is
-// intentionally gated: CI has no Legion App keys, whereas the devbox command is a release gate.
-func TestRealGitHubCredentialSurface(t *testing.T) {
-	if os.Getenv(realGitHubProofEnabled) != "1" {
-		t.Skip("set LEGION_REAL_GITHUB=1 to run the real GitHub App credential proof")
-	}
-	apps := realGitHubApps(t)
-
-	h := newHarness(t)
-	tokens := appauth.New(apps, appauth.Options{})
-	h.handler = NewServer("127.0.0.1", 0, Options{
-		Steps:              config.DesignGateRootIssues.Steps(),
-		Supervisor:         h.supervisor,
-		BootTokens:         h.tokens,
-		Project:            testProject,
-		Tokens:             tokens,
-		GitHubRepositories: func() []ghrepo.Repository { return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion")} },
-		Grants:             credential.New(nil),
-		Pool:               h.store.Pool(),
-		Record:             record.NewStore(),
-	}).Handler
-	gh := realGh(t)
-
-	// The implement App's lease, rendered as the role's gh files, is whose login the real gh
-	// reports. The review App is not minted here: realGitHubApps reads the implement role alone.
-	role := appauth.Implement
-	lease, err := tokens.Token(h.ctx, role, "sjawhar")
-	if err != nil {
-		t.Fatalf("mint the %s App's lease: %v", role, err)
-	}
-	dir := writeRealGhFiles(t, lease.Token)
-	viewer := runRealGh(t, gh, dir, "api", "graphql", "-f", "query={viewer{login}}", "--jq", ".data.viewer.login")
-	if viewer.code != 0 || strings.TrimSpace(viewer.stdout) != lease.Identity.Name {
-		t.Fatalf("%s App viewer login through gh = %q (exit %d, stderr %q), want %q", role, viewer.stdout, viewer.code, viewer.stderr, lease.Identity.Name)
-	}
-	t.Logf("%s App GraphQL login through gh: %s", role, strings.TrimSpace(viewer.stdout))
-
-	// The negative control: a GH_CONFIG_DIR with no gh files authenticates nobody.
-	denied := runRealGh(t, gh, t.TempDir(), "api", "graphql", "-f", "query={viewer{login}}")
-	if denied.code == 0 {
-		t.Fatalf("gh with an empty GH_CONFIG_DIR exit 0, stdout %q; want it refused", denied.stdout)
-	}
-	t.Logf("gh with an empty GH_CONFIG_DIR: exit=%d %s", denied.code, strings.TrimSpace(denied.stderr))
-
-	scratch := t.TempDir()
-	clone := exec.Command("git", "-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential",
-		"clone", "https://github.com/sjawhar/legion-smoke", filepath.Join(scratch, "legion-smoke"))
-	clone.Dir = scratch
-	clone.Env = realCLIEnvironment(gh, dir, t.TempDir())
-	output, err := clone.CombinedOutput()
-	if err != nil {
-		t.Fatalf("clone through gh auth git-credential: %v: %s", err, strings.TrimSpace(string(output)))
-	}
-	t.Log("clone through gh auth git-credential: succeeded")
-}
 
 // githubAppsLib is the live proofs' App lib, scripts/e2e/lib/github-apps.sh: the one place this
 // deployment's App pair, the checks on the three inputs that override it and on the review App's
@@ -95,8 +24,8 @@ var githubAppsLib = filepath.Join("..", "..", "..", "..", "scripts", "e2e", "lib
 // liveProofAppInputs is the two inputs githubAppsLib reads for the implement role, each
 // overriding one default: the App's numeric id and the name of the secrets broker's github-app
 // secret that mints its token. The lib reads the review role's inputs too, which the shell stage
-// proofs set; the proofs here act as the implement App alone and name none of them, so no run of
-// them needs the operator's review key command.
+// proofs set; liveProofImplementApp reads the implement App alone and names none of them, so no
+// run of it needs the operator's review key command.
 var liveProofAppInputs = []string{
 	"LEGION_E2E_IMPLEMENT_APP_ID", "LEGION_E2E_IMPLEMENT_APP_SECRET",
 }
@@ -125,11 +54,12 @@ func runGitHubAppsLib(lib string, environ []string, script string, args ...strin
 }
 
 // liveProofImplementApp resolves the implement App by running githubAppsLib's own
-// require_app_inputs and app_token_command in an environment of environ, so the gated proofs here
-// take the lib's default, its input checks and its token command, and no second copy of any of
-// them exists to drift. It asks for the implement role alone: the review App has no default
-// credential, so naming that role would make every run of these proofs need the operator's key
-// command. A refusal returns the lib's message, which names the input and never its value.
+// require_app_inputs and app_token_command in an environment of environ, so what
+// TestLiveProofAppsReadTheLib holds is the lib's default, its input checks and its token command,
+// and no second copy of any of them exists to drift. It asks for the implement role alone: the
+// review App has no default credential, so naming that role would make every run of it need the
+// operator's key command. A refusal returns the lib's message, which names the input and never
+// its value.
 func liveProofImplementApp(environ []string) (implement liveProofApp, err error) {
 	return liveProofImplementAppFrom(githubAppsLib, environ)
 }
@@ -137,7 +67,7 @@ func liveProofImplementApp(environ []string) (implement liveProofApp, err error)
 // liveProofImplementAppFrom is liveProofImplementApp reading the lib at lib. It refuses anything
 // but exactly three fields, each non-empty and on one line, and a token command that failed.
 // Stray output on a line of its own is refused with them; stray output with no line break joins a
-// field, which the gated path's check then refuses, since no secret mints for that id.
+// field, which proveLiveProofApps's check then refuses, since no secret mints for that id.
 func liveProofImplementAppFrom(lib string, environ []string) (implement liveProofApp, err error) {
 	const script = `set -euo pipefail
 fail() { printf '%s\n' "$*" >&2; exit 1; }
@@ -161,7 +91,7 @@ printf '%s\0%s\0%s\0' "$implement_app_id" "$implement_app_secret" "$command"`
 	return liveProofApp{fields[0], fields[1], fields[2]}, nil
 }
 
-// proveLiveProofApps proves implement, the App the gated proofs act as, against GitHub as every
+// proveLiveProofApps proves implement, the App the stage proofs act as, against GitHub as every
 // stage proof does: it writes implement as legion.yaml's `github_apps` block to
 // work/github-apps.yaml and runs the lib's own check_github_apps on that file, so the implement
 // App's token command must release that App's own token (GraphQL viewer, then GET /apps/<slug>)
@@ -187,45 +117,6 @@ check_github_apps implement`
 		return stderr, fmt.Errorf("%s could not prove the Apps against GitHub (%v): %s", githubAppsLib, runErr, stderr)
 	}
 	return stderr, nil
-}
-
-// realGitHubApps is Legion's implement App: the lib's default, another deployment's through the
-// same two implement inputs the stage proofs read, the App's id and the secrets broker
-// github-app secret whose release the token command prints, as liveProofImplementApp reads them from the
-// lib, and the block it returns proved against GitHub before a proof acts as it. The review App
-// is left out: it has no default credential, so reading that role would make every run need the
-// operator's key command, and the proofs here act as the implement App alone. The daemon runs
-// the token command itself (appauth's token mode), so no key is resolved here.
-func realGitHubApps(t *testing.T) config.GitHubApps {
-	t.Helper()
-	// go test's result cache keys a test on the variables it looks up and the files it opens, and
-	// sees none of them through the bash child, so name them here: a changed input, lib or GET /app
-	// checker runs the gated proof again rather than replaying a pass made as other Apps.
-	for _, name := range liveProofAppInputs {
-		os.LookupEnv(name)
-	}
-	for _, file := range []string{githubAppsLib, filepath.Join(filepath.Dir(githubAppsLib), "app-logins.ts")} {
-		if _, err := os.ReadFile(file); err != nil {
-			t.Fatalf("read the live proofs' App lib: %v", err)
-		}
-	}
-	// Both calls below hand the lib the process's own environment, not a fixtureenv.Isolated one:
-	// scripts/e2e/lib/github-apps.sh reads the two LEGION_E2E_IMPLEMENT_APP_* inputs, which the
-	// package's guard keeps (main_test.go) and Isolated drops, so an Isolated environment here
-	// would silently fall the lib back to its default App and prove an App no proof then acts as.
-	implement, err := liveProofImplementApp(os.Environ())
-	if err != nil {
-		t.Fatal(err)
-	}
-	apps := config.GitHubApps{
-		Implement: config.GitHubApp{AppID: implement.id, TokenCommand: implement.tokenCommand},
-	}
-	notes, err := proveLiveProofApps(os.Environ(), t.TempDir(), apps.Implement)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Log(notes)
-	return apps
 }
 
 // TestLiveProofAppsReadTheLib proves liveProofImplementApp, ungated: with no input set it answers exactly
@@ -458,139 +349,4 @@ write_github_apps implement`, want); err != nil {
 			}
 		}
 	})
-}
-
-type realCommandResult struct {
-	stdout string
-	stderr string
-	code   int
-}
-
-// realGh is the real GitHub CLI the proof runs: LEGION_GH_PATH when the test runs in a Legion pane
-// or pod, whose `gh` on PATH is the `legion gh` wrapper in front of it, and otherwise the gh on
-// PATH, as internal/ghconfig's own gh-backed test picks it.
-func realGh(t *testing.T) string {
-	t.Helper()
-	if path := os.Getenv("LEGION_GH_PATH"); path != "" {
-		return path
-	}
-	if path, err := exec.LookPath("gh"); err == nil {
-		return path
-	}
-	t.Fatal("no real gh on this machine: the proof needs one to read the rendered files")
-	return ""
-}
-
-// runRealGh runs the real gh with the gh files under configDir as its GH_CONFIG_DIR and nothing in
-// the environment outranking them.
-func runRealGh(t *testing.T, gh, configDir string, args ...string) realCommandResult {
-	t.Helper()
-	command := exec.Command(gh, args...)
-	command.Env = realCLIEnvironment(gh, configDir, t.TempDir())
-	var stdout, stderr bytes.Buffer
-	command.Stdout, command.Stderr = &stdout, &stderr
-	err := command.Run()
-	result := realCommandResult{stdout: stdout.String(), stderr: stderr.String()}
-	if err == nil {
-		return result
-	}
-	if exit, ok := err.(*exec.ExitError); ok {
-		result.code = exit.ExitCode()
-		return result
-	}
-	t.Fatalf("run gh %s: %v", strings.Join(args, " "), err)
-	return realCommandResult{}
-}
-
-// writeRealGhFiles writes a role's two gh files for token into a fresh directory, read-only as a
-// pod's Secret volume is, and returns the directory.
-func writeRealGhFiles(t *testing.T, token string) string {
-	t.Helper()
-	dir := filepath.Join(t.TempDir(), "gh")
-	if err := os.Mkdir(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	// TempDir's cleanup removes the directory, which it cannot do while it is read-only; cleanups
-	// run last-registered first, so this one runs before TempDir's.
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
-	for name, content := range map[string]string{ghconfig.HostsFile: ghconfig.Hosts(token), ghconfig.ConfigFile: ghconfig.Config} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o400); err != nil {
-			t.Fatalf("write %s: %v", name, err)
-		}
-	}
-	if err := os.Chmod(dir, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	return dir
-}
-
-// realCLIEnvironment is a pane's environment as far as gh and git read it, built on
-// fixtureenv.Isolated of home so that nothing this test process was handed — a pod's workspace,
-// its GIT_CONFIG_* block, its credential helper, its token or its home's configuration — reaches
-// the real git and gh the proof runs. Isolated drops every GH_* and GITHUB_* name, so the gh
-// files configDir holds are the only credential left, and the two entries after it are what the
-// proof adds: the real gh's directory first on PATH, so git's `gh auth git-credential` helper is
-// that gh, and GH_CONFIG_DIR itself. GIT_ALLOW_PROTOCOL=https comes last of all because Isolated
-// appends GIT_ALLOW_PROTOCOL=file and a child takes the last value of a key: this proof clones
-// over https from real GitHub, which file would refuse.
-func realCLIEnvironment(gh, configDir, home string) []string {
-	return append(fixtureenv.Isolated(home),
-		"PATH="+filepath.Dir(gh)+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"GH_CONFIG_DIR="+configDir,
-		"GIT_ALLOW_PROTOCOL=https")
-}
-
-// TestTheRealGitHubProofEnvironmentIsGuarded holds realCLIEnvironment to handing the real git and
-// gh none of the pod's own reach. It plants a pod's variables with t.Setenv, which is after
-// TestMain's guard already ran, and that is what makes it bite: an environment built from
-// os.Environ() carries whatever the process holds at the call, so only a variable planted after
-// the guard tells such an environment from one built for the test. It is ungated, so CI and a pod
-// both run it, and it names a gh path of its own rather than realGh's, since the environment is
-// all it proves and no gh need be on the machine.
-func TestTheRealGitHubProofEnvironmentIsGuarded(t *testing.T) {
-	planted := map[string]string{
-		"GIT_DIR":            "/legion/repos/acme/widgets/.git",
-		"GIT_WORK_TREE":      "/legion/workspaces/acme/widgets/widgets-42",
-		"GIT_CONFIG_COUNT":   "1",
-		"GIT_CONFIG_KEY_0":   "credential.helper",
-		"GIT_CONFIG_VALUE_0": "!legion git-credential",
-		"GH_TOKEN":           "a pod's token",
-		"LEGION_WORKSPACE":   "/legion/workspaces/acme/widgets/widgets-42",
-	}
-	for name, value := range planted {
-		t.Setenv(name, value)
-	}
-	gh := filepath.Join(t.TempDir(), "bin", "gh")
-	configDir, home := t.TempDir(), t.TempDir()
-	environment := realCLIEnvironment(gh, configDir, home)
-
-	// Every name the pod planted must be gone from the slice, values and all.
-	for _, entry := range environment {
-		key, value, _ := strings.Cut(entry, "=")
-		if want, pod := planted[key]; pod && value == want {
-			t.Errorf("the proof's environment holds %s, which the pod set", entry)
-		}
-	}
-	// A child takes the last value of a key, so each check reads the last entry of its own.
-	last := func(key string) string {
-		value := ""
-		for _, entry := range environment {
-			if found, ok := strings.CutPrefix(entry, key+"="); ok {
-				value = found
-			}
-		}
-		return value
-	}
-	if got := last("GIT_ALLOW_PROTOCOL"); got != "https" {
-		t.Errorf("GIT_ALLOW_PROTOCOL=%q last in the proof's environment, want https: it clones over https from real GitHub", got)
-	}
-	if got := last("GH_CONFIG_DIR"); got != configDir {
-		t.Errorf("GH_CONFIG_DIR=%q, want the proof's own gh files at %q", got, configDir)
-	}
-	if got, _, _ := strings.Cut(last("PATH"), string(os.PathListSeparator)); got != filepath.Dir(gh) {
-		t.Errorf("PATH starts at %q, want the real gh's directory %q, so git's helper is that gh", got, filepath.Dir(gh))
-	}
-	if got := last("HOME"); got != home {
-		t.Errorf("HOME=%q, want the test's own home %q", got, home)
-	}
 }

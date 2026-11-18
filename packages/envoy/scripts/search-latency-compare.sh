@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Compares search latency between a base checkout (usually main) and this one on the same corpus
-# copy: it compiles internal/dispatch/api's tests in each, runs TestSearchLatencyOnCorpus from the
-# two alternately, so both see the same machine load, and prints every run's p50 and p95. It exits
-# 1 when this checkout's median p95 is more than 10% above the base's.
+# copy: it compiles internal/dispatch/api's tests in each, runs BenchmarkSearchLatencyOnCorpus from
+# the two alternately, so both see the same machine load, and prints every run's p50 and p95. It
+# exits 1 when this checkout's median p95 is more than 10% above the base's.
 set -euo pipefail
 
 if (($# < 1 || $# > 2)); then
@@ -22,11 +22,14 @@ trap 'rm -rf "$workdir"' EXIT
 (cd "$base_envoy" && go test -c -o "${workdir}/base.test" ./internal/dispatch/api)
 (cd "$head_envoy" && go test -c -o "${workdir}/head.test" ./internal/dispatch/api)
 
-# Appends one run's "p50=<duration> p95=<duration>" line to runs.txt, read whether or not the test
-# passed: an older checkout's test also fails on an absolute bound after logging it.
+# Appends one run's "p50=<duration> p95=<duration>" line to runs.txt, read whether or not the run
+# passed: an older checkout's test also fails on an absolute bound after logging it. -test.bench
+# runs the benchmark this checkout holds, and -test.run the test that a base checkout from before
+# it became a benchmark holds in its place; each binary has only one of the two.
 measure() {
   local round="$1" name="$2" envoy="$3" measured
-  (cd "${envoy}/internal/dispatch/api" && "${workdir}/${name}.test" -test.run '^TestSearchLatencyOnCorpus$' -test.count=1 -test.v) \
+  (cd "${envoy}/internal/dispatch/api" && "${workdir}/${name}.test" -test.run '^TestSearchLatencyOnCorpus$' \
+    -test.bench '^BenchmarkSearchLatencyOnCorpus$' -test.benchtime 1x -test.count=1 -test.v) \
     >"${workdir}/${name}.log" 2>&1 || true
   if ! measured="$(grep -o 'p50=[^ ]* p95=[^ ]*' "${workdir}/${name}.log")"; then
     printf '%s produced no measurement; its log:\n' "$name" >&2

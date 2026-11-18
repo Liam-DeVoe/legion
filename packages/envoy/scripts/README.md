@@ -628,7 +628,7 @@ DATABASE_URL=<copy> packages/envoy/scripts/search-smoke.sh \
 ```
 
 `search-latency-compare.sh` compares a base checkout (usually `main`) with this one on the same
-copy: it runs `TestSearchLatencyOnCorpus` from each, alternately, for five rounds by default, prints
+copy: it runs `BenchmarkSearchLatencyOnCorpus` from each, alternately, for five rounds by default, prints
 every run's p50 and p95, and exits 1 when this checkout's median p95 is more than 10% above the
 base's. A copy answers in whatever time the machine and its load allow, so the bound is relative,
 never a fixed number of milliseconds.
@@ -681,7 +681,7 @@ packages/envoy/scripts/build-dispatch-build.sh --previous-release --resolve
 
 `related-recall.sh` copies one project's pairs of issues closed one into the other, and every other
 issue of the project they compete with, from a Dispatch server into a JSONL file, for
-`TestRelatedRecallOnDuplicates` (`internal/dispatch/api`). A pair is a done issue whose close
+`BenchmarkRelatedRecallOnDuplicates` (`internal/dispatch/api`). A pair is a done issue whose close
 reason names one other issue that covers it: `Duplicate of`, `Duplicate:`, `Folded into`,
 `Covered by` or `Superseded by`, in any case, followed by a Dispatch issue reference
 (a Dispatch link to `<KEY>`, a bare `<KEY>` of one of the server's projects, or an `/issues/<KEY>` link).
@@ -705,7 +705,7 @@ DISPATCH_URL=<server> DISPATCH_TOKEN_FILE=<token file> \
   packages/envoy/scripts/related-recall.sh <project> "$TMPDIR/recall.jsonl"
 ```
 
-The file is production data: it is written with mode 600 and never committed. The test loads it
+The file is production data: it is written with mode 600 and never committed. The benchmark loads it
 into a fresh test database, every issue open, under its own key, with its latest title and spec.
 For each pair it sets the target's title and spec to their text at the query's filing, takes the
 query out of the search, refreshes the term statistics, runs the check's old 40-word OR query and
@@ -714,13 +714,14 @@ wording, direction, the target's rank in each search and whether each lists it a
 related items, then the counts per wording and over every pair. An idf-weighted coordination rank
 of the same terms is printed beside them as an experiment. `DISPATCH_RECALL_REQUIRE_NO_LOSS=1`
 fails it if the keyword search lists fewer targets than the old query.
-`TestRelatedCheckLatencyOnRecallCorpus` loads the same corpus and prints the keyword search's p50,
+`BenchmarkRelatedCheckLatencyOnRecallCorpus` loads the same corpus and prints the keyword search's p50,
 p95 and max over 20 runs for the text of the issue `DISPATCH_RECALL_LATENCY_ISSUE` names and for a
 10,000-word spec, and the refresh's duration.
 
 ```bash
 cd packages/envoy && DISPATCH_TEST_DATABASE_URL=<test database> DISPATCH_RECALL_CORPUS="$TMPDIR/recall.jsonl" \
-  go test ./internal/dispatch/api -run 'TestRelatedRecallOnDuplicates|TestRelatedCheckLatencyOnRecallCorpus' -v -count=1 -timeout 60m
+  go test ./internal/dispatch/api -run '^$' -bench '^(BenchmarkRelatedRecallOnDuplicates|BenchmarkRelatedCheckLatencyOnRecallCorpus)$' \
+  -benchtime 1x -v -count=1 -timeout 60m
 ```
 
 ## Measuring Dispatch's statements and its write routes on the seeded database
