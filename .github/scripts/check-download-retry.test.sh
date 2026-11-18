@@ -12386,14 +12386,7 @@ check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 check "names the subdirectory script" "$(contains "$out" 'lib/r37-namesake.sh')"
 
-# X2, X4 and X6. A top-level `.py` is an allowed place, so a step may run it with python3 or as
-# its own command word. Each file below runs .github/scripts/r38-fetch.sh, a CI script that
-# retries at 180 s (1050 s), and writes that path literally in its text. Each step passed the gate
-# at e6de07881cdf under a 17-minute key, 1020 s (dispatch://INFRA-1545, the tester's round-38
-# battery, X2, X4 and X6). The architect's accepted limit is a path built at run time; these paths
-# are literal. Each case asks only that the gate exits 1 and names the Python file or the script,
-# so a refusal by name or a charged figure both pass it.
-echo "case: r38 X2 a Python file that runs a fetching CI script is not passed under its retries"
+# T1 and T3 below copy this fixture's r38-fetch.sh, a CI script that retries at 180 s.
 root=$(fixture r38-x2-python-runs-script)
 cat > "$root/.github/scripts/r38-fetch.sh" <<'SH'
 #!/usr/bin/env bash
@@ -12402,73 +12395,6 @@ set -euo pipefail
 retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
 SH
 chmod +x "$root/.github/scripts/r38-fetch.sh"
-cat > "$root/.github/scripts/r38_run.py" <<'PY'
-import subprocess
-subprocess.run([".github/scripts/r38-fetch.sh"], check=True)
-PY
-cat > "$root/.github/workflows/case.yaml" <<'YAML'
-name: Case
-on: [push]
-jobs:
-  build:
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Run a Python file that runs the fetching script
-        timeout-minutes: 17
-        run: python3 .github/scripts/r38_run.py
-YAML
-run_check "$root"
-check "exits 1" "$(is "$status" 1)"
-check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
-check "names the Python file or the script" "$(contains "$out" 'r38_run.py\|r38-fetch.sh')"
-
-echo "case: r38 X4 a Python file that hands a fetching CI script to os.system is not passed under its retries"
-root=$(fixture r38-x4-python-os-system)
-cp "$work/r38-x2-python-runs-script/.github/scripts/r38-fetch.sh" "$root/.github/scripts/r38-fetch.sh"
-cat > "$root/.github/scripts/r38_sys.py" <<'PY'
-import os
-os.system("bash .github/scripts/r38-fetch.sh")
-PY
-cat > "$root/.github/workflows/case.yaml" <<'YAML'
-name: Case
-on: [push]
-jobs:
-  build:
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Run a Python file that hands the fetching script to os.system
-        timeout-minutes: 17
-        run: python3 .github/scripts/r38_sys.py
-YAML
-run_check "$root"
-check "exits 1" "$(is "$status" 1)"
-check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
-check "names the Python file or the script" "$(contains "$out" 'r38_sys.py\|r38-fetch.sh')"
-
-echo "case: r38 X6 a Python file run as its own command word that runs a fetching CI script is not passed under its retries"
-root=$(fixture r38-x6-python-command-word)
-cp "$work/r38-x2-python-runs-script/.github/scripts/r38-fetch.sh" "$root/.github/scripts/r38-fetch.sh"
-cat > "$root/.github/scripts/r38_run.py" <<'PY'
-#!/usr/bin/env python3
-import subprocess
-subprocess.run([".github/scripts/r38-fetch.sh"], check=True)
-PY
-chmod +x "$root/.github/scripts/r38_run.py"
-cat > "$root/.github/workflows/case.yaml" <<'YAML'
-name: Case
-on: [push]
-jobs:
-  build:
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Run a Python file as its own command word
-        timeout-minutes: 17
-        run: .github/scripts/r38_run.py
-YAML
-run_check "$root"
-check "exits 1" "$(is "$status" 1)"
-check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
-check "names the Python file or the script" "$(contains "$out" 'r38_run.py\|r38-fetch.sh')"
 
 # T1 and T3. A bracket expression whose range runs backwards, such as `[z-c]`, is a word bash
 # accepts and matches no file with. The gate turned it into a Python regular expression and
@@ -12513,8 +12439,8 @@ check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 check "refuses by name" "$(contains "$out" '^::error file=.github/workflows/case.yaml,line=')"
 
-# W10 and W11. The four cases above share one cure: the gate reads the `.sh` scripts directly in
-# .github/scripts/ and no other file there, so every other file under that directory, at any
+# W10 and W11. W1, W2, W6 and W9 above share one cure: the gate reads the `.sh` scripts directly
+# in .github/scripts/ and no other file there, so every other file under that directory, at any
 # depth, is refused by name at its line 1, whatever its name, its first line or its text, but a
 # top-level harness, `.py` or `.jq`, and the bytecode Python writes for those `.py` files into
 # .github/scripts/__pycache__/ (dispatch://INFRA-1545, round 37). W10's refused files fetch

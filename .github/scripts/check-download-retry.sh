@@ -602,7 +602,8 @@
 #      37). Another urllib call that reads the network, such as `urllib.request.urlretrieve`,
 #      and Python handed to `python3 -c` as text, are read by no rule, so a read written either
 #      way gets no floor: an accepted limit, named for the next round to close
-#      (dispatch://INFRA-1545, round 38).
+#      (dispatch://INFRA-1545, round 38). No rule reads a `.py` or `.jq` program at all, as
+#      PYTHON IS READ IN ONE PLACE ONLY says below.
 #   7. A `mise x`, `mise exec`, `mise up` or `mise upgrade` carries no retry, anywhere: not a
 #      `retry_fetch` call and not a Dockerfile `retry` call. None of the four fails when it
 #      cannot resolve the tool. `mise x` warns (`Failed to resolve tool version list for … HTTP
@@ -675,12 +676,21 @@
 #
 #      PYTHON IS READ IN ONE PLACE ONLY, which is the other gap worth stating here. Rule 6
 #      reads a `urlopen` written in a heredoc of a `.sh` under .github/scripts, so those
-#      reads meet R1's floor. Python anywhere else — a `.py` file, a heredoc in a workflow's or
-#      an action's `run:`, which the shell rules blank as data, or the text a `python3 -c` is
-#      handed — is read by no rule of this check at all: not rule 8, which puts a figure on none
-#      of it, and not rule 1, so a network read written there gets no floor rather than merely
-#      no price. And in the heredocs rule 6 does read it reads a `urlopen` alone, so another
-#      urllib call, such as `urllib.request.urlretrieve`, gets no floor either
+#      reads meet R1's floor. Python anywhere else — a heredoc in a workflow's or an action's
+#      `run:`, which the shell rules blank as data, or the text a `python3 -c` is handed — is
+#      read by no rule of this check at all: not rule 8, which puts a figure on none of it, and
+#      not rule 1, so a network read written there gets no floor rather than merely no price.
+#      And no rule reads anything a `.py` or `.jq` program under .github/scripts/ does: not its
+#      own downloads, and not a script it runs, by `subprocess`, `os.system` or a `.sh` path it
+#      holds, whether a step runs it with `python3` or as its own command word, so what that
+#      script fetches is charged to no budget. This check reads shell text, and those files are
+#      programs of other languages: a language boundary INFRA-1310's architect accepted
+#      (dispatch://INFRA-1545, round 39). The set is the twelve `.py` files and the one `.jq`
+#      this tree writes there, and measured at e6de0788 the one of them that runs a CI shell
+#      script, go-test-step-expansion.py, runs go-tagged-tests.sh, which fetches nothing. A
+#      `.py` or `.jq` whose `#!` line names another interpreter is no such program, and is
+#      refused, as WHAT IT READS says. And in the heredocs rule 6 does read it reads a `urlopen`
+#      alone, so another urllib call, such as `urllib.request.urlretrieve`, gets no floor either
 #      (dispatch://INFRA-1545, round 38). ci.yaml's `Check the package holds every row of
 #      .github/ci-images.yaml` is this tree's instance: its reads are `urlopen` calls inside
 #      .github/scripts/check-ci-images.sh, held to the floor by rule 6 and budgeted by hand.
@@ -1063,6 +1073,7 @@ import os
 import re
 import signal
 import sys
+import warnings
 from pathlib import Path
 
 import yaml
@@ -5931,6 +5942,13 @@ NO_DIRECTORY_RUN = ("which names a script with no directory, so the shell finds 
 PATTERN_RUN = ("a script that fetches or a file this check does not read, since bash fills in its "
                "patterns and expansions from the files and the values the step holds as it runs, "
                "which this check does not see")
+# A word holding a pattern bash accepts that Python cannot compile into the regular expression
+# pattern_words matches the tree's files with, such as a `[…]` range that runs backwards, `[z-c]`
+# (word_pattern copies a class as written), is refused by name whatever it could name, since this
+# check cannot tell (pattern_words; dispatch://INFRA-1545, round 39). Until round 39 such a word
+# at a run's target, or as an argument holding `.github/`, stopped the check with a traceback.
+UNREADABLE_PATTERN = ("which holds a pattern bash reads and this check cannot turn into a match, "
+                      "such as a `[…]` range that runs backwards, `[z-c]`")
 REASON_CURES = {
     WRITTEN_RUN: (
         "Run no file this text writes: write its commands in the step itself, or move them "
@@ -5951,6 +5969,10 @@ REASON_CURES = {
         "with what varies as its arguments, and run a Python program with `python3 "
         ".github/scripts/<name>.py …`; a pattern that names no such file, such as `ls "
         ".github/workflows/*.yaml`, passes"),
+    UNREADABLE_PATTERN: (
+        "Write the path of the script that runs there literally, `.github/scripts/<name>.sh …`, "
+        "with what varies as its arguments, or write each range of the pattern forwards, `[c-z]` "
+        "rather than `[z-c]`"),
 }
 
 
@@ -6302,9 +6324,11 @@ def word_pattern(word: str, plain: frozenset[int],
                 inner = text[1:-1]
                 negate = inner[:1] in ("!", "^")
                 inner = inner[1:] if negate else inner
+                # `&`, `~` and `|` are literal in a bash class and set operations a later
+                # Python reads in a doubled pair, `[&&]`, which it warns of now (round 39).
                 out += ("[^/]" if "[:" in inner or not inner else
                         "[" + ("^/" if negate else "")
-                        + inner.replace("\\", "\\\\").replace("[", "\\[") + "]")
+                        + re.sub(r"([\\\[&~|])", r"\\\1", inner) + "]")
             elif "," in text and "{" not in text[1:-1]:
                 out += "(?:" + "|".join(re.escape(part) for part in text[1:-1].split(",")) + ")"
             else:
@@ -6316,6 +6340,19 @@ def word_pattern(word: str, plain: frozenset[int],
     prefix = os.path.normpath(word[:slash + 1]) if slash >= 0 else "."
     prefix = "" if prefix == "." else prefix.rstrip("/") + "/"
     return re.escape(prefix) + regex(slash + 1, len(word)), regex(cut + 1, len(word))
+
+
+def compiled_pattern(regex: str) -> re.Pattern[str] | None:
+    """A regular expression of word_pattern, or of a literal path escaped, compiled, or None
+    where Python cannot compile it, as where word_pattern copies a `[…]` range that runs
+    backwards, `[z-c]`, which bash accepts, or compiles it only with a warning that a later Python
+    reads it otherwise, as a class's `--` (UNREADABLE_PATTERN; dispatch://INFRA-1545, round 39)."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", FutureWarning)
+        try:
+            return re.compile(regex, re.DOTALL)
+        except (re.error, FutureWarning):
+            return None
 
 
 def holds_github(word: str, plain: frozenset[int]) -> bool:
@@ -6394,13 +6431,13 @@ def substituted(word: str, plain: frozenset[int],
 
 
 def pattern_words(text: str, first_line: int, action: str | None, elsewhere: bool,
-                  within: str = "", depth: int = 0) -> list[tuple[int, int, str]]:
+                  within: str = "", depth: int = 0) -> list[tuple[int, int, str, str]]:
     """Each command of a body holding a word that is no literal path and could name a CI script
     that fetches or a file of unread_files, as (the first and the last line of the command, what
-    it does with the first such word), UNNAMED_RUN's `does`, whose reason is PATTERN_RUN
-    (dispatch://INFRA-1545, round 38). The word is read as bash reads it (word_pattern): its
-    globs, braces and expansions are filled in from the files and the values the step holds as
-    it runs, so it names whatever matches then.
+    it does with the first such word, why it is refused), UNNAMED_RUN's `does` and `why`, the
+    reason PATTERN_RUN (dispatch://INFRA-1545, round 38). The word is read as bash reads it
+    (word_pattern): its globs, braces and expansions are filled in from the files and the values
+    the step holds as it runs, so it names whatever matches then.
       - At a run's target (run_places), in the step or in the text a shell's `-c` runs, the word
         is read by its last element, whatever its directory is, a pattern, an expansion or a
         literal one: `bash .github/scr*/x.s[h]`, `"$d"/x.s?` and `. .github/*/x.s*` could name
@@ -6417,6 +6454,11 @@ def pattern_words(text: str, first_line: int, action: str | None, elsewhere: boo
     In both, a variable the same text sets once to a literal value (literal_values) is read as
     that value (substituted), so `d=.github/scripts` and then `flock /tmp/l "$d"/x.s[h]` or `cp
     "$d"/x.p? "$RUNNER_TEMP/zz"` is refused, which a reader of the text as written can see.
+    And in both, a word whose pattern Python cannot compile (compiled_pattern), such as a `[…]`
+    range that runs backwards, `[z-c]`, which bash accepts, is refused with the reason
+    UNREADABLE_PATTERN whatever it could name, since this check cannot tell what that is (round
+    39); until then `ls .github/scripts/[z-c]*.sh` and `.github/scripts/x-[z-c].sh` stopped the
+    check with a traceback.
     A file a word names literally, which SCRIPT_CALL or unread_named reads by its name, is left to
     that reading, which charges a call or refuses it by name. A `cd` or a `pushd` in the text, or
     a working directory the step runs in (`elsewhere`), moves where a literal path is read from
@@ -6470,9 +6512,10 @@ def pattern_words(text: str, first_line: int, action: str | None, elsewhere: boo
                 if last and not any(span in patterns for span in last) and sum(
                         end - begin for begin, end in last) == len(normal) - cut - 1:
                     continue
-                name = pattern[1] if pattern is not None else re.escape(normal[cut + 1:])
-                files = [file for file in candidates
-                         if re.fullmatch(name, Path(file).name, re.DOTALL)]
+                matcher = compiled_pattern(pattern[1] if pattern is not None
+                                           else re.escape(normal[cut + 1:]))
+                files = ([file for file in candidates if matcher.fullmatch(Path(file).name)]
+                         if matcher is not None else [])
                 does = (f"sources `{word}`" if at > start and head in (".", "source")
                         else f"runs `{word}` with `{head}`" if at > start
                         else f"runs `{word}` as a command")
@@ -6485,27 +6528,30 @@ def pattern_words(text: str, first_line: int, action: str | None, elsewhere: boo
                 if not holds_github(read, read_plain):
                     continue
                 pattern = word_pattern(read, read_plain, action)
-                whole = (pattern[0] if pattern is not None
-                         else re.escape(os.path.normpath(target_parts(read, action)[0])))
-                files = [file for file in candidates
-                         if re.fullmatch(whole, file, re.DOTALL)
-                         or re.fullmatch(whole, "/" + file, re.DOTALL)]
+                matcher = compiled_pattern(
+                    pattern[0] if pattern is not None
+                    else re.escape(os.path.normpath(target_parts(read, action)[0])))
+                files = ([file for file in candidates
+                          if matcher.fullmatch(file) or matcher.fullmatch("/" + file)]
+                         if matcher is not None else [])
                 does = f"writes `{word}` {word_place(words, at, start)}"
             named = {str(SCRIPTS / match.group(1))
                      for match in SCRIPT_CALL.finditer(text[span[0]:span[1] + 1] if span else word)}
             named |= set(unread_named(value, action, elsewhere)[0])
             files = [file for file in files if file not in named
                      and (file in unread_files or not retries_nothing(file, set()))]
-            if not files or (does.startswith("writes") and all(file in unread_files
-                                                               for file in files)
-                             and unread_place(words, at, start, files, None) is None):
+            if matcher is not None and (not files or (
+                    does.startswith("writes") and all(file in unread_files for file in files)
+                    and unread_place(words, at, start, files, None) is None)):
                 continue
             names = ", ".join(files[:3]) + (f" and {len(files) - 3} more" if len(files) > 3
                                             else "")
             ends = [span[1] for span in command.spans if span]
             last_line = first_line + text.count("\n", 0, max(ends)) if ends else command.line
             found.append((command.line, max(last_line, command.line),
-                          f"{within}{does}, which could name {names}"))
+                          f"{within}{does}, which could name {names}" if matcher is not None
+                          else f"{within}{does}",
+                          PATTERN_RUN if matcher is not None else UNREADABLE_PATTERN))
             break
         if head in INTERPRETERS and depth < 3:
             kind, target = shell_operand(reduced)
@@ -7042,14 +7088,15 @@ for path, name, (who, loops, found, called), owner in body_reads:
         problem(path, line, f"{who} {sentence} (dispatch://INFRA-1545, round 38).")
     # A word that is no literal path and could name a CI script that fetches, or a file this
     # check does not read, is refused by name wherever it stands (pattern_words;
-    # dispatch://INFRA-1545, round 38), where no refusal above names its command already.
-    for line, last, does in pattern_words(without_arithmetic(loops.text), loops.first_line,
-                                          action, loops.elsewhere):
+    # dispatch://INFRA-1545, round 38), and so is one whose pattern this check cannot turn into a
+    # match (UNREADABLE_PATTERN; round 39), where no refusal above names its command already.
+    for line, last, does, why in pattern_words(without_arithmetic(loops.text), loops.first_line,
+                                               action, loops.elsewhere):
         named_at = tuple(f"::error file={path},line={at}::{who} " for at in range(line, last + 1))
         if not any(earlier.startswith(named_at) for earlier in problems):
-            problem(path, line, f"{who} " + UNNAMED_RUN.format(does=does, why=PATTERN_RUN,
-                                                               cure=REASON_CURES[PATTERN_RUN])
-                    + " (dispatch://INFRA-1545, round 38).")
+            problem(path, line, f"{who} " + UNNAMED_RUN.format(does=does, why=why,
+                                                               cure=REASON_CURES[why])
+                    + f" (dispatch://INFRA-1545, round {38 if why == PATTERN_RUN else 39}).")
     for command, word in variable_calls(loops) if owed else ():
         entry = next((entry for entry in DECLARED_CALLS
                       if name == "-" and (entry.path, entry.word) == (path, word)), None)
