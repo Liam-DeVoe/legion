@@ -1253,21 +1253,23 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 		"issue", issue, "round", round, "pod", pod, "roles", namesOf(asking))
 }
 
-// unaskedClaims is every claim the round asks (askedClaims) whose own record still owes it an ask
-// of this round (supervise's Claim.OwesUpdateAsk): it records this round, no ask of the round has
-// reached its session yet (supervise.Claim.UpdateTaskedAt, marked by supervise's
-// Machine.PublishUpdateAsk), it has not answered the round, it has not left the round's pod, and
-// it has not failed. A claim that has not recorded the round yet is asked at the tick after its
-// post lands, so the ask and the round it names are one claim's record. A claim that left the
-// round's pod is asked nothing (supervise's Claim.LeftPodRound): the ask names work that died with
-// that pod, and no process the claim runs now holds any of it. The outbox's row reads the same
-// rule again under the claim's lock before it publishes, because the claim can answer, leave the
-// pod or fail while the row waits, and because the sweep reads the claims through the deciding
-// mask (roundGroup), which can show an answered claim as unanswered; the row's reading is the one
-// that decides what reaches the role.
+// unaskedClaims is every claim the round waits on (blockingClaims) whose own record still owes it
+// an ask of this round (supervise's Claim.OwesUpdateAsk), which is the one statement of whom a
+// round asks: the claim records this round, no ask of the round has reached its session yet
+// (supervise.Claim.UpdateTaskedAt, marked by supervise's Machine.PublishUpdateAsk), it has not
+// answered the round, it has not left the round's pod, and it has not failed. Nothing here
+// filters the claims before the rule reads them, so no claim is refused by a second statement of
+// it. A claim that has not recorded the round yet is asked at the tick after its post lands, so
+// the ask and the round it names are one claim's record. A claim that left the round's pod is
+// asked nothing (supervise's Claim.LeftPodRound): the ask names work that died with that pod, and
+// no process the claim runs now holds any of it. The outbox's row reads the same rule again under
+// the claim's lock before it publishes, because the claim can answer, leave the pod or fail while
+// the row waits, and because the sweep reads the claims through the deciding mask (roundGroup),
+// which can show an answered claim as unanswered; the row's reading is the one that decides what
+// reaches the role.
 func unaskedClaims(group []supervise.Claim, round string) []supervise.Claim {
 	var asking []supervise.Claim
-	for _, c := range askedClaims(group) {
+	for _, c := range blockingClaims(group) {
 		if owed, _ := c.OwesUpdateAsk(round); owed {
 			asking = append(asking, c)
 		}
@@ -1529,7 +1531,7 @@ func waitingClaims(group []supervise.Claim, round string) []supervise.Claim {
 
 // askedClaims is every blocking claim the round can ask: all but a failed one. A failed claim's
 // launches or prompts ran out, so it runs no process and no turn of it runs on the pod; the round
-// asks it nothing (unaskedClaims reads this set, and its machine ignores the round's post), and
+// asks it nothing (supervise's Claim.OwesUpdateAsk; its machine ignores the round's post), and
 // only a retry of it brings it back (supervise's onRetry and onOperatorRetry rows), which the
 // round does not make. Holding the round for its answer held the pod, and every answered worker's
 // next task with it, for an answer it can never give: on the first contract-46 roll a planner that

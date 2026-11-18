@@ -331,9 +331,8 @@ func (h *harness) markAsked(round string) {
 // dispatch://INFRA-4131 R4), and the mark is written where the publish is (PublishUpdateAsk).
 // An ask that reached a session marks the claim at the clock, durably, and the next ask of the
 // round publishes nothing; an ask no session took marks nothing and the next ask publishes again;
-// a round the claim is not in is published nothing; a publish that fails marks nothing; and a
-// mark the store does not take stays in memory, owed, so the next ask writes it and publishes
-// nothing, and answers an error until the write lands.
+// a round the claim is not in is published nothing; and a publish that fails marks nothing. A
+// mark the store does not take is the next test's.
 func TestPodUpdatePublishUpdateAskMarksOnlyAnAskThatReachedASession(t *testing.T) {
 	t.Run("a delivered ask marks the claim once, and a later ask of the round publishes nothing", func(t *testing.T) {
 		h := updateHarness(t, PodUpdateContract)
@@ -404,34 +403,6 @@ func TestPodUpdatePublishUpdateAskMarksOnlyAnAskThatReachedASession(t *testing.T
 			t.Fatalf("UpdateTaskedAt = %v after a failed publish, want no mark", c.UpdateTaskedAt)
 		}
 	})
-
-	t.Run("a mark the store does not take is written by the next ask, which publishes nothing", func(t *testing.T) {
-		h := updateHarness(t, PodUpdateContract)
-		h.reach(StateReady)
-		h.openUpdate(testRound, testReasons)
-		reached := &askPublisher{delivered: true}
-		h.store.fail("PutClaim", errBoom)
-		if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); !errors.Is(err, errBoom) || outcome != UpdateAskDelivered {
-			t.Fatalf("the delivered ask over a failing write = %v, %v; want it delivered, with the store's error", outcome, err)
-		}
-		if c, stored := h.claim(), h.store.load(h.token); c.UpdateTaskedAt == nil || stored.UpdateTaskedAt != nil {
-			t.Fatalf("UpdateTaskedAt = %v, stored %v; want the mark in memory and the write owed", c.UpdateTaskedAt, stored.UpdateTaskedAt)
-		}
-		if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err == nil || outcome != UpdateAskAlreadyDelivered {
-			t.Fatalf("the next ask while the write stays owed = %v, %v; want it refused as already delivered, with an error that keeps the row", outcome, err)
-		}
-
-		h.store.fail("PutClaim", nil)
-		if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskAlreadyDelivered {
-			t.Fatalf("the next ask once the store answers = %v, %v; want it refused as already delivered", outcome, err)
-		}
-		if stored := h.store.load(h.token); stored.UpdateTaskedAt == nil {
-			t.Fatalf("stored UpdateTaskedAt = nil, want the owed mark written")
-		}
-		if reached.calls != 1 {
-			t.Fatalf("the ask was published %d times, want once: the owed mark is no reason to publish again", reached.calls)
-		}
-	})
 }
 
 // A round publishes its ask once per claim, and the answer a role gives stands for its round. So
@@ -485,35 +456,60 @@ func TestPodUpdatePublishUpdateAskPublishesNothingOnceTheRoleAnswered(t *testing
 	}
 }
 
-// A mark the store did not take is kept by the row however the claim moves on: a role that
-// answers while the mark of its delivered ask is still owed leaves the row answering an error,
-// and publishing nothing, until the write lands. The answer does not end the row early. The
-// control is the same owed mark with no answer beside it, which keeps the row the same way. In
-// both, the ask is published once in all, and the mark is written once the store answers.
-func TestPodUpdatePublishUpdateAskAnAnswerBesideAnOwedMarkKeepsTheRow(t *testing.T) {
+// A mark the store did not take is kept by the row however the claim moves on. The ask reached a
+// session, and the write of its mark is owed: the store holds no mark, and while the write stays
+// owed every next ask of the round answers UpdateAskAlreadyDelivered with an error, which keeps
+// the row, and publishes nothing, whatever the claim became in between: its role answered the
+// round, the claim failed, or the claim left the round's pod. The publish answers the owed mark
+// before it reads the rule (OwesUpdateAsk), so no case of the rule ends that row first. Once the
+// store answers, the next ask writes the mark, with what the claim became, and ends the row. The
+// control is the same owed mark with nothing in between, which keeps the row the same way. In
+// each, the ask is published once in all.
+//
+// The failure is the machine's own (fail): the claim's process dies while its launch budget has
+// one launch left, and the relaunch that death asks for spends it. The leave is set under the
+// machine's lock by the call the launch makes (leftPodRoundAt), because the launch that would
+// start the claim in another pod writes the claim first, and the store refuses that write too,
+// so the launch is tried again later and starts no process (launchNow).
+func TestPodUpdatePublishUpdateAskAnOwedMarkKeepsTheRowWhateverTheClaimBecomes(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
-		answers bool
+		between func(*harness)
+		// became is whether the claim, in memory or as the store holds it, is what between made.
+		became func(Claim) bool
 	}{
-		{name: "the control: an owed mark with no answer keeps the row and is published once", answers: false},
-		{name: "an answer beside the owed mark keeps the row and is published once", answers: true},
+		{name: "the control: an owed mark with nothing in between keeps the row and is published once",
+			between: func(*harness) {}, became: func(Claim) bool { return true }},
+		{name: "an answer beside the owed mark keeps the row and is published once", between: func(h *harness) {
+			if err := h.handle(PodUpdateSignalled{Claim: h.token, Generation: h.generation(), Session: session, Round: testRound, Head: "c0ffee"}); !errors.Is(err, errBoom) {
+				h.t.Fatalf("the answer over a failing write = %v, want the store's error", err)
+			}
+		}, became: func(c Claim) bool { return c.UpdateSignalledAt != nil && c.UpdateHead == "c0ffee" }},
+		{name: "a failure beside the owed mark keeps the row and is published once", between: func(h *harness) {
+			h.m.deps.Limits.LaunchFailures = 1
+			if err := h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}}); !errors.Is(err, errBoom) {
+				h.t.Fatalf("the death over a failing write = %v, want the store's error", err)
+			}
+			h.wantFailure(CauseDied, "launch failures ran out", h.clock.Now())
+		}, became: func(c Claim) bool { return c.State == StateFailed }},
+		{name: "a leave of the round's pod beside the owed mark keeps the row and is published once", between: func(h *harness) {
+			h.m.mu.Lock()
+			h.m.leftPodRoundAt(podProcess(testOtherPod, 2))
+			h.m.mu.Unlock()
+		}, became: func(c Claim) bool { return c.LeftPodRound(testRound) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := updateHarness(t, PodUpdateContract)
-			h.reach(StateReady)
+			h.inPod(testRoundPod)
 			h.openUpdate(testRound, testReasons)
 			reached := &askPublisher{delivered: true}
 			h.store.fail("PutClaim", errBoom)
 			if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); !errors.Is(err, errBoom) || outcome != UpdateAskDelivered {
 				t.Fatalf("the delivered ask over a failing write = %v, %v; want it delivered, with the store's error", outcome, err)
 			}
-			if tc.answers {
-				if err := h.handle(PodUpdateSignalled{Claim: h.token, Generation: h.generation(), Session: session, Round: testRound, Head: "c0ffee"}); !errors.Is(err, errBoom) {
-					t.Fatalf("the answer over a failing write = %v, want the store's error", err)
-				}
-			}
-			if c := h.claim(); c.UpdateTaskedAt == nil || (c.UpdateSignalledAt != nil) != tc.answers {
-				t.Fatalf("the claim = %+v, want the mark held in memory with the write owed, and answered=%t", c, tc.answers)
+			tc.between(h)
+			if c, stored := h.claim(), h.store.load(h.token); c.UpdateTaskedAt == nil || stored.UpdateTaskedAt != nil || !tc.became(c) || c.UpdateRound != testRound {
+				t.Fatalf("the claim = %+v, stored mark %v; want it still in round %s, marked in memory with the write owed, and what the case made it", c, stored.UpdateTaskedAt, testRound)
 			}
 
 			if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err == nil || outcome != UpdateAskAlreadyDelivered {
@@ -521,11 +517,11 @@ func TestPodUpdatePublishUpdateAskAnAnswerBesideAnOwedMarkKeepsTheRow(t *testing
 			}
 
 			h.store.fail("PutClaim", nil)
-			if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskAlreadyDelivered {
-				t.Fatalf("the next ask once the store answers = %v, %v; want it refused as already delivered", outcome, err)
+			if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil {
+				t.Fatalf("the next ask once the store answers = %v, %v; want it refused with no error, which ends the row", outcome, err)
 			}
-			if stored := h.store.load(h.token); stored.UpdateTaskedAt == nil || (stored.UpdateSignalledAt != nil) != tc.answers {
-				t.Fatalf("stored claim = %+v, want the owed mark written, and answered=%t", stored, tc.answers)
+			if stored := h.store.load(h.token); stored.UpdateTaskedAt == nil || !tc.became(stored) {
+				t.Fatalf("stored claim = %+v, want the owed mark written, with what the case made the claim", stored)
 			}
 			if reached.calls != 1 {
 				t.Fatalf("the ask was published %d times, want once", reached.calls)
@@ -586,8 +582,11 @@ func TestPodUpdatePublishUpdateAskPublishesNothingToAClaimThatLeftTheRoundsPod(t
 // runtime refuses to suspend its process (fail), so that process can still hold the role's topic;
 // the round the claim is in stays on it. Here the turn ends in a provider error that holds the
 // issue (HTTP 400), with every suspension refused. The ask that then runs is published to nobody
-// and marks nothing. The control is the same claim whose turn ends in an error that clears (HTTP
-// 503): it does not fail, it stays in the round, and its ask is published once and marked.
+// and marks nothing. The refusal is the failed state and no mark that outlives it: once the
+// workflow retries the claim and its agent is ready again, the claim is still in the round,
+// unasked, and its next ask is published once and marked. The control is the same claim whose
+// turn ends in an error that clears (HTTP 503): it does not fail, it stays in the round, and its
+// ask is published once and marked.
 func TestPodUpdatePublishUpdateAskPublishesNothingToAClaimThatFailed(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -627,6 +626,19 @@ func TestPodUpdatePublishUpdateAskPublishesNothingToAClaimThatFailed(t *testing.
 			}
 			if reached.calls != 0 || outcome != UpdateAskClaimFailed || c.UpdateTaskedAt != nil || stored.UpdateTaskedAt != nil {
 				t.Fatalf("the ask to the failed claim = %v, published %d times, marked %v, stored %v; want it refused as failed, unpublished and unmarked", outcome, reached.calls, c.UpdateTaskedAt, stored.UpdateTaskedAt)
+			}
+
+			h.rt.FailSuspend(nil)
+			h.must(RequestRetry{Claim: h.token})
+			h.relaunched()
+			if c := h.claim(); c.State == StateFailed || c.UpdateRound != testRound || c.LeftPodRound(testRound) || c.UpdateTaskedAt != nil {
+				t.Fatalf("the retried claim = %s in round %q, left %q, marked %v; want it back in round %s, unasked", c.State, c.UpdateRound, c.UpdateLeftRound, c.UpdateTaskedAt, testRound)
+			}
+			if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskDelivered || reached.calls != 1 {
+				t.Fatalf("the ask to the retried claim = %v, %v, published %d times; want it delivered once", outcome, err, reached.calls)
+			}
+			if stored := h.store.load(h.token); stored.UpdateTaskedAt == nil {
+				t.Fatalf("stored claim = %+v, want the retried claim's ask marked", stored)
 			}
 		})
 	}

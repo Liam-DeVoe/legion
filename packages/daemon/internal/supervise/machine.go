@@ -1634,10 +1634,11 @@ const (
 	// that round's pod and no process the claim runs now holds any of it.
 	UpdateAskLeftPodRound
 	// UpdateAskClaimFailed is an ask of a round whose claim has failed: nothing is published and
-	// nothing is marked. A failed claim runs no turn, so the round asks it nothing and does not
-	// wait for it (internal/daemon's askedClaims). Its process can still hold the role's topic,
-	// because a claim fails even when the runtime refuses to suspend that process (fail). A retry
-	// starts the claim again, and the sweep asks it from the next tick.
+	// nothing is marked. A failed claim runs no turn, so the round asks it nothing (OwesUpdateAsk)
+	// and does not wait for it (internal/daemon's askedClaims). Its process can still hold the
+	// role's topic, because a claim fails even when the runtime refuses to suspend that process
+	// (fail). A retry starts the claim again, and the sweep asks it at the first tick after its
+	// agent is ready again.
 	UpdateAskClaimFailed
 )
 
@@ -1688,13 +1689,17 @@ func (c Claim) OwesUpdateAsk(round string) (bool, UpdateAskOutcome) {
 //     that waited would hold every role message of that issue behind that decision. Held, the
 //     call answers ErrMachineBusy having published nothing, and the row's next attempt is still
 //     the first publish.
-//  2. The claim is read under the lock (OwesUpdateAsk): a claim no longer in round is published
-//     nothing, and so is one an earlier ask of round already reached, one whose role has answered
-//     round, one that has left round's pod, and one that has failed. Two rows of one round — a
-//     row left by an older daemon beside the sweep's own — therefore deliver one ask between
-//     them, whichever order they run in and whichever of them finds a holder, and a row that runs
-//     after the role answered, after the claim left the round's pod, or after the claim failed,
-//     delivers none.
+//  2. An owed mark is answered first: an ask of round already reached a session, and the write of
+//     its mark is one the store has not taken (owedWrite). That answers UpdateAskAlreadyDelivered
+//     with an error, so the row stays until the write lands, before the rule below is read at
+//     all: whatever the claim became since — answered, out of round's pod or failed — no case of
+//     the rule, now or added later, can end that row first. Then the claim is read under the lock
+//     (OwesUpdateAsk): a claim no longer in round is published nothing, and so is one an earlier
+//     ask of round already reached, one whose role has answered round, one that has left round's
+//     pod, and one that has failed. Two rows of one round — a row left by an older daemon beside
+//     the sweep's own — therefore deliver one ask between them, whichever order they run in and
+//     whichever of them finds a holder, and a row that runs after the role answered, after the
+//     claim left the round's pod, or after the claim failed, delivers none.
 //  3. The publish runs under the lock, so nothing else of this claim reads or writes the mark
 //     between the publish and the mark. The section holds the lock for at most the owed write's
 //     repair, the publish and the mark's write: the claim-write deadline twice and notify's
@@ -1728,10 +1733,10 @@ func (m *Machine) PublishUpdateAsk(ctx context.Context, round string, publish fu
 	}
 	defer m.unlock()
 	m.repair(ctx)
+	if m.owedWrite != nil && m.claim.UpdateRound == round && m.claim.UpdateTaskedAt != nil {
+		return UpdateAskAlreadyDelivered, fmt.Errorf("the mark of the ask of round %s that reached the role waits on a claim write the store has not taken", round)
+	}
 	if owed, why := m.claim.OwesUpdateAsk(round); !owed {
-		if why == UpdateAskAlreadyDelivered && m.owedWrite != nil {
-			return why, fmt.Errorf("the mark of the ask of round %s that reached the role waits on a claim write the store has not taken", round)
-		}
 		return why, nil
 	}
 	delivered, err := publish(ctx)
