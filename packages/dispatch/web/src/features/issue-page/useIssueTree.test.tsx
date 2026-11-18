@@ -4711,10 +4711,10 @@ function focusWhileWriting(words: string, meanwhile?: (rig: Rig) => Promise<void
 /** A write of the issue out for 1.5 s while the tree is asked for again by `refetchQueries`, with
  *  the live feed up: the write holds the tree, so that ask sends nothing during the hold, and
  *  leaves nothing to hear (the app's client skips a disabled query). 200 ms after the write
- *  settles the comments are read, and 200 ms after that an event refreshes them: the tree read
- *  the event asks for begins at once, the tree's last read being past its second, and the
- *  comments read the scheduler owes, begun after it while the event marked it invalid, counts as
- *  newer and reads the tree once more. So the way reads the tree twice, both after the event. */
+ *  settles the comments are read, and 200 ms after that an event refreshes them: the scheduler
+ *  holds the comments read the event owes to a second after the last one began, and the tree
+ *  read the event asks for waits until that read has begun, so the comments read, begun first,
+ *  counts as no newer read. One event, read once. */
 const EVENT_AFTER_WAITED_READ: RuleWay = {
   words:
     "a write out for 1.5 s while the tree is read again, the comments read 200 ms after it settles and an event of the issue 200 ms later",
@@ -4993,6 +4993,134 @@ function marginResolve(latency: number): RuleWay {
   };
 }
 
+/** The reader's Retry: the outline's failed line's for the tree, a new observer's `refetch` for a
+ *  view (`WAYS.retry`). */
+function pressRetry(rig: Rig): void {
+  act(() => {
+    if (rig.read === "tree") void stageOf(rig).result.current.refetch();
+    else void new QueryObserver(rig.client, viewQuery(KEY, rig.read)).refetch();
+  });
+}
+
+/** A write of the page held until the row lets it go, under `mutationKey` - none where it is
+ *  undefined, as most of the page's writes are pressed (`useKeyedWrite` with no key, the comment
+ *  actions' `useCommentActionQueue.ts`) - built and run as `held-sends.ts`' `hold` runs a send. */
+function holdKeyedWrite(rig: Rig, mutationKey: readonly string[] | undefined): () => void {
+  const answer = Promise.withResolvers<void>();
+  rig.client
+    .getMutationCache()
+    .build(rig.client, {
+      ...(mutationKey === undefined ? {} : { mutationKey }),
+      mutationFn: () => answer.promise,
+      networkMode: "always",
+    })
+    .execute(undefined)
+    .catch(() => {});
+  return answer.resolve;
+}
+
+/** A write held while the row's way runs, begun as `start` begins it, and a step `during` it:
+ *  `during` reads the row's query `whileOut` times before the write settles, and the write then
+ *  settles. */
+function duringWrite(
+  words: string,
+  start: (rig: Rig) => () => void,
+  during: (rig: Rig) => Promise<void>,
+  whileOut: number
+): RuleWay {
+  return {
+    words,
+    does: async (rig) => {
+      const settleWrite = start(rig);
+      await tick(10, 10);
+      const before = ruleReads(rig);
+      await during(rig);
+      await tick(300, 10);
+      expect(ruleReads(rig) - before, "the reads while the write is out").toBe(whileOut);
+      act(() => settleWrite());
+      await tick(50, 10);
+    },
+  };
+}
+
+/** A write of another issue (`writeKeyOf(OTHER_KEY)`) pressed while the reader is on another
+ *  page, the reader then coming back to the read while it is out (the tree's stage drawn as a
+ *  slot), and `then` 1.5 s on, past the second after the reads the return began. */
+function backDuringOtherWrite(
+  words: string,
+  then: (rig: Rig) => Promise<void>,
+  whileOut: number
+): RuleWay {
+  return {
+    words,
+    does: async (rig) => {
+      const settleWrite = holdWrite(rig, { of: OTHER_KEY });
+      await tick(10, 10);
+      const before = ruleReads(rig);
+      stageSlot(rig);
+      await tick(1_500, 10);
+      await then(rig);
+      await tick(300, 10);
+      expect(ruleReads(rig) - before, "the reads while the write is out").toBe(whileOut);
+      act(() => settleWrite());
+      await tick(50, 10);
+    },
+  };
+}
+
+/** The tree's Retry on a stage drawn as a slot (`backDuringOtherWrite`). */
+async function slotRetry(rig: Rig): Promise<void> {
+  const slot = rig.slots.at(-1) as RuleStage | undefined;
+  act(() => {
+    void slot?.result.current.refetch();
+  });
+}
+
+/** A composer send of the margin (`["margin-composer", documentId]`, `margin-context.tsx`), held
+ *  as `held-sends.ts:307-324` holds one: under its name until its deadline, then under
+ *  `pastDeadlineKey`, built before the name lets go. Pressed with the stage drawn; the reader
+ *  leaves 10 s in; an event of the issue 20 s in; the send past its deadline at 30 s, the reader
+ *  still away; the reader back at 35 s; an event at 40 s; the send settling at 60 s. One write of
+ *  the issue, begun while the page drew its tree: nothing of the tree is read until it settles. */
+const MARGIN_SEND_PAST_DEADLINE_AWAY: RuleWay = {
+  words:
+    "a send from the margin pressed on the page that goes past its deadline 30 s in while the reader is away, an event 20 s and 40 s in, the reader back at 35 s and the send settling at 60 s",
+  does: async (rig) => {
+    const name = ["margin-composer", "artifact-plan"];
+    const before = ruleReads(rig);
+    const settleName = holdKeyedWrite(rig, name);
+    await tick(10_000, 100);
+    leave(rig);
+    await tick(10_000, 100);
+    await commentsEvent(rig);
+    await tick(10_000, 100);
+    const settlePast = holdKeyedWrite(rig, [...name, "past-deadline"]);
+    act(() => settleName());
+    await tick(5_000, 100);
+    comeBack(rig);
+    await tick(5_000, 100);
+    await commentsEvent(rig);
+    await tick(19_000, 100);
+    expect(ruleReads(rig) - before, "the reads while the send is out").toBe(0);
+    act(() => settlePast());
+    await tick(50, 10);
+  },
+};
+
+/** An event of the issue 200 ms after the comments were read again, the tree's last read past its
+ *  second: the scheduler holds the comments read the event owes to a second after the last one
+ *  began, and the tree read the event asks for is not held. One event, read once. */
+const EVENT_SOON_AFTER_COMMENTS_READ: RuleWay = {
+  words: "an event of the issue 200 ms after the comments were read again, no write out",
+  does: async (rig) => {
+    await act(async () => {
+      await rig.client.refetchQueries({ queryKey: ["comments", KEY] });
+    });
+    await tick(200, 10);
+    await commentsEvent(rig);
+  },
+};
+
 const WAYS = {
   mount: {
     words: "a new surface mounting",
@@ -5132,6 +5260,66 @@ const WAYS = {
   landedBlankQuietDown: answerlessLanding("down", { resolves: false }),
   comeBackDuringWrite: COME_BACK_DURING_WRITE,
   retryRetriedDuringWrite: RETRY_RETRIED_DURING_WRITE,
+  retryDuringOwnWrite: duringWrite(
+    "the reader's Retry while a write of the issue is out, the write then settling",
+    (rig) => holdWrite(rig),
+    async (rig) => pressRetry(rig),
+    1
+  ),
+  eventDuringOwnWrite: duringWrite(
+    "an event of the issue while a write of it is out, the write then settling",
+    (rig) => holdWrite(rig),
+    commentsEvent,
+    0
+  ),
+  eventDuringOtherWriteOnPage: duringWrite(
+    "an event of the issue while a write naming another issue, pressed on the page, is out, the write then settling",
+    (rig) => holdWrite(rig, { of: OTHER_KEY }),
+    commentsEvent,
+    0
+  ),
+  eventDuringUnkeyedWriteOnPage: duringWrite(
+    "an event of the issue while a write with no mutation key, pressed on the page, is out, the write then settling",
+    (rig) => holdKeyedWrite(rig, undefined),
+    commentsEvent,
+    0
+  ),
+  retryDuringOtherWriteOnPage: duringWrite(
+    "the reader's Retry while a write naming another issue, pressed on the page, is out, the write then settling",
+    (rig) => holdWrite(rig, { of: OTHER_KEY }),
+    async (rig) => pressRetry(rig),
+    1
+  ),
+  firstPressDuringOtherWriteOnPage: duringWrite(
+    "its filter's first press while a write naming another issue, pressed on the page, is out, the write then settling",
+    (rig) => holdWrite(rig, { of: OTHER_KEY }),
+    async (rig) => comeBack(rig),
+    1
+  ),
+  eventAwayDuringOtherWrite: {
+    words:
+      "an event of the issue while the reader is away and a write of another issue, pressed on another page, is out, the write then settling",
+    does: async (rig) => {
+      const settleWrite = holdWrite(rig, { of: OTHER_KEY });
+      await tick(10, 10);
+      await commentsEvent(rig);
+      await tick(300, 10);
+      act(() => settleWrite());
+      await tick(50, 10);
+    },
+  },
+  eventBackDuringOtherWrite: backDuringOtherWrite(
+    "the reader coming back while a write of another issue, pressed on another page, is out, an event of the issue 1.5 s on, the write then settling",
+    commentsEvent,
+    1
+  ),
+  retryBackDuringOtherWrite: backDuringOtherWrite(
+    "the reader coming back while a write of another issue, pressed on another page, is out, the reader's Retry 1.5 s on, the write then settling",
+    slotRetry,
+    1
+  ),
+  marginSendPastDeadlineAway: MARGIN_SEND_PAST_DEADLINE_AWAY,
+  eventSoonAfterCommentsRead: EVENT_SOON_AFTER_COMMENTS_READ,
 } satisfies Record<string, RuleWay>;
 
 /** How many reads of a query a way starts: a count, or the least and the most. */
@@ -5707,15 +5895,15 @@ const READ_RULES: readonly ReadRule[] = [
   { read: "tree", state: "answered", observed: true, way: "landedBlankBesideFeedPart", now: 1 },
   { read: "spec", state: "answered", observed: true, way: "landedBlankBesideFeedPart", now: 1 },
   // A refetchQueries of the tree while a write holds it sends nothing; an event after the write
-  // reads the tree, and the comments read it owes, begun after, once more.
-  { read: "tree", state: "answered", observed: true, way: "eventAfterWaitedRead", now: 2 },
+  // reads the tree once, after the comments read it owes has begun.
+  { read: "tree", state: "answered", observed: true, way: "eventAfterWaitedRead", now: 1 },
   // A refused read sent as the last write settles, after a focus with the live feed down asked for
   // every refused one while the write held them: refused, it is read no second time.
   { read: "tree", state: "refused", observed: true, way: "landedBlankBesideFocus", now: 1 },
   { read: "spec", state: "refused", observed: true, way: "landedBlankBesideFocus", now: 1 },
-  // A write Dispatch refuses with the live feed up: its rollback is no change, and an event that
-  // lands while it is out is read once it settles.
-  { read: "tree", state: "answered", observed: true, way: "resolveRefusedUp", now: 0 },
+  // A write Dispatch refuses with the live feed up: its rollback's invalidation is a trigger, read
+  // once as it settles, and an event that lands while it is out is read in that same one read.
+  { read: "tree", state: "answered", observed: true, way: "resolveRefusedUp", now: 1 },
   { read: "tree", state: "answered", observed: true, way: "resolveRefusedUpPosted", now: 1 },
   // A read out as a window focus with the live feed down, or the feed back whole, asks for every
   // refused one, then refused: owed, and read once more.
@@ -5824,6 +6012,86 @@ const READ_RULES: readonly ReadRule[] = [
   // TanStack's own retry is part of the one read out: what asks during it reads once more after it
   // lands, the Retry, its retry and that one read in all.
   { read: "tree", state: "refused", observed: true, way: "retryRetriedDuringWrite", now: 3 },
+  // The reader's Retry while a write of the issue is out, staying: sent at once, and read once
+  // more as the write settles.
+  { read: "tree", state: "refused", observed: true, way: "retryDuringOwnWrite", now: 2 },
+  { read: "tree", state: "refusedHeld", observed: true, way: "retryDuringOwnWrite", now: 2 },
+  { read: "spec", state: "refused", observed: true, way: "retryDuringOwnWrite", now: 2 },
+  { read: "spec", state: "refusedHeld", observed: true, way: "retryDuringOwnWrite", now: 2 },
+  // An event while a write of the issue is out: read once, as the write settles.
+  { read: "tree", state: "answered", observed: true, way: "eventDuringOwnWrite", now: 1 },
+  { read: "tree", state: "refused", observed: true, way: "eventDuringOwnWrite", now: 1 },
+  { read: "tree", state: "refusedHeld", observed: true, way: "eventDuringOwnWrite", now: 1 },
+  { read: "spec", state: "answered", observed: true, way: "eventDuringOwnWrite", now: 1 },
+  { read: "spec", state: "refused", observed: true, way: "eventDuringOwnWrite", now: 1 },
+  { read: "spec", state: "refusedHeld", observed: true, way: "eventDuringOwnWrite", now: 1 },
+  { read: "tree", state: "refused", observed: false, way: "eventDuringOwnWrite", now: 0, back: 1 },
+  { read: "spec", state: "refused", observed: false, way: "eventDuringOwnWrite", now: 0, back: 1 },
+  // A write that names another issue, or none, pressed while the page draws the tree, is a write
+  // of this issue: an event waits for it, and a Retry or a first press is read once more as it
+  // settles.
+  { read: "tree", state: "answered", observed: true, way: "eventDuringOtherWriteOnPage", now: 1 },
+  { read: "tree", state: "refused", observed: true, way: "eventDuringOtherWriteOnPage", now: 1 },
+  { read: "spec", state: "answered", observed: true, way: "eventDuringOtherWriteOnPage", now: 1 },
+  { read: "tree", state: "answered", observed: true, way: "eventDuringUnkeyedWriteOnPage", now: 1 },
+  { read: "spec", state: "refused", observed: true, way: "eventDuringUnkeyedWriteOnPage", now: 1 },
+  { read: "tree", state: "refused", observed: true, way: "retryDuringOtherWriteOnPage", now: 2 },
+  { read: "spec", state: "refused", observed: true, way: "retryDuringOtherWriteOnPage", now: 2 },
+  {
+    read: "spec",
+    state: "never",
+    observed: false,
+    way: "firstPressDuringOtherWriteOnPage",
+    now: 2,
+    back: 0,
+  },
+  // A write of another issue pressed on another page holds nothing: an event or a Retry is read
+  // at once, and nothing more as it settles.
+  {
+    read: "tree",
+    state: "answered",
+    observed: false,
+    way: "eventAwayDuringOtherWrite",
+    now: 0,
+    back: 1,
+  },
+  {
+    read: "tree",
+    state: "refused",
+    observed: false,
+    way: "eventAwayDuringOtherWrite",
+    now: 0,
+    back: 1,
+  },
+  {
+    read: "tree",
+    state: "answered",
+    observed: false,
+    way: "eventBackDuringOtherWrite",
+    now: 1,
+    back: 0,
+  },
+  {
+    read: "tree",
+    state: "refused",
+    observed: false,
+    way: "eventBackDuringOtherWrite",
+    now: 1,
+    back: 0,
+  },
+  {
+    read: "tree",
+    state: "refused",
+    observed: false,
+    way: "retryBackDuringOtherWrite",
+    now: 1,
+    back: 0,
+  },
+  // A send of the margin pressed on the page is one write of the issue past its deadline too.
+  { read: "tree", state: "answered", observed: true, way: "marginSendPastDeadlineAway", now: 1 },
+  // One event, read once.
+  { read: "tree", state: "answered", observed: true, way: "eventSoonAfterCommentsRead", now: 1 },
+  { read: "spec", state: "answered", observed: true, way: "eventSoonAfterCommentsRead", now: 1 },
 ];
 
 describe("the rule for when a read of the tree or of a view starts", () => {
