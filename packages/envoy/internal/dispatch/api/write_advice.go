@@ -560,12 +560,13 @@ func (s *server) supersededApprovalAdvice(
 // document (design_gates, written by PUT /api/v1/issues/{key}/design-gates), keeping the live
 // rows and no others. Two things decide that, and the row alone says neither.
 //
-// The issue must not be done (dispatch://INFRA-1727/spec#b-r-done-issue: a gate is live while
-// the issue holding it is not `done`), so a gate of an issue in `triage`, `icebox` or `backlog` is
-// named too. Nothing clears a parked issue's gate rows - the daemon suspends its claims and
-// deletes none, and its boot republishes them for as long as it stays parked - so its rows stand
-// until the re-admission that brings the tree back clears them, and the clause names them until
-// then. A done issue's rows can stand too, and it is the one status whose gate is not live.
+// The issue must not be done, since the approved requirement says "A gate is live for this
+// sentence while the issue holding it is not `done` in Dispatch", so a gate of an issue in
+// `triage`, `icebox` or `backlog` is named too. Nothing clears a parked issue's gate rows - the
+// daemon suspends its claims and deletes none, and its boot republishes them for as long as it
+// stays parked - so its rows stand until the re-admission that brings the tree back clears them,
+// and the clause names them until then. A done issue's rows can stand too, and it is the one
+// status whose gate is not live.
 //
 // The deployment must gate the row's step, which is the project's own list (projects.gated_steps,
 // written by PUT /api/v1/projects/{key}/gated-steps, the publication of the same boot that writes

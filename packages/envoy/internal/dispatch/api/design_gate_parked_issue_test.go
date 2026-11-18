@@ -6,11 +6,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// dispatch://INFRA-1727/spec#b-r-done-issue (R5): "A gate is live for this sentence while the issue
-// holding it is not `done` in Dispatch." R2: the gate clause "names every issue whose gate records
-// that document". So a gate is named whatever status its issue holds, `triage`, `icebox` and
-// `backlog` among them, until that issue is `done`. The project gates the spec step, the one these
-// gates record, so the status is all that differs between the rows.
+// The approved requirement says "A gate is live for this sentence while the issue holding it is
+// not `done` in Dispatch", and the gate clause "names every issue whose gate records that
+// document". So a gate is named whatever status its issue holds, `triage`, `icebox` and `backlog`
+// among them, until that issue is `done`. The project gates the spec step, the one these gates
+// record, so the status is all that differs between the rows.
 func TestAGateIsLiveWhileItsIssueIsNotDone(t *testing.T) {
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "PARKED")

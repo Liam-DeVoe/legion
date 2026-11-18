@@ -42,12 +42,13 @@ const (
 	codeRankInput = "RANK_INPUT"
 )
 
-// priorityIDMax is the longest priority id, in bytes, which for the ASCII the grammar admits is
-// characters too. The id is a btree key of priority_nodes and of priority_tuples_inbound, and
-// Postgres refuses a btree entry over about 2,700 bytes, so an id with no bound reached the
-// insert inside prioritystore.Create and failed it as a 500. 200 is far under that bound with
-// every other column of the inbound entry beside it, and well over any name a person reads at a
-// glance; a longer title derives a longer id, and the create then asks the caller to name one.
+// priorityIDMax is the longest priority id, in characters (code points), which for the ASCII the
+// grammar admits are bytes too. The id is a btree key of priority_nodes and of
+// priority_tuples_inbound, and Postgres refuses a btree entry over about 2,700 bytes, so an id
+// with no bound reached the insert inside prioritystore.Create and failed it as a 500. 200 is far
+// under that bound with every other column of the inbound entry beside it, and well over any name
+// a person reads at a glance; a longer title derives a longer id, and the create then asks the
+// caller to name one.
 const priorityIDMax = 200
 
 // priorityIDPattern is the grammar of a priority id: lowercase letters and digits in groups
