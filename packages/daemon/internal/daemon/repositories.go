@@ -2138,8 +2138,11 @@ func (w *workflowRuntime) putBackSilenced(taken map[string]map[string]bool) {
 // never fires for such a repository): a read of the mapping never serves one, so no read asks for
 // a follow for it, before or after a role App is installed on it.
 // The pass is followListing; one that fails is logged and stays owed (followReasons), so
-// the refresher reads the mapping again on its backoff and the next read's pass tries again. A
-// mapping change made while this pass runs asks for a read of its own, whose pass covers it.
+// the refresher reads the mapping again on its backoff and the next read's pass tries again. The
+// pass runs within one bound (appMintAttempt) whatever number of issues it moves, which is why it
+// reads GitHub once per repository (followListing), and a pass that bound cuts short fails as any
+// other does: it writes nothing and stays owed. A mapping change made while this pass runs asks
+// for a read of its own, whose pass covers it.
 func (w *workflowRuntime) followMapping(ctx context.Context, follows uint64) {
 	if follows <= w.followApplied.Load() {
 		return
@@ -2171,22 +2174,30 @@ func (w *workflowRuntime) followReasons() []string {
 // record holds writing nothing, and one it resolves to a repository Legion serves no installation
 // of waiting on the record. An issue that names its own repository resolves to it whatever the
 // default is, so it is not moved. Each record is prepared as an event's is (prepareRecorded),
-// outside the transaction: a served repository's default branch is read from defaultBranches,
-// which the mapping's read has just filled for every served repository (nameAccepted), so the
-// pass reads GitHub at most once per repository whatever number of issues move onto it; a
-// repository no mapping names is read for each issue moved onto it, both role Apps' installations
-// and GitHub's answer for its name and default branch at that preparation (readUnmapped,
-// defaultBranches.Fresh), whatever the recorded set keeps, and the read or GitHub's refusal
-// travels on the issue's prepared fact to its correction (intake.DispatchIssue.RepositoryRead,
-// RepositoryRefusal). The corrections are one transaction under the lock every fact applies
-// under, as the boot's reconcile is, and the records are read again inside it, in one read before
-// the first correction: a record a live event has carried past the listing's sequence is left to
-// that event, as the boot's listing leaves it (admit's applySummary). One read serves every issue
-// because each correction writes its own issue's row alone, and what a correction reads of a
-// record (its repository, the change waiting on it, its last Dispatch sequence) is written by
-// facts, which apply under that same lock. The pod an issue's correction leaves on the repository
-// it left is replaced by the ordinary per-issue update round, which reads the record. The records
-// are read first, so a project the workflow records no issue of asks Dispatch for no listing.
+// outside the transaction, and the pass reads GitHub at most once per repository whatever number
+// of issues move onto it, as a root's move moves every child that inherits its repository. A
+// served repository's default branch is read from defaultBranches, which the mapping's read has
+// just filled for every served repository (nameAccepted). A repository no mapping names is read
+// at the first issue of the pass moved onto it, both role Apps' installations and GitHub's answer
+// for its name and default branch then (readUnmapped, defaultBranches.Fresh), whatever the
+// recorded set keeps, and every other issue of the pass moved onto it takes that read
+// (followReads): reads made once per issue, one after another, would use the pass's whole bound
+// up at some fifteen issues, and every read after it would fail on the expired context. It is a
+// read made at this pass, never one kept from an earlier one, and the next pass reads again. The
+// read or GitHub's refusal travels on each issue's prepared fact to its correction
+// (intake.DispatchIssue.RepositoryRead, RepositoryRefusal). A pass whose bound ends while it
+// prepares stops there and writes nothing: a read the bound cut short answered for the bound, not
+// for GitHub, so it is no refusal and leaves no repository unread (readUnmapped), and the follow
+// stays owed, so its next pass reads again. The corrections are one transaction under the lock
+// every fact applies under, as the boot's reconcile is, and the records are read again inside it,
+// in one read before the first correction: a record a live event has carried past the listing's
+// sequence is left to that event, as the boot's listing leaves it (admit's applySummary). One
+// read serves every issue because each correction writes its own issue's row alone, and what a
+// correction reads of a record (its repository, the change waiting on it, its last Dispatch
+// sequence) is written by facts, which apply under that same lock. The pod an issue's correction
+// leaves on the repository it left is replaced by the ordinary per-issue update round, which
+// reads the record. The records are read first, so a project the workflow records no issue of
+// asks Dispatch for no listing.
 func (w *workflowRuntime) followListing(ctx context.Context) error {
 	var issues []record.Issue
 	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
@@ -2204,13 +2215,17 @@ func (w *workflowRuntime) followListing(ctx context.Context) error {
 		return fmt.Errorf("list Dispatch issues for the repository mapping's change: %w", err)
 	}
 	records := recordsByKey(issues)
+	reads := followReads{}
 	follow := make([]intake.DispatchIssue, 0, len(records))
 	for _, summary := range listed {
 		recorded := records[summary.Key]
 		if recorded == nil {
 			continue
 		}
-		prepared, err := w.prepareRecorded(ctx, intake.ListedIssue(summary), recorded, false)
+		prepared, err := w.prepareRecorded(ctx, intake.ListedIssue(summary), recorded, false, reads)
+		if err == nil {
+			err = ctx.Err()
+		}
 		if err != nil {
 			return fmt.Errorf("prepare the repository of %s for the repository mapping's change: %w", summary.Key, err)
 		}
@@ -3197,7 +3212,7 @@ func (w *workflowRuntime) prepareIssue(ctx context.Context, issue intake.Dispatc
 		return issue, err
 	}
 	if recorded != nil {
-		prepared, err := w.prepareRecorded(ctx, issue, recorded, false)
+		prepared, err := w.prepareRecorded(ctx, issue, recorded, false, nil)
 		if err != nil {
 			return prepared, err
 		}
@@ -3298,7 +3313,7 @@ func (w *workflowRuntime) prepareArtifact(ctx context.Context, fact intake.Dispa
 func (w *workflowRuntime) prepareListed(ctx context.Context, records map[string]*record.Issue, walk ancestry, issue intake.DispatchIssue, boot bool) (intake.DispatchIssue, error) {
 	recorded := records[issue.Key]
 	if recorded != nil {
-		prepared, err := w.prepareRecorded(ctx, issue, recorded, boot)
+		prepared, err := w.prepareRecorded(ctx, issue, recorded, boot, nil)
 		if err != nil {
 			return prepared, err
 		}
@@ -3320,7 +3335,9 @@ func (w *workflowRuntime) prepareListed(ctx context.Context, records map[string]
 
 // prepareRecorded readies an event of an issue recorded as recorded, an event's or a listing's
 // (the boot's, or the follow's: followListing): no event of it is held as an admission any longer
-// (forgetIssue), and one that names no repository (ResolvedRepoMissing) takes the record's.
+// (forgetIssue), and one that names no repository (ResolvedRepoMissing) takes the record's. reads
+// is the follow pass's reads of the repositories no mapping names (followReads), and nil for every
+// other caller.
 //
 // A resolution that names another repository is the repository the record follows
 // (workflow.Engine.ApplyRepositoryChange), which resolves it inside the fact's own transaction,
@@ -3340,17 +3357,21 @@ func (w *workflowRuntime) prepareListed(ctx context.Context, records map[string]
 //     answer at this call (defaultBranches.Fresh), never a read Named holds. A correction writes a
 //     repository Dispatch moved the issue onto, often long after any read the daemon kept of it,
 //     so a kept read would move the record onto a repository an App was uninstalled from since,
-//     or at a default branch renamed since. Both installed, the read replaces the recorded set's
-//     entry (repositories.recordRepository) and travels on the fact
-//     (intake.DispatchIssue.RepositoryRead), and the record follows onto GitHub's name and default
-//     branch from it and from nothing else (workflow.Engine.ApplyRepositoryChange); a role App not
-//     installed, an App uninstalled since an entry was kept among them, a repository GitHub does
-//     not have, or a name that is no <owner>/<name> travels on the fact
-//     (intake.DispatchIssue.RepositoryRefusal), and the change waits on the record with that
-//     reason; a read GitHub did not answer carries neither, and the correction writes nothing and
-//     says nothing (workflow.Resolution.Unread). A waiting change onto such a repository is applied
-//     at the issue's next event or at the next boot: the served-set follow never fires for such a
-//     repository (refreshMapping answers for the mapping alone).
+//     or at a default branch renamed since. In the follow's pass (reads) it is read once, at the
+//     first issue the pass moves onto it, and every other issue of that pass moved onto it takes
+//     that pass's read (readCorrection); an event's preparation reads for its own issue alone.
+//     Both installed, the read replaces the recorded set's entry (repositories.recordRepository)
+//     and travels on the fact (intake.DispatchIssue.RepositoryRead), and the record follows onto
+//     GitHub's name and default branch from it and from nothing else
+//     (workflow.Engine.ApplyRepositoryChange); a role App not installed, an App uninstalled since
+//     an entry was kept among them, a repository GitHub does not have, or a name that is no
+//     <owner>/<name> travels on the fact (intake.DispatchIssue.RepositoryRefusal), and the change
+//     waits on the record with that reason; a read GitHub did not answer carries neither, and the
+//     correction writes nothing and says nothing (workflow.Resolution.Unread), and so does a read
+//     the preparation's context cut short, which leaves the repository as it found it
+//     (readUnmapped). A waiting change onto such a repository is applied at the issue's next event
+//     or at the next boot: the served-set follow never fires for such a repository
+//     (refreshMapping answers for the mapping alone).
 //   - In the boot's listing (boot) no repository no mapping names is read, for the reason
 //     prepareListed gives, and nothing is applied for it there (the fact carries no read, so its
 //     correction answers Unread, whatever the recorded set keeps): the boot asks for the follow
@@ -3362,7 +3383,7 @@ func (w *workflowRuntime) prepareListed(ctx context.Context, records map[string]
 // (repositories.same, the engine's own sameRepository), so a configured rename's other name and a
 // spelling that differs in case are no change and read nothing. A resolution that names no
 // repository reads nothing either: the engine tells the issue so without a read.
-func (w *workflowRuntime) prepareRecorded(ctx context.Context, issue intake.DispatchIssue, recorded *record.Issue, boot bool) (intake.DispatchIssue, error) {
+func (w *workflowRuntime) prepareRecorded(ctx context.Context, issue intake.DispatchIssue, recorded *record.Issue, boot bool, reads followReads) (intake.DispatchIssue, error) {
 	w.forgetIssue(issue.Key)
 	if issue.ResolvedRepoMissing {
 		issue.ResolvedRepo, issue.ResolvedRepoMissing = recorded.Repo, false
@@ -3376,13 +3397,49 @@ func (w *workflowRuntime) prepareRecorded(ctx context.Context, issue intake.Disp
 		w.requestFollow()
 		return issue, nil
 	case answer.source != fromMapping:
-		prepared, read := w.readUnmapped(ctx, issue, false, w.defaultBranches.Fresh)
-		prepared.RepositoryRead = read
-		return prepared, nil
+		return w.readCorrection(ctx, issue, reads), nil
 	case answer.refusal != "":
 		return issue, nil
 	}
 	return issue, w.readDefaultBranch(ctx, issue.Key, answer.mapped.Repo)
+}
+
+// followReads is what one follow pass (followListing) read of each repository no mapping names
+// that its issues move onto, by the repository's lowercased <owner>/<name>, as the first issue's
+// preparation read it (readCorrection). It lives for that pass alone, so no pass takes a read
+// made at an earlier one.
+type followReads map[string]unmappedRead
+
+// unmappedRead is what one correction's reads of a repository no mapping names answered
+// (readUnmapped), as its fact carries it: GitHub's read where both role Apps are installed on the
+// repository (intake.DispatchIssue.RepositoryRead), or the refusal GitHub's answer made
+// (RepositoryRefusal), or neither for a read GitHub did not answer.
+type unmappedRead struct {
+	read    *ghbranch.Repository
+	refusal string
+}
+
+// readCorrection is issue, which Dispatch moves off its record's repository onto one no mapping
+// names, carrying what its correction is written from (readUnmapped, through
+// defaultBranches.Fresh). With reads, one follow pass's, the repository is read at the first issue
+// of the pass moved onto it and every other takes that read; with reads nil, an event's
+// preparation, it is read for this issue alone. A name that is no <owner>/<name> asks GitHub
+// nothing and its refusal names this issue, so no other issue takes it.
+func (w *workflowRuntime) readCorrection(ctx context.Context, issue intake.DispatchIssue, reads followReads) intake.DispatchIssue {
+	key := strings.ToLower(issue.ResolvedRepo)
+	if _, err := ghrepo.Parse("", issue.ResolvedRepo); err != nil {
+		reads = nil
+	}
+	if taken, read := reads[key]; read {
+		issue.RepositoryRead, issue.RepositoryRefusal = taken.read, taken.refusal
+		return issue
+	}
+	prepared, read := w.readUnmapped(ctx, issue, false, true)
+	prepared.RepositoryRead = read
+	if reads != nil {
+		reads[key] = unmappedRead{read: read, refusal: prepared.RepositoryRefusal}
+	}
+	return prepared
 }
 
 // readDefaultBranch reads repo's default branch from GitHub for the preparation of issue key that
@@ -3622,7 +3679,8 @@ func (w *workflowRuntime) prepareUnrecorded(ctx context.Context, issue intake.Di
 // an operator who installs the App, or a person who corrects a misspelled repository, is taken at
 // the next preparation of the issue, with no wait, no restart and no mapping change. A recorded
 // issue's correction onto such a repository makes the same reads (prepareRecorded), always, kept
-// read or not, and from GitHub's own answer at that call (defaultBranches.Fresh).
+// read or not, and from GitHub's own answer at that call (defaultBranches.Fresh), once per
+// repository in a follow pass (readCorrection).
 //
 // The three answers. Both Apps installed and GitHub naming the repository: the read is kept and
 // the issue is recorded and admitted on it. A role App that is not installed, a repository GitHub
@@ -3652,20 +3710,28 @@ func (w *workflowRuntime) prepareUnrecorded(ctx context.Context, issue intake.Di
 // event, and every later preparation of an issue on it, ask under the name the issue resolves
 // to, which is the one GitHub renamed away from.
 func (w *workflowRuntime) prepareUnmapped(ctx context.Context, issue intake.DispatchIssue, boot bool) (intake.DispatchIssue, error) {
-	prepared, _ := w.readUnmapped(ctx, issue, boot, w.defaultBranches.Named)
+	prepared, _ := w.readUnmapped(ctx, issue, boot, false)
 	return prepared, nil
 }
 
 // readUnmapped makes prepareUnmapped's reads of the repository issue resolves to, one no mapping
-// names, with branch as the read of its name and default branch, and answers issue with the
-// refusal GitHub's answer makes (intake.DispatchIssue.RepositoryRefusal) and the read itself where
-// GitHub answered both Apps installed and named the repository, nil otherwise. That read is kept
-// in the recorded set either way (repositories.recordRepository), replacing what it held, so the
-// reads after it start from it. Admission's preparation reads the name and default branch through
-// defaultBranches.Named, which may answer from a read it holds; a recorded issue's correction
-// through defaultBranches.Fresh, which never does (prepareRecorded).
-func (w *workflowRuntime) readUnmapped(ctx context.Context, issue intake.DispatchIssue, boot bool,
-	branch func(context.Context, ghrepo.Repository) (ghbranch.Repository, error)) (intake.DispatchIssue, *ghbranch.Repository) {
+// names, and answers issue with the refusal GitHub's answer makes
+// (intake.DispatchIssue.RepositoryRefusal) and the read itself where GitHub answered both Apps
+// installed and named the repository, nil otherwise. That read is kept in the recorded set either
+// way (repositories.recordRepository), replacing what it held, so the reads after it start from
+// it. Admission's preparation reads the name and default branch through defaultBranches.Named,
+// which may answer from a read it holds; a recorded issue's correction (correction, from
+// readCorrection) through defaultBranches.Fresh, which never does.
+//
+// A read GitHub did not answer leaves the repository unread (leaveUnread), except a correction's
+// read that ctx's end cut short — the follow pass's bound, an event's acknowledgement window, the
+// stop — which answered for that end and not for GitHub, and leaves the repository as it found
+// it, as the webhook check below keeps nothing then. The follow stays owed and its next pass
+// reads again (followListing), an event's correction is read again at the issue's next event or
+// at the next boot, and the marker would drive only the recovery, which takes no recorded issue
+// (recoveredOn). An admission's read cut short leaves the repository unread all the same: its
+// event is applied and acknowledged, and that recovery is what takes its issue.
+func (w *workflowRuntime) readUnmapped(ctx context.Context, issue intake.DispatchIssue, boot, correction bool) (intake.DispatchIssue, *ghbranch.Repository) {
 	if w.installs == nil {
 		// A daemon with no GitHub Apps reads no installation, so nothing is recorded on a
 		// repository its mapping does not name: the issue's apply leaves it as an unread one.
@@ -3680,12 +3746,21 @@ func (w *workflowRuntime) readUnmapped(ctx context.Context, issue intake.Dispatc
 		w.leaveForRecovery(repo)
 		return issue, nil
 	}
+	branch := w.defaultBranches.Named
+	if correction {
+		branch = w.defaultBranches.Fresh
+	}
+	leave := func(reason string) {
+		if !correction || ctx.Err() == nil {
+			w.leaveUnread(repo, reason)
+		}
+	}
 	for _, role := range appauth.Roles {
 		read, cancel := context.WithTimeout(ctx, installReadAttempt)
 		installed, err := w.installs.InstalledOn(read, role, repo)
 		cancel()
 		if err != nil {
-			w.leaveUnread(repo, fmt.Sprintf("the %s App's installation on %s could not be read: %v; Legion reads it again", role, repo, err))
+			leave(fmt.Sprintf("the %s App's installation on %s could not be read: %v; Legion reads it again", role, repo, err))
 			return issue, nil
 		}
 		if !installed {
@@ -3696,7 +3771,7 @@ func (w *workflowRuntime) readUnmapped(ctx context.Context, issue intake.Dispatc
 	}
 	read, err := branch(ctx, repo)
 	if err != nil {
-		w.leaveUnread(repo, fmt.Sprintf("the name and default branch of %s could not be read: %v; Legion reads it again", repo, err))
+		leave(fmt.Sprintf("the name and default branch of %s could not be read: %v; Legion reads it again", repo, err))
 		return issue, nil
 	}
 	check, cancel := context.WithTimeout(ctx, installReadAttempt)

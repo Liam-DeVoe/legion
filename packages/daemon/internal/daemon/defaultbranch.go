@@ -145,10 +145,11 @@ func (d *defaultBranches) Kept(repo string) (ghbranch.Repository, bool) {
 // Fresh is repo as GitHub names it at this call, with its default branch: GitHub's own answer
 // (fetch), never a read kept within ttl, one held through GitHub's rate limit, or one another
 // caller has in flight, each of which Named may answer from. It is the read a recorded issue's
-// correction onto a repository no mapping names makes at its preparation (prepareRecorded), which
-// writes the record from what GitHub answers then and from nothing the daemon kept. A read GitHub
-// refuses, its rate limit included, is returned and keeps nothing; one it answers replaces what
-// is kept under repo, so the reads after it start from it.
+// correction onto a repository no mapping names makes at its preparation (prepareRecorded), once
+// per repository in a follow pass (readCorrection), which writes the record from what GitHub
+// answers then and from nothing the daemon kept. A read GitHub refuses, its rate limit included,
+// is returned and keeps nothing; one it answers replaces what is kept under repo, so the reads
+// after it start from it.
 func (d *defaultBranches) Fresh(ctx context.Context, repo ghrepo.Repository) (ghbranch.Repository, error) {
 	repository, err := d.fetch(ctx, repo)
 	if err != nil {

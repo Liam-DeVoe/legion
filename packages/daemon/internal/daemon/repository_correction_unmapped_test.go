@@ -3,21 +3,23 @@ package daemon
 // A recorded issue Dispatch moves onto a repository no mapping names. Since INFRA-2543 any
 // repository both role Apps are installed on records an issue, read from GitHub at each
 // preparation (prepareUnmapped), and a recorded issue's record follows Dispatch onto such a
-// repository by its own reads at that preparation (prepareRecorded), always, whatever #3730's
-// recorded set keeps: both Apps installed, the correction applies at the name and default branch
+// repository by its own reads at that preparation (prepareRecorded), always, whatever the recorded
+// set (repositories.recordRepository) keeps, and once per repository in a follow pass
+// (readCorrection): both Apps installed, the correction applies at the name and default branch
 // GitHub answered then (intake.DispatchIssue.RepositoryRead) through the one writer
 // (workflow.Engine.ApplyRepositoryChange, record.Store.CorrectIssueRepository); a role App not
 // installed is a refusal the preparation carries on the fact (intake.DispatchIssue.RepositoryRefusal),
-// and the change waits on the record with it; a read GitHub did not answer, or a fact no
-// preparation read GitHub for, applies nothing and says nothing. A waiting change onto such a
-// repository is applied at the issue's next event or at the next boot: the served-set follow never
-// fires for such a repository. These tests run the daemon's own preparation and handlers over a
-// real PostgreSQL and NATS, with a GitHub that names unmappedRepo as unmappedNamed and nothing
-// mapping it to any project.
+// and the change waits on the record with it; a read GitHub did not answer, a read the
+// preparation's bound cut short, or a fact no preparation read GitHub for, applies nothing and
+// says nothing. A waiting change onto such a repository is applied at the issue's next event or at
+// the next boot: the served-set follow never fires for such a repository. These tests run the
+// daemon's own preparation and handlers over a real PostgreSQL and NATS, with a GitHub that names
+// unmappedRepo as unmappedNamed and nothing mapping it to any project.
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -27,34 +29,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
-
-// recordOnWidgets records key as the running root of a live tree on acme/widgets at main, at
-// Dispatch sequence 1, holding slot, with nothing waiting and no correction: the issue each test
-// here moves. Its tree runs (record.TreeLive), so no pass over it takes it out of the workflow,
-// and nothing but the correction can move what the tests read.
-func recordOnWidgets(t *testing.T, w *workflowRuntime, key string, slot int) {
-	t.Helper()
-	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
-		if err := w.records.PutIssue(ctx, tx, record.Issue{Key: key, Tree: key, Project: "LEGION", Title: key, Phase: phase.Implementing,
-			Generation: correctionGeneration, Status: "in_progress", DispatchStatus: "in_progress", Rank: "A", HandedOver: true,
-			LastDispatchSeq: 1, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}); err != nil {
-			return err
-		}
-		if err := w.records.PutSlot(ctx, tx, record.Slot{Issue: key, Index: slot, AdmittedAt: correctionMoment}); err != nil {
-			return err
-		}
-		return openTreeTx(ctx, tx, "LEGION", key)
-	}); err != nil {
-		t.Fatalf("record %s: %v", key, err)
-	}
-}
 
 // onUnmapped fails unless key's record is on unmappedNamed at branch, GitHub's own spelling and
 // the default branch GitHub answered, having left acme/widgets, with nothing waiting and its
@@ -96,7 +77,7 @@ func waitingNote(role string) string {
 
 // changingGitHub is a GitHub that names the rig's two mapped repositories at main and unmappedRepo
 // as unmappedNamed at the default branch it holds now, which a test changes (rename), counting the
-// reads of unmappedRepo.
+// reads of unmappedRepo's name and default branch (reads).
 type changingGitHub struct {
 	branch atomic.Pointer[string]
 	reads  atomic.Int64
@@ -140,8 +121,9 @@ func changingRig(t *testing.T, installs *installations, opts ...func(*workflowRu
 }
 
 // keepAnEntry admits LEGION-1100, a root handed to Legion on unmappedRepo, which has the daemon
-// keep #3730's read of the repository (its recorded set, and defaultBranches' own read) at trunk,
-// and fails unless both hold it: the kept read the corrections below must not write.
+// keep its read of the repository at trunk (the recorded set, repositories.recordRepository, and
+// defaultBranches' own read), and fails unless both hold it: the kept read the corrections below
+// must not write.
 func keepAnEntry(t *testing.T, w *workflowRuntime, client *mappingDispatch) {
 	t.Helper()
 	deliver(t, w, client, issue("LEGION-1100", unmappedRepo, "todo", true, "", 1))
@@ -166,8 +148,8 @@ func keepAnEntry(t *testing.T, w *workflowRuntime, client *mappingDispatch) {
 func TestRepositoryCorrectionFollowsAnEventOntoARepositoryNoMappingNamesBothAppsAreInstalledOn(t *testing.T) {
 	w, client, installs, stream := unmappedRig(t, &installations{})
 	const first, second = "LEGION-1001", "LEGION-1002"
-	recordOnWidgets(t, w, first, 0)
-	recordOnWidgets(t, w, second, 1)
+	recordCorrectionRoot(t, w.pool, w.records, first, first, 0)
+	recordCorrectionRoot(t, w.pool, w.records, second, second, 1)
 	heard := "notifications.github." + strings.ReplaceAll(unmappedNamed, "/", ".") + ".>"
 	requested := w.mappingRequested.Load()
 
@@ -203,7 +185,7 @@ func TestRepositoryCorrectionOntoARepositoryNoMappingNamesWaitsWhileARoleAppIsNo
 	installs.setMissing(true, "review "+unmappedRepo)
 	w, client, installs, _ := unmappedRig(t, installs)
 	const key = "LEGION-1011"
-	recordOnWidgets(t, w, key, 0)
+	recordCorrectionRoot(t, w.pool, w.records, key, key, 0)
 
 	deliver(t, w, client, issue(key, unmappedRepo, "in_progress", true, "", 2))
 	deliver(t, w, client, issue(key, unmappedRepo, "in_progress", true, "", 3))
@@ -225,14 +207,14 @@ func TestRepositoryCorrectionOntoARepositoryNoMappingNamesWaitsWhileARoleAppIsNo
 }
 
 // A correction onto a repository no mapping names writes GitHub's answer at the correction and
-// never the read #3730 kept of the repository at an earlier preparation (the recorded set, and the
-// default-branch read defaultBranches holds within its TTL): an admission on unmappedRepo keeps
-// that read at trunk first, then GitHub's answer changes, and the issue is corrected. A default
-// branch renamed since is the one the record takes; an App uninstalled since leaves the change
-// waiting with GitHub's reason and the record where it was, as for an App never installed; a read
-// GitHub does not answer writes nothing; and a hand-over, which no preparation read GitHub for
-// (admit's consumeHandover hands the engine only Dispatch's resolution), writes nothing either.
-// Each row fails on the code as merged, which took the kept read.
+// never the read the daemon kept of the repository at an earlier preparation (the recorded set,
+// repositories.recordRepository, and the default-branch read defaultBranches holds within its
+// TTL): an admission on unmappedRepo keeps that read at trunk first, then GitHub's answer changes,
+// and the issue is corrected. A default branch renamed since is the one the record takes; an App
+// uninstalled since leaves the change waiting with GitHub's reason and the record where it was, as
+// for an App never installed; a read GitHub does not answer writes nothing; and a hand-over, which
+// no preparation read GitHub for (admit's consumeHandover hands the engine only Dispatch's
+// resolution), writes nothing either.
 func TestRepositoryCorrectionOntoARepositoryNoMappingNamesWritesGitHubsAnswerAtTheCorrection(t *testing.T) {
 	const key = "LEGION-1041"
 	for _, tc := range []struct {
@@ -269,7 +251,7 @@ func TestRepositoryCorrectionOntoARepositoryNoMappingNamesWritesGitHubsAnswerAtT
 			quickInstallReads(t)
 			installs := &installations{}
 			w, client, github := changingRig(t, installs)
-			recordOnWidgets(t, w, key, 0)
+			recordCorrectionRoot(t, w.pool, w.records, key, key, 0)
 			keepAnEntry(t, w, client)
 			tc.change(github, installs)
 
@@ -330,7 +312,7 @@ func TestTheBootsListingLeavesACorrectionOntoARepositoryNoMappingNamesToTheFollo
 	w, client, github := changingRig(t, installs.installations, func(w *workflowRuntime) { w.installs = installs })
 	w.bootID = "unmapped-correction-boot"
 	const key = "LEGION-1031"
-	recordOnWidgets(t, w, key, 0)
+	recordCorrectionRoot(t, w.pool, w.records, key, key, 0)
 	keepAnEntry(t, w, client)
 	github.rename("release/v2")
 	client.show(issue(key, unmappedRepo, "in_progress", true, "", 1))
@@ -356,5 +338,126 @@ func TestTheBootsListingLeavesACorrectionOntoARepositoryNoMappingNamesToTheFollo
 	}
 	if reads := installs.reads("implement "+unmappedRepo) - before; reads != 1 {
 		t.Fatalf("%s's implement App was read %d times after the boot began, want once, by the follow", unmappedRepo, reads)
+	}
+}
+
+// slowInstallations is installations whose reads of unmappedRepo GitHub answers after wait each,
+// or, while hang is set, not before the read's context ends, which it counts in cut: a GitHub that
+// answers that repository slowly, or not within a pass's bound.
+type slowInstallations struct {
+	*installations
+	wait time.Duration
+	hang atomic.Bool
+	cut  atomic.Int64
+}
+
+func (i *slowInstallations) InstalledOn(ctx context.Context, role appauth.AppRole, repo ghrepo.Repository) (bool, error) {
+	if !strings.EqualFold(repo.String(), unmappedRepo) {
+		return i.installations.InstalledOn(ctx, role, repo)
+	}
+	var answered <-chan time.Time
+	if !i.hang.Load() {
+		answered = time.After(i.wait)
+	}
+	select {
+	case <-answered:
+		return i.installations.InstalledOn(ctx, role, repo)
+	case <-ctx.Done():
+		i.cut.Add(1)
+		return false, ctx.Err()
+	}
+}
+
+// A follow pass (followListing) that moves fifteen recorded issues onto one repository no mapping
+// names, as a root's move moves every child that inherits its repository, reads that repository
+// once: the first issue's preparation reads both Apps' installations and GitHub's name and default
+// branch, every other issue of the pass takes that read, and each is corrected onto GitHub's
+// spelling and default branch from it. The pass runs within one bound (appMintAttempt, two
+// seconds here), and GitHub answers each installation read of the repository in a tenth of a
+// second: read once per issue, one after another, the reads would use the bound up two thirds of
+// the way through the issues, and every read after it would fail on the expired context.
+func TestAFollowReadsARepositoryNoMappingNamesOnceForEveryIssueItMovesOntoIt(t *testing.T) {
+	attempt := appMintAttempt
+	appMintAttempt = 2 * time.Second
+	t.Cleanup(func() { appMintAttempt = attempt })
+	installs := &slowInstallations{installations: &installations{}, wait: 100 * time.Millisecond}
+	w, client, github := changingRig(t, installs.installations, func(w *workflowRuntime) { w.installs = installs })
+	keys := make([]string, 15)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("LEGION-%d", 1051+i)
+		recordCorrectionRoot(t, w.pool, w.records, keys[i], keys[i], i)
+		client.show(issue(keys[i], unmappedRepo, "in_progress", true, "", 1))
+	}
+
+	w.requestFollow()
+	follows := w.followRequested.Load()
+	applied := testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool { return w.followApplied.Load() >= follows })
+	for _, role := range []string{"implement " + unmappedRepo, "review " + unmappedRepo} {
+		if reads := installs.reads(role); reads != 1 {
+			t.Errorf("the follow made %d reads of %q for %d issues, want one: every issue of the pass takes the first one's", reads, role, len(keys))
+		}
+	}
+	if reads := github.reads.Load(); reads != 1 {
+		t.Errorf("the follow read %s's name and default branch %d times for %d issues, want once", unmappedRepo, reads, len(keys))
+	}
+	if !applied {
+		t.Fatalf("the follow never committed: each of its passes ran out of its bound of %s", appMintAttempt)
+	}
+	for _, key := range keys {
+		onUnmapped(t, w, key, "trunk")
+		if notes := repositoryNotes(t, w, key); len(notes) != 0 {
+			t.Fatalf("notes on %s = %q, want none: its record followed Dispatch onto a repository both Apps are installed on", key, notes)
+		}
+	}
+}
+
+// A follow pass whose bound ends while it reads a repository no mapping names writes nothing for
+// any issue moved onto it: the read the bound cut short answered for the bound, not for GitHub, so
+// it is no refusal for a change to wait with, nothing is said on any issue, and the repository is
+// not left unread, as it is for a read GitHub does not answer, which would have the refresher
+// recover a repository GitHub never failed. The follow stays owed, and the pass after GitHub
+// answers corrects every issue onto GitHub's spelling and default branch.
+func TestAFollowWhoseBoundEndsWhileItReadsARepositoryNoMappingNamesWritesNothingAndIsMadeAgain(t *testing.T) {
+	quickInstallReads(t)
+	attempt := appMintAttempt
+	appMintAttempt = 500 * time.Millisecond
+	t.Cleanup(func() { appMintAttempt = attempt })
+	installs := &slowInstallations{installations: &installations{}}
+	installs.hang.Store(true)
+	w, client, _ := changingRig(t, installs.installations, func(w *workflowRuntime) { w.installs = installs })
+	keys := []string{"LEGION-1071", "LEGION-1072", "LEGION-1073"}
+	for i, key := range keys {
+		recordCorrectionRoot(t, w.pool, w.records, key, key, i)
+		client.show(issue(key, unmappedRepo, "in_progress", true, "", 1))
+	}
+
+	w.requestFollow()
+	follows, requested := w.followRequested.Load(), w.mappingRequested.Load()
+	testwait.Eventually(t, "two passes of the follow cut short by their bound", func() bool { return installs.cut.Load() >= 2 })
+	if applied := w.followApplied.Load(); applied >= follows {
+		t.Fatalf("the follow is applied (%d of %d) with every pass cut short, want it owed", applied, follows)
+	}
+	for _, key := range keys {
+		if got := onWidgets(t, w, key); got.RepoChange != nil {
+			t.Fatalf("%s waits on %+v, want nothing waiting: a read its bound cut short is no refusal", key, got.RepoChange)
+		}
+		if notes := repositoryNotes(t, w, key); len(notes) != 0 {
+			t.Fatalf("notes on %s = %q, want none: a read its bound cut short says nothing", key, notes)
+		}
+	}
+	if waiting := w.unreadReasons(); len(waiting) != 0 {
+		t.Fatalf("the daemon leaves %q unread, want nothing: GitHub did not fail to answer, the pass's bound ended", waiting)
+	}
+	if asked := w.mappingRequested.Load(); asked != requested {
+		t.Fatalf("the cut passes asked for %d reads of the mapping, want none: they left no repository unread to recover", asked-requested)
+	}
+
+	installs.hang.Store(false)
+	testwait.Eventually(t, "the follow applied once GitHub answers", func() bool { return w.followApplied.Load() >= follows })
+	for _, key := range keys {
+		onUnmapped(t, w, key, "trunk")
+		if notes := repositoryNotes(t, w, key); len(notes) != 0 {
+			t.Fatalf("notes on %s = %q, want none", key, notes)
+		}
 	}
 }

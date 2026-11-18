@@ -86,23 +86,24 @@ func newCorrectionRig(t *testing.T) *correctionRig {
 	r.engine = workflow.New(r.records, workflow.Config{Project: correctionProject, Repositories: r.repos, Steps: config.DesignGateOff.Steps(),
 		Clock: func() time.Time { return correctionMoment }}, quietLogger())
 	r.admission = admit.New(r.records, r.engine, 1, correctionProject, quietLogger())
-	recordCorrectionRoot(t, r.pool, r.records)
+	recordCorrectionRoot(t, r.pool, r.records, correctionKey, "root", 0)
 	return r
 }
 
-// recordCorrectionRoot records the issue the tests here move: the running root of a live tree, on
-// acme/widgets at main, at the generation and in the phase a correction may not move.
-func recordCorrectionRoot(t *testing.T, pool *store.Pool, records record.Store) {
+// recordCorrectionRoot records key, titled title, as the issue a test moves: the running root of a
+// live tree holding slot, on acme/widgets at main, at Dispatch sequence 1, at the generation and in
+// the phase a correction may not move, with nothing waiting and no correction.
+func recordCorrectionRoot(t *testing.T, pool *store.Pool, records record.Store, key, title string, slot int) {
 	t.Helper()
 	ctx := context.Background()
-	root := record.Issue{Key: correctionKey, Tree: correctionKey, Project: correctionProject, Title: "root", Phase: phase.Implementing,
+	root := record.Issue{Key: key, Tree: key, Project: correctionProject, Title: title, Phase: phase.Implementing,
 		Generation: correctionGeneration, Status: "in_progress", DispatchStatus: "in_progress", Rank: "A", HandedOver: true, LastDispatchSeq: 1,
 		Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}
-		if err := records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: correctionMoment}); err != nil {
+		if err := records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: slot, AdmittedAt: correctionMoment}); err != nil {
 			return err
 		}
 		// The tree runs, which its open lifecycle is what says (record.TreeLive): without it
@@ -499,7 +500,7 @@ func newRuntimeCorrectionRig(t *testing.T) (*correctionRig, *workflowRuntime, *d
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	recordCorrectionRoot(t, pool, records)
+	recordCorrectionRoot(t, pool, records, correctionKey, "root", 0)
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main", "acme/tools": "acme/tools@release/v7.1"})
 	repos := newRepositories(correctionProject, ghrepo.Renames{})
 	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets"), Default: true}, {Repo: ghrepo.MustParse("acme/tools")}}, nil)
