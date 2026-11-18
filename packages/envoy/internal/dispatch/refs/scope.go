@@ -15,8 +15,10 @@ import (
 )
 
 // askScope is the document an ask (aliased k) belongs to: the one its block is on, the one it is
-// anchored to, or the one that owns it, else its issue's spec (ks, askScopeJoin).
-const askScope = `coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid, k.artifact_id, ks.id)`
+// anchored to, or the one that owns it, else its issue's spec (ks, askScopeJoin). The document a
+// block is on is the one whose fragment holds it in an issue room, whose tree artifact keys the
+// ask's row (AskBlockDocumentSQL), never the tree.
+var askScope = `coalesce(` + AskBlockDocumentSQL("k") + `, (k.anchor->>'artifact_id')::uuid, k.artifact_id, ks.id)`
 
 const askScopeJoin = `left join artifacts ks on ks.issue_key = k.issue_key and ks.is_primary`
 
@@ -24,7 +26,7 @@ const askScopeJoin = `left join artifacts ks on ks.issue_key = k.issue_key and k
 // the one that owns it, or, for a reply to an ask, that ask's scope (commentOwnScopeJoin). A
 // comment naming none is in its parent's scope when it is a reply in a thread, else in its issue's
 // spec.
-const commentOwnScope = `coalesce((c.anchor->>'artifact_id')::uuid, c.artifact_id, ` + askScope + `)`
+var commentOwnScope = `coalesce((c.anchor->>'artifact_id')::uuid, c.artifact_id, ` + askScope + `)`
 
 const commentOwnScopeJoin = `left join asks k on k.id = c.ask_id ` + askScopeJoin
 
@@ -158,8 +160,21 @@ const commentSeedJoins = commentOwnScopeJoin + `
 // of the walk's roots: it names the document itself (commentOwnScope), or it names none and is a
 // thread root of the issue whose spec the document is. An arm narrows which comments are read,
 // never which of the read ones are answered.
-const commentSeedScope = `(` + commentOwnScope + ` = $1
+var commentSeedScope = `(` + commentOwnScope + ` = $1
 		       or (` + commentOwnScope + ` is null and c.reply_to is null and cs.id = $1))`
+
+// scopedAsksTerm is scopeSourcesQuery's scoped_asks, every ask whose scope (askScope) is the
+// document $1: read from the asks whose block is keyed by $1 or by the issue room $1 is edited in
+// (DocumentRoomSQL), the asks anchored to it or owning it, and those of the issue whose spec it
+// is (spec), each then held to its scope.
+var scopedAsksTerm = `
+	scoped_asks as (
+		select k.id from asks k ` + askScopeJoin + `
+		where (coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid) in ($1, ` + DocumentRoomSQL("$1") + `)
+		       or k.artifact_id = $1
+		       or k.issue_key in (select issue_key from spec))
+		  and ` + askScope + ` = $1
+	),`
 
 // scopeSourcesQuery lists, by kind and id, every reference source whose ScopeOf is the document $1.
 // The comments are found from the thread roots and the comments that name the document
@@ -192,18 +207,11 @@ const commentSeedScope = `(` + commentOwnScope + ` = $1
 // recursing on it again. That is why the walk down the replies cannot loop or repeat either: a
 // comment has one parent (comments.reply_to), and a cycle of replies naming no document reaches a
 // comment already answered, where the iteration stops with an empty working table.
-const scopeSourcesQuery = `
+var scopeSourcesQuery = `
 	with recursive
 	spec as (
 		select issue_key from artifacts where id = $1 and is_primary
-	),
-	scoped_asks as (
-		select k.id from asks k ` + askScopeJoin + `
-		where (coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid) = $1
-		       or k.artifact_id = $1
-		       or k.issue_key in (select issue_key from spec))
-		  and ` + askScope + ` = $1
-	),
+	),` + scopedAsksTerm + `
 	scoped_comments(id) as (
 		select c.id from comments c ` + commentSeedJoins + `
 		where (c.anchor->>'artifact_id')::uuid = $1 and ` + commentSeedScope + `

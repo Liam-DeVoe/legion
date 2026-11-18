@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // A link the release before this one adds after the backfill marked its document reaches the
@@ -82,18 +84,209 @@ func TestALinkThePreviousReleaseAddsAfterTheBackfillReachesTheStore(t *testing.T
 // under the event that recorded it.
 func TestAVersionWriteThatDrainsTheMarkGivesThePreviousReleasesVersionItsNode(t *testing.T) {
 	link := writePreviousReleaseLink(t)
-	database, service, document, refKey := link.database, link.service, link.document, link.refKey
+	database, document, refKey := link.database, link.document, link.refKey
 	ctx := context.Background()
 
-	// This build's version 3, as the route that snapshots a document writes it: a live edit, then
-	// the version write in the route's transaction, the version's artifact.version event, and what
-	// the write stated appended under that event.
+	writer := model.Actor{Kind: "user", ID: "bob"}
+	const ownVersion = previousReleaseVersion + 1
+	event := writeVersionThroughThisBuild(t, link, writer, ownVersion)
+	var marked int
+	if err := database.Pool.QueryRow(ctx,
+		`select count(*) from document_block_versions where artifact_id = $1 and store_owed_at is not null`, document).Scan(&marked); err != nil || marked != 0 {
+		t.Fatalf("the document holds the backfill's mark %d time(s) (%v) after this build's version write, want it drained by that write's pass: this test proves nothing", marked, err)
+	}
+
+	requirePresentVersionNode(t, database, refKey, previousReleaseVersion, "after this build's version write drained the backfill's mark")
+	requireOwnVersionNode(t, database, document, refKey, ownVersion, writer, event)
+	requireNoCensusDifference(t, database, "after this build's version write drained the backfill's mark over a link the previous release added")
+}
+
+// A version write of this build that drains the mark writes no more of the previous release's
+// version nodes than missingVersionNodesBound in its own request: where more are missing it writes
+// none of them, owes the document its block index again in the same transaction, and the
+// reconciliation's next tick writes every one.
+//
+// The order is TestAVersionWriteThatDrainsTheMarkGivesThePreviousReleasesVersionItsNode's, with
+// the previous release writing missingVersionNodesBound more versions after its version 2, each
+// with no node, so one more version than the bound holds none when this build writes its own.
+func TestAVersionWriteLeavesMoreMissingVersionNodesThanItsBoundToTheTick(t *testing.T) {
+	link := writePreviousReleaseLink(t)
+	database, service, document, refKey := link.database, link.service, link.document, link.refKey
+	ctx := context.Background()
+	const missing = missingVersionNodesBound + 1
+	if _, err := database.Pool.Exec(ctx, `
+		insert into artifact_versions (artifact_id, number, markdown, authors)
+		select $1, $2::int + n, v.markdown, v.authors
+		from generate_series(1, $3::int) n, artifact_versions v
+		where v.artifact_id = $1 and v.number = $2
+	`, document, previousReleaseVersion, missing-1); err != nil {
+		t.Fatalf("write the previous release's further versions: %v", err)
+	}
+	missingVersions := func() []int {
+		t.Helper()
+		var numbers []int
+		for number := previousReleaseVersion; number < previousReleaseVersion+missing; number++ {
+			if _, stands, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindVersion, graphstore.VersionID(refKey, number)); err != nil {
+				t.Fatalf("read the node of version %d: %v", number, err)
+			} else if !stands {
+				numbers = append(numbers, number)
+			}
+		}
+		return numbers
+	}
+	if held := missingVersions(); len(held) != missing {
+		t.Fatalf("before this build's write %d of the previous release's versions hold no node, want %d: this test proves nothing", len(held), missing)
+	}
+
+	writer := model.Actor{Kind: "user", ID: "bob"}
+	ownVersion := previousReleaseVersion + missing
+	event := writeVersionThroughThisBuild(t, link, writer, ownVersion)
+	if held := missingVersions(); len(held) != missing {
+		t.Errorf("after this build's write %d of the previous release's %d versions hold no node, want all %d left to the tick: the request wrote more than %d",
+			len(held), missing, missing, missingVersionNodesBound)
+	}
+	var version *int
+	var owed bool
+	if err := database.Pool.QueryRow(ctx, `
+		select version, store_owed_at is not null from document_block_versions where artifact_id = $1
+	`, document).Scan(&version, &owed); err != nil {
+		t.Fatalf("read the document's block index marks: %v", err)
+	}
+	if version != nil || !owed {
+		t.Errorf("after this build's write the document's block index stands at %s with this build's mark %t, want it owed by both marks, in the write's transaction",
+			describeVersion(version), owed)
+	}
+	requireOwnVersionNode(t, database, document, refKey, ownVersion, writer, event)
+
+	drainBlockIndex(t, service, "after this build's write left the versions to the tick")
+	if held := missingVersions(); len(held) != 0 {
+		t.Errorf("after the tick versions %v hold no node, want the tick to write every one", held)
+	}
+	requireOwnVersionNode(t, database, document, refKey, ownVersion, writer, event)
+	requireNoCensusDifference(t, database, "after the tick wrote the previous release's version nodes")
+}
+
+// A version the release before writes of a document of an issue room, with no version node, has
+// its node at the room's next drain, as one document's version has, through either drain of the
+// room: the reconciliation's tick, which indexes the room whole on the null version that
+// version's row left (indexOwedRoom), and a settlement of the room, which writes a version of
+// another of its documents while the backfill's mark stands (commitRoomVersions). After either,
+// every version of every document of the room holds its node, the previous release's made by its
+// first author at its row's time, and the settlement's own version's node is the one its write
+// states: dated at its row, made by its writer, under the event that recorded it.
+//
+// The room is createIssueRoom's, run through the backfill, which names its documents' nodes and
+// their first versions' and marks each document (store_owed_at). The release before then writes
+// the plan's version 2 with no node: in the tick's case after a tick drained the backfill's
+// marks, so that version leaves the null version alone; in the settlement's case with the marks
+// standing, and a browser's paragraph in the spec's fragment is what the settlement saves.
+func TestAVersionThePreviousReleaseWritesInAnIssueRoomHasItsNodeAtTheRoomsNextDrain(t *testing.T) {
+	for _, through := range []string{"the tick", "a settlement of the room"} {
+		t.Run(through, func(t *testing.T) {
+			ctx := context.Background()
+			database := storetest.Open(t)
+			service, server := newTestServiceInstance(t, database)
+			room := createIssueRoom(t, database, 1)
+			if _, err := graphcensus.Backfill(ctx, database, io.Discard); err != nil {
+				t.Fatalf("backfill the store: %v", err)
+			}
+			tick := through == "the tick"
+			if tick {
+				drainBlockIndex(t, service, "the backfill's marks")
+			}
+			bob := model.Actor{Kind: "user", ID: "bob"}
+			var previousAt time.Time
+			if err := database.Pool.QueryRow(ctx, `
+				insert into artifact_versions (artifact_id, number, markdown, authors)
+				values ($1, 2, $2, '[{"kind":"user","id":"bob"}]') returning created_at
+			`, room.plan, planSeed).Scan(&previousAt); err != nil {
+				t.Fatalf("write the plan's version 2 as the release before writes it: %v", err)
+			}
+			refKeys := map[string]string{}
+			for _, document := range []string{room.spec, room.verification, room.plan, room.tree} {
+				var refKey string
+				if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, document).Scan(&refKey); err != nil {
+					t.Fatalf("read the ref_key of %s: %v", document, err)
+				}
+				refKeys[document] = refKey
+			}
+			if _, stands, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindVersion, graphstore.VersionID(refKeys[room.plan], 2)); err != nil || stands {
+				t.Fatalf("the plan's version 2 holds a node (%t, %v) before the drain: this test proves nothing", stands, err)
+			}
+
+			if tick {
+				drainBlockIndex(t, service, "the previous release's version")
+			} else {
+				peer := connectPeer(t, server.URL, room.spec, "alice")
+				stored := roomUpdateCount(t, database, room.tree)
+				if _, err := peer.Send(writeParagraph(peer.Doc, room.spec, "Spec words.")); err != nil {
+					t.Fatalf("write into the spec's fragment: %v", err)
+				}
+				waitForStoredUpdates(t, database, room.tree, stored)
+				if err := service.waitForDurableAppends(ctx, room.tree); err != nil {
+					t.Fatalf("wait for the room's appends: %v", err)
+				}
+				if err := service.settleOwedNow(ctx, room.tree, time.Now().Add(roomWait(t))); err != nil {
+					t.Fatalf("settle the issue's room: %v", err)
+				}
+			}
+
+			for document, refKey := range refKeys {
+				var numbers []int
+				if err := database.Pool.QueryRow(ctx, `
+					select array_agg(number order by number) from artifact_versions where artifact_id = $1
+				`, document).Scan(&numbers); err != nil {
+					t.Fatalf("read the versions of %s: %v", refKey, err)
+				}
+				for _, number := range numbers {
+					requirePresentVersionNode(t, database, refKey, number, "after "+through+" drained the room")
+				}
+			}
+			previous := requirePresentVersionNode(t, database, refKeys[room.plan], 2, "after "+through+" drained the room")
+			if !previous.MadeBy.SameAs(bob) || !previous.MadeAt.Equal(previousAt) {
+				t.Errorf("the node of the plan's version 2 was made at %s by %+v, want at its row's %s by its first author %+v",
+					previous.MadeAt, previous.MadeBy, previousAt, bob)
+			}
+			if tick {
+				return
+			}
+			// The settlement's own version of the spec, and the event that recorded it.
+			var own int
+			var event int64
+			var actor []byte
+			if err := database.Pool.QueryRow(ctx, `
+				select v.number, e.id, e.actor from artifact_versions v
+				join events e on e.type = 'artifact.version' and e.payload->>'artifact_id' = v.artifact_id::text
+				 and e.payload->'version'->>'number' = v.number::text
+				where v.artifact_id = $1 order by v.number desc limit 1
+			`, room.spec).Scan(&own, &event, &actor); err != nil {
+				t.Fatalf("read the settlement's version of the spec and its event: %v", err)
+			}
+			var writer model.Actor
+			if err := json.Unmarshal(actor, &writer); err != nil {
+				t.Fatalf("read the actor of the spec's version %d's event: %v", own, err)
+			}
+			if own != 2 {
+				t.Fatalf("the settlement wrote the spec's version %d, want its version 2", own)
+			}
+			requireOwnVersionNode(t, database, room.spec, refKeys[room.spec], own, writer, event)
+		})
+	}
+}
+
+// writeVersionThroughThisBuild writes version want of link's document through this build, as the
+// route that snapshots a document writes it: a live edit, then the version write in the route's
+// transaction, the version's artifact.version event, and what the write stated appended under
+// that event. It answers the event.
+func writeVersionThroughThisBuild(t *testing.T, link previousReleaseLink, writer model.Actor, want int) int64 {
+	t.Helper()
+	database, service, document := link.database, link.service, link.document
+	ctx := context.Background()
 	editLiveTree(t, service, document, func(tree *pmdoc.Node) *pmdoc.Node {
 		replaceText(tree, "Outer of linked.", "Outer of linked, edited through this build.")
 		return tree
 	})
 	waitForLandedAppends(t, service, document)
-	writer := model.Actor{Kind: "user", ID: "bob"}
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the version write: %v", err)
@@ -103,11 +296,10 @@ func TestAVersionWriteThatDrainsTheMarkGivesThePreviousReleasesVersionItsNode(t 
 	defer ledger.Discard()
 	written, err := service.SnapshotVersion(joined, document, writer)
 	if err != nil {
-		t.Fatalf("write version 3 through this build: %v", err)
+		t.Fatalf("write version %d through this build: %v", want, err)
 	}
-	const ownVersion = previousReleaseVersion + 1
-	if !written.Wrote || written.Version.Number != ownVersion {
-		t.Fatalf("the version write wrote %t at version %d, want version %d", written.Wrote, written.Version.Number, ownVersion)
+	if !written.Wrote || written.Version.Number != want {
+		t.Fatalf("the version write wrote %t at version %d, want version %d", written.Wrote, written.Version.Number, want)
 	}
 	var event int64
 	if err := tx.QueryRow(ctx, `
@@ -116,42 +308,43 @@ func TestAVersionWriteThatDrainsTheMarkGivesThePreviousReleasesVersionItsNode(t 
 		       jsonb_build_object('artifact_id', $1::text, 'name', 'linked.md', 'version', jsonb_build_object('number', $2::int)), false
 		from events where issue_key = 'CORE-1'
 		returning id
-	`, document, ownVersion).Scan(&event); err != nil {
-		t.Fatalf("append version 3's event: %v", err)
+	`, document, want).Scan(&event); err != nil {
+		t.Fatalf("append version %d's event: %v", want, err)
 	}
 	if err := graphstore.Caused(ctx, tx, written.Blocks, event); err != nil {
-		t.Fatalf("append what version 3's write stated: %v", err)
+		t.Fatalf("append what version %d's write stated: %v", want, err)
 	}
 	if err := ledger.Commit(ctx); err != nil {
-		t.Fatalf("commit version 3: %v", err)
+		t.Fatalf("commit version %d: %v", want, err)
 	}
-	var marked int
-	if err := database.Pool.QueryRow(ctx,
-		`select count(*) from document_block_versions where artifact_id = $1 and store_owed_at is not null`, document).Scan(&marked); err != nil || marked != 0 {
-		t.Fatalf("the document holds the backfill's mark %d time(s) (%v) after this build's version write, want it drained by that write's pass: this test proves nothing", marked, err)
-	}
+	return event
+}
 
-	requirePresentVersionNode(t, database, refKey, previousReleaseVersion, "after this build's version write drained the backfill's mark")
-	own := requirePresentVersionNode(t, database, refKey, ownVersion, "after this build's version write")
+// requireOwnVersionNode holds the node of version number of document, whose ref_key is refKey, to
+// the one every version write states: dated at its own row, made by its writer, under the event
+// that recorded it, with its part_of stated once.
+func requireOwnVersionNode(t *testing.T, database *store.Store, document, refKey string, number int, writer model.Actor, event int64) {
+	t.Helper()
+	ctx := context.Background()
+	own := requirePresentVersionNode(t, database, refKey, number, "after its version write")
 	var ownAt time.Time
 	if err := database.Pool.QueryRow(ctx, `select created_at from artifact_versions where artifact_id = $1 and number = $2`,
-		document, ownVersion).Scan(&ownAt); err != nil {
-		t.Fatalf("read the row of version %d: %v", ownVersion, err)
+		document, number).Scan(&ownAt); err != nil {
+		t.Fatalf("read the row of version %d: %v", number, err)
 	}
 	if !own.MadeAt.Equal(ownAt) || !own.MadeBy.SameAs(writer) || own.SourceEvent != event {
 		t.Errorf("the node of version %d was made at %s by %+v under event %d, want at its row's %s by its writer %+v under its event %d",
-			ownVersion, own.MadeAt, own.MadeBy, own.SourceEvent, ownAt, writer, event)
+			number, own.MadeAt, own.MadeBy, own.SourceEvent, ownAt, writer, event)
 	}
 	var partOf int
 	if err := database.Pool.QueryRow(ctx, `
 		select count(*) from graph_tuples where from_kind = $1 and from_id = $2 and kind = $3
 	`, graphstore.KindVersion, own.ID, graphstore.TuplePartOf).Scan(&partOf); err != nil {
-		t.Fatalf("read the part_of tuples of version %d: %v", ownVersion, err)
+		t.Fatalf("read the part_of tuples of version %d: %v", number, err)
 	}
 	if partOf != 1 {
-		t.Errorf("the node of version %d states %d part_of tuple(s), want one: a write other than the version's own stated it", ownVersion, partOf)
+		t.Errorf("the node of version %d states %d part_of tuple(s), want one: a write other than the version's own stated it", number, partOf)
 	}
-	requireNoCensusDifference(t, database, "after this build's version write drained the backfill's mark over a link the previous release added")
 }
 
 // previousReleaseVersion is the version the release before this one writes of the document of

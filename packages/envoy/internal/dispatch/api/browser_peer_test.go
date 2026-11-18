@@ -99,6 +99,21 @@ func artifactFragment(t *testing.T, handler http.Handler, artifactID string) str
 	return model.ArtifactFragmentOwn
 }
 
+// artifactRoom is the room the artifact read answers for artifactID: the issue room a converted
+// document is edited in, whose settlement saves it, or the document itself where it is its own
+// room.
+func artifactRoom(t *testing.T, handler http.Handler, artifactID string) string {
+	t.Helper()
+	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID, nil, "alice")
+	if read.Code != http.StatusOK {
+		t.Fatalf("read the artifact %s: status=%d body=%s", artifactID, read.Code, read.Body.String())
+	}
+	if room := decodeBody[model.Artifact](t, read).Room; room != "" {
+		return room
+	}
+	return artifactID
+}
+
 func (p *syncedPeer) connect(t *testing.T) {
 	t.Helper()
 	socketID := strconv.FormatInt(p.sockets.next.Add(1), 10)

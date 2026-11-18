@@ -337,7 +337,9 @@ func (f *heldWriteFixture) connectPlainSocket(t *testing.T) {
 
 func (f *heldWriteFixture) connectPeer(t *testing.T) *syncedPeer {
 	t.Helper()
-	peer := &syncedPeer{wsURL: f.wsURL, sockets: f.sockets, headers: f.headers, artifactID: f.issue.PrimaryArtifactID, doc: crdt.New()}
+	_, fragment := documentRoomOf(t, f.database.Pool, f.issue.PrimaryArtifactID)
+	peer := &syncedPeer{wsURL: f.wsURL, sockets: f.sockets, headers: f.headers, artifactID: f.issue.PrimaryArtifactID,
+		fragment: fragment, doc: crdt.New()}
 	peer.connect(t)
 	t.Cleanup(peer.close)
 	drainDocumentUpdates(f.persistence)

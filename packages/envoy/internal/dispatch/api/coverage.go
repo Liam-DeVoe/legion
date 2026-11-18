@@ -71,15 +71,17 @@ func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 // step with the document it wrote; the requirements' order and words come from the live spec,
 // and each one's node state from the store (queueRequirementStates). The node states and the
 // counts of what serves each requirement are read in one batch, one round trip, as the counts
-// alone were before the states were read.
+// alone were before the states were read. A spec edited in its issue's room has its blocks' rows
+// and nodes keyed by the room's tree artifact (refs.DocumentRoomSQL), so they are read there.
 func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, issueKey string) (model.IssueCoverage, error) {
 	coverage := model.IssueCoverage{Issue: issueKey, Requirements: []model.RequirementCoverage{}, Gaps: []string{}}
-	var specRefKey string
+	var specNodeKey string
 	err := q.QueryRow(ctx, `
 		select coalesce((select a.id::text from artifacts a where a.issue_key = $1 and a.is_primary), ''),
-		       coalesce((select a.ref_key from artifacts a where a.issue_key = $1 and a.is_primary), ''),
+		       coalesce((select keyed.ref_key from artifacts a join artifacts keyed on keyed.id = `+refs.DocumentRoomSQL("a.id")+`
+		                 where a.issue_key = $1 and a.is_primary), ''),
 		       exists (select 1 from artifacts a where a.issue_key = $1 and `+aliasedPlanRole+`)
-	`, issueKey).Scan(&coverage.SpecArtifactID, &specRefKey, &coverage.HasPlan)
+	`, issueKey).Scan(&coverage.SpecArtifactID, &specNodeKey, &coverage.HasPlan)
 	if err != nil {
 		return model.IssueCoverage{}, fmt.Errorf("read the documents of %s: %w", issueKey, err)
 	}
@@ -102,7 +104,7 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, 
 	batch := &pgx.Batch{}
 	states := make(map[string]string, len(requirements))
 	served := map[string]servingCounts{}
-	queueRequirementStates(batch, who, specRefKey, requirements, states)
+	queueRequirementStates(batch, who, specNodeKey, requirements, states)
 	queueServingBlockCounts(batch, who, coverage.SpecArtifactID, append([]string{issueKey}, descendants...), served)
 	if err := q.SendBatch(ctx, batch).Close(); err != nil {
 		return model.IssueCoverage{}, err
@@ -143,10 +145,11 @@ var requirementStatesQuery = `
 	where ` + refs.VisibleKind(refs.BlockNodeKind, `requirement.id`, `$2`)
 
 // queueRequirementStates queues, in b, the read of the node state of each requirement of the spec
-// whose ref_key is refKey (requirementStatesQuery) for who, and fills states with each by block
-// id once the batch is read. A requirement the store holds no row of reads live, as every read of
-// a node answers one (refs.StoredStateAndVisibility); one the predicate hides from who answers no
-// state, and the caller reads it live.
+// whose blocks' nodes are keyed under refKey (requirementStatesQuery) for who - the spec's own
+// ref_key, or its room's where the spec is edited in its issue's room - and fills states with each
+// by block id once the batch is read. A requirement the store holds no row of reads live, as every
+// read of a node answers one (refs.StoredStateAndVisibility); one the predicate hides from who
+// answers no state, and the caller reads it live.
 func queueRequirementStates(b *pgx.Batch, who model.Actor, refKey string, requirements []model.RequirementCoverage, states map[string]string) {
 	ids := make([]string, len(requirements))
 	for index, requirement := range requirements {
@@ -219,9 +222,11 @@ type servingCounts struct {
 
 // queueServingBlockCounts queues, in b, the count, for each block of the spec, of the `check` and
 // `plan_task` blocks of the documents of issues that name it in `serves`, and adds each to served
-// once the batch is read. Both ends are current blocks of their documents: deleting the check
-// deletes its row, so its requirement is uncovered again. A check or a plan task whose block's
-// node state is proposed is a question still open and serves nothing yet
+// once the batch is read. The spec's blocks are the rows of the room it is edited in whose
+// document is the spec (refs.DocumentRoomSQL, refs.BlockDocumentSQL): its own rows where it is its
+// own room. Both ends are current blocks of their documents: deleting the check deletes its row,
+// so its requirement is uncovered again. A check or a plan task whose block's node state is
+// proposed is a question still open and serves nothing yet
 // (dispatch://INFRA-1950/spec#b-r-proposed), so it is not counted; one at any other state is, and
 // one the store holds no row of reads live, as every read of a node answers one. Its state is read
 // for who in the same statement, as requirementStatesQuery reads a requirement's: from the store's
@@ -239,7 +244,8 @@ func queueServingBlockCounts(b *pgx.Batch, who model.Actor, specArtifactID strin
 	b.Queue(`
 		select t.block_id, s.type, count(*)
 		from block_refs r
-		join document_blocks t on t.node_id = r.to_id and t.artifact_id = $1::uuid and t.type = 'requirement'
+		join document_blocks t on t.node_id = r.to_id and t.artifact_id = `+refs.DocumentRoomSQL("$1::uuid")+` and t.type = 'requirement'
+		  and `+refs.BlockDocumentSQL("t")+` = $1::uuid
 		join document_blocks s on s.artifact_id = r.artifact_id and s.block_id = r.block_id
 		join artifacts a on a.id = r.artifact_id
 		where r.kind = 'serves' and r.to_kind = 'block'

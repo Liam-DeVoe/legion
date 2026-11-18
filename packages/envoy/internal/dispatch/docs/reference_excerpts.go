@@ -48,6 +48,20 @@ import (
 // reconciliation's. The 8,000-item list pays nothing instead of 347 ms.
 const deferBlockIndexBlocks = 2000
 
+// missingVersionNodesBound is the most version nodes a writer's index pass writes in its own
+// request for versions of the documents it covers that the release before wrote with none
+// (indexRenderedVersion); a pass that finds more leaves them all to the block-index
+// reconciliation, which writes them under no request's clock. Before the backfill's version pass
+// has run, a document the backfill marked can hold every one of its versions with no node.
+//
+// A version node costs about 300 µs to write on a two-core pod:
+// graphcensus.WriteMissingVersionNodes over one document wrote 51 nodes in 15 and 27 ms, 101 in
+// 31 and 37 ms, 201 in 38 and 57 ms, 401 in 90 and 121 ms and 801 in 210 and 211 ms, the read of
+// the versions with no node included. At 100 versions a write that drains them pays at most about
+// 40 ms more, under half of the 100 ms its own block index is held to (deferBlockIndexBlocks), and
+// so well inside the ±150 ms by which this pod moves the same byte-identical write.
+const missingVersionNodesBound = 100
+
 // IndexDocumentReferences indexes version's markdown, which the calling transaction has just
 // stored as the document's version (indexDocument): its references, each mention's excerpt and
 // its blocks, all from the rendering of the tree that transaction wrote: an upload's replacement,
@@ -181,7 +195,7 @@ func (s *Service) indexDocument(ctx context.Context, tx pgx.Tx, artifactID strin
 		changes, err := s.indexUnrenderedVersion(ctx, tx, artifactID, versions[artifactID].Number, newest.At, markdown)
 		return changes, graphstore.Uncaused{}, err
 	}
-	return s.indexRenderedVersion(ctx, tx, artifactID, versions, versions, markdown, offsetBlocks(rendered.offsets, rendered.documents), rendered.tree, settled)
+	return s.indexRenderedVersion(ctx, tx, artifactID, versions, versions, false, markdown, offsetBlocks(rendered.offsets, rendered.documents), rendered.tree, settled)
 }
 
 // oweVersionsIndex owes each document of versions this build's block index (oweDocumentIndex), in
@@ -291,7 +305,7 @@ func (s *Service) indexDocumentInRoom(ctx context.Context, tx pgx.Tx, room strin
 		return s.indexDeferredVersion(ctx, tx, room, versions, markdown,
 			renderedTree{tree: joined, markdown: markdown, offsets: offsets, documents: layout.blockDocuments(room, joined, counts)})
 	}
-	index, err := s.indexRoom(ctx, tx, room, versions, refs.Versions{document: versions[document]}, markdown, blocks, joined, settled)
+	index, err := s.indexRoom(ctx, tx, room, versions, refs.Versions{document: versions[document]}, false, markdown, blocks, joined, settled)
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
@@ -344,14 +358,22 @@ func offsetBlocks(offsets []pmdoc.BlockOffset, documents map[string]string) []mo
 // artifactID's re-index queue row, and for an issue room each document's the pass read is settled
 // beside it (settleRoomDocumentsOwed).
 //
-// A pass that drains this build's mark (refs.IndexBlocks' marked) also writes, in this
-// transaction, the node of each version of the documents it covers that holds none
-// (graphcensus.WriteMissingVersionNodes), after the pass's own nodes: the release before this one
-// writes no version node, and once the mark is cleared no later pass reaches such a version.
-// written is the versions of versions this transaction wrote, which are left out: each one's
-// node is its writer's, written after the index with the version's own writer, time and event
-// (WriteVersionNode). The reconciliation writes no version and leaves none out.
-func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactID string, versions, written refs.Versions, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node, settled *askBlockSources) (model.ReferenceChanges, graphstore.Uncaused, error) {
+// A pass that drains a mark also writes, in this transaction, the node of each version of the
+// documents it covers that holds none (graphcensus.WriteMissingVersionNodes), after the pass's own
+// nodes: the release before this one writes no version node, and once the marks are cleared no
+// later pass reaches such a version. tick is set by the block-index reconciliation's passes
+// (indexOwedDocument, indexOwedRoom), which run only on a document or a room they listed as owed
+// by either mark - this build's (store_owed_at), or the null version migration 0122's trigger
+// sets, which is all the release before leaves on a version whose blocks it deferred or which it
+// wrote with no rendering - so such a pass writes them wherever it wins, every one, and leaves
+// none out, since it writes no version. Any other pass is a writer's and drains this build's mark
+// alone (refs.IndexBlocks' marked); written is the versions of versions its transaction wrote,
+// which are left out, each one's node being its writer's, written after the index with the
+// version's own writer, time and event (WriteVersionNode). A writer's pass writes at most
+// missingVersionNodesBound of them: where more are missing it writes none, and owes each document
+// the pass covers its block index again in this transaction (oweVersionsIndex), so the
+// reconciliation's next tick indexes them again and writes those nodes.
+func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactID string, versions, written refs.Versions, tick bool, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node, settled *askBlockSources) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	own, held := versions[artifactID]
 	if !held {
 		_, newest := versions.Newest(artifactID)
@@ -379,9 +401,21 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 		write.Nodes = append(write.Nodes, typed.Nodes...)
 		write.Tuples = append(write.Tuples, typed.Tuples...)
 	}
-	if marked {
-		if err := graphcensus.WriteMissingVersionNodes(ctx, tx, slices.Sorted(maps.Keys(versions)), written); err != nil {
+	if tick && won || marked {
+		bound := missingVersionNodesBound
+		if tick {
+			bound = 0
+		}
+		wrote, err := graphcensus.WriteMissingVersionNodes(ctx, tx, slices.Sorted(maps.Keys(versions)), written, bound)
+		if err != nil {
 			return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+		}
+		if !wrote {
+			slog.Info("dispatch: a version write left the version nodes the release before did not write to the block-index reconciliation: more are missing than a write writes in its own request",
+				"artifact", artifactID, "bound", missingVersionNodesBound)
+			if err := oweVersionsIndex(ctx, tx, versions); err != nil {
+				return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+			}
 		}
 	}
 	if err := settleRoomDocumentsOwed(ctx, tx, artifactID, versions); err != nil {

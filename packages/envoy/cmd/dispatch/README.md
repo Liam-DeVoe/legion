@@ -3138,6 +3138,11 @@ A version node held `gone` counts as missing: a removal or an erase states a ver
 Each node and its facts are dated at the row's `created_at`, made by the version's first author (or by the run, where the row names none), and caused by no event; a version that is its image's or file's newest states its bytes on its document's node beside its node.
 A batch takes the owner rows its versions' documents stand under first and reads its rows again under them, so a version removed meanwhile gets no node and an upload of a later version waits for the batch and states its bytes after it.
 The report prints its `kind=version` line.
+A version the release before this one writes during a roll holds no node either, and the block index writes it without a second run.
+The reconciliation's index pass over a document or an issue room it lists as owed, by `store_owed_at` or by the null `version` that release's version leaves, writes the node of every version of the documents it covers that holds none, as this pass writes them (`TestAVersionThePreviousReleaseWritesInAnIssueRoomHasItsNodeAtTheRoomsNextDrain`).
+A version write of this build whose own index pass drains `store_owed_at` writes them too, all but its own, whose node its write states with its writer and event;
+where more than 100 are missing it writes none of them and owes the document its block index again, so the reconciliation's next tick writes them out of the request (`TestAVersionWriteLeavesMoreMissingVersionNodesThanItsBoundToTheTick`).
+A version that release writes and indexes in one request, of a document this build has already drained, leaves neither mark, and no tick of this build lists the document: that version's node stands at the next run of the backfill.
 
 A block's parent is the one fact it does not write.
 The parent is the nesting of the rendered version, which no column of `document_blocks` holds, and the version's stored markdown cannot give it either, since a paragraph's id is no part of that text; only the server renders the document the ids belong to.

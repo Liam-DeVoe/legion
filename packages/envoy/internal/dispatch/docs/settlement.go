@@ -1217,7 +1217,7 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 		parts[index] = fragment.tree
 	}
 	indexed := withoutSilentFragments(offsets, parts, func(index int) bool { return fragments[index].markdown == "" })
-	index, err := s.indexRoom(ctx, tx, room, versions, inserted, markdown, offsetBlocks(indexed, st.layout.blockDocuments(room, st.versioned, st.versionedCounts)),
+	index, err := s.indexRoom(ctx, tx, room, versions, inserted, false, markdown, offsetBlocks(indexed, st.layout.blockDocuments(room, st.versioned, st.versionedCounts)),
 		st.versioned, &st.reconciliation.sources)
 	if err != nil {
 		return graphstore.NoEvent, err

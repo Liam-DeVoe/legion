@@ -713,10 +713,11 @@ var indexPasses = map[string]string{
 	// found by an anti-join on graph_nodes since the row names no node, and its document's row,
 	// which give the node its address, its project and whether it is a query's version.
 	"graphcensus/census_versions.go#writeVersionBatch": "the artifact_versions rows no version node stands for, and their documents' rows",
-	// The same nodes written by the block-index pass that drains this build's mark (docs'
-	// indexRenderedVersion): the same read of the same rows, limited to the versions of the
-	// documents the pass covers, less the version its own writer writes the node of, each row's own
-	// content and its document's row, so it mends no projection from the store either.
+	// The same nodes written by the block-index pass that drains a mark of its documents (docs'
+	// indexRenderedVersion: the reconciliation's pass on either mark, a writer's on this build's,
+	// up to missingVersionNodesBound): the same read of the same rows, limited to the versions of
+	// the documents the pass covers, less the version its own writer writes the node of, each
+	// row's own content and its document's row, so it mends no projection from the store either.
 	"graphcensus/census_versions.go#WriteMissingVersionNodes": "the artifact_versions rows of the documents the draining pass covers that no version node stands for, and their documents' rows",
 	// The backfill of the waits a process of the release before wrote: each issue_links row naming
 	// no node, its own content, read again under its issue's row, and that issue's own row, whose

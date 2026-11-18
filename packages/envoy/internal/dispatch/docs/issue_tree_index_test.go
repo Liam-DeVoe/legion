@@ -667,6 +667,18 @@ func TestTheIssueTreeHoldsTheParentAndRankOfEveryBlockOfTheVersion(t *testing.T)
 		t.Errorf("after version %d the moved block's parent_block_id is %q, want left", late.version, got)
 	}
 	requireTheTreeOfTheVersion(t, database, service, spec, "CORE-1", '1', map[string]string{"mover": rankMoved})
+	// That build writes no version node, and its version leaves the spec owed by the null version
+	// alone (the backfill's mark was drained before it): the tick's pass, which won on the spec it
+	// listed as owed, writes the version's node, made by its first author at its row's created_at.
+	var refKey string
+	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, spec).Scan(&refKey); err != nil {
+		t.Fatalf("read the spec's ref_key: %v", err)
+	}
+	node := requirePresentVersionNode(t, database, refKey, late.version, "after the tick that indexed it")
+	if !node.MadeBy.SameAs(bob) || !node.MadeAt.Equal(late.versionAt) {
+		t.Errorf("the node of version %d was made at %s by %+v, want at its row's %s by its first author %+v",
+			late.version, node.MadeAt, node.MadeBy, late.versionAt, bob)
+	}
 }
 
 // renderedVersion is the canonical markdown of markdown and its blocks, as the block index takes
@@ -796,7 +808,7 @@ func TestAPassThatWaitedForTheOwnerRowDatesItsTuplesAfterThePassItWaitedFor(t *t
 			`, document, markdown).Scan(&versionAt); err != nil {
 				return fmt.Errorf("write version 2: %w", err)
 			}
-			_, write, err := service.indexRenderedVersion(ctx, requestTx, document, refs.OneVersion(document, 2, versionAt), refs.OneVersion(document, 2, versionAt), markdown, blocks, nil, nil)
+			_, write, err := service.indexRenderedVersion(ctx, requestTx, document, refs.OneVersion(document, 2, versionAt), refs.OneVersion(document, 2, versionAt), false, markdown, blocks, nil, nil)
 			if err != nil {
 				return fmt.Errorf("index version 2: %w", err)
 			}

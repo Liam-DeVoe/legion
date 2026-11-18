@@ -393,7 +393,8 @@ func requireResolvedDecisionAndCopy(t *testing.T, handler http.Handler, database
 // it holds none of the block's state, and the text an agent reads shows the block resolved.
 func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) {
 	var documents *docs.Service
-	// hold names the document whose next settlement is held at its owner row, until release.
+	// hold names the room whose next settlement is held at its owner row, until release: the room
+	// the spec is edited in (documentRoomOf), which a settlement locks.
 	var hold atomic.Pointer[string]
 	held := make(chan struct{})
 	release := make(chan struct{})
@@ -418,7 +419,8 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 	awaitSettled(t, database, spec)
 	versions := len(versionHashes(t, database, spec))
 
-	hold.Store(&spec)
+	specRoom, _ := documentRoomOf(t, database.Pool, spec)
+	hold.Store(&specRoom)
 	edited := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+spec+"/edits", map[string]any{
 		"actor": sessionActor(),
 		"ops": []map[string]string{{
