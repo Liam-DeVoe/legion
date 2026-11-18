@@ -1069,6 +1069,11 @@ const rules: Record<string, Rule> = {
     refreshes: ["documentPanel", "comment"],
     spares: ["specPanel", "issuePanel", "inbox"],
   },
+  "a delete of a comment a project document owns refreshes that document's panel": {
+    event: event("comment.deleted", { anchor: null, ask_id: null, id: "comment-1" }, documentOwner),
+    refreshes: ["documentPanel", "comment"],
+    spares: ["specPanel", "issuePanel", "inbox"],
+  },
   "an edit of a comment refreshes every read of its blocks, pinned or not, and no other block": {
     event: event("comment.edited", { anchor: null, ask_id: null, id: "comment-1" }),
     refreshes: ["commentBlock", "commentBlockPinned", "comment"],

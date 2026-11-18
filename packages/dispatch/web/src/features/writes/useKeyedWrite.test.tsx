@@ -125,6 +125,66 @@ test("a write answered KEY_COMMITTED succeeds with null: no error and no rollbac
   }
 });
 
+// W27 again, for the other answer a landed write can get: a repeat under the key that Dispatch
+// answers with the first answer's own 2xx, replayed (`Idempotency-Replayed: ?1`), and a body that
+// reads ANSWER_NOT_KEPT, since it keeps no copy of that answer. The write was made, so it too
+// succeeds with `null`: nothing is rolled back, nothing shows as failed, and it is not sent again.
+test("a write whose replayed answer Dispatch kept no copy of succeeds with null: no error and no rollback", async () => {
+  const tab = keptTab();
+  const answerPath = "/api/v1/asks/ask-1/answer";
+  const fetched = spyOn(globalThis, "fetch").mockImplementation((async (
+    input: RequestInfo | URL
+  ) =>
+    String(input) === answerPath
+      ? Response.json(
+          { code: "ANSWER_NOT_KEPT", error: "Dispatch kept no copy of this answer" },
+          { headers: { "Idempotency-Replayed": "?1" }, status: 200 }
+        )
+      : Response.json(
+          { code: "NOT_FOUND", error: "no such route" },
+          { status: 404 }
+        )) as typeof fetch);
+  let rolledBack = 0;
+  const succeeded: unknown[] = [];
+  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  const hook = renderHook(
+    () =>
+      useKeyedWrite({
+        inline: true,
+        label: () => "Answer to “Ship?”",
+        onError: () => {
+          rolledBack += 1;
+        },
+        onSuccess: (data) => succeeded.push(data),
+        write: (input: { selected: string[] }, bounds) =>
+          api.answerAsk("ask-1", { expected_edited_at: null, ...input }, bounds),
+      }),
+    { wrapper }
+  );
+
+  try {
+    let resolved: unknown = "unset";
+    await act(async () => {
+      resolved = await hook.result.current.mutateAsync({ selected: ["Ship"] });
+    });
+    expect(resolved).toBeNull();
+    expect(fetched.mock.calls.map(([input]) => String(input))).toEqual([answerPath]);
+    expect(hook.result.current.isSuccess).toBe(true);
+    expect(hook.result.current.data).toBeNull();
+    expect(rolledBack).toBe(0);
+    expect(succeeded).toEqual([null]);
+    expect(writesOf(client).rows()).toEqual([]);
+  } finally {
+    hook.unmount();
+    fetched.mockRestore();
+    tab.close();
+  }
+});
+
 // A write pressed while the browser says it is offline is attempted, not paused: its own retries
 // wait out the network, so it goes late at its deadline and can be stopped (`networkMode:
 // "always"`).

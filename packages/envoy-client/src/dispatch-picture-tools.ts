@@ -15,7 +15,12 @@ import type {
 } from "@legion/contracts";
 import { SESSION_ID_PATTERN } from "@legion/contracts";
 import { bodyWasCut, carriedItem, wholeCarriedBody } from "./delivery";
-import { type DispatchClient, DispatchGatewayError, DispatchServiceError } from "./dispatch-http";
+import {
+  type DispatchClient,
+  DispatchGatewayError,
+  DispatchServiceError,
+  DispatchWriteLandedError,
+} from "./dispatch-http";
 import { parseDispatchRef } from "./dispatch-owner";
 import {
   type DatedText,
@@ -125,12 +130,21 @@ export async function textWithPictures(
           : `; the pictures before it are uploaded (${addresses.join(", ")})`;
       // Only a refusal that says the upload never took effect is "not uploaded": a gateway's page
       // or Dispatch's own 5xx may come after Dispatch stored it, and a transport failure or an
-      // unsettled write may still land. The write's own message already ends its sentence.
+      // unsettled write may still land. A write Dispatch says landed with no answer to give
+      // (DispatchWriteLandedError, which the caller may wrap as its cause) was uploaded. The
+      // write's own message already ends its sentence.
+      const landed =
+        error instanceof DispatchWriteLandedError ||
+        (error instanceof Error && error.cause instanceof DispatchWriteLandedError);
       const refused =
         error instanceof DispatchGatewayError
           ? !error.mayHaveReachedDispatch
           : error instanceof DispatchServiceError && error.status < 500;
-      const outcome = refused ? "was not uploaded" : "may or may not have been uploaded";
+      const outcome = landed
+        ? "was uploaded"
+        : refused
+          ? "was not uploaded"
+          : "may or may not have been uploaded";
       throw new Error(
         `images: ${picture.path} ${outcome}: ${messageFor(error).replace(/\.$/, "")}. Nothing ` +
           `was posted${earlier}.`
