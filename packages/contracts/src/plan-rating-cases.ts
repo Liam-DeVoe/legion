@@ -32,6 +32,6 @@ export const PlanRatingCases = z.strictObject({
       error: "the cases hold no rating the daemon refused",
     })
     .refine((cases) => GO_TRIM_SPLIT.every((blank) => cases.some((c) => c.planReason === blank)), {
-      error: "the cases hold no reason of one of GO_TRIM_SPLIT alone (U+0085, U+FEFF)",
+      error: "the cases hold no reason of one of GO_TRIM_SPLIT alone (./go-blank.ts)",
     }),
 });

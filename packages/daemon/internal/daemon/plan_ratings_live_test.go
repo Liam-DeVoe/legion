@@ -3,8 +3,8 @@
 // The live proof's driver for the rating of each plan: each retro of the whole daemon rates the
 // plan its issue ran, the daemon writes the plan and the rating onto the issue in Dispatch, and a
 // person lists the finished issues of the project with the real `dispatch plans` command.
-// scripts/e2e/plan-ratings.sh builds this driver with `-tags e2e` and owns the nats-server and the
-// PostgreSQL it runs against.
+// scripts/e2e/plan-ratings.sh builds this driver with `-tags e2e` and owns the nats-server it runs
+// against; it starts no database, and the PostgreSQL is the server LEGION_TEST_PG_DSN names.
 //
 // Nothing of the record path is stood in for. Dispatch is the real server this checkout builds
 // (startHandoffDispatch), on a database of its own on LEGION_TEST_PG_DSN's server, with NATS off.

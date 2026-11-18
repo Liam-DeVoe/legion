@@ -314,7 +314,7 @@ describe("dispatch steps", () => {
   // admits those kinds and no other, so `bun run typecheck` fails at the directive below once the
   // field loses its enum and the contract is generated again.
   test("a retro's run prints its kind at place 0, a kind the read's type holds", async () => {
-    const kinds: readonly StepRecord["kind"][] = ["step", "retro", "merge"];
+    const _kinds: readonly StepRecord["kind"][] = ["step", "retro", "merge"];
     // @ts-expect-error - a kind Dispatch never stores is no kind.
     const notStored: StepRecord["kind"] = "pause";
     void notStored;

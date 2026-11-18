@@ -646,7 +646,7 @@ func TestAReadyReleasesAPacedCatchUpWhoseMomentHasPassed(t *testing.T) {
 	reserved := now.Add(3 * testWakeInterval)
 	id := pacedCatchUp(t, pool, records, "LEGION-1", 1, now, reserved)
 	// Two attempts fail, so the row waits three seconds past its moment on a backoff of its own
-	// (record.RetryBackoff of one attempt, then of two) rather than one second, and a ready
+	// (record.RetryBackoff of no attempt, then of one) rather than one second, and a ready
 	// between the two moments is a ready the row is waiting through.
 	for _, at := range []time.Time{reserved, reserved.Add(time.Second)} {
 		now = at

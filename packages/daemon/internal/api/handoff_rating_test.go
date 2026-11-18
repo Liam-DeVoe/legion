@@ -41,7 +41,10 @@ func ratedAs(fact intake.HandoffComplete, score int, reason string) bool {
 // gives it. The route reads which completion that is from phase.Of and never from the role: the
 // implementer's completion while the issue is in retro, and its late completion of retro once the
 // issue has moved on to merging, which is still of retro. The fact the route applies carries the
-// rating and its reason, for the workflow to write on the retro's record.
+// rating and its reason in both. The workflow writes it on the retro's record for the completion
+// in retro alone: that completion is what moves the issue on to merging (TriggerRetroCompleted),
+// so a late one finds the implementer's retro standing and is refused HANDOFF_NOT_CURRENT_PHASE,
+// and its rating is never written (TestARatedRetroSentAgainKeepsItsFirstRating).
 func TestTheRetrosAgentGivesTheRating(t *testing.T) {
 	for _, at := range []phase.Phase{phase.Retro, phase.Merging} {
 		t.Run(string(at), func(t *testing.T) {

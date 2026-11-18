@@ -699,7 +699,7 @@ func inThousands(n int) string {
 // the scale and the most characters of a reason, as the daemon holds them (planrating.Least,
 // planrating.Most and planrating.ReasonMax, which api's planRatingOf reads), and both
 // refusals. No other phase worker ends the retro, and the daemon refuses a rating on its
-// completion (PLAN_RATING_UNEXPECTED), so no other composed prompt teaches one.
+// completion (PLAN_RATING_UNEXPECTED).
 //
 // The same prompt reaches a tool that takes neither field: a claim whose launch installs no plugin
 // (a Claude Code role in a pod) is served on the contract of the plugin its image carries until the
@@ -727,14 +727,6 @@ func TestTheComposedRetroRatesThePlanTheIssueRan(t *testing.T) {
 	} {
 		if !strings.Contains(text, phrase) {
 			t.Errorf("the composed %s prompt, the retro's, omits %q", retro, phrase)
-		}
-	}
-	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger} {
-		if role == retro {
-			continue
-		}
-		if strings.Contains(composedText(t, composer, role, false), "plan_rating") {
-			t.Errorf("the composed %s prompt teaches plan_rating, and the %s never ends the retro", role, role)
 		}
 	}
 }

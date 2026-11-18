@@ -47,7 +47,7 @@ import (
 // dispatch://INFRA-3274's kind list with the merge-queue read and removal (20261114031356), which
 // stand above all of them and are applied after them, in version order: the kind list with the
 // update ask, the record of what a relaunch ended, the drop, then the merge-queue kind list. The
-// last of them was the last word of outbox_kind_check until the two kind lists below stood above
+// last of them was the last word of outbox_kind_check until the three kind lists below stood above
 // it: the upgrade applies it after 20261029120800 has deleted main's merge-lane rows, and it
 // names every other kind main's daemon writes (mainsOutboxKinds), with update_ask and the two
 // merge-queue kinds besides, which main's daemon

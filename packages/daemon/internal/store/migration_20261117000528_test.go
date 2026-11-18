@@ -16,9 +16,9 @@ const stepRecordKindVersion = 20261117000528
 
 // stepRecordReleaseKinds is every kind the outbox's check names at stepRecordKindVersion, which is
 // the list that migration writes whole: what the release that records each step queues, and what a
-// rollback to it must still be able to queue. The migrations above it rewrite this list with their
-// own kinds added (migration_20261117023932_test.go), and the way back of a release above it is
-// held to it (plan_ratings_way_back_test.go).
+// rollback to it must still be able to queue. The one migration above it that writes the list,
+// 20261117023932, rewrites it with its own kind added (migration_20261117023932_test.go), and the
+// way back of the release that writes that migration is held to it (plan_ratings_way_back_test.go).
 var stepRecordReleaseKinds = []string{
 	"dispatch_status", "dispatch_message", "notice", "controller_notice", "supervise", "gate_seed",
 	"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",

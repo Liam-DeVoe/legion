@@ -372,10 +372,12 @@ test("the retro's completion sends plan_rating and plan_reason as planRating and
 });
 
 // Which completion ends the retro is the daemon's to say from phase.Of, never from the issue's
-// phase: the implementer's late completion of retro, once the issue has moved on to merging, still
-// ends the retro and takes its rating, and a completion of implementing that carries one is the
-// daemon's to refuse (PLAN_RATING_UNEXPECTED). So the tool sends a rating on a completion at any
-// phase, since a filter on the record's phase would drop a rating the agent believes it gave.
+// phase: the implementer's late completion of retro, once the issue has moved on to merging, is
+// still of retro, so the daemon reads its rating (and its workflow then refuses it
+// HANDOFF_NOT_CURRENT_PHASE, since the retro's completion already stands, and writes no rating of
+// it), and a completion of implementing that carries one is the daemon's to refuse
+// (PLAN_RATING_UNEXPECTED). So the tool sends a rating on a completion at any phase, since a filter
+// on the record's phase would drop a rating the agent believes it gave.
 test("a rating is sent on a completion at any phase: the late retro's at merging, and one at implementing that the daemon refuses PLAN_RATING_UNEXPECTED", async () => {
   // A retro writes no handoff record, so the pane reports the commit alone for it.
   const lateHead = "b".repeat(40);

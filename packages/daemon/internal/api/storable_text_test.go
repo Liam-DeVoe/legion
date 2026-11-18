@@ -100,8 +100,9 @@ func TestTheBodyDecoderRefusesAStringHoldingANul(t *testing.T) {
 // A completion whose summary holds a NUL character is refused as input naming summary, before
 // GitHub is read, with nothing recorded and the issue where it was, so the agent sends it again
 // corrected and that is taken. The workflow decides the fact here, writing the summary on the
-// implementer's phase row as the whole daemon does, which is where PostgreSQL refused it and the
-// completion was answered 500 FACT_APPLY_FAILED, naming no field.
+// implementer's phase row as the whole daemon does: a summary holding a NUL that reached that
+// write would fail it, and the completion would be answered 500 FACT_APPLY_FAILED, naming no
+// field.
 func TestACompletionSummaryWithANulIsRefusedAsInput(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h := newWorkflowHandoffHarness(t, github, io.Discard)

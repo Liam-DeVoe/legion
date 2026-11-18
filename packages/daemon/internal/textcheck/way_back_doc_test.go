@@ -41,11 +41,12 @@ const (
 	wayBackGuide                 = "docs/kubernetes.md"
 	// wayBackMark is the line that deletes the migration's version row, which no other rollback's
 	// block carries. The version is internal/daemon's phaseEntryMigration, written out because
-	// this file reaches no product package: importing internal/daemon would put the daemon, and
-	// every file that package's own tests read, back in this job's filter, which is what
-	// splitting the check took out. A version that moved cannot pass silently either way: the
-	// header, the guide and the extract all carry it, so a guide whose block names another
-	// version holds no fence this mark finds, which fails loudly.
+	// importing internal/daemon would put the daemon, and every file that package's own tests
+	// read, back in this job's filter, which is what splitting the check took out; the one product
+	// package this file imports, internal/store/migrations, imports no other package of the daemon.
+	// A version that moved cannot pass silently either way: the header, the guide and the extract
+	// all carry it, so a guide whose block names another version holds no fence this mark finds,
+	// which fails loudly.
 	wayBackMark = "delete from schema_version where version = 20261111225552;"
 	// architectEntryWayBackMark is the line that deletes the version row of
 	// 20261114061900_phase_entry_verbatim, the newest of contract 146's four migrations and the
