@@ -184,7 +184,7 @@ recipe written as a script, for the container it runs Playwright in. A session
 of the stubbed layer alone needs no stack at all, since it addresses none:
 `--project=stub --ui` opens as it is.
 
-The ask card's 23 pictures (INFRA-3231's check b5ee93c7) are one row of
+The ask card's 29 pictures (INFRA-3231's check b5ee93c7) are one row of
 `e2e/ask-card-pictures.e2e.ts`, which runs only where the command names its
 project: `bun run e2e -- --project=ask-card-pictures`. It seeds the demo's
 fixture text (`e2e/ask-card-fixtures.ts`) through the stack's server and the
@@ -193,9 +193,14 @@ picture under the row's output directory. With `DISPATCH_E2E_ASK_CARD_DEMO`
 naming a directory of the demo's pictures it lays each beside the demo's with
 its share of changed pixels (`bunx pixelmatch@5.3.0`), and
 `bun e2e/tools/ask-card-pictures-diff.ts <built> <demo> <out>` does the same for
-pictures taken elsewhere. The pictures are drawn in Inter, as the demo's were:
-point Chromium's fontconfig at Inter's files (`FONTCONFIG_FILE`) on a machine
-that lacks it.
+pictures taken elsewhere. The pictures are drawn in Inter, as the demo's were,
+and the app asks for the family `Inter`. On a machine that lacks it, point
+Chromium's fontconfig (`FONTCONFIG_FILE`) at a file that adds Inter 4.1's
+`InterVariable.ttf` (from `Inter-4.1.zip`, the release
+`web/src/fonts/inter/subset.sh` pins) and maps the family `Inter` onto
+`Inter Variable`, the name that file gives itself; without that mapping
+Chromium draws every screen in a fallback, and each picture differs from the
+demo's in every line of text.
 
 Playwright's own `--workers <n>` runs the suite in parallel, and the config's
 default is 1. `e2e/global-setup.ts` starts one stack

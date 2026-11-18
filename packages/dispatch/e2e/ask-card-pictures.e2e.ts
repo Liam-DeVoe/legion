@@ -100,7 +100,7 @@ import { asUser } from "./users";
  *
  * The pictures are a rendering: drawn in Inter, the app's font, as the demo's were. A machine
  * without Inter draws them in a fallback, so a run meant for comparison points Chromium's
- * fontconfig at Inter's files (`FONTCONFIG_FILE`), as the demo's README says.
+ * fontconfig at Inter's files (`FONTCONFIG_FILE`), as `packages/dispatch/README.md` says.
  *
  * At the commit before the change this file fails: once the seeding has written what that build
  * takes, it waits for the flip audit's card to draw its split button, which that build does not.
