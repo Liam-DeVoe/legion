@@ -16,13 +16,14 @@
 # setup signs alice@example.com and bob@example.com in through the harness's dev sign-in; alice
 # makes a project of the run's own, gives it the Slack channel C0MEMBER01, and mints a dsp_ token
 # of her own. `person` reads alice's member kind and an unknown login's. `project` reads the
-# project for bob while it is public. `private` reads the private-projects list, exactly
-# {"projects":[]} while no project is private, then makes the project private with SQL (nothing in
-# this release switches one) and reads it listed with its channel and the time its list changed,
-# and reads the project again for bob, who no longer sees it, and for alice, its owner. `refused`
-# sends each of the three routes alice's dsp_ token and her cookie, each 403
+# project for bob while it is public, compared whole but for `repositories`, which this driver
+# does not read and #4156 removes from the answer. `private` reads the private-projects list,
+# exactly {"projects":[]} while no project is private, then makes the project private with SQL
+# (nothing in this release switches one) and reads it listed with its channel and the time its
+# list changed, and reads the project again for bob, who no longer sees it, and for alice, its
+# owner. `refused` sends each of the three routes alice's dsp_ token and her cookie, each 403
 # ACCESS_ACCOUNT_REQUIRED. On exit it makes the project public again, so the next run's list starts
-# empty.
+# empty; a run that cannot do so fails, naming the project.
 #
 # Its inputs are what with-harness.sh exports: DISPATCH_E2E_PORT (the server), DATABASE_URL (the
 # database it serves, on this machine) and DISPATCH_E2E_ACCESS_TOKEN_FILE. Without the switch the
@@ -68,12 +69,16 @@ project="MEMB$(printf '%05d' "$((RANDOM % 100000))" | tr 0-9 A-J)"
 readonly project
 made=""
 
+# cleanup makes the run's project public again. A restore that fails fails the run, naming why:
+# no stack truncates this database, so a project left private would make the next run's empty-list
+# check fail on state that run did not make.
 cleanup() {
   local code=$?
-  if [[ -n "$made" ]]; then
-    env -u PGHOSTADDR psql "$database_url" -Atqc \
-      "update projects set visibility = 'public' where key = '$project'" >/dev/null 2>&1 ||
-      printf 'membership-answer.sh: could not make %s public again\n' "$project" >&2
+  if [[ -n "$made" ]] && ! env -u PGHOSTADDR psql "$database_url" -v ON_ERROR_STOP=1 -Atqc \
+    "update projects set visibility = 'public' where key = '$project'" >/dev/null 2>"$work/psql"; then
+    printf 'membership-answer.sh: could not make %s public again, so the next run on this database would find it private: %s\n' \
+      "$project" "$(<"$work/psql")" >&2
+    [[ "$code" -ne 0 ]] || code=1
   fi
   rm -rf "$work"
   exit "$code"
@@ -139,7 +144,7 @@ want_status 200 "$section" "the broker reads $project for $bob"
 expect "$section" "$bob sees public $project, owned by $alice, with its channel and its time" \
   "$(jq -cnS --arg p "$project" --arg o "$alice" --arg b "$bob" --arg c "$channel" --arg t "$changed_at" \
     '{project: $p, visibility: "public", owner: $o, person: $b, member_kind: "full", visible: true,
-      repositories: [], slack_channels: [$c], slack_channels_changed_at: $t}')" .
+      slack_channels: [$c], slack_channels_changed_at: $t}')" 'del(.repositories)'
 
 section=private
 call broker GET /api/v1/access/private-projects

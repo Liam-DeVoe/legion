@@ -692,8 +692,9 @@ unknown login's, a project of the run's own as bob sees it, and the private-proj
 exactly `{"projects":[]}`; it then makes its project private with SQL (nothing in this release
 switches one) and reads it listed with its Slack channel and the time its list changed, hidden
 from bob and seen by alice, its owner. Alice's own `dsp_` token and her cookie are each
-`403 ACCESS_ACCOUNT_REQUIRED` on all three routes. On exit it makes the project public again. Its
-inputs are what `with-harness.sh` exports: without the switch there is no
+`403 ACCESS_ACCOUNT_REQUIRED` on all three routes. On exit it makes the project public again, and a
+run that cannot exits non-zero naming the project, since the next run's empty list would find it.
+Its inputs are what `with-harness.sh` exports: without the switch there is no
 `DISPATCH_E2E_ACCESS_TOKEN_FILE`, and the run stops with exit 2, naming the switch; a token file
 it cannot read stops it the same way, naming the file. From `packages/dispatch`:
 
