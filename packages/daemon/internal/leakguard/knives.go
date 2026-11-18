@@ -215,6 +215,9 @@ func (g *Guard) knivesNaming(ctx context.Context, what string, req PushRequest) 
 	if err != nil {
 		return knivesNamed{failure: &SetupFailure{What: what, Why: unread, Err: err}}
 	}
+	if len(rows) == 0 {
+		return knivesNamed{}
+	}
 	now := g.clock().Now()
 	kept, held := g.keptKnives(listed)
 	var entries []knivesEntry
@@ -253,12 +256,12 @@ func (g *Guard) knivesNaming(ctx context.Context, what string, req PushRequest) 
 // upstreamHeld are the commits of records that a branch or a tag of the upstream of one of
 // applying reaches, as that upstream reports its refs at the push, read in dir once for each
 // upstream URL (Guard.advertised), each ref counting where this clone has the commit it is at
-// (remoteHeld): the commits neither the rule pass nor the knives pass reads (knivesRead). An entry
-// that names no upstream holds nothing. A read of an upstream that fails is a setup failure of
-// what naming the upstream's URL, and a rev-list that fails is one too, never a commit read as
-// held.
+// (Guard.reachedFrom): the commits neither the rule pass nor the knives pass reads (knivesRead).
+// An entry that names no upstream holds nothing. A read of an upstream that fails is a setup
+// failure of what naming the upstream's URL, and a rev-list that fails is one too, never a commit
+// read as held.
 func (g *Guard) upstreamHeld(ctx context.Context, what, dir string, applying []knivesEntry, records []Record) (map[string]bool, error) {
-	var holding []string
+	var tips []string
 	upstreams := map[string]bool{}
 	for _, entry := range applying {
 		if entry.Upstream == "" || upstreams[entry.Upstream] {
@@ -269,60 +272,50 @@ func (g *Guard) upstreamHeld(ctx context.Context, what, dir string, applying []k
 		if err != nil {
 			return nil, &SetupFailure{What: what, Why: "the refs of the registry entry's upstream could not be read", Err: err}
 		}
-		holding = append(holding, upstream...)
+		tips = append(tips, upstream...)
 	}
-	reached, err := g.remoteHeld(ctx, dir, holding, records)
+	reached, err := g.reachedFrom(ctx, dir, tips, records)
 	if err != nil {
 		return nil, &SetupFailure{What: what, Why: "the commits the registry entry's upstream holds could not be read", Err: err}
 	}
 	return reached, nil
 }
 
-// unheld are records less each record of a commit held names (Guard.upstreamHeld): a ref name,
-// and any other record of no commit, stays.
-func unheld(records []Record, held map[string]bool) []Record {
-	return slices.DeleteFunc(slices.Clone(records), func(record Record) bool { return held[record.Commit] })
+// unheld are records less each record of a commit reached names (Guard.upstreamHeld): a ref
+// name, and any other record of no commit, stays.
+func unheld(records []Record, reached map[string]bool) []Record {
+	return slices.DeleteFunc(slices.Clone(records), func(record Record) bool { return reached[record.Commit] })
 }
 
-// remoteHeld are the commits of records that one of held reaches, each reaching itself: the
-// commits neither the rule pass nor the knives pass reads (Guard.upstreamHeld), held being the
+// reachedFrom are the commits of records that one of tips reaches, each reaching itself: the
+// commits neither the rule pass nor the knives pass reads (Guard.upstreamHeld), tips being the
 // commits that the branches and tags of an applying entry's upstream are at (Guard.advertised).
-// One rev-list answers for all of them, fed on its standard input the records' commits, a line
-// each, and then ^<sha> for each of held:
-//
-//	git rev-list --stdin
-//
-// which is `git rev-list <commits...> --not <held...>` with the shas off the command line, since a
-// repository can advertise thousands of refs. It prints every fed commit that none of held
-// reaches, with any ancestor of one that none reaches either, so a fed commit it does not print is
-// held. No git runs where no record names a commit, or where held is empty: nothing is held then.
-// A git that fails is an error, never a commit read as held.
-func (g *Guard) remoteHeld(ctx context.Context, dir string, held []string, records []Record) (map[string]bool, error) {
-	// reached is every commit asked about, until rev-list names the ones none of held reaches.
+// One rev-list answers for all of them (Guard.revList), fed the records' commits and then
+// ^<sha> for each of tips, which is `git rev-list <commits...> --not <tips...>`. It prints every
+// fed commit that none of tips reaches, with any ancestor of one that none reaches either, so a
+// fed commit it does not print is reached. No git runs where no record names a commit, or where
+// tips is empty: nothing is reached then. A git that fails is an error, never a commit read as
+// reached.
+func (g *Guard) reachedFrom(ctx context.Context, dir string, tips []string, records []Record) (map[string]bool, error) {
+	// reached is every commit asked about, until rev-list names the ones none of tips reaches.
 	reached := map[string]bool{}
-	var fed strings.Builder
+	var commits []string
 	for _, record := range records {
 		if record.Commit == "" || reached[record.Commit] {
 			continue
 		}
 		reached[record.Commit] = true
-		fed.WriteString(record.Commit)
-		fed.WriteString("\n")
+		commits = append(commits, record.Commit)
 	}
-	if len(reached) == 0 || len(held) == 0 {
+	if len(commits) == 0 || len(tips) == 0 {
 		return nil, nil
 	}
-	for _, sha := range held {
-		fed.WriteString("^")
-		fed.WriteString(sha)
-		fed.WriteString("\n")
-	}
-	out, err := g.gitFed(ctx, dir, fed.String(), "rev-list", "--stdin")
+	unreached, err := g.revList(ctx, dir, nil, commits, notLines(tips))
 	if err != nil {
 		return nil, err
 	}
-	for _, unheld := range strings.Fields(out) {
-		delete(reached, unheld)
+	for _, sha := range unreached {
+		delete(reached, sha)
 	}
 	return reached, nil
 }
@@ -450,23 +443,19 @@ func knivesRows(listed string) ([]KnivesRegistry, error) {
 
 // knivesEntries are the entries of the registries rows name, in name order, merged as knives
 // v4.0.1 merges its registry and its overlay (src/config.rs, load and apply_local_overlay): the
-// first row is the registry, whose tables repos.<name> are the entries, and each row after it an
-// overlay whose tables may name only an entry an earlier row has, each adding its forbidden terms
-// to the end of that entry's list. After each row, each list the row wrote is checked as knives
-// checks one (knivesChecked). An entry of the first row must name its origin, which knives requires
-// as well, and an origin, release or upstream it names must be a string; either error names the
-// row, the entry (knivesEntryName) and the field. A file that is not TOML of that shape is an
-// error, never a registry read as empty.
+// first row, which rows always has (knivesNaming), is the registry, whose tables repos.<name> are
+// the entries, and each row after it an overlay whose tables may name only an entry an earlier
+// row has, each adding its forbidden terms to the end of that entry's list. After each row, each
+// list the row wrote is checked as knives checks one (knivesChecked). An entry of the first row
+// must name its origin, which knives requires as well, and an origin, release or upstream it
+// names must be a string; either error names the row, the entry (knivesEntryName) and the field.
+// A file that is not TOML of that shape is an error, never a registry read as empty.
 //
 // The files are read at once, one gh each, and merged in row order after the last read ends: a
 // read takes about as long as a push's other passes together (measured 2026-11-17 in an issue
 // pod, 5 pushes each to a local bare: a median of 5.12 s with two rows read one after the other,
 // 3.45 s with none), and the reads depend on nothing of one another.
 func (g *Guard) knivesEntries(ctx context.Context, rows []KnivesRegistry) ([]knivesEntry, error) {
-	if len(rows) == 0 {
-		// An empty list names no registry, and so no entry.
-		return []knivesEntry{}, nil
-	}
 	files := make([]string, len(rows))
 	failures := make([]error, len(rows))
 	var reads sync.WaitGroup
@@ -599,7 +588,7 @@ func knivesChecked(i int, entry *knivesEntry) error {
 //     on GitHub where the remote does;
 //   - the remote, where it is itself a URL: `git push <url>` hands the hook the URL as typed;
 //   - and where the remote is a name, the URLs its configuration names, as written there and
-//     before any rewriting (Guard.remotes): its remote.<name>.pushurl values, and its
+//     before any rewriting (Guard.remoteURLs): its remote.<name>.pushurl values, and its
 //     remote.<name>.url values as well where no push URL names a GitHub repository. A push URL
 //     at a local bare repository, which a role sets for one run (`git remote set-url --push origin
 //     <bare>`), leaves the remote's URL naming the fork, so the rehearsal is a push to the fork
@@ -622,60 +611,47 @@ func (g *Guard) destinationRepos(ctx context.Context, req PushRequest) ([]string
 	if req.Remote == "" || add(req.Remote) {
 		return repos, nil
 	}
-	remotes, err := g.remotes(ctx, req.Dir)
+	urls, pushurls, err := g.remoteURLs(ctx, req.Dir, req.Remote)
 	if err != nil {
 		return nil, err
 	}
-	pushed := slices.IndexFunc(remotes, func(r remote) bool { return r.name == req.Remote })
-	if pushed < 0 {
-		return repos, nil
-	}
 	named := false
-	for _, address := range remotes[pushed].pushurls {
+	for _, address := range pushurls {
 		named = add(address) || named
 	}
 	if !named {
-		for _, address := range remotes[pushed].urls {
+		for _, address := range urls {
 			add(address)
 		}
 	}
 	return repos, nil
 }
 
-// remote is one remote of a repository's configuration, its URLs as written there and before
-// any rewriting.
-type remote struct {
-	// name is the remote's name, the subsection of its remote.<name>.* keys, as written.
-	name string
-	// urls are its remote.<name>.url values and pushurls its remote.<name>.pushurl values, each
-	// in the order the configuration lists them.
-	urls, pushurls []string
-}
-
-// remotes are the remotes of dir's configuration that name a URL or a push URL, in the order
-// git config first names each. One git config reads them all:
+// remoteURLs are the URLs dir's configuration names for the remote called name, as written there
+// and before any rewriting: urls its remote.<name>.url values and pushurls its
+// remote.<name>.pushurl values, each in the order the configuration lists them. One git config
+// reads them, with every other remote's:
 //
 //	git config -z --get-regexp '^remote\..*\.(url|pushurl)$'
 //
 // It prints "remote.<name>.<key>\n<value>" for each value, ending each with a zero byte, so a
 // value with a newline in it is read whole; the name is all that lies between the first dot and
-// the last, dots and slashes included. A key set with no value at all has no newline, and names
-// no URL. git config answers 1 where no key matches, which is a configuration with no remote;
-// any other status is an error.
-func (g *Guard) remotes(ctx context.Context, dir string) ([]remote, error) {
+// the last, dots and slashes included, and a value of another name's is passed over. A key set
+// with no value at all has no newline, and names no URL. git config answers 1 where no key
+// matches, which is a configuration with no remote; any other status is an error.
+func (g *Guard) remoteURLs(ctx context.Context, dir, name string) (urls, pushurls []string, err error) {
 	var stderr strings.Builder
 	status, out, err := g.run(ctx, child{argv: gitArgv("config", "-z", "--get-regexp", `^remote\..*\.(url|pushurl)$`), dir: dir, stderr: &stderr})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	switch status {
 	case 0:
 	case 1:
-		return nil, nil
+		return nil, nil, nil
 	default:
-		return nil, fmt.Errorf("git config exited %d: %s", status, strings.TrimSpace(stderr.String()))
+		return nil, nil, fmt.Errorf("git config exited %d: %s", status, strings.TrimSpace(stderr.String()))
 	}
-	var remotes []remote
 	for entry := range strings.SplitSeq(out, "\x00") {
 		key, value, ok := strings.Cut(entry, "\n")
 		if !ok {
@@ -683,22 +659,16 @@ func (g *Guard) remotes(ctx context.Context, dir string) ([]remote, error) {
 		}
 		subsection, ok := strings.CutPrefix(key, "remote.")
 		dot := strings.LastIndexByte(subsection, '.')
-		if !ok || dot < 0 {
+		if !ok || dot < 0 || subsection[:dot] != name {
 			continue
 		}
-		name, variable := subsection[:dot], subsection[dot+1:]
-		i := slices.IndexFunc(remotes, func(r remote) bool { return r.name == name })
-		if i < 0 {
-			i = len(remotes)
-			remotes = append(remotes, remote{name: name})
-		}
-		if variable == "pushurl" {
-			remotes[i].pushurls = append(remotes[i].pushurls, value)
+		if subsection[dot+1:] == "pushurl" {
+			pushurls = append(pushurls, value)
 		} else {
-			remotes[i].urls = append(remotes[i].urls, value)
+			urls = append(urls, value)
 		}
 	}
-	return remotes, nil
+	return urls, pushurls, nil
 }
 
 // knivesApplying are the entries whose origin or release names one of repos (namesOneOf).

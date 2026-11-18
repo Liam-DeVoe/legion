@@ -122,7 +122,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	}
 	commandPath = target.command
 	if target.owner != "" && target.repo != "" {
-		repo = target.owner + "/" + target.repo
+		repo = target.repository()
 	}
 	mode := ghCallModeOf(rateLimitRead, isVisibilityRead, target.writesNothing)
 	// For a read and a guarded call one guard serves twice where the call reads one repository of
@@ -317,13 +317,13 @@ func ghConfigDir(ctx context.Context, guard *leakguard.Guard, env map[string]str
 	case !target.read:
 		return "", refused
 	}
-	read := target.owner + "/" + target.repo
+	repository := target.repository()
 	// The guard reads no visibility of a name ghVisibilityRead could not let past it, which the
 	// read through the `gh` wrapper would then run the guard for again (Guard.scanThrough).
-	if _, err := ghrepo.Parse("", read); err != nil {
+	if _, err := ghrepo.Parse("", repository); err != nil {
 		return "", refused
 	}
-	if visibility, err := guard.Visibility(ctx, read); err != nil || visibility != leakguard.Public {
+	if visibility, err := guard.Visibility(ctx, repository); err != nil || visibility != leakguard.Public {
 		return "", refused
 	}
 	return env["GH_CONFIG_DIR"], nil
@@ -738,6 +738,12 @@ type ghTarget struct {
 	command       string
 	files         []leakguard.GhFile
 	writesNothing bool
+}
+
+// repository is the target's repository as owner/repo, the name the call log records and the
+// guard reads the visibility of.
+func (target ghTarget) repository() string {
+	return target.owner + "/" + target.repo
 }
 
 // ghSentFileOptions are the options of gh 2.98.0, by long name, whose value names a file gh

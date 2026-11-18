@@ -1,6 +1,8 @@
 package leakguard
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -57,17 +59,22 @@ func TestAPushThatAddsNoKnivesTermPasses(t *testing.T) {
 }
 
 // Where LEGION_KNIVES_REGISTRIES is not set, and where it lists no row, no entry names the push's
-// destination: a line that holds a term passes, and gh is never run.
+// destination: a line that holds a term passes, gh is never run, and no list is kept.
 func TestNoKnivesRegistriesIsNoKnivesPass(t *testing.T) {
 	_, repo, base, head := knivesCommit(t, map[string]string{"notes.md": "the QUILLWORTHY build\n"})
 	path, _, ran := servingKnives(t, theKnivesRow)
+	const none = KnivesRegistriesVar + "=[]"
 	for name, env := range map[string][]string{
 		"no registries listed":        {path},
-		"an empty list of registries": {path, KnivesRegistriesVar + "=[]"},
+		"an empty list of registries": {path, none},
 	} {
 		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, env...)
 		if err := guard.Push(bound(t), knivesPush(repo, base, head, "origin", knivesOrigin)); err != nil {
 			t.Errorf("a push with %s: %v", name, err)
+		}
+		kept := knivesKeptFile(guard, none)
+		if _, err := os.Stat(kept); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("a push with %s kept a list in %s (%v), want none", name, kept, err)
 		}
 	}
 	if runs := countLines(t, ran); runs != 0 {
@@ -578,7 +585,7 @@ func TestTheRulesAndTheKnivesPassShareOneReadOfTheRegistryAndOfTheUpstream(t *te
 esac
 exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 `)
-	path = "PATH=" + bin + string(os.PathListSeparator) + strings.TrimPrefix(path, "PATH=")
+	path = pathFirst(bin, path)
 	err := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, path, listed).Push(bound(t), push)
 	want := []string{"member.md:1: forbidden term 1"}
 	if refused := knivesRefusal(t, err); !slices.Equal(refused.Lines, want) {
@@ -668,9 +675,9 @@ func TestAFreshKeptKnivesListIsUsedWithNoRead(t *testing.T) {
 
 // The kept list's file is the JSON of the read's time and the merged entries, each entry's name,
 // origin, release, upstream and forbidden list in that order and under those names, and a
-// newline: the bytes the guard wrote while the file had an entry type of its own, so a list a
-// role kept before a release is the one the next release reads, and a guard of either release
-// reads a file the other kept. The file reads back as the entries the read merged.
+// newline: that format is fixed, so a list a role kept before a release is the one the next
+// release reads, and a guard of either release reads a file the other kept. The file reads back
+// as the entries the read merged.
 func TestTheKeptKnivesListsFileIsTheMergedEntriesAsJSON(t *testing.T) {
 	_, repo, base, head := knivesCommit(t, map[string]string{"notes.md": "a line of ordinary prose\n"})
 	path, listed, _ := servingKnives(t, theKnivesRow, knivesOverlayRow)

@@ -15,10 +15,10 @@ body: |-
   has the commit that ref is at; it reads the upstream only for a push it would otherwise refuse.
   No remote-tracking ref of the clone counts, since git moves those for a push to whatever URL a
   remote pushes to at the time, a local bare one a role points the fork's remote at for one run
-  included. Each push that adds a commit costs one `git ls-remote` of its destination, and a read
-  that fails refuses the push. A remote whose push URL names no GitHub repository is matched by
-  its URL as well, so a push rehearsed on a local bare push URL of the fork's remote is scanned
-  too.
+  included. Each push with an update that is not a deletion costs one `git ls-remote` of its
+  destination, and a read that fails refuses the push. A remote whose push URL names no GitHub
+  repository is matched by its URL as well, so a push rehearsed on a local bare push URL of the
+  fork's remote is scanned too.
   The daemon tells every role of an issue pod and the controller it launches the rows as
   `LEGION_KNIVES_REGISTRIES`; a tmux pane is told nothing, since its push runs no leak guard. The
   new `knives-push-gate` capability row is open while no registry is named, and under tmux, which

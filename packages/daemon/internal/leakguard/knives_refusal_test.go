@@ -88,6 +88,12 @@ func servingKnives(t *testing.T, registries ...knivesServed) (path, listed, ran 
 	return pathWith(bin), "LEGION_KNIVES_REGISTRIES=" + KnivesRegistriesValue(rows), ran
 }
 
+// pathFirst is path, a PATH entry such as servingKnives answers, with dir in front of it, so
+// that a stand-in of dir's is found before any of path's.
+func pathFirst(dir, path string) string {
+	return "PATH=" + dir + string(os.PathListSeparator) + strings.TrimPrefix(path, "PATH=")
+}
+
 // knivesCommit is a repository of two commits on main: a base the destination holds, and on it a
 // commit that writes files, each path to its content. It answers the fixture's runner, the
 // repository and the two commits. The fork at knivesOrigin and the upstream at knivesUpstream are

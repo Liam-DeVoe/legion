@@ -768,7 +768,7 @@ func TestGhTargetOfReadsOnlyTheRepositoryOfAReadOnlyCommand(t *testing.T) {
 		target, err := ghTargetOf(tc.argv, nil, savedGhHelp, noGitRepository)
 		read := ""
 		if target.read {
-			read = target.owner + "/" + target.repo
+			read = target.repository()
 		}
 		if err != nil || read != tc.read {
 			t.Errorf("ghTargetOf(%q) = %+v, %v; want it to read %q", tc.argv, target, err, tc.read)

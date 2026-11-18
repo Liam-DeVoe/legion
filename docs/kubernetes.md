@@ -88,17 +88,19 @@ It carries:
   The second and third passes read a push alike:
 
   - every file as text, whatever `.gitattributes` says of it, the pushed commit's own included, and no line of a file whose blob holds a zero byte in its first 8000 bytes, which is how git's own diff tells a binary file (`commitFiles`, `internal/leakguard/push.go`).
-    A commit of one parent has its files classed by their blobs before any is diffed, so a binary file, the commit's or its parent's, is read no further than those bytes and is in no diff, and the commit's one diff reads its modifications and renames of text files alone (`addedLines`);
+    A commit of one parent has its files classed by their blobs before any is diffed, so the guard holds no more of a binary file, the commit's or its parent's, than those bytes, passing over the rest that git writes, and the file is in no diff.
+    The commit's one diff reads its modifications and renames of text files alone (`addedLines`);
 
   - a merge from its files, not from git's combined diff, which is wrong from 33 parents and drops a line only the merge adds from 64:
     a merge's own lines are the lines of a file that differs from every parent's that no parent's file holds, and its own paths are those no parent has (`mergeFiles`, `internal/leakguard/push.go`).
     The pod's roles share one memory limit, so the read holds one path's files at a time;
 
-  - a text file above 32 MiB as a setup error that refuses the push and names the file and its size, whichever the shape (`fileBytes`):
-    a commit's own file, or its parent's that the commit's is diffed against, and a merge's own file, or a parent's at a path the merge changes;
+  - a text file it reads above 32 MiB as a setup error that refuses the push and names the file and its size, whichever the shape (`fileBytes`):
+    a commit's own file, or its parent's that the commit's is diffed against, and a merge's own file, or a parent's at a path the merge changes.
+    A merge reads no parent's file at a path where its own file is binary or where earlier parents' files already hold every line of it, and a commit reads nothing of a file it renames or changes the mode of and leaves as it is;
 
   - and no commit that a branch or a tag of the destination already reaches, as one `git ls-remote --heads --tags` of the URL git hands the hook reads them (`Guard.advertised`, `internal/leakguard/push.go`).
-    Each push that adds a commit to a destination the guard scans costs that one read, which both passes share, and a read that fails refuses the push as a setup error that names the remote and the URL.
+    Each push with an update that is not a deletion, to a destination the guard scans, costs that one read, which both passes share, and a read that fails refuses the push as a setup error that names the remote and the URL.
     The knives pass reads the upstream's refs the same way, with the same failure, naming the upstream's URL.
     Where an entry names the destination as a fork and names an upstream, a commit a branch or a tag of that upstream reaches is held for the rule file's pass as well (`Guard.upstreamHeld`, `internal/leakguard/knives.go`): it is upstream's public text, which leaks nothing by reaching the fork.
     The rule file's pass reads the registries and that upstream only for a push it would otherwise refuse, each read made once for both passes (`knivesRead`).
@@ -3979,7 +3981,7 @@ and the five deployment rows are the daemon's to measure from its own configurat
   Under tmux it is present: no probe pod runs.
 
 - `knives-push-gate`: `leak_guard.knives_registries` names a knives registry, so a push from a role to a repository GitHub reports public, or to one the leak guard cannot name, is scanned for the knives forbidden list of the repository it pushes to ([Worker image](#worker-image), the leak guard).
-  Open, the detail reads `leak_guard.knives_registries names no knives registry, so a push from a role is not scanned for a knives forbidden list`.
+  Open, the detail begins `leak_guard.knives_registries names no knives registry, so a push from a role is not scanned for a knives forbidden list`.
   The daemon measures it from the configuration alone, so `legion start --check-config` prints it and the boot logs it.
   A role is told the rows only when it launches, and nothing relaunches a running role when they change, so under Kubernetes the open detail and the present one both end `a role reads the rows from its next launch, so a role launched before they changed scans by the rows it was launched with, or by none`.
   Under tmux it is open unless decided, whatever the rows name: a pane's push runs no leak guard, and the detail reads `the tmux runtime runs no push guard in a pane's git or jj, so a pane's push is not scanned for a knives forbidden list`.

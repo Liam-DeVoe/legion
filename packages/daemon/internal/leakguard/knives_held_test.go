@@ -183,11 +183,11 @@ func TestARehearsalOnTheForksPushURLIsReadAndHoldsNothingForTheRealPush(t *testi
 
 // A read of what the destination or the upstream holds that fails refuses the push as a setup
 // failure, naming the remote and the URL read, never a push read as one whose destination holds
-// nothing. The destination is read for every push that adds a commit, and the upstream only for a
-// push the rules or the knives pass would otherwise refuse, so a push that adds no term and no
-// private name passes with its upstream unread. Each URL reaches a path that does not exist
-// (url.<base>.insteadOf): the destination is the fork named without .git, which knivesCommit's
-// bare is not reached from, and the upstream one the registry names in place of
+// nothing. The destination is read for every push with an update that is not a deletion, and the
+// upstream only for a push the rules or the knives pass would otherwise refuse, so a push that
+// adds no term and no private name passes with its upstream unread. Each URL reaches a path that
+// does not exist (url.<base>.insteadOf): the destination is the fork named without .git, which
+// knivesCommit's bare is not reached from, and the upstream one the registry names in place of
 // theKnivesRegistry's.
 func TestAReadOfWhatTheDestinationOrTheUpstreamHoldsThatFailsRefusesThePush(t *testing.T) {
 	const fork = "https://github.com/invented-org/invented-repo"

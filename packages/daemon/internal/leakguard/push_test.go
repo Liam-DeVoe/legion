@@ -277,12 +277,7 @@ func TestAMergesOwnResolutionIsRead(t *testing.T) {
 	}
 	destinationAt(t, fixture, repo, theURL, base+":refs/heads/main")
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-	err := guard.Push(bound(t), PushRequest{
-		Dir:     repo,
-		Remote:  "origin",
-		URL:     theURL,
-		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: base}},
-	})
+	err := guard.Push(bound(t), knivesPush(repo, base, head, "origin", theURL))
 	want := []string{"resolution.md: " + theClass}
 	if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
 		t.Errorf("the report is %q, want %q", refused.Lines, want)
@@ -291,13 +286,14 @@ func TestAMergesOwnResolutionIsRead(t *testing.T) {
 
 // pushOf is a repository whose base the destination at theURL holds on its main, the base
 // writing the files held, and head, the commit the push adds, on that base, which writes the
-// files added, each path to its content. Where side is not nil, head is a merge, in the shape of
+// files added, each path to its content, and makes edit's change to the working tree, where edit
+// is not nil. Where side is not nil, head is a merge, in the shape of
 // TestAMergesOwnResolutionIsRead: of main, at a commit of its own on the base, and of a branch
 // side, whose commit on the base writes the files side names, with the files added written by
-// the merge's resolution. The destination holds side's commit too, at a branch of its own, so that
-// the push adds main's commit and the merge alone: a file side writes is read as a parent's file
-// of the merge, and never as a file of a commit the push adds.
-func pushOf(t *testing.T, held, side, added map[string]string) (repo, base, head string) {
+// the merge's resolution. The destination holds side's commit too, at a branch of its own, so
+// that the push adds main's commit and the merge alone: a file side writes is read as a parent's
+// file of the merge, and never as a file of a commit the push adds.
+func pushOf(t *testing.T, held, side, added map[string]string, edit func(t *testing.T, repo string)) (repo, base, head string) {
 	t.Helper()
 	home, root := t.TempDir(), t.TempDir()
 	repo = filepath.Join(root, "repo")
@@ -331,6 +327,9 @@ func pushOf(t *testing.T, held, side, added map[string]string) (repo, base, head
 		fixture.Run(repo, "git", "merge", "--quiet", "--no-ff", "--no-commit", "side")
 	}
 	write(added)
+	if edit != nil {
+		edit(t, repo)
+	}
 	head = commit("the commit the push adds")
 	refspecs := []string{base + ":refs/heads/main"}
 	if side != nil {
@@ -338,17 +337,6 @@ func pushOf(t *testing.T, held, side, added map[string]string) (repo, base, head
 	}
 	destinationAt(t, fixture, repo, theURL, refspecs...)
 	return repo, base, head
-}
-
-// pushedTo is the push of head to main, where the destination holds base, from repo to origin at
-// theURL.
-func pushedTo(repo, base, head string) PushRequest {
-	return PushRequest{
-		Dir:     repo,
-		Remote:  "origin",
-		URL:     theURL,
-		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: base}},
-	}
 }
 
 // A file is binary by its own content alone, whatever an attribute says: a file .gitattributes
@@ -399,9 +387,9 @@ func TestAFileIsBinaryByItsOwnContentAlone(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			repo, base, head := pushOf(t, tc.held, tc.side, tc.added)
+			repo, base, head := pushOf(t, tc.held, tc.side, tc.added, nil)
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-			err := guard.Push(bound(t), pushedTo(repo, base, head))
+			err := guard.Push(bound(t), knivesPush(repo, base, head, "origin", theURL))
 			if tc.want == nil {
 				if err != nil {
 					t.Fatalf("a push whose one named line is in a binary file: %v", err)
@@ -417,8 +405,8 @@ func TestAFileIsBinaryByItsOwnContentAlone(t *testing.T) {
 
 // A merge's text file above blobBound refuses the push as a setup failure that names the file and
 // its size, whether it is the merge's own or a parent's at a path the merge changes: a file passed
-// over, or read in part, would pass its lines unread. A binary file above the bound is read no
-// further than its first 8000 bytes and adds no line, and a text file at the bound is read. The
+// over, or read in part, would pass its lines unread. Of a binary file above the bound the guard
+// holds no more than its first 8000 bytes, and it adds no line; a text file at the bound is read. The
 // bound here is 64 bytes.
 func TestAMergesFileAboveTheBoundRefusesThePush(t *testing.T) {
 	kept := blobBound
@@ -466,9 +454,9 @@ func TestAMergesFileAboveTheBoundRefusesThePush(t *testing.T) {
 			if side == nil {
 				side = map[string]string{}
 			}
-			repo, base, head := pushOf(t, nil, side, tc.added)
+			repo, base, head := pushOf(t, nil, side, tc.added, nil)
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-			err := guard.Push(bound(t), pushedTo(repo, base, head))
+			err := guard.Push(bound(t), knivesPush(repo, base, head, "origin", theURL))
 			switch {
 			case tc.failure != nil:
 				setupFailure(t, err)
@@ -502,18 +490,21 @@ case " $* " in
 esac
 exec "$git" "$@"
 `)
-	return "PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"), record
+	return pathWith(bin), record
 }
 
 // A commit of one parent reads its files bounded, as a merge does: each file a line could come
 // from is classed by its own first 8000 bytes before any is diffed. A binary file adds no line
 // and is in no diff, whatever its size, whether the commit's file is binary or the parent's file
-// it replaces is. A text file above blobBound refuses the push as a setup failure that names the
-// file and its size, whether it is the commit's own or the parent's file the commit's is diffed
-// against: a file passed over, or read in part, would pass its lines unread. A text file at the
-// bound is read, a text file that replaces a binary one adds every line it has, and of a commit
-// that changes a binary file and a text file, the text file alone is diffed. The bound here is 64
-// bytes, and what the guard's diffs answer is kept (diffRecord), to say what they read.
+// it replaces is: a binary file above the bound that the commit changes is left out of the diff
+// of the text file the commit changes beside it. A text file above blobBound refuses the push as
+// a setup failure that names the file and its size, whether it is the commit's own or the
+// parent's file the commit's is diffed against: a file passed over, or read in part, would pass
+// its lines unread. A rename or a mode change that leaves such a file as the parent has it adds
+// no line, and nothing of the file is read. A text file at the bound is read, a text file that
+// replaces a binary one adds every line it has, and of a commit that changes a binary file and a
+// text file, the text file alone is diffed. The bound here is 64 bytes, and what the guard's
+// diffs answer is kept (diffRecord), to say what they read.
 func TestACommitsFileAboveTheBoundRefusesThePush(t *testing.T) {
 	kept := blobBound
 	blobBound = 64
@@ -528,14 +519,35 @@ func TestACommitsFileAboveTheBoundRefusesThePush(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		held, added map[string]string
+		// edit is the change the commit makes to the working tree beyond added, nil for none.
+		edit func(t *testing.T, repo string)
 		// failure is the setup failure for the commit, "" where there is none.
 		failure func(commit string) string
 		// want is the report, and nil where the push passes or fails.
 		want []string
 	}{
 		{
-			name:  "a binary file above the bound",
-			added: map[string]string{"big.bin": "\x00" + unseen + "\n" + big + named},
+			name:  "a binary file above the bound, which the commit changes beside a text file",
+			held:  map[string]string{"big.bin": "\x00" + big, "notes.md": "one\n"},
+			added: map[string]string{"big.bin": "\x00" + unseen + "\n" + big + named, "notes.md": "one\ntwo\n"},
+		},
+		{
+			name: "a text file above the bound, renamed whole",
+			held: map[string]string{"big.md": big + named},
+			edit: func(t *testing.T, repo string) {
+				if err := os.Rename(filepath.Join(repo, "big.md"), filepath.Join(repo, "moved.md")); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "a text file above the bound whose mode the commit changes",
+			held: map[string]string{"big.md": big + named},
+			edit: func(t *testing.T, repo string) {
+				if err := os.Chmod(filepath.Join(repo, "big.md"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
 		},
 		{
 			name:  "a text file above the bound",
@@ -571,10 +583,18 @@ func TestACommitsFileAboveTheBoundRefusesThePush(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			repo, base, head := pushOf(t, tc.held, nil, tc.added)
+			repo, base, head := pushOf(t, tc.held, nil, tc.added, tc.edit)
 			path, record := diffRecord(t)
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, path)
-			err := guard.Push(bound(t), pushedTo(repo, base, head))
+			err := guard.Push(bound(t), knivesPush(repo, base, head, "origin", theURL))
+			// Read first, so that a binary file a diff read is said whatever the push's answer.
+			patches, read := os.ReadFile(record)
+			if read != nil && !errors.Is(read, fs.ErrNotExist) {
+				t.Fatal(read)
+			}
+			if strings.Contains(string(patches), unseen) {
+				t.Errorf("a diff of the guard's read a binary file:\n%s", patches)
+			}
 			switch {
 			case tc.failure != nil:
 				setupFailure(t, err)
@@ -586,14 +606,7 @@ func TestACommitsFileAboveTheBoundRefusesThePush(t *testing.T) {
 					t.Errorf("the report is %q, want %q", refused.Lines, tc.want)
 				}
 			case err != nil:
-				t.Fatalf("a commit whose one named line is in a binary file: %v", err)
-			}
-			patches, err := os.ReadFile(record)
-			if err != nil && !errors.Is(err, fs.ErrNotExist) {
-				t.Fatal(err)
-			}
-			if strings.Contains(string(patches), unseen) {
-				t.Errorf("a diff of the guard's read a binary file:\n%s", patches)
+				t.Errorf("a commit that adds no line the rules refuse: %v", err)
 			}
 		})
 	}
@@ -621,9 +634,9 @@ case " $* " in
 esac
 exec "$git" "$@"
 `)
-	repo, base, head := pushOf(t, map[string]string{"notes.md": "one\n"}, nil, map[string]string{"notes.md": "one\nthe runner answers at " + theHost + "\n"})
-	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	err := guard.Push(bound(t), pushedTo(repo, base, head))
+	repo, base, head := pushOf(t, map[string]string{"notes.md": "one\n"}, nil, map[string]string{"notes.md": "one\nthe runner answers at " + theHost + "\n"}, nil)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, pathWith(bin))
+	err := guard.Push(bound(t), knivesPush(repo, base, head, "origin", theURL))
 	want := []string{"notes.md: " + theClass}
 	if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
 		t.Errorf("the report is %q, want %q", refused.Lines, want)
@@ -778,7 +791,7 @@ exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 			registry := theKnivesRow
 			registry.file = strings.ReplaceAll(theKnivesRegistry, knivesUpstream, tc.upstream)
 			path, listed, _ := servingKnives(t, registry)
-			path = "PATH=" + bin + string(os.PathListSeparator) + strings.TrimPrefix(path, "PATH=")
+			path = pathFirst(bin, path)
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, path, listed)
 			remote := tc.remote
 			if remote == "" {
@@ -905,12 +918,7 @@ func TestAnOctopusMergeIsReadFromItsFiles(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-			err := guard.Push(bound(t), PushRequest{
-				Dir:     repo,
-				Remote:  "origin",
-				URL:     theURL,
-				Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: tc.head, RemoteRef: "refs/heads/main", RemoteSHA: base}},
-			})
+			err := guard.Push(bound(t), knivesPush(repo, base, tc.head, "origin", theURL))
 			if tc.want == nil {
 				if err != nil {
 					t.Fatalf("a merge that adds nothing of its own: %v", err)
