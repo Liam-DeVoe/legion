@@ -98,7 +98,7 @@ func deliveredSeries(status string) string {
 
 // agentWakeProbe subscribes, on the harness's own connection, to the subject the listener's wake
 // reports are published on, so a test reads each report the moment the stream stores it
-// (awaitAgentWake).
+// (awaitWake).
 func agentWakeProbe(t *testing.T, harness listenerDeliveryHarness) *natsgo.Subscription {
 	t.Helper()
 	wakes, err := harness.client.Conn.SubscribeSync(bus.LegionWakeTopic)
@@ -180,7 +180,7 @@ func TestAgentDeliveryReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 		if err != nil {
 			break
 		}
-		if named := wakeReportSession(t, msg); named == target {
+		if wakeNamed(wakeReportIn(t, msg), wakeKindAgent, target) {
 			t.Fatalf("the delivery to %s, which the bucket holds a record of, reported its wake", target)
 		}
 	}
@@ -319,7 +319,7 @@ func TestUnplaceableDeferralsStopAtTheirCap(t *testing.T) {
 		waitFor(t, 15*time.Second, "the delivery that found the cap reached to report its wake", func() bool {
 			return len(deliveryRecords(t, harness.logs.String(), "listener agent wake reported")) > 0
 		})
-		awaitAgentWake(t, wakes, target)
+		awaitWake(t, wakes, wakeKindAgent, target)
 		logs := harness.logs.String()
 		reports := deliveryRecords(t, logs, "listener agent wake reported")
 		if len(reports) != 1 || reports[0].Level != "INFO" || reports[0].SessionID != target || reports[0].EventID != run.item.EventID || reports[0].Topic != run.item.Topic {

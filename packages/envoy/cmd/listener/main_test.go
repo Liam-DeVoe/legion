@@ -3416,7 +3416,7 @@ func TestListenerDeliveryHandler_NoHolderKeepsARoleAndWakesAnAgent(t *testing.T)
 
 			// Then
 			if tc.role == "" {
-				awaitAgentWake(t, wakes, strings.TrimPrefix(tc.topic, contracts.AgentTopicPrefix))
+				awaitWake(t, wakes, wakeKindAgent, strings.TrimPrefix(tc.topic, contracts.AgentTopicPrefix))
 				noException(t, probe)
 				return
 			}

@@ -80,7 +80,7 @@ func TestTheAgentPathReadsTheSessionOfEitherForm(t *testing.T) {
 			if reports := deliveryRecords(t, harness.logs.String(), "listener agent wake reported"); len(reports) != 1 || reports[0].SessionID != absent {
 				t.Errorf("wake lines %+v, want one naming %s", reports, absent)
 			}
-			awaitAgentWake(t, wakes, absent)
+			awaitWake(t, wakes, wakeKindAgent, absent)
 		})
 	}
 }
