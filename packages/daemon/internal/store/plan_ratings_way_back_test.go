@@ -228,10 +228,8 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 	defer rows.Close()
 	// stood is a row left after the way back, with its retry state.
 	type stood struct {
-		row       record.OutboxRow
-		attempts  int
-		nextAt    time.Time
-		lastError string
+		row record.OutboxRow
+		retryState
 	}
 	left := map[int64]stood{}
 	for rows.Next() {
