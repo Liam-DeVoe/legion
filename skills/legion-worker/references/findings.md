@@ -197,8 +197,9 @@ it](#when-no-controller-takes-it) says:
 dispatch comment --issue '<ASK KEY>' --body-file - <<'EOF'
 <the evidence: commands, output with its time, file:line, links>
 EOF
-# Keep `File it for Legion` only when your Legion addressing line lists the repository where the
-# fix belongs. For a clear defect no controller took, replace the `File an issue` option below with
+# Keep `File it for Legion` only when the repository where the fix belongs is one your project maps
+# (GET $DISPATCH_URL/api/v1/settings/repo-projects lists each repository with its project). For a
+# clear defect no controller took, replace the `File an issue` option below with
 # 'Hand it to the owning tree: <the tree, when you know it>', the first option and recommended.
 dispatch ask --issue '<ASK KEY>' --ref 'dispatch://<ASK KEY>/comment/<id>' --question-file - \
   --option 'File an issue: <what it would track, and who would own it>' \

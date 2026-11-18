@@ -42,7 +42,8 @@ you open. With no reply, leave it open: catch-up step 2 takes it again at your n
 The work goes to whoever already owns that code. You file an issue only when nobody does.
 
 1. Check that it is clear: the fix needs no choice a person must make, and it belongs in a
-   repository your addressing line lists. Otherwise open an ask for it, as `findings.md` says.
+   repository your project maps (`GET $DISPATCH_URL/api/v1/settings/repo-projects` lists each
+   repository with its project). Otherwise open an ask for it, as `findings.md` says.
 2. Search first (`skill://dispatch-first`). When an open issue tracks it, comment the evidence
    there, reply `Filed dispatch://<that KEY>` under the evidence, and file nothing. When that issue
    belongs to an approved root and has no `child_of` link to it, link it as
