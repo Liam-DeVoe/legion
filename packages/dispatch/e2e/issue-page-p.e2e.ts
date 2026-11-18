@@ -2283,11 +2283,15 @@ const ON_ISSUE_ACTIONS = {
   what: `button ${CONTROL_LABELS.issue_actions}`,
 } as const;
 
-/** Waits for Details, just opened, to hold the focus, as it takes the focus as it opens. */
-async function expectFocusInDetails(page: Page): Promise<void> {
+/** Waits for Details to hold the focus: just opened, as it takes the focus as it opens, or after a
+ *  dialog opened from it gave the focus back as it closed, which `message` then names. */
+async function expectFocusInDetails(
+  page: Page,
+  message = "Details took no focus as it opened"
+): Promise<void> {
   await expect
     .poll(() => details(page).evaluate((drawer) => drawer.contains(document.activeElement)), {
-      message: "Details took no focus as it opened",
+      message,
     })
     .toBe(true);
 }
@@ -2329,6 +2333,48 @@ test("Details closed after a write removed the labels' count leaves the focus in
     expect(
       await focusNow(page),
       "Details, closed after its labels' count went, left the focus off Issue actions"
+    ).toEqual(ON_ISSUE_ACTIONS);
+  });
+});
+
+// The same with the search palette opened by Control+K from inside Details before the write. The
+// palette is a dialog the app draws in its own root, beside Details rather than inside it, and it
+// gives the focus back into Details as it closes. The keeper stopped watching Details once the
+// focus went into the palette, so the count's removal and Details' close then left the focus on
+// the page's body. A focus in another layer now keeps the watch going, since that layer gives the
+// focus back, and the focus ends on "Issue actions" as in the row above.
+test("Details closed after a write removed the labels' count while the palette was open leaves the focus in the header", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await patchIssue(seeded.key, { labels: [...TWENTY_LABELS] });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const count = labelsLeft(page);
+    await expect(count, "twenty labels draw no labels' count").toBeVisible();
+    await count.focus();
+    await page.keyboard.press("Enter");
+    await expect(details(page), "Enter on the labels' count opened no Details").toBeVisible();
+    await expectFocusInDetails(page);
+    await page.keyboard.press("Control+k");
+    const palette = page.getByRole("dialog", { name: "Search" });
+    await expect(palette, "Control+k in Details did not open the palette").toBeVisible();
+    await expect
+      .poll(() => palette.evaluate((dialog) => dialog.contains(document.activeElement)), {
+        message: "the palette took no focus as it opened",
+      })
+      .toBe(true);
+    await patchIssue(seeded.key, { labels: ["dispatch"] });
+    await expect(count, "one label still draws the labels' count").toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(palette, "Escape did not close the palette").toHaveCount(0);
+    await expect(details(page), "Escape in the palette closed Details too").toBeVisible();
+    await expectFocusInDetails(page, "the palette did not give the focus back into Details");
+    await escapeDetails(page);
+    expect(
+      await focusNow(page),
+      "Details, closed after the palette and after its labels' count went, left the focus off Issue actions"
     ).toEqual(ON_ISSUE_ACTIONS);
   });
 });
