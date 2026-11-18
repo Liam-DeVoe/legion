@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -451,12 +452,14 @@ func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, condi
 
 // ListedSession is one row of Envoy's session list as the daemon reads it (sessionInfo in
 // packages/envoy/cmd/listener/api.go): the session, the state its last registration puts it in —
-// `live`, or `unresponsive` for one past the listener's live window and not gone — and that
-// registration, read from `last_seen` in unix milliseconds. The row's other members are not read.
+// `live`, or `unresponsive` for one past the listener's live window and not gone — that
+// registration, read from `last_seen` in unix milliseconds, and the Envoy roles the session holds.
+// The row's other members are not read.
 type ListedSession struct {
 	Session  string
 	State    string
 	LastSeen time.Time
+	Roles    []string
 }
 
 // StateLive is the state the listener names a session inside its live window by.
@@ -464,6 +467,9 @@ const StateLive = "live"
 
 // Live is whether the listener names the session live.
 func (s ListedSession) Live() bool { return s.State == StateLive }
+
+// HoldsRole is whether the session holds the Envoy role role.
+func (s ListedSession) HoldsRole(role string) bool { return slices.Contains(s.Roles, role) }
 
 // sessionListBodyLimit bounds the body ListSessions reads. Envoy's session list holds every
 // session of the fleet, about 1,100 in its cache (`session_cache_size` on its /healthz), each row
@@ -503,9 +509,10 @@ func (p *HTTPPublisher) ListSessions(ctx context.Context) ([]ListedSession, erro
 		return nil, fmt.Errorf("read Envoy's session list: %w", err)
 	}
 	var rows []struct {
-		SessionID string `json:"session_id"`
-		State     string `json:"state"`
-		LastSeen  int64  `json:"last_seen"`
+		SessionID string   `json:"session_id"`
+		State     string   `json:"state"`
+		LastSeen  int64    `json:"last_seen"`
+		Roles     []string `json:"roles"`
 	}
 	if err := json.Unmarshal(body, &rows); err != nil {
 		return nil, fmt.Errorf("read Envoy's session list: %w", err)
@@ -515,7 +522,7 @@ func (p *HTTPPublisher) ListSessions(ctx context.Context) ([]ListedSession, erro
 		if row.SessionID == "" {
 			continue
 		}
-		sessions = append(sessions, ListedSession{Session: row.SessionID, State: row.State, LastSeen: time.UnixMilli(row.LastSeen)})
+		sessions = append(sessions, ListedSession{Session: row.SessionID, State: row.State, LastSeen: time.UnixMilli(row.LastSeen), Roles: row.Roles})
 	}
 	return sessions, nil
 }

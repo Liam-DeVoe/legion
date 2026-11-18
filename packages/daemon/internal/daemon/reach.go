@@ -93,6 +93,8 @@ type reachKeeper struct {
 	records map[claim.Token]supervise.Reach
 	dirty   map[claim.Token]bool
 	seen    map[string]time.Time
+	// listed is each session of the last list that answered, with the Envoy roles it holds.
+	listed map[string]notify.ListedSession
 	// failingSince is the first of a run of failed reads, and failedAt the end of the last failed
 	// read; noLiveSince is the first of a run of reads that found no live session, noLiveAt the
 	// last such read, and noLiveTold whether the controller has been told of that run.
@@ -423,10 +425,12 @@ func (k *reachKeeper) sweep(ctx context.Context, claims []supervise.Claim) {
 	k.failingSince = time.Time{}
 	k.alerts.Close(fleetalert.SessionListUnreadable, "")
 	live := false
+	k.listed = make(map[string]notify.ListedSession, len(sessions))
 	for _, s := range sessions {
 		if s.LastSeen.After(k.seen[s.Session]) {
 			k.seen[s.Session] = s.LastSeen
 		}
+		k.listed[s.Session] = s
 		live = live || s.Live()
 	}
 	if live {
@@ -476,8 +480,8 @@ func (k *reachKeeper) judge(ctx context.Context, c supervise.Claim, now time.Tim
 		// The daemon's relaunch of its own controller has not brought it back: a controller
 		// whose path to Envoy stays blocked fails each boot's Envoy claim and exits, and its
 		// claim fails once its launch failures run out, on the same session. The episode lasts
-		// until that session registers again, so R6's line says, 20 minutes after the relaunch,
-		// that the relaunch did not bring it back.
+		// until the controller is back (controllerBack), so R6's line says, 20 minutes after the
+		// relaunch, that the relaunch did not bring it back.
 		return k.judgeController(ctx, c, rec, now), false
 	}
 	if c.Session == "" || !holdsEpisode(c.State) {
@@ -503,6 +507,13 @@ func (k *reachKeeper) judge(ctx context.Context, c supervise.Claim, now time.Tim
 	}
 	lastSeen := k.seen[c.Session]
 	if !lastSeen.IsZero() && now.Sub(lastSeen) <= supervise.UnreachableAfter {
+		if controller && rec.Relaunched && !k.controllerBack(c, rec) {
+			// A registration alone does not bring back the controller the daemon relaunched:
+			// a process that registers and goes no further, or says ready and never takes the
+			// controller's Envoy role, hears nothing as the controller (R6). The episode lasts,
+			// so R6's line says, 20 minutes after the relaunch, that it did not bring it back.
+			return k.judgeController(ctx, c, rec, now), false
+		}
 		if rec.Unreachable() || rec.Reported || rec.Relaunched {
 			k.log.Info("reach: the claim's session registered with Envoy again; it is reachable", "claim", c.Token, "lastSeen", lastSeen)
 		}
@@ -656,6 +667,14 @@ func (k *reachKeeper) relaunchOwnController(ctx context.Context, c supervise.Cla
 func (k *reachKeeper) controllerReachable(c supervise.Claim) {
 	k.alerts.Close(fleetalert.ControllerUnreachable, string(c.Token))
 	k.alerts.Close(fleetalert.ControllerRelaunchRefused, string(c.Token))
+}
+
+// controllerBack is whether the daemon's own controller c, which a relaunch reached in the
+// episode rec marks, is back from that relaunch (R6): it said ready after the relaunch, and its
+// session holds the controller's Envoy role in the last list read. The caller holds mu.
+func (k *reachKeeper) controllerBack(c supervise.Claim, rec supervise.Reach) bool {
+	return supervise.SaidReady(c.State) && c.LastReady.After(rec.RelaunchedAt) &&
+		k.listed[c.Session].HoldsRole(string(c.Token))
 }
 
 // report tells the controller, in one notice, of every claim newly out of reach this minute, and

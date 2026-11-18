@@ -39,9 +39,11 @@ type reachRig struct {
 	k      *reachKeeper
 	logged *bytes.Buffer
 
-	mu         sync.Mutex
-	now        time.Time
-	sessions   []notify.ListedSession
+	mu       sync.Mutex
+	now      time.Time
+	sessions []notify.ListedSession
+	// roles is the Envoy roles each session holds in the list listing writes.
+	roles      map[string][]string
 	listErr    error
 	puts       map[claim.Token]supervise.Reach
 	told       []toldNotice
@@ -54,7 +56,7 @@ type reachRig struct {
 func newReachRig(t *testing.T, daemonController bool) *reachRig {
 	t.Helper()
 	r := &reachRig{t: t, logged: &bytes.Buffer{}, now: reachBoot, puts: map[claim.Token]supervise.Reach{},
-		rows: map[string][]record.OutboxPayload{}}
+		roles: map[string][]string{}, rows: map[string][]record.OutboxPayload{}}
 	log := slog.New(slog.NewTextHandler(r.logged, nil))
 	r.k = newReachKeeper(reachKeeperOptions{
 		log: log, project: "LEGION", boot: reachBoot, daemonController: daemonController,
@@ -121,7 +123,7 @@ func (r *reachRig) at(d time.Duration) {
 }
 
 // listing sets what Envoy's list answers: each session with its last registration, live when it
-// is inside the listener's 5-minute live window.
+// is inside the listener's 5-minute live window, and the roles it holds (roles).
 func (r *reachRig) listing(seen map[string]time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -132,7 +134,7 @@ func (r *reachRig) listing(seen map[string]time.Duration) {
 		if r.now.Sub(last) > 5*time.Minute {
 			state = notify.StateUnresponsive
 		}
-		r.sessions = append(r.sessions, notify.ListedSession{Session: session, State: state, LastSeen: last})
+		r.sessions = append(r.sessions, notify.ListedSession{Session: session, State: state, LastSeen: last, Roles: r.roles[session]})
 	}
 }
 
@@ -691,10 +693,16 @@ func TestTheDaemonRelaunchesItsOwnControllerOnceInSixHours(t *testing.T) {
 		t.Fatalf("20 minutes after the relaunch: %d lines and %d relaunches, want one line and no second relaunch", got, len(r.relaunched))
 	}
 
-	// It registers, and is out of reach a second time within 6 hours: no relaunch, a line.
+	// It is back: its session registers, says ready after the relaunch and holds the controller's
+	// role. Then it is out of reach a second time within 6 hours: no relaunch, a line.
 	r.at(51 * time.Minute)
+	r.roles["ses_controller"] = []string{string(controller.Token)}
 	r.listing(map[string]time.Duration{"ses_controller": 51 * time.Minute})
+	controller.LastReady = reachBoot.Add(51 * time.Minute)
 	r.sweep(r.with(controller))
+	if r.reach(controller.Token).Unreachable() {
+		t.Fatalf("a controller ready after its relaunch and holding its role reads %+v, want its episode over", r.reach(controller.Token))
+	}
 	r.at(75 * time.Minute)
 	r.listing(map[string]time.Duration{"ses_other": 75 * time.Minute, "ses_controller": 51 * time.Minute})
 	r.sweep(r.with(controller))
@@ -703,6 +711,58 @@ func TestTheDaemonRelaunchesItsOwnControllerOnceInSixHours(t *testing.T) {
 	}
 	if !r.reach(controller.Token).Unreachable() {
 		t.Fatal("the controller is not marked out of reach")
+	}
+}
+
+// A controller the daemon relaunched is back only once it is ready after that relaunch and holds
+// the controller's Envoy role (R6). A session that registers with Envoy and goes no further, or
+// says ready and never takes the role, keeps the episode, and R6's line is written once, 20
+// minutes after the relaunch.
+func TestARelaunchedControllerThatRegistersButIsNotBackWritesTheLine(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		state supervise.ClaimState
+		ready time.Duration
+		roles []string
+		back  bool
+	}{
+		{name: "registered and never ready", state: supervise.StateRegistered, ready: -time.Hour, roles: []string{"legion-legion-controller"}},
+		{name: "ready without its role", state: supervise.StateIdle, ready: 23 * time.Minute, roles: []string{"some-other-role"}},
+		{name: "ready with its role", state: supervise.StateIdle, ready: 23 * time.Minute, roles: []string{"legion-legion-controller"}, back: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newReachRig(t, true)
+			project, _ := claim.ProjectToken("legion")
+			controller := supervise.Claim{Token: claim.ControllerToken(project), Project: project, Role: claim.RoleController,
+				Generation: 1, State: supervise.StateIdle, Session: "ses_controller", LastReady: reachBoot.Add(-time.Hour),
+				Locator: pluginTestLocator(claim.ControllerToken(project)), ActivityAt: reachBoot}
+			r.at(21 * time.Minute)
+			r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
+			r.sweep(controller)
+			if len(r.relaunched) != 1 {
+				t.Fatalf("the daemon relaunched its controller %d times, want once", len(r.relaunched))
+			}
+
+			// From the next minute its session registers with Envoy every minute.
+			controller.Generation++
+			controller.State, controller.LastReady = tc.state, reachBoot.Add(tc.ready)
+			r.roles["ses_controller"] = tc.roles
+			for minute := 22; minute <= 50; minute++ {
+				r.at(time.Duration(minute) * time.Minute)
+				r.listing(map[string]time.Duration{"ses_other": time.Duration(minute) * time.Minute, "ses_controller": time.Duration(minute) * time.Minute})
+				r.sweep(r.with(controller))
+			}
+			want := 1
+			if tc.back {
+				want = 0
+			}
+			if got := r.lines(fleetalert.ControllerUnreachable.Word); got != want || len(r.relaunched) != 1 {
+				t.Fatalf("a relaunched controller %s: %d lines and %d relaunches, want %d lines and no second relaunch", tc.name, got, len(r.relaunched), want)
+			}
+			if got := r.reach(controller.Token); got.Unreachable() == tc.back {
+				t.Fatalf("a relaunched controller %s reads %+v, want its episode over %t", tc.name, got, tc.back)
+			}
+		})
 	}
 }
 
