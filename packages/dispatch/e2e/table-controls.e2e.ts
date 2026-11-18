@@ -5868,9 +5868,11 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 // below 1280 px and under which iOS Safari zooms the page onto the box - the option a typed word
 // leaves is not the value the list starts on, the word leaves only the options it matches,
 // Escape picks nothing and changes no value, Tab out of the text box (Shift+Tab at the second
-// width) picks nothing and leaves the reader on the trigger, and Enter picks the option the word
-// left - the trigger shows it with the focus back on it, or where the pick takes the trigger away
-// the panel hands the focus on. A list that holds no text box is named and the row goes on, so
+// width) picks nothing and leaves the reader on the trigger, `?` pressed then on the closed
+// trigger opens no Keyboard shortcuts, since the trigger takes a page's single keys as the select
+// or the text box it replaced did (`isEditableTarget` in `features/shell/keymap.ts`), and Enter
+// picks the option the word left - the trigger shows it with the focus back on it, or where the
+// pick takes the trigger away the panel hands the focus on. A list that holds no text box is named and the row goes on, so
 // one run names every such list.
 // It runs in Chromium alone. What an engine decides here is one component's, the same in every
 // list, and two rows read it in Firefox and WebKit at a fraction of this row's cost: the keys the
@@ -5892,6 +5894,9 @@ test("every list of options a reader picks from holds a text box that narrows it
   /** The lists the row could not read: no trigger, a trigger that names no list of its own, or
    *  a list holding other than one text box. */
   const missing: string[] = [];
+  /** The closed triggers a page's single key acted through. */
+  const keyed: string[] = [];
+  const shortcuts = page.getByRole("dialog", { name: "Keyboard shortcuts" });
   /** Opens `list` from its trigger and answers the options of its own panel, once the focus is
    *  in that panel's one text box; or records why not, and shuts what the press opened. */
   const open = async (list: PickList, at: string): Promise<Locator | undefined> => {
@@ -5988,6 +5993,17 @@ test("every list of options a reader picks from holds a text box that narrows it
       await expect(list.trigger, `${at}: ${tab} left the focus elsewhere`).toBeFocused();
       expect(await list.value(), `${at}: ${tab} changed the list's value`).toBe(before);
 
+      // A single key of the page, pressed on the closed trigger, is the list's as it was the
+      // select's or the text box's: the shell's `?` opens no Keyboard shortcuts over it.
+      await page.keyboard.press("?");
+      await nextFrames(page);
+      if ((await shortcuts.count()) > 0) {
+        keyed.push(`${at}: ? on the closed trigger opened the Keyboard shortcuts`);
+        await page.keyboard.press("Escape");
+        await expect(shortcuts, `${at}: Escape left the Keyboard shortcuts open`).toHaveCount(0);
+        await list.trigger.focus();
+      }
+
       // Enter picks the option the word left.
       const entered = await open(list, at);
       if (entered === undefined) continue;
@@ -6006,6 +6022,7 @@ test("every list of options a reader picks from holds a text box that narrows it
     }
   }
   expect(missing, missing.join("; ")).toEqual([]);
+  expect(keyed, keyed.join("; ")).toEqual([]);
 });
 
 /** A title wider than any list's trigger is at 1024x768, given to an epic, a priority and a named
