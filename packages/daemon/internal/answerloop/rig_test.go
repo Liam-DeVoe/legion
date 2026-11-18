@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -138,6 +139,24 @@ type toolsFunc func(ghtool.Agent) Tool
 
 func (f toolsFunc) Open(_ context.Context, agent ghtool.Agent, _ string) (Tool, error) {
 	return f(agent), nil
+}
+
+// openedTools has the rig's gh tool record the agent each answer opens it as, and answers a read
+// of those agents so far, in order. It sets the rig's configuration, so a restart follows it.
+func (r *rig) openedTools() func() []ghtool.Agent {
+	var mu sync.Mutex
+	var opened []ghtool.Agent
+	r.cfg.Tools = toolsFunc(func(agent ghtool.Agent) Tool {
+		mu.Lock()
+		defer mu.Unlock()
+		opened = append(opened, agent)
+		return r.tool
+	})
+	return func() []ghtool.Agent {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(opened)
+	}
 }
 
 type issuesFunc func(string) IssueFacts

@@ -32,7 +32,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/conversation"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ghtool"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
@@ -125,21 +124,16 @@ type GH interface {
 }
 
 // Agent is the stopped agent that answers: its role, its issue, its session and the phase the
-// daemon has it in; and the repository its issue works and the number of the issue's pull request
-// the daemon's record holds, 0 for none, which the gh tool's description and the system prompt
-// name (usage), as the tool's own refusals do (ghtool.Agent, built from the same record).
+// daemon has it in; and GHUsage, how it calls the gh tool (its issue's repository and, where the
+// daemon's record holds one, the issue's pull request), which the gh tool's description and the
+// system prompt name in the words the tool's own refusals use (ghtool.Agent.Usage, from the same
+// record).
 type Agent struct {
-	Role        claim.Role
-	Issue       string
-	Session     string
-	Phase       string
-	Repository  ghrepo.Repository
-	PullRequest int
-}
-
-// usage is how the agent calls the gh tool, in the words the tool's refusals use.
-func (a Agent) usage() ghtool.Usage {
-	return ghtool.Usage{Repository: a.Repository, PullRequest: a.PullRequest}
+	Role    claim.Role
+	Issue   string
+	Session string
+	Phase   string
+	GHUsage ghtool.Usage
 }
 
 // Question is what the agent is asked: its id (which the log line names and the append records),
@@ -248,7 +242,7 @@ func (req Request) validate() error {
 		return errors.New("answer: the request names no question")
 	case req.GH == nil:
 		return errors.New("answer: the request has no gh tool")
-	case req.Agent.Repository.IsZero():
+	case req.Agent.GHUsage.Repository.IsZero():
 		return errors.New("answer: the request names no repository for the gh tool to call on")
 	case req.Bounds.Answer <= 0 || req.Bounds.ModelCalls <= 0 || req.Bounds.OutputTokens <= 0:
 		return errors.New("answer: the request has no answer_seconds, model_calls or output_tokens bound")

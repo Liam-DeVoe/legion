@@ -30,7 +30,7 @@ var tools = []tool{{name: "gh", description: ghDescription, schema: ghSchema, ru
 func ghDescription(req Request) string {
 	return "Run GitHub's own gh command line. The daemon runs it for you as your role's App, with full access to " +
 		"your issue's repository owner and read access to the project's other owners, each call routed to the owner it " +
-		"names. " + req.Agent.usage().String() + " Use it to read code at any commit, pull requests, reviews, checks " +
+		"names. " + req.Agent.GHUsage.String() + " Use it to read code at any commit, pull requests, reviews, checks " +
 		"and runs, and to write (comment, review, merge, rerun) when the message asks for it and you judge you should. " +
 		"Every comment or review it posts carries your Legion footer, which the tool adds. Commands and options unsafe " +
 		"on the daemon's host are refused with the reason."
@@ -39,7 +39,7 @@ func ghDescription(req Request) string {
 // ghSchema is the JSON schema of the gh tool's input for req: gh's arguments as an array of
 // strings, whose description gives the description's example (ghtool.Usage.Example).
 func ghSchema(req Request) json.RawMessage {
-	example, _ := json.Marshal(req.Agent.usage().Example())
+	example, _ := json.Marshal(req.Agent.GHUsage.Example())
 	description, _ := json.Marshal("gh's arguments without the leading gh, one per element; no shell reads them. For example " + string(example) + ".")
 	return json.RawMessage(`{"type":"object","properties":{"args":{"type":"array","items":{"type":"string"},"description":` +
 		string(description) + `}},"required":["args"],"additionalProperties":false}`)

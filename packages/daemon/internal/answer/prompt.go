@@ -21,7 +21,7 @@ func systemPrompt(req Request) string {
 	fmt.Fprintf(&b, "You are the agent whose conversation follows: the %s of issue %s (session %s, phase %s).", req.Agent.Role, req.Agent.Issue, req.Agent.Session, req.Agent.Phase)
 	b.WriteString(" You are not running now, and Legion has resumed your conversation for one message to you. Answer it as yourself, from your conversation and from what your tools read.\n\n")
 	fmt.Fprintf(&b, "Your tools now: %s. ", strings.Join(names, ", "))
-	fmt.Fprintf(&b, "The `gh` tool is GitHub's own command line with your GitHub access. %s Give it gh's arguments without the leading gh; its description lists the commands it takes and gives an example. ", req.Agent.usage().Checkout())
+	fmt.Fprintf(&b, "The `gh` tool is GitHub's own command line with your GitHub access. %s Give it gh's arguments without the leading gh; its description lists the commands it takes and gives an example. ", req.Agent.GHUsage.Checkout())
 	b.WriteString("Every comment or review you post with it carries your Legion footer, which the tool adds, so do not write one. ")
 	b.WriteString("The other tools your conversation used (reading and editing files, running commands, your Legion and Envoy tools) are not available now: do not call them. ")
 	fmt.Fprintf(&b, "This answer may make at most %d gh calls and %d model calls; your last model call offers no tool and must be your reply.\n\n", req.Bounds.GHCalls, req.Bounds.ModelCalls)

@@ -9,8 +9,10 @@ body: |-
   `gh api`); the repository the agent's issue works and, where the daemon's record holds one, the
   issue's pull request number; the commands the tool takes; and one example call that runs as
   written against that repository, which the input schema gives too. The system prompt's sentence
-  on `gh` says the same. The tool still writes (comment, review, merge and the other writes its
-  rules allow) when the message asks for it, with the Legion footer on every comment or review.
+  on `gh` carries the checkout sentence, the repository and the pull request, and points to the
+  tool's description for the commands and the example. The tool still writes (comment, review,
+  merge and the other writes its rules allow) when the message asks for it, with the Legion
+  footer on every comment or review.
 
   A call naming no gh command, gh's `--version`, `--help` or `-h` on its own, and a command the
   tool does not take are refused with their reason and then the same guidance, and a call gh ran

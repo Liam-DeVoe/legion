@@ -92,9 +92,9 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 	if err != nil {
 		return fmt.Errorf("read what changed on %s: %w", conv.Issue, err)
 	}
-	// The answer's gh tool and the model's description of it name the issue's repository and,
-	// where the record holds one, its pull request, so a call names its repository rather than
-	// leaving gh to read one from a working directory that has none.
+	// The answer's gh tool, and the model's description of it from agent.Usage, name the issue's
+	// repository and, where the record holds one, its pull request, so a call names its
+	// repository rather than leaving gh to read one from a working directory that has none.
 	pullRequest := 0
 	if facts.PullRequest != nil {
 		pullRequest = facts.PullRequest.Number
@@ -118,9 +118,8 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 		return err
 	}
 	reply, err := l.cfg.Answer(ctx, answer.Request{
-		Conversation: session.Conversation(),
-		Agent: answer.Agent{Role: conv.Role, Issue: conv.Issue, Session: conv.Session, Phase: facts.Phase,
-			Repository: facts.Repository, PullRequest: pullRequest},
+		Conversation:  session.Conversation(),
+		Agent:         answer.Agent{Role: conv.Role, Issue: conv.Issue, Session: conv.Session, Phase: facts.Phase, GHUsage: agent.Usage()},
 		ChangeNote:    changeNote(conv.Issue, facts),
 		Question:      answer.Question{ID: q.ID, Text: origin.Text, Asker: origin.Asker, Where: origin.Where},
 		MayAskNothing: q.MayAskNothing, Earlier: earlier,

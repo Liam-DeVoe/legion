@@ -1534,9 +1534,9 @@ Beside it: one `answers: question` line per change of a question's state, one `a
 - **A refusal says how to call it.**
   A call naming no command the tool takes is refused with its reason and then the same words:
   a call naming no command at all, which is what gh's own `--help` or `-h` on its own reads as, gh's `--version`, a command gh has and the tool does not, and one the allow list refuses.
-  So is a call gh ran that failed for naming no repository, gh's own `not a git repository` failure, which carries gh's output and then those words, so the model names the repository rather than making the same call again;
+  A call gh ran that failed for naming no repository, git's `not a git repository` failure that gh passes on, is not refused: the model reads gh's output and then those words, so it names the repository rather than making the same call again;
   that call is recorded in `answer_tool_calls` with what the model read.
-  Every other refusal, such as an option opening a browser, keeps its own reason alone.
+  Every refusal for another reason, such as an option opening a browser, keeps its own reason alone.
 
 A pane is a sandbox; the daemon's host is not, holding the daemon's own credentials and disk.
 So the tool runs only what is safe there, and decides before anything runs:

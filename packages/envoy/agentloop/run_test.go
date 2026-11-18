@@ -787,7 +787,6 @@ func withoutLastCall(t *testing.T, kind Kind, body map[string]any) map[string]an
 // (never more than four); and the Result is the same, no step holding the sentence.
 func TestOnlyTheLastCallCarriesTheLastCallSentence(t *testing.T) {
 	t.Parallel()
-	anthropicTools := func() []reply { return threeCallAnthropic() }
 	openaiTools := func() []reply {
 		return []reply{
 			openaiStream(openaiUsage{Input: 100, Output: 5}, "", openaiToolCall("fc_1", "call_1", toolName, map[string]any{"path": "note.txt"})),
@@ -805,7 +804,7 @@ func TestOnlyTheLastCallCarriesTheLastCallSentence(t *testing.T) {
 		// after is what the last call's request ends with before the sentence (newestPart).
 		after string
 	}{
-		{name: "anthropic-messages calling the tool to the bound", kind: AnthropicMessages, calls: 3, history: anthropicHistory, replies: anthropicTools, after: "tool_result"},
+		{name: "anthropic-messages calling the tool to the bound", kind: AnthropicMessages, calls: 3, history: anthropicHistory, replies: threeCallAnthropic, after: "tool_result"},
 		{name: "anthropic-messages with one call", kind: AnthropicMessages, calls: 1, history: anthropicHistory,
 			replies: func() []reply {
 				return []reply{anthropicStream("end_turn", anthropicUsage{Input: 10, Output: 5}, anthropicText("The note says plum."))}

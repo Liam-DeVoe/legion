@@ -584,14 +584,14 @@ func TestACallNamingNoCommandOrNoRepositoryIsToldHowToCallTheTool(t *testing.T) 
 				t.Errorf("a call opening a browser is refused with %q; want its own reason", got.Output)
 			}
 
-			const noRepository = "failed to run git: fatal: not a git repository (or any of the parent directories): .git\n"
-			setBehaviour(t, f.stand, behaviour{Stderr: noRepository, Exit: 1})
+			const gitFailure = "failed to run git: fatal: not a git repository (or any of the parent directories): .git\n"
+			setBehaviour(t, f.stand, behaviour{Stderr: gitFailure, Exit: 1})
 			seq++
 			got := f.run(seq, "issue", "list", "--limit", "1")
-			if !got.Ran || got.Exit != 1 || !strings.HasPrefix(got.Output, noRepository) {
+			if !got.Ran || got.Exit != 1 || !strings.HasPrefix(got.Output, gitFailure) {
 				t.Errorf("gh issue list naming no repository = %+v; want gh's failure first", got)
 			}
-			if missing := missingUsage(agent, strings.TrimPrefix(got.Output, noRepository)); len(missing) > 0 {
+			if missing := missingUsage(agent, strings.TrimPrefix(got.Output, gitFailure)); len(missing) > 0 {
 				t.Errorf("gh issue list naming no repository gives %q, which lacks %q after gh's output", got.Output, missing)
 			}
 			if row, _ := f.calls.row(question, seq); row.Result == nil || *row.Result != got.Output || row.Exit == nil || *row.Exit != 1 {

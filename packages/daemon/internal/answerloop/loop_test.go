@@ -422,14 +422,7 @@ func TestARestartAnswersAGeneratingQuestionAgainWithItsRecordedCalls(t *testing.
 func TestTheGhToolRunsAsTheAgentWithItsRolesRecordedHead(t *testing.T) {
 	const tested, reviewed = "8848896da05779c592221b1199ee55ddb11cc3f3", "4c1d0b9a7e52f38610d4c2b7a9e5f0318d6b2c47"
 	r := newRig(t)
-	var mu sync.Mutex
-	var opened []ghtool.Agent
-	r.cfg.Tools = toolsFunc(func(agent ghtool.Agent) Tool {
-		mu.Lock()
-		defer mu.Unlock()
-		opened = append(opened, agent)
-		return r.tool
-	})
+	opened := r.openedTools()
 	r.cfg.Issues = issuesFunc(func(string) IssueFacts {
 		return IssueFacts{Recorded: true, DispatchStatus: "in_progress", Phase: "reviewing",
 			HandoffCommits: map[claim.Role]string{claim.RoleTester: tested, claim.RoleReviewer: reviewed}}
@@ -438,9 +431,7 @@ func TestTheGhToolRunsAsTheAgentWithItsRolesRecordedHead(t *testing.T) {
 	r.conversation("ses_tester", testerToken, 0)
 	r.receive(messageHandoff("ses_tester", "m-1", 1, "Which head did you test?"))
 	r.drain()
-	mu.Lock()
-	defer mu.Unlock()
-	if len(opened) != 1 || opened[0].Role != claim.RoleTester || opened[0].Session != "ses_tester" || opened[0].Head != tested {
+	if opened := opened(); len(opened) != 1 || opened[0].Role != claim.RoleTester || opened[0].Session != "ses_tester" || opened[0].Head != tested {
 		t.Fatalf("the gh tool was opened as %+v; want the tester ses_tester once, with the head its phases row records, %s", opened, tested)
 	}
 }
@@ -460,14 +451,7 @@ func TestTheAnswerAndItsGhToolNameTheRecordsRepositoryAndPullRequest(t *testing.
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newRig(t)
-			var mu sync.Mutex
-			var opened []ghtool.Agent
-			r.cfg.Tools = toolsFunc(func(agent ghtool.Agent) Tool {
-				mu.Lock()
-				defer mu.Unlock()
-				opened = append(opened, agent)
-				return r.tool
-			})
+			opened := r.openedTools()
 			r.cfg.Issues = issuesFunc(func(string) IssueFacts {
 				return IssueFacts{Recorded: true, DispatchStatus: "in_progress", Phase: "testing", Repository: repository, PullRequest: c.pr}
 			})
@@ -475,14 +459,12 @@ func TestTheAnswerAndItsGhToolNameTheRecordsRepositoryAndPullRequest(t *testing.
 			r.conversation("ses_tester", testerToken, 0)
 			r.receive(messageHandoff("ses_tester", "m-1", 1, "Which pull request did you test?"))
 			r.drain()
-			mu.Lock()
-			defer mu.Unlock()
-			if len(opened) != 1 || opened[0].Repository != repository || opened[0].PullRequest != c.want {
+			if opened := opened(); len(opened) != 1 || opened[0].Repository != repository || opened[0].PullRequest != c.want {
 				t.Fatalf("the gh tool was opened as %+v; want it once, on %s with pull request %d", opened, repository, c.want)
 			}
 			r.mu.Lock()
 			defer r.mu.Unlock()
-			if len(r.requests) != 1 || r.requests[0].Agent.Repository != repository || r.requests[0].Agent.PullRequest != c.want {
+			if len(r.requests) != 1 || r.requests[0].Agent.GHUsage.Repository != repository || r.requests[0].Agent.GHUsage.PullRequest != c.want {
 				t.Fatalf("the answers asked %+v; want one, its agent on %s with pull request %d", r.requests, repository, c.want)
 			}
 		})

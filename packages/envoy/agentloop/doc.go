@@ -138,11 +138,11 @@
 // Bounds.OutputTokens bounds each call. Tool calls are numbered on across the asks, Result.Steps
 // holds every call in order with the sentence on the step it answered (Step.AskedAgain), and
 // Result.Usage sums them all. The cache marks are placed as for any call: the history keeps its
-// own, and the newest message, the check's sentence, takes the last of the four. Where the asks
-// or the bounds are spent, the run returns the last reply as it would with no check, its Value
-// set and no fault: a check's refusal is never a fault of this package, and refusing that value
-// is the caller's to do. A request with no Check sends exactly what it sent before Check
-// existed.
+// own, and the check's sentence takes the last of the four, as the newest message but for the
+// LastCall sentence after it on a last call, which takes none. Where the asks or the bounds are
+// spent, the run returns the last reply as it would with no check, its Value set and no fault: a
+// check's refusal is never a fault of this package, and refusing that value is the caller's to
+// do. A request with no Check sends exactly what it sent before Check existed.
 //
 // # The last call
 //

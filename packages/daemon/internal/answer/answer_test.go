@@ -111,7 +111,7 @@ func anthropicRequest(t *testing.T, s *standIn, gh GH, modelCalls int) Request {
 	_, credential := keyFile(t, "sk-ant-standin")
 	return Request{
 		Conversation: anthropicConversation(),
-		Agent:        Agent{Role: "planner", Issue: "INFRA-1", Session: "s-planner", Phase: "implementing", Repository: ghrepo.MustParse("acme/widgets")},
+		Agent:        Agent{Role: "planner", Issue: "INFRA-1", Session: "s-planner", Phase: "implementing", GHUsage: ghtool.Usage{Repository: ghrepo.MustParse("acme/widgets")}},
 		ChangeNote:   "Dispatch status: in progress. PR #7: open, head abc123.",
 		Question:     Question{ID: "dispatch:m-1", Text: "Is PR 7 green?", Asker: "a person", Where: "the INFRA-1 thread"},
 		Providers:    map[config.AnswerProvider]config.AnswerEndpoint{config.AnswerAnthropic: {BaseURL: s.server.URL, Credential: credential}},
@@ -260,6 +260,34 @@ func TestTheCostSumsEveryCallCacheWritesIncludedAndOneLineLogsIt(t *testing.T) {
 	}
 }
 
+// offered is what an Anthropic model call offered the model: the system prompt's blocks, and
+// each tool's name, description and input schema's properties.
+type offered struct {
+	System []struct {
+		Text string `json:"text"`
+	} `json:"system"`
+	Tools []struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		InputSchema struct {
+			Properties map[string]struct {
+				Type        string `json:"type"`
+				Description string `json:"description"`
+			} `json:"properties"`
+		} `json:"input_schema"`
+	} `json:"tools"`
+}
+
+// offerOf is what the call r offered.
+func offerOf(t *testing.T, r recorded) offered {
+	t.Helper()
+	var body offered
+	if err := json.Unmarshal(r.body, &body); err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
 // The loop's tool list holds gh, every model call offers it, and the system prompt names it.
 func TestTheLoopsToolListHoldsGh(t *testing.T) {
 	if !slices.ContainsFunc(tools, func(t tool) bool { return t.name == "gh" }) {
@@ -269,22 +297,7 @@ func TestTheLoopsToolListHoldsGh(t *testing.T) {
 	if _, err := Answer(context.Background(), anthropicRequest(t, s, &stubGH{}, 1)); err != nil {
 		t.Fatal(err)
 	}
-	var body struct {
-		System []struct {
-			Text string `json:"text"`
-		} `json:"system"`
-		Tools []struct {
-			Name        string `json:"name"`
-			InputSchema struct {
-				Properties map[string]struct {
-					Type string `json:"type"`
-				} `json:"properties"`
-			} `json:"input_schema"`
-		} `json:"tools"`
-	}
-	if err := json.Unmarshal(s.requests()[0].body, &body); err != nil {
-		t.Fatal(err)
-	}
+	body := offerOf(t, s.requests()[0])
 	if len(body.Tools) != 1 || body.Tools[0].Name != "gh" || body.Tools[0].InputSchema.Properties["args"].Type != "array" {
 		t.Errorf("the call offers tools %+v, want gh taking args, an array", body.Tools)
 	}
@@ -297,22 +310,7 @@ func TestTheLoopsToolListHoldsGh(t *testing.T) {
 // description, its args' description in the input schema, and the system prompt.
 func ghOffer(t *testing.T, r recorded) (description, args, system string) {
 	t.Helper()
-	var body struct {
-		System []struct {
-			Text string `json:"text"`
-		} `json:"system"`
-		Tools []struct {
-			Description string `json:"description"`
-			InputSchema struct {
-				Properties map[string]struct {
-					Description string `json:"description"`
-				} `json:"properties"`
-			} `json:"input_schema"`
-		} `json:"tools"`
-	}
-	if err := json.Unmarshal(r.body, &body); err != nil {
-		t.Fatal(err)
-	}
+	body := offerOf(t, r)
 	if len(body.Tools) != 1 || len(body.System) == 0 {
 		t.Fatalf("the call offers tools %+v under the system prompt %+v, want gh alone", body.Tools, body.System)
 	}
@@ -388,7 +386,7 @@ func TestTheGhToolIsDescribedForTheRecordsRepositoryAndPullRequest(t *testing.T)
 		t.Run(fmt.Sprintf("pull request %d", c.pr), func(t *testing.T) {
 			s := newStandIn(t, anthropicStream("end_turn", anthropicUsage{Input: 1, Output: 1}, anthropicText(`{"kind":"answered","text":"Yes.","needs":""}`)))
 			req := anthropicRequest(t, s, &stubGH{}, 1)
-			req.Agent.PullRequest = c.pr
+			req.Agent.GHUsage.PullRequest = c.pr
 			if _, err := Answer(context.Background(), req); err != nil {
 				t.Fatal(err)
 			}
@@ -396,7 +394,7 @@ func TestTheGhToolIsDescribedForTheRecordsRepositoryAndPullRequest(t *testing.T)
 			for _, problem := range ghOfferProblems(c.pr, c.example, description, args, system) {
 				t.Error(problem)
 			}
-			usage := ghtool.Usage{Repository: req.Agent.Repository, PullRequest: c.pr}
+			usage := req.Agent.GHUsage
 			if !strings.Contains(description, usage.String()) || !strings.Contains(system, usage.Checkout()) {
 				t.Errorf("the description %q and the system prompt %q do not carry the gh tool's own usage %q", description, system, usage)
 			}
@@ -437,10 +435,11 @@ func claudeSession(t *testing.T) *claude.Session {
 // after everything else it carries and with no cache mark, and no earlier call is. The exchange
 // appended to the conversation holds no trace of that message: the question, the model's turns, a
 // reply the form refused with the sentence it was asked again with, the reply, and nothing else.
-// It validates, and Oh My Pi's appender and Claude Code's each encode it with none of that
-// message in what they write. Two runs reach their last call: one whose first call reads with gh,
-// so the message comes after the call's result, and one whose first reply the form refuses, so
-// the last call is the one asked again and the message comes after the form's sentence.
+// Oh My Pi's appender and Claude Code's each encode it with none of that message in what they
+// write (the answer already validated it: finish faults an append that does not, and this reply
+// has no fault). Two runs reach their last call: one whose first call reads with gh, so the
+// message comes after the call's result, and one whose first reply the form refuses, so the last
+// call is the one asked again and the message comes after the form's sentence.
 func TestTheLastCallIsToldItIsTheLastAndTheAppendHoldsNoTraceOfIt(t *testing.T) {
 	const answered = `{"kind":"answered","text":"PR 7 is green.","needs":""}`
 	refused := `{"kind":"not_answered","text":"I cannot tell from here.","needs":""}`
@@ -480,9 +479,6 @@ func TestTheLastCallIsToldItIsTheLastAndTheAppendHoldsNoTraceOfIt(t *testing.T) 
 			}
 
 			appended := reply.Append
-			if err := appended.Validate(); err != nil {
-				t.Fatalf("the append does not validate: %v", err)
-			}
 			if encoded, err := json.Marshal(appended); err != nil || bytes.Contains(encoded, []byte(lastCall)) {
 				t.Errorf("the append %s (%v) holds the last call's message", encoded, err)
 			}
@@ -503,19 +499,13 @@ func TestTheLastCallIsToldItIsTheLastAndTheAppendHoldsNoTraceOfIt(t *testing.T) 
 					t.Errorf("%s's appender writes the last call's message:\n%s", name, data)
 				}
 				for _, want := range []string{"Is PR 7 green?", "PR 7 is green.", c.after} {
-					if want != "tool_result" && !bytes.Contains(data, []byte(jsonText(want))) {
+					if want != "tool_result" && !bytes.Contains(data, []byte(want)) {
 						t.Errorf("%s's appender writes no %q:\n%s", name, want, data)
 					}
 				}
 			}
 		})
 	}
-}
-
-// jsonText is text as a JSON string holds it, without its quotes.
-func jsonText(text string) string {
-	encoded, _ := json.Marshal(text)
-	return string(encoded[1 : len(encoded)-1])
 }
 
 const openaiHistoryOne = "gAAAAhist+/one=="
@@ -557,7 +547,7 @@ func openaiRequest(t *testing.T, s *standIn, gh GH, modelCalls int) Request {
 	_, credential := keyFile(t, "sk-openai-standin")
 	return Request{
 		Conversation: openaiConversation(),
-		Agent:        Agent{Role: "implementer", Issue: "INFRA-2", Session: "s-impl", Phase: "testing", Repository: ghrepo.MustParse("acme/widgets")},
+		Agent:        Agent{Role: "implementer", Issue: "INFRA-2", Session: "s-impl", Phase: "testing", GHUsage: ghtool.Usage{Repository: ghrepo.MustParse("acme/widgets")}},
 		ChangeNote:   "Dispatch status: in review.",
 		Question:     Question{ID: "envoy:k-1", Text: "What did the note say?", Asker: "the tester", Where: "an Envoy message"},
 		Providers:    map[config.AnswerProvider]config.AnswerEndpoint{config.AnswerOpenAI: {BaseURL: s.server.URL + "/v1", Credential: credential}},
