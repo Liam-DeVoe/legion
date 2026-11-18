@@ -1131,17 +1131,27 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 // prompt, so it is quoted as a Go string (strconv.Quote): the quotes bound it, and a quote or a
 // newline inside it is escaped rather than closing the one around it. sessionStoreFault quotes
 // its own detail for the same reason.
+//
+// A claim is its agent's, so a keyed agent's claim can lose its session on a step of another role
+// than its name: the sentence then names the agent and the step's role, and says that each later
+// step of that agent runs in the fresh session, which is the key's. A claim named by its role, the
+// claim of every step of an issue with no plan rows, keeps the sentence it always had.
 func (e *Engine) sessionLost(ctx context.Context, tx pgx.Tx, fact intake.SessionLost) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	told := fmt.Sprintf("The %s of %s lost the session it recorded: %s. It is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives.",
-		fact.Role, issue.Key, strconv.Quote(fact.Detail))
+	const fresh = "It is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives."
+	told := fmt.Sprintf("The %s of %s lost the session it recorded: %s. %s", fact.Role, issue.Key, strconv.Quote(fact.Detail), fresh)
+	if _, agent, ok := fact.Claim.Cut(); ok && agent != claim.Agent(fact.Role) {
+		told = fmt.Sprintf("The agent %s of %s, on its %s step, lost the session it recorded: %s. %s Each later step of that agent runs in the fresh session.",
+			agent, issue.Key, fact.Role, strconv.Quote(fact.Detail), fresh)
+	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: told}); err != nil {
 		return intake.Result{}, err
 	}
-	e.warnOnCommit(ctx, "workflow: a worker's recorded session was in no session store", "issue", issue.Key, "role", fact.Role, "detail", fact.Detail)
+	e.warnOnCommit(ctx, "workflow: a worker's recorded session was in no session store", "issue", issue.Key, "role", fact.Role,
+		"claim", fact.Claim, "detail", fact.Detail)
 	return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{
 		Kind: "session-lost", Role: fact.Role, Phase: issue.Phase, Reason: told})
 }

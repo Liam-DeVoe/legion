@@ -1874,7 +1874,7 @@ func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 // one launch that lost the session reports once however often the fact is applied.
 func (w *workflowRuntime) sessionLost(c supervise.Claim, detail string) {
 	w.applySessionFact(c, fmt.Sprintf("session-lost:%s:%d", c.Token, c.Generation),
-		intake.SessionLost{Issue: c.Issue, Role: c.Role, Detail: detail}, "apply a claim's lost session")
+		intake.SessionLost{Issue: c.Issue, Role: c.Role, Claim: c.Token, Detail: detail}, "apply a claim's lost session")
 }
 
 // sessionStoreFault applies the fact that a start could not reach the session store at all

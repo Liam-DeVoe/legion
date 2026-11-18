@@ -1080,12 +1080,14 @@ type ClaimFailed struct {
 func (ClaimFailed) isFact() {}
 
 // SessionLost is a claim whose recorded session no session store holds any more: its worker now
-// runs a fresh agent that has read none of its own earlier work (supervise's startFresh). Detail
-// is why, as the runtime said it. It is told on the issue, to its architect and to the controller,
-// because a worker that silently lost its memory looks like one that is merely slow.
+// runs a fresh agent that has read none of its own earlier work (supervise's startFresh). Claim is
+// that claim, whose name is its agent's, and Role the role of the step it runs. Detail is why, as
+// the runtime said it. It is told on the issue, to its architect and to the controller, because a
+// worker that silently lost its memory looks like one that is merely slow.
 type SessionLost struct {
 	Issue  string
 	Role   claim.Role
+	Claim  claim.Token
 	Detail string
 }
 
