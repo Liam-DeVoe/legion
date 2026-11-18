@@ -1468,6 +1468,7 @@ The controller is `legion controller start` on the operator's machine, or, under
 A step below that reads or writes the daemon's database by hand gives `psql` or `pg_dump` the database's URL with no password in it, `<postgres_url>`, and the password in a file, never as an argument, because every process on the machine can read another's arguments.
 `<postgres_url>` is the daemon's `postgres_dsn` with its password taken out: `postgres://<user>@<host>:<port>/<database>?sslmode=...`.
 `<pgpass file>` is a file of mode `0600` that holds one line, `<host>:<port>:<database>:<user>:<password>`, which libpq reads when `PGPASSFILE` names it (https://www.postgresql.org/docs/current/libpq-pgpass.html).
+Write each field as it is, not as a URL writes it: a password that `postgres_dsn` percent-encodes (`%40` for `@`) goes into the file decoded, and a `:` or a `\` inside a field is written `\:` or `\\`, or libpq reads the line wrong and the command fails to authenticate.
 So each command reads `PGPASSFILE=<pgpass file> psql '<postgres_url>' …`, and libpq takes the password from the file.
 Delete the file when the step is done.
 
@@ -2006,7 +2007,15 @@ After the rollback, no role reads that document, because the earlier release's r
 
 **The architect's `provider-errors` and `update-stalled` notices must go as well.**
 An earlier release refuses a `notice` row of either kind at each attempt (`unknown notice kind`, `validNoticeKind` in `record/outbox.go`), so the row fails on its backoff for ever, and while that backoff holds it ahead of now it fails every read of the project's state that passes it (`WaitingNotices`, `pacedCatchUps`).
-Run this with the daemon stopped, before the earlier image is pinned:
+Run this with the daemon stopped, before the earlier image is pinned.
+First read the `update-stalled` rows, because each names a claim an architect suspended, and the delete leaves nobody told of it:
+
+```sql
+select issue, payload->>'reason' from outbox where kind = 'notice' and payload->>'kind' = 'update-stalled';
+```
+
+Keep what it prints: the step below hands each such claim to the operator, and after the rollback resume each one with `legion claims resume` once the cause it was suspended for is gone, or the round's pod waits for it.
+Then delete the rows:
 
 ```sql
 -- The notices to an architect of a run of provider errors and of a held update round. The
@@ -2017,7 +2026,7 @@ delete from outbox where kind = 'notice' and payload->>'kind' in ('provider-erro
 Each deleted row costs one architect one notice of one run of provider errors or of one held round.
 The controller's `controller_notice` row of a run of provider errors stays, and the earlier release sends it.
 A held round whose architect's row is deleted stays marked told on its claims, so the earlier release tells nobody of it.
-So before the delete, read each such row (`select issue, payload->>'reason' from outbox where kind = 'notice' and payload->>'kind' = 'update-stalled';`): each names a claim an architect suspended, which the step below hands to the operator, and which only the operator's `legion claims resume` then lifts, so the pod waits for that resume.
+That is why the `select` above comes first.
 
 **The earlier release does not hold a claim that the controller or an architect suspended, unless you move it to the operator.**
 An earlier release keeps a claim suspended against its own rules only when the operator suspended it (`suspended_by = 'operator'`, supervise's `RuleHolds` and the repair in `admit.go`), and it repairs every other suspended claim as it repairs one the daemon itself suspended.
@@ -4935,9 +4944,7 @@ GNU tar 1.35 and git 2.47.3 were measured doing each of these: tar replaced a re
 
 **The controller's route.**
 A project's controller carries an issue pod's unpushed work itself before it deletes the pod, where its own pod holds `create pods/exec` and `delete pods` in `legion` (`skills/legion-controller/references/operations.md`, "A pod delete with nothing lost").
-It runs step 1 as above, and a step 3 of its own:
-it fetches the issue branch and the default branch from GitHub into a fresh clone with the implement App token the secrets broker lends, narrowed to the one repository, then fetches the bundle into that clone with git's object check, and pushes through the worker image's `git` wrapper, so the leak guard checks the push;
-where GitHub answers that `legion/<KEY>` was never pushed, or the fetch fails another way, it deletes nothing and tells the issue's architect by a mention naming git's first line.
+It runs step 1 as above, and a step 3 of its own, which that section of the controller's skill gives: a fresh clone fetched from GitHub with the implement App token the secrets broker lends, the bundle fetched into it with git's object check, and a push through the worker image's `git` wrapper, so the leak guard checks the push.
 Its pod has no Docker, so it runs step 2's script in that pod with `CARRY_OUT_STAGE` unset:
 the script runs itself under `unshare --user --map-root-user --net --mount --pid --fork --mount-proc`, mounts a tmpfs over `/run` and over `$HOME`, and runs the rebuild there.
 It stops where `unshare` is refused, so it never rebuilds with the network.
@@ -5924,7 +5931,7 @@ a replacement waits its pod out and a sweep interval at worst, so one made where
 What the last sweep decided under the two limits is one line of `legion claims list` ("Contract discipline" above).
 
 A round that outlives its bound is told once, as an `update-stalled` notice, when the bound has passed and something still holds the round (`tellLateRound`):
-to the project's controller, but for a hold an architect placed, which goes to the architect that owns the held claim, and to the controller only where that architect's claim has failed or there is none (`tellUpdateStalled`).
+to the project's controller, but for a hold an architect placed, which goes to the architect that owns the held claim, and to the controller only where that architect's claim has failed or been retired, where there is none, or where the hold is over the tree root's own architect (`tellUpdateStalled`, `architectHears`).
 What holds it is a suspension that holds over a claim the round asks — the operator's, the controller's or an architect's, each named with its holder and with who can resume it (`holdSentences`) — a `ReplacePod` the cluster refuses, no claim recording a process in the round's pod or in any pod (`roundWithNoProcessInItsPod`, `tellPodlessRound`), or claims recording two pods at once.
 Its `reason` names that hold, and the notice names the issue, the round, the pod, the drift and every claim the round asked, with that claim's state and whether it answered (`skill://legion-controller/references/escalation.md`).
 One round is told once, however many sweeps find it open.

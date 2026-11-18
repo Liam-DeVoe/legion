@@ -194,10 +194,11 @@ The issue's agents run while you copy. Work they write after step 1 goes with th
    ```
 
    An exec that `kubectl` refuses (`Forbidden`) is an operation you lack: delete nothing, and name
-   it in the day's report. Any other exit that is not 0 is a copy you cannot use: the `test` that
-   refuses a directory reached through a symlink, an exec cut off, or a tar that fails. Make step 1
-   again once. A second such exit means delete nothing, and tell the issue's architect by a
-   mention that names the command and its last line of output.
+   it in the day's report. Any other exit that is not 0, but the exit 1 after `file changed as we
+   read it` above, is a copy you cannot use: the `test` that refuses a directory reached through a
+   symlink, an exec cut off, or a tar that fails. Make step 1 again once. A second such exit means
+   delete nothing, and tell the issue's architect by a mention that names the command and its last
+   line of output.
 
 2. **Rebuild the work into a bundle in your own pod.** `carry-out.sh` runs itself in a user,
    network, mount and PID namespace of its own, with a tmpfs over `/run` and over `$HOME`, and
@@ -414,8 +415,8 @@ with that refusal, the text on stdin
 ## Each kind of request the controller sent
 
 On 2026-11-13, the controllers of one deployment sent other sessions requests of thirteen kinds,
-as a labeller of that day's transcripts counted them for cybermonklabs/legion#4065. Each row says
-what you do now in place of such a request.
+as a labeller of that day's transcripts counted them. Each row says what you do now in place of
+such a request.
 An operation is one of the sections above. A decision that only a person may make is a
 `dispatch ask`. Every other request goes to the session whose work it is, as a Dispatch comment
 that mentions its role (`skill://legion-worker/references/findings.md#write-to-the-owner`). Send

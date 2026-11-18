@@ -43,8 +43,8 @@ You file an issue only when nobody owns that code.
    issue on (your addressing line names the owners your own App is installed on, and
    `read_state`'s `repositories.refused` names a repository either App is missing from).
    Otherwise reply `Not filed: <reason>` under the evidence, the reason naming the choice a
-   person must make or the repository the Apps miss, and open nothing: the finder opens its ask
-   itself, as `findings.md` says.
+   person must make or the repository the Apps miss, and open nothing: a finder that reads that
+   reply opens its ask itself (`skill://legion-worker/references/findings.md#write-to-the-owner`).
 2. Search first (`skill://dispatch-first`). When an open issue tracks it, comment the evidence
    there, reply `Filed dispatch://<that KEY>` under the evidence, and file nothing.
 3. Check that no running tree owns that code: no live tree whose repository and component match.
