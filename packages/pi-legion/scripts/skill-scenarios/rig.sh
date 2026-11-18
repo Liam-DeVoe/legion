@@ -641,11 +641,15 @@ base_env() {
 # nothing under the agent's HOME) and records the call to $R/calls.jsonl as gh-standin.ts records
 # its own. The score reads the tester's run of the CLI from that record. No `legion` stands in: an
 # agent reaches the daemon stand-in through its `legion` tool alone, never `legion` from bash.
+# gh-standin.ts is bundled into $R/bin, so the `gh` an agent reads names no path of this checkout,
+# which is the head label's own checkout when the rig runs from it.
 standins() {
   local bun_real
   bun_real=$(bun -e 'console.log(process.execPath)')
   mkdir -p "$R/bin"
-  printf '#!/bin/sh\nexec %q %q gh "$@"\n' "$bun_real" "$here/gh-standin.ts" >"$R/bin/gh"
+  bun build --target bun --minify --outfile "$R/bin/gh-standin.js" "$here/gh-standin.ts" >/dev/null ||
+    fail "gh-standin.ts did not bundle"
+  printf '#!/bin/sh\nexec %q %q gh "$@"\n' "$bun_real" "$R/bin/gh-standin.js" >"$R/bin/gh"
   cat >"$R/bin/bun" <<EOF
 #!/usr/bin/env bash
 at=\$(date -u +%FT%T.%3NZ)

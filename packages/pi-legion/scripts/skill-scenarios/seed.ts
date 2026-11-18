@@ -816,7 +816,8 @@ export async function headsIssue(file: string, world: HeadsWorld): Promise<void>
   );
   const fixture: z.infer<typeof HeadsFixture> = { issue: issue.key, title };
   writeFileSync(file, `${JSON.stringify(fixture)}\n`);
-  console.log(`seeded ${issue.key} (${world})`);
+  // The log is the run's fixture.log, which its agent can read: it names no scenario and no case.
+  console.log(`seeded ${issue.key}`);
 }
 
 /** One result of k1 that `heads-events` records, at the head of the pull request `pr`. */

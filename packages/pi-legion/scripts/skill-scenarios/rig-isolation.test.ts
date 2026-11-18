@@ -80,6 +80,8 @@ put(
   ["#!/usr/bin/env bash", 'exec bun "$STUB_DIR/server.ts"', ""].join("\n"),
   0o755
 );
+// The gh stand-in, which standins bundles into each run's bin; no row here calls gh.
+put(path.join(path.dirname(rig), "gh-standin.ts"), "process.exit(0);\n");
 // No DISPATCH_E2E_PORT: the server takes a port of the kernel's choosing and reports it as the Go
 // server does (`msg="dispatch: listening" addr=127.0.0.1:<port>`), which start_dispatch reads from
 // the run's own log.
