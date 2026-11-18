@@ -38,11 +38,12 @@ func deferredList(items int) string {
 	return body.String()
 }
 
-// writeDocumentThroughTheRequestPath writes one document the way a request writes it (api's
-// storeArtifact): the document's node written before its row, the text seeded in the writer's
-// transaction, the version row, the version's references and blocks indexed from the rendering
-// that transaction wrote, the version's event, and then what the node write and the block index
-// stated, appended under that event.
+// writeDocumentThroughTheRequestPath writes one document the way this build's request writes it
+// (api's storeArtifact): the document's node and its part_of its issue written before its row,
+// the row naming that node, the text seeded in the writer's transaction, the version row, the
+// version's references and blocks indexed from the rendering that transaction wrote, the
+// version's node (WriteVersionNode), the version's event, and then what the node writes and the
+// block index stated, appended under that event.
 func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database *store.Store, slug, markdown string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -51,36 +52,49 @@ func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database
 		t.Fatalf("begin the document write: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	documentNode, err := graphstore.WriteUncaused(ctx, tx, []graphstore.Node{graphstore.ArtifactNode(
-		graphstore.ArtifactRefKey("CORE-1", "CORE", "", slug), "CORE", "", model.Actor{Kind: "user", ID: "alice"},
-		time.Now().UTC())}, nil)
+	writer := model.Actor{Kind: "user", ID: "alice"}
+	refKey := graphstore.ArtifactRefKey("CORE-1", "CORE", "", slug)
+	at := time.Now().UTC()
+	documentNode, err := graphstore.WriteUncaused(ctx, tx,
+		[]graphstore.Node{graphstore.Created(graphstore.ArtifactNode(refKey, "CORE", "", writer, at))},
+		[]graphstore.Tuple{graphstore.ArtifactPartOf(refKey, "CORE-1", writer, at)})
 	if err != nil {
 		t.Fatalf("write the node of document %s: %v", slug, err)
 	}
 	var artifactID string
 	if err := tx.QueryRow(ctx, `
-		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-		values ('CORE-1', 'CORE', $1, $1 || '.md', 'doc', false, '{"kind":"user","id":"alice"}')
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by, node_kind, node_address)
+		values ('CORE-1', 'CORE', $1, $1 || '.md', 'doc', false, '{"kind":"user","id":"alice"}', $2, $3)
 		returning id::text
-	`, slug).Scan(&artifactID); err != nil {
+	`, slug, graphstore.KindArtifact, refKey).Scan(&artifactID); err != nil {
 		t.Fatalf("create document %s: %v", slug, err)
 	}
 	joined, ledger := service.Join(ctx, tx)
 	defer ledger.Discard()
-	stored, err := service.SeedText(joined, artifactID, markdown, model.Actor{Kind: "user", ID: "alice"})
+	stored, err := service.SeedText(joined, artifactID, markdown, writer)
 	if err != nil {
 		t.Fatalf("seed %s: %v", slug, err)
 	}
-	if _, err := tx.Exec(ctx, `
-		insert into artifact_versions (artifact_id, number, markdown, authors)
+	var versionAt time.Time
+	var owner graphstore.VersionOwner
+	if err := tx.QueryRow(ctx, `
+		insert into artifact_versions as v (artifact_id, number, markdown, authors)
 		values ($1, 1, $2, '[{"kind":"user","id":"alice"}]')
-	`, artifactID, stored); err != nil {
+		returning created_at, `+graphstore.VersionOwnerColumns("v.artifact_id"),
+		artifactID, stored).Scan(append([]any{&versionAt}, owner.Targets()...)...); err != nil {
 		t.Fatalf("write version 1 of %s: %v", slug, err)
 	}
 	_, write, err := service.IndexDocumentReferences(joined, artifactID, 1, stored)
 	if err != nil {
 		t.Fatalf("index the references of %s: %v", slug, err)
 	}
+	// The version's node, after its block index's block nodes, held for the event below with the
+	// document's own node, as storeArtifact holds it.
+	versionNode, err := WriteVersionNode(ctx, tx, owner, 1, writer, versionAt)
+	if err != nil {
+		t.Fatalf("write the node of version 1 of %s: %v", slug, err)
+	}
+	documentNode = graphstore.Joined(documentNode, versionNode)
 	payload, err := json.Marshal(map[string]any{"artifact": map[string]any{"id": artifactID}})
 	if err != nil {
 		t.Fatalf("encode the created event's payload: %v", err)
@@ -96,7 +110,7 @@ func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database
 		t.Fatalf("record the document's event: %v", err)
 	}
 	if err := graphstore.Caused(ctx, tx, documentNode, event); err != nil {
-		t.Fatalf("append what the document's node write stated: %v", err)
+		t.Fatalf("append what the document's and its version's node writes stated: %v", err)
 	}
 	if err := graphstore.Caused(ctx, tx, write, event); err != nil {
 		t.Fatalf("append what the write's block index stated: %v", err)

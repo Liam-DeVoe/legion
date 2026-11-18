@@ -31,6 +31,14 @@ import (
 // The stand-in for that release is indexAsThePreviousRelease, as in
 // TestTheBlockAndTheLinkThePreviousReleaseDroppedAreGoneAfterTheBackfill, run here after the
 // backfill rather than before it.
+//
+// That release writes its version 2 with no version node, as it writes every version, and this
+// build's reconciliation writes none either: a version an older build stored with no node is the
+// backfill's to write (graphcensus' backfillVersions, by an anti-join, since artifact_versions
+// takes no marker column), and the command's README has it run after a rollback to the release
+// before and back, before `census --store`. The test runs it after the drain and holds that run
+// to writing the version's node and nothing of the document's blocks or links, so the census
+// still reads what the drain alone left of them.
 func TestALinkThePreviousReleaseAddsAfterTheBackfillReachesTheStore(t *testing.T) {
 	database, service := blockIndexService(t)
 	ctx := context.Background()
@@ -112,6 +120,22 @@ func TestALinkThePreviousReleaseAddsAfterTheBackfillReachesTheStore(t *testing.T
 	}
 	if len(held) != 1 || held[0].ToKind != added.toKind || held[0].ToID != added.toID {
 		t.Errorf("the store states %#v out of %s, want the %s %s:%s the version holds", held, middleAddress, added.kind, added.toKind, added.toID)
+	}
+	// The previous release wrote version 2 with no version node, and neither the drain nor the
+	// boot's backfill (graphcensus.BackfillAsks: issues, documents, asks and messages) writes one.
+	// The backfill run after the rollback writes it, and nothing of the blocks or links the drain
+	// brought to the store.
+	again, err := graphcensus.Backfill(ctx, database, io.Discard)
+	if err != nil {
+		t.Fatalf("backfill the store after this build drained the mark: %v", err)
+	}
+	for _, kind := range []string{refs.BlockNodeKind, "block_ref"} {
+		if done := backfilledKind(t, again, kind); done.Rows != 0 || done.Owed != 0 {
+			t.Errorf("the backfill after the drain wrote %#v for kind %s, want nothing: the drain left a row of it to the backfill", done, kind)
+		}
+	}
+	if versions := backfilledKind(t, again, graphstore.KindVersion); versions.Rows != 1 || !versions.Complete {
+		t.Errorf("the backfill after the drain wrote %#v for the versions, want the previous release's version 2 alone", versions)
 	}
 	census := takeStoreCensus(t, database)
 	for _, kind := range census.Kinds {

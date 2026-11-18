@@ -410,13 +410,13 @@ func moverUnderRight() blockDoc {
 // the document holds.
 //
 // A version that moves a block under another parent and changes no text retracts the parent it
-// left and asserts the one it reached, each at that version's time, by its writer and under the
-// event that recorded it, moves no block's changed_version or changed_at, and states nothing else
-// at all, the moved block being the one child of either parent, so its rank still stands. A
-// version that changes one block's text alone reads the parent of every other block again, and
-// the same version indexed twice loses the revision fence and appends no tuple. A block one
-// version drops and the next restores joins the document a second time, on its new row, and no
-// block that stayed joins it twice.
+// left and asserts the one it reached at one time, the pass's own, which is no earlier than that
+// version's created_at, by its writer and under the event that recorded it, moves no block's
+// changed_version or changed_at, and states nothing else at all, the moved block being the one
+// child of either parent, so its rank still stands. A version that changes one block's text
+// alone reads the parent of every other block again, and the same version indexed twice loses
+// the revision fence and appends no tuple. A block one version drops and the next restores
+// joins the document a second time, on its new row, and no block that stayed joins it twice.
 func TestABlockParentIsATupleAndItsColumnIsItsProjection(t *testing.T) {
 	ctx := context.Background()
 	database := parentDatabase(t)
@@ -664,13 +664,20 @@ func TestABlockParentIsATupleAndItsColumnIsItsProjection(t *testing.T) {
 	// The version that moves the block is another writer's, so a tuple stated with the first
 	// version's writer fails here as one stated with its time or its event does.
 	moved := mover.writeVersion(t, 2, moverMarkdown, model.Actor{Kind: "user", ID: "carol"})
-	_, stated = mover.indexVersion(t, 2, moverUnderRight(), moved)
-	// The new parent and the retraction of the one the block left are each the moving version's:
-	// its time, its writer and the event that recorded it, read off that version's own rows.
+	_, stated, movePassAt := mover.indexVersionAt(t, 2, moverUnderRight(), moved)
+	// The new parent and the retraction of the one the block left share one time, the pass's own,
+	// which it reads once it holds the owner row and the fence: at or after its transaction
+	// began, and no earlier than the moving version's row's created_at. The writer and the event
+	// are the moving version's, read off that version's own rows.
+	var movedAt time.Time
 	requireMovedBy := func(what string, tuple graphstore.Tuple) {
 		t.Helper()
-		if !tuple.At.Equal(moved.at) {
-			t.Errorf("the moved block's %s is dated %s, want the moving version's own %s", what, tuple.At, moved.at)
+		if movedAt.IsZero() {
+			movedAt = tuple.At
+		}
+		if !tuple.At.Equal(movedAt) || tuple.At.Before(movePassAt) || tuple.At.Before(moved.at) {
+			t.Errorf("the moved block's %s is dated %s, want the pass's one time (%s), at or after the pass began at %s and no earlier than the moving version's %s",
+				what, tuple.At, movedAt, movePassAt, moved.at)
 		}
 		if tuple.Who != moved.writer {
 			t.Errorf("the moved block's %s was stated by %#v, want the moving version's writer %#v", what, tuple.Who, moved.writer)

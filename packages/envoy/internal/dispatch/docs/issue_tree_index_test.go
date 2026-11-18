@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"slices"
@@ -341,13 +342,90 @@ func latestVersionAt(t *testing.T, database *store.Store, artifactID string) tim
 	return at
 }
 
+// lateIndexWait is how long after a version's row is written the reconciliation indexes it, in
+// the case of TestTheIssueTreeHoldsTheParentAndRankOfEveryBlockOfTheVersion that reads a pass
+// dated at its own time rather than at the version's.
+const lateIndexWait = 300 * time.Millisecond
+
+// movingPass is what a block's move is held to (requireTheMove): the version that moved it, its
+// row's created_at, the least wait between that row's write and the pass that indexed it, the
+// version's writer and the event that recorded it, and the log's end before the pass, past which
+// the pass's own tuples stand.
+type movingPass struct {
+	version   int
+	versionAt time.Time
+	wait      time.Duration
+	writer    model.Actor
+	event     int64
+	after     int64
+}
+
+// requireTheMove holds the move of the block at address of the document from block from to block
+// to (D2 of dispatch://INFRA-1253's plan, as INFRA-1098's architect ruled it): its newest part_of
+// asserts to and the one before it retracts from, and the two share one time, the moving pass's
+// own, which every parent, rank, text and placement that pass appended out of the document's
+// blocks carries too, since the pass reads it once, after it holds the owner row and the fence.
+// That time is no earlier than the version row's created_at, and later than it by at least the
+// wait between the row's write and the pass; both tuples carry the version's writer and its event.
+// Each failure names the block and both times.
+func requireTheMove(t *testing.T, database *store.Store, artifactID, address, from, to string, pass movingPass) {
+	t.Helper()
+	history, err := graphstore.History(context.Background(), database.Pool, refs.BlockNodeKind, address, graphstore.TuplePartOf)
+	if err != nil {
+		t.Fatalf("read the part_of history of block %s: %v", address, err)
+	}
+	if len(history) < 2 {
+		t.Fatalf("block %s's part_of history is %+v, want version %d's retraction of block/%s and assertion of block/%s",
+			address, history, pass.version, from, to)
+	}
+	retracted, asserted := history[len(history)-2], history[len(history)-1]
+	if retracted.ToKind != refs.BlockNodeKind || retracted.ToID != from || retracted.Asserted ||
+		asserted.ToKind != refs.BlockNodeKind || asserted.ToID != to || !asserted.Asserted {
+		t.Errorf("block %s's newest part_of tuples are %+v then %+v, want version %d's retraction of block/%s and assertion of block/%s",
+			address, retracted, asserted, pass.version, from, to)
+	}
+	if !retracted.At.Equal(asserted.At) {
+		t.Errorf("block %s's retraction of block/%s is dated %s and its assertion of block/%s %s, want one time, the pass's that indexed version %d",
+			address, from, retracted.At, to, asserted.At, pass.version)
+	}
+	for _, tuple := range []struct {
+		what  string
+		tuple graphstore.Tuple
+	}{{"retraction of block/" + from, retracted}, {"assertion of block/" + to, asserted}} {
+		if lag := tuple.tuple.At.Sub(pass.versionAt); lag < pass.wait {
+			t.Errorf("block %s's %s is dated %s, %s after version %d's created_at %s, want the pass's own time, no earlier than that row and at least %s after it",
+				address, tuple.what, tuple.tuple.At, lag, pass.version, pass.versionAt, pass.wait)
+		}
+		if tuple.tuple.Who != pass.writer {
+			t.Errorf("block %s's %s, dated %s, was stated by %#v, want version %d's writer %#v (its row's created_at %s)",
+				address, tuple.what, tuple.tuple.At, tuple.tuple.Who, pass.version, pass.writer, pass.versionAt)
+		}
+		if tuple.tuple.SourceEvent != pass.event {
+			t.Errorf("block %s's %s, dated %s, was caused by event %d, want version %d's own %d (its row's created_at %s)",
+				address, tuple.what, tuple.tuple.At, tuple.tuple.SourceEvent, pass.version, pass.event, pass.versionAt)
+		}
+	}
+	stated := treeTuplesSince(t, database, artifactID, pass.after)
+	if len(stated) == 0 {
+		t.Fatalf("the pass that indexed version %d stated no parent, rank, text or placement, so block %s's move is none of its own", pass.version, address)
+	}
+	for _, tuple := range stated {
+		if !tuple.At.Equal(asserted.At) {
+			t.Errorf("the pass that indexed version %d dated its %s tuple of %s at %s and block %s's move at %s, want the pass's one time",
+				pass.version, tuple.Kind, tuple.FromID, tuple.At, address, asserted.At)
+		}
+	}
+}
+
 // The issue tree holds the parent and the rank of every block of the version, a block whose text
 // no version changed included (c-parent-written; R1 of dispatch://INFRA-1253).
 //
 // A spec is indexed at one version, then at a second that moves a block out of one callout under
 // another, after the block already there, and changes no character of it, so the index writes no
 // document_blocks row for it and only reconcileBlockParents reaches it. Its part_of after the
-// second index is the new holder, with the retraction of the old one at the same time;
+// second index is the new holder, and it and the retraction of the old one share one time, the
+// second pass's own, which every tuple that pass states carries, no earlier than the second
+// version row's created_at, with that version's writer and event (requireTheMove);
 // parent_block_id projects the new holder; and it and its new siblings stand in increasing rank.
 // The move costs the block nothing else: its changed_version and its document_block_texts rows
 // are the first version's, the Keep recorded on it before the move still stands, its change mark
@@ -358,9 +436,14 @@ func latestVersionAt(t *testing.T, database *store.Store, artifactID string) tim
 // RunBlockIndexReconciliation's tick does, and every block holds the parent and the rank its
 // version's tree gives it, with no row owed, no block id changed, no block_refs row moved and no
 // version added; a second backfill marks nothing. Every tuple of the drain is dated at or after
-// clock_timestamp() read just before it, and after its version's created_at. Last, an older pass
-// over the spec's blocks after the newer move is refused by the fence, and the newer parent
-// stands.
+// clock_timestamp() read just before it, and after its version's created_at. An older pass over
+// the spec's blocks after the newer move is refused by the fence, and the newer parent stands.
+//
+// Last, the reconciliation indexes a version lateIndexWait after a build without the block index
+// wrote its row, a version that moves the block back: the pass's retraction of the holder it
+// leaves and its assertion of the one it reaches share one time, later than that row's
+// created_at by at least the wait, with that version's writer and event; parent_block_id projects
+// the new holder, and the block and its new siblings stand in increasing rank.
 func TestTheIssueTreeHoldsTheParentAndRankOfEveryBlockOfTheVersion(t *testing.T) {
 	ctx := context.Background()
 	database, service := blockIndexService(t)
@@ -405,25 +488,16 @@ func TestTheIssueTreeHoldsTheParentAndRankOfEveryBlockOfTheVersion(t *testing.T)
 	if _, err := joinedReplaceText(service, spec, treeVersion2, alice); err != nil {
 		t.Fatalf("move the block in the live document: %v", err)
 	}
+	beforeMove := highestTuple(t, database)
 	second, secondEvent := writeVersionThroughTheRealPath(t, service, spec, "The move")
 	settle(t, database, spec)
-
-	history, err := graphstore.History(ctx, database.Pool, refs.BlockNodeKind, mover, graphstore.TuplePartOf)
-	if err != nil {
-		t.Fatalf("read the moved block's parents: %v", err)
+	if len(second.Version.Authors) == 0 {
+		t.Fatalf("version %d records no author, so its pass's tuples can be held to no writer", second.Version.Number)
 	}
-	if len(history) < 2 {
-		t.Fatalf("the moved block's part_of history is %+v, want the move's retraction and assertion", history)
-	}
-	retracted, asserted := history[len(history)-2], history[len(history)-1]
-	if asserted.ToID != right || !asserted.Asserted || retracted.ToID != left || retracted.Asserted {
-		t.Errorf("the move's part_of tuples are %+v then %+v, want the retraction of block/%s and the assertion of block/%s",
-			retracted, asserted, left, right)
-	}
-	if !retracted.At.Equal(asserted.At) || asserted.At.Before(second.Version.CreatedAt) || asserted.SourceEvent != secondEvent {
-		t.Errorf("the move's retraction is dated %s and its assertion %s under event %d, want both at one time at or after version %d's own %s, under its event %d",
-			retracted.At, asserted.At, asserted.SourceEvent, second.Version.Number, second.Version.CreatedAt, secondEvent)
-	}
+	requireTheMove(t, database, spec, mover, left, right, movingPass{
+		version: second.Version.Number, versionAt: second.Version.CreatedAt,
+		writer: second.Version.Authors[0], event: secondEvent, after: beforeMove,
+	})
 	if now := currentPartOf(t, database, mover); now.ToID != right {
 		t.Errorf("after the move block mover is part of %s, want block/%s", now.ToID, right)
 	}
@@ -548,6 +622,51 @@ func TestTheIssueTreeHoldsTheParentAndRankOfEveryBlockOfTheVersion(t *testing.T)
 	if now := currentPartOf(t, database, mover); now.ToID != right {
 		t.Errorf("after the older pass block mover is part of %s, want the newer parent block/%s", now.ToID, right)
 	}
+
+	// The reconciliation indexes a version some time after its row was written. A build without
+	// the block index writes version 3 of the spec, by another writer and with its event, which
+	// moves mover out of right back under left, before stays, and changes no character of it; the
+	// reconciliation reaches it lateIndexWait later. Its pass dates the move at its own time, so
+	// the retraction of right and the assertion of left are one time later than the row's
+	// created_at by at least that wait, and parent_block_id and the ranks follow the move.
+	rankMoved, _ := treeValue(t, database, mover, treeRank)
+	if _, err := joinedReplaceText(service, spec, treeVersion1, alice); err != nil {
+		t.Fatalf("move the block back in the live document: %v", err)
+	}
+	settle(t, database, spec)
+	live, _, err := service.TextWithBlocks(ctx, spec)
+	if err != nil {
+		t.Fatalf("read the spec's live text: %v", err)
+	}
+	bob := model.Actor{Kind: "user", ID: "bob"}
+	late := movingPass{wait: lateIndexWait, writer: bob}
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, `
+			insert into artifact_versions (artifact_id, number, markdown, authors)
+			select $1, max(number) + 1, $2, '[{"kind":"user","id":"bob"}]' from artifact_versions where artifact_id = $1
+			returning number, created_at
+		`, spec, live).Scan(&late.version, &late.versionAt); err != nil {
+			return err
+		}
+		payload, err := json.Marshal(map[string]any{"artifact_id": spec, "version": map[string]any{"number": late.version}})
+		if err != nil {
+			return err
+		}
+		late.event, err = documentEvent(ctx, tx, "artifact.version", payload)
+		return err
+	}); err != nil {
+		t.Fatalf("write the spec's next version as a build without the block index writes it: %v", err)
+	}
+	time.Sleep(lateIndexWait)
+	late.after = highestTuple(t, database)
+	if tick := reconcileBlockIndex(t, service, ""); tick.Documents != 1 {
+		t.Fatalf("the tick after version %d indexed %d documents, want the spec", late.version, tick.Documents)
+	}
+	requireTheMove(t, database, spec, mover, right, left, late)
+	if got := projectedParent(t, database, spec, "mover"); got != "left" {
+		t.Errorf("after version %d the moved block's parent_block_id is %q, want left", late.version, got)
+	}
+	requireTheTreeOfTheVersion(t, database, service, spec, "CORE-1", '1', map[string]string{"mover": rankMoved})
 }
 
 // renderedVersion is the canonical markdown of markdown and its blocks, as the block index takes
