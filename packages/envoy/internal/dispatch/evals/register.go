@@ -297,16 +297,14 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 		}
 		change.applyTo(&next, w.now)
 		next.WrittenVia, next.WrittenBy = ViaRegister, change.Caller.Recorded()
-		if change.DocText.Set || (!found && next.DocBlock == "") {
-			if err := s.readyDocumentWrite(ctx, w); err != nil {
-				return err
-			}
-		}
 		// section writes the method the new version's doc_block names, once the versions are
 		// stored: nil where the write leaves the eval's section as it is.
 		var section func() error
 		switch {
 		case change.DocText.Set:
+			if err := s.readyDocumentWrite(ctx, w); err != nil {
+				return err
+			}
 			held, err := s.holdsMethod(ctx, w, current.DocBlock, change.DocText.Value)
 			if err != nil {
 				return err
@@ -320,6 +318,9 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 				}
 			}
 		case !found && next.DocBlock == "":
+			if err := s.readyDocumentWrite(ctx, w); err != nil {
+				return err
+			}
 			next.DocBlock = uuid.NewString()
 			section = func() error {
 				return s.writeMethod(ctx, w, next.Slug, "", next.DocBlock, registrationSentence(ViaRegister, change.Caller, w.now), RegistryActor)

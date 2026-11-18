@@ -12,7 +12,9 @@ import (
 // beside its key and bookkeeping, and a row written with every field of its part set reads back
 // holding the same part, both as a stored row (scanDay) and as the window read the folds read
 // (DayWindow), with its key and bookkeeping kept, so a field added to the part and not to the
-// columns the writes and the reads name fails here.
+// columns the writes and the reads name fails here. The window read is of a `last` series over two
+// repositories, the read that sends every field of a part: it sends the write that stored the
+// last value (last_recorded_at, last_reading) only where a `last` fold can tie two rows.
 func TestADayRowsPartIsStoredAndReadBackWithNothingLost(t *testing.T) {
 	r := newRig(t)
 	day := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
@@ -49,8 +51,9 @@ func TestADayRowsPartIsStoredAndReadBackWithNothingLost(t *testing.T) {
 	if stored.ProjectKey != row.ProjectKey || stored.EvalID != row.EvalID || stored.Repo != row.Repo || !stored.Listed || stored.BuiltBy != testBuild {
 		t.Errorf("the stored row's key and bookkeeping are %+v, want those of %+v built by %s", stored, row, testBuild)
 	}
-	entry := Entry{Definition: Definition{EvalID: row.EvalID, Source: SourceFoldTiming}, Series: []Series{{EvalID: row.EvalID, Series: part.Series}}}
-	window, err := r.registry.DayWindow(t.Context(), []string{r.project}, []Entry{entry}, []string{row.Repo}, Range{From: day, To: day.AddDate(0, 0, 1)}, nil)
+	entry := Entry{Definition: Definition{EvalID: row.EvalID, Source: SourceFoldTiming},
+		Series: []Series{{EvalID: row.EvalID, Series: part.Series, SeriesComputation: SeriesComputation{Agg: AggLast}}}}
+	window, err := r.registry.DayWindow(t.Context(), []string{r.project}, []Entry{entry}, []string{row.Repo, "acme/api"}, Range{From: day, To: day.AddDate(0, 0, 1)}, nil)
 	if err != nil {
 		t.Fatalf("read the row's window: %v", err)
 	}

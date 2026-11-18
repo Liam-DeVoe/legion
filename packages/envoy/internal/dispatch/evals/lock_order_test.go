@@ -511,7 +511,7 @@ func TestFirstRegistrationsBesideAnEditOfEvalsMdNeitherDeadlockNorLoseASection(t
 			go func() { answers <- registration.write(ctx) }()
 		}
 		if waiting := storetest.WaitForLockWaiters(t, holder, 2+len(queued), lockOrderBound); waiting < 2+len(queued) {
-			t.Errorf("%d writers wait behind the paused registration, want the edit and the %d registrations", waiting, len(queued))
+			t.Errorf("%d writers wait, want %d: the paused registration, the edit and the %d queued registrations", waiting, 2+len(queued), len(queued))
 		}
 		requireQueuedWithNoTransactionID(t, holder, r.project, len(queued))
 	})

@@ -41,13 +41,12 @@
 --                   holds no such value.
 --   last_recorded_at, last_reading
 --                   which write stored last_value: the recorded_at and the id of the reading it
---                   is, on a logged eval's day; the moment of the write that stored the count, and
---                   no reading, on the unowned-p0 day. Of rows whose last_at is one moment (two
+--                   is, on a logged eval's day. Of rows whose last_at is one moment (two
 --                   repositories' rows of one day, which a read cut by repository folds), the
 --                   `last` fold answers the later written value, by last_recorded_at and then
 --                   last_reading, the order the readings write breaks a tie of one day's
 --                   readings by, so a read of repositories answers what the project's own row
---                   holds. Both are null where last_value is.
+--                   holds. Both are null where the row records no write.
 --   via_repository  how many of the row's inputs reached the project through a repository
 --                   rather than through an issue.
 --   built_by        the build that wrote the row, so a build whose rules differ rewrites rows an

@@ -135,57 +135,62 @@ func deliveryMeasuresOver(settings delivery.DeliverySettings, pop deliveryPopula
 
 // measuresStatus judges each KPI of a measures answer by its eval's target: figures is the
 // answer's own statistics of each eval (evals.ResultStatistics), so each verdict is the one the
-// eval's read states of the same figures (deliveryVerdict). MergeToProductionMedian and
-// ChangeFailureRateUpperBound are each the verdict of one statistic of an eval, the median merge to
-// production and the failure rate's upper bound, against that eval's target, answered only where
-// the eval's judges name that statistic (deliveryJudgeVerdict): a figure no judge holds to the
-// target has no verdict, so the judges a person sets decide which figures are judged (R5). The
-// catalogue's judges answer the median's verdict (merge to production judges its longest change and
-// its median) and no upper-bound verdict (the change failure rate judges its per-deploy rate).
+// eval's read states of the same figures (deliveryVerdictOf), judged once per eval.
+// MergeToProductionMedian and ChangeFailureRateUpperBound are each the verdict of one statistic of
+// an eval, the median merge to production and the failure rate's upper bound, against that eval's
+// target, answered only where the eval's judges name that statistic (deliveryJudgeVerdict): a
+// figure no judge holds to the target has no verdict, so the judges a person sets decide which
+// figures are judged (R5). The catalogue's judges answer the median's verdict (merge to production
+// judges its longest change and its median) and no upper-bound verdict (the change failure rate
+// judges its per-deploy rate).
 func measuresStatus(entries map[string]evals.Entry, figures map[string]map[string]evals.Statistics) measures.Status {
-	verdict := func(slug string) *bool {
-		return deliveryVerdict(entries, slug, figures[slug])
+	verdict := func(slug string) *evals.Verdict {
+		return deliveryVerdictOf(entries, slug, figures[slug])
 	}
-	judged := func(slug, judge string) *bool {
-		return deliveryJudgeVerdict(entries, slug, figures[slug], judge)
-	}
+	changeFailRate, mergeToProduction := verdict(evals.SlugChangeFailRate), verdict(evals.SlugMergeToProduction)
 	return measures.Status{
-		DeploysPerDay:               verdict(evals.SlugDeployFrequency),
-		ChangeFailureRate:           verdict(evals.SlugChangeFailRate),
-		ChangeFailureRateUpperBound: judged(evals.SlugChangeFailRate, measures.SeriesUpperBound+".rate"),
-		MergeToProductionMedian:     judged(evals.SlugMergeToProduction, measures.SeriesMinutes+".median"),
-		MergeToProduction:           verdict(evals.SlugMergeToProduction),
-		OpenedToMerge:               verdict(evals.SlugPROpenToMerge),
-		DeployRunSuccess:            verdict(evals.SlugDeployRunSuccess),
-		UnownedP0:                   verdict(evals.SlugUnownedP0),
+		DeploysPerDay:               verdictMet(verdict(evals.SlugDeployFrequency)),
+		ChangeFailureRate:           verdictMet(changeFailRate),
+		ChangeFailureRateUpperBound: deliveryJudgeVerdict(changeFailRate, measures.SeriesUpperBound+".rate"),
+		MergeToProductionMedian:     deliveryJudgeVerdict(mergeToProduction, measures.SeriesMinutes+".median"),
+		MergeToProduction:           verdictMet(mergeToProduction),
+		OpenedToMerge:               verdictMet(verdict(evals.SlugPROpenToMerge)),
+		DeployRunSuccess:            verdictMet(verdict(evals.SlugDeployRunSuccess)),
+		UnownedP0:                   verdictMet(verdict(evals.SlugUnownedP0)),
 	}
+}
+
+// deliveryVerdictOf is the verdict of slug's eval of figures, a delivery answer's own statistics
+// of that eval, by the rule every eval read judges by (evals.VerdictOf): nil where entries, the
+// evals the answer's population read (evals.Store.DeployRepoEvals), holds no such eval, or its
+// target is off.
+func deliveryVerdictOf(entries map[string]evals.Entry, slug string, figures map[string]evals.Statistics) *evals.Verdict {
+	entry, held := entries[slug]
+	if !held {
+		return nil
+	}
+	return evals.VerdictOf(entry, figures)
 }
 
 // deliveryVerdict is whether figures, a delivery answer's own statistics of slug's eval, meet that
-// eval's target, by the rule every eval read judges by (evals.VerdictOf): null where entries, the
-// evals the answer's population read (evals.Store.DeployRepoEvals), holds no such eval, its target
-// is off, or no figure it judges has a value.
+// eval's target (deliveryVerdictOf): null where there is no verdict, or no figure it judges has a
+// value.
 func deliveryVerdict(entries map[string]evals.Entry, slug string, figures map[string]evals.Statistics) *bool {
-	entry, held := entries[slug]
-	if !held {
-		return nil
-	}
-	if verdict := evals.VerdictOf(entry, figures); verdict != nil {
-		return verdict.Met
-	}
-	return nil
+	return verdictMet(deliveryVerdictOf(entries, slug, figures))
 }
 
-// deliveryJudgeVerdict is whether judge, one `<series>.<stat>` of slug's eval, meets that eval's
-// target in figures: the verdict evals.VerdictOf states of that one judge, null where entries holds
-// no such eval, its target is off, the eval's judges (evals.JudgesOf) do not name judge, or judge
-// has no value.
-func deliveryJudgeVerdict(entries map[string]evals.Entry, slug string, figures map[string]evals.Statistics, judge string) *bool {
-	entry, held := entries[slug]
-	if !held {
+// verdictMet is whether verdict is met, null where there is no verdict or it cannot be judged.
+func verdictMet(verdict *evals.Verdict) *bool {
+	if verdict == nil {
 		return nil
 	}
-	verdict := evals.VerdictOf(entry, figures)
+	return verdict.Met
+}
+
+// deliveryJudgeVerdict is whether judge, one `<series>.<stat>` of an eval, meets that eval's target
+// in verdict, the eval's verdict of a delivery answer's figures (deliveryVerdictOf): null where
+// there is no verdict, the eval's judges (evals.JudgesOf) do not name judge, or judge has no value.
+func deliveryJudgeVerdict(verdict *evals.Verdict, judge string) *bool {
 	if verdict == nil {
 		return nil
 	}

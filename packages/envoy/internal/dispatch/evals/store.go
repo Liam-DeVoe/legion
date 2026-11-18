@@ -250,10 +250,7 @@ func scanReading(row pgx.Row) (Reading, error) {
 	reading.Links = utcLinks(reading.Links)
 	reading.MeasuredAt = reading.MeasuredAt.UTC()
 	reading.RecordedAt = reading.RecordedAt.UTC()
-	if reading.SupersededAt != nil {
-		superseded := reading.SupersededAt.UTC()
-		reading.SupersededAt = &superseded
-	}
+	reading.SupersededAt = utcTime(reading.SupersededAt)
 	return reading, nil
 }
 
