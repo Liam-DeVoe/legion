@@ -124,7 +124,7 @@ It carries:
     A branch or a tag at a commit the clone does not have holds nothing, so where that commit is ahead of the clone's, the clone's commits it reaches are read, which fails closed.
     A push whose destination holds nothing the clone has, an empty local bare repository among them, fails closed the same way:
     it reads every commit the branch reaches, at one read of each, which is thousands for a fork's branch.
-    The four reads of what the clone has run with `GIT_NO_LAZY_FETCH=1`: the batch check of the shas `git ls-remote` prints (`Guard.advertised`), the check of the commit the destination's ref is at (`Guard.holds`), and `git cat-file -t` and `git cat-file tag` of each tag pushed (`Guard.tagRecords`).
+    The four reads of what the clone has run with `GIT_NO_LAZY_FETCH=1`: the batch check of `ls-remote`'s shas (`Guard.advertised`), the check of the remote ref's commit (`Guard.holds`), `cat-file -t` of the object each update pushes, and `cat-file tag` of each tag in its chain (`Guard.tagRecords`).
     So a partial clone fetches no object it lacks from its promisor remote, and such an object holds nothing there either.
     No ref of the clone's own counts: git moves a remote's `refs/remotes/<remote>/` for a push to whatever URL the remote pushes to at that time, a local bare one that a role points it at for one run (`git remote set-url --push origin <bare>`) included, and a ref can be written by hand.
 

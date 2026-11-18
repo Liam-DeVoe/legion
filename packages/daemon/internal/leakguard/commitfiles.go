@@ -38,7 +38,10 @@ func (g *Guard) commitRecords(ctx context.Context, dir, commit string) ([]Record
 	// git writes the separator for itself, as %x00 in the format: an argument of this process's
 	// own holding a zero byte is a child that cannot be started at all. %P comes before the
 	// body, which is the one field that can hold a newline, so the parents are read with the
-	// identities and the message.
+	// identities and the message. They are %P's rather than the commit object's parent lines:
+	// %P is git's own view of the parents, and a shallow clone's boundary commit has none in it
+	// (in a --depth 1 clone %P prints nothing where cat-file prints two parent lines), so its
+	// files are read as a root commit's, the clone holding no parent to compare them with.
 	const separator = "%x00"
 	out, err := g.git(ctx, dir, "show", "--no-patch", "--no-color",
 		"--format="+separator+"%an <%ae>"+separator+"%cn <%ce>"+separator+"%P"+separator+"%B"+separator, commit)
@@ -66,7 +69,8 @@ func (g *Guard) commitRecords(ctx context.Context, dir, commit string) ([]Record
 			name == "committer" && identityLine(value, parts[2]) {
 			continue
 		}
-		records = append(records, Record{Label: label + " " + name, Text: value})
+		// A copy, so that a record of one line does not hold the whole object git wrote.
+		records = append(records, Record{Label: label + " " + name, Text: strings.Clone(value)})
 	}
 	records = append(records, Record{Label: label + " message", Text: parts[4]})
 	var paths []string
@@ -346,15 +350,15 @@ func textLines(file string) iter.Seq[string] {
 	}
 }
 
-// objectHeaders are the headers of a commit or a tag object, head, as git cat-file writes them
-// ahead of the blank line its message follows: each header's name and value, in head's order. A
+// objectHeaders are the headers of a commit or a tag object, as git cat-file writes them ahead of
+// the blank line its message follows: each header's name and value, in the order of headers. A
 // header is a line "<name> <value>", and each line after it that starts with a space carries its
 // value on, which is how git writes a value of more than one line: a merge's mergetag, which holds
 // the whole tag object the merge is of, or a signature. Such a value is its lines joined by
 // newlines, each with that space off.
-func objectHeaders(head string) iter.Seq2[string, string] {
+func objectHeaders(headers string) iter.Seq2[string, string] {
 	return func(yield func(name, value string) bool) {
-		for rest := head; rest != ""; {
+		for rest := headers; rest != ""; {
 			header := rest
 			_, rest, _ = strings.Cut(rest, "\n")
 			for strings.HasPrefix(rest, " ") {

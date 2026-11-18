@@ -82,8 +82,8 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 		return fixture.Fed(repo, "tree "+tree+"\nparent "+base+"\n"+headers+"\na message of no interest\n", "git", "hash-object", "-t", "commit", "-w", "--stdin")
 	}
 	const (
-		author    = "author builder <builder@example.invalid> 1700000000 +0000\n"
-		committer = "committer builder <builder@example.invalid> 1700000000 +0000\n"
+		authorLine    = "author builder <builder@example.invalid> 1700000000 +0000\n"
+		committerLine = "committer builder <builder@example.invalid> 1700000000 +0000\n"
 	)
 
 	for _, tc := range []struct {
@@ -141,7 +141,7 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 		{
 			name: "a header of the commit's own beyond its identities names a host",
 			build: func(t *testing.T) string {
-				return crafted(t, author+committer+"build-host "+theHost+"\n")
+				return crafted(t, authorLine+committerLine+"build-host "+theHost+"\n")
 			},
 			want: func(head string) []string {
 				return []string{"commit " + short(head) + " build-host: " + theClass}
@@ -152,7 +152,7 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 			build: func(t *testing.T) string {
 				// git show formats the last author line of a commit that holds two, the clean one,
 				// and git's own check of a commit reads no line after its committer.
-				return crafted(t, "author builder <builder@"+theHost+"> 1700000000 +0000\n"+committer+author)
+				return crafted(t, "author builder <builder@"+theHost+"> 1700000000 +0000\n"+committerLine+authorLine)
 			},
 			want: func(head string) []string {
 				return []string{"commit " + short(head) + " author: " + theClass}
