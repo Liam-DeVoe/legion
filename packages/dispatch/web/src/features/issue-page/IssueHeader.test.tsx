@@ -1266,3 +1266,93 @@ test("the actions group closes once Tab takes the focus out of it", async () => 
     restore();
   }
 });
+
+/** Opens the header's actions group from the keyboard, as a reader does: the focus on its control,
+ *  then Enter. Answers the control, the group it names and the group's actions. */
+async function openIssueActionsByKey(user: UserEvent): Promise<{
+  actions: HTMLElement[];
+  control: HTMLElement;
+  group: HTMLElement;
+}> {
+  const control = await screen.findByRole("button", { name: "Issue actions" });
+  act(() => control.focus());
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(control).toHaveAttribute("aria-expanded", "true"));
+  const group = document.getElementById(control.getAttribute("aria-controls") ?? "");
+  if (group === null) throw new Error("the actions control names no group");
+  const actions = within(group).getAllByRole("button");
+  expect(actions.length).toBeGreaterThan(0);
+  return { actions, control, group };
+}
+
+// Shift+Tab from the group's first action takes the focus back to the group's control, which
+// is inside the box the group closes on leaving: the reader is still in the menu, so it stays
+// open.
+test("the actions group stays open as Shift+Tab takes the focus from its first action back to its control", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+
+  try {
+    const { actions, control } = await openIssueActionsByKey(user);
+    await user.tab();
+    expect(actions[0]).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(control).toHaveFocus();
+    expect(control).toHaveAttribute("aria-expanded", "true");
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// The window losing the focus - the reader switching to another window - blurs the focused action
+// with no element for the focus to go to, and the action stays the document's active element.
+// The reader has not moved on in the page, so the group stays open for their return.
+test("the actions group stays open as the window loses the focus from one of its actions", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+
+  try {
+    const { actions, control } = await openIssueActionsByKey(user);
+    await user.tab();
+    const action = actions[0];
+    if (action === undefined) throw new Error("the actions group holds no action");
+    expect(action).toHaveFocus();
+    // What a browser sends as its window loses the focus, with no relatedTarget and the focus
+    // left where it was: user-event has no form for a window's blur.
+    fireEvent.blur(action, { relatedTarget: null });
+    fireEvent.focusOut(action, { relatedTarget: null });
+    fireEvent.blur(window);
+    expect(action).toHaveFocus();
+    expect(control).toHaveAttribute("aria-expanded", "true");
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// A focus the page moves by code to a control outside the group leaves it as a Tab does, so the
+// group closes there too and leaves that control uncovered.
+test("the actions group closes once a focus moved by code goes to a control outside it", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+
+  try {
+    const { actions, control, group } = await openIssueActionsByKey(user);
+    await user.tab();
+    expect(actions[0]).toHaveFocus();
+    const status = within(screen.getByTestId("issue-state-actions")).getByRole("combobox", {
+      name: "Status",
+    });
+    act(() => status.focus());
+    expect(status).toHaveFocus();
+    expect(group.contains(document.activeElement)).toBe(false);
+    await waitFor(() => expect(control).toHaveAttribute("aria-expanded", "false"));
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
