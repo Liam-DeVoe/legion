@@ -34,9 +34,13 @@ import (
 // pushes find it.
 //
 // The one walk both records the move and asks for the read a moved base calls for
-// (askMergeStateFor), which is why a base push is the one fact Apply's askMergeState leaves
-// alone: what tells a redelivered push from a first delivery is the commit the record held when
-// the push arrived, and this walk is the last reader of it.
+// (askMergeStateFor with basePush set), which is why a base push is the one fact Apply's
+// askMergeState leaves alone: what tells a redelivered push from a first delivery is the commit
+// the record held when the push arrived, and this walk is the last reader of it. The read is asked
+// for each pull request the push moved whose issue stands in testing, reviewing, accepting, retro
+// or merging (conflictReadPhase), whether or not a review round waits on GitHub there: GitHub
+// sends no event when a moved base turns a head conflicting, and that read is the only thing that
+// would find it.
 func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) (intake.Result, error) {
 	open, err := e.store.OpenPullRequestsOnBase(ctx, tx, fact.Repo, fact.Branch)
 	if err != nil {
@@ -62,14 +66,16 @@ func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) 
 		if err := e.store.PutPullRequest(ctx, tx, *own); err != nil {
 			return intake.Result{}, err
 		}
-		// A base that moved is what takes a head from clean to behind, which is the one answer
-		// that holds an approved issue in reviewing, so every pull request this push moved is
-		// read for. The read is asked for here rather than from Apply's askMergeState because
-		// the line above has just overwritten what tells a redelivery from a first delivery: a
-		// second walk after the handler would find every pull request on the base recorded at
-		// this push's commit and ask for all of their reads again, however many times the push
-		// was delivered.
-		if err := e.askMergeStateFor(ctx, tx, own); err != nil {
+		// A base that moved is what takes a head from clean to behind, which holds an approved
+		// issue in reviewing, and what turns a head conflicting, which GitHub sends no event for
+		// and which sends an issue back to implementing from testing, reviewing, accepting, retro
+		// or merging alike (mergeability, TriggerConflict); so every pull request this push moved
+		// is read for in each of those phases. The read is asked for here rather than from Apply's
+		// askMergeState because the line above has just overwritten what tells a redelivery from
+		// a first delivery: a second walk after the handler would find every pull request on the
+		// base recorded at this push's commit and ask for all of their reads again, however many
+		// times the push was delivered.
+		if err := e.askMergeStateFor(ctx, tx, own, true); err != nil {
 			return intake.Result{}, err
 		}
 	}

@@ -38,12 +38,14 @@ const (
 	mergeStateLadderWait  = 30 * time.Second
 )
 
-// queueMergeState is what the workflow asks for when a fact leaves a review round waiting on
-// GitHub's merge state for the pull request's head (workflow's askMergeState, the engine's
-// Config.ReadMergeState): a ladder of reads for issue. It only records the issue and wakes the
-// reader, so the fact's own transaction waits for no GitHub call, and a second fact of the same
-// issue queued before the reader takes it is one ladder rather than two. A runtime with no reader
-// - the API-only daemon, and a test that drives the ladder itself - queues nothing.
+// queueMergeState is what the workflow asks for when a fact calls for a read of GitHub's merge
+// state for an issue's pull request (the engine's Config.ReadMergeState): a fact that leaves a
+// review round waiting on GitHub's answer for the head (workflow's askMergeState), and a push onto
+// the base of an issue standing in a phase a conflict with the base is acted on (workflow's
+// askMergeStateFor). It queues a ladder of reads for issue. It only records the issue and wakes
+// the reader, so the fact's own transaction waits for no GitHub call, and a second fact of the
+// same issue queued before the reader takes it is one ladder rather than two. A runtime with no
+// reader - the API-only daemon, and a test that drives the ladder itself - queues nothing.
 func (w *workflowRuntime) queueMergeState(issue string) {
 	w.mergeStates.add(issue)
 }
@@ -119,15 +121,22 @@ func (w *workflowRuntime) mergeStateEnds(ctx context.Context, issue string) bool
 // open pull request among them, is an answer, and the climb ends on it. After the last `unknown`
 // it ends too, leaving nothing queued or armed behind it. A failed read ends the climb: the
 // issue's next event, its next handoff and the daemon's next start all read again.
+//
+// Each read GitHub answers is logged at Info with the issue, the read's number on the ladder and
+// the state GitHub answered, so the log counts the reads one fact cost; a read of an issue whose
+// record holds no open pull request reaches no GitHub, and logs nothing.
 func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) {
 	for read := 1; ; read++ {
-		state, err := w.readMergeState(ctx, issue)
+		state, answered, err := w.readMergeState(ctx, issue)
 		if err != nil {
 			if ctx.Err() == nil {
-				w.log.Warn("read GitHub's merge state for an issue whose approval waits on it; the record stands as it was until the next read",
+				w.log.Warn("read GitHub's merge state for an issue's pull request; the record stands as it was until the next read",
 					"issue", issue, "read", read, "error", err)
 			}
 			return
+		}
+		if answered {
+			w.log.Info("read GitHub's merge state", "issue", issue, "read", read, "mergeState", state)
 		}
 		if state != record.MergeStateUnknown || read >= mergeStateLadderReads {
 			return
@@ -153,30 +162,30 @@ func (w *workflowRuntime) mergeStateWait() time.Duration {
 
 // readMergeState reads issue's pull request from GitHub once (one GET /pulls/{number}) and applies
 // what it says about merging that head into its base (applyMergeability, the same fact the
-// per-issue read applies), answering GitHub's merge state as that read found it. An issue whose
-// record holds no open pull request is read from nothing and answers record.MergeStateUnread: the
-// state belongs to a pull request, and there is none.
+// per-issue read applies), answering GitHub's merge state as that read found it and true. An issue
+// whose record holds no open pull request is read from nothing and answers
+// record.MergeStateUnread and false: the state belongs to a pull request, and there is none.
 //
 // The fact names the head GitHub answered for, which the engine records the answer against only
 // while the record still stands at it (workflow's mergeability): this ladder reads GitHub with no
 // transaction of its own, and a push can land while it waits. The ladder reads on, since what it
 // answers is GitHub's state for the head it read, and the push the record took is itself a fact
 // that asks for a read of the head it left (workflow's askMergeState).
-func (w *workflowRuntime) readMergeState(ctx context.Context, issue string) (record.MergeState, error) {
+func (w *workflowRuntime) readMergeState(ctx context.Context, issue string) (record.MergeState, bool, error) {
 	_, recorded, err := w.issueRecord(ctx, issue)
 	if err != nil {
-		return record.MergeStateUnread, err
+		return record.MergeStateUnread, false, err
 	}
 	if recorded == nil || recorded.State != record.PullRequestOpen {
-		return record.MergeStateUnread, nil
+		return record.MergeStateUnread, false, nil
 	}
 	read, cancel := context.WithTimeout(ctx, issueRead)
 	_, pull, err := w.readPullRequest(read, *recorded)
 	answeredAt := time.Now().UTC()
 	cancel()
 	if err != nil {
-		return record.MergeStateUnread, fmt.Errorf("read pull request %s#%d and its merge state: %w", recorded.Repo, recorded.Number, err)
+		return record.MergeStateUnread, false, fmt.Errorf("read pull request %s#%d and its merge state: %w", recorded.Repo, recorded.Number, err)
 	}
 	w.applyMergeability(ctx, *recorded, pull, answeredAt)
-	return pull.mergeState(), nil
+	return pull.mergeState(), true, nil
 }

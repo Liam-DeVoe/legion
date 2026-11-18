@@ -588,12 +588,19 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 	}
 	r.note("holding the advisory lock a lane takes before it claims a lifecycle row of %s, so the start row the conflict writes cannot be run", r.key)
 
+	// The conflict is armed and every read of the pull request held until the reviewer has
+	// completed, as phaseChangesWhileTheStartWaits holds its own: the push onto the base asks for
+	// a read of its own in reviewing (workflow's askMergeStateFor), and one that landed ahead of
+	// the completion would move the issue out of reviewing under the reviewer's turn.
+	releaseRead := r.reads.pause()
+	defer releaseRead()
 	r.armConflict()
 	r.rev.startOwnTurn()
 	if status, failure := r.rev.complete("reviewed the fix", "", "", r.rev.handoff("review")); status != http.StatusOK {
 		t.Fatalf("the reviewer's completion = %d %s %s, want 200: it is what asks the daemon to read the pull request", status, failure.Code, failure.Error)
 	}
 	r.rev.endTurn()
+	releaseRead()
 	r.waitFor("the issue back in implementing", func(got api.Issue) bool { return got.Phase == phase.Implementing })
 	var starts []convergeStart
 	testwait.Eventually(t, "the start row of the implementer's new entry", func() bool {
@@ -692,13 +699,14 @@ func (r *phaseEntryConvergeLive) stateCarriesBothNumbers() {
 // request apply its answer even where that answer only confirms what is stored (daemon's
 // applyMergeability).
 //
-// What delivers the conflict is the read, not the push, and an issue short of an approval
-// standing in reviewing has one source for that read: the one the daemon makes after a worker's
+// What delivers the conflict is a read, not the push, and two reads can carry it: the one the
+// push itself asks for while the issue stands in a phase a conflict sends back to implementing
+// (workflow's askMergeStateFor, conflictReadPhase), and the one the daemon makes after a worker's
 // completion (the API's handoffCompleted, daemon's readHandedOff, readIssuePullRequest). No
-// GitHub envelope carries mergeability at all (intake's decode), and the base push asks for a
-// merge-state read only for an approved issue in reviewing (workflow's askMergeStateFor,
-// reviewRound's waitsOnMergeState), which is why every caller here arms the answer before the
-// completion whose read is to carry it rather than after it.
+// GitHub envelope carries mergeability at all (intake's decode). So every caller here arms the
+// answer before the completion whose read is to carry it rather than after it, and holds the
+// reads (pullRequestReadPause.pause) from before the push until after that completion, so that
+// neither read lands ahead of it.
 func (r *phaseEntryConvergeLive) armConflict() {
 	r.t.Helper()
 	r.github.conflicts(true)

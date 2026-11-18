@@ -99,11 +99,14 @@ type Config struct {
 	// mapped one (daemon's hearRecorded). It is told every recording, including one on a
 	// repository already heard, which costs the daemon one comparison. Nil tells none.
 	HearRepository func(ctx context.Context, repo string)
-	// ReadMergeState is asked, on the commit of a fact that leaves a review round waiting on
-	// GitHub's merge state for the pull request's head (askMergeState), to read it: the one thing
-	// a reviewing round is owed from outside the record, and what moves an approved issue to
-	// accepting. The daemon answers it with a ladder of reads (workflowRuntime.queueMergeState);
-	// nil asks for none, which is the API-only daemon and a test that drives the reads itself.
+	// ReadMergeState is asked, on the commit of a fact that calls for it (askMergeStateFor), to
+	// read GitHub's merge state for the pull request's head: for every fact but a push to the
+	// base, one that leaves a review round waiting on that answer, which is what moves an approved
+	// issue to accepting; for a push to the base, one that moved the base under an issue in a
+	// phase a conflict with the base sends back to implementing (conflictReadPhase), since GitHub
+	// sends no event when a head starts to conflict. The daemon answers it with a ladder of reads
+	// (workflowRuntime.queueMergeState); nil asks for none, which is the API-only daemon and a
+	// test that drives the reads itself.
 	ReadMergeState func(issue string)
 	// Reserve is the moment a wake the engine causes may run, given the caller's own now and
 	// never a moment before it: the daemon's one wake limiter (internal/wakepace, openSupervision

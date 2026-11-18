@@ -260,7 +260,7 @@ type workflowRuntime struct {
 	// readHandedOff has not read the pull request of yet, which is what makes a second completion
 	// of the same issue, while the first is still queued, one read rather than two.
 	handedOff *wakeSet[string]
-	// mergeStates is each issue a fact left waiting on GitHub's merge state (queueMergeState,
+	// mergeStates is each issue a fact asked a read of GitHub's merge state for (queueMergeState,
 	// the engine's Config.ReadMergeState) that readMergeStates has not started a ladder for yet,
 	// and mergeStateRunning each issue whose ladder is still reading, which is why a second fact
 	// of an issue already being read starts no second ladder. mergeStateRetry is how long a
