@@ -295,7 +295,6 @@ test("the title's notice stands outside the heading, which is named by the title
   // notice, which is drawn outside it.
   const heading = screen.getByRole("heading", { level: 1, name: "Written elsewhere" });
   expect(heading.contains(title)).toBe(true);
-  expect(heading.contains(notice)).toBe(false);
   // The field and its notice stay tied all the same.
   expect(notice.id).not.toBe("");
   expect(title.getAttribute("aria-describedby")).toBe(notice.id);

@@ -26,10 +26,9 @@ export const SAVE_AFTER_MS = 500;
  * third text arrived meanwhile; the owner's write names none. Nothing is dropped until the reader
  * picks. It is an alert, since the reader's text has just left the field they were writing in.
  * A one-line field names it as what describes it (`aria-describedby`, by `id`), so the two stay
- * tied wherever it is drawn: a field standing in a heading has it drawn outside the heading
- * (`InPlaceField`'s `noticeAt`), so the heading is named by the field's text alone. It is drawn
- * in spans and buttons alone, since the owner's field on the priority's page, which draws it
- * beside itself, stands in a span.
+ * tied wherever it is drawn (`InPlaceField`'s `noticeAt`). It is drawn in spans and buttons
+ * alone, since the owner's field on the priority's page, which draws it beside itself, stands in
+ * a span.
  */
 export function ChangedMeanwhile({
   id,
@@ -275,7 +274,7 @@ export function InPlaceField({
           ))}
         </datalist>
       )}
-      {notice !== null && noticeAt ? createPortal(notice, noticeAt) : notice}
+      {noticeAt ? createPortal(notice, noticeAt) : notice}
     </>
   );
 }

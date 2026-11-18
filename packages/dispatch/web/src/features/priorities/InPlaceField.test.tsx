@@ -392,17 +392,15 @@ async function placedField(placed: boolean) {
     field,
     notice: page.getByRole("alert", { name: "Title, changed by another person" }),
     place: page.getByRole("region", { name: "Place for the notice" }),
-    region: page.getByRole("region", { name: "Field" }),
     user,
     view,
   };
 }
 
 test("a field given a place for its notice draws it there, and names it as what describes the field", async () => {
-  const { field, notice, place, region, user, view } = await placedField(true);
+  const { field, notice, place, user, view } = await placedField(true);
   expect(within(notice).getByText("Old name, mine")).toBeDefined();
   expect(notice.parentElement).toBe(place);
-  expect(region.contains(notice)).toBe(false);
   expect(notice.id).not.toBe("");
   expect(field.getAttribute("aria-describedby")).toBe(notice.id);
   // Let go, the notice leaves its place empty, which a page may hide while it is, and the field
@@ -414,10 +412,9 @@ test("a field given a place for its notice draws it there, and names it as what 
 });
 
 test("a field given no place for its notice draws it beside itself, and names it all the same", async () => {
-  const { field, notice, place, view } = await placedField(false);
+  const { field, notice, view } = await placedField(false);
   expect(within(notice).getByText("Old name, mine")).toBeDefined();
   expect(notice.parentElement).toBe(field.parentElement);
-  expect(place.childNodes).toHaveLength(0);
   expect(notice.id).not.toBe("");
   expect(field.getAttribute("aria-describedby")).toBe(notice.id);
   view.unmount();

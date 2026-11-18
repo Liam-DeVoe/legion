@@ -45,7 +45,7 @@ export function PriorityPage(): ReactNode {
   const work = useQuery({ ...advancesIssuesQuery({ advances: id }, true), enabled: id !== "" });
   const [open, setOpen] = useState(true);
   // Where the title's notice of the reader's kept texts is drawn: under the heading, not in it.
-  const [titleNotice, setTitleNotice] = useState<HTMLElement | null>(null);
+  const [titleNoticeAt, setTitleNoticeAt] = useState<HTMLElement | null>(null);
   const { canWrite, describe, keep, kept, patch, rename } = usePriorityWrites();
   // The way out of this scope, in the issue table's own shape: the issues advancing this
   // priority, project by project, each as that project's table narrowed to them. The chip the
@@ -110,7 +110,7 @@ export function PriorityPage(): ReactNode {
                   kept={kept(id, "title")}
                   key={id}
                   label="Title"
-                  noticeAt={titleNotice}
+                  noticeAt={titleNoticeAt}
                   onKeptChange={(texts) => keep(id, "title", texts)}
                   onSave={(next) =>
                     rename(id, next, title, `Rename the priority “${title}” to “${next}”`)
@@ -124,7 +124,7 @@ export function PriorityPage(): ReactNode {
             </h1>
             {/* The title's notice, on a line of its own under the heading: drawn in the heading,
                 it would be read as part of the heading's name. Empty, it takes no room. */}
-            <div className="basis-full empty:hidden" ref={setTitleNotice} />
+            <div className="basis-full empty:hidden" ref={setTitleNoticeAt} />
           </div>
           <div
             className={`flex flex-wrap items-center gap-x-6 gap-y-2 text-sm ${textSecondaryOnCanvas}`}
