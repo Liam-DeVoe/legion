@@ -332,7 +332,8 @@ func (h *harness) markAsked(round string) {
 // An ask that reached a session marks the claim at the clock, durably, and the next ask of the
 // round publishes nothing; an ask no session took marks nothing and the next ask publishes again;
 // a round the claim is not in is published nothing; and a publish that fails marks nothing. A
-// mark the store does not take is the next test's.
+// mark the store does not take is held by
+// TestPodUpdatePublishUpdateAskAnOwedMarkKeepsTheRowWhateverTheClaimBecomes.
 func TestPodUpdatePublishUpdateAskMarksOnlyAnAskThatReachedASession(t *testing.T) {
 	t.Run("a delivered ask marks the claim once, and a later ask of the round publishes nothing", func(t *testing.T) {
 		h := updateHarness(t, PodUpdateContract)
@@ -462,8 +463,11 @@ func TestPodUpdatePublishUpdateAskPublishesNothingOnceTheRoleAnswered(t *testing
 // the row, and publishes nothing, whatever the claim became in between: its role answered the
 // round, the claim failed, or the claim left the round's pod. The publish answers the owed mark
 // before it reads the rule (OwesUpdateAsk), so no case of the rule ends that row first. Once the
-// store answers, the next ask writes the mark, with what the claim became, and ends the row. The
-// control is the same owed mark with nothing in between, which keeps the row the same way. In
+// store answers, the next ask writes the mark, with what the claim became, and ends the row as
+// UpdateAskAlreadyDelivered with no error: an ask of the round reached the role, and the rule's
+// delivered case comes before its answer, leave and failure cases, so the outbox's line for the
+// row says the ask was delivered rather than that the role answered, the claim left or it failed.
+// The control is the same owed mark with nothing in between, which keeps the row the same way. In
 // each, the ask is published once in all.
 //
 // The failure is the machine's own (fail): the claim's process dies while its launch budget has
@@ -517,8 +521,8 @@ func TestPodUpdatePublishUpdateAskAnOwedMarkKeepsTheRowWhateverTheClaimBecomes(t
 			}
 
 			h.store.fail("PutClaim", nil)
-			if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil {
-				t.Fatalf("the next ask once the store answers = %v, %v; want it refused with no error, which ends the row", outcome, err)
+			if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskAlreadyDelivered {
+				t.Fatalf("the next ask once the store answers = %v, %v; want it refused as already delivered with no error, which ends the row", outcome, err)
 			}
 			if stored := h.store.load(h.token); stored.UpdateTaskedAt == nil || !tc.became(stored) {
 				t.Fatalf("stored claim = %+v, want the owed mark written, with what the case made the claim", stored)

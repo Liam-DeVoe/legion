@@ -69,9 +69,9 @@ var fleetStart = time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
 // role whose process has started and whose agent has not registered yet. Such a claim blocks no
 // round (blockingClaims), so the sweep's ask never reaches it, and it records the issue's pod
 // all the same. failed is each role seeded failed — its launches or prompts ran out — with the
-// session its agent registered and no locator, as supervise's fail leaves one: such a claim
-// blocks the round (blockingClaims) and the round asks it nothing (askedClaims), because its
-// machine ignores the round's post (supervise's table).
+// session its agent registered and no locator, as supervise's fail leaves one: such a claim is
+// one of the round's claims with a session (blockingClaims), and the round neither asks it nor
+// waits for it (askedClaims), because its machine ignores the round's post (supervise's table).
 type fleetIssue struct {
 	key          string
 	phase        phase.Phase

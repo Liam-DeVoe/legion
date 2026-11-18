@@ -577,18 +577,19 @@ func TestPodUpdateNoSweepAsksAClaimThatLeftTheRoundsPod(t *testing.T) {
 }
 
 // The sweep owes a claim an ask where the claim's own record owes it one (supervise's
-// Claim.OwesUpdateAsk), and refuses no claim by a statement of its own: a claim of the round with
-// a session is owed its ask until an ask of the round reached its session, its role answered the
-// round, it left the round's pod or it failed, and a claim in another round is owed none. This is
-// the list before the sweep asks whether the claim's agent said it is ready (askRound's
-// supervise.SaidReady), which drops a failed claim as it drops every claim that is not ready, so
-// the rule's failed case taken out shows here and in no sweep that runs. The control is the ready
-// claim with none of these, which the sweep owes its ask.
+// Claim.OwesUpdateAsk): a claim of the round with a session is owed its ask until an ask of the
+// round reached its session, its role answered the round, it left the round's pod or it failed,
+// and a claim in another round is owed none. This is the list before the sweep asks whether the
+// claim's agent said it is ready (askRound's supervise.SaidReady), which drops a failed claim as
+// it drops every claim that is not ready, so the rule's failed case taken out shows here and in no
+// sweep that runs. The control is the ready claim with none of these, which the sweep owes its ask.
 //
 // The negative control is the rule with its failed case taken out: the failed claim is then on
-// the list, and its case fails. A sweep that dropped failed claims on its own before it read the
-// rule passes under that same mutant: that is the second statement of the rule this test keeps
-// out.
+// the list, and its case fails. This test holds each case of the rule as the sweep reads it, and
+// the next one (TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoes) holds that the sweep refuses
+// and owes no claim by a statement of its own that the rule does not make: a sweep that dropped
+// failed claims on its own before it read the rule passes this test under that same mutant, and
+// fails the next one.
 func TestPodUpdateSweepOwesAnAskWhereTheClaimsOwnRecordOwesOne(t *testing.T) {
 	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
@@ -614,6 +615,67 @@ func TestPodUpdateSweepOwesAnAskWhereTheClaimsOwnRecordOwesOne(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The sweep's list (unaskedClaims) holds a claim exactly where the claim has a session and its own
+// record owes it an ask (supervise's Claim.OwesUpdateAsk), over every mix of the facts the two
+// read: six states, and each of a session, a delivered ask, an answer, a leave of the round's pod
+// and another round, set or not, which is 192 claims. With the test above it holds the one rule of
+// whom a round asks: that test fails when the rule loses a case, and this one fails when the sweep
+// refuses or owes a claim by a statement of its own that the rule does not make, such as its own
+// failed filter put back while the rule's failed case is taken out, or its left-pod check taken
+// out. Neither test fails for a statement of the sweep's own that agrees with the rule in every
+// case, such as that failed filter put back with the rule whole: it changes no claim's answer, and
+// it shows here the first time the rule changes and the two disagree.
+//
+// The negative control is the sweep's own failed filter put back with the rule's failed case taken
+// out: this test then fails on the failed claim with a session that the rule owes an ask, and the
+// test above passes. The test also fails when its set holds no owed or no refused claim, since
+// such a set shows nothing.
+func TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoes(t *testing.T) {
+	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	states := []supervise.ClaimState{supervise.StateReady, supervise.StateWorking, supervise.StateIdle,
+		supervise.StateFailed, supervise.StateSuspended, supervise.StateLaunching}
+	checked, owedSeen, refusedSeen := 0, 0, 0
+	for _, state := range states {
+		for bits := range 1 << 5 {
+			c := supervise.Claim{Token: "legion-legion-implementer", Role: claim.RoleImplementer,
+				State: state, UpdateRound: podUpdateRound}
+			if bits&1 != 0 {
+				c.Session = "ses_i"
+			}
+			if bits&2 != 0 {
+				c.UpdateTaskedAt = &at
+			}
+			if bits&4 != 0 {
+				c.UpdateSignalledAt = &at
+			}
+			if bits&8 != 0 {
+				c.UpdateLeftRound = podUpdateRound
+			}
+			if bits&16 != 0 {
+				c.UpdateRound = "pod:" + podUpdateReplacementPod
+			}
+			owed, why := c.OwesUpdateAsk(podUpdateRound)
+			want := c.Session != "" && owed
+			asking := unaskedClaims([]supervise.Claim{c}, podUpdateRound)
+			got := len(asking) == 1 && asking[0].Token == c.Token
+			if got != want || len(asking) > 1 {
+				t.Errorf("a %s claim, session %q, asked %v, answered %v, left %q, in round %q: the sweep owes it an ask = %t (%d claims), the rule says owed=%t (%v); want the sweep to owe it one exactly where the rule does and it has a session",
+					c.State, c.Session, c.UpdateTaskedAt != nil, c.UpdateSignalledAt != nil, c.UpdateLeftRound, c.UpdateRound, got, len(asking), owed, why)
+			}
+			checked++
+			if want {
+				owedSeen++
+			} else {
+				refusedSeen++
+			}
+		}
+	}
+	if owedSeen == 0 || refusedSeen == 0 {
+		t.Fatalf("checked %d claims, %d owed and %d refused: a set with no owed or no refused claim shows nothing", checked, owedSeen, refusedSeen)
+	}
+	t.Logf("checked %d claims: %d owed an ask, %d refused one", checked, owedSeen, refusedSeen)
 }
 
 // stoppingPublisher delivers through the listener and then cancels the context its row runs
