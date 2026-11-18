@@ -96,10 +96,11 @@ export const MessageSchema = z.strictObject(messageFields).readonly();
  *  delete of a message answer that row, so the document declares it beside `MessageWithTrees`
  *  and nothing here spells it a second time. */
 
-/** `thread_logins` is carried by `message.created` and `message.answered`: on an issue message
- *  the logins with a Replies row on its thread root (up `in_reply_to`), and on a direct
- *  (issue-less) conversation's message, which keeps no Replies row, the thread root author's
- *  login, the one Inbox that conversation's Agent row sits in (`[]` when no person opened it). */
+/** `thread_logins` is carried by `message.created`, `message.answered`, `message.edited` and
+ *  `message.deleted`: on an issue message the logins with a Replies row on its thread root (up
+ *  `in_reply_to`), and on a direct (issue-less) conversation's message, which keeps no Replies
+ *  row, the thread root author's login, the one Inbox that conversation's Agent row sits in (`[]`
+ *  when no person opened it). */
 export const messageEventPayloadFields = {
   ...messageFields,
   /** The message's body. Every message row has one, but a deleted message's events carry none:

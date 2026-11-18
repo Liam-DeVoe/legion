@@ -390,10 +390,13 @@ upload of a megabyte or more, whose every ask sends the whole file again, keeps 
 It asks again only of a Dispatch that judges the key: one whose answer
 carried the key back, or whose `/healthz` said `idempotency_keys: true` in the last five minutes,
 whatever its status; any other would make a repeated write twice. Dispatch makes the write once per
-key and answers a repeat with the first answer, so the command never makes a write twice. When the
-write landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a first answer too
-large to keep), the command exits 0 and says it was made: read it back to see it. When no attempt
-got an answer, the command says the write may or may not have taken effect: read it back before
+key, so the command never makes a write twice; what Dispatch answers a repeat with is
+`IDEMPOTENCY_KEY_HEADER`'s description in `packages/contracts/src/dispatch-api-limits.ts`. When the
+write landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a replayed answer
+reading `ANSWER_NOT_KEPT`), the command exits 0 and says it was made: read it back to see it. A call
+that writes nothing (`dispatch related`, the check an upload runs first) is asked once more under a
+new key, and exits 1 if Dispatch keeps no answer again. When no attempt got an answer, the command
+says the write may or may not have taken effect: read it back before
 you run the command again, since a new command is a new key. Reads, and the `PUT` and `DELETE` of
 `dispatch follow` and `dispatch claim --release`, carry no key and go once. A script that calls
 the API directly can send its own key on any `POST` or `PATCH`: 1 to 128 letters, digits, `.`,
