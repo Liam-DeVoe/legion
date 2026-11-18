@@ -631,10 +631,10 @@ test("the priorities table stacks its title's header in a box under 640 px", asy
 // INFRA-3135's review round 1, R10: the priorities table registered `x`, "Select or deselect the
 // priority", though the table selects nothing, so the shortcut help listed a key that did
 // nothing. It registers no select key, as the Delivery list does. The issue tables beside it
-// share the project scope's row actions (INFRA-2160), and their `x` selects their own rows, so
-// from a priority's row the help lists that key as not available. INFRA-2160 adds Shift+O, which
-// opens the priority's page in a new tab, and the control row's Shift+F and Shift+V (R24): the
-// row draws a display menu and no filter trigger, so Shift+F is not available here.
+// share the project scope's row actions, whose `x` selects their own rows, so from a priority's
+// row the help lists `x` as not available, with Shift+O, which opens the priority's page in a new
+// tab, and the control row's Shift+F and Shift+V: the row draws a display menu and no filter
+// trigger, so Shift+F is not available here.
 test("the priorities table registers no select key, so from its rows the shortcut help greys x", async () => {
   page(FIFTEEN);
   const priorities = await screen.findByRole("table", { name: "Priorities table" });

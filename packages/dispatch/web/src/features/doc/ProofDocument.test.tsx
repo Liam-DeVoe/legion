@@ -1057,22 +1057,20 @@ test("Ctrl+Alt+M comments on the selection while the editor has focus, and nowhe
   expect(appKeymap.describe().some((entry) => entry.id === "comment-on-selection")).toBe(false);
 });
 
-/** Presses Alt+Enter on `target` through the application's registry, as `KeymapProvider`'s window
- *  listener does, and answers whether a binding claimed it; a navigation it makes is drawn. */
-function pressOpenLink(target: Element): boolean {
-  const event = new KeyboardEvent("keydown", {
-    altKey: true,
-    bubbles: true,
-    cancelable: true,
-    code: "Enter",
-    key: "Enter",
-  });
+/** Presses the key `init` names on `target` through the application's registry, as
+ *  `KeymapProvider`'s window listener does, and answers whether a binding claimed it; a
+ *  navigation or a focus move it makes is drawn. */
+function pressThroughRegistry(target: Element, init: KeyboardEventInit): boolean {
+  const event = new KeyboardEvent("keydown", { ...init, bubbles: true, cancelable: true });
   act(() => {
     target.dispatchEvent(event);
     appKeymap.handleKeyDown(event);
   });
   return event.defaultPrevented;
 }
+
+const ALT_ENTER: KeyboardEventInit = { altKey: true, code: "Enter", key: "Enter" };
+const ESCAPE: KeyboardEventInit = { code: "Escape", key: "Escape" };
 
 test("Alt+Enter opens the link at the caret while the editor has focus and takes edits, and nowhere else", async () => {
   const { editors, rerender, sync, view } = renderProofDocument();
@@ -1091,23 +1089,23 @@ test("Alt+Enter opens the link at the caret while the editor has focus and takes
     editor.root.focus();
 
     // No link at the caret: the key is the editor's own, and opens nothing.
-    expect(pressOpenLink(editor.root)).toBe(false);
+    expect(pressThroughRegistry(editor.root, ALT_ENTER)).toBe(false);
 
     // Focus in a comment composer: the key is the composer's.
     editor.caretLink = "dispatch://CORE-1";
     composer.focus();
-    expect(pressOpenLink(composer)).toBe(false);
+    expect(pressThroughRegistry(composer, ALT_ENTER)).toBe(false);
 
     // A closed issue's document takes no edits, and its links are in the tab order instead.
     editor.root.focus();
     rerender({ isClosed: true });
-    expect(pressOpenLink(editor.root)).toBe(false);
+    expect(pressThroughRegistry(editor.root, ALT_ENTER)).toBe(false);
     expect(within(view.container).getByTestId("current-route").textContent).not.toBe(
       "/issues/CORE-1"
     );
 
     rerender({ isClosed: false });
-    expect(pressOpenLink(editor.root)).toBe(true);
+    expect(pressThroughRegistry(editor.root, ALT_ENTER)).toBe(true);
     expect(within(view.container).getByTestId("current-route").textContent).toBe("/issues/CORE-1");
   } finally {
     composer.remove();
@@ -1115,22 +1113,6 @@ test("Alt+Enter opens the link at the caret while the editor has focus and takes
   }
   expect(appKeymap.describe().some((entry) => entry.id === "open-link")).toBe(false);
 });
-
-/** Presses Escape on `target` through the application's registry, as `KeymapProvider`'s window
- *  listener does, and answers whether a binding claimed it. */
-function pressEscape(target: Element): boolean {
-  const event = new KeyboardEvent("keydown", {
-    bubbles: true,
-    cancelable: true,
-    code: "Escape",
-    key: "Escape",
-  });
-  act(() => {
-    target.dispatchEvent(event);
-    appKeymap.handleKeyDown(event);
-  });
-  return event.defaultPrevented;
-}
 
 test("Escape takes the focus out of the editor the reader edits onto the document, and nowhere else does anything", async () => {
   const { editors, rerender, sync, view } = renderProofDocument();
@@ -1162,21 +1144,21 @@ test("Escape takes the focus out of the editor the reader edits onto the documen
     editor.root.tabIndex = 0;
     editor.root.focus();
 
-    expect(pressEscape(editor.root)).toBe(true);
+    expect(pressThroughRegistry(editor.root, ESCAPE)).toBe(true);
     expect(document.activeElement).toBe(article);
     // Out of the editor the key is not the document's any more.
-    expect(pressEscape(article)).toBe(false);
+    expect(pressThroughRegistry(article, ESCAPE)).toBe(false);
     expect(document.activeElement).toBe(article);
 
     // Focus in a comment composer: Escape is the composer's.
     composer.focus();
-    expect(pressEscape(composer)).toBe(false);
+    expect(pressThroughRegistry(composer, ESCAPE)).toBe(false);
     expect(document.activeElement).toBe(composer);
 
     // A closed issue's document takes no edits, so there is no typing to leave.
     editor.root.focus();
     rerender({ isClosed: true });
-    expect(pressEscape(editor.root)).toBe(false);
+    expect(pressThroughRegistry(editor.root, ESCAPE)).toBe(false);
     expect(document.activeElement).toBe(editor.root);
   } finally {
     composer.remove();

@@ -410,6 +410,9 @@ export function ApprovalChip({
       <ControlKeyHint keys={shortcutKeys?.requestChanges} />
     </button>
   );
+  // In the pane's head each action stands in its own box.
+  const boxed = (button: ReactNode): ReactNode =>
+    pane ? <span className={paneActionBox}>{button}</span> : button;
 
   const pill =
     approval === undefined ? null : (
@@ -444,18 +447,9 @@ export function ApprovalChip({
         pill
       )}
       {variant !== "list" && showActions ? (
-        // In the pane's head each action stands in its own box.
         <>
-          {approval?.state === "approved" ? null : pane ? (
-            <span className={paneActionBox}>{approveButton}</span>
-          ) : (
-            approveButton
-          )}
-          {pane ? (
-            <span className={paneActionBox}>{requestChangesButton}</span>
-          ) : (
-            requestChangesButton
-          )}
+          {approval?.state === "approved" ? null : boxed(approveButton)}
+          {boxed(requestChangesButton)}
           {movedRefusal === null ? null : (
             <p className={`basis-full text-sm ${dangerText}`} role="alert">
               {movedRefusal}

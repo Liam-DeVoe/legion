@@ -274,7 +274,9 @@ export function ThreadCard({
   const root = thread.root.comment;
   // The document that owns a comment on no issue, under which its reference is named.
   const documentOwner = owner.kind === "document" ? owner : undefined;
-  const rootReference = showRootReference ? itemRoute("comment", root, documentOwner) : undefined;
+  // The root's reference, which only the folded card's copy button reads.
+  const rootReference =
+    showRootReference && !expanded ? itemRoute("comment", root, documentOwner) : undefined;
   const rootSuggestion = root.suggestion;
   const terminalSuggestion = rootSuggestion !== null && rootSuggestion.accepted !== null;
   // The server refuses accept and reject on an orphaned anchor (409 ANCHOR_ORPHANED), so the
@@ -491,7 +493,7 @@ export function ThreadCard({
                     key={reply.id}
                     ref={reply === newestReply ? markRead : undefined}
                     style={{ marginLeft: "0px" }}
-                    {...turnMarks(inTab, itemRoute("comment", reply, documentOwner))}
+                    {...(inTab ? turnMarks(true, itemRoute("comment", reply, documentOwner)) : {})}
                   >
                     {editing(reply) ? (
                       renderEditor(reply)

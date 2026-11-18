@@ -2464,7 +2464,6 @@ test("a approves the spec from the header and Shift+R opens its Request changes 
     // On a turn of the Conversation the reader is on that turn, and neither key acts.
     const turn = (await screen.findByText("Anchored note.")).closest<HTMLElement>("[data-turn]");
     if (turn === null) throw new Error("the comment drew no turn");
-    turn.tabIndex = -1;
     act(() => turn.focus());
     expect(issueBinding("approve")?.enabled).toBe(false);
     expect(issueBinding("request-changes")?.enabled).toBe(false);

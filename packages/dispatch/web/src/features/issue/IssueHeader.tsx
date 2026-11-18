@@ -518,11 +518,11 @@ export function IssueHeader({
               value: status,
             }))}
             disabled={isClosed}
-            held={updateIssue.isPending}
+            held={fieldHeld}
             label="Status"
             marks={{ "data-status-menu": "" }}
             onChoose={drafts.requestStatusSubmit}
-            triggerClassName={`flex min-h-11 shrink-0 cursor-pointer items-center gap-2 rounded-full border px-2 text-sm font-semibold uppercase tracking-wide outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50 sm:px-3 md:min-h-8 xl:px-2 ${focusVisibleRing} ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
+            triggerClassName={`flex min-h-11 shrink-0 cursor-pointer items-center gap-2 rounded-full border px-2 text-sm font-semibold uppercase tracking-wide outline-none focus-visible:ring-2 refused:cursor-not-allowed refused:opacity-50 sm:px-3 md:min-h-8 xl:px-2 ${focusVisibleRing} ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
           >
             <span
               aria-hidden="true"

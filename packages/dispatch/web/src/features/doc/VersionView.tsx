@@ -89,11 +89,9 @@ export function VersionView({
   // latest version's question blocks declare the asks it names, as the server reads them.
   const textSource = useMemo(() => textSourceOf("artifact", artifactId), [artifactId]);
   // The page's link opener, which the editor calls for a click on one of its links: a past
-  // version takes no edits, so Tab reaches each link and Enter opens it the same way. The editor
-  // reads its options once, so it reaches the opener through this ref.
+  // version takes no edits, so Tab reaches each link and Enter opens it the same way. It is one
+  // function for the life of this view, so the editor, which reads its options once, holds it.
   const openLink = useLinkOpener();
-  const openLinkRef = useRef(openLink);
-  openLinkRef.current = openLink;
 
   // `ProofDocument` renders this view and forwards `highlight`; `ArtifactDocument` above it
   // builds that object afresh on every render. So the editor effect below keys on what the
@@ -151,7 +149,7 @@ export function VersionView({
         blockSchema: compiledBlockSchema,
         heatMapMode: "hidden",
         onAskBlockHosts: setAskBlockHosts,
-        openLink: (target, how) => openLinkRef.current(target, how),
+        openLink,
         user: { color: colorForLogin(login), name: login },
         watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
         ydoc: doc,
@@ -219,7 +217,7 @@ export function VersionView({
       ydoc?.destroy();
       setEditorHandle(undefined);
     };
-  }, [baseline, createEditor, highlighted, login, markdown, queryClient, tree]);
+  }, [baseline, createEditor, highlighted, login, markdown, openLink, queryClient, tree]);
 
   if (versionQuery.isPending) {
     return <p>Loading version…</p>;

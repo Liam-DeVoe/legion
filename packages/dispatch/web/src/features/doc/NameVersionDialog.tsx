@@ -49,8 +49,6 @@ export function NameVersionDialog({
   const trimmed = summary.trim();
   // While the save is out the field and Save are held rather than disabled: whichever holds the
   // focus keeps it (`heldPress`), and `commit` sends nothing more.
-  const held = saving;
-
   const commit = (): void => {
     if (trimmed === "" || saving) {
       return;
@@ -81,7 +79,7 @@ export function NameVersionDialog({
           <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
             What changed?
             <input
-              {...heldField(held)}
+              {...heldField(saving)}
               className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none aria-disabled:opacity-50 ${inputClasses(false)}`}
               onChange={(event) => setSummary(event.target.value)}
               onKeyDown={handleInputKeyDown}
@@ -106,7 +104,7 @@ export function NameVersionDialog({
             <button
               className={`rounded-lg px-3 py-1.5 text-sm font-medium ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
               disabled={trimmed === ""}
-              {...heldPress(held, commit)}
+              {...heldPress(saving, commit)}
               type="button"
             >
               {saving ? "Saving…" : "Save"}

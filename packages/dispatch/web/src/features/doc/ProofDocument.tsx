@@ -323,11 +323,9 @@ export function ProofDocument({
   // declare the asks it names (`refs.ScopeOf` of a document version is the document).
   const textSource = useMemo(() => textSourceOf("artifact", artifact.id), [artifact.id]);
   // The page's link opener, which the editor calls for a click on one of its links and for
-  // Alt+Enter (`features/refs/link-open.ts`). The editor reads its options once, so it reaches the
-  // opener through this ref, which follows the router's latest `navigate`.
+  // Alt+Enter (`features/refs/link-open.ts`). It is one function for the life of this view and
+  // follows the router's latest `navigate`, so the editor, which reads its options once, holds it.
   const openLink = useLinkOpener();
-  const openLinkRef = useRef(openLink);
-  openLinkRef.current = openLink;
   // The address's fragment as the dashboard's own navigation leaves it: a click on a link to a
   // block of this document changes it in place, firing no event of the browser's own.
   const { hash: routedHash } = useLocation();
@@ -1010,7 +1008,7 @@ export function ProofDocument({
                 },
                 onMarkClick: (markId) => marginRef.current.focusItemForMark(markId),
                 onMarkHover: (markId) => marginRef.current.hoverItemForMark(markId),
-                openLink: (target, how) => openLinkRef.current(target, how),
+                openLink,
                 // A pane takes no edits and no comments: a reader who clicks into the text from a
                 // list never changes the document they are reading.
                 access: editorAccess(page, isClosedRef.current, schemaReadOnlyRef.current),
@@ -1069,6 +1067,7 @@ export function ProofDocument({
     focusInEditor,
     followBlockHash,
     loadTransport,
+    openLink,
     page,
     pendingWaiter,
     queryClient,

@@ -65,51 +65,66 @@ export function linkDestination(
   return { kind: "page", path: `${url.pathname}${url.search}${url.hash}` };
 }
 
-/** The page's link opener: `target` is a link's own target - a `dispatch://` reference, a web
- *  address, a `mailto:` address - and `newTab` whether the reader asked for a new tab. */
-export function useLinkOpener(): OpenLink {
+/** The page's opener of a link's destination, as `linkDestination` reads its target, in the page
+ *  or, where `newTab`, in a new tab. It is one function for as long as the component lives, and
+ *  opens through the router and the query client of the latest render: the editor reads its
+ *  options once, and `LinkClickHost` adds its listener once. */
+function useDestinationOpener(): (
+  destination: LinkDestination | undefined,
+  newTab: boolean
+) => void {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  return useCallback(
-    (target, { newTab }) => {
-      const destination = linkDestination(target);
-      const go = (path: string) => {
-        if (newTab) {
-          openInNewTab(path);
-        } else {
-          navigate(path);
-        }
-      };
-      switch (destination?.kind) {
-        case "away":
-          window.open(destination.href, "_blank", "noopener,noreferrer");
-          return;
-        case "server":
-          // The editor has already taken the click, so the load the browser would have made is
-          // made here.
-          if (newTab) {
-            openInNewTab(destination.href);
-          } else {
-            window.location.assign(destination.href);
-          }
-          return;
-        case "page":
-          go(destination.path);
-          return;
-        case "reference":
-          // A block of a spec pinned to a version opens that version under the spec's slug,
-          // which only the issue names; every other reference's path is known at once.
-          if (needsSpecSlug(destination.route)) {
-            void fetchReferencePath(queryClient, destination.route).then(go);
-          } else {
-            go(buildReferencePath(destination.route));
-          }
-          return;
-        case undefined:
-          return;
+  const latest = useRef({ navigate, queryClient });
+  latest.current = { navigate, queryClient };
+  return useCallback((destination, newTab) => {
+    const { navigate, queryClient } = latest.current;
+    const go = (path: string) => {
+      if (newTab) {
+        openInNewTab(path);
+      } else {
+        navigate(path);
       }
-    },
-    [navigate, queryClient]
+    };
+    switch (destination?.kind) {
+      case "away":
+        window.open(destination.href, "_blank", "noopener,noreferrer");
+        return;
+      case "server":
+        // The editor has already taken the click, so the load the browser would have made is
+        // made here.
+        if (newTab) {
+          openInNewTab(destination.href);
+        } else {
+          window.location.assign(destination.href);
+        }
+        return;
+      case "page":
+        go(destination.path);
+        return;
+      case "reference":
+        // A block of a spec pinned to a version opens that version under the spec's slug,
+        // which only the issue names; every other reference's path is known at once.
+        if (needsSpecSlug(destination.route)) {
+          void fetchReferencePath(queryClient, destination.route).then(go);
+        } else {
+          go(buildReferencePath(destination.route));
+        }
+        return;
+      case undefined:
+        return;
+    }
+  }, []);
+}
+
+/** The page's link opener: `target` is a link's own target - a `dispatch://` reference, a web
+ *  address, a `mailto:` address - and `newTab` whether the reader asked for a new tab. It is one
+ *  function for as long as the component lives, as `useDestinationOpener`'s is. */
+export function useLinkOpener(): OpenLink {
+  const openDestination = useDestinationOpener();
+  return useCallback(
+    (target, { newTab }) => openDestination(linkDestination(target), newTab),
+    [openDestination]
   );
 }
 
@@ -123,9 +138,7 @@ export function useLinkOpener(): OpenLink {
  * (`collectReferenceAnchors`) - and a link to an address the server answers itself.
  */
 export function LinkClickHost(): ReactNode {
-  const openLink = useLinkOpener();
-  const openLinkRef = useRef(openLink);
-  openLinkRef.current = openLink;
+  const openDestination = useDestinationOpener();
   useEffect(() => {
     const onClick = (event: MouseEvent) => {
       if (
@@ -157,14 +170,15 @@ export function LinkClickHost(): ReactNode {
         anchor.getAttribute("data-dispatch-ref") ??
         anchor.getAttribute("data-dispatch-href") ??
         anchor.href;
-      if (linkDestination(target)?.kind === "server") {
+      const destination = linkDestination(target);
+      if (destination?.kind === "server") {
         return;
       }
       event.preventDefault();
-      openLinkRef.current(target, { newTab: false });
+      openDestination(destination, false);
     };
     document.addEventListener("click", onClick);
     return () => document.removeEventListener("click", onClick);
-  }, []);
+  }, [openDestination]);
   return null;
 }
