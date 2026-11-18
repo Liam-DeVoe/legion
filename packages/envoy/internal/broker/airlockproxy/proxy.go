@@ -44,6 +44,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/answer"
+	"github.com/sjawhar/envoy/internal/broker/netaddr"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/fold"
@@ -160,15 +161,33 @@ type Options struct {
 	// services on loopback reachable, and the broker's own loopback port still refused.
 	// BROKER_AIRLOCK_TEST_DIAL_ALLOW is it.
 	DialAllow []string
+	// ClusterRanges is BROKER_AIRLOCK_CLUSTER_RANGES: the broker cluster's own Service, pod and
+	// node ranges. Such a range can be global unicast - a GKE Service range such as
+	// 34.118.224.0/20 is - so none of localRule's fixed rules refuses an address in it, and a
+	// tunnel there reaches a ClusterIP of the cluster the broker runs in. An address inside any
+	// of them is refused as a private one is, after those fixed rules; DialAllow still opens
+	// one it names. Nil refuses nothing beyond the fixed rules, which is a broker outside a
+	// cluster.
+	ClusterRanges []netip.Prefix
 	// KeepValues keeps a grant's values across the reread of one of its names and past the
 	// five-minute margin of a minted token's expiry, so a run can show what the airlock does
 	// when neither happens. BROKER_AIRLOCK_TEST_KEEP_VALUES is it, the negative control of
 	// the check that both halves belong to.
 	KeepValues bool
-	// NoKind turns the azure exchange and the AWS signing off, so an entry whose kind names
-	// one of them takes the plain header swap instead. BROKER_AIRLOCK_TEST_NO_KIND is it, the
-	// negative control of the check the two kinds belong to.
+	// NoKind turns off the azure kind's exchange of a command's token request and the AWS
+	// signing, so an entry whose kind names one of them takes the plain header swap instead, and
+	// a request carrying the federated token's placeholder in a header is still refused
+	// (serveBound). BROKER_AIRLOCK_TEST_NO_KIND is it, the negative control of the check the two
+	// kinds belong to.
 	NoKind bool
+	// AzureAuthority is the host of the token authority every exchange of the azure kind is
+	// made at (azure.go): a host name in lower case with no port, which the host of a token
+	// request's connection, ASCII lower-cased, must equal exactly, and "" for Microsoft's,
+	// login.microsoftonline.com. A token request to any other host an azure entry binds is
+	// refused, and so is an access slot that names one, since the exchange carries the broker's
+	// federated token. BROKER_AIRLOCK_TEST_AZURE_AUTHORITY is it in the broker's local stack,
+	// whose token authority is a stand-in.
+	AzureAuthority string
 }
 
 // Server is the broker's proxy port: one HTTP CONNECT proxy whose password is a placeholder of a
@@ -189,6 +208,9 @@ type Server struct {
 	// resolve answers the addresses a host has, the ones refuseLocalAddress reads. It is
 	// Options.Resolve, and net.DefaultResolver's lookup for a proxy given none.
 	resolve func(ctx context.Context, host string) ([]netip.Addr, error)
+	// clusterRanges is Options.ClusterRanges, the broker cluster's own ranges, which localRule
+	// refuses after its fixed rules.
+	clusterRanges []netip.Prefix
 	// hashBudget is the bytes of AWS body the proxy may hold at once to hash
 	// (hashedBodyBudget, aws.go). One semaphore for the whole Server, because what it bounds
 	// is the pod's memory, which every connection shares.
@@ -199,6 +221,8 @@ type Server struct {
 	dialAllow  []string
 	keepValues bool
 	noKind     bool
+	// azureAuthority is Options.AzureAuthority, and microsoftAuthority for a proxy given none.
+	azureAuthority string
 
 	// outer serves the bound listener: CONNECT and absolute-URL proxy requests. inner serves
 	// what the outer one decrypted, through innerLn.
@@ -275,23 +299,24 @@ type decryptedKey struct{}
 // New builds the proxy. Nothing is bound and nothing is served until Serve.
 func New(o Options) *Server {
 	s := &Server{
-		rules:      o.Rules,
-		grants:     o.Grants,
-		ca:         o.CA,
-		idle:       o.Idle,
-		watch:      o.Watch,
-		log:        o.Log,
-		answers:    o.Answers,
-		dial:       o.Dial,
-		now:        o.Now,
-		resolve:    o.Resolve,
-		dialAllow:  o.DialAllow,
-		keepValues: o.KeepValues,
-		noKind:     o.NoKind,
-		innerLn:    newChanListener(),
-		open:       map[io.Closer]struct{}{},
-		values:     map[string]*grantValues{},
-		access:     map[accessKey]*accessHeld{},
+		rules:         o.Rules,
+		grants:        o.Grants,
+		ca:            o.CA,
+		idle:          o.Idle,
+		watch:         o.Watch,
+		log:           o.Log,
+		answers:       o.Answers,
+		dial:          o.Dial,
+		now:           o.Now,
+		resolve:       o.Resolve,
+		clusterRanges: o.ClusterRanges,
+		dialAllow:     o.DialAllow,
+		keepValues:    o.KeepValues,
+		noKind:        o.NoKind,
+		innerLn:       newChanListener(),
+		open:          map[io.Closer]struct{}{},
+		values:        map[string]*grantValues{},
+		access:        map[accessKey]*accessHeld{},
 	}
 	if o.HashBudget <= 0 {
 		o.HashBudget = hashedBodyBudget
@@ -312,6 +337,10 @@ func New(o Options) *Server {
 	}
 	if s.watch <= 0 {
 		s.watch = watchInterval
+	}
+	s.azureAuthority = o.AzureAuthority
+	if s.azureAuthority == "" {
+		s.azureAuthority = microsoftAuthority
 	}
 	s.upstream = &http.Transport{
 		// The whole check-and-dial, so that a request to a bound host reaches the address
@@ -592,7 +621,9 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 		s.refuse(w, r, call{grant: grant, host: requestHost(r)}, http.StatusBadRequest, codeConnectTarget, r.Host+" is no host and port")
 		return
 	}
-	host = fold.ASCII(host)
+	// An address literal written as every address check reads it (netaddr.Host): the bound-host
+	// check, the certificate and the dial below all read this one spelling of the host.
+	host = netaddr.Host(fold.ASCII(host))
 	target = net.JoinHostPort(host, port)
 	// The addresses this name has, read and checked once: the tunnel below dials these and
 	// resolves nothing of its own, and a bound host's requests are checked and dialled the
@@ -754,7 +785,7 @@ func (s *Server) connectTunnel(w http.ResponseWriter, r *http.Request, hijacker 
 // servePlain answers an absolute-URL proxy request, which is plain HTTP: a command that asked
 // for http:// rather than https://.
 func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant requests.AirlockConnection) {
-	host := fold.ASCII(r.URL.Hostname())
+	host := netaddr.Host(fold.ASCII(r.URL.Hostname()))
 	// Whether any name of this grant may carry a secret to this host, from the one function
 	// that says what is bound (candidates). It is asked about 443 because that is the only
 	// port an entry's hosts speak about, while the refusal below is about no port at all: a
