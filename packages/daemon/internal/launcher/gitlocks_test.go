@@ -2393,9 +2393,10 @@ func TestTheDerivationRefusesACloneThatIsASymlinkBeforeTheSweepStarts(t *testing
 	t.Chdir(c.dir)
 	log := &lockedBuffer{}
 	s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef)
-	// A /proc of the row's own, as every other row's sweep reads: were the derivation to take the
-	// clone, the pass below would remove both locks, where over this machine's /proc any git or jj
-	// of another user whose open files cannot be read would keep them and hide that.
+	// A /proc of the row's own, as every other row's sweep reads, so the check below that the pass
+	// removed nothing depends on no process the test did not start. A derivation that took the
+	// clone fails the checks above over any /proc, and the pass's own guard (workspace.GitLocksOf)
+	// still refuses the clone and keeps both locks.
 	s.proc = procRoot(t, os.Getpid())
 	refusal := fmt.Sprintf("launcher: the git lock sweep's working directory %q is no jj workspace it can sweep (%q); it takes its workspace from the first role start",
 		c.dir, fmt.Sprintf("refusing workspace operation in %s: %s is a symlink, and no directory of the workspace layout below the state directory is one", c.dir, c.clone))
