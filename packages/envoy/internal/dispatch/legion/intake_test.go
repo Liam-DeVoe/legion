@@ -7,9 +7,12 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -99,13 +102,19 @@ func newIntakeRig(t *testing.T) *intakeRig {
 // waits for its take-over to have bound the durable on a deliver subject of its own.
 func (r *intakeRig) start() {
 	r.t.Helper()
+	r.startOn(r.clock.now)
+}
+
+// startOn is start with now as the intake's clock rather than the rig's.
+func (r *intakeRig) startOn(now func() time.Time) {
+	r.t.Helper()
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(r.t)})
 	if err != nil {
 		r.t.Fatalf("connect the intake: %v", err)
 	}
 	r.t.Cleanup(client.Close)
 	intake := NewIntake(client, r.database.Pool, r.leases, r.wake)
-	intake.now = r.clock.now
+	intake.now = now
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -1078,5 +1087,291 @@ func TestAnApplyThatFailsIsRetriedBeforeAnyLaterMessage(t *testing.T) {
 	}
 	if events != 2 {
 		t.Errorf("%d batches recorded, want the two messages once each", events)
+	}
+}
+
+// stateEventsGoldenPath is the Legion daemon's golden of its state lane, which the daemon's own
+// TestStateEventsGolden writes (packages/daemon/internal/daemon/state_events_golden_test.go): a
+// daemon of project LEGION driven step by step over a seeded store, each step with every message
+// its state lane published, as the Envoy listener's publish route stores the envelope, and the
+// document GET /legion/v1/state served once they were published.
+func stateEventsGoldenPath() string {
+	return filepath.Join("..", "..", "..", "..", "contracts", "fixtures", "daemon-api", "state-events.json")
+}
+
+// goldenStep is one step of the state lane's golden: what the daemon did; the one message its lane
+// published for it, with the run, the last sequence and the commit time its payload names; and the
+// state document the daemon served after it.
+type goldenStep struct {
+	name     string
+	envelope contracts.Envelope
+	run      string
+	seq      int64
+	at       time.Time
+	state    json.RawMessage
+}
+
+// readStateEventsGolden reads the state lane's golden (stateEventsGoldenPath), and fails unless
+// each step is one message and a state whose stateSeq is that message's last sequence: one
+// committed transaction, and the state a whole read made right after it reads.
+func readStateEventsGolden(t *testing.T) []goldenStep {
+	t.Helper()
+	raw, err := os.ReadFile(stateEventsGoldenPath())
+	if err != nil {
+		t.Fatalf("read the daemon's state events golden: %v", err)
+	}
+	var golden struct {
+		Steps []struct {
+			Name     string               `json:"name"`
+			Messages []contracts.Envelope `json:"messages"`
+			State    json.RawMessage      `json:"state"`
+		} `json:"steps"`
+	}
+	if err := json.Unmarshal(raw, &golden); err != nil {
+		t.Fatalf("decode the daemon's state events golden: %v", err)
+	}
+	if len(golden.Steps) == 0 {
+		t.Fatal("the daemon's state events golden holds no step, so there is nothing to compare")
+	}
+	steps := make([]goldenStep, 0, len(golden.Steps))
+	for _, step := range golden.Steps {
+		if len(step.Messages) != 1 {
+			t.Fatalf("step %q holds %d messages, want one: a step's state is compared with the rows of one committed transaction", step.Name, len(step.Messages))
+		}
+		var message struct {
+			Run string    `json:"run"`
+			Seq int64     `json:"seq"`
+			At  time.Time `json:"at"`
+		}
+		if err := json.Unmarshal([]byte(step.Messages[0].Payload), &message); err != nil {
+			t.Fatalf("decode the message of step %q: %v", step.Name, err)
+		}
+		var state struct {
+			Daemon struct {
+				StateSeq int64 `json:"stateSeq"`
+			} `json:"daemon"`
+		}
+		if err := json.Unmarshal(step.State, &state); err != nil {
+			t.Fatalf("decode the state of step %q: %v", step.Name, err)
+		}
+		if state.Daemon.StateSeq != message.Seq {
+			t.Fatalf("the state of step %q serves stateSeq %d and its message ends at %d: the state must hold the events up to the message's last and none after it",
+				step.Name, state.Daemon.StateSeq, message.Seq)
+		}
+		steps = append(steps, goldenStep{
+			name: step.Name, envelope: step.Messages[0], run: message.Run, seq: message.Seq, at: message.At, state: step.State,
+		})
+	}
+	return steps
+}
+
+// observedRow is one legion_observations row: its issue and field, its value as jsonb writes it,
+// and when it was observed.
+type observedRow struct {
+	issue, field, value string
+	at                  time.Time
+}
+
+func (r observedRow) String() string {
+	return fmt.Sprintf("%s/%s=%s@%s", r.issue, r.field, r.value, r.at.UTC().Format(time.RFC3339Nano))
+}
+
+// observedRows is project's legion_observations, by issue, field and time.
+func observedRows(t *testing.T, database *store.Store, project string) []observedRow {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select issue_key, field, value::text, observed_at from legion_observations
+		where project = $1 order by issue_key, field, observed_at
+	`, project)
+	if err != nil {
+		t.Fatalf("read the observations of %s: %v", project, err)
+	}
+	listed, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (observedRow, error) {
+		var observed observedRow
+		err := row.Scan(&observed.issue, &observed.field, &observed.value, &observed.at)
+		return observed, err
+	})
+	if err != nil {
+		t.Fatalf("read the observations of %s: %v", project, err)
+	}
+	return listed
+}
+
+// rowsOutside is each of rows that others does not hold: the same issue, field, value and time.
+func rowsOutside(rows, others []observedRow) []observedRow {
+	held := make(map[string]bool, len(others))
+	for _, row := range others {
+		held[row.String()] = true
+	}
+	var outside []observedRow
+	for _, row := range rows {
+		if !held[row.String()] {
+			outside = append(outside, row)
+		}
+	}
+	return outside
+}
+
+// currentDifference is each issue and field whose legion_current row differs between two
+// projects' currentValues, in key order.
+func currentDifference(events, reads map[string]string) []string {
+	keys := slices.Collect(maps.Keys(events))
+	for key := range reads {
+		if _, held := events[key]; !held {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	text := func(values map[string]string, key string) string {
+		if value, held := values[key]; held {
+			return value
+		}
+		return "no row"
+	}
+	var differing []string
+	for _, key := range keys {
+		if fromEvents, fromReads := text(events, key), text(reads, key); fromEvents != fromReads {
+			differing = append(differing, fmt.Sprintf("%s: %s from the events, %s from the reads", key, fromEvents, fromReads))
+		}
+	}
+	return differing
+}
+
+// orNone is *value's text, or "none" for nil.
+func orNone[T any](value *T) string {
+	if value == nil {
+		return "none"
+	}
+	return fmt.Sprint(*value)
+}
+
+// TestEventsWriteTheRowsAWholeReadOfTheSameStatesWrites: the rows the daemon's state events write
+// are the rows a whole read of the same states writes. The daemon's own golden of its state lane
+// (stateEventsGoldenPath) is applied twice over. Project LEGION, the golden's own, takes each
+// step's message through the intake from a real NATS stream, published as the daemon's listener
+// stored it; project READS records each step's state document as a whole read records it
+// (RecordRead). After each step the two hold the same legion_current, `null` rows included, and
+// the same history: a row of LEGION only where READS has one, with the same value, at the same
+// moment, which is the message's `at`.
+//
+// Both start from the golden's first state: the intake's starting read of LEGION's daemon is served
+// it, and READS records it. The intake's clock stands at the commit time of the step it applies
+// (its message's `at`), the moment READS records the step's state at, so the starting read is
+// stamped at the boot's commit. A row is stamped 1 µs after its field's newest row where that is
+// later than its own time (recordEvents, recordObservations), but each step of the golden commits
+// a minute after the one before, so that rule moves no row of either project here: every row a step
+// writes is at its message's `at`, and the test fails on one that is not.
+//
+// The boot's message is at the starting read's stateSeq, and a whole read names no run, so the
+// intake cannot tell it from a daemon whose counter went back and reads the daemon whole once more
+// (stateMessage.unfollowed); the daemon still serves the first state, so that read writes nothing.
+// From the second step on the daemon is never read again: each step's rows are its message's.
+func TestEventsWriteTheRowsAWholeReadOfTheSameStatesWrites(t *testing.T) {
+	const events, reads = "LEGION", "READS"
+	steps := readStateEventsGolden(t)
+	rig := newIntakeRig(t)
+	var clock atomic.Pointer[time.Time]
+	clock.Store(&steps[0].at)
+	daemon := newFakeDaemon(t, string(steps[0].state))
+	seedLegionProject(t, rig.database, events, daemon.URL)
+	rig.startOn(func() time.Time { return *clock.Load() })
+	rig.awaitStartingRead(events)
+	// READS has a setting too, written once the take-over has read the settings, and nothing
+	// queues another starting point (no take-over, no settings wake), so its daemon is never read
+	// and its rows are RecordRead's alone.
+	readsDaemon := newFakeDaemon(t, `{}`)
+	seedLegionProject(t, rig.database, reads, readsDaemon.URL)
+
+	wholeReads := func() []string {
+		var reasons []string
+		for _, line := range rig.logRecords(wholeReadLine) {
+			if line["project"] != events {
+				continue
+			}
+			if line["ok"] != true {
+				t.Fatalf("a whole read of %s failed: %v", events, line)
+			}
+			reasons = append(reasons, fmt.Sprint(line["reason"]))
+		}
+		return reasons
+	}
+	var before []observedRow
+	var firstReads []string
+	var firstServed, fromEvents int
+	for index, step := range steps {
+		name := fmt.Sprintf("step %d (%s)", index+1, step.name)
+		clock.Store(&step.at)
+		daemon.serves(string(step.state))
+		if err := rig.publisher.Publish(step.envelope); err != nil {
+			t.Fatalf("%s: publish its message: %v", name, err)
+		}
+		rig.settled()
+		var state State
+		if err := json.Unmarshal(step.state, &state); err != nil {
+			t.Fatalf("%s: decode its state: %v", name, err)
+		}
+		if _, err := RecordRead(t.Context(), rig.database.Pool, reads, step.at, len(step.state), state.Observations()); err != nil {
+			t.Fatalf("%s: record its state as a whole read: %v", name, err)
+		}
+
+		if differing := currentDifference(currentValues(t, rig.database, events), currentValues(t, rig.database, reads)); len(differing) > 0 {
+			t.Fatalf("%s: legion_current differs between the events and the reads:\n%s", name, strings.Join(differing, "\n"))
+		}
+		eventsRows, readsRows := observedRows(t, rig.database, events), observedRows(t, rig.database, reads)
+		if onlyEvents, onlyReads := rowsOutside(eventsRows, readsRows), rowsOutside(readsRows, eventsRows); len(onlyEvents)+len(onlyReads) > 0 {
+			t.Fatalf("%s: the histories differ\nrows only the events wrote: %v\nrows only the reads wrote: %v", name, onlyEvents, onlyReads)
+		}
+		written := rowsOutside(eventsRows, before)
+		for _, row := range written {
+			if !row.at.Equal(step.at) {
+				t.Errorf("%s: the row %s is not at the message's at %s", name, row, step.at.Format(time.RFC3339Nano))
+			}
+		}
+		before = eventsRows
+		current := cursorOf(t, rig.database, events)
+		if current.lastSeq == nil || *current.lastSeq != step.seq || current.readOwed {
+			t.Fatalf("%s: the cursor is at %s with a read owed %v, want it at %d with none owed", name, orNone(current.lastSeq), current.readOwed, step.seq)
+		}
+
+		if index == 0 {
+			firstReads, firstServed = wholeReads(), daemon.served()
+			t.Logf("%s: seq %d at %s; the whole reads %v wrote %d rows", name, step.seq, step.at.Format(time.RFC3339Nano), firstReads, len(written))
+			continue
+		}
+		if served, reasons := daemon.served(), wholeReads(); served != firstServed || !slices.Equal(reasons, firstReads) {
+			t.Fatalf("%s: the daemon served %d reads and the whole reads logged are %v, want the first step's %d and %v: a step's rows must be its message's",
+				name, served, reasons, firstServed, firstReads)
+		}
+		var batches int
+		if err := rig.database.Pool.QueryRow(t.Context(), `
+			select count(*) from legion_reads where project = $1 and kind = $2 and read_at = $3
+		`, events, readKindEvents, step.at).Scan(&batches); err != nil {
+			t.Fatalf("%s: count its batches: %v", name, err)
+		}
+		if batches != 1 {
+			t.Fatalf("%s: %d batches of events are recorded at its message's at, want one", name, batches)
+		}
+		if current.run == nil || *current.run != step.run {
+			t.Fatalf("%s: the cursor follows the run %s, want the message's %s", name, orNone(current.run), step.run)
+		}
+		fromEvents += len(written)
+		t.Logf("%s: seq %d at %s; its message wrote %d rows", name, step.seq, step.at.Format(time.RFC3339Nano), len(written))
+	}
+
+	if fromEvents == 0 {
+		t.Error("the messages wrote no row, so nothing past the starting point was compared")
+	}
+	if !slices.Contains(slices.Collect(maps.Values(currentValues(t, rig.database, events))), "null") {
+		t.Error("legion_current holds no null row, so no null row was compared")
+	}
+	if served := readsDaemon.served(); served != 0 {
+		t.Errorf("the daemon of %s served %d reads, want none: its rows must be RecordRead's alone", reads, served)
+	}
+	var cursors int
+	if err := rig.database.Pool.QueryRow(t.Context(), `select count(*) from legion_event_cursors where project = $1`, reads).Scan(&cursors); err != nil {
+		t.Fatalf("count the cursors of %s: %v", reads, err)
+	}
+	if cursors != 0 {
+		t.Errorf("%s has a cursor, want none: the intake never touched it", reads)
 	}
 }
