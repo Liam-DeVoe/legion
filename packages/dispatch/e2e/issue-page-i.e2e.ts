@@ -1711,6 +1711,217 @@ test("a row that edits a statement is no taller than the window, and the page ar
   });
 });
 
+// The architect's ruling of 2026-11-18 on the width of a row's editor: its box never scrolls
+// sideways. Prose wraps, a run with no space in it too, and a wide block scrolls sideways inside
+// itself alone, as the document's reading view draws it. On a real spec at 390 by 664, Enter on a
+// plain statement opened a box whose words were 414 px wide in a 320 px one. Read in this row's
+// 350 px box before the fix, two things were wider than it. A reference the editor draws as its
+// issue's title is one line of up to 24em, 384 px, that nothing held to its line, and in a bullet
+// it starts 30 px in: 414 px. A note's title is an item of the note's header, which held this
+// path, a run with no space in it, at its whole width, 862 px, since the editor's `break-word`
+// gives the run no place to break while the header sizes it. No seed cites an issue in a bullet
+// or titles a block with such a run, and no row read the editor at a phone's width, so no row met
+// it.
+// SLOW(>=2s): a seeded issue, an issue of another project and a spec citing it, a load waited on
+// until the focus lands, then End and Enter, waited on until the editor draws the cited issue's
+// name.
+test("a row's editor on a phone does not scroll sideways, and its words wrap @phone @phone-only", async ({
+  browser,
+}) => {
+  await phase(browser, seedNoChildren, async (page) => {
+    await page.setViewportSize({ height: 664, width: 390 });
+    // The cited issue is another project's, so its name is drawn once the editor's read of it
+    // answers, as in the row of the names a document cites.
+    await createProject({ key: "CITED", name: "Cited issues" });
+    const cited = await createIssue({
+      force: true,
+      project: "CITED",
+      title: "A cited issue of another project, whose title runs past a phone's line",
+    });
+    const spec = await createIssue({
+      force: true,
+      project: PROJECT,
+      spec: [
+        "# A plain statement under a cited issue and a path",
+        "",
+        "## Problem",
+        "",
+        `- dispatch://${cited.key}`,
+        "",
+        `:::callout{#n-path kind="note" title="${UNBROKEN_PATH}"}`,
+        "The note's own words.",
+        ":::",
+        "",
+        "## Requirements",
+        "",
+        ":::requirement{#r-plain}",
+        "A plain statement.",
+        ":::",
+        "",
+      ].join("\n"),
+      title: "An issue whose plain statement stands under wide words",
+    });
+    const statement = blockNodeId(await primarySlug(spec.key), "r-plain");
+    await gotoIssue(page, `/issues/${spec.key}`);
+    await expectIssuePageDrawn(page);
+    await expect
+      .poll(async () => (await focusedRow(page)) !== null, {
+        message: "the page opens with the focus on no row",
+      })
+      .toBe(true);
+    await page.keyboard.press("End");
+    await expect
+      .poll(() => focusedRow(page), { message: "End did not reach the statement" })
+      .toBe(statement);
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => caretInNode(page), { message: "Enter did not put the caret in the statement" })
+      .toBe(true);
+    const box = nodeRow(page, statement).first().locator("[data-editor-box]");
+    await expect(
+      box.locator("a.dispatch-reference"),
+      "the row's editor draws no name for the cited issue"
+    ).toBeVisible();
+    await nextFrames(page);
+    const drawn = await box.evaluate((element) => {
+      const title = element.querySelector("[data-proof-block-title]");
+      return {
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        // How many lines the note's title is drawn on: its height over its own line's.
+        titleLines:
+          title === null
+            ? 0
+            : title.getBoundingClientRect().height /
+              Number.parseFloat(getComputedStyle(title).lineHeight),
+      };
+    });
+    expect(
+      drawn.scrollWidth,
+      "the editor's box of a plain statement scrolls sideways at 390x664"
+    ).toBeLessThanOrEqual(drawn.clientWidth);
+    expect(
+      drawn.titleLines,
+      "the note's title, a path with no space in it, is not wrapped at 390x664"
+    ).toBeGreaterThan(1.5);
+  });
+});
+
+// The same ruling's other half: a wide block the node itself holds is still whole by its own
+// scroll, so a box held to its width cuts none of it. A note is the block that holds a table - a
+// statement holds paragraphs alone (`pmdoc/schema/blocks.json`) - and this one names an issue too,
+// whose title is what widened the box at f5d49c35, while the table already scrolled inside itself.
+// SLOW(>=2s): a seeded issue, an issue of another project and a spec citing it, a load waited on
+// until the focus lands, then End and Enter, waited on until the editor draws the cited issue's
+// name, and a scroll of the table waited on until its last column shows.
+test("a table a row's editor holds scrolls sideways inside itself, and the box around it does not @phone @phone-only", async ({
+  browser,
+}) => {
+  await phase(browser, seedNoChildren, async (page) => {
+    await page.setViewportSize({ height: 664, width: 390 });
+    await createProject({ key: "CITED", name: "Cited issues" });
+    const cited = await createIssue({
+      force: true,
+      project: "CITED",
+      title: "A cited issue of another project, whose title runs past a phone's line",
+    });
+    const columns = Array.from({ length: 16 }, (_, index) => index + 1);
+    const spec = await createIssue({
+      force: true,
+      project: PROJECT,
+      spec: [
+        "# A note that holds a table wider than a phone",
+        "",
+        // The spec's first callout is its summary, which the outline draws as no row of its own
+        // (`spec-summary.ts`), so the note is the second.
+        ':::callout{#summary kind="note"}',
+        "What the issue is about, in a sentence.",
+        ":::",
+        "",
+        ':::callout{#n-table kind="note"}',
+        `The note names dispatch://${cited.key} and lists what it found in sixteen columns.`,
+        "",
+        `| ${columns.map((column) => `column ${column}`).join(" | ")} |`,
+        `| ${columns.map(() => "---").join(" | ")} |`,
+        `| ${columns.map((column) => `cell ${column}`).join(" | ")} |`,
+        ":::",
+        "",
+      ].join("\n"),
+      title: "An issue whose note holds a table wider than a phone",
+    });
+    const note = blockNodeId(await primarySlug(spec.key), "n-table");
+    await gotoIssue(page, `/issues/${spec.key}`);
+    await expectIssuePageDrawn(page);
+    await expect
+      .poll(async () => (await focusedRow(page)) !== null, {
+        message: "the page opens with the focus on no row",
+      })
+      .toBe(true);
+    await page.keyboard.press("End");
+    await expect.poll(() => focusedRow(page), { message: "End did not reach the note" }).toBe(note);
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => caretInNode(page), { message: "Enter did not put the caret in the note" })
+      .toBe(true);
+    const box = nodeRow(page, note).first().locator("[data-editor-box]");
+    await expect(
+      box.locator("a.dispatch-reference"),
+      "the row's editor draws no name for the cited issue"
+    ).toBeVisible();
+    const table = box.locator("table");
+    await expect(table, "the row's editor draws no table in the note").toHaveCount(1);
+    await nextFrames(page);
+    /** The box's and the table's widths, and whether the table's last column is inside what the
+     *  table shows. */
+    const widths = () =>
+      box.evaluate((element) => {
+        const drawn = element.querySelector("table");
+        const shown = drawn?.getBoundingClientRect();
+        const last = drawn?.querySelector("tr")?.lastElementChild?.getBoundingClientRect();
+        return {
+          box: {
+            client: element.clientWidth,
+            left: element.scrollLeft,
+            scroll: element.scrollWidth,
+          },
+          lastShown:
+            shown !== undefined &&
+            last !== undefined &&
+            last.left >= shown.left - 0.5 &&
+            last.right <= shown.right + 0.5,
+          table: { client: drawn?.clientWidth ?? 0, scroll: drawn?.scrollWidth ?? 0 },
+        };
+      });
+    const before = await widths();
+    expect(
+      before.box.scroll,
+      "the editor's box of a note that holds a table scrolls sideways at 390x664"
+    ).toBeLessThanOrEqual(before.box.client);
+    expect(
+      before.table.scroll,
+      "the table is no wider than what it shows, so it does not scroll inside itself"
+    ).toBeGreaterThan(before.table.client);
+    expect(before.lastShown, "the table shows its last column before it is scrolled").toBe(false);
+    // A reader's sideways scroll over the table, as a trackpad makes it.
+    const at = await table.boundingBox();
+    expect(at, "the table has no box on the page").not.toBeNull();
+    await page.mouse.move(
+      (at?.x ?? 0) + (at?.width ?? 0) / 2,
+      (at?.y ?? 0) + (at?.height ?? 0) / 2
+    );
+    await page.mouse.wheel(before.table.scroll, 0);
+    await expect
+      .poll(async () => (await widths()).lastShown, {
+        message: "a sideways scroll over the table does not reach its last column",
+      })
+      .toBe(true);
+    expect(
+      (await widths()).box.left,
+      "a sideways scroll over the table scrolled the editor's box"
+    ).toBe(0);
+  });
+});
+
 // The tester's finding at #4205's 861adff1, on "after each move the focused row is on screen":
 // `.` zooms into a row of the outline's top level, which draws that row alone at the top of the
 // page, and `,` draws the whole outline again with the focus still on that row, and nothing
