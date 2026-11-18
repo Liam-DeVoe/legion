@@ -127,11 +127,12 @@ func MainWith(m *testing.M, run func(*testing.M) int) int {
 // A test that gives a stream a byte limit (MaxBytes) takes a server of its own (Start) instead:
 // that limit is the server's reservation, not the account's. nats-server adds it to the one
 // jetStream.storeReserved of the whole server when the stream is created and subtracts it when the
-// stream is deleted, under the server's own lock (jetstream.go:2423-2462), while the limits check
-// of every other stream create on that server reads the same field holding the account's lock
-// alone (jetstream_api.go:3310-3327, through checkBytesLimits at jetstream.go:2276). Two tests of
-// one server, one of them with a byte limit, are therefore a data race inside nats-server
-// v2.10.29, which the race detector reports against whichever test was running.
+// stream is deleted (reserveStreamResources and releaseStreamResources), so a test that leaves a
+// limit on a shared server takes room from every account's stream creates there. Under
+// nats-server v2.10.29 it was also a data race, which the race detector reported against
+// whichever test was running: the limits check of every other stream create read that field
+// holding the account's lock alone. v2.15.1, which go.mod pins, reads it under the jetStream lock
+// that guards its writes (server/stream.go:939-944, server/jetstream_api.go:4339-4347).
 // When the test ends, its account's streams are deleted to free their storage; nothing creates a
 // stream in that account again, so a delete that leaves files behind reaches no test.
 func URL(t testing.TB) string {

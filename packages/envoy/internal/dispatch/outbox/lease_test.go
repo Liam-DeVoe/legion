@@ -564,12 +564,12 @@ func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 // and reads from that line why the turn ended and when. The reason must be NATS lost, which here
 // only the grace's timer can give: the cut closes the connection, so the loss is reported by the
 // client's own connection event (bus.Client.Connected reads the connection's status,
-// nats.go:573-577), the holder reads its client disconnected and arms one timer of that grace
-// without scanning (lease.go:500-503), and only that timer firing with the client still down ends
-// the turn as NATS lost (lease.go:551-557). The line's stopped attribute, at or before the moment
-// the process stopped publishing, must be natsLossGrace or more past the cut, so a release inside
-// the grace is a holder that gave the hold up early; load can only make that bound safer, since a
-// loaded machine delays the release and never hastens it.
+// internal/bus/nats.go:770-774), the holder reads its client disconnected and arms one timer of
+// that grace without scanning (lease.go:500-503), and only that timer firing with the client still
+// down ends the turn as NATS lost (lease.go:551-557). The line's stopped attribute, at or before
+// the moment the process stopped publishing, must be natsLossGrace or more past the cut, so a
+// release inside the grace is a holder that gave the hold up early; load can only make that bound
+// safer, since a loaded machine delays the release and never hastens it.
 //
 // How long past the grace the release comes is not bounded: between the grace's timer and the
 // release there is only a run of goroutine wakes - the holder's wake, the timer, serve's return

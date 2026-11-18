@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/logging"

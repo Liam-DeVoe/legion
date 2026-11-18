@@ -1310,7 +1310,7 @@ func TestSecretRetagReadsTheValueOnlyWhenItChangesTheType(t *testing.T) {
 // Serial: it shares process-wide state - AGENT_SECRETS_URL, which brokerBaseURL (identity.go)
 // reads the broker's address from (startSecretBroker's t.Setenv), and the package-level seams
 // set is reached through, which it sets: awsClients and secretStdin. The value itself is never
-// read here: set refuses the type tag first (secret.go:1270-1272, before the read at :1276).
+// read here: set refuses the type tag first (secret.go:1269-1271, before the read at :1275).
 func TestSecretSetRefusesASecretWhoseTypeTagNamesNoType(t *testing.T) {
 	local := secrets.NewLocal(policytest.TypeSecret("ODD_KEY", "ada@example.com", policy.TierAgent, "other", "v1"))
 	broker := startSecretBroker(t, servedBy(local))

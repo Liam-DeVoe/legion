@@ -483,9 +483,15 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 			elapsed, err := rig.handOver(t, role)
 
 			// The second read of the lane is what shows the handover waited the failed read out
-			// and read again; the lower bound beside it, which load cannot break, holds the wait to
-			// a pause.
-			if read := reads(); err == nil || read < 2 || elapsed < roleKeepDrainRetryPause {
+			// and read again. The count's upper end is what holds that wait to a pause: the
+			// handover's pauses widen from roleKeepDrainRetryPause (1 s, then 2 s,
+			// roleKeepDrainBackoff), so the rig's window of three such pauses holds two passes, and
+			// a third read only where the window's end is seen after the second pause's, while a
+			// retry that skipped its pause would read the lane every few milliseconds until the
+			// window ended. A loaded machine can only shorten what each pass gets of the window,
+			// never add a pass inside it. The elapsed floor beside them, which load cannot break
+			// either, says the same from the clock.
+			if read := reads(); err == nil || read < 2 || read > 3 || elapsed < roleKeepDrainRetryPause {
 				t.Fatalf("the handover of role %s ended %s in having read the lane %d times, reporting %v; want it to wait out a pause of %s, read the lane again and report the read that failed: the claim record names %s",
 					role, elapsed, read, err, roleKeepDrainRetryPause, holder)
 			}
