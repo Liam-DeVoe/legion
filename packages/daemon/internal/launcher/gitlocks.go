@@ -59,6 +59,13 @@ var gitLockRecheck = 2 * time.Second
 // worktree entry's gitdir that is a fifo among them (internal/workspace's readGitdir).
 var gitLockRemove = os.Remove
 
+// gitLockProc is the /proc root newGitLockSweep gives the sweep (gitLockSweep.proc): the
+// container's own /proc, which PID 1 reads whole. It is a variable for the rows that drive a real
+// launcher outside a container, whose /proc is the whole machine's: a git or jj of another user
+// there, whose open files the row cannot read, would make every pass keep every lock
+// (gitLockHolders' blind case), so such a row gives the sweep a root of the processes it planted.
+var gitLockProc = "/proc"
+
 // gitLockFirstPassBound is how long the launcher's first pass may spend between the locks it
 // decides. It exists for the reason testPGBound exists: the first pass runs before the launcher
 // serves any role, the daemon's boot timeout for a pod is 120 s by default, and a pass that goes
@@ -222,7 +229,7 @@ func serveGitLockSweep(ctx context.Context, managers []*manager) <-chan struct{}
 // sweep's own field.
 func newGitLockSweep(log func(format string, args ...any)) *gitLockSweep {
 	s := &gitLockSweep{
-		proc: "/proc", guard: gitLockGuard, interval: gitLockInterval, recheck: gitLockRecheck,
+		proc: gitLockProc, guard: gitLockGuard, interval: gitLockInterval, recheck: gitLockRecheck,
 		remove: gitLockRemove, now: time.Now, log: log,
 	}
 	dir, err := os.Getwd()

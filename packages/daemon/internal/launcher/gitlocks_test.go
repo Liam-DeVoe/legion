@@ -353,11 +353,17 @@ func shortGitLockClock(t *testing.T, interval, recheck time.Duration) {
 // sweeps (serveGitLockSweep) and no test of this package runs as PID 1. Such a launcher runs the
 // memory guard too, so the guard is pointed at an empty pod of its own (useGuardPod), whose
 // reading is far below the mark and whose signal ends nothing of the machine's, rather than at
-// this machine's /proc, whose processes the row knows nothing of. It is called before the
-// launcher starts, so its restore runs after the launcher's own cleanup, which waits for Run.
+// this machine's /proc, whose processes the row knows nothing of. Its sweep reads a /proc root of
+// the row's own (gitLockProc, procRoot) for the same reason: on a machine where another user runs
+// a git or jj, that process's open files cannot be read, and a sweep of the machine's /proc would
+// keep every lock. It is called before the launcher starts, so its restores run after the
+// launcher's own cleanup, which waits for Run.
 func useSweepingLauncher(t *testing.T) {
 	t.Helper()
 	useGuardPod(t, newGuardPod(t), nil)
+	previous := gitLockProc
+	gitLockProc = procRoot(t, os.Getpid())
+	t.Cleanup(func() { gitLockProc = previous })
 }
 
 // roleStart is a start of role's generation that runs argv and exits, carrying env besides the
