@@ -1963,6 +1963,14 @@ type Store interface {
 	// finish: a stale lease is ErrOutboxLeaseLost, so the caller rolls that effect back rather than
 	// committing it beside the replacement worker's own.
 	FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error
+	// StateRowsAfter is every state row still in the outbox that committed in head's transaction
+	// (OutboxRow.StateTx) with a higher sequence, in sequence order: the rows the state lane
+	// publishes with head as one message.
+	StateRowsAfter(ctx context.Context, tx pgx.Tx, head OutboxRow) ([]OutboxRow, error)
+	// FinishStateRows finishes head under its lease, and with it the rows of head's transaction
+	// with sequences above head's and at most through; a lease no longer head's is
+	// ErrOutboxLeaseLost and the caller's transaction finishes none of them.
+	FinishStateRows(ctx context.Context, tx pgx.Tx, head OutboxRow, through int64) error
 	RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, nextAt time.Time, lastErr string) error
 	PendingStatusWrites(ctx context.Context, tx pgx.Tx, project string) ([]OutboxRow, error)
 	// StateSeq is the sequence of the newest state row project's daemon committed

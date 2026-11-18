@@ -133,6 +133,22 @@ func (e ErrPublishDenied) Error() string {
 	return fmt.Sprintf("the listener's NATS grant denied the forward (%s)", e.Message)
 }
 
+// ErrMessageRefused is a publish the listener answered 400 or 413 with an error of its own
+// ({"error": ...}, writeJSONError and writeNATSError, packages/envoy/cmd/listener/api.go): it
+// refused the message itself before it stored anything, a field or a topic it does not take (400)
+// or a message larger than NATS takes whole (413), and it answers the same message the same way
+// however often it is sent. Status is the answer's status and Message its error, bounded by
+// refusalBodyLimit as the refusal is. A 400 or 413 whose body is not such an error, as a proxy in
+// front of the listener could write, stays a plain refusal, retried.
+type ErrMessageRefused struct {
+	Status  int
+	Message string
+}
+
+func (e ErrMessageRefused) Error() string {
+	return fmt.Sprintf("the listener refused the message itself (%d: %s)", e.Status, e.Message)
+}
+
 // RoleTopicPrefix is the Envoy subject a role token is reached on (ROLE_TOPIC_PREFIX,
 // packages/contracts/src/subject.ts): a notice goes to its architect's, and a review-stuck notice
 // names its reviewer's, so the architect need not build it.
@@ -173,6 +189,19 @@ const RoleTopicPrefix = "notifications.role."
 // state` and Dispatch.
 func ControllerTopic(project string) string {
 	return "notifications.legion." + project + ".controller"
+}
+
+// StateTopic is the topic of the project's state events (legionStateSubject,
+// packages/contracts/src/subject.ts). The daemon publishes one message there for each transaction
+// it committed that queued state events (the outbox's stateEvents executor), carrying that
+// transaction's events in sequence order (legionStateMessage,
+// packages/contracts/src/legion-api.ts): each change of what Dispatch observes of an issue (its
+// phase, tree, slot, waitingOn or a role's claim), each change of the admission block, and the boot
+// event that opens each run. Dispatch reads it from a durable of its own and writes its
+// observations from it. token is the project token panes are told as LEGION_PROJECT, as
+// ControllerTopic's is, never the Dispatch project key, which each message carries itself.
+func StateTopic(token string) string {
+	return "notifications.legion." + token + ".state"
 }
 
 // Publisher delivers a notice to one listener topic.
@@ -260,6 +289,8 @@ func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payl
 			return fmt.Errorf("%w: %w", refusal, ErrRefusedByHolder{Holder: answer.Holder})
 		case response.StatusCode == http.StatusForbidden && strings.HasPrefix(answer.Error, publishDeniedPrefix):
 			return fmt.Errorf("%w: %w", refusal, ErrPublishDenied{Message: answer.Error})
+		case (response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusRequestEntityTooLarge) && answer.Error != "":
+			return fmt.Errorf("%w: %w", refusal, ErrMessageRefused{Status: response.StatusCode, Message: answer.Error})
 		}
 		return refusal
 	}

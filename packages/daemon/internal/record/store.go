@@ -3514,6 +3514,54 @@ func (s *Postgres) StateSeq(ctx context.Context, tx pgx.Tx, project string) (int
 	return seq, nil
 }
 
+// StateRowsAfter is every state row still in the outbox that committed in head's transaction
+// (OutboxRow.StateTx) with a sequence above head's, in sequence order: the rows the project's state
+// lane publishes with head as one message. They hold the sequences that follow head's, since the
+// commit trigger of migration 20261118164019_state_events holds the project's counter row from a
+// transaction's first state row to its commit, so no other transaction's row takes a sequence
+// between them. None of them is leased: the lane rule (outboxInOrder) makes a state row claimable
+// only while no unfinished state row of its project has a lower sequence, and head is one.
+func (s *Postgres) StateRowsAfter(ctx context.Context, tx pgx.Tx, head OutboxRow) ([]OutboxRow, error) {
+	rows, err := tx.Query(ctx, `select `+outboxColumns+` from outbox
+		where issue = $1 and state_tx = $2 and state_seq > $3 order by state_seq`, head.Issue, head.StateTx, head.StateSeq)
+	if err != nil {
+		return nil, fmt.Errorf("read the state rows committed with row %d: %w", head.ID, err)
+	}
+	defer rows.Close()
+	after := []OutboxRow{}
+	for rows.Next() {
+		row, err := scanOutbox(rows)
+		if err != nil {
+			return nil, fmt.Errorf("read the state rows committed with row %d: %w", head.ID, err)
+		}
+		after = append(after, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the state rows committed with row %d: %w", head.ID, err)
+	}
+	return after, nil
+}
+
+// FinishStateRows finishes head while its lease still holds it, and with it every row of head's
+// transaction whose sequence is above head's and at most through: the rows published beside head
+// in one message (StateRowsAfter). A lease no longer head's is ErrOutboxLeaseLost, as
+// FinishLeasedOutbox answers, and the caller's transaction then finishes none of them, so only the
+// runner that holds head finishes the rows of its message. Those rows hold no lease of their own
+// to fence on: while head is unfinished no lane can claim them (outboxInOrder).
+func (s *Postgres) FinishStateRows(ctx context.Context, tx pgx.Tx, head OutboxRow, through int64) error {
+	if err := s.FinishLeasedOutbox(ctx, tx, head.ID, head.LeaseToken); err != nil {
+		return err
+	}
+	if through <= head.StateSeq {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `delete from outbox where issue = $1 and state_tx = $2 and state_seq > $3 and state_seq <= $4`,
+		head.Issue, head.StateTx, head.StateSeq, through); err != nil {
+		return fmt.Errorf("finish the state rows of row %d through sequence %d: %w", head.ID, through, err)
+	}
+	return nil
+}
+
 func leaseToken() (string, error) {
 	var raw [24]byte
 	if _, err := rand.Read(raw[:]); err != nil {

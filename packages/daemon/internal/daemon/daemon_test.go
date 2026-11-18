@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1188,6 +1189,12 @@ func TestWorkflowBootServingNoRepositoryReportsWhatItLeftOut(t *testing.T) {
 // restart and the same failure.
 func TestWorkflowBootWhoseEveryInstallationReadFailsAnswersItsState(t *testing.T) {
 	cfg := workflowConfig(t, workflowNATS(t))
+	// A daemon with a workflow publishes its boot event through the Envoy listener (the outbox's
+	// stateEvents), so it is given one that takes the publish: a publish nothing answers would be
+	// an ERROR line of its own, and the line counted below is the boot's.
+	listener := httptest.NewServer(newNoticeListener())
+	t.Cleanup(listener.Close)
+	cfg.EnvoyURL = listener.URL
 	failure := errors.New("read whether the implement App is installed on acme/widgets failed (403)")
 	tokens := &workflowTokenRecorder{failing: map[string]error{"implement acme/widgets": failure}}
 	var logged syncBuffer

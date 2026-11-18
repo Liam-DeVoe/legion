@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -274,6 +276,11 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 		}
 		return
 	}
+	// The state executor finished the row itself, together with the rows it published beside it,
+	// in one transaction fenced on this row's lease (stateEvents): a finish here would find nothing.
+	if record.LaneOf(row.Kind) == record.LaneState {
+		return
+	}
 	if err := r.finish(ctx, row); err != nil {
 		r.log.Error("outbox row finish not recorded; it runs again when its lease expires", "row", row.ID, "error", err)
 	}
@@ -404,6 +411,15 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		told = func() {
 			log("outbox role-holders publish refused by Dispatch and dropped; the set Dispatch holds for the issue is the last one it took, and the next ready or end of a claim on the issue publishes again",
 				"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", cause)
+		}
+	case record.StateChange, record.StateAdmission, record.StateBoot:
+		// Nobody is told, and the line is what says the event is lost. The row is finished so it
+		// no longer holds the project's later state events behind it, and any row that rode beside
+		// it in the refused message goes out as the next one, whose first sequence is one above
+		// this row's: Dispatch finds the gap the row leaves and reads the daemon's whole state.
+		told = func() {
+			r.log.Error("outbox state event refused by the listener and dropped; Dispatch reads the whole state at the gap it leaves",
+				"row", row.ID, "project", row.Issue, "seq", row.StateSeq, "kind", row.Kind, "error", cause)
 		}
 	}
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
@@ -639,6 +655,18 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 			return false
 		}
 		return refusal.Status == http.StatusBadRequest || (refusal.Status == http.StatusNotFound && refusal.Code == dispatch.IssueNotFound)
+	case record.OutboxKindStateChange, record.OutboxKindStateAdmission, record.OutboxKindStateBoot:
+		// Permanent where the listener answers the same message the same way however often it is
+		// sent: its own NATS grant denies the subject (notify.ErrPublishDenied), which ends a
+		// notice too, or it refuses the message itself, a field, the topic or a size NATS does not
+		// take (notify.ErrMessageRefused). The state lane publishes in sequence order, so such a
+		// row would hold every later state event of the project behind it for ever. Every other
+		// failure — the listener, NATS or the stream down or full, a bearer the listener does not
+		// take — ends with an outage or an operator's repair, and the row retries on its backoff,
+		// keeping its sequence.
+		var denied notify.ErrPublishDenied
+		var refused notify.ErrMessageRefused
+		return errors.As(err, &denied) || errors.As(err, &refused)
 	default:
 		return false
 	}
@@ -740,6 +768,8 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return r.mergeQueueRead(ctx, row, value)
 	case record.MergeQueueRemoval:
 		return r.mergeQueueRemoval(ctx, row, value)
+	case record.StateChange, record.StateAdmission, record.StateBoot:
+		return r.stateEvents(ctx, row, payload)
 	default:
 		return fmt.Errorf("outbox row %d: no executor for %T", row.ID, payload)
 	}
@@ -1808,6 +1838,178 @@ func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, pay
 	}
 	if err := r.notices.Publish(ctx, notify.ControllerTopic(r.project), noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID)); err != nil {
 		return fmt.Errorf("publish controller notice for %s: %w", row.Issue, err)
+	}
+	return nil
+}
+
+// stateMessageBound is how large one message of the state lane may be as the listener's envelope
+// carries it: 900 KB of its encoding as a JSON string (stateCarried), which leaves the envelope's
+// own fields far more room than they take under the 1 MiB a NATS server takes whole by default. A
+// transaction whose events would pass it is published as consecutive messages, split between
+// events (stateEvents).
+const stateMessageBound = 900_000
+
+// stateAtLayout is how a state message writes when its transaction committed: RFC 3339 in UTC with
+// the microseconds Postgres keeps, every digit written, so the same commit always reads the same.
+const stateAtLayout = "2006-01-02T15:04:05.000000Z07:00"
+
+// stateMessage is one message of the project's state lane (notify.StateTopic), whose contract is
+// legionStateMessage (packages/contracts/src/legion-api.ts): the state events of one committed
+// transaction in sequence order, or a run of them where the transaction's events are too large for
+// one message (stateMessageBound). Project is the Dispatch project key and Run the id of the daemon
+// run that wrote the rows, each lifted off the rows' payloads, which every row of one transaction
+// carries alike; FirstSeq and Seq are the first and the last event's sequence, which the events run
+// between with no gap; At is when the transaction committed (OutboxRow.StateAt), which every row of
+// it shares (stateAtLayout). Each event is a stateEvent, encoded once: the encoding the message's
+// size is counted on is the one published.
+type stateMessage struct {
+	Project  string            `json:"project"`
+	Run      string            `json:"run"`
+	FirstSeq int64             `json:"firstSeq"`
+	Seq      int64             `json:"seq"`
+	At       string            `json:"at"`
+	Events   []json.RawMessage `json:"events"`
+}
+
+// stateEvent is one event of a stateMessage: one state row's payload with its project and run taken
+// off, its sequence (OutboxRow.StateSeq) put on, and the kind the contract names it by. A change
+// (record.StateChange) names its issue and each field the write moved; an admission
+// (record.StateAdmission) carries the whole block the state route serves; a boot
+// (record.StateBoot) carries the settings the state route serves and whether that boot applied a
+// migration, written false as well as true.
+type stateEvent struct {
+	Seq       int64                     `json:"seq"`
+	Kind      string                    `json:"kind"`
+	Issue     string                    `json:"issue,omitempty"`
+	Changes   []record.StateFieldChange `json:"changes,omitempty"`
+	Admission json.RawMessage           `json:"admission,omitempty"`
+	Settings  json.RawMessage           `json:"settings,omitempty"`
+	Migrated  *bool                     `json:"migrated,omitempty"`
+}
+
+// stateEventOf is row's event, encoded, and the project and the run its payload names.
+func stateEventOf(row record.OutboxRow, payload record.OutboxPayload) (json.RawMessage, string, string, error) {
+	var event stateEvent
+	var project, run string
+	switch value := payload.(type) {
+	case record.StateChange:
+		event = stateEvent{Kind: "change", Issue: value.Issue, Changes: value.Changes}
+		project, run = value.Project, value.Run
+	case record.StateAdmission:
+		event = stateEvent{Kind: "admission", Admission: value.Admission}
+		project, run = value.Project, value.Run
+	case record.StateBoot:
+		migrated := value.Migrated
+		event = stateEvent{Kind: "boot", Settings: value.Settings, Migrated: &migrated}
+		project, run = value.Project, value.Run
+	default:
+		return nil, "", "", fmt.Errorf("outbox row %d is a %T, which is no state event", row.ID, payload)
+	}
+	event.Seq = row.StateSeq
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("encode the state event of outbox row %d: %w", row.ID, err)
+	}
+	return encoded, project, run, nil
+}
+
+// stateCarried is how many bytes encoded takes as the payload of the listener's envelope, a JSON
+// string: encoding/json writes no control character and no raw <, > or & (it escapes them in every
+// string and raw value), so writing its output as a string escapes exactly its quotes and its
+// backslashes, each into two bytes.
+func stateCarried(encoded []byte) int {
+	return len(encoded) + bytes.Count(encoded, []byte{'"'}) + bytes.Count(encoded, []byte{'\\'})
+}
+
+// stateEvents publishes the state events of head's transaction as one message on the project's
+// state topic (stateMessage, notify.StateTopic). head is the project's lowest unfinished state row,
+// the only one its lane can claim (record.Store's outboxInOrder): every state row of the project
+// carries the bare Dispatch project key as its issue and runs on that one lane (record.LaneState).
+// The rows that committed with head (record.Store.StateRowsAfter) hold the sequences that follow
+// its own, and ride beside it, so Dispatch takes a transaction's events together and collapses a
+// field one fact wrote twice (a pass's slot release and grant) to the value that committed. A
+// transaction whose events pass stateMessageBound is split between events: the message ends before
+// the event that would pass it, and the rows after it are the next message, whose first row the
+// lane claims once this message's rows are finished. The head's event goes out whatever its size,
+// so a row too large for any message is refused by the listener and dropped rather than held.
+//
+// The message's key is the head's own (record.OutboxKey), so a message published again after a
+// failed finish is one the stream already holds. Once the listener has taken it, head and the rows
+// published beside it are finished in one transaction fenced on head's lease
+// (record.Store.FinishStateRows), which is why settle finishes no state row itself. The other rows
+// are not leased, and are finished by their sequences instead: while head is unfinished the lane
+// rule lets no runner claim them, and a runner whose lease on head lapsed, and was taken by
+// another, finishes nothing, the other runner publishing the same message under the same key. A
+// finish that does not commit is the row's failure and head runs again; one cut short by the
+// daemon's stop is recorded on a bounded context of its own, as settle's is (outboxSettleTimeout),
+// since the message was published.
+//
+// A publish that fails returns its error, and settle retries head on the outbox's backoff with its
+// sequence, holding every later state row of the project behind it; one the listener refuses the
+// same way however often it is sent is finished, logged, instead (permanentRefusal, finishRefused).
+func (r *outbox) stateEvents(ctx context.Context, head record.OutboxRow, payload record.OutboxPayload) error {
+	if r.notices == nil {
+		return errors.New("state event executor has no Envoy publisher")
+	}
+	var after []record.OutboxRow
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var err error
+		after, err = r.records.StateRowsAfter(ctx, tx, head)
+		return err
+	}); err != nil {
+		return fmt.Errorf("read the state rows committed with outbox row %d: %w", head.ID, err)
+	}
+	first, project, run, err := stateEventOf(head, payload)
+	if err != nil {
+		return err
+	}
+	message := stateMessage{Project: project, Run: run, FirstSeq: head.StateSeq, Seq: head.StateSeq,
+		At: head.StateAt.UTC().Format(stateAtLayout), Events: []json.RawMessage{first}}
+	// The message's own fields are counted with the group's last sequence, which no message of the
+	// group passes, so the count is never short of what the message takes.
+	frame := message
+	frame.Events = nil
+	if len(after) > 0 {
+		frame.Seq = after[len(after)-1].StateSeq
+	}
+	encodedFrame, err := json.Marshal(frame)
+	if err != nil {
+		return fmt.Errorf("encode the state message of outbox row %d: %w", head.ID, err)
+	}
+	size := stateCarried(encodedFrame) + stateCarried(first)
+	for _, row := range after {
+		decoded, err := record.DecodeOutboxPayload(row)
+		if err != nil {
+			return fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		event, _, _, err := stateEventOf(row, decoded)
+		if err != nil {
+			return err
+		}
+		grown := size + 1 + stateCarried(event)
+		if grown > stateMessageBound {
+			break
+		}
+		message.Events, message.Seq, size = append(message.Events, event), row.StateSeq, grown
+	}
+	summary := fmt.Sprintf("%s state %d-%d", project, message.FirstSeq, message.Seq)
+	if err := r.notices.Publish(ctx, notify.StateTopic(r.project), summary, message, record.OutboxKey(head.ID)); err != nil {
+		return fmt.Errorf("publish the state events %d-%d of %s: %w", message.FirstSeq, message.Seq, project, err)
+	}
+	finishCtx := ctx
+	if ctx.Err() != nil {
+		var cancel context.CancelFunc
+		finishCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), outboxSettleTimeout)
+		defer cancel()
+	}
+	if err := pgx.BeginFunc(finishCtx, r.pool, func(tx pgx.Tx) error {
+		return r.records.FinishStateRows(finishCtx, tx, head, message.Seq)
+	}); err != nil {
+		if errors.Is(err, record.ErrOutboxLeaseLost) {
+			// Another runner holds head now, and publishes and finishes the same message.
+			return nil
+		}
+		return fmt.Errorf("finish the state events %d-%d of %s once published: %w", message.FirstSeq, message.Seq, project, err)
 	}
 	return nil
 }
