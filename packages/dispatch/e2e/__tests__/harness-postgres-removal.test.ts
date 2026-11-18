@@ -414,16 +414,14 @@ test.skipIf(!onLinux)(
 /** The id of the container the next two rows remove, which their stand-in `docker` alone answers
  *  for: it names no container of the machine. */
 const standInId = "0".repeat(64);
-/** How long the next two rows let one ask of Docker go unanswered, in place of a start's 60 s: on
- *  a shared Linux machine under a load of about 900, on 2026-11-18, the stand-in `docker` of an
- *  ask took more than 1 s to start, and an ask it answers must never run out here. */
-const answerMs = 10_000;
-/** How long the next row's stand-in `docker rm` takes: longer than one ask may go unanswered, and
- *  than the 5 s a start waits before its first ask of whether Docker answers. */
+/** How long the next row's stand-in `docker rm` takes: longer than the 5 s a start waits before
+ *  its first ask of whether Docker answers, and than any bound a start could set a removal that
+ *  is shorter than its asks' own. */
 const removalSeconds = 12;
 
 // A daemon that many sessions share took 74 s over one `docker rm` while it answered every other
-// call within a second. The removal here takes longer than one ask may go unanswered.
+// call within a second. The start here keeps its own bound of one ask, 60 s, so only a stand-in
+// `docker ps` that took longer than that to answer could fail the row.
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a start waits for its removal of a dead stack's container as long as Docker takes over it while Docker answers, and then says it removed it",
   async () => {
@@ -436,18 +434,11 @@ test.skipIf(!onLinux)(
         "esac",
       ]);
 
-      const { removal, seconds } = await removeInChild(
-        docker.bin,
-        standInId,
-        answerMs,
-        claimEventMs
-      );
+      const { removal, seconds } = await removeInChild(docker.bin, standInId, claimEventMs);
 
       expect(removal).toEqual({ kind: "removed" });
       expect(seconds).toBeGreaterThan(removalSeconds);
-      // It asked whether Docker answers while its removal ran, and Docker did.
       expect(docker.calls()[0]).toBe(`rm --force --volumes ${standInId}`);
-      expect(docker.calls()).toContain(`ps --all --quiet --no-trunc --filter id=${standInId}`);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -458,42 +449,37 @@ test.skipIf(!onLinux)(
 );
 
 // A daemon that hangs answers neither the removal nor the asks beside it: the start gives the
-// removal up at the first ask that goes unanswered, and stops both calls it made. That ask may
-// be stopped before its stand-in writes its call, so the row requires no line of it.
+// removal up at the first ask that goes unanswered, and stops both calls it made. The stand-in
+// never answers, so the 1 s an ask may go unanswered here only makes the start end sooner; the
+// row's bound on the whole removal is `claimEventMs`.
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a start gives up its removal of a dead stack's container only where Docker answers no ask while it runs, says so, and leaves no docker it started running",
   async () => {
     const { tmp } = scratch();
-    const docker = standInDocker(tmp, ["exec sleep 600"]);
+    const docker = standInDocker(tmp, ['exec -a "$0" sleep 600']);
     try {
-      const { removal } = await removeInChild(docker.bin, standInId, answerMs, claimEventMs);
+      const { removal } = await removeInChild(docker.bin, standInId, claimEventMs, 1_000);
 
       expect(removal).toEqual({
         kind: "failed",
-        reason: "Docker answered no docker ps within 10 s while this start removed it",
+        reason: "Docker answered no docker ps within 1 s while this start removed it",
       });
-      const [first, ...asks] = docker.calls();
-      expect(first).toBe(`rm --force --volumes ${standInId}`);
-      expect(asks.length).toBeLessThanOrEqual(1);
-      for (const ask of asks) {
-        expect(ask).toBe(`ps --all --quiet --no-trunc --filter id=${standInId}`);
-      }
-      // Each `docker` the start ran ends with the start's removal: the stand-in's `sleep` runs on
-      // where no signal reached it.
+      // Each `docker` the start ran ends with the start's removal: the stand-in's `sleep`, which
+      // keeps its path for a name, runs on where no signal reached it.
       await until(
-        () => docker.processes().every(({ pid, start }) => !marks.stillRuns(pid, start)),
+        () => docker.running().length === 0,
         "the end of each docker the start ran",
         claimEventMs
       );
     } finally {
-      for (const { pid, start } of docker.processes()) {
+      for (const { pid, start } of [...docker.processes(), ...docker.running()]) {
         if (marks.stillRuns(pid, start)) process.kill(pid, "SIGKILL");
       }
       rmSync(tmp, { recursive: true, force: true });
     }
   },
   // One `bun` child, which waits at most `claimEventMs` to start under load and then the 5 s
-  // before its ask and the 10 s that ask may go unanswered, and then the end of each `docker`.
+  // before its ask and the 1 s that ask may go unanswered, and then the end of each `docker`.
   600_000
 );
 

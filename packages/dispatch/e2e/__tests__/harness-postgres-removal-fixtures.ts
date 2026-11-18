@@ -382,18 +382,21 @@ export function holding(lines: readonly string[], text: string): string[] {
  *  2026-11-17, is the longest of them. */
 export const claimEventMs = 240_000;
 
-/** A start's removal of the container `CONTAINER_ID` (`removeContainer`) in a child of this file,
- *  which waits at most `ANSWER_MS` for one ask of Docker: it prints how the removal ended. */
+/** A start's removal of the container `CONTAINER_ID` (`removeContainer`) in a child of this file:
+ *  it prints how the removal ended. `ANSWER_MS`, where it is set, is how long one ask of Docker
+ *  may go unanswered; where it is not, the start's own bound holds. */
 const removeScript = `
 import { removeContainer } from ${JSON.stringify(removalModule)};
-console.log(JSON.stringify(await removeContainer(process.env.CONTAINER_ID, Number(process.env.ANSWER_MS))));
+const answerMs = process.env.ANSWER_MS;
+console.log(JSON.stringify(await removeContainer(process.env.CONTAINER_ID, answerMs === undefined ? undefined : Number(answerMs))));
 `;
 
 /** A directory in `tmp` with a stand-in `docker`, which runs no real one, so a row of it acts on
  *  no container of the machine: it writes the arguments of each call it gets as a line of
  *  `calls`, and the stat of its own process as a file of `processes`, and then runs the lines of
- *  bash `body`. Answers the directory, the calls so far, and each process it ran as, by its pid
- *  and start. */
+ *  bash `body`. A body that execs another program keeps the stand-in's path as its name
+ *  (`exec -a "$0"`), so `running` finds it. Answers the directory, the calls so far, each process
+ *  the stand-in wrote, by its pid and start, and each process that runs now under its path. */
 export function standInDocker(tmp: string, body: readonly string[]) {
   const bin = mkdtempSync(join(tmp, "docker-"));
   const calls = join(bin, "calls");
@@ -410,6 +413,7 @@ export function standInDocker(tmp: string, body: readonly string[]) {
     ].join("\n"),
     { mode: 0o755 }
   );
+  const ofStandIn = `${join(bin, "docker")}\0`;
   return {
     bin,
     calls: (): string[] => readFileSync(calls, "utf8").trim().split("\n"),
@@ -418,20 +422,38 @@ export function standInDocker(tmp: string, body: readonly string[]) {
         pid: Number(pid),
         start: marks.startOf(readFileSync(join(processes, pid), "utf8")),
       })),
+    // A stand-in that has not reached its first line yet, or wrote no stat before a signal ended
+    // it, is found here all the same: its command line names the stand-in's path.
+    running: (): { pid: number; start: string }[] =>
+      readdirSync("/proc").flatMap((entry) => {
+        if (!/^\d+$/.test(entry)) return [];
+        try {
+          if (!readFileSync(`/proc/${entry}/cmdline`, "utf8").includes(ofStandIn)) return [];
+          return [
+            {
+              pid: Number(entry),
+              start: marks.startOf(readFileSync(`/proc/${entry}/stat`, "utf8")),
+            },
+          ];
+        } catch {
+          return [];
+        }
+      }),
   };
 }
 
-/** Removes the container `id` in a child (`removeScript`) whose `docker` is the one in `bin`, and
- *  which waits at most `answerMs` for one ask of Docker. Answers how the removal ended and how
- *  many seconds the child took; kills the child and throws where it has not ended within `ms`. */
-export async function removeInChild(bin: string, id: string, answerMs: number, ms: number) {
+/** Removes the container `id` in a child (`removeScript`) whose `docker` is the one in `bin`,
+ *  where one ask of Docker may go unanswered for `answerMs`, or for the start's own bound where
+ *  it is not given. Answers how the removal ended and how many seconds the child took; kills the
+ *  child and throws where it has not ended within `ms`. */
+export async function removeInChild(bin: string, id: string, ms: number, answerMs?: number) {
   const started = Date.now();
   const child = Bun.spawn([process.execPath, "--eval", removeScript], {
     env: {
       ...process.env,
       PATH: `${bin}:${process.env.PATH ?? ""}`,
       CONTAINER_ID: id,
-      ANSWER_MS: String(answerMs),
+      ...(answerMs === undefined ? {} : { ANSWER_MS: String(answerMs) }),
     },
     stdout: "pipe",
     stderr: "pipe",
