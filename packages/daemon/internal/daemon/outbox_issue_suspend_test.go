@@ -792,6 +792,11 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 			Linger: time.Hour, Clock: func() time.Time { return clock }}, quietLogger())
 		admission := admit.New(records, engine, 2, "LEGION", quietLogger())
 		trees := outboxTreeStore(t, pool, root.Key)
+		// The claims are stored as the daemon stores them, where the linger's close reads every
+		// stored claim of the tree (record.Store.IssueClaims), the tree's cleanup waits for each to
+		// retire, and a re-admission reads them to decide which of a member's sessions to bring back
+		// (admit's startMidPhaseMembers).
+		sup.deps.Store, sup.store = trees, trees
 		runner := &outbox{pool: pool, records: records, project: "legion", dispatchProject: "LEGION", supervisor: sup,
 			trees: trees, tokens: outboxTokens{}, stateDir: t.TempDir(),
 			githubAPI: newBranchGitHub(t, nil, branchExists).url, notices: &outboxPublisher{},
@@ -859,12 +864,8 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 			t.Fatal(err)
 		}
 		run("the linger's close of the tree")
-		// The supervisor of this door keeps its claims in a stand-in store of its own
-		// (outboxClaimStore), so the two roles that ran leave no claim row behind. Each is
-		// written to the record here, in the state the close left it: the claim row is the
-		// durable record that a role has run, which a re-admission reads to decide which of a
-		// member's sessions to bring back (admit's startMidPhaseMembers), and it survives the
-		// close and the new generation.
+		// The claim row is the durable record that a role has run, and it survives the close and
+		// the new generation.
 		for _, tok := range []claim.Token{worker, earlier} {
 			machine, found := sup.Machine(tok)
 			if !found {
@@ -874,9 +875,6 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 			stopped := machine.Claim()
 			if stopped.State != supervise.StateRetired || stopped.SessionFile == "" {
 				t.Fatalf("%s after the linger closed the tree = %s with session file %q, want it retired with its session kept", tok, stopped.State, stopped.SessionFile)
-			}
-			if err := trees.PutClaim(ctx, stopped); err != nil {
-				t.Fatalf("record the retired claim of %s: %v", tok, err)
 			}
 		}
 
