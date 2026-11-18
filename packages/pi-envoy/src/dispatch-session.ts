@@ -30,7 +30,7 @@ export interface DispatchSession {
 export function sessionDispatchClient(
   file: SessionConfigFile,
   cwd: string,
-  limit: { readonly signal: AbortSignal } | { readonly deadlineMs: number },
+  limit: { readonly signal?: AbortSignal; readonly deadlineMs?: number },
   session: () => string
 ): DispatchSession | undefined {
   const config = activeDispatchSettings(

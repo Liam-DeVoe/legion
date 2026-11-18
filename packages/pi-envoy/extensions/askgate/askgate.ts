@@ -357,8 +357,13 @@ async function loadAskGate(
     logger: host.logger,
     runtimeLogger: host.runtimeLogger,
     configFile: host.configFile.path,
-    dispatchClient: (directory, signal) =>
-      sessionDispatchClient(host.configFile, directory, { signal }, host.session),
+    dispatchClient: (directory, signal, deadlineMs) =>
+      sessionDispatchClient(
+        host.configFile,
+        directory,
+        deadlineMs === undefined ? { signal } : { signal, deadlineMs },
+        host.session
+      ),
     recordDecision: record,
     // The dump holds the primary system prompt and transcript: owner-only, like the session files.
     appendFile: appendDump,

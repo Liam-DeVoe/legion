@@ -174,7 +174,11 @@ message from Dispatch's Agents page as that person's own turn.
   and with the bearer a command resolves: `envoySettings` over the envoy.json
   `envoyConfigPath("command")` chooses (the `ENVOY_CONFIG_FILE` the `open-asks` hook hands the
   session's Bash first), with `ENVOY_URL` and `ENVOY_TOKEN_FILE` or `ENVOY_TOKEN` over its `envoy`
-  section. With Envoy off it sends nothing and exits 1, saying why.
+  section. With Envoy off it sends nothing and exits 1, saying why. It sends through envoy-client's
+  own send (`createEnvoyClient().send`): one idempotency key on every attempt, so the listener
+  stores the message at most once; an attempt with no answer or a 5xx sent again under that key;
+  a send that may have arrived reported as such, with the key that resends it safely; and the
+  listener's URL named only as `urlForText` names it, never its user info.
 
 ## What a delivered line carries
 

@@ -10,7 +10,7 @@
 import { expect, test } from "bun:test";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { brokerCredential } from "../broker-credential";
-import { createEnvoyClient } from "../transport";
+import { createEnvoyClient, EnvoySendUnconfirmedError } from "../transport";
 import { brokerStandIns } from "./broker-stand-ins";
 
 const { podEnvironment, servers } = brokerStandIns("transport-credential-deadline");
@@ -68,6 +68,55 @@ test("an Envoy call gives its credential the attempt less the request's reserve,
   // The call asked the listener once, without the credential that did not come.
   expect(fetched).toEqual([null]);
 });
+
+// The listener refuses a request without the credential it wants at its auth gate, before any
+// route runs (`apiauth.go`), so a send it answered so stored nothing: the call says the send was
+// refused, in both halves' words, and never that it may have arrived with a resend to make. A send
+// whose earlier attempt went unanswered stays unconfirmed, since that attempt may have stored it.
+test("a send the auth gate refused for want of the credential that could not be minted is refused, not unconfirmed", async () => {
+  const pending = {
+    scheme: "DPoP" as const,
+    headers: (_method: string, _url: string, _session?: string, signal?: AbortSignal) => {
+      const { promise, reject } = Promise.withResolvers<Readonly<Record<string, string>>>();
+      signal?.addEventListener("abort", () => reject(new Error(`pending: ${POD_SESSION}`)), {
+        once: true,
+      });
+      return promise;
+    },
+    stale: () => {},
+    secret: () => "",
+  };
+  const answers: Response[] = [];
+  const sent: string[] = [];
+  const client = createEnvoyClient({
+    baseUrl: "http://listener.test",
+    timeoutMs: 200,
+    fetch: async (_url, init) => {
+      sent.push(String(JSON.parse(String(init?.body)).idempotency_key));
+      return (
+        answers.shift() ??
+        Response.json({ error: "this listener wants a credential" }, { status: 401 })
+      );
+    },
+    credential: pending,
+  });
+  const send = () =>
+    client.send({ sourceSessionID: "", targetSessionID: "ses_receiver", message: "hello" });
+
+  const refused = await send().catch((error: unknown) => error);
+  expect(refused).not.toBeInstanceOf(EnvoySendUnconfirmedError);
+  expect((refused as Error).message).toBe(
+    `POST http://listener.test/v1/messages/send answered 401, and this machine's Envoy credential could not be minted: pending: ${POD_SESSION}`
+  );
+  // Both attempts went, under one key: the broker may have come back for the second.
+  expect(sent).toHaveLength(2);
+  expect(sent[0]).toBe(sent[1] as string);
+
+  // A first attempt the listener may have acted on (a 503) keeps the send unconfirmed.
+  sent.length = 0;
+  answers.push(Response.json({ error: "restarting" }, { status: 503 }));
+  expect(await send().catch((error: unknown) => error)).toBeInstanceOf(EnvoySendUnconfirmedError);
+}, 20_000);
 
 test.each([
   ["refuses connections", (): string => "http://127.0.0.1:1"],

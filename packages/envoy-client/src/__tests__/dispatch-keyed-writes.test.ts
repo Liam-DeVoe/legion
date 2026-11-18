@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { type AddressInfo, createServer, type Socket } from "node:net";
+import { TradeRetryingError } from "@legion/broker-client/token-errors";
 import {
   type CommentWriteResponse,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
@@ -7,7 +8,7 @@ import {
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_KEY_PATTERN,
 } from "@legion/contracts";
-import { bearerCredential } from "../bearer";
+import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
   DispatchClient,
@@ -847,6 +848,93 @@ describe("DispatchClient's writes", () => {
         "received whatever this command does, so read the write back before you send it again: " +
         "a new command sends it under a new key."
     );
+  });
+
+  // An attempt cut off for silence may still be running in Dispatch, so a write whose later
+  // attempts then fail in transport may have landed: unsettled, not "unreachable", which reads as
+  // nothing written.
+  test("a transport failure after a silent attempt leaves the write unsettled", async () => {
+    const { retry, stall } = stalling();
+    const { fetchImpl, sent } = scripted([
+      stall,
+      ...Array.from({ length: 20 }, () => new TypeError("fetch failed")),
+    ]);
+
+    const error = await failure(client(fetchImpl, retry).comment("DSP-1", comment));
+
+    expect(sent.length).toBeGreaterThan(1);
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect(error.message).toStartWith(
+      "POST http://dispatch.test/api/v1/issues/DSP-1/comments failed on its last attempt " +
+        "(Dispatch at http://dispatch.test is unreachable: TypeError (message withheld)."
+    );
+    expect(error.message).toContain("so it may or may not have taken effect");
+  });
+
+  // A credential that cannot present a later attempt sends nothing, but an earlier attempt that
+  // was cut off for silence may still have landed: the write is unsettled, never the broker's
+  // error, which reads as nothing having been written and invites a resend under a new key.
+  test("a credential that fails after a silent attempt leaves the write unsettled, naming the credential", async () => {
+    const { retry, stall } = stalling();
+    const { fetchImpl, sent } = scripted([stall, replayed()]);
+    // The write's own presentations: the first goes out with attempt 1, every later one fails, as
+    // a fail-fast broker credential does once its token lapsed and the broker is down. The
+    // `/healthz` probe, which presents the credential too, is answered.
+    let presented = 0;
+    const credential: RequestCredential = {
+      scheme: "Bearer",
+      headers: (_method, url) => {
+        if (url.endsWith("/healthz")) return { Authorization: "Bearer secret" };
+        presented += 1;
+        if (presented > 1) {
+          throw new TradeRetryingError(
+            "the secrets broker answered 503 temporarily_unavailable to the trade"
+          );
+        }
+        return { Authorization: "Bearer secret" };
+      },
+      secret: () => "secret",
+    };
+
+    const error = await failure(
+      new DispatchClient("http://dispatch.test", credential, fetchImpl, {
+        writeRetry: retry,
+      }).comment("DSP-1", comment)
+    );
+
+    expect(sent).toHaveLength(1);
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect((error as DispatchWriteUnsettledError).last).toBeInstanceOf(TradeRetryingError);
+    expect(error.message).toBe(
+      "POST http://dispatch.test/api/v1/issues/DSP-1/comments could not present its credential " +
+        "for another attempt (the secrets broker answered 503 temporarily_unavailable to the " +
+        "trade, and the trade is being retried in the background) (its only attempt), and an " +
+        "attempt of the write may have reached Dispatch, so it may or may not have taken effect. " +
+        "Dispatch finishes an attempt it received whatever this command does, so read the write " +
+        "back before you send it again: a new command sends it under a new key."
+    );
+  });
+
+  // A write that never sent anything has nothing to settle: the credential's own error stands.
+  test("a credential that fails before any attempt is sent throws its own error", async () => {
+    const { retry } = stalling();
+    const { fetchImpl, sent } = scripted([]);
+    const credential: RequestCredential = {
+      scheme: "Bearer",
+      headers: () => {
+        throw new TradeRetryingError("the secrets broker refused the connection");
+      },
+      secret: () => "",
+    };
+
+    const error = await failure(
+      new DispatchClient("http://dispatch.test", credential, fetchImpl, {
+        writeRetry: retry,
+      }).comment("DSP-1", comment)
+    );
+
+    expect(sent).toHaveLength(0);
+    expect(error).toBeInstanceOf(TradeRetryingError);
   });
 
   // A Dispatch not known to run the keyed layer is never asked twice, however long the call has.

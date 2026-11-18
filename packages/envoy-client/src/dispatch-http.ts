@@ -2101,21 +2101,32 @@ export class DispatchClient {
     // Whether this call ever saw the keyed layer judge the write (an echoed key, or `/healthz`),
     // which the unsettled message says. Whether it may ask again is decided afresh each time.
     let sawKeyedLayer = false;
+    // How many attempts went out: a credential that could not present one sent nothing.
+    let sentAttempts = 0;
     for (let attempt = 1; ; attempt++) {
       let answer: WriteAnswer | undefined;
       let thrown: unknown;
+      // Whether this attempt's credential, not the attempt, failed: nothing went to Dispatch, so
+      // it reached nothing, and only an earlier attempt can have landed.
+      let unpresented = false;
       try {
         // Each attempt after the first presents the credential afresh: a resource server that
         // keeps a replay store refuses a proof it has already seen.
         if (attempt > 1) {
-          presented = await this.#credential.headers(
-            method,
-            url,
-            undefined,
-            this.#credentialSignal(limit)
-          );
+          try {
+            presented = await this.#credential.headers(
+              method,
+              url,
+              undefined,
+              this.#credentialSignal(limit)
+            );
+          } catch (error) {
+            unpresented = true;
+            throw error;
+          }
         }
         const sent = { ...headers, ...presented };
+        sentAttempts += 1;
         answer = await writeAnswer(await this.#attempt(url, method, sent, body, silenceMs), key);
         if (answer.echoed) KEYED_LAYER_SEEN.set(this.#baseUrl, this.#now());
         if (!answer.again) return answer.response;
@@ -2130,10 +2141,13 @@ export class DispatchClient {
           !(error instanceof WriteAttemptSilent) &&
           (this.#signal.aborted || name === "AbortError" || name === "TimeoutError")
         ) {
-          throw this.#ended(error, request, attempt, true, sawKeyedLayer);
+          const mayHaveReached = unpresented ? reached || running : true;
+          throw this.#ended(error, request, sentAttempts, mayHaveReached, sawKeyedLayer);
         }
         thrown = error;
-        reached = true;
+        // A credential that failed sent nothing, so it is no attempt that may have reached
+        // Dispatch; the loop still asks it again on the schedule, as the broker may come back.
+        if (!unpresented) reached = true;
         running ||= error instanceof WriteAttemptSilent && !upload;
       }
       const scheduled = running
@@ -2157,7 +2171,7 @@ export class DispatchClient {
         try {
           await pause(wait, this.#signal);
         } catch (error) {
-          throw this.#ended(error, request, attempt, reached, sawKeyedLayer);
+          throw this.#ended(error, request, sentAttempts, reached, sawKeyedLayer);
         }
         again = this.#now() <= latest;
       }
@@ -2165,13 +2179,35 @@ export class DispatchClient {
         // An answer the write would have asked again after was read whole and rebuilt from its
         // text (`writeAnswer`), so it holds no connection and can be read here.
         if (answer !== undefined) {
-          return this.#unsettled(method, url, answer.response, reached, attempt, sawKeyedLayer);
+          return this.#unsettled(
+            method,
+            url,
+            answer.response,
+            reached,
+            sentAttempts,
+            sawKeyedLayer
+          );
         }
         if (thrown instanceof WriteAttemptSilent) {
           throw new DispatchWriteUnsettledError(
             thrown,
-            attempt,
+            sentAttempts,
             `${request} ${thrown.message}`,
+            sawKeyedLayer
+          );
+        }
+        // A credential that could not present another attempt after one that may have reached
+        // Dispatch, or any failure while Dispatch may still be running an earlier attempt (one cut
+        // off for silence, or answered 409 KEY_IN_FLIGHT): the write may have landed, so the
+        // caller is told it is unsettled, never the broker's or the transport's error alone, which
+        // reads as nothing written and invites a resend under a new key.
+        if (thrown instanceof Error && ((unpresented && reached) || running)) {
+          throw new DispatchWriteUnsettledError(
+            thrown,
+            sentAttempts,
+            unpresented
+              ? `${request} could not present its credential for another attempt (${thrown.message})`
+              : `${request} failed on its last attempt (${thrown.message})`,
             sawKeyedLayer
           );
         }

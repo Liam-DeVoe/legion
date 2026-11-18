@@ -866,6 +866,14 @@ type RequestOptions = {
   /** Called for each attempt that got no answer or a 5xx: one the listener may have acted on. */
   readonly onUnanswered?: () => void;
   /**
+   * Called when the call fails on an attempt that reached no route of the listener: its
+   * credential could not be minted and the listener's auth gate answered 401 to the request
+   * sent without it, or the attempt's deadline ended while the credential waited, so nothing
+   * was sent. Such an attempt is retried as an unanswered one is, but is never one the listener
+   * may have acted on.
+   */
+  readonly onNotSent?: () => void;
+  /**
    * The session this call acts for, where its body names one the listener binds to the
    * credential: a subscribe, an unsubscribe, a deregistration, a role claim, and a
    * send's or a publish's `source_session`. The listener answers 403 to a body naming a session
@@ -879,10 +887,12 @@ type RequestOptions = {
   readonly actingSession?: string;
 };
 
-/** One attempt's outcome: the listener's status and body, or no answer and why. */
+/** One attempt's outcome: the listener's status and body; no answer, and why; or nothing that
+ *  reached a route of the listener, and why (`RequestOptions.onNotSent`). */
 type AttemptOutcome =
   | { readonly response: Response; readonly body: string }
-  | { readonly unanswered: unknown };
+  | { readonly unanswered: unknown }
+  | { readonly notSent: unknown };
 
 /**
  * The one place the client's call timing resolves: a configuration names a per-attempt timeout
@@ -953,9 +963,9 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       } catch (error) {
         unminted = error;
       }
-      // Only the attempt's own deadline leaves nothing to send: the attempt is unanswered, in the
-      // credential's own words (a pending registration names its session).
-      if (unminted !== undefined && deadline.aborted) return { unanswered: unminted };
+      // Only the attempt's own deadline leaves nothing to send: the attempt sent nothing, and
+      // fails in the credential's own words (a pending registration names its session).
+      if (unminted !== undefined && deadline.aborted) return { notSent: unminted };
       for (const [name, value] of Object.entries(presented ?? {})) headers.set(name, value);
       response = await config.fetch(url, {
         ...init,
@@ -967,12 +977,14 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     }
     if (unminted !== undefined && response.status === 401) {
       // The listener wanted the credential this machine could not mint: a listener that requires
-      // one answers a request without it 401 and nothing else (`apiauth.go`). That is no answer
-      // about the call itself, so it retries like any other unanswered attempt — the broker may
-      // have come back — and the error names both halves. A 403 is the listener's own refusal of
-      // what the call asked (a send's capability, a denied publish), and stands as its answer.
+      // one answers a request without it 401 and nothing else, at its auth gate before any route
+      // runs (`apiauth.go`). That is no answer about the call itself, and nothing the call asked
+      // was done, so it retries as an unanswered attempt does — the broker may have come back —
+      // but is never one the listener may have acted on, and the error names both halves. A 403
+      // is the listener's own refusal of what the call asked (a send's capability, a denied
+      // publish), and stands as its answer.
       return {
-        unanswered: new Error(
+        notSent: new Error(
           `${init.method ?? "GET"} ${shown(url)} answered ${response.status}, and this machine's Envoy credential could not be minted: ${messageFor(unminted)}`,
           { cause: unminted }
         ),
@@ -1011,6 +1023,14 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
           continue;
         }
         throw outcome.unanswered;
+      }
+      if ("notSent" in outcome) {
+        if (attempt + 1 < tries) {
+          await waitForRetry(retryDelayMs);
+          continue;
+        }
+        options.onNotSent?.();
+        throw outcome.notSent;
       }
       const { response, body } = outcome;
       if (response.ok) return body;
@@ -1111,8 +1131,11 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       const idempotencyKey = input.idempotencyKey ?? crypto.randomUUID();
       // An attempt the listener may have acted on keeps the send unconfirmed, whatever a later
       // attempt got: a first attempt can store the message and lose its answer, and the retry
-      // then find the target gone.
+      // then find the target gone. A last attempt that reached no route of the listener (its
+      // auth gate's 401 to a request sent without the credential that could not be minted)
+      // stored nothing, so where no earlier attempt may have, the send was refused.
       let unanswered = false;
+      let notSent = false;
       let response: z.infer<typeof EnvelopeResponseSchema>;
       try {
         const answer = await post(
@@ -1129,6 +1152,9 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
             onUnanswered: () => {
               unanswered = true;
             },
+            onNotSent: () => {
+              notSent = true;
+            },
             ...(input.sourceSessionID === undefined || input.sourceSessionID === ""
               ? {}
               : { actingSession: input.sourceSessionID }),
@@ -1137,9 +1163,8 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         // A 2xx whose body does not parse is the listener's word that cannot be read.
         response = EnvelopeResponseSchema.parse(JSON.parse(answer));
       } catch (error) {
-        if (error instanceof EnvoyApiError && error.details.status < 500 && !unanswered) {
-          throw error;
-        }
+        const refused = notSent || (error instanceof EnvoyApiError && error.details.status < 500);
+        if (refused && !unanswered) throw error;
         throw new EnvoySendUnconfirmedError(input.targetSessionID, idempotencyKey, attempts, error);
       }
       return {

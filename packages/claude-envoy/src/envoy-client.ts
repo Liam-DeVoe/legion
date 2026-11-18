@@ -1,9 +1,5 @@
-import { credentialDeadline, type RequestCredential } from "@legion/envoy-client/bearer"
-import { messageFor } from "@legion/envoy-client/errors"
-import ky, { HTTPError } from "ky"
-
-/** How long one send may take, the credential's trade included. */
-const SEND_TIMEOUT_MS = 5_000
+import type { RequestCredential } from "@legion/envoy-client/bearer"
+import { createEnvoyClient } from "@legion/envoy-client/transport"
 
 export type SendEnvoyMessageOptions = {
   readonly baseUrl: string
@@ -13,57 +9,33 @@ export type SendEnvoyMessageOptions = {
   readonly credential: RequestCredential | undefined
   readonly targetSession: string
   readonly message: string
-  /** Ends the send early, beside its own {@link SEND_TIMEOUT_MS}. */
-  readonly signal?: AbortSignal | undefined
 }
 
 /**
- * Sends one direct message, as envoy-client's transport sends a call (`attemptOnce`). One deadline
- * bounds the whole send, and the credential waits on all of it but the request's reserve
- * (`credentialDeadline`). A credential that could not mint in that time — a broker credential
- * waiting on a pod's missing registration, or on a broker that does not answer — leaves the send
- * to go without it in the reserve, which a listener that asks for no credential answers; one that
- * wants a credential answers 401, and the error names both halves. The trade goes on in the
- * background either way.
+ * Sends one direct message through envoy-client's own send (`createEnvoyClient().send`), so the
+ * `envoy-send` command keeps every rule a session's own send keeps:
+ * - one idempotency key for the message, on every attempt, so the listener stores it at most
+ *   once however many attempts reach it;
+ * - an attempt that got no answer or a 5xx is sent again under that key, after 250 ms;
+ * - a send that may have arrived is told so (`EnvoySendUnconfirmedError`), naming the key that
+ *   resends it safely, never "failed";
+ * - each attempt's credential waits the attempt less the request's reserve
+ *   (`credentialDeadline`), and a credential that could not be minted lets the request go
+ *   without it, which a listener that asks for no credential answers. A listener that wants one
+ *   answers 401 at its auth gate, and the error names both halves and no resend, since nothing
+ *   was stored.
  */
 export async function sendEnvoyMessage(options: SendEnvoyMessageOptions): Promise<void> {
-  const url = new URL("/v1/messages/send", options.baseUrl)
-  const timeout = AbortSignal.timeout(SEND_TIMEOUT_MS)
-  const deadline =
-    options.signal === undefined ? timeout : AbortSignal.any([options.signal, timeout])
-  let headers: Readonly<Record<string, string>> = {}
-  let unminted: unknown
-  try {
-    headers =
-      (await options.credential?.headers(
-        "POST",
-        url.toString(),
-        undefined,
-        credentialDeadline(deadline, SEND_TIMEOUT_MS),
-      )) ?? {}
-  } catch (error) {
-    // The send's own deadline leaves nothing to send: the credential's words are the send's.
-    if (deadline.aborted) throw error
-    unminted = error
-  }
-  try {
-    await ky.post(url, {
-      json: {
-        target_session: options.targetSession,
-        message: options.message,
-      },
-      headers,
-      retry: 0,
-      timeout: false,
-      signal: deadline,
-    })
-  } catch (error) {
-    if (unminted !== undefined && error instanceof HTTPError && error.response.status === 401) {
-      throw new Error(
-        `the send answered 401, and this machine's Envoy credential could not be minted: ${messageFor(unminted)}`,
-        { cause: unminted },
-      )
-    }
-    throw error
-  }
+  const client = createEnvoyClient({
+    baseUrl: options.baseUrl,
+    fetch: globalThis.fetch,
+    credential: options.credential,
+  })
+  // No source session: the body names none, as `envoy-send` never has, and the listener stamps
+  // the message `agent` from the credential it was sent with.
+  await client.send({
+    sourceSessionID: "",
+    targetSessionID: options.targetSession,
+    message: options.message,
+  })
 }

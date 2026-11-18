@@ -1,20 +1,48 @@
 import { afterAll, expect, test } from "bun:test"
 import { writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
+import { EnvoySendUnconfirmedError } from "@legion/envoy-client/transport"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { sendEnvoyMessage } from "../src/envoy-client"
 
-const requests: { path: string; authorization: string | null; body: string }[] = []
+/** What one send reached the stand-in listener with. */
+interface Sent {
+  readonly path: string
+  readonly authorization: string | null
+  readonly body: Record<string, unknown>
+}
+
+/** The envelope a listener answers a stored send with. */
+function stored(target: string): Record<string, unknown> {
+  return {
+    event_id: "evt-sent",
+    source: "agent",
+    source_event_id: "agent.ses_sender.evt-sent",
+    topic: `notifications.agent.${target}`,
+    dedupe_key: `agent.${target}.evt-sent`,
+    issued_at: 1,
+    payload_summary: "message",
+    trace_id: "trace-sent",
+    recipient: target,
+    recipient_state: "live",
+  }
+}
+
+const requests: Sent[] = []
+/** What the stand-in listener answers each send, in order; past the end it stores the send. */
+const answers: (() => Response)[] = []
 const server = Bun.serve({
   port: 0,
   fetch: async (request) => {
+    const body = JSON.parse(await request.text()) as Record<string, unknown>
     requests.push({
       path: new URL(request.url).pathname,
       authorization: request.headers.get("authorization"),
-      body: await request.text(),
+      body,
     })
-    return new Response(null, { status: 202 })
+    const answer = answers.shift()
+    return answer?.() ?? Response.json(stored(String(body["target_session"])), { status: 202 })
   },
 })
 const scratch = temporaryDirectory("claude-envoy-send")
@@ -22,7 +50,10 @@ afterAll(() => {
   server.stop(true)
 })
 
-test("sends a direct message through Envoy's HTTP API, with no bearer for a listener that asks for none", async () => {
+/** A lower-case UUID, the idempotency key the client mints for a send. */
+const MINTED_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+
+test("sends a direct message through Envoy's HTTP API under an idempotency key, with no bearer for a listener that asks for none", async () => {
   requests.length = 0
   await sendEnvoyMessage({
     baseUrl: `http://127.0.0.1:${server.port}`,
@@ -30,101 +61,106 @@ test("sends a direct message through Envoy's HTTP API, with no bearer for a list
     targetSession: "ses_receiver",
     message: "adapter send proof",
   })
-  expect(requests).toEqual([
-    {
-      path: "/v1/messages/send",
-      authorization: null,
-      body: JSON.stringify({ target_session: "ses_receiver", message: "adapter send proof" }),
-    },
-  ])
+  expect(requests).toHaveLength(1)
+  expect(requests[0]?.path).toBe("/v1/messages/send")
+  expect(requests[0]?.authorization).toBeNull()
+  expect(requests[0]?.body).toMatchObject({
+    source: "agent",
+    target_session: "ses_receiver",
+    message: "adapter send proof",
+  })
+  expect(String(requests[0]?.body["idempotency_key"])).toMatch(MINTED_KEY)
 })
 
-/** What `call` settled with by the next turn of the event loop, or "pending": the test's bound. */
-async function outcome(call: Promise<unknown>): Promise<unknown> {
-  const bound = Promise.withResolvers<"pending">()
-  setImmediate(() => bound.resolve("pending"))
-  return await Promise.race([
-    call.then(
-      (value) => value,
-      (error: unknown) => error,
-    ),
-    bound.promise,
-  ])
+// A send whose attempt the listener may have acted on and whose answer was lost is sent again
+// under the same key, so the listener stores it once: before, envoy-send made one attempt with no
+// key, so a send that landed and lost its answer failed, and running it again delivered it twice.
+test("a send whose first attempt got no answer is sent again under the same key", async () => {
+  requests.length = 0
+  answers.push(() => Response.json({ error: "listener restarting" }, { status: 503 }))
+  await sendEnvoyMessage({
+    baseUrl: `http://127.0.0.1:${server.port}`,
+    credential: undefined,
+    targetSession: "ses_receiver",
+    message: "sent once",
+  })
+  expect(requests).toHaveLength(2)
+  const keys = requests.map((one) => one.body["idempotency_key"])
+  expect(keys[0]).toBe(keys[1])
+  expect(String(keys[0])).toMatch(MINTED_KEY)
+})
+
+test("a send no attempt of which was answered says it may have arrived, naming the key that resends it safely", async () => {
+  requests.length = 0
+  for (let n = 0; n < 2; n++) {
+    answers.push(() => Response.json({ error: "listener restarting" }, { status: 503 }))
+  }
+  const refused = await sendEnvoyMessage({
+    baseUrl: `http://127.0.0.1:${server.port}`,
+    credential: undefined,
+    targetSession: "ses_receiver",
+    message: "maybe sent",
+  }).catch((error: unknown) => error)
+  expect(refused).toBeInstanceOf(EnvoySendUnconfirmedError)
+  const unconfirmed = refused as EnvoySendUnconfirmedError
+  expect(unconfirmed.resendSafe).toBe(true)
+  expect(unconfirmed.idempotencyKey).toBe(String(requests[0]?.body["idempotency_key"]))
+  expect(unconfirmed.message).toContain(`idempotency_key ${unconfirmed.idempotencyKey}`)
+})
+
+/** A credential that waits on the broker until its signal ends, then rejects with `words`, and
+ *  answers with `token` once `ready()` says so. `given` keeps each signal it was handed. */
+function waitingCredential(words: string, ready: () => string | undefined = () => undefined) {
+  const given: (AbortSignal | undefined)[] = []
+  return {
+    given,
+    credential: {
+      scheme: "DPoP" as const,
+      headers: (_method: string, _url: string, _session?: string, signal?: AbortSignal) => {
+        given.push(signal)
+        const token = ready()
+        if (token !== undefined) return { Authorization: `DPoP ${token}` }
+        const { promise, reject } = Promise.withResolvers<Readonly<Record<string, string>>>()
+        signal?.addEventListener("abort", () => reject(new Error(words)), { once: true })
+        return promise
+      },
+      stale: () => {},
+      secret: () => "",
+    },
+  }
 }
 
-test("a send hands the credential its deadline: waiting on a pod's missing registration, it fails at that deadline naming the session, and sends once the registration lands", async () => {
+test("a send whose credential waits on a pod's missing registration goes without it after its share, and carries the token once the registration lands", async () => {
   requests.length = 0
   let registered = false
-  const given: (AbortSignal | undefined)[] = []
-  // A broker credential while the pod's registration is missing: it answers nothing until its
-  // caller's deadline ends, then says the session's registration is pending.
-  const credential = {
-    scheme: "DPoP" as const,
-    headers: (_method: string, _url: string, _session?: string, signal?: AbortSignal) => {
-      given.push(signal)
-      if (registered) return { Authorization: "DPoP registered-token" }
-      const { promise, reject } = Promise.withResolvers<Readonly<Record<string, string>>>()
-      signal?.addEventListener(
-        "abort",
-        () => reject(new Error("registration pending: implementer-g1")),
-        {
-          once: true,
-        },
-      )
-      return promise
-    },
-    stale: () => {},
-    secret: () => "",
-  }
+  const { credential, given } = waitingCredential("registration pending: implementer-g1", () =>
+    registered ? "registered-token" : undefined,
+  )
   const options = {
     baseUrl: `http://127.0.0.1:${server.port}`,
     credential,
     targetSession: "ses_receiver",
-    message: "sent once registered",
+    message: "sent while the registration is pending",
   }
-  // The send's deadline is a signal the test ends, standing in for the call's own timer.
-  const deadline = new AbortController()
-  const send = sendEnvoyMessage({ ...options, signal: deadline.signal })
-  await new Promise((resolve) => setImmediate(resolve))
+  const started = Date.now()
+  await sendEnvoyMessage(options)
+  // The credential waited the attempt less the request's reserve, not the send's whole time.
   expect(given[0], "the send handed its credential no deadline").toBeInstanceOf(AbortSignal)
-  // The control: while the deadline is live the send is still waiting on the credential.
-  expect(await outcome(send)).toBe("pending")
-  deadline.abort()
-  const refused = await outcome(send)
-  expect(refused, "the send did not return at its deadline").toBeInstanceOf(Error)
-  expect((refused as Error).message).toContain("implementer-g1")
-  expect(requests).toEqual([])
+  expect(Date.now() - started).toBeLessThan(5_000)
+  expect(requests.map((one) => one.authorization)).toEqual([null])
   registered = true
-  await sendEnvoyMessage({ ...options, signal: new AbortController().signal })
-  expect(requests.map((one) => one.authorization)).toEqual(["DPoP registered-token"])
-})
-
-/** A credential whose trade never answers: it rejects only when its signal ends. */
-function silentCredential() {
-  return {
-    scheme: "DPoP" as const,
-    headers: (_method: string, _url: string, _session?: string, signal?: AbortSignal) => {
-      const { promise, reject } = Promise.withResolvers<Readonly<Record<string, string>>>()
-      signal?.addEventListener(
-        "abort",
-        () => reject(new Error("the secrets broker has not yet answered the trade")),
-        { once: true },
-      )
-      return promise
-    },
-    stale: () => {},
-    secret: () => "",
-  }
-}
+  await sendEnvoyMessage(options)
+  expect(requests.map((one) => one.authorization)).toEqual([null, "DPoP registered-token"])
+}, 20_000)
 
 test("a send whose credential's trade never answers goes without it, and a listener that asks for none takes it", async () => {
-  // The credential waits the send's 5 s less the request's 1 s reserve
-  // (`credentialDeadline`), then the send goes without it, as envoy-client's transport does.
+  // The credential waits the attempt's 5 s less the request's 1 s reserve (`credentialDeadline`),
+  // then the send goes without it, as envoy-client's transport does.
   requests.length = 0
   const started = Date.now()
   await sendEnvoyMessage({
     baseUrl: `http://127.0.0.1:${server.port}`,
-    credential: silentCredential(),
+    credential: waitingCredential("the secrets broker has not yet answered the trade").credential,
     targetSession: "ses_receiver",
     message: "sent without a credential",
   })
@@ -132,7 +168,10 @@ test("a send whose credential's trade never answers goes without it, and a liste
   expect(requests.map((one) => one.authorization)).toEqual([null])
 }, 20_000)
 
-test("a listener that wants a credential answers 401, and the send's error names both halves", async () => {
+// A listener that wants a credential refuses a request without one at its auth gate, before any
+// route runs (`apiauth.go`), so nothing was stored: the error names the 401 and why the
+// credential could not be minted, and never says the message may have arrived.
+test("a listener that wants a credential answers 401, and the send's error names both halves and no resend", async () => {
   const wanting = Bun.serve({
     port: 0,
     fetch: () => Response.json({ error: "this listener wants a credential" }, { status: 401 }),
@@ -140,17 +179,18 @@ test("a listener that wants a credential answers 401, and the send's error names
   try {
     const refused = await sendEnvoyMessage({
       baseUrl: `http://127.0.0.1:${wanting.port}`,
-      credential: silentCredential(),
+      credential: waitingCredential("the secrets broker has not yet answered the trade").credential,
       targetSession: "ses_receiver",
       message: "refused",
     }).catch((error: unknown) => error)
+    expect(refused).not.toBeInstanceOf(EnvoySendUnconfirmedError)
     expect((refused as Error).message).toBe(
-      "the send answered 401, and this machine's Envoy credential could not be minted: the secrets broker has not yet answered the trade",
+      `POST http://127.0.0.1:${wanting.port}/v1/messages/send answered 401, and this machine's Envoy credential could not be minted: the secrets broker has not yet answered the trade`,
     )
   } finally {
     wanting.stop(true)
   }
-}, 20_000)
+}, 30_000)
 
 test("envoy-send sends to the listener and with the bearer its envoy.json names", async () => {
   requests.length = 0
@@ -173,13 +213,11 @@ test("envoy-send sends to the listener and with the bearer its envoy.json names"
   )
   expect(await send.exited).toBe(0)
   expect(await new Response(send.stdout).text()).toBe("Sent Envoy message to ses_receiver.\n")
-  expect(requests).toEqual([
-    {
-      path: "/v1/messages/send",
-      authorization: `Bearer ${listenerToken}`,
-      body: JSON.stringify({ target_session: "ses_receiver", message: "file send" }),
-    },
-  ])
+  expect(requests).toHaveLength(1)
+  expect(requests[0]?.path).toBe("/v1/messages/send")
+  expect(requests[0]?.authorization).toBe(`Bearer ${listenerToken}`)
+  expect(requests[0]?.body).toMatchObject({ target_session: "ses_receiver", message: "file send" })
+  expect(String(requests[0]?.body["idempotency_key"])).toMatch(MINTED_KEY)
 })
 
 test("envoy-send with no Envoy configured refuses, saying why, and sends nothing", async () => {

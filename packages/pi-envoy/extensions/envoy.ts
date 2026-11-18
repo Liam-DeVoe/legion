@@ -219,6 +219,7 @@ import {
   withSessionAnswers,
 } from "../src/session-answers-context";
 import { sideTurn } from "../src/side-turn";
+import { startTradeBoundMs } from "../src/start-bound";
 import { TypedPictures } from "../src/typed-pictures";
 import {
   MOVED_SESSION_REASON,
@@ -834,9 +835,6 @@ export default function envoyExtension(hostApi: PiApi): void {
   // off, unlike `requireEnvoy`, which throws: the queues exist whatever the session resolved, and
   // a queue cannot answer a throw with a deadline.
   const passDeadlineMs = (): number => active?.settings.passDeadlineMs ?? MIN_PASS_DEADLINE_MS;
-  /** What a pass needs beside the start's wait for its broker token: the dial, its subscribes and
-   *  the registration (`TRADE_DEADLINE_MS` is the default pass deadline less this). */
-  const PASS_REST_MS = 10_000;
   const delivered = createDeliveryDedupe();
   let connection: NatsConnection | undefined;
   // Stops the keeper of `connection`'s broker token (`keepNatsCredential`): one per connection,
@@ -1188,13 +1186,13 @@ export default function envoyExtension(hostApi: PiApi): void {
     // A broker token is signed into the CONNECT itself, so a live one is taken before the dial.
     // The start has nothing to do until it holds one, so it waits for ready within its bound
     // (`TRADE_DEADLINE_MS`, or the pass deadline less the 10 s the rest of the pass needs where
-    // that is shorter): a first trade's 503 is ridden out rather than costing the session its
-    // registration until the next heartbeat, and a broker that never grants fails the start
-    // naming the trade's cause.
+    // that is shorter, or half the pass where even that rest does not fit, `startTradeBoundMs`):
+    // a first trade's 503 is ridden out rather than costing the session its registration until
+    // the next heartbeat, and a broker that never grants fails the start naming the trade's cause.
     if (natsCredential.kind === "broker") {
       await natsCredential.broker.ready({
         waitForReady: true,
-        boundMs: passDeadlineMs() - PASS_REST_MS,
+        boundMs: startTradeBoundMs(passDeadlineMs()),
       });
     }
     // nats.js re-subscribes existing subscriptions on its own once reconnected.
