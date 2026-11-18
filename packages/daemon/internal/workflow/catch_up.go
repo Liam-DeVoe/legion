@@ -301,6 +301,9 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 	awaiting := []string{}
 	for _, issue := range issues {
 		listed := record.CatchUpIssue{Key: issue.Key, Title: issue.Title, Phase: issue.Phase, Status: issue.Status}
+		if issue.Phase == phase.Step {
+			listed.StepRole = issue.StepRole
+		}
 		if issue.Parent != nil {
 			listed.Parent = *issue.Parent
 		}

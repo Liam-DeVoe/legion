@@ -599,13 +599,16 @@ type CatchUpGate struct {
 	Open         bool       `json:"open"`
 }
 
-// CatchUpIssue is one issue of the tree as a catch-up lists it.
+// CatchUpIssue is one issue of the tree as a catch-up lists it. StepRole is the role that runs the
+// issue's step where it stands at step (Issue.StepRole), a role the deployment defines, which the
+// phase alone does not name; it is absent at every other phase.
 type CatchUpIssue struct {
-	Key    string      `json:"key"`
-	Parent string      `json:"parent,omitempty"`
-	Title  string      `json:"title"`
-	Phase  phase.Phase `json:"phase"`
-	Status string      `json:"status"`
+	Key      string      `json:"key"`
+	Parent   string      `json:"parent,omitempty"`
+	Title    string      `json:"title"`
+	Phase    phase.Phase `json:"phase"`
+	StepRole claim.Role  `json:"stepRole,omitempty"`
+	Status   string      `json:"status"`
 }
 
 func (Notice) OutboxKind() OutboxKind { return OutboxKindNotice }

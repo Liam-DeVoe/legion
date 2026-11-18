@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -244,4 +245,35 @@ func TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole(t *testing.T) {
 			t.Fatalf("the architect's start task of a root carried at its checker's step (carried %t) = %q, want it to say %q", start.Carried, task, says)
 		}
 	})
+}
+
+// The architect's catch-up names the role that runs a member at step, beside its phase: step alone
+// does not say which role of the deployment works it. A member at a phase of Legion's names none.
+func TestTheCatchUpNamesTheRunningDeploymentRole(t *testing.T) {
+	pool := migratedPool(t)
+	root := seedAdmittedTree(t, pool, 1)
+	root.Phase = phase.Implementing
+	seedIssue(t, pool, root)
+	parent := root.Key
+	standAtStep(t, pool, record.Issue{Key: "LEGION-2", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root.Key,
+		Project: "LEGION", Title: "Child", Parent: &parent, Generation: 1, Status: "in_progress", Rank: "V"}, false)
+
+	claimReady(t, pool, testEngine(config.DesignGateRootIssues, nil), root.Key, claim.RoleArchitect, 1)
+
+	var listed string
+	if err := pool.QueryRow(t.Context(), `select (payload->'catch_up'->'issues')::text from outbox
+		where kind = 'notice' and payload->>'kind' = 'catch-up' order by id limit 1`).Scan(&listed); err != nil {
+		t.Fatalf("read the catch-up's issues: %v", err)
+	}
+	var issues []map[string]any
+	if err := json.Unmarshal([]byte(listed), &issues); err != nil {
+		t.Fatalf("decode the catch-up's issues %s: %v", listed, err)
+	}
+	roles := map[string]any{}
+	for _, issue := range issues {
+		roles[issue["key"].(string)] = issue["stepRole"]
+	}
+	if want := map[string]any{"LEGION-1": nil, "LEGION-2": "checker"}; !reflect.DeepEqual(roles, want) {
+		t.Fatalf("the catch-up's running roles = %v (issues %s), want %v", roles, listed, want)
+	}
 }
