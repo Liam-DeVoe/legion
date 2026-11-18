@@ -27,6 +27,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // credentialsFileVar is the variable Google's own libraries read a credentials file from.
@@ -133,18 +134,20 @@ func (e *ExternalAccountIdentity) Describe() string {
 }
 
 // Token mints the service account's access token with the credentials file's own exchange and
-// spends it on one generateIdToken. Every error names the step that failed and never a token.
+// spends it on one generateIdToken. Every error names the step that failed and never a token. The
+// exchange builds its requests' credentials itself (the subject token it read, the client's Basic
+// pair, the access token it minted and spends on the impersonation call) and prints a refusal's
+// body as text, so its requests go through a redact.RefusalClient, which redacts each one's own
+// credentials from its refusal before the library reads it.
 func (e *ExternalAccountIdentity) Token(ctx context.Context) (string, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*poolTimeout)
 	defer cancel()
-	if e.HTTP != nil {
-		ctx = context.WithValue(ctx, oauth2.HTTPClient, e.HTTP)
-	}
-	creds, err := google.CredentialsFromJSONWithType(ctx, e.CredentialsJSON, google.ExternalAccount, poolScope)
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, redact.RefusalClient(e.HTTP))
+	creds, err := redact.OAuth2(google.CredentialsFromJSONWithType(ctx, e.CredentialsJSON, google.ExternalAccount, poolScope))
 	if err != nil {
 		return "", "", fmt.Errorf("read the external_account credential %s names: %w", credentialsFileVar, err)
 	}
-	access, err := creds.TokenSource.Token()
+	access, err := redact.OAuth2(creds.TokenSource.Token())
 	if err != nil {
 		return "", "", fmt.Errorf("mint %s's access token with the external_account credential %s names: %w", e.ServiceAccount, credentialsFileVar, err)
 	}

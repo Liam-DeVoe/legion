@@ -55,7 +55,7 @@ func TestAnOAuthRefusalSettlesAsTheBrokersRefusalWhereverItsWordsPrint(t *testin
 			var be *BrokerError
 			isBrokerError := errors.As(got, &be)
 			switch {
-			case row.known && (!isBrokerError || be.Status != http.StatusBadRequest || be.Code != "LOGIN_PENDING" || be.Message != "a login is already pending"):
+			case row.known && (!isBrokerError || be.Status != http.StatusBadRequest || !be.HasCode("LOGIN_PENDING") || got.Error() != "broker 400 LOGIN_PENDING: a login is already pending"):
 				t.Errorf("oauthBrokerError = %v (%T); want the broker's 400 LOGIN_PENDING as a BrokerError", got, got)
 			case !row.known && isBrokerError:
 				t.Errorf("oauthBrokerError = %v, a BrokerError; want the class the redactor printed, with no code", got)

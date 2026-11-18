@@ -23,6 +23,7 @@
 // only with what `token()` gave it never writes with no identity, nor with one that has been
 // ended.
 
+import { callLibrary, LibraryError, RemoteText } from "@legion/contracts/remote-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
   allowInsecureRequests,
@@ -31,7 +32,6 @@ import {
   customFetch,
   genericGrantRequest,
   None,
-  ResponseBodyError,
   type TokenEndpointResponse,
 } from "openid-client";
 import type { DpopKey } from "./dpop";
@@ -65,8 +65,10 @@ export interface BrokerToken {
   /** The token itself, presented as `Authorization: DPoP <token>` beside a proof of the key it is
    *  bound to. */
   readonly accessToken: string;
-  /** The answer's `token_type`, `DPoP` for every token this grant mints. */
-  readonly tokenType: string;
+  /** The answer's `token_type`, read as the closed set this grant mints: `DPoP` alone, since
+   *  `#read` refuses an answer naming any other, in whatever case. It holds none of the broker's
+   *  text. */
+  readonly tokenType: typeof TOKEN_TYPE_DPOP;
   /** When the token lapses, from the answer's `expires_in`. */
   readonly expiresAt: Date;
   /** The launcher credential the trade minted for this machine or sign-in, under which sessions
@@ -129,22 +131,52 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  * revoked, a token of the wrong audience — and a renewal stops on it rather than asking again.
  * The five exceptions are the broker's 429, its two DPoP refusals, a pod session it holds no
  * registration for yet, and a person Dispatch holds (`permanent`).
+ *
+ * The broker's code and description are its words, and they can quote a URL that carries a
+ * credential, so the refusal holds them as {@link RemoteText}, which prints only the rule's
+ * reading of them (`redactRemoteText`) in a message, `JSON.stringify` and an inspection, as the Go
+ * client's `RefusedError` does. A caller that tells refusals apart compares through
+ * {@link hasCode} and {@link descriptionStartsWith}, which answer no text.
  */
 export class BrokerRefusedError extends Error {
+  readonly #code: RemoteText;
+  readonly #description: RemoteText;
+
   /** `refused` names the identity traded, as its source describes it: this machine's, or a
-   *  person's sign-in on it. */
+   *  person's sign-in on it. `code` and `description` are the broker's, held as they came where
+   *  they are already a {@link RemoteText} (a {@link LibraryError}'s). */
   constructor(
     readonly status: number,
-    readonly code: string,
-    readonly description: string,
+    code: RemoteText | string,
+    description: RemoteText | string,
     refused: string
   ) {
+    const said = code instanceof RemoteText ? code : new RemoteText(code);
+    const described = description instanceof RemoteText ? description : new RemoteText(description);
     super(
-      description === ""
-        ? `the secrets broker refused ${refused}: HTTP ${status} ${code}`
-        : `the secrets broker refused ${refused}: HTTP ${status} ${code}: ${description}`
+      described.isEmpty
+        ? `the secrets broker refused ${refused}: HTTP ${status} ${said}`
+        : `the secrets broker refused ${refused}: HTTP ${status} ${said}: ${described}`
     );
     this.name = "BrokerRefusedError";
+    this.#code = said;
+    this.#description = described;
+  }
+
+  /** Whether the broker refused with `code`, compared as it came. It answers no text. */
+  hasCode(code: string): boolean {
+    return this.#code.equals(code);
+  }
+
+  /** Whether the broker's description begins with `prefix`, compared as it came. */
+  descriptionStartsWith(prefix: string): boolean {
+    return this.#description.startsWith(prefix);
+  }
+
+  /** The broker's description as it prints itself, for a message that quotes it
+   *  ({@link RegistrationPendingError}). */
+  get printedDescription(): string {
+    return this.#description.toString();
   }
 
   /**
@@ -181,9 +213,9 @@ export class BrokerRefusedError extends Error {
   get permanent(): boolean {
     return (
       this.status !== TOO_MANY_REQUESTS &&
-      this.code !== INVALID_DPOP_PROOF &&
-      this.code !== USE_DPOP_NONCE &&
-      this.code !== MEMBERSHIP_HELD &&
+      !this.hasCode(INVALID_DPOP_PROOF) &&
+      !this.hasCode(USE_DPOP_NONCE) &&
+      !this.hasCode(MEMBERSHIP_HELD) &&
       !this.podSessionUnregistered
     );
   }
@@ -193,7 +225,7 @@ export class BrokerRefusedError extends Error {
    *  The same words under another code, or anywhere but at the start, are some other refusal. */
   get podSessionUnregistered(): boolean {
     return (
-      this.code === INVALID_GRANT && this.description.startsWith(`${POD_SESSION_NOT_REGISTERED}:`)
+      this.hasCode(INVALID_GRANT) && this.descriptionStartsWith(`${POD_SESSION_NOT_REGISTERED}:`)
     );
   }
 }
@@ -210,7 +242,7 @@ export class RegistrationPendingError extends Error {
     refusal: BrokerRefusedError
   ) {
     super(
-      `the secrets broker has no registration for this pod's session ${session} yet, and the trade is being retried in the background until it lands (${refusal.description})`,
+      `the secrets broker has no registration for this pod's session ${session} yet, and the trade is being retried in the background until it lands (${refusal.printedDescription})`,
       { cause: refusal }
     );
     this.name = "RegistrationPendingError";
@@ -316,18 +348,13 @@ export interface BrokerTokenClientOptions {
 }
 
 /**
- * The HTTP status behind `error`, or 0 where it carries none: a status `openid-client` reports
- * as an unconforming answer is left in the response it hangs off the error's `cause` chain. The
- * person's identity source reads its issuer's errors with it too (`person-identity.ts`).
+ * The HTTP status behind `error`, or 0 where it carries none: the status of the answer behind an
+ * error `openid-client` threw, which {@link callLibrary} keeps on the {@link LibraryError} it makes
+ * of it. The person's identity source reads its issuer's errors with it too
+ * (`person-identity.ts`).
  */
 export function statusOf(error: unknown): number {
-  let cause: unknown = error;
-  for (let depth = 0; depth < 4; depth += 1) {
-    if (cause instanceof Response) return cause.status;
-    if (typeof cause !== "object" || cause === null || !("cause" in cause)) return 0;
-    cause = cause.cause;
-  }
-  return 0;
+  return error instanceof LibraryError ? error.status : 0;
 }
 
 /**
@@ -600,19 +627,24 @@ export class BrokerTokenClient {
     }
     const endpoint = this.#brokerUrl + TOKEN_PATH;
     const raw: { body: unknown } = { body: undefined };
-    const config = new Configuration(
-      { issuer: this.#brokerUrl, token_endpoint: endpoint },
-      EXCHANGE_CLIENT_ID,
-      {},
-      None()
+    const config = callLibrary(
+      () =>
+        new Configuration(
+          { issuer: this.#brokerUrl, token_endpoint: endpoint },
+          EXCHANGE_CLIENT_ID,
+          {},
+          None()
+        )
     );
     // The broker is wherever the deployment put it, which in a cluster and on a dev stack is an
     // http origin; the client posts where it is told, as the Go client does.
-    allowInsecureRequests(config);
+    callLibrary(() => allowInsecureRequests(config));
     config[customFetch] = (url, options) => this.#send(url, options, signal, raw);
     let answered: TokenEndpointResponse;
     try {
-      answered = await genericGrantRequest(config, GRANT_TYPE_TOKEN_EXCHANGE, form);
+      answered = await callLibrary(() =>
+        genericGrantRequest(config, GRANT_TYPE_TOKEN_EXCHANGE, form)
+      );
     } catch (error) {
       throw this.#refusal(endpoint, error);
     }
@@ -624,18 +656,28 @@ export class BrokerTokenClient {
    * identity, which no retry can cure; everything else — a broker that did not answer, a 5xx, an
    * answer that is not this grant's — is an error a renewal may ask about again. A status the
    * library reports without naming it is named here, since "the broker answered HTTP 503" is what
-   * tells a reader to look at the broker rather than at this process.
+   * tells a reader to look at the broker rather than at this process. `error` crossed
+   * {@link callLibrary}, so it is a {@link LibraryError}, whose words print only as the rule reads
+   * them and which keeps nothing of the answer: the cause the error below holds is that one, never
+   * the library's own, whose body can hold a token the answer minted.
    */
   #refusal(endpoint: string, error: unknown): Error {
-    if (error instanceof ResponseBodyError && error.status >= 400 && error.status < 500) {
+    if (
+      error instanceof LibraryError &&
+      error.name === "ResponseBodyError" &&
+      error.status >= 400 &&
+      error.status < 500
+    ) {
       return new BrokerRefusedError(
         error.status,
-        error.error,
-        error.error_description ?? "",
+        error.code,
+        error.description,
         this.#subject.describe()
       );
     }
     const status = statusOf(error);
+    // The library's own message: it names what it found wrong ("unexpected HTTP response status
+    // code") and quotes no word of the broker's answer.
     const message = messageOf(error);
     const said = status === 0 ? message : `HTTP ${status}: ${message}`;
     return new Error(`trade ${this.#subject.describe()} at ${endpoint}: ${said}`, {
@@ -688,18 +730,22 @@ export class BrokerTokenClient {
   /**
    * The answer as a token, refusing one that is not this grant's: a token type that is not DPoP,
    * no usable expiry, or a refresh token — the exchange issues none, and a client that kept one
-   * would hold a credential this contract says is never minted.
+   * would hold a credential this contract says is never minted. The one remote text a refusal
+   * quotes here, `credential_expires_at`, prints through `redactRemoteText`; `token_type` is one
+   * `openid-client` accepted (it refuses any other before this is called), so it quotes none.
    *
    * Every member but one is read from what `openid-client` validated. `token_type` is read from
    * `raw`, the answer's own body: the library lowercases it, RFC 6749 Section 7.1 making it
    * case-insensitive, while the corpus names the spelling the broker wrote and holds both clients
-   * to it.
+   * to it. `token_type` and `credential_expires_at` are the broker's text, so each is held as
+   * {@link RemoteText} and read only through it: the one compared (`equalsIgnoringCase`), the other
+   * parsed (`date`), and a refusal quotes either only as the rule reads it.
    */
   #read(endpoint: string, answered: TokenEndpointResponse, raw: unknown): BrokerToken {
     const written =
       typeof raw === "object" && raw !== null && "token_type" in raw ? raw.token_type : undefined;
-    const tokenType = typeof written === "string" ? written : "";
-    if (tokenType.toLowerCase() !== TOKEN_TYPE_DPOP.toLowerCase()) {
+    const tokenType = new RemoteText(typeof written === "string" ? written : "");
+    if (!tokenType.equalsIgnoringCase(TOKEN_TYPE_DPOP)) {
       throw new Error(
         `the broker at ${endpoint} answered token_type ${JSON.stringify(tokenType)}, and this grant mints DPoP-bound tokens alone`
       );
@@ -715,22 +761,22 @@ export class BrokerTokenClient {
         `the broker at ${endpoint} answered no usable expires_in (${JSON.stringify(answered.expires_in)})`
       );
     }
-    const expiresAtText =
-      typeof answered["credential_expires_at"] === "string"
-        ? answered["credential_expires_at"]
-        : "";
+    const expiresAt = new RemoteText(
+      typeof answered["credential_expires_at"] === "string" ? answered["credential_expires_at"] : ""
+    );
     let credentialExpiresAt: Date | null = null;
-    if (expiresAtText !== "") {
-      credentialExpiresAt = new Date(expiresAtText);
-      if (Number.isNaN(credentialExpiresAt.getTime())) {
+    if (!expiresAt.isEmpty) {
+      const parsed = expiresAt.date();
+      if (parsed === undefined) {
         throw new Error(
-          `the broker at ${endpoint} answered a credential_expires_at that is no RFC 3339 time (${JSON.stringify(expiresAtText)})`
+          `the broker at ${endpoint} answered a credential_expires_at that is no RFC 3339 time (${JSON.stringify(expiresAt)})`
         );
       }
+      credentialExpiresAt = parsed;
     }
     return {
       accessToken: answered.access_token,
-      tokenType,
+      tokenType: TOKEN_TYPE_DPOP,
       expiresAt: new Date(this.#now() + seconds * 1000),
       credentialId: typeof answered["credential_id"] === "string" ? answered["credential_id"] : "",
       credentialExpiresAt,

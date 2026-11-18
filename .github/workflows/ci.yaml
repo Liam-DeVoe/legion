@@ -678,6 +678,9 @@ jobs:
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
+              # excerpt: one redacted line of a body a server's place wrote, which the daemon's
+              # tests compile through internal/broker/brokertest.
+              - 'packages/envoy/excerpt/*'
               # The reasons the listener refuses a publish to a role no session holds, which the
               # daemon's notify path reads as notify.ErrNoHolder.
               - 'packages/envoy/roleholder/*'
@@ -692,6 +695,9 @@ jobs:
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
               - 'packages/envoy/testnatsimages/*'
+              # The x/oauth2 boundary a module outside envoy calls through (internal/redact's
+              # OAuth2 and TokenSource, for the launcher's and the session proxy's token exchange).
+              - 'packages/envoy/oauth2call/*'
             # The Dispatch server, `go list -deps ./cmd/dispatch` in packages/envoy (its embedded
             # migrations and pmdoc schema included): what the daemon's outbox test builds
             # (internal/testbuild/testbuild.go:112, called from
@@ -883,6 +889,7 @@ jobs:
               - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/redact/*'
+              - 'packages/envoy/oauth2call/*'
               - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/listenfd/*'
               # packages/envoy/migrationid is the identifier rule the daemon's embedded
@@ -922,6 +929,7 @@ jobs:
               - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/*'
               - 'packages/envoy/internal/ratelimit/*'
+              - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/roles/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
@@ -1087,6 +1095,7 @@ jobs:
               - *dispatch_server
               - 'packages/envoy/daemonpermissions/*'
               - 'packages/envoy/dispatchbody/*'
+              - 'packages/envoy/oauth2call/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/sessiontiming/*'
@@ -2117,6 +2126,7 @@ jobs:
               - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/*'
               - 'packages/envoy/internal/ratelimit/*'
+              - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/roles/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
@@ -2382,6 +2392,9 @@ jobs:
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/fold/*'
+              # The x/oauth2 boundary the daemon's launcher and session proxy call through.
+              - 'packages/envoy/internal/redact/*'
+              - 'packages/envoy/oauth2call/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/sessiontiming/*'
@@ -2453,6 +2466,7 @@ jobs:
               - 'packages/contracts/src/index.ts'
               - 'packages/contracts/src/legion-roles.ts'
               - 'packages/contracts/src/related-forms.ts'
+              - 'packages/contracts/src/remote-text.ts'
               - 'packages/contracts/src/repo.ts'
               - 'packages/contracts/src/sha256.ts'
               - 'packages/contracts/src/slack.ts'
@@ -2567,6 +2581,7 @@ jobs:
               - 'packages/contracts/src/index.ts'
               - 'packages/contracts/src/legion-roles.ts'
               - 'packages/contracts/src/related-forms.ts'
+              - 'packages/contracts/src/remote-text.ts'
               - 'packages/contracts/src/repo.ts'
               - 'packages/contracts/src/sha256.ts'
               - 'packages/contracts/src/slack.ts'
@@ -2666,6 +2681,8 @@ jobs:
               # Dispatch server's, which e2e/run-broker.sh builds in one `go build`.
               # agentloop: the model loop cmd/broker's judge runs a model and its tools through.
               - 'packages/envoy/agentloop/*'
+              # excerpt: the one redacted line brokertest names a page in the broker's place in.
+              - 'packages/envoy/excerpt/*'
               - 'packages/envoy/cmd/broker/*'
               - 'packages/envoy/cmd/dev-oidc-issuer/*'
               - 'packages/envoy/internal/broker/airlock/*'
@@ -3085,6 +3102,7 @@ jobs:
               - 'packages/contracts/src/index.ts'
               - 'packages/contracts/src/legion-roles.ts'
               - 'packages/contracts/src/related-forms.ts'
+              - 'packages/contracts/src/remote-text.ts'
               - 'packages/contracts/src/repo.ts'
               - 'packages/contracts/src/sha256.ts'
               - 'packages/contracts/src/slack.ts'
@@ -3178,6 +3196,7 @@ jobs:
               - 'packages/contracts/src/index.ts'
               - 'packages/contracts/src/legion-roles.ts'
               - 'packages/contracts/src/related-forms.ts'
+              - 'packages/contracts/src/remote-text.ts'
               - 'packages/contracts/src/repo.ts'
               - 'packages/contracts/src/sha256.ts'
               - 'packages/contracts/src/slack.ts'
@@ -3616,6 +3635,7 @@ jobs:
               - '!packages/envoy/cmd/natstail/**/*_test.go'
               - '!packages/envoy/cmd/spec-check/**/*_test.go'
               - '!packages/envoy/dispatchbody/**/*_test.go'
+              - '!packages/envoy/excerpt/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/infra/**/*_test.go'
               - '!packages/envoy/internal/broker/**/*_test.go'
@@ -3724,6 +3744,7 @@ jobs:
               - *go_workspace
               - 'packages/envoy/brokeraddr/*'
               - 'packages/envoy/going/*'
+              - 'packages/envoy/excerpt/*'
               - 'packages/envoy/going/goingtest/*'
               - 'packages/envoy/internal/broker/airlock/*'
               - 'packages/envoy/internal/broker/answer/*'
@@ -3838,6 +3859,7 @@ jobs:
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/redact/*'
+              - 'packages/envoy/internal/redact/redacttest/*'
               - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/roles/*'
               - 'packages/envoy/internal/routing/*'
@@ -3864,6 +3886,7 @@ jobs:
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/brokeraddr/**/*_test.go'
+              - '!packages/envoy/excerpt/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/internal/broker/**/*_test.go'
               - '!packages/envoy/internal/brokerclient/**/*_test.go'
@@ -3997,6 +4020,7 @@ jobs:
               - 'packages/envoy/internal/oidc/*'
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
+              - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/stacktest/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
@@ -4026,6 +4050,7 @@ jobs:
               - '!packages/envoy/internal/oidc/**/*_test.go'
               - '!packages/envoy/internal/pglisten/**/*_test.go'
               - '!packages/envoy/internal/pgmigrate/**/*_test.go'
+              - '!packages/envoy/internal/redact/**/*_test.go'
               - '!packages/envoy/internal/stacktest/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               # END generated
@@ -4124,6 +4149,7 @@ jobs:
               - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/redact/*'
+              - 'packages/envoy/oauth2call/*'
               - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/listenfd/*'
               # packages/envoy/migrationid is the identifier rule the daemon's embedded
@@ -4176,6 +4202,8 @@ jobs:
               - *go_workspace
               - 'packages/envoy/brokeraddr/*'
               - 'packages/envoy/agentloop/*'
+              # excerpt: the one redacted line brokertest names a page in the broker's place in.
+              - 'packages/envoy/excerpt/*'
               - 'packages/envoy/cmd/broker/*'
               - 'packages/envoy/cmd/agent-secrets/*'
               # cmd/broker/main_test.go:348 (sslrootcert).
@@ -4251,6 +4279,7 @@ jobs:
               - '!packages/envoy/agentloop/**/*_test.go'
               - '!packages/envoy/brokeraddr/**/*_test.go'
               - '!packages/envoy/cmd/agent-secrets/**/*_test.go'
+              - '!packages/envoy/excerpt/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               # END generated
@@ -4351,6 +4380,7 @@ jobs:
               - '!packages/envoy/clitest/**/*_test.go'
               - '!packages/envoy/cmd/**/*_test.go'
               - '!packages/envoy/dispatchbody/**/*_test.go'
+              - '!packages/envoy/excerpt/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/infra/aws/**/*_test.go'
               - '!packages/envoy/infra/cmd/**/*_test.go'
@@ -4462,11 +4492,13 @@ jobs:
               - 'packages/envoy/dispatchbody/**'
               - 'packages/envoy/docker/**'
               - 'packages/envoy/docs/**'
+              - 'packages/envoy/excerpt/**'
               - 'packages/envoy/going/**'
               - 'packages/envoy/internal/**'
               - 'packages/envoy/listenfd/**'
               - 'packages/envoy/loadtest/**'
               - 'packages/envoy/migrationid/**'
+              - 'packages/envoy/oauth2call/**'
               - 'packages/envoy/roleholder/**'
               - 'packages/envoy/scripts/**'
               - 'packages/envoy/sessiontiming/**'

@@ -20,7 +20,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -284,7 +283,7 @@ func TestContractASiblingRoleIsRefusedAnotherRolesSession(t *testing.T) {
 	}
 	err := trade(keyA, sessionB)
 	var refused *brokerclient.RefusedError
-	if !errors.As(err, &refused) || refused.Code != "invalid_grant" || !strings.Contains(refused.Description, sessionB) {
+	if !errors.As(err, &refused) || !refused.HasCode("invalid_grant") || !refused.DescriptionContains(sessionB) {
 		t.Fatalf("role A, holding the pod's exchange token and its own key, traded for role B's session %s: %v; want it refused invalid_grant naming %s", sessionB, err, sessionB)
 	}
 	for _, c := range []struct {
@@ -352,7 +351,7 @@ func TestContractALateOldIncarnationWriteKeepsTheNewKey(t *testing.T) {
 	}
 	err = tradeAs(t, rig, exchangeToken, oldKey, session)
 	var refused *brokerclient.RefusedError
-	if !errors.As(err, &refused) || refused.Code != "invalid_grant" || !strings.Contains(refused.Description, session) {
+	if !errors.As(err, &refused) || !refused.HasCode("invalid_grant") || !refused.DescriptionContains(session) {
 		t.Errorf("a trade for %s proved with the earlier process's key: %v, want it refused invalid_grant naming %s", session, err, session)
 	}
 }

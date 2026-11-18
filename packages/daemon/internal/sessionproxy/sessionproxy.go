@@ -26,6 +26,7 @@ import (
 	"google.golang.org/api/impersonate"
 	"google.golang.org/api/option"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 )
 
@@ -421,5 +422,5 @@ func connectorOptions(ctx context.Context, account string, iam ...option.ClientO
 	if err != nil {
 		return nil, fmt.Errorf("impersonate %s for the database login: %w", account, err)
 	}
-	return append(opts, cloudsqlconn.WithIAMAuthNTokenSources(api, login)), nil
+	return append(opts, cloudsqlconn.WithIAMAuthNTokenSources(oauth2call.TokenSource(api), oauth2call.TokenSource(login))), nil
 }

@@ -43,7 +43,7 @@ test("membership_held is not a final refusal", async () => {
   try {
     const during = await refusalOf(() => client.token());
     expect(during).toBeInstanceOf(BrokerRefusedError);
-    expect((during as BrokerRefusedError).code).toBe("membership_held");
+    expect((during as BrokerRefusedError).hasCode("membership_held")).toBe(true);
     expect(isFinalRefusal(during), "the trade's membership_held read as a final refusal").toBe(
       false
     );
@@ -93,7 +93,7 @@ test("membership_held answers the token in hand while it is live", async () => {
     clock.now += 60_000;
     const lapsed = await refusalOf(() => client.token());
     expect(lapsed).toBeInstanceOf(BrokerRefusedError);
-    expect((lapsed as BrokerRefusedError).code).toBe("membership_held");
+    expect((lapsed as BrokerRefusedError).hasCode("membership_held")).toBe(true);
     expect(isFinalRefusal(lapsed), "the lapsed token's membership_held read as final").toBe(false);
 
     held = false;
