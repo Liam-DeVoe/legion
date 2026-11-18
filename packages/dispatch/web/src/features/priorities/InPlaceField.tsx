@@ -1,4 +1,5 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   borderDefault,
   calloutWarningBg,
@@ -23,16 +24,22 @@ export const SAVE_AFTER_MS = 500;
  * other person's text, and lets the others go; keeping theirs lets every one go. A title's or a
  * description's write names the text it goes over (`usePriorityWrites`), so it is refused if a
  * third text arrived meanwhile; the owner's write names none. Nothing is dropped until the reader
- * picks. It is an alert, since the reader's text has just left the field they were writing in,
- * and it is drawn in spans and buttons alone, since the title's field stands in the page's
- * heading.
+ * picks. It is an alert, since the reader's text has just left the field they were writing in.
+ * A one-line field names it as what describes it (`aria-describedby`, by `id`), so the two stay
+ * tied wherever it is drawn: a field standing in a heading has it drawn outside the heading
+ * (`InPlaceField`'s `noticeAt`), so the heading is named by the field's text alone. It is drawn
+ * in spans and buttons alone, since the owner's field on the priority's page, which draws it
+ * beside itself, stands in a span.
  */
 export function ChangedMeanwhile({
+  id,
   label,
   mine,
   onKeepTheirs,
   onUse,
 }: {
+  /** The notice's own id, which the one-line field it stands for names in `aria-describedby`. */
+  id?: string;
   /** The field's own name, which names the notice. */
   label: string;
   /** The reader's texts, newest first, each drawn as written: every line of it, its spaces kept. */
@@ -45,6 +52,7 @@ export function ChangedMeanwhile({
     <span
       aria-label={`${label}, changed by another person`}
       className={`mt-1 block space-y-1 rounded-lg border p-2 text-sm font-normal ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
+      id={id}
       role="alert"
     >
       {mine.length === 1 ? (
@@ -115,13 +123,16 @@ function heldText(draft: string, base: string, required: boolean): string {
  * taken in at once - with the focus in the field or not - while the reader holds no unwritten
  * typing and no write of theirs is out. Else it is taken in all the same, the waiting write is
  * stopped, and the reader's text is kept beside the field (`ChangedMeanwhile`) until they use it
- * again or let it go. Where the page holds those texts (`kept`, `onKeptChange`) they outlive the
- * field, and a field drawn again shows them again; else they go with it.
+ * again or let it go; where the page gives that notice a place of its own (`noticeAt`), it is
+ * drawn there, and the field names it as what describes it either way. Where the page holds
+ * those texts (`kept`, `onKeptChange`) they outlive the field, and a field drawn again shows
+ * them again; else they go with it.
  */
 export function InPlaceField({
   id,
   kept: keptByPage,
   label,
+  noticeAt,
   onKeptChange,
   onSave,
   options,
@@ -135,6 +146,11 @@ export function InPlaceField({
    *  `onKeptChange` hears each change of them. */
   kept?: readonly string[];
   label: string;
+  /** Where the notice of the reader's kept texts is drawn, where the page gives it a place of its
+   *  own: a field standing in a heading would else draw it inside the heading, whose name would
+   *  then carry the notice's words. `null` is a place not drawn yet, which holds no notice until
+   *  it is; absent, the notice is drawn beside the field. */
+  noticeAt?: HTMLElement | null;
   onKeptChange?: (kept: readonly string[]) => void;
   onSave: (next: string) => void;
   /** What other rows already hold, offered beside the field: a reader picks one of the owners
@@ -152,6 +168,7 @@ export function InPlaceField({
   const kept = keptByPage ?? ownKept;
   const setKept = onKeptChange ?? setOwnKept;
   const timer = useRef<number | undefined>(undefined);
+  const noticeId = useId();
   // Where the field stands against the server's text (`FieldStand`): what the edit started from,
   // and the texts written that the server has not answered with yet, oldest first.
   const base = useRef(value);
@@ -209,12 +226,25 @@ export function InPlaceField({
     setDraft(text);
     if (text !== base.current) write(text);
   };
+  // The notice of the reader's kept texts: in the place the page gives it once that place is
+  // drawn, else beside the field, and named by the field as what describes it wherever it is.
+  const notice =
+    kept.length === 0 || noticeAt === null ? null : (
+      <ChangedMeanwhile
+        id={noticeId}
+        label={label}
+        mine={kept}
+        onKeepTheirs={() => setKept(NOTHING_KEPT)}
+        onUse={putBack}
+      />
+    );
   // A plain bordered field: it is the text's one reading, written where it is read, so nothing
   // hides it until the reader hovers it.
   const listId = options === undefined ? undefined : `${label.replace(/\W+/g, "-")}-options`;
   return (
     <>
       <input
+        aria-describedby={notice === null ? undefined : noticeId}
         aria-label={label}
         className={`w-full rounded-md border px-2 py-1 text-sm ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas} ${focusVisibleRing}`}
         id={id}
@@ -245,14 +275,7 @@ export function InPlaceField({
           ))}
         </datalist>
       )}
-      {kept.length === 0 ? null : (
-        <ChangedMeanwhile
-          label={label}
-          mine={kept}
-          onKeepTheirs={() => setKept(NOTHING_KEPT)}
-          onUse={putBack}
-        />
-      )}
+      {notice !== null && noticeAt ? createPortal(notice, noticeAt) : notice}
     </>
   );
 }

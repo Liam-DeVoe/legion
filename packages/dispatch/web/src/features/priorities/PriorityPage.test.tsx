@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { onFakeClock } from "../../__tests__/fake-clock";
 import { recordedEditors, selectText, writeAtEnd } from "../../__tests__/recorded-editors";
 import { answerPriorityPatches } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
@@ -274,6 +275,30 @@ test("a title the reader empties writes nothing, and left, shows the title again
   await user.tab();
   expect(title.value).toBe("Rocq and Lean speed work restarted");
   expect(patch).not.toHaveBeenCalled();
+});
+
+test("the title's notice stands outside the heading, which is named by the title alone, and the field names the notice", async () => {
+  // The clock is held, so the typing has not rested when the other person's title arrives,
+  // however long the typing takes here.
+  const user = userEvent.setup({ delay: null });
+  const { patch, writtenElsewhere } = page();
+  const title = (await screen.findByRole("textbox", { name: "Title" })) as HTMLInputElement;
+  await onFakeClock(async () => {
+    await user.type(title, ", mine");
+    writtenElsewhere({ title: "Written elsewhere" });
+  });
+  const notice = screen.getByRole("alert", { name: "Title, changed by another person" });
+  expect(within(notice).getByText("Rocq and Lean speed work restarted, mine")).toBeDefined();
+  expect(title.value).toBe("Written elsewhere");
+  expect(patch).not.toHaveBeenCalled();
+  // The heading holds the field, and its name is the title the field shows: nothing of the
+  // notice, which is drawn outside it.
+  const heading = screen.getByRole("heading", { level: 1, name: "Written elsewhere" });
+  expect(heading.contains(title)).toBe(true);
+  expect(heading.contains(notice)).toBe(false);
+  // The field and its notice stay tied all the same.
+  expect(notice.id).not.toBe("");
+  expect(title.getAttribute("aria-describedby")).toBe(notice.id);
 });
 
 test("the keyboard reaches the description's editor from the disclosure above it", async () => {

@@ -348,3 +348,77 @@ test("a required field the reader empties writes nothing, and left, shows the te
   view.unmount();
   expect(writes).toEqual([]);
 });
+
+/** The field as a page draws it that may give its notice a place of its own (`noticeAt`), as the
+ *  priority's page does for the title standing in its heading. The field stands in one region and
+ *  the place in another, so a row reads where the notice is drawn. */
+function PlacedField({
+  land,
+  placed,
+}: {
+  land: { write?: (text: string) => void };
+  placed: boolean;
+}): ReactNode {
+  const [value, setValue] = useState("Old name");
+  const [place, setPlace] = useState<HTMLElement | null>(null);
+  land.write = setValue;
+  return (
+    <>
+      <section aria-label="Field">
+        <InPlaceField
+          label="Title"
+          noticeAt={placed ? place : undefined}
+          onSave={() => undefined}
+          value={value}
+        />
+      </section>
+      <section aria-label="Place for the notice" ref={setPlace} />
+    </>
+  );
+}
+
+/** `PlacedField` drawn, with the reader's typing and another person's text landing under it. */
+async function placedField(placed: boolean) {
+  const user = userEvent.setup({ delay: null });
+  const land: { write?: (text: string) => void } = {};
+  const view = render(<PlacedField land={land} placed={placed} />);
+  const page = within(view.container);
+  const field = page.getByRole("textbox", { name: "Title" });
+  await onFakeClock(async () => {
+    await user.type(field, ", mine");
+    act(() => land.write?.("Written elsewhere"));
+  });
+  return {
+    field,
+    notice: page.getByRole("alert", { name: "Title, changed by another person" }),
+    place: page.getByRole("region", { name: "Place for the notice" }),
+    region: page.getByRole("region", { name: "Field" }),
+    user,
+    view,
+  };
+}
+
+test("a field given a place for its notice draws it there, and names it as what describes the field", async () => {
+  const { field, notice, place, region, user, view } = await placedField(true);
+  expect(within(notice).getByText("Old name, mine")).toBeDefined();
+  expect(notice.parentElement).toBe(place);
+  expect(region.contains(notice)).toBe(false);
+  expect(notice.id).not.toBe("");
+  expect(field.getAttribute("aria-describedby")).toBe(notice.id);
+  // Let go, the notice leaves its place empty, which a page may hide while it is, and the field
+  // names nothing.
+  await user.click(within(notice).getByRole("button", { name: "Keep their text" }));
+  expect(place.childNodes).toHaveLength(0);
+  expect(field.getAttribute("aria-describedby")).toBeNull();
+  view.unmount();
+});
+
+test("a field given no place for its notice draws it beside itself, and names it all the same", async () => {
+  const { field, notice, place, view } = await placedField(false);
+  expect(within(notice).getByText("Old name, mine")).toBeDefined();
+  expect(notice.parentElement).toBe(field.parentElement);
+  expect(place.childNodes).toHaveLength(0);
+  expect(notice.id).not.toBe("");
+  expect(field.getAttribute("aria-describedby")).toBe(notice.id);
+  view.unmount();
+});
