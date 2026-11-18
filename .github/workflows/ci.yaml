@@ -5246,9 +5246,10 @@ jobs:
   # for the reason .github/actions/pull-test-images gives. That step runs only the tests the tag
   # adds, one call per package: the unit step above already ran every untagged test of core, seed
   # and gcp, so each call takes its -run from .github/scripts/go-tagged-tests.sh, which reads the
-  # names off the source at run time. The gcp natslive tests pull no image:
-  # they install helm, nats-server, the config reloader and the exporter with go install, at the
-  # versions the clustered hub runs, and render the vendored chart in gcp/testdata. The per-target
+  # names off the source at run time. The gcp natslive tests pull no image and download nothing:
+  # they run helm, nats-server, the config reloader and the exporter at the versions the
+  # clustered hub runs, which the job's fetch step installs before the tests
+  # (gcp/testdata/live-tools.txt), and render the vendored chart in gcp/testdata. The per-target
   # compile runs in the lint job's notices step.
   envoy-infra-go:
     needs: changes

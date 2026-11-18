@@ -416,12 +416,18 @@ takes a grant change and refuses any change of the `auth_callout` block, one rea
 carry the `envoy-infra.sjawhar.dev/auth-callout` annotation.
 
 `gcp/clusteredhub_live_test.go` carries the `natslive` tag too, but starts no container and needs
-no Docker: it installs each tool it runs with `go install`, into a temporary `GOBIN` with
-`GOWORK=off`, at a pinned version, and a tool that does not install fails the test, never skips
-it. The tools are helm v3.20.2 (`helm.sh/helm/v3/cmd/helm`), the helm pulumi-kubernetes v4.34.2's
-provider renders charts with, and the versions chart 2.15.1 runs: nats-server v2.15.1, the config
-reloader v0.24.0 (`github.com/nats-io/nack/cmd/nats-server-config-reloader`) and
-prometheus-nats-exporter v0.20.2. `TestClusteredNatsHubChart` checks the vendored
+no Docker, and it downloads nothing while it runs. The tools it runs are pinned in
+`gcp/testdata/live-tools.txt`, one `go install` argument per line, and installed before the tests
+(`.github/scripts/go-fetch.sh tools`); each test takes its tool from `go env GOBIN` after checking
+the binary's build information against its pin, and fails, never skips, naming the `go install`
+command when the tool is absent or another build. The tools are helm v3.20.2
+(`helm.sh/helm/v3/cmd/helm`), the helm pulumi-kubernetes v4.34.2's provider renders charts with,
+and the versions chart 2.15.1 runs: nats-server v2.15.1, the config reloader v0.24.0
+(`github.com/nats-io/nack/cmd/nats-server-config-reloader`) and prometheus-nats-exporter v0.20.2.
+The envoy commands these tests, core's live tests and heldportwrapper's unit test build
+(`cmdtest.BuildCommand`) build with `GOPROXY=off`, so their modules are fetched before the tests
+too (`.github/scripts/go-fetch.sh deps .. ./cmd/listener ./cmd/dispatch`).
+`TestClusteredNatsHubChart` checks the vendored
 `gcp/testdata/nats-2.15.1.tgz` against the SHA-256 the chart index publishes, runs the hub under
 the mocks, writes its chart registration's `values` to a file and runs `helm template` on the
 archive: exactly the StatefulSet, the two Services, the ConfigMap and the budget render, with the
@@ -448,10 +454,12 @@ because routes keep their 30 s ping, and at least 12 MB of the burst has crossed
 then, so the row fails when the route closed early for another reason or the burst never crossed
 it. Its control, the same `nats.conf` without the pin, counts from the moment A has queued all of
 the burst: the route is closed as stale within 60.5 s of that moment, by the top-level 20 s ping.
-Installing the tools takes minutes on a cold module cache, which is why CI runs the `natslive`
-packages with `-timeout 30m`. To run them alone, from `packages/envoy/infra`:
+CI runs the `natslive` packages with `-timeout 30m`. To run them alone, from `packages/envoy/infra`,
+install the tools once, then run the tests:
 
 ```sh
+../../../.github/scripts/go-fetch.sh tools gcp/testdata/live-tools.txt
+../../../.github/scripts/go-fetch.sh deps .. ./cmd/listener ./cmd/dispatch
 go test -count=1 -tags natslive -run 'TestClusteredNatsHub(Chart|Cluster)' -v -timeout 20m ./gcp/
 ```
 
@@ -463,6 +471,8 @@ test -z "$(gofmt -l .)"
 go vet -tags pulumilive,natslive ./...
 flags=$(python3 ../../../.github/scripts/go_build_tags.py . darwin arm64)
 while IFS= read -r flag; do GOOS=darwin GOARCH=arm64 go vet "$flag" ./...; done <<< "$flags"
+../../../.github/scripts/go-fetch.sh tools gcp/testdata/live-tools.txt
+../../../.github/scripts/go-fetch.sh deps .. ./cmd/listener ./cmd/dispatch
 go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1
 go test -timeout 30m -tags natslive ./core/ ./seed/ ./gcp/
 ```
