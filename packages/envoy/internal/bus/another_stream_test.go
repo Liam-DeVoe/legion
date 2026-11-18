@@ -19,79 +19,6 @@ import (
 // notifications stream, which no session consumer reads.
 const anotherProgramsStream = "ANOTHER_PROGRAMS_STREAM"
 
-// Every stored publish of the bus counts as stored only on the acknowledgement of the
-// notifications stream (Stream), the one stream the session consumers read. A newer build's
-// notifications stream, which this build leaves as it is, can drop a subject this build stores,
-// and then another stream of the account may capture it: that stream's acknowledgement is of a
-// copy no consumer reads, so each stored publish answers an error for it, and neither stream holds
-// the message. Each kind of stored send is a row: the publish of an envelope on its own topic and
-// on a subject the caller names, the cursor write, a window's two sends and its request, and a
-// forward. The negative control runs every row first over a notifications stream that captures the
-// subject: nil and one copy each, so an error in the second run is the other stream's doing and not
-// the row's.
-func TestEveryStoredPublishIsStoredOnlyByTheNotificationsStream(t *testing.T) {
-	publishes := storedPublishes()
-	agentSubjects := contracts.AgentTopicPrefix + ">"
-	if !slices.Contains(streamCarriedSubjects, agentSubjects) {
-		t.Fatalf("this build carries no %s to drop", agentSubjects)
-	}
-	for _, stream := range []struct {
-		name     string
-		subjects []string
-		another  bool
-	}{
-		{"the notifications stream captures the subject", streamCarriedSubjects, false},
-		{"another stream captures the subject the notifications stream dropped", slices.DeleteFunc(slices.Clone(streamCarriedSubjects), func(s string) bool { return s == agentSubjects }), true},
-	} {
-		t.Run(stream.name, func(t *testing.T) {
-			uri := testnats.URL(t)
-			js := rawJetStream(t, uri)
-			if _, err := js.AddStream(&nats.StreamConfig{
-				Name:      Stream,
-				Subjects:  stream.subjects,
-				Retention: nats.LimitsPolicy,
-				Discard:   nats.DiscardNew,
-				Storage:   nats.FileStorage,
-				Metadata:  map[string]string{StreamIDMetadataKey: "stream-of-a-newer-build", generationKey: strconv.Itoa(streamConfigGeneration + 1)},
-			}); err != nil {
-				t.Fatalf("the newer build creates %s: %v", Stream, err)
-			}
-			if stream.another {
-				if _, err := js.AddStream(&nats.StreamConfig{Name: anotherProgramsStream, Subjects: []string{agentSubjects}, Storage: nats.FileStorage}); err != nil {
-					t.Fatalf("another program creates %s: %v", anotherProgramsStream, err)
-				}
-			}
-			client, err := ConnectOwningStream([]string{uri})
-			if err != nil {
-				t.Fatalf("connect: %v", err)
-			}
-			t.Cleanup(client.Close)
-			for i, p := range publishes {
-				subject := fmt.Sprintf("%sses_stored_%d", contracts.AgentTopicPrefix, i)
-				started := time.Now()
-				err := p.publish(client, subject)
-				elapsed := time.Since(started)
-				held := storedIn(t, js, Stream, subject)
-				elsewhere := uint64(0)
-				if stream.another {
-					elsewhere = storedIn(t, js, anotherProgramsStream, subject)
-				}
-				t.Logf("%s on %s: err=%v, %d in %s, %d in %s, after %s", p.name, subject, err, held, Stream, elsewhere, anotherProgramsStream, elapsed)
-				if err == nil && held == 0 {
-					t.Errorf("%s on %s answered nil and %s holds no copy (%d in %s)", p.name, subject, Stream, elsewhere, anotherProgramsStream)
-					continue
-				}
-				if !stream.another && (err != nil || held != 1) {
-					t.Errorf("control: %s on %s = %v with %d copies in %s, want nil and 1", p.name, subject, err, held, Stream)
-				}
-				if stream.another && (err == nil || held != 0 || elsewhere != 0) {
-					t.Errorf("%s on %s = %v with %d copies in %s and %d in %s, want an error and none", p.name, subject, err, held, Stream, elsewhere, anotherProgramsStream)
-				}
-			}
-		})
-	}
-}
-
 // storedPublish is one kind of stored send of the bus, made to subject. unanswered is the error of
 // the send's own words that a send nothing answered still carries beside ErrStreamLacksSubject,
 // since its callers read it: a publish's nats.ErrNoStreamResponse, a window's ErrNotAcknowledged,
@@ -151,16 +78,21 @@ func storedPublishes() []storedPublish {
 // stream's answer.
 const storedPublishWindow = 2 * time.Second
 
-// Every stored send of the bus that the notifications stream did not take because, as the client
-// read it, the deployed stream captures no subject of the send's is named ErrStreamLacksSubject,
-// with the subject and the stream's generation, as soon as the server says so: alone, where no
-// stream answers the send, and beside another stream that captures the subject, which refuses the
-// send that names the notifications stream. So a caller answers it as what it is and at once, and
-// does not retry it as a send nothing answered: the listener's role send stops after one forward
-// instead of forty, and a window's Request stops at the server's answer instead of at its timeout.
-// A send nothing answered keeps the words its callers read beside it (storedPublish.unanswered).
-// The negative control is the same sends over a stream that captures the subject: nil and one
-// copy each.
+// Every stored send of the bus counts as stored only on the acknowledgement of the notifications
+// stream (Stream), the one stream the session consumers read, and a send that stream did not take
+// because, as the client read it, the deployed stream captures no subject of the send's is named
+// ErrStreamLacksSubject, with the subject and the stream's generation, as soon as the server says
+// so. A newer build's notifications stream, which this build leaves as it is, can drop a subject
+// this build stores: then no stream answers the send, or another stream of the account captures
+// the subject, whose acknowledgement would be of a copy no session consumer reads, so it refuses
+// the send that names the notifications stream and neither stream holds the message. So a caller
+// answers it as what it is and at once, and does not retry it as a send nothing answered: the
+// listener's role send stops after one forward instead of forty, and a window's Request stops at
+// the server's answer instead of at its timeout. A send nothing answered keeps the words its
+// callers read beside it (storedPublish.unanswered). Each kind of stored send (storedPublishes) is
+// a row over each of three streams, and no row leaves a copy in the other stream. The negative
+// control is the stream that captures the subject: nil and one copy each, so an error over the
+// other two is the stream's doing and not the row's.
 func TestEveryStoredPublishTheDeployedStreamLeavesOutIsNamedErrStreamLacksSubjectAtOnce(t *testing.T) {
 	agentSubjects := contracts.AgentTopicPrefix + ">"
 	omitsAgent := slices.DeleteFunc(slices.Clone(streamCarriedSubjects), func(s string) bool { return s == agentSubjects })
@@ -206,7 +138,14 @@ func TestEveryStoredPublishTheDeployedStreamLeavesOutIsNamedErrStreamLacksSubjec
 				err := p.publish(client, subject)
 				elapsed := time.Since(started)
 				held := storedIn(t, js, Stream, subject)
-				t.Logf("%s on %s: err=%v, %d in %s, after %s", p.name, subject, err, held, Stream, elapsed)
+				elsewhere := uint64(0)
+				if stream.another {
+					elsewhere = storedIn(t, js, anotherProgramsStream, subject)
+				}
+				t.Logf("%s on %s: err=%v, %d in %s, %d in %s, after %s", p.name, subject, err, held, Stream, elsewhere, anotherProgramsStream, elapsed)
+				if elsewhere != 0 {
+					t.Errorf("%s on %s left %d copies in %s, which no session consumer reads, want none", p.name, subject, elsewhere, anotherProgramsStream)
+				}
 				if captures {
 					if err != nil || held != 1 {
 						t.Errorf("control: %s on %s = %v with %d copies, want nil and 1", p.name, subject, err, held)
