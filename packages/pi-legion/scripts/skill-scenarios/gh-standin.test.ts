@@ -13,17 +13,21 @@ afterEach(() => {
 /** The fields this file reads of a call the stand-in recorded to calls.jsonl. */
 interface Call {
   argv: string[];
+  /** The call as the routes read it, where the stand-in resolved one. */
+  request?: string;
   route: string | null;
   exit: number;
+  unmodeled?: true;
   published?: { status: number; body: string } | { error: string };
 }
 
 /** A run directory of a test's own, holding the routes the stand-in answers from. The environment
- * it reads is this process's without its Envoy variables, which a Legion pane exports for the live
- * relay, and then the world's own, so a row that publishes names its listener and its token file
- * after the directory exists, and a row that names none publishes nowhere. Each call is spawned
- * rather than run in this process: the stand-in is a process per call, and a test serving its
- * publish needs its own loop free while the call runs. */
+ * it reads is this process's without its Dispatch, Envoy and NATS variables, which a Legion pane
+ * exports for the live services, and then the world's own (`env`, which a row may add to). A row
+ * that publishes names its listener and its token file in the run's pane.env (`paneEnv`), as
+ * rig.sh does, and a row that names none publishes nowhere. Each call is spawned rather than run
+ * in this process: the stand-in is a process per call, and a test serving its publish needs its
+ * own loop free while the call runs. */
 function world(routes: unknown[]) {
   const run = runDirectory();
   const env: Record<string, string> = { SKILL_SCENARIO_RUN: run };
@@ -31,7 +35,7 @@ function world(routes: unknown[]) {
   /** One run of the stand-in with `argv`: a `gh` call, or the rig's `--check` of the file. */
   async function standinRun(...argv: string[]) {
     const inherited = Object.fromEntries(
-      Object.entries(process.env).filter(([name]) => !name.startsWith("ENVOY_"))
+      Object.entries(process.env).filter(([name]) => !/^(?:DISPATCH|ENVOY|NATS)_/.test(name))
     );
     const child = Bun.spawn(["bun", standin, ...argv], {
       env: { ...inherited, ...env },
@@ -98,6 +102,15 @@ function tokenFile(run: string, token: string): string {
   const file = path.join(run, "envoy-token");
   writeFileSync(file, `${token}\n`);
   return file;
+}
+
+/** Names `url` as the run's own listener, with the bearer `token`, in <run>/pane.env: the file
+ * rig.sh writes the agent's environment to, which the stand-in reads its listener from. */
+function paneEnv(run: string, url: string, token: string) {
+  writeFileSync(
+    path.join(run, "pane.env"),
+    `ENVOY_URL=${url}\nENVOY_TOKEN_FILE=${tokenFile(run, token)}\n`
+  );
 }
 
 /** The head's checks before a re-run and after it: the one row a re-run world turns on. */
@@ -291,7 +304,7 @@ test("a route that counts as another advances every route that follows that one"
   const { gh } = world([
     { match: "^gh pr checks", replies: [RED, GREEN], follows: "^gh run rerun" },
     { match: "^gh run rerun", stdout: RERUN },
-    { match: "^gh api -X POST", stdout: {}, counts_as: "^gh run rerun" },
+    { match: "^gh api POST ", stdout: {}, counts_as: "^gh run rerun" },
   ]);
   const before = await gh("pr", "checks");
   await gh("api", "-X", "POST", "repos/example/widgets/actions/runs/17420/rerun-failed-jobs");
@@ -333,29 +346,29 @@ const REVIEW = {
 };
 /** Routes that keep the reviews a role sends and read them back with their inline comments, and
  * take the comments it posts on a line or on the pull request, which they do not keep. */
-const LINE_COMMENT = "^gh api -X POST \\S+/pulls/\\d+/comments";
+const LINE_COMMENT = "^gh api POST \\S+/pulls/\\d+/comments";
 const UNTIL_LINE_COMMENT = {
   follows: LINE_COMMENT,
   replies: [{ stdout: [] }, { unmodeled: true }],
 };
 const REVIEW_ROUTES = [
-  { match: "^gh api -X POST \\S+/reviews(?:\\s|$)", review: REVIEW },
+  { match: "^gh api POST \\S+/reviews(?:\\s|$)", review: REVIEW },
   { match: LINE_COMMENT, stdout: { id: 1 } },
-  { match: "^gh api -X POST \\S+/issues/\\d+/comments", stdout: { id: 2 } },
-  { match: "^gh api \\S+/pulls/\\d+/comments", reviews: "comments", ...UNTIL_LINE_COMMENT },
+  { match: "^gh api POST \\S+/issues/\\d+/comments", stdout: { id: 2 } },
+  { match: "^gh api GET \\S+/pulls/\\d+/comments", reviews: "comments", ...UNTIL_LINE_COMMENT },
   {
-    match: "^gh api \\S+/reviews/(?<id>\\d+)/comments",
+    match: "^gh api GET \\S+/reviews/(?<id>\\d+)/comments",
     reviews: "review_comments",
     ...UNTIL_LINE_COMMENT,
   },
-  { match: "^gh api \\S+/reviews/(?<id>\\d+)", reviews: "one", ...UNTIL_LINE_COMMENT },
-  { match: "^gh api \\S+/reviews", reviews: "list", ...UNTIL_LINE_COMMENT },
+  { match: "^gh api GET \\S+/reviews/(?<id>\\d+)", reviews: "one", ...UNTIL_LINE_COMMENT },
+  { match: "^gh api GET \\S+/reviews", reviews: "list", ...UNTIL_LINE_COMMENT },
   { match: "^gh pr review", stdout: "", review: REVIEW },
   {
     match: "^gh pr view",
     stdout: { number: 1000 },
     reviews: "pr",
-    comments: "^gh api -X POST \\S+/issues/\\d+/comments",
+    comments: "^gh api POST \\S+/issues/\\d+/comments",
   },
 ];
 const REVIEWS = "repos/example/widgets/pulls/1000/reviews";
@@ -367,44 +380,18 @@ function inputFile(run: string, body: object): string {
   return file;
 }
 
-// Catches: a review sent with no event kept as anything but GitHub's pending review, or hidden
-// from its author; a second pending review, a review on another commit than the head, a body-less
-// changes request, an inline comment off the diff and flags gh refuses kept rather than refused;
-// a review's inline comments missing from the review-comment reads; a review read by an id no
-// review has; and the reads still answering once the role posts a line comment of its own.
-test("the reviews a role sends are kept as GitHub records them, and those the rig cannot state are refused", async () => {
-  const { gh, run, calls } = world(REVIEW_ROUTES);
+// The rules of the review model are review-keep.test.ts's, called directly. Catches: a review
+// route that keeps nothing across calls (the stand-in is a process per call, so what it keeps lives
+// in fixtures.json), a read mode wired to another read, a review or a read the model refuses
+// answered rather than refused as unmodeled, a review read by an id no review has answered other
+// than GitHub's 404, and the reads still answering once the role posts a line comment of its own.
+test("the reviews a role sends are kept across calls, read back by every read, and refused where the model refuses", async () => {
+  const { gh, run, calls, check } = world(REVIEW_ROUTES);
   const pending = JSON.parse((await gh("api", "-X", "POST", REVIEWS, "-f", "body=draft")).stdout);
   const refused = [
     await gh("api", "-X", "POST", REVIEWS, "-f", "body=again"),
-    await gh(
-      "api",
-      "-X",
-      "POST",
-      REVIEWS,
-      "-f",
-      "event=APPROVE",
-      "-f",
-      `commit_id=${"0".repeat(40)}`
-    ),
-    await gh("api", "-X", "POST", REVIEWS, "-f", "event=REQUEST_CHANGES"),
-    await gh("pr", "review", "1000"),
-    await gh("pr", "review", "1000", "--comment"),
     await gh("pr", "view", "1000", "--json", "latestReviews"),
-    await gh(
-      "api",
-      "-X",
-      "POST",
-      REVIEWS,
-      "--input",
-      inputFile(run, {
-        event: "COMMENT",
-        body: "x",
-        comments: [{ path: "b.ts", line: 1, body: "y" }],
-      })
-    ),
   ];
-  const before = await gh("api", "repos/example/widgets/pulls/1000/comments");
   const commented = JSON.parse(
     (
       await gh(
@@ -421,63 +408,40 @@ test("the reviews a role sends are kept as GitHub records them, and those the ri
       )
     ).stdout
   );
-  const after = await gh("api", "repos/example/widgets/pulls/1000/comments");
-  const ofReview = await gh("api", `${REVIEWS}/7002/comments`);
+  const comments = JSON.parse(
+    (await gh("api", "repos/example/widgets/pulls/1000/comments")).stdout
+  );
+  const ofReview = JSON.parse((await gh("api", `${REVIEWS}/7002/comments`)).stdout);
   const list = JSON.parse((await gh("api", REVIEWS)).stdout);
   const one = JSON.parse((await gh("api", `${REVIEWS}/7002`)).stdout);
   const none = await gh("api", `${REVIEWS}/7003`);
   const view = JSON.parse((await gh("pr", "view", "1000", "--json", "reviews,comments")).stdout);
 
-  expect([pending.id, pending.state, pending.body, "submitted_at" in pending]).toEqual([
-    7001,
-    "PENDING",
-    "draft",
-    false,
-  ]);
+  expect([pending.id, pending.state]).toEqual([7001, "PENDING"]);
   expect(
     refused.map((call) => [call.stderr.startsWith("rig: request not modeled: gh "), call.exit])
-  ).toEqual(Array(7).fill([true, 1]));
-  expect([commented.id, commented.state, commented.commit_id]).toEqual([7002, "COMMENTED", HEAD]);
-  const line = JSON.parse(after.stdout);
-  expect([before.stdout, ofReview.stdout]).toEqual(["[]\n", after.stdout]);
-  expect(
-    line.map((comment: Record<string, unknown>) => [
-      comment.id,
-      comment.pull_request_review_id,
-      comment.path,
-      comment.line,
-      comment.body,
-      comment.commit_id,
-    ])
-  ).toEqual([[7101, 7002, "a.ts", 3, "here", HEAD]]);
-  expect(list.map((review: { id: number; state: string }) => [review.id, review.state])).toEqual([
-    [7001, "PENDING"],
-    [7002, "COMMENTED"],
+  ).toEqual([
+    [true, 1],
+    [true, 1],
   ]);
+  expect([commented.id, commented.state, commented.commit_id]).toEqual([7002, "COMMENTED", HEAD]);
+  expect([comments.map((c: { id: number }) => c.id), ofReview]).toEqual([[7101], comments]);
+  expect(list.map((review: { id: number }) => review.id)).toEqual([7001, 7002]);
   expect(one).toEqual(commented);
   expect([none.stderr, none.exit]).toEqual(["gh: Not Found (HTTP 404)\n", 1]);
-  expect(
-    view.reviews.map((review: { state: string; submittedAt: string | null }) => [
-      review.state,
-      review.submittedAt === null,
-    ])
-  ).toEqual([
-    ["PENDING", true],
-    ["COMMENTED", false],
+  expect([view.reviews.map((review: { state: string }) => review.state), view.comments]).toEqual([
+    ["PENDING", "COMMENTED"],
+    [],
   ]);
-  expect(view.comments).toEqual([]);
   // A line comment posted on its own opens a review GitHub keeps and the stand-in does not.
   await gh("api", "-X", "POST", "repos/example/widgets/pulls/1000/comments", "-f", "body=z");
-  const unstated = [
-    await gh("api", REVIEWS),
-    await gh("api", "repos/example/widgets/pulls/1000/comments"),
-  ];
-  expect(unstated.map((call) => call.exit)).toEqual([1, 1]);
-  expect(calls().filter((call) => "unmodeled" in call).length).toBe(9);
+  expect((await gh("api", REVIEWS)).exit).toBe(1);
+  expect(calls().filter((call) => "unmodeled" in call).length).toBe(3);
+  expect((await check()).exit).toBe(0);
   const typo = world([{ match: "^gh pr view", reviews: "pr", comments: "^gh api nothing" }]);
   expect((await typo.check()).exit).toBe(2);
-  // Twenty stand-in processes one after another: past bun's 5 s default on a loaded machine.
-}, 60_000);
+  // Fourteen stand-in processes one after another: past bun's 5 s default on a loaded machine.
+}, 30_000);
 
 test("the re-run and the failed-log read are each recorded with the route that answered them", async () => {
   const log = "--- FAIL: TestSettlesTheHead (0.12s)";
@@ -530,11 +494,10 @@ test("a route's stderr names the text each named group of its match took in the 
 
 test("a route's publish posts the envelope the fixture wrote, with the bearer, to the listener", async () => {
   const envoy = listener();
-  const { env, gh, calls, run } = world([
+  const { gh, calls, run } = world([
     { match: "^gh run rerun \\d+ --failed", stdout: RERUN, publish: ENVELOPE },
   ]);
-  env.ENVOY_URL = envoy.url;
-  env.ENVOY_TOKEN_FILE = tokenFile(run, "rig-listener-bearer");
+  paneEnv(run, envoy.url, "rig-listener-bearer");
 
   const result = await gh("run", "rerun", "17420", "--failed");
 
@@ -553,8 +516,7 @@ test("a route's publish posts the envelope the fixture wrote, with the bearer, t
 test("a publish the listener refuses, or that reaches nothing, leaves the call's exit status alone", async () => {
   const refusing = listener(400, { error: "message is required", expected: ["message"] });
   const refused = world([{ match: "^gh run rerun", stdout: RERUN, publish: ENVELOPE }]);
-  refused.env.ENVOY_URL = refusing.url;
-  refused.env.ENVOY_TOKEN_FILE = tokenFile(refused.run, "rig-listener-bearer");
+  paneEnv(refused.run, refusing.url, "rig-listener-bearer");
 
   const answered = await refused.gh("run", "rerun", "17420", "--failed");
 
@@ -568,36 +530,226 @@ test("a publish the listener refuses, or that reaches nothing, leaves the call's
   const unreachable = world([{ match: "^gh run rerun", stdout: "", exit: 2, publish: ENVELOPE }]);
   // The dead address rig.sh's own probe uses: a listener bound and stopped here would be stopped
   // twice by the afterEach, and its freed port could be taken by another process mid-test.
-  unreachable.env.ENVOY_URL = "http://127.0.0.1:1";
-  unreachable.env.ENVOY_TOKEN_FILE = tokenFile(unreachable.run, "rig-listener-bearer");
+  paneEnv(unreachable.run, "http://127.0.0.1:1", "rig-listener-bearer");
 
   expect((await unreachable.gh("run", "rerun", "17420", "--failed")).exit).toBe(2);
   expect(unreachable.calls()[0]?.published).toHaveProperty("error");
 });
 
-// This process stands in for a Legion pane, whose ENVOY_URL and ENVOY_TOKEN_FILE name the live
-// relay. Catches: a world that hands the stand-in this process's environment whole, so a row that
-// names no listener of its own posts its settlement to that relay.
-test("a row that names no listener publishes nowhere, whatever Envoy this process names", async () => {
+// The stand-in's own environment stands in for a Legion pane's, whose ENVOY_URL and
+// ENVOY_TOKEN_FILE name the live relay: a stand-in run by hand from a pane is given them.
+// Catches: a stand-in that publishes to the listener its own environment names rather than the
+// one the run's pane.env names, which on 2026-11-18 posted a fixture's settlement to the live
+// relay (topic notifications.github.example.widgets.pr.1003.checks).
+test("a run whose pane.env names no listener publishes nowhere, whatever Envoy the stand-in is given", async () => {
   const pane = listener();
-  const { gh, calls, run } = world([
+  const { env, gh, calls, run } = world([
     { match: "^gh run rerun \\d+ --failed", stdout: RERUN, publish: ENVELOPE },
   ]);
-  const saved = { url: process.env.ENVOY_URL, tokenFile: process.env.ENVOY_TOKEN_FILE };
-  process.env.ENVOY_URL = pane.url;
-  process.env.ENVOY_TOKEN_FILE = tokenFile(run, "pane-relay-bearer");
-  try {
-    const result = await gh("run", "rerun", "17420", "--failed");
-    expect([result.stdout, result.exit]).toEqual([`${RERUN}\n`, 0]);
-  } finally {
-    for (const [name, value] of [
-      ["ENVOY_URL", saved.url],
-      ["ENVOY_TOKEN_FILE", saved.tokenFile],
-    ] as const) {
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
-    }
-  }
+  env.ENVOY_URL = pane.url;
+  env.ENVOY_TOKEN_FILE = tokenFile(run, "pane-relay-bearer");
+
+  const result = await gh("run", "rerun", "17420", "--failed");
+
+  expect([result.stdout, result.exit]).toEqual([`${RERUN}\n`, 0]);
   expect(pane.received).toEqual([]);
-  expect(calls()[0]?.published).toHaveProperty("error");
+  expect(calls()[0]?.published).toEqual({
+    error: `${run}/pane.env names no ENVOY_URL or ENVOY_TOKEN_FILE`,
+  });
+});
+
+// Catches: a route that reads the call as the agent typed it rather than as gh resolves it, so
+// `-R x` and `--repo=x` are two requests, text inside a body reads as a flag of its own (`--body
+// "a -R other/repo b"` taken for another repository), `{owner}/{repo}` reads as another
+// repository, a write sent with fields and no -X reads as a GET, and a flag the rig does not model
+// is answered as if it were absent.
+test("a call is read as gh resolves it: long flags, one argument after another, gh api's method and endpoint", async () => {
+  const { env, gh, calls } = world([
+    { match: "^gh pr view 1000(?:\\s|$)", stdout: { title: "t", number: 1000 } },
+    { match: "^gh pr comment 1000 ", stdout: "https://github.com/example/widgets/pull/1000" },
+    { match: "^gh api POST repos/example/widgets/pulls/1000/reviews(?:\\s|$)", stdout: { id: 1 } },
+    { match: "^gh api GET repos/example/widgets/pulls(?:\\s|$)", stdout: [{ number: 1000 }] },
+  ]);
+  env.GH_REPO = "example/widgets";
+  await gh("pr", "view", "1000", "-R", "example/widgets", "--json", "title");
+  await gh("pr", "view", "1000", "--repo=example/widgets", "--json=title");
+  await gh("pr", "comment", "1000", "--body", "a -R other/repo b");
+  await gh("api", "/repos/{owner}/{repo}/pulls/1000/reviews", "-f", "event=APPROVE");
+  await gh(
+    "api",
+    "-X",
+    "GET",
+    "https://api.github.com/repos/example/widgets/pulls",
+    "-f",
+    "state=open"
+  );
+  const web = await gh("pr", "view", "1000", "--web");
+
+  expect(calls().map((call) => call.request ?? null)).toEqual([
+    "gh pr view 1000 --repo example/widgets --json title",
+    "gh pr view 1000 --repo example/widgets --json title",
+    "gh pr comment 1000 --body a\u001f-R\u001fother/repo\u001fb",
+    "gh api POST repos/example/widgets/pulls/1000/reviews --raw-field event=APPROVE",
+    "gh api GET repos/example/widgets/pulls --raw-field state=open",
+    null,
+  ]);
+  expect(calls().map((call) => call.route)).toEqual([
+    "^gh pr view 1000(?:\\s|$)",
+    "^gh pr view 1000(?:\\s|$)",
+    "^gh pr comment 1000 ",
+    "^gh api POST repos/example/widgets/pulls/1000/reviews(?:\\s|$)",
+    "^gh api GET repos/example/widgets/pulls(?:\\s|$)",
+    null,
+  ]);
+  expect([web.stderr, web.exit, calls()[5]?.unmodeled]).toEqual([
+    "rig: request not modeled: gh pr view 1000 --web\n",
+    1,
+    true,
+  ]);
+  // Six stand-in processes one after another: 1.1 s on a quiet pod, 1.8 to 3.0 s beside the rig
+  // suite (measured), and past bun's 5 s default beside two replays.
+}, 12_000);
+
+// Catches: a --json read that drops a field gh refuses or the world does not hold and answers
+// exit 0 without it, where gh 2.98.0 refuses an unknown field with its list (measured) and the
+// rig cannot say what GitHub holds for the other; fields printed in the order the call names them
+// rather than gh's; and `--paginate --slurp` printed as one page rather than a list of pages.
+test("--json picks gh's fields by name, refuses one gh does not know, and leaves one the world lacks unmodeled", async () => {
+  const { gh, calls } = world([
+    { match: "^gh pr view 1000(?:\\s|$)", stdout: { title: "t", number: 1000, headRefOid: HEAD } },
+    { match: "^gh pr list(?:\\s|$)", stdout: [{ number: 1, title: "a", state: "OPEN" }] },
+    { match: "^gh api GET repos/example/widgets/pulls(?:\\s|$)", stdout: [{ number: 1000 }] },
+  ]);
+  const picked = await gh("pr", "view", "1000", "--json", "title,number");
+  const listed = await gh("pr", "list", "--json", "title,number");
+  const unknown = await gh("pr", "view", "1000", "--json", "bogus");
+  const lacking = await gh("pr", "view", "1000", "--json", "number,mergeStateStatus");
+  const slurped = await gh("api", "repos/example/widgets/pulls", "--paginate", "--slurp");
+
+  expect([picked.stdout, listed.stdout, slurped.stdout]).toEqual([
+    `${JSON.stringify({ number: 1000, title: "t" })}\n`,
+    `${JSON.stringify([{ number: 1, title: "a" }])}\n`,
+    JSON.stringify([[{ number: 1000 }]]),
+  ]);
+  expect([unknown.stdout, unknown.exit]).toEqual(["", 1]);
+  expect(unknown.stderr).toStartWith(
+    'Unknown JSON field: "bogus"\nAvailable fields:\n  additions\n  assignees\n  author\n'
+  );
+  expect([lacking.stdout, lacking.stderr, lacking.exit]).toEqual([
+    "",
+    "rig: request not modeled: gh pr view 1000 --json number,mergeStateStatus\n",
+    1,
+  ]);
+  expect(calls().map((call) => call.unmodeled ?? false)).toEqual([
+    false,
+    false,
+    false,
+    true,
+    false,
+  ]);
+});
+
+// Catches: a GraphQL read answered with the whole object a route holds rather than the query's own
+// selection, a field the world does not hold answered as missing rather than refused, a pull
+// request the world does not have answered with the world's own (round 5's `pullRequest(number:
+// 999)`), and two spellings of one query read as two requests.
+test("a GraphQL query is answered with its own selection of the world, or GitHub's error, or refused", async () => {
+  const { gh, calls } = world([
+    {
+      match: "^gh api POST graphql ",
+      graphql: true,
+      stdout: {
+        graphql: {
+          'repository(name:"widgets",owner:"example")': {
+            name: "widgets",
+            "pullRequest(number:1000)": { $ref: "pr" },
+            "pullRequest(*)": {
+              $error: {
+                type: "NOT_FOUND",
+                message: "Could not resolve to a PullRequest with the number of {number}.",
+              },
+            },
+          },
+        },
+        $refs: { pr: { title: "t", number: 1000, headRefOid: HEAD } },
+      },
+    },
+  ]);
+  const query = (pr: string) =>
+    `{repository(owner:"example",name:"widgets"){pullRequest(number:${pr}){title}}}`;
+  const selected = await gh("api", "graphql", "-f", `query=${query("1000")}`);
+  const variables = await gh(
+    "api",
+    "graphql",
+    "-F",
+    "n=1000",
+    "-f",
+    'query=query($n:Int!){ repository(name: "widgets", owner: "example") { pr: pullRequest(number: $n) { number headRefOid } } }'
+  );
+  const missing = await gh("api", "graphql", "-f", `query=${query("999")}`);
+  const unheld = await gh(
+    "api",
+    "graphql",
+    "-f",
+    'query={repository(owner:"example",name:"widgets"){pullRequest(number:1000){title bogus}}}'
+  );
+  const respelled = await gh(
+    "api",
+    "graphql",
+    "-f",
+    'query={ repository( name: "widgets", owner: "example" ) { pullRequest( number: 1000 ) { title } } }'
+  );
+
+  expect([selected.stdout, selected.exit]).toEqual([
+    JSON.stringify({ data: { repository: { pullRequest: { title: "t" } } } }),
+    0,
+  ]);
+  expect(JSON.parse(variables.stdout)).toEqual({
+    data: { repository: { pr: { number: 1000, headRefOid: HEAD } } },
+  });
+  expect([JSON.parse(missing.stdout), missing.stderr, missing.exit]).toEqual([
+    {
+      data: { repository: { pullRequest: null } },
+      errors: [
+        {
+          type: "NOT_FOUND",
+          path: ["repository", "pullRequest"],
+          locations: [{ line: 1, column: query("999").indexOf("pullRequest") + 1 }],
+          message: "Could not resolve to a PullRequest with the number of 999.",
+        },
+      ],
+    },
+    "gh: Could not resolve to a PullRequest with the number of 999.\n",
+    1,
+  ]);
+  expect([unheld.stdout, unheld.exit, calls()[3]?.unmodeled]).toEqual(["", 1, true]);
+  expect(respelled.stdout).toBe(selected.stdout);
+  expect(calls()[4]?.request).toBe(calls()[0]?.request);
+});
+
+// Catches: a measured answer printed in other bytes than the files hold, or with the probe's
+// commit (1111…1111) where the call named another, and a `$<name>` in a route's stdout left
+// unfilled; and a `gh api` body printed with a newline after it, which gh does not print.
+test("a route's github answer prints the measured files with the call's commit, and gh api adds no newline", async () => {
+  const { gh } = world([
+    {
+      match: "^gh api GET repos/example/widgets/commits/(?<commit>\\w+)/check-runs(?:\\s|$)",
+      github: "checkruns-422",
+      sha: "commit",
+    },
+    {
+      match: "^gh api GET repos/example/widgets/commits/(?<commit>\\w+)/status(?:\\s|$)",
+      stdout: { sha: "$<commit>" },
+    },
+  ]);
+  const files = (part: string) =>
+    readFileSync(path.join(import.meta.dir, "github-answers", `checkruns-422.${part}`), "utf8");
+  const refused = await gh("api", "repos/example/widgets/commits/abc123/check-runs");
+  const status = await gh("api", "repos/example/widgets/commits/abc123/status");
+  expect([refused.stdout, refused.stderr, refused.exit]).toEqual([
+    files("stdout").replaceAll("1".repeat(40), "abc123"),
+    files("stderr").replaceAll("1".repeat(40), "abc123"),
+    1,
+  ]);
+  expect([status.stdout, status.exit]).toEqual(['{"sha":"abc123"}', 0]);
 });

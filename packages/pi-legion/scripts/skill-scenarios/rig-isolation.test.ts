@@ -16,14 +16,16 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 // checkout that holds its e2e helpers and stand-ins for what a run reaches:
 //   - docker: the batch's Postgres container;
 //   - packages/dispatch/e2e/run-server.sh: a server that answers every request with the database
-//     its DATABASE_URL names;
-//   - seed.ts: records the Dispatch that each seed reached, and writes the fixture;
+//     its DATABASE_URL names, and records the Dispatch, Envoy and NATS variables it was handed;
+//   - seed.ts: records the Dispatch that each seed reached, and the variables it was handed, and
+//     writes the fixture;
 //   - tmux: runs the pane's command at once;
 //   - mise: answers `mise where <pin>` with a pin whose bin/omp is the agent, which records the
-//     Dispatch variables of its environment, and runs `mise x <pin> -- <command>` as the command
-//     (a run names its pin's omp by path).
+//     Dispatch, Envoy and NATS variables of its environment, and runs `mise x <pin> -- <command>`
+//     as the command (a run names its pin's omp by path).
 // Each run must get a database of its own, a server of its own and a DISPATCH_URL of its own, and
-// must stop its server when it ends.
+// must stop its server when it ends; and the rig is started with a Legion pane's Envoy, Dispatch
+// and NATS in its environment (CALLER), none of which may reach anything it starts.
 setDefaultTimeout(120_000);
 
 // Every row here runs the rig through python3, which puts it in a process group of its own
@@ -76,6 +78,17 @@ put(
   ["#!/usr/bin/env bash", 'exec bun "$STUB_DIR/server.ts"', ""].join("\n"),
   0o755
 );
+/** The lines a stub runs to record, under `who`, every DISPATCH_, ENVOY_ and NATS_ variable of its
+ * own environment to <stub>/service-env.log: the probe of what the rig hands on to a process it
+ * starts. */
+const recordServiceEnv = (who: string) => [
+  "appendFileSync(",
+  '  path.join(process.env.STUB_DIR ?? "", "service-env.log"),',
+  `  JSON.stringify({ who: ${JSON.stringify(who)}, env: Object.fromEntries(`,
+  "    Object.entries(process.env).filter(([name]) => /^(?:DISPATCH|ENVOY|NATS)_/.test(name))",
+  '  ) }) + "\\n"',
+  ");",
+];
 // No DISPATCH_E2E_PORT: the server takes a port of the kernel's choosing and reports it as the Go
 // server does (`msg="dispatch: listening" addr=127.0.0.1:<port>`), which start_dispatch reads from
 // the run's own log.
@@ -96,6 +109,7 @@ put(
     // Bun expands them when it runs.
     `  \`\${process.pid} \${server.port} \${process.env.DATABASE_URL}\\n\``,
     ");",
+    ...recordServiceEnv("server"),
     `console.log(\`msg="dispatch: listening" addr=127.0.0.1:\${server.port}\`);`,
     "",
   ].join("\n")
@@ -113,6 +127,7 @@ put(
     '  path.join(process.env.STUB_DIR ?? "", "seeds.log"),',
     '  JSON.stringify({ command, port, database }) + "\\n"',
     ");",
+    ...recordServiceEnv("seed"),
     'if (command === "askgate")',
     "  writeFileSync(",
     '    file ?? "",',
@@ -165,7 +180,7 @@ put(
   path.join(bin, "pin", "bin", "omp"),
   [
     "#!/usr/bin/env bash",
-    'env | grep "^DISPATCH_" | sort >"$SKILL_SCENARIO_RUN/agent-env.txt"',
+    'env | grep -E "^(DISPATCH|ENVOY|NATS)_" | sort >"$SKILL_SCENARIO_RUN/agent-env.txt"',
     "",
   ].join("\n"),
   0o755
@@ -199,6 +214,20 @@ put(path.join(work, "services/dispatch-token"), "e2e-token\n");
 /** The tag rig.sh names the work directory's containers with. */
 const tag = `skill-scenarios-${new Bun.CryptoHasher("sha256").update(work).digest("hex").slice(0, 8)}`;
 
+/** The Envoy, Dispatch and NATS of the rig's caller, as a Legion pane exports them, each value
+ * naming `caller-sentinel` so a row finds it wherever it lands: rig.sh drops them at its start,
+ * so neither run's agent, pane.env, seeds nor server is handed one. */
+const CALLER = {
+  ENVOY_URL: "http://caller-sentinel.invalid:9020",
+  ENVOY_CONFIG_FILE: "/caller-sentinel/envoy.json",
+  ENVOY_TOKEN_FILE: "/caller-sentinel/envoy-token",
+  ENVOY_NATS_URL: "nats://caller-sentinel.invalid:4222",
+  DISPATCH_URL: "http://caller-sentinel.invalid:8080",
+  DISPATCH_HOST: "caller-sentinel.invalid",
+  DISPATCH_TOKEN_FILE: "/caller-sentinel/dispatch-token",
+  DISPATCH_SESSION_ID: "caller-sentinel-session",
+};
+
 /** The caller's PATH behind the stand-ins, a HOME of the test's own, and the caller's mise data
  * and config directories when the caller names them: jq is a mise shim on a devbox, which finds
  * nothing under a fresh HOME without them. A caller that names neither gets neither, so the
@@ -220,6 +249,7 @@ const env = {
   STUB_DIR: stub,
   SKILL_SCENARIOS_WORK: work,
   SKILL_SCENARIOS_ASKGATE_CASE: "facts",
+  ...CALLER,
 };
 
 /** The parent between the test and the rig: it puts the rig in a process group of its own
@@ -375,6 +405,31 @@ test.skipIf(withoutPython)(
       );
     }
     expect(urls.size).toBe(2);
+  }
+);
+
+// Catches: a rig that hands its caller's Envoy, Dispatch or NATS (a Legion pane's, CALLER above)
+// to a process it starts, the agent among them: rig.sh drops every DISPATCH_*, ENVOY_* and NATS_*
+// variable at its start, and launch runs the agent under `env -i` with its pane.env alone, which
+// holds the rig's own values. Each stub records the variables of those families it was handed.
+test.skipIf(withoutPython)(
+  "no Envoy, Dispatch or NATS of the caller's reaches an agent, its pane.env, a seed or a server",
+  () => {
+    const handed = lines(path.join(stub, "service-env.log")).map(
+      (line) => JSON.parse(line) as { who: string; env: Record<string, string> }
+    );
+    const records = [
+      ...runs.flatMap(({ dir }) => [
+        ...lines(path.join(dir, "pane.env")).map((line) => `pane.env ${line}`),
+        ...lines(path.join(dir, "agent-env.txt")).map((line) => `agent ${line}`),
+      ]),
+      ...handed.flatMap(({ who, env }) =>
+        Object.entries(env).map(([name, value]) => `${who} ${name}=${value}`)
+      ),
+    ];
+    expect(new Set(handed.map(({ who }) => who))).toEqual(new Set(["seed", "server"]));
+    expect(records.filter((record) => record.startsWith("agent DISPATCH_URL=")).length).toBe(2);
+    expect(records.filter((record) => record.includes("caller-sentinel"))).toEqual([]);
   }
 );
 

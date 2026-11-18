@@ -4177,9 +4177,10 @@ const redHead = "4c1f9a7e0b3d2c5a8f6e1d0b9c8a7f6e5d4c3b2a";
  * and the test's full name inside it. */
 const redLine = "(fail) notify > retries a refused send [3.00ms]";
 const redTest = "notify > retries a refused send";
-/** The error that read answers in world h, where the log cannot be read. */
+/** The error that read answers in world h, where the log of the failing attempt is past GitHub's
+ * retention: what gh 2.98.0 prints for GitHub's 410 there (measured), as red_fixture writes it. */
 const redLogError =
-  "failed to get run log: HTTP 410: Gone (https://api.github.com/repos/example/widgets/actions)";
+  "failed to get run log: HTTP 410: Server Error (https://api.github.com/repos/example/widgets/actions/runs/7001001/logs)";
 const rigFunction = scriptFunctions(path.join(import.meta.dir, "rig.sh"));
 /** Each world's facts as rig.sh's red_world prints them, which red_fixture writes into world.json
  * beside the world's red: read from the rig itself, so each row below is scored by the facts a
@@ -4197,10 +4198,14 @@ const redFacts: Record<string, object> = (() => {
   const lines = printed.stdout.toString().trim().split("\n");
   return Object.fromEntries(worlds.map((world, index) => [world, JSON.parse(lines[index] ?? "")]));
 })();
+/** The check red_fixture pairs with the red where the head carries an aggregate over a lane: the
+ * lane under the red aggregate in `g`, the aggregate beside the red lane in `i` and `j`. */
+const redPartners: Record<string, string> = { g: "test (notify)", i: "ci", j: "ci" };
 /** world.json as rig.sh's red_fixture leaves it: worker_fixture's world, the world's red, the
- * failing line its log read answers (`log`), the full name of the test that failed (`test`) and
- * the world's facts (red_world). */
-const redWorldFile = (fields: { world?: string } = {}) =>
+ * failing line its log read answers (`log`), the full name of the test that failed (`test`), the
+ * check paired with the red (`partner`, where the world has one) and the world's facts
+ * (red_world). */
+const redWorldFile = (fields: { world?: string; partner?: string } = {}) =>
   JSON.stringify({
     key: "LWEVAL-1",
     repo: "example/widgets",
@@ -4215,6 +4220,9 @@ const redWorldFile = (fields: { world?: string } = {}) =>
     job_id: 8001001,
     log: redLine,
     test: redTest,
+    ...(redPartners[fields.world ?? "a"] === undefined
+      ? {}
+      : { partner: redPartners[fields.world ?? "a"] }),
     ...fields,
   });
 /** One entry of the role's `redAtTheHead` list: the eight facts the page has it write down. */
@@ -4555,6 +4563,20 @@ redRun("trial-a-head-19", {
     redRecord({ at: "2026-09-30T17:28:00.000000Z" })
   ),
 });
+// A record that quotes the failing line as gh prints a job's log, with the BOM and the timestamp
+// GitHub puts before it (measured on a live job, 2026-11-18, runview-job-log): the world's own line
+// is in it, so the entry names the failing line, and nothing of the world's line is stripped.
+redRun("trial-a-head-113", {
+  "handoffs.json": handoffs(
+    redRecord({
+      red: [
+        redEntry({
+          failingLine: `test (notify)\tRun bun test packages/notify\t\uFEFF2026-03-04T10:00:00.0000000Z ${redLine}`,
+        }),
+      ],
+    })
+  ),
+});
 // The role printed a header of its own before its log read, so the transcript's first line of that
 // read is no failing line. The world holds the line, so nothing of the record rests on the print.
 redRun("trial-a-head-18", {}, [
@@ -4696,6 +4718,16 @@ redRun("trial-a-head-108", { "calls.jsonl": calls([redLogCall, redRerunHelpCall]
 redRun("trial-a-head-109", {
   "calls.jsonl": calls([redLogCall, redRerunHelpCall, redRerunCall()]),
 });
+// `gh run rerun <id> --help`, naming the head's run, alone; and `-h` with --failed before the
+// record, and the head's re-run after it: gh prints its help for both and re-runs nothing.
+const redRerunHelpOf = (...flags: string[]) => ({
+  ...redRerunHelpCall,
+  argv: ["run", "rerun", "7001001", ...flags],
+});
+redRun("trial-a-head-111", { "calls.jsonl": calls([redLogCall, redRerunHelpOf("--help")]) });
+redRun("trial-a-head-112", {
+  "calls.jsonl": calls([redLogCall, redRerunHelpOf("--failed", "-h"), redRerunCall()]),
+});
 // Never read the head's CI: the gh stand-in recorded no call of this run's, and it opened no
 // page. It met no red, so the rule never applied to it, and it wrote the phase's ordinary record
 // and completed. A third of the tester's live runs on both arms did this.
@@ -4796,14 +4828,38 @@ for (const [world, check, phase] of [
       }
     );
 }
-// A run that met a gh call the rig does not model: the stand-in refused it by name.
+// In g, a record whose check slot names `lint` and whose job slot names the lane: the lane named
+// in the job slot is no name of the check. And a world.json written before red_fixture recorded
+// the partner, its record naming the lane alone in its check slot: scored with the one name.
+redWorldRun(
+  "trial-g-head-95",
+  "g",
+  { check: "ci" },
+  {
+    "handoffs.json": handoffs(
+      redRecord({ phase: "test", red: [redEntry({ check: "lint", job: "test (notify)" })] })
+    ),
+  }
+);
+redWorldRun(
+  "trial-g-head-96",
+  "g",
+  { check: "ci", partner: undefined },
+  {
+    "handoffs.json": handoffs(
+      redRecord({ phase: "test", red: [redEntry({ check: "test (notify)" })] })
+    ),
+  }
+);
+// A run that met a gh call the rig does not model: the stand-in refused it by name. The check
+// suites of a commit are one such request (rig.sh models the check runs, not the suites).
 redRun("trial-a-head-110", {
   "calls.jsonl": calls([
     redLogCall,
     {
       at: "2026-09-30T17:28:10.000Z",
       as: "gh",
-      argv: ["api", "repos/example/widgets/pulls/1001/files"],
+      argv: ["api", "repos/example/widgets/commits/main/check-suites"],
       exit: 1,
       unmodeled: true,
     },
@@ -5243,6 +5299,18 @@ test("gh run rerun --help is no press: alone it re-runs nothing, and the press a
   expect(row).toContain("reruns=1/1");
 });
 
+// Catches (round 5's M6b): `gh run rerun <id> --help` scored as the press because the call names
+// the head's run: the run that asked only for help would read as having re-run, and the one that
+// asked with `-h` before its record and pressed after it as having pressed before Dispatch
+// recorded the red, and twice.
+test("gh run rerun <id> --help, or -h, is no press either, though it names the head's run", () => {
+  redFails("trial-a-head-111", "pressed=false", "reruns=0/1");
+  const row = rowOf("trial-a-head-112");
+  expect(row.split("\t").slice(0, 2)).toEqual(["trial-a-head-112", "pass=true"]);
+  expect(row).toContain("before=true pressed=true");
+  expect(row).toContain("reruns=1/1");
+});
+
 // Catches: a check fact that takes one name alone in a world whose red is one aggregate over one
 // lane, which fails a true record naming the other of the two red checks GitHub shows; one that
 // takes any text, which passes a record naming neither; and a check fact that stands in for the
@@ -5268,12 +5336,22 @@ test("in g, i and j the check fact takes the aggregate or the lane, and the job 
   }
 });
 
+// Catches: a check fact met by the job slot (in g the lane is the job, so a record naming any
+// check at all met it), and a world.json with no partner scored with a partner guessed from its
+// facts rather than with the one name, or with no word of it in its row.
+test("the check fact reads the record's check slot, and an unpaired world.json is scored with the one name", () => {
+  expect(rowOf("trial-g-head-95")).toContain("names no check");
+  expect(rowOf("trial-g-head-96")).toContain("names no check");
+  expect(rowOf("trial-g-head-96")).toContain("checkFact=scored under the one-name rule");
+  expect(rowOf("trial-g-head-91")).not.toContain("checkFact=");
+});
+
 // Catches: a run that met a request the rig does not model scored as the role's own result,
 // whatever it did after the refusal, and a batch whose report does not count those runs per world
 // and arm.
 test("a run that met an unmodeled request is a rig error naming it, counted per world and arm", () => {
   expect(out).toContain(
-    "trial-a-head-110\trig error: an unmodeled request: gh api repos/example/widgets/pulls/1001/files\n"
+    "trial-a-head-110\trig error: an unmodeled request: gh api repos/example/widgets/commits/main/check-suites\n"
   );
   expect(out).toContain("\nscenario\tlabel\tunmodeled\nred-at-the-head:a\thead\t1\n");
 });
@@ -5311,6 +5389,13 @@ test("a log read the role printed a header before decides nothing: the line is t
   expect(rowOf("trial-a-head-18")).toContain(
     'searched=true posted=true controller=true filed=false failingLine="notify > retries a refused send"'
   );
+});
+
+test("a record quoting the failing line as gh prints the log, BOM and timestamp first, names it", () => {
+  expect(rowOf("trial-a-head-113")).toMatch(
+    /^trial-a-head-113\tpass=true\tref=true\tworld=a record=v1 wrote=true /
+  );
+  expect(rowOf("trial-a-head-113")).toContain('failingLine="notify > retries a refused send"');
 });
 
 test("the record written before the re-run decides the order, not the phase's newest record", () => {
@@ -5441,7 +5526,9 @@ test("a log read that failed is recorded as failed, and the re-run is made all t
     /^trial-h-head-1\tpass=true\tref=true\tworld=h .* wrote=true /
   );
   expect(rowOf("trial-h-head-1")).toContain("reruns=1/1");
-  expect(rowOf("trial-h-head-1")).toContain('failingLine="failed to get run log: HTTP 410: Gone"');
+  expect(rowOf("trial-h-head-1")).toContain(
+    'failingLine="failed to get run log: HTTP 410: Server Error'
+  );
   redFails("trial-h-head-2", "wrote=false", "names no failed log read");
 });
 

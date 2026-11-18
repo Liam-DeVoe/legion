@@ -281,7 +281,11 @@ set -euo pipefail
 # which seed.ts calls, addresses PLAYWRIGHT_BASE_URL with E2E_AGENT_TOKEN whenever it is set.
 # PGHOSTADDR, PGSERVICE and PGSERVICEFILE go too: own_dispatch reads a given Postgres's URL with
 # the loopback guard's run_database_url, and require_loopback_dsn in
-# scripts/e2e/lib/loopback-dsn.sh:78-83 says why a caller of that guard clears the three.
+# scripts/e2e/lib/loopback-dsn.sh:78-83 says why a caller of that guard clears the three. The rig's
+# own values are set after this, each where it is needed: pane.env for an agent (base_env,
+# dispatch_session, boot_worker), and the services' own variables where each starts. The gh
+# stand-in and daemon-pane.ts drop the same three families again for what they run, since each
+# can be started outside this script (gh-standin.ts's and runDaemonPane's comments).
 for name in $(compgen -e); do
   case $name in DISPATCH_* | ENVOY_* | NATS_* | PLAYWRIGHT_BASE_URL | E2E_AGENT_TOKEN | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$name" ;; esac
 done
@@ -1567,85 +1571,390 @@ cmd_judge() {
   SKILL_SCENARIOS_WORK=$work exec bun "$here/judge.ts" run "$@"
 }
 
-# other_commit_routes HEAD_SHA BRANCH PR BASE BASE_SHA prints, as one JSON object, the routes that
-# answer a read of a commit other than the head, HEAD_SHA, of pull request PR: `rest` for the check
-# runs, the combined status and the statuses of a commit (commits/<ref>/check-runs, /status and
-# /statuses), and `graphql` for the rollup of a commit object (statusCheckRollup). worker_fixture
-# puts each list ahead of the route that answers the head's own reads of that kind, its generic
-# `(check-runs|status)` route and its GraphQL rollup route, which red_fixture turns red in place.
-# Each of those two matches a read of any commit, so before these routes a read of the base, or of
-# a commit nobody made, was answered the head's own checks: in the tester's round-9 batch at
+# other_commit_routes HEAD_SHA BRANCH PR BASE BASE_SHA prints, as one JSON object, what a read of a
+# commit names, for the head, HEAD_SHA, of pull request PR, and for the base, BASE_SHA on BASE:
+# `forms`, the regex of each commit's names in a REST path; `heads`, the matches of the head's own
+# check runs, combined status and statuses; `rest`, the routes that answer those three reads of
+# every other commit; and `graphql`, the names a GraphQL read of the repository gives a commit (an
+# object by its oid or its expression, a ref by its qualified name, the default branch), each
+# naming the node it resolves to in the world worker_fixture writes (`$refs`: head, base, head_ref,
+# base_ref), and every other name of an object or a ref answering null, GitHub's answer for a name
+# the repository does not resolve. worker_fixture puts `rest` ahead of the routes that answer the
+# head's own reads, which red_fixture turns red in place. Before these routes a read of the base, or
+# of a commit nobody made, was answered the head's own checks: in the tester's round-9 batch at
 # c0ace596, trial-j-nos1-4 read main's check runs at 77671688…, was answered the head's
 # `test (notify)` failure, and declined the re-run, since the base read as failing the same test
 # (red-at-the-head.md, "When the cause is another tree's"); runs of rounds 6 and 9 that read
-# `commits/null/…` or `commits/trunk/…` were answered the same red.
+# `commits/null/…` or `commits/trunk/…` were answered the same red. A GraphQL rollup read that
+# named the base by its default branch, its ref or a variable was answered the head's red too
+# until the round-5 review at 4728c2f7: the world now resolves every name itself.
 # A call names the head by HEAD_SHA or an abbreviation of it down to four digits, as git resolves
-# one, by BRANCH (also as heads/BRANCH or refs/heads/BRANCH, its slash also as %2F), or by the pull
-# request's head ref (pull/PR/head). None of these routes takes such a call, so every read of the
-# head answers what it answered before them. A call names the base by BASE_SHA or an abbreviation of
-# it, by BASE as a branch, or by `HEAD`, which GitHub resolves to the default branch. A GraphQL call
-# names its commit in an `oid` field (-F oid=<x>), in any field whose value is a full sha, or inline,
-# object(oid:"<x>") or object(expression:"<x>"); a rollup read that names no commit, the rollup of a
-# pull request's last commit say, is still the head's. The routes, in the order they are matched:
-#   rest     the base's check runs: none, since the rig runs nothing on the base
-#            the base's combined status: GitHub's answer for a commit nothing posted a status to,
-#              `pending` with no status
-#            the base's statuses: none, for the same reason
-#            any other commit's check runs, status or statuses: refused as GitHub refuses a ref it
-#              cannot resolve, `gh: No commit found for SHA: <ref> (HTTP 422)` and exit 1, since the
-#              rig knows no other commit and so can answer nothing of one truthfully. The stand-in
-#              puts the ref the call named in place of `$<commit>` (gh-standin.ts)
-#   graphql  the base's rollup: `statusCheckRollup: null` on the commit object, GitHub's rollup of a
-#              commit with no check and no status
-#            any other commit's rollup: `object: null`, GitHub's answer for an object the
-#              repository does not hold
+# one, by BRANCH (also as heads/BRANCH or refs/heads/BRANCH, its slash also as %2F in a path), or
+# by the pull request's head ref (pull/PR/head). A call names the base by BASE_SHA or an
+# abbreviation of it, by BASE as a branch, or by `HEAD`, which GitHub resolves to the default
+# branch. GraphQL's `object(oid:)` takes a full sha alone. The REST routes, in the order they are
+# matched:
+#   the base's check runs: none, since the rig runs nothing on the base
+#   the base's combined status: GitHub's answer for a commit nothing posted a status to, `pending`
+#     with no status
+#   the base's statuses: none, for the same reason
+#   any other commit, as GitHub answers a ref it does not hold (measured, github-answers/): its
+#     check runs and the commit itself `No commit found for SHA: <ref>` (422); a full sha's
+#     combined status `pending` with no status and its statuses none, as for any commit nothing
+#     posted a status to, and its check suites 422 too; any other ref's combined status `Ref not
+#     found`, and its statuses and check suites `Not Found` (404). The stand-in puts the ref the
+#     call named in place of the measured answer's commit, and of `$<commit>` (gh-standin.ts)
 other_commit_routes() {
   jq -nc --arg head "$1" --arg branch "$2" --arg pr "$3" --arg base "$4" --arg base_sha "$5" \
-    "$(route_defs)"'
+    --arg repo "$worker_repo" "$(route_defs)"'
     ("(?:" + ($head | abbreviations) + "|" + ($branch | branch)
      + "|(?:refs/)?pull/" + $pr + "/head)") as $heads
     | ("(?:" + ($base_sha | abbreviations) + "|" + ($base | branch) + "|HEAD)") as $bases
-    # Where a GraphQL call names its commit, and where the name ends.
-    | "(?:\\soid=|\\s\\w+=(?=[0-9a-f]{40}(?![0-9a-f]))|\\b(?:oid|expression):\\s*\\\\?\")" as $names
-    | "(?![^\\s\"\\\\)}])" as $ends
-    | {forms:{head:$heads, base:$bases},
-       heads:{rollup:graphql_read("statusCheckRollup"),
-              "check-runs":api("commits/" + $heads + "/check-runs"),
-              status:api("commits/" + $heads + "/status"),
-              statuses:api("commits/" + $heads + "/statuses")},
-       rest:[
-         {match:api("commits/" + $bases + "/check-runs"), stdout:{total_count:0, check_runs:[]}},
-         {match:api("commits/" + $bases + "/status"), base_read:"status",
-          stdout:{state:"pending", statuses:[], total_count:0, sha:$base_sha}},
-         {match:api("commits/" + $bases + "/statuses"), stdout:[]},
-         {match:api("commits/(?!" + $heads + "/)(?<commit>[^\\s?]*)/(?:check-runs|statuses?)"),
-          stderr:"gh: No commit found for SHA: $<commit> (HTTP 422)\n", exit:1}],
-       graphql:[
-         {match:("(?=.*" + $names + $bases + $ends + ")" + graphql_read("statusCheckRollup")),
-          stdout:{data:{repository:{object:{statusCheckRollup:null}}}}},
-         {match:("(?=.*" + $names + "(?!" + $heads + $ends + ")[^\\s\"\\\\)}])"
-                 + graphql_read("statusCheckRollup")),
-          stdout:{data:{repository:{object:null}}}}]}'
+    # Every name GraphQL resolves a commit or a ref by, keyed as gh-graphql.ts keys a field.
+    | def names($sha; $ref): [range(4; 41) as $n | $sha[0:$n]]
+        + [$ref, "refs/heads/" + $ref, "heads/" + $ref];
+      def object($field; $value): "object(" + $field + ":" + ($value | tojson) + ")";
+      def qualified($value): "ref(qualifiedName:" + ($value | tojson) + ")";
+    {forms:{head:$heads, base:$bases},
+     heads:{"check-runs":api("commits/" + $heads + "/check-runs"),
+            "check-suites":api("commits/" + $heads + "/check-suites"),
+            status:api("commits/" + $heads + "/status"),
+            statuses:api("commits/" + $heads + "/statuses")},
+     rest:[
+       {match:api("commits/" + $bases + "/check-runs"), stdout:{total_count:0, check_runs:[]}},
+       {match:api("commits/" + $bases + "/status"), stdout:combined_status($base_sha)},
+       {match:api("commits/" + $bases + "/statuses"), stdout:[]},
+       ({match:api("commits/(?!" + $heads + "/)(?<commit>[^\\s?]*)/check-runs")}
+        + github("checkruns-422"; "commit")),
+       {match:api("commits/(?!" + $heads + "/)(?<commit>[0-9a-f]{40})/status"),
+        stdout:combined_status("$<commit>")},
+       {match:api("commits/(?!" + $heads + "/)(?<commit>[0-9a-f]{40})/statuses"), stdout:[]},
+       ({match:api("commits/(?!" + $heads + "/)(?<commit>[0-9a-f]{40})/check-suites")}
+        + github("suites-422"; "commit")),
+       ({match:api("commits/(?!" + $heads + "/)[^\\s?]*/status")} + github("status-ref-404")),
+       ({match:api("commits/(?!" + $heads + "/)[^\\s?]*/statuses")} + github("statuses-ref-404")),
+       ({match:api("commits/(?!" + $heads + "/)[^\\s?]*/check-suites")} + github("suites-ref-404")),
+       ({match:api("commits/(?!(?:" + $heads + "|" + $bases + ")(?=[?\\s]|$))(?<commit>[^\\s?/]+)")}
+        + github("commit-422"; "commit"))],
+     graphql:(([[$head, "head"], [$base_sha, "base"]] | map({(object("oid"; .[0])): {"$ref":.[1]}}) | add)
+       + ([names($head; $branch)[], "refs/pull/" + $pr + "/head", "pull/" + $pr + "/head"]
+          | map({(object("expression"; .)): {"$ref":"head"}}) | add)
+       + (names($base_sha; $base) + ["HEAD"] | map({(object("expression"; .)): {"$ref":"base"}}) | add)
+       + {(qualified("refs/heads/" + $branch)): {"$ref":"head_ref"}, (qualified($branch)): {"$ref":"head_ref"},
+          (qualified("refs/heads/" + $base)): {"$ref":"base_ref"}, (qualified($base)): {"$ref":"base_ref"},
+          "object(*)": null, "ref(*)": null, defaultBranchRef:{"$ref":"base_ref"}})}'
 }
 
 # route_defs prints the jq definitions every route writer here shares: how a regex names a text
-# alone, a commit by its sha or any abbreviation of it, and a branch by its name; and where a route
-# looks in a call. A REST route anchors on the endpoint path itself, the argument after `gh api`
-# and any options ahead of it, which ends at its query or at the end of the argument, so no text
-# inside another argument (a --jq filter, a field) and no text inside a query string makes it
-# match: before this the generic `(check-runs|status)` route took a pull request files read whose
-# --jq named `.status`, and a protection read whose --jq named `required_status_checks`. A GraphQL
-# route anchors on the `graphql` endpoint and reads the query, which is the request itself.
+# alone, a commit by its sha or any abbreviation of it, and a branch by its name; where a route
+# looks in a call; and the errors GitHub and gh answer for what they cannot find. Each writer binds
+# `$repo`, the world's repository. A route reads the call's request as the gh stand-in resolves it
+# (gh-standin.ts): a REST route anchors on the method gh sends and the endpoint path, in the
+# world's repository, which ends at its query or at the end of the argument, so no text inside
+# another argument (a --jq filter, a field) and no text inside a query string makes it match, and
+# it takes no media type but JSON in an `Accept` header, since another type is another answer;
+# before this the generic `(check-runs|status)` route took a pull request files read whose --jq
+# named `.status`, and a protection read whose --jq named `required_status_checks`. A GraphQL route
+# anchors on the `graphql` endpoint, and the stand-in answers the query from the world it holds.
 route_defs() {
   printf '%s\n' '
     def literal: gsub("(?<c>[.*+?^${}()|\\[\\]\\\\])"; "\\\(.c)");
     def abbreviations: .[0:4] + (.[4:] | split("") | reverse
       | reduce .[] as $digit (""; "(?:" + $digit + . + ")?"));
     def branch: "(?:(?:refs/)?heads/)?" + (literal | gsub("/"; "(?:/|%2[Ff])"));
-    def api($path): "^gh api(?:\\s+\\S+)*?\\s+(?:https://api\\.github\\.com)?/?repos/[^/\\s]+/[^/\\s]+/"
-      + $path + "(?:\\?\\S*)?(?:\\s|$)";
-    def api_post($path): "^gh api(?=.*\\s(?:-X|--method)\\s?POST(?:\\s|$))" + (api($path) | ltrimstr("^gh api"));
-    def graphql_read($word): "^gh api(?:\\s+\\S+)*?\\s+graphql(?:\\s|$).*\\b" + $word + "\\b";'
+    def json_only: "(?!.*\\s--header\\s[Aa]ccept:(?!\\u001f*application/(?:vnd\\.github(?:\\.v3)?\\+)?json(?:\\s|$)))";
+    def rest($method; $path; $headers): "^gh api " + $method + " repos/" + ($repo | literal)
+      + (if $path == "" then "" else "/" + $path end) + "(?:\\?\\S*)?(?=\\s|$)" + $headers;
+    def api($path): rest("GET"; $path; json_only);
+    def api_post($path): rest("POST"; $path; json_only);
+    def graphql: "^gh api POST graphql ";
+    # An error GitHub answers, as measured (gh-standin.ts reads github-answers/<answer>): the body
+    # GitHub sent and the line gh prints for it; one that names a commit names the one the group
+    # `sha` took.
+    def github($answer): {github:$answer};
+    def github($answer; $sha): {github:$answer, sha:$sha};
+    # The repository as the REST API answers it within another object (a combined status), and the
+    # combined status of a commit nothing posted a status to, in the order GitHub answers them.
+    def repository: ($repo | split("/")) as [$owner, $name]
+      | {id:1, name:$name, full_name:$repo, private:false, owner:{login:$owner},
+         html_url:("https://github.com/" + $repo)};
+    def combined_status($sha): {state:"pending", statuses:[], sha:$sha, total_count:0,
+      repository:repository, commit_url:("https://api.github.com/repos/" + $repo + "/commits/" + $sha),
+      url:("https://api.github.com/repos/" + $repo + "/commits/" + $sha + "/status")};
+    def no_run($in; $id): {stderr:("failed to get run: HTTP 404: Not Found (https://api.github.com/repos/"
+      + $in + "/actions/runs/" + $id + "?exclude_pull_requests=true)\n"), exit:1};
+    def no_job($in; $id): {stderr:("failed to get job: HTTP 404: Not Found (https://api.github.com/repos/"
+      + $in + "/actions/jobs/" + $id + ")\n"), exit:1};
+    def no_runs($in): {stderr:("failed to get runs: HTTP 404: Not Found (https://api.github.com/repos/"
+      + $in + "/actions/runs?exclude_pull_requests=true&per_page=20)\n"), exit:1};
+    def no_repo($name): {stderr:("GraphQL: Could not resolve to a Repository with the name \u0027"
+      + $name + "\u0027. (repository)\n"), exit:1};
+    def no_pr($number): {stderr:("GraphQL: Could not resolve to a PullRequest with the number of "
+      + $number + ". (repository.pullRequest)\n"), exit:1};
+    def until_posted($post): {follows:$post, replies:[{stdout:[]}, {unmodeled:true}]};'
+}
+
+# The programs routes run over their answers, each printed whole by a function of its own, as
+# plain jq: gh-standin.ts runs a route's `program` with the call's arguments as $argv, whether the
+# call carried --json as $json, and the moment of the call as $now. program_defs prints what they
+# share: opt, the value a flag of the call names, by its short or its long name, as gh reads it.
+program_defs() {
+  cat <<'EOF'
+def opt($short; $long): ([range(0; ($argv|length) - 1) as $i
+    | select($argv[$i] == $short or $argv[$i] == $long) | $argv[$i + 1]]
+  + [$argv[] | select(startswith($long + "=")) | ltrimstr($long + "=")]) | first;
+EOF
+}
+
+# gh pr list as gh 2.98.0 prints it: its filters (--state, open unless it says; --head; --base;
+# --limit) over the one pull request of the world, and to no terminal number, title, branch,
+# state and creation, a tab between each, or the fields --json names.
+pr_list_program() {
+  program_defs
+  cat <<'EOF'
+(opt("-s"; "--state") // "open") as $state | opt("-H"; "--head") as $head
+| opt("-B"; "--base") as $base | (opt("-L"; "--limit") // "30" | tonumber) as $limit
+| [.] | map(select(($state == "open" or $state == "all")
+    and ($head == null or .headRefName == $head) and ($base == null or .baseRefName == $base)))
+| .[:$limit]
+| if $json then .
+  else map([(.number|tostring), .title, .headRefName, .state, .createdAt] | join("\t"))
+       | join("\n") end
+EOF
+}
+
+# gh pr view with no --json as gh 2.98.0 prints it to no terminal (measured): a line per field of
+# the pull request, empty for those the world holds none of, its author by the login GraphQL
+# gives a bot, and its body after `--`. Its reviewers line once the role has sent a review is
+# not measured, so a view after a review is refused (the program fails, gh-standin.ts).
+pr_view_program() {
+  cat <<'EOF'
+if (.reviews | length) > 0 then error("no measured reviewers line")
+else "title:\t\(.title)\nstate:\t\(.state)\nauthor:\t\(.author.login | ltrimstr("app/"))\n"
+  + "labels:\t\nassignees:\t\nreviewers:\t\nprojects:\t\nmilestone:\t\n"
+  + "number:\t\(.number)\nurl:\t\(.url)\nadditions:\t\(.additions)\n"
+  + "deletions:\t\(.deletions)\nauto-merge:\tdisabled\n--\n\(.body)" end
+EOF
+}
+
+# The REST list of the pull requests, filtered by its query as GitHub filters it: `state` (open
+# unless it says), `head` (owner:branch), `base`, and `per_page`.
+pulls_query_program() {
+  cat <<'EOF'
+([$argv[] | select(test("(^|/)pulls\\?"))] | first // "" | split("?")[1:] | join("?")) as $query
+| ($query | split("&") | map(select(. != "") | split("=")
+    | {key:.[0], value:(.[1:] | join("=") | gsub("%3[Aa]"; ":") | gsub("%2[Ff]"; "/"))})
+    | from_entries) as $p
+| map(select((($p.state // "open") == "open" or $p.state == "all")
+    and ($p.head == null or .head.label == $p.head)
+    and ($p.base == null or .base.ref == $p.base)))
+| .[:(($p.per_page // "30") | tonumber)]
+EOF
+}
+
+# gh run list, each run in the shape its --json answers it, filtered by its flags as gh asks
+# GitHub to filter them (--status, --workflow, --commit, --branch, --event, --limit, 20 unless it
+# says), and printed as gh 2.98.0 prints the list to no terminal: status, conclusion, title,
+# workflow, branch, event, id, elapsed and creation, a tab between each.
+run_list_program() {
+  program_defs
+  cat <<'EOF'
+def seconds: sub("\\..*Z$"; "Z") | fromdate;
+def elapsed: ((.updatedAt | seconds) - (.startedAt | seconds)) as $s
+  | (($s / 3600) | floor) as $h | ((($s % 3600) / 60) | floor) as $m
+  | (if $h > 0 then "\($h)h" else "" end)
+    + (if $h > 0 or $m > 0 then "\($m)m" else "" end) + "\($s % 60)s";
+opt("-s"; "--status") as $status | opt("-w"; "--workflow") as $workflow
+| opt("-c"; "--commit") as $commit | opt("-b"; "--branch") as $branch
+| opt("-e"; "--event") as $event | (opt("-L"; "--limit") // "20" | tonumber) as $limit
+| [.[] | select(($status == null or .status == $status or .conclusion == $status)
+    and ($workflow == null or .workflowName == $workflow
+         or ($workflow | test("(^|/)" + .workflowName + "\\.ya?ml$")))
+    and ($commit == null or .headSha == $commit)
+    and ($branch == null or .headBranch == $branch)
+    and ($event == null or .event == $event))] | .[:$limit]
+| if $json then .
+  else map([.status, .conclusion, .displayTitle, .workflowName, .headBranch, .event,
+            (.databaseId|tostring), elapsed, .createdAt] | join("\t")) | join("\n") end
+EOF
+}
+
+# The REST list of the runs of the repository, filtered by its query as GitHub filters it.
+runs_query_program() {
+  cat <<'EOF'
+([$argv[] | select(test("actions/runs\\?"))] | first // "" | split("?")[1:] | join("?"))
+  as $query
+| ($query | split("&") | map(select(. != "") | split("=")
+    | {key:.[0], value:(.[1:] | join("=") | gsub("%2[Ff]"; "/"))}) | from_entries) as $p
+| .workflow_runs |= map(select(($p.head_sha == null or .head_sha == $p.head_sha)
+    and ($p.branch == null or .head_branch == $p.branch)
+    and ($p.event == null or .event == $p.event)
+    and ($p.status == null or .status == $p.status or .conclusion == $p.status)))
+| .total_count = (.workflow_runs | length)
+| .workflow_runs |= .[:(($p.per_page // "30") | tonumber)]
+EOF
+}
+
+# The text gh 2.98.0 prints for `gh run view <run>` (`--verbose` lists the steps of every job,
+# without it the steps of a failed job alone) and for `gh run view --job <job>` to no terminal
+# (measured): the run's line, what triggered it and how long ago, its jobs, each with its time and
+# id, and where to look next. The program runs over {run, jobs} or {run, job}; how long ago is
+# gh's own rounding of $now less the run's creation.
+run_view_program() {
+  cat <<'EOF'
+def ago($t): ($now - ($t | fromdate)) as $s | (($s / 3600) | floor) as $h
+  | def about($n; $unit): "about \($n) \($unit)\(if $n == 1 then "" else "s" end) ago";
+  if $s < 60 then "less than a minute ago"
+  elif $s < 3600 then about(($s / 60) | floor; "minute")
+  elif $s < 86400 then about($h; "hour")
+  elif $s < 2592000 then about(($h / 24) | floor; "day")
+  elif $s < 31536000 then about(((($h / 24) | floor) / 30) | floor; "month")
+  else about(($s / 31536000) | floor; "year") end;
+def symbol: if . == "success" then "✓" elif . == "failure" then "X" else "-" end;
+def took: ((.completed_at | fromdate) - (.started_at | fromdate)) as $s
+  | (($s / 3600) | floor) as $h | ((($s % 3600) / 60) | floor) as $m
+  | if $h > 0 then "\($h)h\($m)m\($s % 60)s" elif $m > 0 then "\($m)m\($s % 60)s"
+    else "\($s % 60)s" end;
+def heading: "\n" + (.conclusion | symbol) + " " + .head_branch + " " + .name + " · "
+  + (.id | tostring) + "\nTriggered via " + .event + " " + ago(.created_at) + "\n\n";
+def line($steps): (.conclusion | symbol) + " " + .name + " in " + took + " (ID " + (.id | tostring)
+  + ")" + (if $steps then .steps | map("\n  " + (.conclusion | symbol) + " " + .name) | join("")
+           else "" end);
+if has("job") then
+  (.run | heading) + (.job | line(true)) + "\n\n"
+  + (if .job.conclusion == "failure"
+     then "To see the logs for the failed steps, try: gh run view --log-failed --job=\(.job.id)"
+     else "To see the full job log, try: gh run view --log --job=\(.job.id)" end)
+  + "\nView this run on GitHub: " + .run.html_url
+else
+  ($argv | any(. == "--verbose" or . == "-v")) as $verbose
+  | (.run | heading) + "JOBS\n" + (.jobs | map(line($verbose or .conclusion == "failure")) | join("\n"))
+  + "\n\n"
+  + (if .run.conclusion == "failure"
+     then "To see what failed, try: gh run view \(.run.id) --log-failed"
+     else "For more information about a job, try: gh run view --job=<job-id>" end)
+  + "\nView this run on GitHub: " + .run.html_url
+end
+EOF
+}
+
+# The words gh 2.98.0 prints to no terminal (measured against a local stand-in of the API): the
+# help of `gh run rerun`, whole, and the usage errors of `gh run rerun` and `gh run view` that
+# name no run and no job where no terminal is there to pick one. The help and the usage error of
+# `gh run rerun` share its flags. A caller reads each through $(…), which drops the newlines each
+# ends with: the help goes to stdout, which the stand-in ends with one newline, and a usage error,
+# which goes to stderr as it stands, has its one newline put back where a route answers it.
+rerun_flags() {
+  cat <<'EOF'
+  -d, --debug        Rerun with debug logging
+      --failed       Rerun only failed jobs, including dependencies
+  -j, --job string   Rerun a specific job ID from a run, including dependencies
+EOF
+}
+rerun_help() {
+  cat <<'EOF'
+Rerun an entire run, only failed jobs, or a specific job from a run.
+
+Note that due to historical reasons, the `--job` flag may not take what you expect.
+Specifically, when navigating to a job in the browser, the URL looks like this:
+`https://github.com/<owner>/<repo>/actions/runs/<run-id>/jobs/<number>`.
+
+However, this `<number>` should not be used with the `--job` flag and will result in the
+API returning `404 NOT FOUND`. Instead, you can get the correct job IDs using the following command:
+
+	gh run view <run-id> --json jobs --jq '.jobs[] | {name, databaseId}'
+
+You will need to use databaseId field for triggering job re-runs.
+
+
+USAGE
+  gh run rerun [<run-id>] [flags]
+
+FLAGS
+EOF
+  rerun_flags
+  cat <<'EOF'
+
+INHERITED FLAGS
+      --help                     Show help for command
+  -R, --repo [HOST/]OWNER/REPO   Select another repository using the [HOST/]OWNER/REPO format
+
+LEARN MORE
+  Use `gh <command> <subcommand> --help` for more information about a command.
+  Read the manual at https://cli.github.com/manual
+  Learn about exit codes using `gh help exit-codes`
+  Learn about accessibility experiences using `gh help accessibility`
+
+EOF
+}
+rerun_usage() {
+  printf '%s\n\n%s\n\n%s\n' '`<run-id>` or `--job` required when not running interactively' \
+    'Usage:  gh run rerun [<run-id>] [flags]' 'Flags:'
+  rerun_flags
+  printf '  \n'
+}
+view_usage() {
+  cat <<'EOF'
+run or job ID required when not running interactively
+
+Usage:  gh run view [<run-id>] [flags]
+
+Flags:
+  -a, --attempt uint      The attempt number of the workflow run
+      --exit-status       Exit with non-zero status if run failed
+  -j, --job string        View a specific job ID from a run
+  -q, --jq expression     Filter JSON output using a jq expression
+      --json fields       Output JSON with the specified fields
+      --log               View full log for either a run or specific job
+      --log-failed        View the log for any failed steps in a run or specific job
+  -t, --template string   Format JSON output using a Go template; see "gh help formatting"
+  -v, --verbose           Show job steps
+  -w, --web               Open run in the browser
+  
+EOF
+}
+
+# repo_snapshot SRC C0 C1 DATE prints what the repository at SRC holds, as GitHub answers it from
+# the remote worker_fixture pushed it to, as one JSON object: the pull request's diff and its
+# files (C0..C1), the two commits, each dated DATE, and the tree of each.
+repo_snapshot() {
+  local src=$1 c0=$2 c1=$3 date=$4 diff files commits trees
+  local g=(git -C "$src")
+  diff=$("${g[@]}" diff "$c0" "$c1")
+  files=$("${g[@]}" diff --name-status "$c0" "$c1" | while IFS=$'\t' read -r status name; do
+    jq -n --arg name "$name" --arg status "$status" --arg sha "$("${g[@]}" rev-parse "$c1:$name")" \
+      --arg patch "$("${g[@]}" diff "$c0" "$c1" -- "$name" | sed -n '/^@@/,$p')" \
+      --argjson lines "$("${g[@]}" diff --numstat "$c0" "$c1" -- "$name" | awk '{print "[" $1 "," $2 "]"}')" \
+      --arg repo "$worker_repo" --arg head "$c1" '
+      {sha:$sha, filename:$name,
+       status:({A:"added", M:"modified", D:"removed"}[$status] // "modified"),
+       additions:$lines[0], deletions:$lines[1], changes:($lines[0] + $lines[1]),
+       blob_url:("https://github.com/" + $repo + "/blob/" + $head + "/" + $name),
+       raw_url:("https://github.com/" + $repo + "/raw/" + $head + "/" + $name),
+       contents_url:("https://api.github.com/repos/" + $repo + "/contents/" + $name + "?ref=" + $head),
+       patch:$patch}'
+  done | jq -sc .)
+  commits=$(for c in "$c0" "$c1"; do
+    jq -n --arg sha "$c" --arg tree "$("${g[@]}" rev-parse "$c^{tree}")" \
+      --arg parent "$("${g[@]}" rev-parse -q --verify "$c^" || true)" \
+      --arg message "$("${g[@]}" log -1 --format=%B "$c")" \
+      --arg date "$date" --arg repo "$worker_repo" '
+      {sha:$sha,
+       commit:{message:$message, tree:{sha:$tree},
+               author:{name:"Fixture", email:"fixture@example.invalid", date:$date},
+               committer:{name:"Fixture", email:"fixture@example.invalid", date:$date}},
+       parents:(if $parent == "" then [] else [{sha:$parent}] end),
+       html_url:("https://github.com/" + $repo + "/commit/" + $sha)}'
+  done | jq -sc .)
+  trees=$(for c in "$c0" "$c1"; do
+    "${g[@]}" ls-tree -r -l "$c" | jq -Rsc --arg sha "$("${g[@]}" rev-parse "$c^{tree}")" '
+      {sha:$sha, truncated:false,
+       tree:(split("\n") | map(select(. != "")
+             | capture("^(?<mode>\\S+) (?<type>\\S+) (?<sha>\\S+)\\s+(?<size>\\S+)\t(?<path>.*)$")
+             | {path, mode, type, sha} + (if .type == "blob" then {size:(.size|tonumber)} else {} end)))}'
+  done | jq -sc .)
+  jq -nc --arg diff "$diff" --argjson files "$files" --argjson commits "$commits" \
+    --argjson trees "$trees" '{diff:$diff, files:$files, commits:$commits, trees:$trees}'
 }
 
 # The tester's frozen world under $R, on the run's own issue <key> (seed.ts tester-proof, which
@@ -1744,83 +2053,71 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
 **Fast-follow:** none.
 
 **Chain:** not stacked."
-  # What the repository holds, as GitHub answers it from the remote this fixture pushed: the pull
-  # request's diff and its files (base..head), the two commits, and the tree of each.
-  local diff files commits trees date
+  # What the repository holds, as GitHub answers it from the remote this fixture pushed.
+  local snapshot date
   date=$(date -u -d "@$((start + index))" +%Y-%m-%dT%H:%M:%SZ)
-  diff=$(g diff "$C0" "$C1")
-  files=$(g diff --name-status "$C0" "$C1" | while IFS=$'\t' read -r status name; do
-    jq -n --arg name "$name" --arg status "$status" --arg sha "$(g rev-parse "$C1:$name")" \
-      --arg patch "$(g diff "$C0" "$C1" -- "$name" | sed -n '/^@@/,$p')" \
-      --argjson lines "$(g diff --numstat "$C0" "$C1" -- "$name" | awk '{print "[" $1 "," $2 "]"}')" \
-      --arg repo "$worker_repo" --arg head "$C1" '
-      {sha:$sha, filename:$name,
-       status:({A:"added", M:"modified", D:"removed"}[$status] // "modified"),
-       additions:$lines[0], deletions:$lines[1], changes:($lines[0] + $lines[1]),
-       blob_url:("https://github.com/" + $repo + "/blob/" + $head + "/" + $name),
-       raw_url:("https://github.com/" + $repo + "/raw/" + $head + "/" + $name),
-       contents_url:("https://api.github.com/repos/" + $repo + "/contents/" + $name + "?ref=" + $head),
-       patch:$patch}'
-  done | jq -sc .)
-  commits=$(for c in "$C0" "$C1"; do
-    jq -n --arg sha "$c" --arg tree "$(g rev-parse "$c^{tree}")" \
-      --arg parent "$(g rev-parse -q --verify "$c^" || true)" --arg message "$(g log -1 --format=%B "$c")" \
-      --arg date "$date" --arg repo "$worker_repo" '
-      {sha:$sha,
-       commit:{message:$message, tree:{sha:$tree},
-               author:{name:"Fixture", email:"fixture@example.invalid", date:$date},
-               committer:{name:"Fixture", email:"fixture@example.invalid", date:$date}},
-       parents:(if $parent == "" then [] else [{sha:$parent}] end),
-       html_url:("https://github.com/" + $repo + "/commit/" + $sha)}'
-  done | jq -sc .)
-  trees=$(for c in "$C0" "$C1"; do
-    g ls-tree -r -l "$c" | jq -Rsc --arg sha "$(g rev-parse "$c^{tree}")" '
-      {sha:$sha, truncated:false,
-       tree:(split("\n") | map(select(. != "")
-             | capture("^(?<mode>\\S+) (?<type>\\S+) (?<sha>\\S+)\\s+(?<size>\\S+)\t(?<path>.*)$")
-             | {path, mode, type, sha} + (if .type == "blob" then {size:(.size|tonumber)} else {} end)))}'
-  done | jq -sc .)
+  snapshot=$(repo_snapshot "$src" "$C0" "$C1" "$date") || fail "worker_fixture: no snapshot of $src"
   # The routes the gh stand-in answers from. The head reads green in all four places an agent reads
   # it: the `gh pr view` rollup, `gh pr checks`, the GraphQL rollup of the head, and the commit's
-  # check runs. Ahead of the last two go the routes for a read of every other commit
+  # check runs. Ahead of the last go the routes for a read of every other commit
   # (other_commit_routes): the base, C0, as GitHub answers a commit nothing ran on, and any other
-  # commit as GitHub answers one it cannot find. Each route answers only from what the world
-  # holds; a request it cannot answer truthfully stays unmodeled, which the stand-in refuses.
+  # commit as GitHub answers one it cannot find; GraphQL resolves each name in the world itself.
+  # Each route answers only from what the world holds and only the request it names; anything
+  # else stays unmodeled, which the stand-in refuses (deny by default, in each route as across
+  # them).
   jq -n --arg head "$C1" --arg body "$body" --arg url "$worker_pr_url" --arg ref "legion/$worker_key" \
     --arg key "$worker_key" --argjson number "$worker_pr" --arg repo "$worker_repo" \
-    --arg base_sha "$C0" --arg date "$date" --arg diff "$diff" --argjson files "$files" \
-    --argjson commits "$commits" --argjson trees "$trees" \
+    --arg base_sha "$C0" --arg date "$date" --argjson snapshot "$snapshot" \
     --argjson others "$(other_commit_routes "$C1" "legion/$worker_key" "$worker_pr" main "$C0")" \
-    "$(route_defs)"'
-    {number:$number, url:$url, html_url:$url, title:("feat: greet() (" + $key + ")"), state:"OPEN", isDraft:false,
-     headRefName:$ref, headRefOid:$head, baseRefName:"main", body:$body, mergeable:"MERGEABLE",
-     reviewDecision:"", head:{sha:$head, ref:$ref}, base:{ref:"main"}, createdAt:$date,
-     statusCheckRollup:[{name:"test", status:"COMPLETED", conclusion:"SUCCESS"},
-                        {name:"lint", status:"COMPLETED", conclusion:"SUCCESS"}]} as $pr
+    --arg pr_list "$(pr_list_program)" --arg pr_view_text "$(pr_view_program)" \
+    --arg pulls_query "$(pulls_query_program)" "$(route_defs)"'
+    $snapshot as {$diff, $files, $commits, $trees}
     | ($number|tostring) as $n
-    | ($repo | literal) as $this
-    | "(?:[^/\\s]+/)?(?<other>[^/\\s]+/[^/\\s]+)(?:\\s|$)" as $other
-    | ("(?=.*\\s(?:-R|--repo)[\\s=](?!(?:[^/\\s]+/)?" + $this + "(?:\\s|$))") as $elsewhere
-    | {data:{repository:{pullRequest:($pr | {id:("PR_" + ($number|tostring)), number, title, state,
-        url, body, isDraft, mergeable, reviewDecision:null, headRefName, headRefOid,
-        baseRefName})}}} as $pr_fields
-    # gh pr list as gh 2.98.0 prints it: its filters (--state, open unless it says; --head;
-    # --base; --limit) over the one pull request of the world, and to no terminal number, title,
-    # branch, state and creation, a tab between each, or the fields --json names.
-    | ("def opt($short; $long): ([range(0; ($argv|length) - 1) as $i
-          | select($argv[$i] == $short or $argv[$i] == $long) | $argv[$i + 1]]
-        + [$argv[] | select(startswith($long + \"=\")) | ltrimstr($long + \"=\")]) | first;
-      (opt(\"-s\"; \"--state\") // \"open\") as $state | opt(\"-H\"; \"--head\") as $head
-      | opt(\"-B\"; \"--base\") as $base | (opt(\"-L\"; \"--limit\") // \"30\" | tonumber) as $limit
-      | [.] | map(select(($state == \"open\" or $state == \"all\")
-          and ($head == null or .headRefName == $head) and ($base == null or .baseRefName == $base)))
-      | .[:$limit]
-      | if any($argv[]; . == \"--json\" or startswith(\"--json=\")) then .
-        else map([(.number|tostring), .title, .headRefName, .state, .createdAt] | join(\"\\t\"))
-             | join(\"\\n\") end") as $pr_list
+    | ($repo | split("/")) as [$owner, $name]
+    | ("feat: greet() (" + $key + ")") as $title
+    # The green head checks of this world, `test` and `lint` of the `ci` workflow, each with the
+    # link `gh pr checks` prints for it and the time it took.
+    | [{name:"test", link:"https://example.invalid/2", seconds:20},
+       {name:"lint", link:"https://example.invalid/1", seconds:10}] as $checks
+    # The pull request in the fields gh 2.98.0 prints for `gh pr view --json` and `gh pr list
+    # --json` (measured), each one the world holds: its files in the shape gh prints them, its
+    # rollup as gh flattens it (a node per check run, its workflow named), and its author, the
+    # App of the rig. REST names that account rig[bot]; GitHub GraphQL names a bot by its bare
+    # login, rig, with no [bot] (as this repository records for the pull requests of its own App:
+    # the comment on searchPullRequestNode in packages/envoy/internal/dispatch/delivery/github_prs.go),
+    # and gh 2.98.0 prints a Bot author as is_bot true and `app/` before that login (measured
+    # against a local GraphQL stand-in). A field gh lists that the world does not hold is not here,
+    # and the stand-in refuses a read of it. The merge state is CLEAN (the MergeStateStatus of
+    # GitHub, https://docs.github.com/en/graphql/reference/enums#mergestatestatus: "Mergeable and
+    # passing commit status"): no check of this head fails and the base of this world requires none.
+    | {id:("PR_" + $n), number:$number, url:$url, title:$title, state:"OPEN", isDraft:false,
+       closed:false, closedAt:null, mergedAt:null, headRefName:$ref, headRefOid:$head,
+       baseRefName:"main", baseRefOid:$base_sha, body:$body, mergeable:"MERGEABLE",
+       mergeStateStatus:"CLEAN", reviewDecision:"", createdAt:$date, isCrossRepository:false,
+       author:{is_bot:true, login:"app/rig"}, labels:[], assignees:[], reviewRequests:[],
+       milestone:null, autoMergeRequest:null,
+       additions:($files | map(.additions) | add), deletions:($files | map(.deletions) | add),
+       changedFiles:($files | length),
+       files:($files | map({path:.filename, additions, deletions,
+                            changeType:({added:"ADDED", modified:"MODIFIED", removed:"DELETED"}[.status])})),
+       statusCheckRollup:($checks | map({__typename:"CheckRun", completedAt:$date, conclusion:"SUCCESS",
+                                         detailsUrl:.link, name, startedAt:$date, status:"COMPLETED",
+                                         workflowName:"ci"}))} as $pr
+    # The same pull request as the REST API answers it, the fields it holds at every moment of the
+    # run (no count of comments, which the stand-in does not keep).
+    | {url:("https://api.github.com/repos/" + $repo + "/pulls/" + $n), id:$number, node_id:("PR_" + $n),
+       html_url:$url, diff_url:($url + ".diff"), patch_url:($url + ".patch"), number:$number,
+       state:"open", locked:false, title:$title, user:{login:"rig[bot]", type:"Bot"}, body:$body,
+       labels:[], milestone:null, draft:false, created_at:$date, closed_at:null, merged_at:null,
+       merge_commit_sha:null, assignee:null, assignees:[], requested_reviewers:[], requested_teams:[],
+       head:{label:($owner + ":" + $ref), ref:$ref, sha:$head, user:{login:$owner}},
+       base:{label:($owner + ":main"), ref:"main", sha:$base_sha, user:{login:$owner}},
+       author_association:"NONE", auto_merge:null, merged:false, mergeable:true,
+       mergeable_state:"clean", merged_by:null, maintainer_can_modify:false, commits:1,
+       additions:$pr.additions, deletions:$pr.deletions, changed_files:$pr.changedFiles} as $pull
     | def tree_of($sha): $trees | map(select(.sha == ($commits[] | select(.sha == $sha) | .commit.tree.sha))) | first;
-      def ref_of($sha; $name): {ref:("refs/heads/" + $name),
-        url:("https://api.github.com/repos/" + $repo + "/git/refs/heads/" + $name),
+      def ref_of($sha; $branch): {ref:("refs/heads/" + $branch),
+        url:("https://api.github.com/repos/" + $repo + "/git/refs/heads/" + $branch),
         object:{sha:$sha, type:"commit",
                 url:("https://api.github.com/repos/" + $repo + "/git/commits/" + $sha)}};
       def contents($sha): tree_of($sha).tree | map(select(.type == "blob") | {name:.path, path,
@@ -1829,13 +2126,18 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
         download_url:("https://raw.githubusercontent.com/" + $repo + "/" + $sha + "/" + .path)});
     # Each route answers the one read or write it models, and a call no route models is refused
     # by the stand-in as unmodeled. `head_read` marks the reads of the head that red_fixture
-    # turns red where they stand: its rollup, and its check runs by any name of the head. The
-    # combined status of the head is GitHub own answer for a commit no status was posted to,
-    # whatever its check runs say, since a combined status holds statuses and no check run.
+    # turns red where they stand: the pull request (`pr`, the gh object, and `pull` and `pulls`,
+    # the REST ones, whose merge state follows the checks), its checks (`checks`), the GraphQL
+    # world (`graphql`), and its check runs by any name of the head (`check-runs`). The combined
+    # status of the head is GitHub own answer for a commit no status was posted to, whatever its
+    # check runs say, since a combined status holds statuses and no check run.
     # `repo_refusal` marks the answers for a repository other than the world, which GitHub
     # cannot see: REST answers its 404, the commands gh runs through GraphQL the words gh 2.98.0
     # prints for a repository GraphQL cannot resolve (measured), and the run commands the 404 of
     # the run, the job or the list they read. red_fixture keeps them ahead of every route.
+    # A pull request command names this pull request by its number; another number is answered
+    # what gh 2.98.0 prints for a pull request GraphQL cannot resolve (measured), and a branch, a
+    # URL or no number at all (gh then reads the branch of its working directory) is not modeled.
     # The reviews a role sends, with their inline comments, are kept by the stand-in, through the
     # routes that carry `review`, the template of each ($review: the head, the login of the rig,
     # which is no member or collaborator of the repository and so has the association NONE, the
@@ -1851,90 +2153,116 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
        added_lines:($files | map(select(.status == "added") | {(.filename):.additions}) | add // {})}
       as $review
     | api_post("pulls/" + $n + "/comments(?:/\\d+/replies)?") as $line_comment
-    | {follows:$line_comment, replies:[{stdout:[]}, {unmodeled:true}]} as $until_line_comment
+    | api_post("issues/" + $n + "/comments") as $issue_comment
+    # The world GraphQL reads (gh-graphql.ts): the repository, its pull request, the head and
+    # the base under every name GraphQL resolves them by, and the viewer.
+    | {graphql:{
+         ("repository(name:" + ($name|tojson) + ",owner:" + ($owner|tojson) + ")"):
+           ({("pullRequest(number:" + $n + ")"):{"$ref":"pr"},
+             "pullRequest(*)":{"$error":{type:"NOT_FOUND",
+               message:"Could not resolve to a PullRequest with the number of {number}."}},
+             name:$name, nameWithOwner:$repo, owner:{login:$owner}, url:("https://github.com/" + $repo)}
+            + $others.graphql),
+         "repository(*)":{"$error":{type:"NOT_FOUND",
+           message:"Could not resolve to a Repository with the name \u0027{owner}/{name}\u0027."}},
+         viewer:{login:"rig[bot]"}},
+       "$refs":{
+         head:{__typename:"Commit", oid:$head,
+               statusCheckRollup:{state:"SUCCESS",
+                 contexts:{totalCount:($checks|length), pageInfo:{hasNextPage:false},
+                           nodes:($checks | map({__typename:"CheckRun", name, status:"COMPLETED",
+                                                 conclusion:"SUCCESS", detailsUrl:.link}))}}},
+         base:{__typename:"Commit", oid:$base_sha, statusCheckRollup:null},
+         head_ref:{__typename:"Ref", name:$ref, prefix:"refs/heads/", target:{"$ref":"head"}},
+         base_ref:{__typename:"Ref", name:"main", prefix:"refs/heads/", target:{"$ref":"base"}},
+         pr:{__typename:"PullRequest", id:$pr.id, number:$number, title:$title, state:"OPEN",
+             url:$url, body:$body, isDraft:false, mergeable:"MERGEABLE", mergeStateStatus:"CLEAN",
+             reviewDecision:null, headRefName:$ref, headRefOid:$head, baseRefName:"main",
+             baseRefOid:$base_sha, createdAt:$date, headRef:{"$ref":"head_ref"},
+             baseRef:{"$ref":"base_ref"},
+             commits:{totalCount:1, nodes:[{commit:{"$ref":"head"}}]},
+             reviewThreads:{"$keep":"threads", until:$line_comment}}}} as $graphql
     | {routes:[
-      {match:("^gh api(?:\\s+\\S+)*?\\s+(?:https://api\\.github\\.com)?/?repos/(?!" + $this
-              + "(?:[/?\\s]|$))[^/\\s]+/[^/\\s]+"), repo_refusal:true, stderr:"gh: Not Found (HTTP 404)\n", exit:1},
-      {match:("^gh (?:pr|repo|issue)\\b" + $elsewhere + $other + ")"), repo_refusal:true,
-       stderr:"GraphQL: Could not resolve to a Repository with the name \u0027$<other>\u0027. (repository)\n",
-       exit:1},
-      {match:("^gh repo view\\s+(?!(?:[^/\\s]+/)?" + $this + "(?:\\s|$))" + $other), repo_refusal:true,
-       stderr:"GraphQL: Could not resolve to a Repository with the name \u0027$<other>\u0027. (repository)\n",
-       exit:1},
-      {match:("^gh run (?:view|rerun)\\b" + $elsewhere + $other + ")(?=.*\\s(?:-j|--job)[\\s=](?<job>\\d+))"),
-       repo_refusal:true,
-       stderr:"failed to get job: HTTP 404: Not Found (https://api.github.com/repos/$<other>/actions/jobs/$<job>)\n",
-       exit:1},
-      {match:("^gh run (?:view|rerun)\\b" + $elsewhere + $other + ")(?=.*?\\s(?<run>\\d+)(?:\\s|$))"),
-       repo_refusal:true,
-       stderr:("failed to get run: HTTP 404: Not Found (https://api.github.com/repos/$<other>/actions/runs/$<run>"
-               + "?exclude_pull_requests=true)\n"), exit:1},
-      {match:("^gh run list\\b" + $elsewhere + $other + ")"), repo_refusal:true,
-       stderr:("failed to get runs: HTTP 404: Not Found (https://api.github.com/repos/$<other>/actions/runs"
-               + "?exclude_pull_requests=true&per_page=20)\n"), exit:1},
-      {match:"^gh (?:--version|version)(?:\\s|$)",
+      # A request of another repository answers what GitHub answers for a repository it does not
+      # hold, measured for each request the archived runs make of one (github-answers/repo-404-*:
+      # the 404 of the endpoint asked, which names the documentation of that endpoint); any other
+      # request of another repository is not modeled. The read of a branch takes no path below
+      # the branch, whose protection reads answer their own 404.
+      ("repos/(?!" + ($repo | literal) + "(?:[/?\\s]|$))[^/\\s]+/[^/\\s]+") as $other
+      | def other($method; $path; $answer):
+          {match:("^gh api " + $method + " " + $other + $path + "(?:\\?\\S*)?(?=\\s|$)"),
+           repo_refusal:true} + github($answer);
+      other("GET"; ""; "repo-404-repo"),
+      other("GET"; "/pulls"; "repo-404-pulls-list"),
+      other("GET"; "/pulls/\\d+"; "repo-404-pulls"),
+      other("PATCH"; "/pulls/\\d+"; "repo-404-pull-patch"),
+      other("GET"; "/pulls/\\d+/reviews"; "repo-404-reviews"),
+      other("POST"; "/pulls/\\d+/reviews"; "repo-404-review-post"),
+      other("GET"; "/commits/[^/\\s?]+/check-runs"; "repo-404-checkruns"),
+      other("GET"; "/actions/runs"; "repo-404-runs-list"),
+      other("GET"; "/actions/runs/\\d+"; "repo-404-runs"),
+      other("GET"; "/actions/runs/\\d+/jobs"; "repo-404-run-jobs"),
+      other("GET"; "/actions/jobs/\\d+"; "repo-404-job"),
+      other("GET"; "/rules/branches/[^\\s?]+"; "repo-404-rules"),
+      other("GET"; "/branches/[^\\s?]+/protection"; "repo-404-protection"),
+      other("GET"; "/branches/[^\\s?]+/protection/required_status_checks"; "repo-404-required-checks"),
+      other("GET"; "/branches/(?![^\\s?]*/protection(?:/|[?\\s]|$))[^\\s?]+"; "repo-404-branch"),
+      {match:("^gh api [A-Z]+ repos/(?!" + ($repo | literal) + "(?:[/?\\s]|$))[^/\\s]+/[^/\\s]+"),
+       repo_refusal:true, unmodeled:true},
+      ({match:("^gh (?:pr|repo|issue) .*\\s--repo\\s(?!(?:[^/\\s]+/)?" + ($repo | literal)
+               + "(?:\\s|$))(?:[^/\\s]+/)?(?<other>[^/\\s]+/[^/\\s]+)(?:\\s|$)"), repo_refusal:true}
+       + no_repo("$<other>")),
+      ({match:("^gh repo view (?!(?:[^/\\s]+/)?" + ($repo | literal)
+               + "(?:\\s|$))(?:[^/\\s]+/)?(?<other>[^/\\s]+/[^/\\s]+)(?:\\s|$)"), repo_refusal:true}
+       + no_repo("$<other>")),
+      ({match:("^gh run (?:view|rerun)(?=.*\\s--repo\\s(?!(?:[^/\\s]+/)?" + ($repo | literal)
+               + "(?:\\s|$))(?:[^/\\s]+/)?(?<other>[^/\\s]+/[^/\\s]+)(?:\\s|$))(?=.*\\s--job\\s(?<job>\\d+)(?:\\s|$))"),
+        repo_refusal:true} + no_job("$<other>"; "$<job>")),
+      ({match:("^gh run (?:view|rerun) (?<run>\\d+)(?=.*\\s--repo\\s(?!(?:[^/\\s]+/)?" + ($repo | literal)
+               + "(?:\\s|$))(?:[^/\\s]+/)?(?<other>[^/\\s]+/[^/\\s]+)(?:\\s|$))"), repo_refusal:true}
+       + no_run("$<other>"; "$<run>")),
+      ({match:("^gh run list(?=.*\\s--repo\\s(?!(?:[^/\\s]+/)?" + ($repo | literal)
+               + "(?:\\s|$))(?:[^/\\s]+/)?(?<other>[^/\\s]+/[^/\\s]+)(?:\\s|$))"), repo_refusal:true}
+       + no_runs("$<other>")),
+      {match:"^gh (?:--version|version)$",
        stdout:"gh version 2.98.0 (2026-08-20)\nhttps://github.com/cli/cli/releases/tag/v2.98.0\n"},
-      {match:"^gh pr view", stdout:$pr, reviews:"pr", comments:api_post("issues/" + $n + "/comments")},
-      {match:"^gh pr checks", stdout:"lint\tpass\t10s\thttps://example.invalid/1\ntest\tpass\t20s\thttps://example.invalid/2"},
-      {match:"^gh pr list(?!.*\\s(?:-S|--search|-A|--author|-l|--label|-a|--assignee|--app|-d|--draft)(?:[\\s=]|$))",
-       stdout:$pr, program:$pr_list},
-      {match:"^gh pr diff(?=.*\\s--name-only(?:\\s|$))", stdout:($files | map(.filename) | join("\n"))},
-      {match:"^gh pr diff(?!.*\\s--patch(?:\\s|$))", stdout:$diff},
-      {match:"^gh pr comment", stdout:($url+"#issuecomment-6001"), counts_as:api_post("issues/" + $n + "/comments")},
-      {match:"^gh pr review", stdout:"", counts_as:api_post("pulls/" + $n + "/reviews"), review:$review},
-      {match:"^gh pr (edit|ready)", stdout:($url+"#issuecomment-1")},
-      $others.graphql[],
-      {match:graphql_read("statusCheckRollup"), head_read:"rollup",
-       stdout:{data:{repository:{object:{statusCheckRollup:{state:"SUCCESS",
-         contexts:{totalCount:($pr.statusCheckRollup|length), pageInfo:{hasNextPage:false},
-                   nodes:($pr.statusCheckRollup | map({__typename:"CheckRun"} + .))}}}}}}},
-      # The review threads of this pull request (named by a variable or inline), asked alone,
-      # in the fields agents ask: a thread id and whether it is resolved, with or without the
-      # author and body of its last comment, beside the page info, the count, both or neither.
-      # Each inline comment kept opens one (gh-standin.ts), and the program answers the fields the
-      # query asks and no other, as GitHub does. Another field set is not modeled.
-      {match:("^gh api(?:\\s+\\S+)*?\\s+graphql(?:\\s|$)"
-              + "(?=.*pullRequest\\s*\\([^)]*\\)\\s*\\{\\s*reviewThreads\\s*\\([^)]*\\)\\s*\\{\\s*"
-              + "(?:(?:pageInfo\\s*\\{\\s*hasNextPage\\s+endCursor\\s*\\}|totalCount)\\s*)*"
-              + "nodes\\s*\\{\\s*id\\s+isResolved(?:\\s+comments\\s*\\(\\s*last\\s*:\\s*1\\s*\\)\\s*\\{"
-              + "\\s*nodes\\s*\\{\\s*author\\s*\\{\\s*login\\s*\\}\\s*body\\s*\\}\\s*\\})?\\s*\\}\\s*\\}\\s*\\})"
-              + "(?=.*(?:\\s-[Ff]\\s?\\w+=|number:\\s*)" + $n + "(?:\\s|$|[,)]))"),
-       reviews:"threads",
-       # The query alone, so text another argument holds (a --jq filter) asks for nothing.
-       program:("($argv | map(select(startswith(\"query=\"))) | first // \"\") as $q"
-                + " | .data.repository.pullRequest.reviewThreads |= ("
-                + "(if ($q | test(\"\\\\bpageInfo\\\\b\")) then {pageInfo} else {} end)"
-                + " + (if ($q | test(\"\\\\btotalCount\\\\b\")) then {totalCount:(.nodes|length)} else {} end)"
-                + " + {nodes:(if ($q | test(\"isResolved\\\\s+comments\")) then .nodes"
-                + " else (.nodes | map({id, isResolved})) end)})")} + $until_line_comment,
-      {match:("^gh api(?:\\s+\\S+)*?\\s+graphql(?:\\s|$)(?=.*\\squery=(?:query\\s*)?\\{\\s*viewer\\s*\\{\\s*login"
-              + "\\s*\\}\\s*\\}(?:\\s|$))"), stdout:{data:{viewer:{login:"rig[bot]"}}}},
-      # A GraphQL read of the pull request that asks only fields its object holds.
-      {match:("^gh api(?:\\s+\\S+)*?\\s+graphql(?:\\s|$)(?=.*pullRequest\\s*\\(\\s*number:[^)]*\\)\\s*\\{"
-              + "\\s*(?:(?:id|number|title|state|url|body|isDraft|mergeable|reviewDecision|headRefName"
-              + "|headRefOid|baseRefName)[\\s,]*)+\\})"), stdout:$pr_fields},
-      {match:api_post("issues/" + $n + "/comments"), stdout:{id:6001, html_url:($url+"#issuecomment-6001")}},
+      ({match:("^gh pr (?:view|checks|diff|comment|review|edit) (?!" + $n + "(?:\\s|$))(?<number>\\d+)(?:\\s|$)")}
+       + no_pr("$<number>")),
+      {match:("^gh pr view " + $n + "(?=.*\\s--json\\s)"), head_read:"pr", stdout:$pr, reviews:"pr",
+       comments:$issue_comment},
+      {match:("^gh pr view " + $n + "(?=\\s|$)(?!.*\\s--(?:json|jq)\\s)"), stdout:$pr, reviews:"pr",
+       program:$pr_view_text},
+      {match:("^gh pr checks " + $n + "(?=\\s|$)"), head_read:"checks",
+       stdout:($checks | map(.name + "\tpass\t" + (.seconds|tostring) + "s\t" + .link) | join("\n"))},
+      {match:"^gh pr list(?: --|$)", stdout:$pr, program:$pr_list},
+      {match:("^gh pr diff " + $n + "(?=.*\\s--name-only(?:\\s|$))"), stdout:($files | map(.filename) | join("\n"))},
+      {match:("^gh pr diff " + $n + "(?:\\s|$)"), stdout:$diff},
+      {match:("^gh pr comment " + $n + "(?:\\s|$)"), stdout:($url+"#issuecomment-6001"), counts_as:$issue_comment},
+      {match:("^gh pr review " + $n + "(?:\\s|$)"), stdout:"", counts_as:api_post("pulls/" + $n + "/reviews"),
+       review:$review},
+      {match:("^gh pr edit " + $n + "(?:\\s|$)"), stdout:$url},
+      {match:graphql, graphql:true, head_read:"graphql", stdout:$graphql},
+      {match:$issue_comment, stdout:{id:6001, html_url:($url+"#issuecomment-6001")}},
       {match:api_post("pulls/" + $n + "/reviews"), review:$review},
-      {match:api_post("pulls/" + $n + "/comments(?:/\\d+/replies)?"),
-       stdout:{id:6003, html_url:($url+"#discussion_r6003")}},
-      {match:api("issues/" + $n + "/comments"), follows:api_post("issues/" + $n + "/comments"),
-       replies:[{stdout:[]}, {unmodeled:true}]},
-      ({match:api("pulls/" + $n + "/reviews"), reviews:"list"} + $until_line_comment),
-      ({match:api("pulls/" + $n + "/reviews/(?<id>\\d+)"), reviews:"one"} + $until_line_comment),
-      ({match:api("pulls/" + $n + "/reviews/(?<id>\\d+)/comments"), reviews:"review_comments"} + $until_line_comment),
-      ({match:api("pulls/" + $n + "/comments"), reviews:"comments"} + $until_line_comment),
+      {match:$line_comment, stdout:{id:6003, html_url:($url+"#discussion_r6003")}},
+      ({match:api("issues/" + $n + "/comments")} + until_posted($issue_comment)),
+      ({match:api("pulls/" + $n + "/reviews"), reviews:"list"} + until_posted($line_comment)),
+      ({match:api("pulls/" + $n + "/reviews/(?<id>\\d+)"), reviews:"one"} + until_posted($line_comment)),
+      ({match:api("pulls/" + $n + "/reviews/(?<id>\\d+)/comments"), reviews:"review_comments"}
+       + until_posted($line_comment)),
+      ({match:api("pulls/" + $n + "/comments"), reviews:"comments"} + until_posted($line_comment)),
       $others.rest[],
       {match:$others.heads["check-runs"], head_read:"check-runs",
        stdout:{total_count:2, check_runs:[{name:"test", status:"completed", conclusion:"success"}, {name:"lint", status:"completed", conclusion:"success"}]}},
-      {match:$others.heads.status, stdout:{state:"pending", statuses:[], total_count:0, sha:$head}},
+      # The check suites of the head, one per workflow run, which red_fixture writes from the runs
+      # of its world; this world holds no run.
+      {match:$others.heads["check-suites"], head_read:"check-suites", unmodeled:true},
+      {match:$others.heads.status, stdout:combined_status($head)},
       {match:$others.heads.statuses, stdout:[]},
       # The repository, its commits, trees, refs and root contents, and its one pull request.
-      {match:"^gh api(?:\\s+\\S+)*?\\s+(?:https://api\\.github\\.com)?/?repos/[^/\\s]+/[^/\\s]+/?(?:\\?\\S*)?(?:\\s|$)",
-       stdout:{id:1, name:($repo | split("/")[1]), full_name:$repo, private:false,
-        owner:{login:($repo | split("/")[0])}, html_url:("https://github.com/" + $repo),
-        default_branch:"main"}},
-      {match:"^gh repo view(?=.*\\s--json(?:[\\s=]|$))",
-       stdout:{name:($repo | split("/")[1]), nameWithOwner:$repo, owner:{login:($repo | split("/")[0])},
+      {match:api(""), stdout:(repository + {default_branch:"main"})},
+      {match:("^gh repo view(?: (?:[^/\\s]+/)?" + ($repo | literal) + ")?(?=.*\\s--json\\s)"),
+       stdout:{name:$name, nameWithOwner:$repo, owner:{login:$owner},
                url:("https://github.com/" + $repo), defaultBranchRef:{name:"main"}, isPrivate:false,
                visibility:"PUBLIC"}},
       {match:api("commits/" + $others.forms.base), stdout:($commits[0])},
@@ -1943,26 +2271,43 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
       {match:api("git/trees/" + $others.forms.head), stdout:tree_of($head)},
       {match:api("git/refs?/heads/main"), stdout:ref_of($base_sha; "main")},
       {match:api("git/refs?/heads/" + ($ref | literal)), stdout:ref_of($head; $ref)},
-      {match:api("git/refs?/heads/\\S+"), stderr:"gh: Not Found (HTTP 404)\n", exit:1},
-      {match:(api("contents/?") | sub("\\(\\?:\\\\\\?\\\\S\\*\\)\\?"; "(?:\\?(?!\\S*\\bref=)\\S*)?")), stdout:contents($base_sha)},
+      ({match:api("git/ref/heads/\\S+")} + github("gitref-404")),
+      ({match:api("git/refs/heads/\\S+")} + github("gitrefs-404")),
+      {match:rest("GET"; "contents/?(?:\\?(?!\\S*\\bref=)\\S*)?"; json_only), stdout:contents($base_sha)},
       {match:api("contents/?\\?(?:\\S*&)?ref=" + $others.forms.base + "(?:&\\S*)?"), stdout:contents($base_sha)},
       {match:api("contents/?\\?(?:\\S*&)?ref=" + $others.forms.head + "(?:&\\S*)?"), stdout:contents($head)},
-      {match:api("branches/" + ($ref | literal)),
+      {match:api("branches/" + ($ref | literal | gsub("/"; "(?:/|%2[Ff])"))),
        stdout:{name:$ref, commit:{sha:$head, url:("https://api.github.com/repos/" + $repo + "/commits/" + $head)},
                protected:false}},
-      {match:api("branches/(?!main(?:[/?\\s]|$))[^/?\\s]+"), stderr:"gh: Branch not found (HTTP 404)\n", exit:1},
+      ({match:api("branches/(?!main(?:[/?\\s]|$))[^/?\\s]+")} + github("branch-404")),
       {match:api("rules/branches/(?!main(?:[?\\s]|$))[^?\\s]+"), stdout:[]},
-      {match:api("check-runs"), stderr:"gh: Not Found (HTTP 404)\n", exit:1},
-      {match:("^gh api(?=.*\\s-H\\s?[Aa]ccept:\\s?application/vnd\\.github(?:\\.v3)?\\.diff)"
-              + (api("pulls/" + $n) | ltrimstr("^gh api"))), stdout:$diff},
+      # GitHub serves no list of check runs and no `runs` under a repository (workflow runs are
+      # under actions/runs, check runs under check-runs and a commit), so a read of either answers
+      # its 404 for a route it does not have (round 6 trial-c-ablate-3 read check run 9001008 so).
+      ({match:api("check-runs")} + github("checkruns-list-404")),
+      ({match:api("runs(?:/\\S*)?")} + github("noroute-404")),
+      # The diff as GitHub serves it, which ends with the newline git ends a diff with ($diff is
+      # read through $(…), which drops it); gh api prints a body as it stands.
+      {match:rest("GET"; "pulls/" + $n;
+                  "(?=.*\\s--header\\s[Aa]ccept:\\u001f*application/vnd\\.github(?:\\.v3)?\\.diff(?:\\s|$))"),
+       stdout:($diff + "\n")},
       {match:api("pulls/" + $n + "/files"), stdout:$files},
-      {match:api("pulls"), stdout:[$pr]},
-      {match:api("pulls/" + $n), stdout:$pr},
-      {match:"^gh (?:api(?:\\s+\\S+)*?\\s+/?user(?:\\s|$)|auth status)", stdout:{login:"rig[bot]"}}
+      {match:api("pulls"), head_read:"pulls", stdout:[$pull], program:$pulls_query},
+      {match:api("pulls/" + $n), head_read:"pull", stdout:$pull},
+      {match:rest("PATCH"; "pulls/" + $n; json_only), head_read:"pull", stdout:$pull},
+      # Another pull request number, its reviews or its comments: the 404 of GitHub (measured).
+      ({match:api("pulls/(?!" + $n + "(?:[/?\\s]|$))\\d+")} + github("pull-404")),
+      ({match:api("pulls/(?!" + $n + "/)\\d+/reviews")} + github("reviews-404")),
+      ({match:api("issues/(?!" + $n + "/)\\d+/comments")} + github("comments-404")),
+      {match:"^gh api GET user(?:\\s|$)", stdout:{login:"rig[bot]"}}
     ]}' >"$R/fixtures.json"
-  # The world the scorer reads: head is the PR's head, the implementer's code commit.
+  # The world the scorer reads: head is the PR's head, the implementer's code commit. It names
+  # the base the pull request merges into, its commit, and the pull request's title, which
+  # red_fixture reads here.
   jq -n --arg key "$worker_key" --arg repo "$worker_repo" --argjson pr "$worker_pr" --arg head "$C1" \
-    '{key:$key, repo:$repo, pr:$pr, branch:("legion/" + $key), head:$head}' >"$R/world.json"
+    --arg base_sha "$C0" \
+    '{key:$key, repo:$repo, pr:$pr, branch:("legion/" + $key), head:$head, base:"main",
+      base_sha:$base_sha, title:("feat: greet() (" + $key + ")")}' >"$R/world.json"
 }
 
 # worker_world INDEX START [WORLD] seeds one worker run: its own Dispatch and issue, the
@@ -2163,13 +2508,11 @@ red_worlds() {
 # change touches and every other directory is one it does not. The head reads red in all four
 # places an agent reads it — the `gh pr view` rollup, `gh pr checks`, the GraphQL
 # `statusCheckRollup` of the head, and the commit's check runs — and every call
-# skills/legion-worker/references/red-at-the-head.md tells a role to make is answered, so none
-# falls through to the stand-in's 404: the head's own check runs, the re-run, the read of the
-# failing attempt's log, the head's runs and the failing run's jobs. The GraphQL route is
-# worker_fixture's own, which the jq below turns red where it stands: ahead of worker_fixture's
-# generic graphql route, which answers a review thread list, so the counted set is never read as
-# one, and behind the routes for a rollup read of any other commit (other_commit_routes), so such a
-# read never answers the head's counted set.
+# skills/legion-worker/references/red-at-the-head.md tells a role to make is answered: the head's
+# own check runs, the re-run, the read of the failing attempt's log, the head's runs and the
+# failing run's jobs. The GraphQL world is worker_fixture's own (gh-graphql.ts), whose head the jq
+# below turns red where it stands, so a rollup read of the head by any name GraphQL resolves it by
+# answers the counted set, and a read of any other commit answers that commit's own.
 # The first three of those reads are the counted set, what GitHub counts for the pull request;
 # the commit's check-runs endpoint answers every run at that commit instead, which in world `k`
 # is one run more and in world `l` one run the counted set has not reported. The head's runs read
@@ -2181,28 +2524,42 @@ red_worlds() {
 # calls (gh-standin.ts, `follows`), so the head reads red however many times a role reads it
 # before the re-run, and the world's own answer from the moment the re-run is pressed, and
 # `gh pr checks` exits 1 while a check it reports is red and 0 when none is, as the real command
-# does. The base requires the one aggregate check `ci`, and every read of its required set says
-# so: `gh pr checks --required` answers the checks the base requires alone, as GitHub does, and
-# the rules of the base's rulesets and its branch protection, the two reads the reviewer's prompt
+# does. The merge state of the pull request follows the checks, as GitHub's MergeStateStatus
+# states it (https://docs.github.com/en/graphql/reference/enums#mergestatestatus: BLOCKED "The
+# merge is blocked.", UNSTABLE "Mergeable with non-passing commit status.", CLEAN "Mergeable and
+# passing commit status."), with a required status check that has not passed blocking the merge
+# (https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches#require-status-checks-before-merging):
+# BLOCKED while a check the base requires is missing or red, UNSTABLE while it is green and
+# another check is red, CLEAN when none is red; the world's protection requires no review, so
+# checks alone decide it (merge_state below). Per world, from its facts: the heads of `a` to `f`,
+# `h`, `k` and `l` report no `ci`, the one check their base requires, so each reads BLOCKED before
+# and after the re-run; `g` and `i` read BLOCKED while `ci` is red and CLEAN once the re-run
+# settles it and every lane green; `j` stays BLOCKED, its `ci` red again on the re-run; and no
+# world reads UNSTABLE, since none has `ci` green beside a red lane. The base
+# requires the one aggregate check `ci`, and every read of its required set says so:
+# `gh pr checks --required` answers the checks the base requires alone, as GitHub does, and the
+# rules of the base's rulesets and its branch protection, the two reads the reviewer's prompt
 # gives for that set, each name `ci` in the shape GitHub answers them in, as do the protection
-# endpoint of the branch and the repository's one ruleset (required_set_fixture, which red_fixture
-# runs last, so those five reads go ahead of every other route). The heads of worlds `g`, `i` and
-# `j` report `ci`, and at every other head the `--required` read answers gh's `no required checks
-# reported on the '<branch>' branch` and exits 1. In a world that stays red both answers are red,
-# and nothing of it moves; in a world that presses no re-run (`d`, `e`, `f`) the head reads red
-# for the whole run. World `l`'s counted reads answer three states, the first of them reporting
-# no red at all, and each route that answers them carries the mark `unreported`: red_report drops
-# that first state of each marked route between the two turns, which is the rig reporting the
-# check. The head's check-runs route goes in front of worker_fixture's generic check-runs route,
-# which is left answering the same red to a read of the head that route does not take, a `status`
-# read or a read by the head's branch. A read of another commit's check runs or status never
-# reaches it: the routes other_commit_routes wrote ahead of it take that read. The re-run's route
-# carries the settlement the head's checks would raise later, as the envelope the gh stand-in
-# publishes the moment the role presses the re-run. Only a re-run of the run the red belongs to,
-# by its id or by one of its jobs, presses it; every other `gh run rerun` is answered by a route
-# ahead of it as gh answers it (--help, a call naming no run, a run or job id GitHub has no run
-# or job for), and moves neither the head nor the count the head's reads follow. A read of the
-# runs of another commit or branch answers no run.
+# endpoint of the branch, its required status checks and their contexts, and the repository's
+# rulesets and its one ruleset (required_set_fixture, which red_fixture runs last, so those seven
+# reads go ahead of every other route). The heads of worlds `g`, `i` and `j` report `ci`, and at
+# every other head the `--required` read answers gh's `no required checks reported on the
+# '<branch>' branch` and exits 1. In a world that stays red both answers are red, and nothing of it
+# moves; in a world that presses no re-run (`d`, `e`, `f`) the head reads red for the whole run.
+# World `l`'s counted reads answer three states, the first of them reporting no red at all, and
+# each route that answers them carries the mark `unreported`: red_report drops that first state of
+# each marked route between the two turns, which is the rig reporting the check. A read of
+# another commit's check runs or status takes the routes other_commit_routes wrote ahead of the
+# head's, and the head's combined status answers GitHub's `pending` with no status, since no
+# status was posted to it. The re-run's route carries the settlement the head's checks would raise
+# later, as the envelope the gh stand-in publishes the moment the role presses the re-run. Only a
+# re-run of the failed jobs of the run the red belongs to (`--failed`), or of the red's own job
+# (`--job`), presses it, as GitHub re-runs the jobs that depend on that one; gh's help and its
+# errors for a call naming no run, or a run or a job GitHub has no run or job for, are answered
+# as gh answers them, and move neither the head nor the count the head's reads follow; a re-run
+# of all the jobs of a run, of another job of the head or of another run of the head makes a state
+# this world does not hold, and is not modeled. A read of the runs of another commit or branch
+# answers no run.
 # The twelve worlds, each the same change under a different red:
 #   a  a failing test of packages/notify, a package the change does not touch; green on the re-run
 #   b  that test, red again on the re-run
@@ -2231,15 +2588,202 @@ red_worlds() {
 #   l  a, with a counted set that does not report the red when the role first reads it, although
 #      the commit endpoint already holds its failing run: the role waits for the pull request's
 #      checks event, and the rig reports the check between the two turns (red_report)
+# red_fixture runs the parts below in order: red_model prints the model of the world's red,
+# run_routes the routes of the head's runs, jobs and check runs from it, the jq here rewrites the
+# reads of the head worker_fixture marked, and required_set_fixture puts the reads of the base's
+# required set ahead of every route. The model and the routes go through files of the run, which
+# red_fixture removes once it has written the world: a world's routes are more than one argument
+# can carry (fixtures.json is 195 to 233 KB; Linux takes 128 KB in one argument).
 red_fixture() {
-  local world=$1 facts pr head branch check job step summary log log_err test_name world_log
-  local run_id job_id red_id lanes required base run_name partner partner_summary
+  local world=$1 model=$R/red-model.json routes=$R/red-routes.json required base base_sha
+  red_model "$world" >"$model" || fail "red_fixture: no model of world '$world'"
+  run_routes "$model" >"$routes" || fail "red_fixture: no routes of world '$world'"
+  jq --slurpfile model "$model" --slurpfile routes "$routes" "$(red_model_defs)$(route_defs)"'
+    $routes[0] as $new
+    # The reads of the head worker_fixture marks `head_read` answer the red where they stand, and
+    # what the head settles at once the re-run is pressed: the pull request (its rollup and its
+    # merge state, through gh and through REST), its checks, the GraphQL world (the rollup of the
+    # head and the merge state of the pull request), and its check runs. The commit endpoint answers
+    # every run at the head, the by-hand one among them, and the attempt each re-run made once it
+    # is pressed. The check suites of the head are one of GitHub Actions per run of the head, each
+    # with what the run holds: its suite id and node id, branch, commit, status and conclusion,
+    # pull requests and times. A field of a suite a run does not hold (before, after, its count of
+    # check runs, whether it can be re-requested) is in no answer.
+    | def check_suite: {id:.check_suite_id, node_id:.check_suite_node_id, head_branch,
+        head_sha, status, conclusion, url:($api + "/check-suites/" + (.check_suite_id|tostring)),
+        pull_requests, app:{id:15368, slug:"github-actions"}, created_at, updated_at,
+        check_runs_url:($api + "/check-suites/" + (.check_suite_id|tostring) + "/check-runs")};
+      .routes |= map(
+        if .head_read == "pr"
+        then (.stdout as $view
+              | . + counted({stdout:($view + {statusCheckRollup:rollup(.), mergeStateStatus:merge_state(.)})})
+              | .follows = $rerun | del(.stdout))
+        elif .head_read == "pull"
+        then (.stdout as $pull
+              | . + counted({stdout:($pull + {mergeable_state:(merge_state(.) | ascii_downcase)})})
+              | .follows = $rerun | del(.stdout))
+        elif .head_read == "pulls"
+        then (.stdout as $pulls
+              | . + counted(merge_state(.) as $state
+                            | {stdout:($pulls | map(. + {mergeable_state:($state | ascii_downcase)}))})
+              | .follows = $rerun | del(.stdout))
+        # `gh pr checks --required` answers the checks the base requires and no other, as GitHub
+        # does, from a route of its own ahead of the one that answers every check. The base
+        # requires the one aggregate check `ci` ($required), which the heads of worlds `g`, `i`
+        # and `j` report: every other head reports no check the base requires, which gh answers on
+        # stderr, exiting 1 (\u0027 is the quote gh puts around the branch: this program is in
+        # single quotes).
+        elif .head_read == "checks"
+        then (def answer($checks):
+                {stdout:rows($checks), exit:(if (failing($checks)|length) > 0 then 1 else 0 end)};
+              ({match:(.match + "(?=.*\\s--required(?:\\s|$))"), follows:$rerun}
+               + counted(map(select(.name == $required))
+                 | if . == []
+                   then {stderr:("no required checks reported on the \u0027" + $branch
+                                 + "\u0027 branch\n"), exit:1}
+                   else answer(.) end)),
+              (. + counted(answer(.)) | .follows = $rerun | del(.stdout)))
+        elif .head_read == "graphql"
+        then (.stdout as $world
+              | . + counted(. as $checks
+                            | {stdout:($world
+                                       | .["$refs"].head.statusCheckRollup = graphql_rollup($checks)
+                                       | .["$refs"].pr.mergeStateStatus = merge_state($checks))})
+              | .follows = $rerun | del(.stdout))
+        elif .head_read == "check-runs"
+        then (. + {follows:$rerun,
+                   replies:[{stdout:{total_count:(($red_checks + $uncounted)|length),
+                                     check_runs:($red_checks + $uncounted)}},
+                            {stdout:{total_count:(($settled_checks + $uncounted)|length),
+                                     check_runs:($settled_checks + $uncounted)}}]}
+              | del(.stdout))
+        elif .head_read == "check-suites"
+        then (moving(.match; [0, 1] | map(. as $state
+                | [$runs[].states[$state].run | check_suite] as $suites
+                | {stdout:{total_count:($suites|length), check_suites:$suites}}))
+              + {head_read:"check-suites"})
+        else . end)
+    # The answers for a repository other than the world (`repo_refusal`, worker_fixture) stand
+    # ahead of every route, as GitHub refuses such a read whatever it asks.
+    | .routes = ([.routes[] | select(.repo_refusal)] + $new + [.routes[] | select(.repo_refusal | not)])
+    # The envelope red_report publishes in a world whose counted set the rig reports (world `l`),
+    # the settlement the head would raise when the counted set reports the red.
+    | . + (if $facts.report then {reported:published($shown)} else {} end)' \
+    "$R/fixtures.json" >"$R/fixtures.red.json"
+  if jq -e '.facts.report' "$model" >/dev/null; then
+    jq '.reported' "$R/fixtures.red.json" >"$R/reported.json"
+    jq 'del(.reported)' "$R/fixtures.red.json" >"$R/fixtures.json"
+    rm -f "$R/fixtures.red.json"
+  else
+    mv "$R/fixtures.red.json" "$R/fixtures.json"
+  fi
+  # The reads of the base's required set, which read nothing of the world but the repository and
+  # the base, go ahead of every route the jq above wrote, on the check the base requires.
+  IFS=$'\t' read -r required base base_sha < <(jq -r '[.required, .base, .base_sha] | @tsv' "$model")
+  required_set_fixture "$required" "$base" "$base_sha"
+  # The world the scorer reads, beside worker_fixture's: the red check, the run and job that carry
+  # it, the failing line the world's log read answers (`log`, empty where that read answers an
+  # error), where the red is a test, that test's full name (`test`, empty where it is none), the
+  # check paired with the red where the head carries an aggregate over a lane (`partner`: the
+  # aggregate beside the red lane in `i` and `j`, the lane under the red aggregate in `g`; no
+  # partner in any other world), and the world's facts (red_world). score.ts's redAtTheHead judges
+  # the role's record against `log` and its `dispatch search` against `test`, so that neither rests
+  # on how the role printed its own log read, and a record's check against `check` and `partner`.
+  jq --slurpfile model "$model" '$model[0] as $m
+    | . + {world:$m.world, check:$m.check, job:$m.job, run_id:$m.run_id, job_id:$m.job_id,
+           log:$m.world_log, test:$m.test_name}
+    + (if $m.partner == "" then {} else {partner:$m.partner} end) + $m.facts' \
+    "$R/world.json" >"$R/world.red.json"
+  mv "$R/world.red.json" "$R/world.json"
+  rm -f "$model" "$routes"
+}
+
+# red_defs prints what red_model, run_routes and red_fixture's rewrite share, as a jq prefix over
+# the facts of the red, which the program that takes it has bound ($repo, $pr, $head, $partner,
+# $run_id, $required): the repository's API, whether the red has a partner, the latest attempt of
+# each job of a run, a check suite's id, the counted set's verdicts and merge state, the
+# settlement the re-run publishes, and a run and a job in the shape gh answers them. It ends in
+# definitions, so the program that takes it goes on with its own.
+red_defs() {
+  printf '%s\n' '
+    ("https://api.github.com/repos/" + $repo) as $api
+    | ($partner != "") as $paired
+    # The jobs of a state of a run as its jobs read answers them: the latest attempt of each job.
+    | def latest: .attempts as $attempts
+        | reduce $attempts[1:][] as $later ($attempts[0];
+            map(. as $j | ([$later[] | select(.name == $j.name)] | first) // $j));
+      # The check suite of a run: a rig id made as the run ids are, the run id less a million.
+      def check_suite_id($run): $run - 1000000;
+    # One state of the counted set as its reads answer it: the `gh pr view` rollup, the rows of
+    # `gh pr checks`, and the GraphQL rollup of the head (below), all over the latest counted run
+    # of each name. The link each carries is the details_url of the check run, the page of the job
+    # that ran it, which is the link GitHub gives a check run of GitHub Actions and the one
+    # `gh pr checks` prints. The merge state of the pull request follows from them and from the
+    # check the base requires.
+    def failing($checks): $checks | map(select(.conclusion == "failure") | .name) | sort;
+    def passing($checks): $checks | map(select(.conclusion == "success") | .name) | sort;
+    def verdict: if .conclusion == "failure" then "FAILURE" else "SUCCESS" end;
+    def rows($checks): $checks
+      | map(.name + "\t" + (if .conclusion == "failure" then "fail" else "pass" end)
+            + "\t20s\t" + .details_url)
+      | join("\n");
+    def merge_state($checks): ($checks | map(select(.name == $required))) as $requires
+      | if ($requires | length) == 0 or any($requires[]; .conclusion != "success") then "BLOCKED"
+        elif any($checks[]; .conclusion == "failure") then "UNSTABLE" else "CLEAN" end;
+    def run_url: "https://github.com/" + $repo + "/actions/runs/" + ($run_id|tostring);
+    # The settlement as the Envoy listener renders one (packages/envoy/internal/cistore/render.go),
+    # and the envelope that carries it to the listener of the run.
+    def settlement($checks):
+      {kind:"checks", repo:$repo, number:($pr|tostring), sha:$head,
+       check_runs:($checks | map({name:.name, id:.id}) | sort_by(.name)),
+       generation:2, snapshot:$head[0:8],
+       failed:{count:(failing($checks)|length), checks:failing($checks)},
+       running:{count:0, checks:[]},
+       passed:{count:(passing($checks)|length), checks:passing($checks)},
+       queued:{count:0, checks:[]},
+       cancelled:{count:0, checks:[]},
+       skipped:{count:0, checks:[]},
+       failing_checks:(failing($checks) | map({name:., url:run_url}))};
+    def published($checks):
+      settlement($checks) as $settled
+      | ($repo | split("/")) as [$owner, $repo_name]
+      | {topic:("notifications.github." + $owner + "." + $repo_name + ".pr."
+                + ($pr|tostring) + ".checks"),
+         source:"github",
+         message:("checks settled on " + $repo + "#" + ($pr|tostring) + " @ " + $head[0:7]
+                  + ": " + ($settled.passed.count|tostring) + " passed, "
+                  + ($settled.failed.count|tostring) + " failed, 0 cancelled, 0 skipped"),
+         payload:($settled|tojson)};
+    # A run and a job in the shape `gh run view --json` and `gh run list --json` answer them, with
+    # the field names gh 2.98.0 lists for those flags.
+    def gh_job: {completedAt:.completed_at, conclusion, databaseId:.id, name,
+      startedAt:.started_at, status, steps:(.steps | map({conclusion, name, number, status})),
+      url:.html_url};
+    def gh_run($jobs): {attempt:.run_attempt, conclusion, createdAt:.created_at, databaseId:.id,
+      displayTitle:.display_title, event, headBranch:.head_branch, headSha:.head_sha,
+      jobs:($jobs | map(gh_job)), name, number:.run_number, startedAt:.run_started_at, status,
+      updatedAt:.updated_at, url:.html_url, workflowDatabaseId:1, workflowName:.name};
+'
+}
+
+# red_model WORLD prints the model of the red of WORLD as one JSON object, from worker_fixture's
+# world ($R/world.json) and the world's facts (red_world): the facts of the red (its check, job,
+# failing line, test and partner, its run and job ids, the check the base requires), the runs of
+# the head, each in its two states, before the re-run and after it, with their jobs, and the check
+# runs of the head in each state, the counted set among them as its reads answer it.
+red_model() {
+  local world=$1 facts pr head branch check job step summary log log_gone test_name world_log
+  local run_id job_id red_id lanes required base base_sha title run_name partner partner_summary
   facts=$(red_world "$world") || fail "red_fixture: '$world' is no world of red-at-the-head"
-  read -r pr head branch < <(jq -r '"\(.pr) \(.head) \(.branch)"' "$R/world.json")
+  # The pull request, its head and branch, the base it merges into and the base commit, and its
+  # title, which every run of the head carries as its display title: worker_fixture's world.
+  IFS=$'\t' read -r pr head branch base base_sha title < <(jq -r \
+    '[.pr, .head, .branch, .base, .base_sha, .title] | @tsv' "$R/world.json")
+  [ -n "$base_sha" ] || fail "red_fixture: $R/world.json names no base commit"
   run_id=$((7000000 + pr))
   job_id=$((8000000 + pr))
   red_id=$((9000000 + pr))
-  log_err=''
+  log_gone=false
   # The workflow the run of the red belongs to: `ci`, which holds every job of the head, in every
   # world but `f`, whose title check runs in a workflow of its own (below).
   run_name=ci
@@ -2293,7 +2837,9 @@ red_fixture() {
     step='Run bun test packages/notify'
     summary='1 of 412 tests in packages/notify failed.'
     log='(fail) notify > retries a refused send [3.00ms]'
-    [ "$world" != h ] || log_err='failed to get run log: HTTP 410: Gone (https://api.github.com/repos/example/widgets/actions/runs)'
+    # The log of attempt 1 of the run of the red is past GitHub's retention in world `h`, so each
+    # read of it answers the 410 GitHub answers for such a log (log_gone below).
+    [ "$world" != h ] || log_gone=true
     ;;
   esac
   # The check the base requires: the one aggregate check `ci`, which every read of the required set
@@ -2310,85 +2856,26 @@ red_fixture() {
   elif jq -e .over_lane <<<"$facts" >/dev/null; then
     partner=$job partner_summary='1 of 412 tests in packages/notify failed.'
   fi
-  # The base the pull request merges into, whose required set required_set_fixture answers, and the
-  # pull request title, which every run of the head carries as its display title: both read here,
-  # from worker_fixture's one answer of the `gh pr view` route, since the jq below turns that route
-  # into a sequence of replies; and the base commit, from the answer worker_fixture writes for its
-  # combined status (other_commit_routes marks it `base_read`).
-  local title base_sha
-  IFS=$'\t' read -r base title < <(jq -r 'first(.routes[] | select(.match == "^gh pr view")
-    | .stdout | "\(.baseRefName)\t\(.title)")' "$R/fixtures.json") && [ -n "$base" ] ||
-    fail "red_fixture: no \`gh pr view\` route of $R/fixtures.json answers the base"
-  base_sha=$(jq -er 'first(.routes[] | select(.base_read == "status") | .stdout.sha)' \
-    "$R/fixtures.json") || fail "red_fixture: no route of $R/fixtures.json answers the base commit"
   # The failing line this world's log read answers, as the world knows it: a world whose read
   # answers an error (h) leaves none, since the role reads no line there.
   world_log=$log
-  [ -z "$log_err" ] || world_log=''
-  jq --arg head "$head" --argjson pr "$pr" --arg repo "$worker_repo" --arg branch "$branch" \
-    --arg check "$check" --arg job "$job" --arg step "$step" --arg title "$title" \
-    --arg summary "$summary" --arg log "$log" --arg log_err "$log_err" --argjson facts "$facts" \
-    --arg lanes "$lanes" --arg required "$required" --arg run_name "$run_name" \
-    --arg partner "$partner" --arg partner_summary "$partner_summary" \
-    --argjson run_id "$run_id" --argjson job_id "$job_id" --argjson red_id "$red_id" \
-    "$(route_defs)"'
+  [ "$log_gone" = false ] || world_log=''
+  jq -n --arg world "$world" --arg head "$head" --argjson pr "$pr" --arg repo "$worker_repo" \
+    --arg branch "$branch" --arg base "$base" --arg base_sha "$base_sha" --arg title "$title" \
+    --arg check "$check" --arg job "$job" --arg step "$step" --arg summary "$summary" \
+    --arg log "$log" --argjson log_gone "$log_gone" --arg world_log "$world_log" \
+    --arg test_name "$test_name" --argjson facts "$facts" --arg lanes "$lanes" \
+    --arg required "$required" --arg run_name "$run_name" --arg partner "$partner" \
+    --arg partner_summary "$partner_summary" --argjson run_id "$run_id" \
+    --argjson job_id "$job_id" --argjson red_id "$red_id" "$(red_defs)"'
     def entry($id; $name; $conclusion; $output; $at):
       {id:$id, name:$name, status:"completed", conclusion:$conclusion, started_at:$at,
        completed_at:$at, html_url:("https://github.com/" + $repo + "/runs/" + ($id|tostring)),
        app:{slug:"github-actions"}, output:$output};
-    # One state of the counted set as its three reads answer it: the `gh pr view` rollup, the rows
-    # of `gh pr checks`, and the GraphQL rollup of the head, all three over the latest counted run
-    # of each name. The link each carries is the details_url of the check run, the page of the job
-    # that ran it, which is the link GitHub gives a check run of GitHub Actions and the one
-    # `gh pr checks` prints.
-    def failing($checks): $checks | map(select(.conclusion == "failure") | .name) | sort;
-    def passing($checks): $checks | map(select(.conclusion == "success") | .name) | sort;
-    def verdict: if .conclusion == "failure" then "FAILURE" else "SUCCESS" end;
-    def rollup($checks): $checks | map({name:.name, status:"COMPLETED", conclusion:verdict,
-      detailsUrl:.details_url});
-    def rows($checks): $checks
-      | map(.name + "\t" + (if .conclusion == "failure" then "fail" else "pass" end)
-            + "\t20s\t" + .details_url)
-      | join("\n");
-    def run_url: "https://github.com/" + $repo + "/actions/runs/" + ($run_id|tostring);
-    # The settlement as the Envoy listener renders one (packages/envoy/internal/cistore/render.go),
-    # and the envelope that carries it to the listener of the run.
-    def settlement($checks):
-      {kind:"checks", repo:$repo, number:($pr|tostring), sha:$head,
-       check_runs:($checks | map({name:.name, id:.id}) | sort_by(.name)),
-       generation:2, snapshot:$head[0:8],
-       failed:{count:(failing($checks)|length), checks:failing($checks)},
-       running:{count:0, checks:[]},
-       passed:{count:(passing($checks)|length), checks:passing($checks)},
-       queued:{count:0, checks:[]},
-       cancelled:{count:0, checks:[]},
-       skipped:{count:0, checks:[]},
-       failing_checks:(failing($checks) | map({name:., url:run_url}))};
-    def published($checks):
-      settlement($checks) as $settled
-      | ($repo | split("/")) as [$owner, $repo_name]
-      | {topic:("notifications.github." + $owner + "." + $repo_name + ".pr."
-                + ($pr|tostring) + ".checks"),
-         source:"github",
-         message:("checks settled on " + $repo + "#" + ($pr|tostring) + " @ " + $head[0:7]
-                  + ": " + ($settled.passed.count|tostring) + " passed, "
-                  + ($settled.failed.count|tostring) + " failed, 0 cancelled, 0 skipped"),
-         payload:($settled|tojson)};
-    # A run and a job in the shape `gh run view --json` and `gh run list --json` answer them, with
-    # the field names gh 2.98.0 lists for those flags.
-    def gh_job: {completedAt:.completed_at, conclusion, databaseId:.id, name,
-      startedAt:.started_at, status, steps:(.steps | map({conclusion, name, number, status})),
-      url:.html_url};
-    def gh_run($jobs): {attempt:.run_attempt, conclusion, createdAt:.created_at, databaseId:.id,
-      displayTitle:.display_title, event, headBranch:.head_branch, headSha:.head_sha,
-      jobs:($jobs | map(gh_job)), name, number:.run_number, startedAt:.run_started_at, status,
-      updatedAt:.updated_at, url:.html_url, workflowDatabaseId:1, workflowName:.name};
-    ("https://api.github.com/repos/" + $repo) as $api
-    | "2026-03-04T10:00:00Z" as $t0
+    "2026-03-04T10:00:00Z" as $t0
     | "2026-03-04T10:15:00Z" as $t_hand
     | "2026-03-04T10:31:08Z" as $t1
     | (if $facts.after == "green" then "success" else "failure" end) as $after
-    | ($partner != "") as $paired
     | (if $run_name == "ci" then $run_id else $run_id + 2 end) as $ci_run
     | (if $facts.over_lane then [$red_id + 3, $red_id] else [$red_id, $red_id + 3] end)
       as [$lane_check, $aggregate_check]
@@ -2416,9 +2903,13 @@ red_fixture() {
     | ([job($job_id + 4; $run_id; 2; $job; $after; $step; $t1; $lane_check + 1)]
        + (if $paired then [job($job_id + 5; $run_id; 2; $required; $after; "Check the lanes"; $t1;
                               $aggregate_check + 1)] else [] end)) as $rerun_jobs
+    # Each run is one check suite of GitHub Actions, as GitHub gives a workflow run one: its id is a
+    # rig id made as the run ids are (the run id less a million), its node id in the CS_ shape.
     | def run($id; $name; $event; $attempt; $conclusion; $at):
         {id:$id, name:$name, display_title:$title, event:$event, status:"completed",
-         conclusion:$conclusion, head_sha:$head, head_branch:$branch, run_number:$pr,
+         conclusion:$conclusion, check_suite_id:check_suite_id($id),
+         check_suite_node_id:("CS_rig" + (check_suite_id($id)|tostring)),
+         head_sha:$head, head_branch:$branch, run_number:$pr,
          run_attempt:$attempt,
          html_url:("https://github.com/" + $repo + "/actions/runs/" + ($id|tostring)),
          jobs_url:($api + "/actions/runs/" + ($id|tostring) + "/jobs"),
@@ -2449,29 +2940,16 @@ red_fixture() {
                         attempts:[[job($job_id + 6; $run_id + 1; 1; $job; "failure"; $step;
                                        $t_hand; $red_id + 2)]]}] | . + .)}]
           else [] end)) as $runs
-    # The jobs of a state of a run as its jobs read answers them: the latest attempt of each job.
-    | def latest: .attempts as $attempts
-        | reduce $attempts[1:][] as $later ($attempts[0];
-            map(. as $j | ([$later[] | select(.name == $j.name)] | first) // $j));
-      ([$runs[].states[1].attempts[][]] | unique_by(.id)) as $all_jobs
+    | ([$runs[].states[1].attempts[][]] | unique_by(.id)) as $all_jobs
     | ($all_jobs | map({key:(.check_run_url | split("/") | last), value:.}) | from_entries)
       as $job_of
     | def linked: . + {details_url:$job_of[(.id|tostring)].html_url};
-    # The counted set in GitHub own shape, as the page reads it at a named head: the rollup of the
-    # commit object, its contexts on one page, and one CheckRun node per counted check, each
-    # naming its job page and the workflow run it belongs to. A by-hand run is in no node of it.
-      def graphql($checks): {data:{repository:{object:{statusCheckRollup:{
-        state:(if (failing($checks)|length) > 0 then "FAILURE" else "SUCCESS" end),
-        contexts:{totalCount:($checks|length), pageInfo:{hasNextPage:false},
-          nodes:($checks | map({__typename:"CheckRun", name:.name, databaseId:.id,
-            status:"COMPLETED", conclusion:verdict, detailsUrl:.details_url,
-            checkSuite:{workflowRun:{event:"pull_request",
-                                     databaseId:$job_of[(.id|tostring)].run_id}}}))}}}}}};
+      ($runs | map({key:(.id|tostring), value:.states[0].run.name}) | from_entries) as $workflow_of
     # The superseded runs the commit endpoint carries in a world where the one re-run of the head
     # is spent (`spent`, world `e`): the e2e check of attempt 1 that failed and the one of attempt
     # 2 that replaced it, as `filter=all` lists them. They decide nothing — the page lets no role
     # judge the spend on that endpoint — and the spend itself is in the runs of the head.
-      (if $facts.spent then
+    | (if $facts.spent then
          [entry($red_id - 4; "e2e"; "failure";
                 {title:"e2e", summary:"The e2e lane ended with no result."}; $t0),
           entry($red_id - 3; "e2e"; "success";
@@ -2516,189 +2994,187 @@ red_fixture() {
     # head settles at once the re-run is pressed. A counted set that has not reported the red when
     # the role first reads it (`report` among the facts, world `l`) answers three, the red in the
     # middle: red_report drops the first between the two turns, which is the rig reporting the
-    # check. counted(reply) is the replies of a route that answers the counted set, one per state,
-    # and in such a world the mark red_report trims that route by, `unreported`.
+    # check. counted(reply) (red_model_defs) is the replies of a route that answers the counted
+    # set, one per state, and in such a world the mark red_report trims that route by, `unreported`.
     | (if $facts.report then [($shown | map(select(.name != $check))), $shown, $latest]
        else [$shown, $latest] end) as $counted
-    | def counted(reply):
+    | {world:$world, head:$head, pr:$pr, repo:$repo, branch:$branch, base:$base,
+       base_sha:$base_sha, check:$check, job:$job, test_name:$test_name, world_log:$world_log,
+       log:$log, log_gone:$log_gone, facts:$facts, lanes:$lanes, required:$required,
+       partner:$partner, run_id:$run_id, job_id:$job_id, runs:$runs, all_jobs:$all_jobs,
+       job_of:$job_of, workflow_of:$workflow_of, red_checks:$red_checks,
+       settled_checks:$settled_checks, latest:$latest, shown:$shown, uncounted:$uncounted,
+       counted:$counted}'
+}
+
+# red_model_defs prints what run_routes and red_fixture's rewrite of the head's reads share over
+# the model red_model printed, which the program that takes it reads with `--slurpfile model`:
+# the model's facts and runs, red_defs over them, the rollups of the counted set, the routes that
+# follow the re-run and the press they follow, and a route of a run, of a job, of a check run and
+# of a log. It ends in definitions, so the program that takes it goes on with its own.
+red_model_defs() {
+  printf '%s\n' '
+    $model[0] as {$head, $pr, $repo, $branch, $log, $log_gone, $facts, $lanes, $required,
+                  $partner, $run_id, $job_id, $runs, $all_jobs, $job_of, $workflow_of,
+                  $red_checks, $settled_checks, $latest, $shown, $uncounted, $counted}
+    | '"$(red_defs)"
+  printf '%s\n' '
+    # The counted set in GitHub own shape, as the page reads it at a named head: the rollup of the
+    # commit, its contexts on one page, and one CheckRun node per counted check, each naming its
+    # job page, its times, its app and the workflow run it belongs to; and the same set as
+    # `gh pr view --json statusCheckRollup` flattens it, a node per check run with its workflow
+    # named (measured). A by-hand run is in no node of either.
+    def workflow: $workflow_of[($job_of[(.id|tostring)].run_id|tostring)];
+      def rollup($checks): $checks | map({__typename:"CheckRun", completedAt:.completed_at,
+        conclusion:verdict, detailsUrl:.details_url, name, startedAt:.started_at,
+        status:"COMPLETED", workflowName:workflow});
+      def graphql_rollup($checks): {
+        state:(if (failing($checks)|length) > 0 then "FAILURE" else "SUCCESS" end),
+        contexts:{totalCount:($checks|length), pageInfo:{hasNextPage:false},
+          nodes:($checks | map({__typename:"CheckRun", name:.name, databaseId:.id,
+            status:"COMPLETED", conclusion:verdict, detailsUrl:.details_url,
+            startedAt:.started_at, completedAt:.completed_at,
+            checkSuite:{databaseId:check_suite_id($job_of[(.id|tostring)].run_id),
+                        app:{slug:"github-actions", databaseId:15368},
+                        workflowRun:{event:"pull_request",
+                                     databaseId:$job_of[(.id|tostring)].run_id,
+                                     workflow:{name:workflow}}}}))}};
+    def counted(reply):
         {replies:($counted | map(reply))} + (if $facts.report then {unreported:true} else {} end);
     # Every read of the head below follows the re-run route (gh-standin.ts, `follows`): it answers
     # the first of its replies however many times a role reads it before the re-run, and the one
     # after it from the moment the re-run is pressed. moving(match; replies) is such a route, or
     # one that answers the one reply where the two states agree.
-      "^gh run rerun" as $rerun
+    # The press of the one re-run of the head: a re-run of the failed jobs of the run of the red,
+    # by its id with --failed, or of the own job of the red by its id with --job (that of attempt
+    # 1 or of the re-run), which GitHub re-runs with the jobs that need it, the aggregate among
+    # them. A call naming both a run and a job, or --job with --failed, is one gh refuses in words
+    # the rig has not measured, and no route takes it.
+      ("^gh run rerun (?:" + ($run_id|tostring) + "(?=.*\\s--failed(?:\\s|$))(?!.*\\s--job\\s)(?=\\s|$)"
+       + "|(?=--)(?=(?:\\S+ )*--job (?:" + ($job_id|tostring) + "|" + ($job_id + 4 | tostring)
+       + ")(?:\\s|$))(?!(?:\\S+ )*--failed(?:\\s|$)))") as $rerun
     | def moving($match; $replies):
         {match:$match} + (if $replies[0] == $replies[1] then $replies[0]
                           else {follows:$rerun, replies:$replies} end);
-    # The words gh 2.98.0 prints, measured against a local stand-in of the API: the help of
-    # `gh run rerun`, cut to its usage and its flags; the usage errors of `gh run rerun` and
-    # `gh run view` that name no run and no job where no terminal is there to pick one; and the
-    # 404 of a run or a job GitHub has not got.
-      ("Rerun an entire run, only failed jobs, or a specific job from a run.\n\nUSAGE\n"
-       + "  gh run rerun [<run-id>] [flags]\n\nFLAGS\n"
-       + "  -d, --debug        Rerun with debug logging\n"
-       + "      --failed       Rerun only failed jobs, including dependencies\n"
-       + "  -j, --job string   Rerun a specific job ID from a run, including dependencies\n\n"
-       + "INHERITED FLAGS\n      --help                     Show help for command\n"
-       + "  -R, --repo [HOST/]OWNER/REPO   Select another repository using the [HOST/]OWNER/REPO"
-       + " format\n") as $rerun_help
-    | ("`<run-id>` or `--job` required when not running interactively\n\n"
-       + "Usage:  gh run rerun [<run-id>] [flags]\n\nFlags:\n"
-       + "  -d, --debug        Rerun with debug logging\n"
-       + "      --failed       Rerun only failed jobs, including dependencies\n"
-       + "  -j, --job string   Rerun a specific job ID from a run, including dependencies\n"
-       + "  \n") as $rerun_usage
-    | ("run or job ID required when not running interactively\n\n"
-       + "Usage:  gh run view [<run-id>] [flags]\n\nFlags:\n"
-       + "  -a, --attempt uint      The attempt number of the workflow run\n"
-       + "      --exit-status       Exit with non-zero status if run failed\n"
-       + "  -j, --job string        View a specific job ID from a run\n"
-       + "  -q, --jq expression     Filter JSON output using a jq expression\n"
-       + "      --json fields       Output JSON with the specified fields\n"
-       + "      --log               View full log for either a run or specific job\n"
-       + "      --log-failed        View the log for any failed steps in a run or specific job\n"
-       + "  -t, --template string   Format JSON output using a Go template; see \"gh help formatting\"\n"
-       + "  -v, --verbose           Show job steps\n"
-       + "  -w, --web               Open run in the browser\n"
-       + "  \n") as $view_usage
-    | def no_run($id): {stderr:("failed to get run: HTTP 404: Not Found (" + $api + "/actions/runs/"
-        + $id + "?exclude_pull_requests=true)\n"), exit:1};
-      def no_job($id): {stderr:("failed to get job: HTTP 404: Not Found (" + $api + "/actions/jobs/"
-        + $id + ")\n"), exit:1};
-      {stderr:"gh: Not Found (HTTP 404)\n", exit:1} as $not_found
-    | "\\s(?:-j|--job)[\\s=]" as $job_flag
-    | def ids($xs): "(?:" + ($xs | map(tostring) | join("|")) + ")";
-      def names($id): "(?=.*\\s" + ($id|tostring) + "(?:\\s|$))";
+      def ids($xs): "(?:" + ($xs | map(tostring) | join("|")) + ")";
+      # A `gh run view` that names its run as the positional argument, and no job.
+      def view($id): "^gh run view " + ($id|tostring) + "(?=\\s|$)(?!.*\\s--job\\s)";
+      # A `gh run view` or `gh run rerun` that names its job with --job and no run.
+      def job_flag($id): "(?=--)(?=(?:\\S+ )*--job " + $id + "(?:\\s|$))";
+      # A `gh run view` that names its job with --job, with or without a run: gh reads the job,
+      # then the run the job belongs to, whatever run the call names (measured: `gh run view
+      # 9001002 --job 8001003` asks for job 8001003 and then for run 7001003).
+      def view_job($id): "^gh run view(?: \\d+)?(?=.*\\s--job " + $id + "(?:\\s|$))";
+      def logs: "(?=.*\\s--log(?:-failed)?(?:\\s|$))(?!.*\\s--json\\s)";
+      def plain: "(?!.*\\s--(?:log|log-failed|json)(?:\\s|$))";
     # The log a run or a job prints, as gh does, a line per log line, `<job>\t<step>\t<line>`: the
     # failing line of the world in the failing step of each failed job, and no line of a job that
-    # passed, which is all the log the world holds. The log of attempt 1 of the run of the red is
-    # gone in world `h`, whose read answers the error.
+    # passed, which is all the log the world holds. Each log line carries the time GitHub stamps
+    # on it, seven digits after the second, and the first log line of each step the BOM GitHub
+    # puts there, which gh 2.98.0 prints as it stands (measured on a live job of
+    # cybermonklabs/legion, 2026-11-18, runview-job-log of the measurements); the world logs no
+    # ESC byte, so gh never refuses one for its terminal escape sequences. The log of attempt 1 of
+    # the run of the red is past retention in world `h`, so its read answers what gh 2.98.0 prints
+    # for the 410 GitHub answers there (measured on a run past retention): the URL of the log of
+    # the run gh asked for, or of the attempt where the call names one.
       def log_line: if .name == $required and $paired then $lanes
         elif .name == "e2e" then "The e2e lane ended with no result." else $log end;
+      def log_expired($run; $attempt):
+        {stderr:("failed to get run log: HTTP 410: Server Error (https://api.github.com/repos/"
+                 + $repo + "/actions/runs/" + ($run|tostring)
+                 + (if $attempt == null then "" else "/attempts/" + ($attempt|tostring) end)
+                 + "/logs)\n"),
+         exit:1};
       def log_reply($jobs):
-        if $log_err != "" and any($jobs[]; .run_id == $run_id and .run_attempt == 1
-                                            and .conclusion == "failure")
-        then {stderr:($log_err + "\n"), exit:1}
+        if $log_gone and any($jobs[]; .run_id == $run_id and .run_attempt == 1
+                                      and .conclusion == "failure")
+        then log_expired($run_id; null)
         else {stdout:([$jobs[] | select(.conclusion == "failure")
-                       | .name + "\t" + .steps[1].name + "\t"
+                       | .name + "\t" + .steps[1].name + "\t" + "\ufeff"
                          + (.completed_at | sub("Z$"; ".0000000Z")) + " " + log_line]
                       | join("\n"))} end;
-      def job_in($state; $id): [$runs[].states[$state].attempts[][] | select(.id == $id)] | first;
-      # A job that the state of the head does not hold yet (an attempt 2 before the re-run) is
-      # refused as gh refuses a job it cannot find, or through the REST API with its 404.
-      def job_route($match; $id; reply):
-        moving($match; [0, 1] | map(job_in(.; $id) as $j
-          | if $j != null then ($j | reply)
-            elif ($match | startswith("^gh run")) then no_job($id|tostring) else $not_found end));
+      # A job as a state of the head holds it, with the run of that state it belongs to; a job
+      # that state does not hold yet (an attempt 2 before the re-run) answers $miss, the error gh
+      # prints for a job it cannot find or the 404 of GitHub.
+      def job_in($state; $id):
+        [$runs[].states[$state] | .run as $run | .attempts[][] | select(.id == $id)
+         | {job:., run:$run}] | first;
+      def job_route($match; $id; reply; $miss):
+        moving($match; [0, 1] | map(job_in(.; $id) as $j | if $j != null then ($j | reply) else $miss end));
       def run_route($match; $w; reply): moving($match; $w.states | map(reply));
       def check_in($state; $id):
         [(if $state == 0 then $red_checks else $settled_checks end)[], $uncounted[]
          | select(.id == $id)] | first;
-      def check_route($match; $id; reply):
+      def check_route($match; $id; reply; $miss):
         moving($match; [0, 1] | map(check_in(.; $id) as $c
-                                   | if $c == null then $not_found else ($c | reply) end));
+                                   | if $c == null then $miss else ($c | reply) end));
+'
+}
+
+# run_routes MODEL prints, as one JSON list, the routes of the head's runs, jobs and check runs in
+# the world of MODEL (a file red_model printed): the press of the re-run and gh's help and usage
+# around it, each read of a run, a job, a check run or a log of the head as the state of the head
+# has it, and GitHub's answer, or gh's refusal, for each of those reads of an id the head has not.
+# red_fixture puts them ahead of worker_fixture's routes.
+run_routes() {
+  jq -n --slurpfile model "$1" \
+    --arg rerun_help "$(rerun_help)" --arg rerun_usage "$(rerun_usage)" --arg view_usage "$(view_usage)" \
+    --arg run_view_program "$(run_view_program)" --arg run_list "$(run_list_program)" \
+    --arg runs_query "$(runs_query_program)" "$(red_model_defs)$(route_defs)"'
       ($runs[0]) as $red_run
-    | ($runs[1:]) as $other_runs
-    | ($red_run.states[1].attempts | add | map(.id)) as $red_job_ids
-    | ([$other_runs[].states[1].attempts[][] | .id]) as $other_job_ids
     | ([$runs[].id]) as $run_ids
     | ([$settled_checks[], $uncounted[] | .id] | unique) as $check_ids
-    # gh run list, each run in the shape its --json answers it, filtered by its flags as gh asks
-    # GitHub to filter them (--status, --workflow, --commit, --branch, --event, --limit, 20
-    # unless it says), and printed as gh 2.98.0 prints the list to no terminal: status,
-    # conclusion, title, workflow, branch, event, id, elapsed and creation, a tab between each.
-    | ("def opt($short; $long): ([range(0; ($argv|length) - 1) as $i
-          | select($argv[$i] == $short or $argv[$i] == $long) | $argv[$i + 1]]
-        + [$argv[] | select(startswith($long + \"=\")) | ltrimstr($long + \"=\")]) | first;
-      def seconds: sub(\"\\\\..*Z$\"; \"Z\") | fromdate;
-      def elapsed: ((.updatedAt | seconds) - (.startedAt | seconds)) as $s
-        | (($s / 3600) | floor) as $h | ((($s % 3600) / 60) | floor) as $m
-        | (if $h > 0 then \"\\($h)h\" else \"\" end)
-          + (if $h > 0 or $m > 0 then \"\\($m)m\" else \"\" end) + \"\\($s % 60)s\";
-      opt(\"-s\"; \"--status\") as $status | opt(\"-w\"; \"--workflow\") as $workflow
-      | opt(\"-c\"; \"--commit\") as $commit | opt(\"-b\"; \"--branch\") as $branch
-      | opt(\"-e\"; \"--event\") as $event | (opt(\"-L\"; \"--limit\") // \"20\" | tonumber) as $limit
-      | [.[] | select(($status == null or .status == $status or .conclusion == $status)
-          and ($workflow == null or .workflowName == $workflow
-               or ($workflow | test(\"(^|/)\" + .workflowName + \"\\\\.ya?ml$\")))
-          and ($commit == null or .headSha == $commit)
-          and ($branch == null or .headBranch == $branch)
-          and ($event == null or .event == $event))] | .[:$limit]
-      | if any($argv[]; . == \"--json\" or startswith(\"--json=\")) then .
-        else map([.status, .conclusion, .displayTitle, .workflowName, .headBranch, .event,
-                  (.databaseId|tostring), elapsed, .createdAt] | join(\"\\t\")) | join(\"\\n\") end")
-      as $run_list
-    # The REST list of the runs of the repository, filtered by its query as GitHub filters it.
-    | ("([$argv[] | select(test(\"actions/runs\\\\?\"))] | first // \"\" | split(\"?\")[1:] | join(\"?\"))
-        as $query
-      | ($query | split(\"&\") | map(select(. != \"\") | split(\"=\")
-          | {key:.[0], value:(.[1:] | join(\"=\") | gsub(\"%2[Ff]\"; \"/\"))}) | from_entries) as $p
-      | .workflow_runs |= map(select(($p.head_sha == null or .head_sha == $p.head_sha)
-          and ($p.branch == null or .head_branch == $p.branch)
-          and ($p.event == null or .event == $p.event)
-          and ($p.status == null or .status == $p.status or .conclusion == $p.status)))
-      | .total_count = (.workflow_runs | length)
-      | .workflow_runs |= .[:(($p.per_page // \"30\") | tonumber)]") as $runs_query
-    | [{match:"^gh run rerun\\b.*\\s(?:-h|--help)(?:\\s|$)", stdout:$rerun_help},
-       # A re-run presses the re-run of the head only where it names the run the red of the
-       # world belongs to by its id, or one of the jobs of that run with --job: the re-run route
-       # takes those calls alone, so its count, which every read of the head follows, moves on
-       # them and on nothing else. Before these routes any `gh run rerun` pressed the head, so a
-       # re-run of a check run id (trial-d-head-5, trial-e-head-2, trial-g-head-2) and
-       # `gh run rerun --help` (trial-i-nos1-1, trial-j-nos1-1) each settled the head and
-       # published its settlement. Every other run of the head (the spent e2e run of `e`, the
-       # by-hand run of `k`, the `ci` run of `f`) is accepted as GitHub accepts it, in the words
-       # the re-run route answers, and presses nothing: none of them holds the red.
-       ($other_runs[] | . as $w
-        | {match:("^gh run rerun(?=.*\\s(?:" + ($w.id|tostring) + "|(?:-j|--job)[\\s=]"
-                  + ids([$w.states[1].attempts[][] | .id]) + ")(?:\\s|$))"),
-           stdout:"✓ Requested rerun of failed jobs"}),
-       {match:("^gh run rerun(?=.*" + $job_flag + "(?<job>\\d+)(?:\\s|$))(?!.*" + $job_flag
-               + ids($red_job_ids) + "(?:\\s|$))"),
-        stderr:("failed to get job: HTTP 404: Not Found (" + $api + "/actions/jobs/$<job>)\n"),
-        exit:1},
-       ({match:("^gh run rerun(?!.*" + $job_flag + ")(?!.*\\s" + ($run_id|tostring)
-                + "(?:\\s|$))(?=.*?\\s(?<run>\\d+)(?:\\s|$))")} + no_run("$<run>")),
-       {match:("^gh run rerun(?!.*" + $job_flag + ")(?!.*\\s\\d+(?:\\s|$))"), stderr:$rerun_usage,
-        exit:1},
-       {match:$rerun, stdout:"✓ Requested rerun of failed jobs", publish:published($latest)},
-       # The same re-run through the REST API, a POST of the run of the red or of one of its jobs:
-       # it presses the re-run as `gh run rerun` does, counting as a call of that route
-       # (gh-standin.ts, `counts_as`), and answers what GitHub answers, an empty object. A POST of
-       # another run of the head is accepted and presses nothing.
-       {match:api_post("(?:actions/runs/" + ($run_id|tostring) + "/(?:rerun|rerun-failed-jobs)"
-                       + "|actions/jobs/" + ids($red_job_ids) + "/rerun)"),
+    | [{match:"^gh run rerun(?=.*\\s--help(?:\\s|$))", stdout:$rerun_help},
+       # A re-run presses the re-run of the head only where it re-runs the failed jobs of the run
+       # the red of the world belongs to, or the own job of the red: the re-run route takes those calls
+       # alone, so its count, which every read of the head follows, moves on them and on nothing
+       # else. Before these routes any `gh run rerun` pressed the head, so a re-run of a check run
+       # id (trial-d-head-5, trial-e-head-2, trial-g-head-2) and `gh run rerun --help`
+       # (trial-i-nos1-1, trial-j-nos1-1) each settled the head and published its settlement. A
+       # re-run of every other run or job of the head (the spent e2e run of `e`, the by-hand run of
+       # `k`, the `ci` run of `f`, the lint job) would make a state of it this world does not hold,
+       # and is not modeled; a run or a job the head has none of is answered the 404 gh prints.
+       ({match:("^gh run rerun " + job_flag("(?<job>\\d+)") + "(?!(?:\\S+ )*--job " + ids($all_jobs | map(.id))
+                + "(?:\\s|$))")} + no_job($repo; "$<job>")),
+       ({match:("^gh run rerun (?!" + ids($run_ids) + "(?:\\s|$))(?<run>\\d+)(?=\\s|$)(?!.*\\s--job\\s)")}
+        + no_run($repo; "$<run>")),
+       {match:"^gh run rerun(?! \\d)(?!.*\\s--job\\s)", stderr:($rerun_usage + "\n"), exit:1},
+       # gh 2.98.0 prints nothing for a re-run it requested where no terminal is there (measured).
+       {match:$rerun, stdout:"", publish:published($latest)},
+       # The same re-run through the REST API, a POST of the failed jobs of the run of the red or
+       # of the own job of the red: it presses the re-run as `gh run rerun` does, counting as a call of
+       # that route (gh-standin.ts, `counts_as`), and answers what GitHub answers, an empty object.
+       {match:api_post("(?:actions/runs/" + ($run_id|tostring) + "/rerun-failed-jobs"
+                       + "|actions/jobs/" + ids([$job_id, $job_id + 4]) + "/rerun)"),
         stdout:{}, counts_as:$rerun, publish:published($latest)},
-       (if $other_runs == [] then empty else
-          {match:api_post("(?:actions/runs/" + ids($other_runs | map(.id))
-                          + "/(?:rerun|rerun-failed-jobs)|actions/jobs/" + ids($other_job_ids)
-                          + "/rerun)"), stdout:{}} end),
        # Every read of a run or of a job answers the runs and the jobs of the head alone, each as
-       # the state of the head has it; a run or a job of any other id is refused as gh refuses it,
-       # and its REST read answers the 404 of GitHub.
+       # the state of the head has it: its log, its fields under --json, or the text gh 2.98.0
+       # prints for it (measured, $run_view_program); a run or a job of any other id is refused as
+       # gh refuses it, and its REST read answers the 404 of GitHub. A job read under --json is
+       # not modeled. A read that names an attempt (--attempt) is the log of attempt 1 of the run
+       # of the red in world `h`, past retention, whose 410 names that attempt (measured); any other
+       # read of an attempt is not modeled.
+       (if $log_gone
+        then {match:(view($run_id) + "(?=.*\\s--attempt 1(?:\\s|$))" + logs)} + log_expired($run_id; 1)
+        else empty end),
+       {match:"^gh run view(?=.*\\s--attempt\\s)", unmodeled:true},
        ($all_jobs[] | .id as $id
-        | job_route("^gh run view(?=.*" + $job_flag + ($id|tostring) + "(?:\\s|$))(?=.*\\s--log(?:-failed)?(?:\\s|$))";
-                    $id; [.] as $jobs | log_reply($jobs)),
-          job_route("^gh run view(?=.*" + $job_flag + ($id|tostring) + "(?:\\s|$))";
-                    $id; {stdout:.})),
-       ({match:("^gh run view(?=.*" + $job_flag + "(?<job>\\d+)(?:\\s|$))")} + no_job("$<job>")),
-       ($other_runs[] | . as $w | ("^gh run view(?!.*" + $job_flag + ")" + names($w.id)) as $view
-        | run_route($view + "(?=.*\\s--log(?:-failed)?(?:\\s|$))"; $w;
-                    latest as $jobs | log_reply($jobs)),
-          run_route($view + "(?=.*\\s--json(?:[\\s=]|$))"; $w;
+        | job_route(view_job($id|tostring) + logs; $id;
+                    log_reply([.job]); no_job($repo; $id|tostring)),
+          (job_route(view_job($id|tostring) + plain; $id;
+                     {stdout:.}; no_job($repo; $id|tostring)) + {program:$run_view_program})),
+       ({match:view_job("(?<job>\\d+)")} + no_job($repo; "$<job>")),
+       ({match:("^gh run view (?!" + ids($run_ids) + "(?:\\s|$))(?<run>\\d+)(?=\\s|$)(?!.*\\s--job\\s)")}
+        + no_run($repo; "$<run>")),
+       {match:"^gh run view(?! \\d)(?!.*\\s--job\\s)", stderr:($view_usage + "\n"), exit:1},
+       ($runs[] | . as $w
+        | run_route(view($w.id) + logs; $w; latest as $jobs | log_reply($jobs)),
+          run_route(view($w.id) + "(?=.*\\s--json\\s)(?!.*\\s--log(?:-failed)?(?:\\s|$))"; $w;
                     latest as $jobs | {stdout:(.run | gh_run($jobs))}),
-          run_route($view; $w; {stdout:(.run + {jobs:latest})})),
-       ({match:("^gh run view(?!.*" + $job_flag + ")(?!.*\\s" + ($run_id|tostring)
-                + "(?:\\s|$))(?=.*?\\s(?<run>\\d+)(?:\\s|$))")} + no_run("$<run>")),
-       {match:("^gh run view(?!.*" + $job_flag + ")(?!.*\\s\\d+(?:\\s|$))"), stderr:$view_usage,
-        exit:1},
-       run_route("^gh run view(?=.*\\s--log(?:\\s|$))"; $red_run; latest as $jobs | log_reply($jobs)),
-       run_route("^gh run view(?=.*\\s--json(?:[\\s=]|$))"; $red_run;
-                 latest as $jobs | {stdout:(.run | gh_run($jobs))}),
-       run_route("^gh run view .*--log-failed"; $red_run; latest as $jobs | log_reply($jobs)),
-       run_route("^gh run view"; $red_run; {stdout:(.run + {jobs:latest})}),
-       (moving("^gh run list"; [0, 1] | map(. as $s | {stdout:[$runs[].states[$s] | .run | gh_run([])
-                                                             | del(.jobs)]}))
+          (run_route(view($w.id) + plain; $w; {stdout:{run:.run, jobs:latest}})
+           + {program:$run_view_program})),
+       (moving("^gh run list(?: --|$)"; [0, 1] | map(. as $s | {stdout:[$runs[].states[$s] | .run | gh_run([])
+                                                                        | del(.jobs)]}))
         + {program:$run_list}),
        ($runs[] | . as $w | ($w.id|tostring) as $id
         | run_route(api("actions/runs/" + $id); $w; {stdout:.run}),
@@ -2706,39 +3182,59 @@ red_fixture() {
                     latest as $jobs | {stdout:{total_count:($jobs|length), jobs:$jobs}}),
           (range(1; ($w.states[1].attempts|length) + 1) as $n
            | run_route(api("actions/runs/" + $id + "/attempts/" + ($n|tostring)); $w;
-                       if .attempts[$n - 1] == null then $not_found
+                       if .attempts[$n - 1] == null then github("attempt-404")
                        elif $n == (.attempts|length) then {stdout:.run}
                        else {stdout:(.run + {run_attempt:$n, conclusion:"failure",
                                              updated_at:.run.created_at})} end),
              run_route(api("actions/runs/" + $id + "/attempts/" + ($n|tostring) + "/jobs"); $w;
-                       if .attempts[$n - 1] == null then $not_found
+                       if .attempts[$n - 1] == null then github("attempt-jobs-404")
                        else {stdout:{total_count:(.attempts[$n - 1]|length),
-                                     jobs:.attempts[$n - 1]}} end))),
-       ({match:api("actions/runs/(?!" + ids($run_ids) + "(?:[/?\\s]|$))\\d+(?:/\\S*)?")}
-        + $not_found),
+                                     jobs:.attempts[$n - 1]}} end)),
+          ([range(1; ($w.states[1].attempts|length) + 1)] as $attempts
+           | ({match:api("actions/runs/" + $id + "/attempts/(?!" + ids($attempts) + "(?:[/?\\s]|$))\\d+")}
+              + github("attempt-404")),
+             ({match:api("actions/runs/" + $id + "/attempts/(?!" + ids($attempts) + "(?:[/?\\s]|$))\\d+/jobs")}
+              + github("attempt-jobs-404")))),
+       # A run of no id the head has: the 404 GitHub answers for each read of it the rig answers
+       # (measured), any other read of it not modeled.
+       ("actions/runs/(?!" + ids($run_ids) + "(?:[/?\\s]|$))\\d+") as $other_run
+       | ({match:api($other_run)} + github("run-404")),
+         ({match:api($other_run + "/jobs")} + github("run-jobs-404")),
+         ({match:api($other_run + "/attempts/\\d+")} + github("run-attempt-404")),
+         ({match:api($other_run + "/attempts/\\d+/jobs")} + github("run-attempt-jobs-404")),
+         ({match:api($other_run + "/logs")} + github("run-logs-404")),
+         ({match:api_post($other_run + "/rerun-failed-jobs")} + github("rerun-404")),
+         ({match:api_post($other_run + "/rerun")} + github("run-rerun-404")),
        # A job and its log through the REST API: the log of a failed job holds the failing line of
        # the world in its failing step and the close the runner writes, that of a job that passed
        # its step and no line of its own, which is all the log the world holds. The log of attempt
-       # 1 of the run of the red is gone in world `h`, in words the rig has not measured for this
-       # endpoint, so that read is unmodeled.
+       # 1 of the run of the red is past retention in world `h`, which GitHub answers with a 410
+       # (measured by the lead under gh 2.98.0 on a job past retention, 2026-11-18). A job the
+       # state of the head does not hold yet, or of no id the head has, answers the 404 of GitHub.
+       # The log is as GitHub sends a job log (measured on a live job of cybermonklabs/legion,
+       # 2026-11-18, joblog-live of the measurements): one BOM at its start, each line stamped with
+       # the time, seven digits after the second, and a newline after each line, the last one too.
+       # The world logs no ESC byte, so gh never refuses the log for its terminal escape sequences.
        ($all_jobs[] | .id as $id
-        | job_route(api("actions/jobs/" + ($id|tostring)); $id; {stdout:.}),
+        | job_route(api("actions/jobs/" + ($id|tostring)); $id; {stdout:.job}; github("job-404")),
           job_route(api("actions/jobs/" + ($id|tostring) + "/logs"); $id;
-            (.completed_at | sub("Z$"; ".0000000Z")) as $ts
-            | if $log_err != "" and .run_id == $run_id and .run_attempt == 1
+            .job | (.completed_at | sub("Z$"; ".0000000Z")) as $ts
+            | if $log_gone and .run_id == $run_id and .run_attempt == 1
                  and .conclusion == "failure"
-              then {unmodeled:true}
-              else {stdout:("\($ts) ##[group]\(.steps[1].name)\n"
+              then github("joblog-410")
+              else {stdout:("\ufeff\($ts) ##[group]\(.steps[1].name)\n"
                             + (if .conclusion == "failure"
                                then "\($ts) \(log_line)\n\($ts) ##[error]Process completed with exit code 1.\n"
                                else "" end)
-                            + "\($ts) ##[endgroup]")} end)),
-       ({match:api("actions/jobs/(?!" + ids($all_jobs | map(.id)) + "(?:[/?\\s]|$))\\d+(?:/\\S*)?")}
-        + $not_found),
+                            + "\($ts) ##[endgroup]\n")} end; github("joblog-404"))),
+       ("actions/jobs/(?!" + ids($all_jobs | map(.id)) + "(?:[/?\\s]|$))\\d+") as $other_job
+       | ({match:api($other_job)} + github("job-404")),
+         ({match:api($other_job + "/logs")} + github("joblog-404")),
+         ({match:api_post($other_job + "/rerun")} + github("jobrerun-404")),
        # A check run by its id, and its annotations: none for a check that passed, and for one
        # that failed the annotation the runner writes for any failed step, which names no test.
        ($check_ids[] | . as $id
-        | check_route(api("check-runs/" + ($id|tostring)); $id; {stdout:.}),
+        | check_route(api("check-runs/" + ($id|tostring)); $id; {stdout:.}; github("checkrun-404")),
           check_route(api("check-runs/" + ($id|tostring) + "/annotations"); $id;
                       {stdout:(if .conclusion == "failure"
                                then [{path:".github", start_line:1, end_line:1,
@@ -2746,80 +3242,14 @@ red_fixture() {
                                       annotation_level:"failure", title:"",
                                       message:"Process completed with exit code 1.",
                                       raw_details:""}]
-                               else [] end)})),
-       ({match:api("check-runs/(?!" + ids($check_ids) + "(?:[/?\\s]|$))\\d+(?:/\\S*)?")}
-        + $not_found),
+                               else [] end)}; github("annotations-404"))),
+       ("check-runs/(?!" + ids($check_ids) + "(?:[/?\\s]|$))\\d+") as $other_check
+       | ({match:api($other_check)} + github("checkrun-404")),
+         ({match:api($other_check + "/annotations")} + github("annotations-404")),
        (moving(api("actions/runs"); [0, 1] | map(. as $s
           | [$runs[].states[$s].run] as $all
           | {stdout:{total_count:($all|length), workflow_runs:$all}}))
-        + {program:$runs_query})] as $new
-    | .routes |= map(
-        if (.stdout|type) == "object" and (.stdout|has("statusCheckRollup"))
-        then (.stdout as $view
-              | . + counted({stdout:($view + {statusCheckRollup:rollup(.)})})
-              | .follows = $rerun | del(.stdout))
-        elif .match == "^gh pr checks"
-        # `gh pr checks --required` answers the checks the base requires and no other, as GitHub
-        # does, from a route of its own ahead of the one that answers every check. The base
-        # requires the one aggregate check `ci` ($required), which the heads of worlds `g`, `i`
-        # and `j` report: every other head reports no check the base requires, which gh answers on
-        # stderr, exiting 1 (\u0027 is the quote gh puts around the branch: this program is in
-        # single quotes).
-        then (def answer($checks):
-                {stdout:rows($checks), exit:(if (failing($checks)|length) > 0 then 1 else 0 end)};
-              ({match:"^gh pr checks\\b.*\\s--required\\b", follows:$rerun}
-               + counted(map(select(.name == $required))
-                 | if . == []
-                   then {stderr:("no required checks reported on the \u0027" + $branch
-                                 + "\u0027 branch\n"), exit:1}
-                   else answer(.) end)),
-              (. + counted(answer(.)) | .follows = $rerun | del(.stdout)))
-        # The GraphQL rollup of the head and its check runs by any name of the head, the routes
-        # worker_fixture marks `head_read`, answer the red where they stand: behind the routes for
-        # a read of any other commit. The commit endpoint answers every run at the head, the
-        # by-hand one among them, and the attempt each re-run made once it is pressed.
-        elif .head_read == "rollup"
-        then (. + counted({stdout:graphql(.)}) | .follows = $rerun | del(.stdout))
-        elif .head_read == "check-runs"
-        then (. + {follows:$rerun,
-                   replies:[{stdout:{total_count:(($red_checks + $uncounted)|length),
-                                     check_runs:($red_checks + $uncounted)}},
-                            {stdout:{total_count:(($settled_checks + $uncounted)|length),
-                                     check_runs:($settled_checks + $uncounted)}}]}
-              | del(.stdout))
-        else . end)
-    # The answers for a repository other than the world (`repo_refusal`, worker_fixture) stand
-    # ahead of every route, as GitHub refuses such a read whatever it asks.
-    | .routes = ([.routes[] | select(.repo_refusal)] + $new + [.routes[] | select(.repo_refusal | not)])
-    # The envelope red_report publishes in a world whose counted set the rig reports (world `l`),
-    # the settlement the head would raise when the counted set reports the red.
-    | . + (if $facts.report then {reported:published($shown)} else {} end)' \
-    "$R/fixtures.json" >"$R/fixtures.red.json"
-  if jq -e .report <<<"$facts" >/dev/null; then
-    jq '.reported' "$R/fixtures.red.json" >"$R/reported.json"
-    jq 'del(.reported)' "$R/fixtures.red.json" >"$R/fixtures.json"
-    rm -f "$R/fixtures.red.json"
-  else
-    mv "$R/fixtures.red.json" "$R/fixtures.json"
-  fi
-  # The reads of the base's required set, which read nothing of the world but the repository and
-  # the base ($base, $base_sha), go ahead of every route the jq above wrote, on the same `ci`
-  # ($required).
-  required_set_fixture "$required" "$base" "$base_sha"
-  # The world the scorer reads, beside worker_fixture's: the red check, the run and job that carry
-  # it, the failing line the world's log read answers (`log`, empty where that read answers an
-  # error), where the red is a test, that test's full name (`test`, empty where it is none), the
-  # check the base requires (`required`, the aggregate of `g`, `i` and `j`), and the world's facts
-  # (red_world). score.ts's redAtTheHead judges the role's record against `log` and its
-  # `dispatch search` against `test`, so that neither rests on how the role printed its own log
-  # read.
-  jq --arg world "$world" --arg check "$check" --arg job "$job" --argjson facts "$facts" \
-    --arg log "$world_log" --arg test "$test_name" --arg required "$required" \
-    --argjson run_id "$run_id" --argjson job_id "$job_id" \
-    '. + {world:$world, check:$check, job:$job, run_id:$run_id, job_id:$job_id, log:$log,
-          test:$test, required:$required} + $facts' \
-    "$R/world.json" >"$R/world.red.json"
-  mv "$R/world.red.json" "$R/world.json"
+        + {program:$runs_query})]'
 }
 
 # required_set_fixture CHECK BASE BASE_SHA puts the reads of the required set of the base branch BASE
@@ -2831,8 +3261,7 @@ red_fixture() {
 # to the default branch and holds that same rule; the base branch, read for its protection, which
 # the prompt reads too; and the protection of the base on its own endpoint, the same required
 # checks in the shape that endpoint answers them in. They read nothing of the world but the
-# repository (worker_repo) and BASE, which red_fixture reads, before its own jq rewrites any
-# route, from the `baseRefName` of the answer worker_fixture writes for `gh pr view`. Each
+# repository (worker_repo), BASE and BASE_SHA, which red_fixture reads from world.json. Each
 # answers unfiltered, since the stand-in applies the `--jq` of a call itself, and the branch
 # answers its name, its commit (BASE_SHA, so a read of `.commit.sha` names the base rather than
 # null, which sent runs of rounds 6 and 9 on to read `commits/null/check-runs`) and its protection.
@@ -2842,51 +3271,45 @@ red_fixture() {
 # generic `(check-runs|status)` route took both and each filter, run over a check-runs answer,
 # exited 1, and the rules read without its `--jq` (trial-i-head-3), the protection read
 # (trial-i-head-1) and the rulesets list (trial-i-head-5) each fell to the 404, so every reviewer
-# read the base as requiring nothing. Each match names the repository and ends where its own path
-# ends, so none takes the path of another: the branch route never takes the `/protection` below
-# it, nor the rulesets list the one ruleset, and the rules path has its `rules/` between the
-# repository and `branches/`.
+# read the base as requiring nothing. Each match is a route_defs `api` read, which names the
+# repository and ends where its own path ends, so none takes the path of another: the branch
+# route never takes the `/protection` below it, nor the rulesets list the one ruleset, and the
+# rules path has its `rules/` between the repository and `branches/`.
 required_set_fixture() {
-  jq --arg repo "$worker_repo" --arg required "$1" --arg base "$2" --arg base_sha "$3" '
+  jq --arg repo "$worker_repo" --arg required "$1" --arg base "$2" --arg base_sha "$3" \
+    "$(route_defs)"'
     ("https://api.github.com/repos/" + $repo) as $api
     | ($api + "/branches/" + $base + "/protection") as $protection_url
     | {contexts:[$required], checks:[{context:$required, app_id:null}]} as $status_checks
+    | ({url:($protection_url + "/required_status_checks"), strict:false,
+        contexts_url:($protection_url + "/required_status_checks/contexts")} + $status_checks)
+      as $required_status_checks
     | {id:1, name:("Require " + $required), target:"branch", source_type:"Repository",
        source:$repo, enforcement:"active"} as $ruleset
     | {type:"required_status_checks",
        parameters:{strict_required_status_checks_policy:false,
                    required_status_checks:[{context:$required}]}} as $rule
-    | [{match:("^gh api .*repos/" + $repo + "/rules/branches/" + $base + "([?\\s]|$)"),
+    | ("branches/" + ($base | literal)) as $branch
+    | [{match:api("rules/" + $branch),
         stdout:[$rule + {ruleset_source_type:$ruleset.source_type, ruleset_source:$ruleset.source,
                          ruleset_id:$ruleset.id}]},
-       {match:("^gh api .*repos/" + $repo + "/rulesets([?\\s]|$)"), stdout:[$ruleset]},
-       {match:("^gh api .*repos/" + $repo + "/rulesets/" + ($ruleset.id|tostring) + "([?\\s]|$)"),
+       {match:api("rulesets"), stdout:[$ruleset]},
+       {match:api("rulesets/" + ($ruleset.id|tostring)),
         stdout:($ruleset + {bypass_actors:[],
                             conditions:{ref_name:{include:["~DEFAULT_BRANCH"], exclude:[]}},
                             rules:[$rule]})},
-       {match:("^gh api .*repos/" + $repo + "/branches/" + $base + "([?\\s]|$)"),
+       {match:api($branch),
         stdout:{name:$base, commit:{sha:$base_sha, url:($api + "/commits/" + $base_sha)},
                 protected:true,
                 protection:{enabled:true,
                             required_status_checks:({enforcement_level:"non_admins"}
                                                     + $status_checks)},
                 protection_url:$protection_url}},
-       {match:("^gh api .*repos/" + $repo + "/branches/" + $base + "/protection([?\\s]|$)"),
-        stdout:{url:$protection_url,
-                required_status_checks:({url:($protection_url + "/required_status_checks"),
-                                         strict:false,
-                                         contexts_url:($protection_url
-                                                       + "/required_status_checks/contexts")}
-                                        + $status_checks),
+       {match:api($branch + "/protection"),
+        stdout:{url:$protection_url, required_status_checks:$required_status_checks,
                 enforce_admins:{url:($protection_url + "/enforce_admins"), enabled:false}}},
-       {match:("^gh api .*repos/" + $repo + "/branches/" + $base
-               + "/protection/required_status_checks([?\\s]|$)"),
-        stdout:({url:($protection_url + "/required_status_checks"), strict:false,
-                 contexts_url:($protection_url + "/required_status_checks/contexts")}
-                + $status_checks)},
-       {match:("^gh api .*repos/" + $repo + "/branches/" + $base
-               + "/protection/required_status_checks/contexts([?\\s]|$)"),
-        stdout:[$required]}]
+       {match:api($branch + "/protection/required_status_checks"), stdout:$required_status_checks},
+       {match:api($branch + "/protection/required_status_checks/contexts"), stdout:[$required]}]
       as $required_set
     | .routes = $required_set + .routes' \
     "$R/fixtures.json" >"$R/fixtures.required.json"
@@ -2898,7 +3321,8 @@ required_set_fixture() {
 # `unreported` drops its first answer, the one that reported no red, and the mark with it — the
 # gh stand-in keeps that mark through its own writes of fixtures.json — so the counted set now
 # reports the check red before the re-run and green after it, as every other world's counted
-# reads already do. Then the settlement the head's checks would raise goes to the run's listener,
+# reads already do. Then the settlement the head's checks would raise goes to the run's listener
+# (the last ENVOY_URL of <run>/pane.env, which boot_worker copied from the batch's services file),
 # the envelope red_fixture wrote to <run>/reported.json, through the gh stand-in's own publish
 # (`gh-standin.ts --publish`), the one the re-run's own route publishes with; a publish that
 # fails, or that a listener holds past the stand-in's five seconds, is noted and the run goes on,
@@ -2919,25 +3343,26 @@ red_report() {
       mv "$R/fixtures.reported.json" "$R/fixtures.json"
   ) 9>>"$R/fixtures.lock" || return 1
   date -u +%Y-%m-%dT%H:%M:%SZ >"$R/reported-at"
-  url=$(sed -n 's/^ENVOY_URL=//p' "$services_env")
-  ENVOY_URL=$url ENVOY_TOKEN_FILE=$(sed -n 's/^ENVOY_TOKEN_FILE=//p' "$services_env") \
-    bun "$here/gh-standin.ts" --publish "$R/reported.json" ||
+  url=$(sed -n 's/^ENVOY_URL=//p' "$R/pane.env" | tail -n 1)
+  SKILL_SCENARIO_RUN=$R bun "$here/gh-standin.ts" --publish "$R/reported.json" ||
     note "the report of the check reached no listener at $url"
 }
 
 # rerun_pressed SECONDS waits up to SECONDS for the role's press of the re-run to reach the run's
-# calls.jsonl, which the gh stand-in appends to as it answers each call: a `gh run rerun` that
-# names a run or a job by its id, as score.ts's RERUN_PRESS counts one. `gh run rerun --help`, or a
-# re-run naming neither, presses nothing (red_fixture), so no settlement follows it and it wakes
-# nothing. The wait is bounded and its answer is not a requirement: a role that re-ran nothing is a
-# run the scorer fails, never a rig failure, so this answers 1 and the run ends on its one turn's
-# result.
+# calls.jsonl, which the gh stand-in appends to as it answers each call: the record of a call
+# whose route published the head's settlement (gh-standin.ts, `published`), which only the two
+# press routes of red_fixture do. A call that pressed nothing (`gh run rerun --help`, a re-run of
+# a run or a job the head has none of, a call naming neither) published nothing, so it wakes
+# nothing: the second turn starts on a settlement that came. The scorer counts presses its own
+# way (score.ts, RERUN_PRESS): the role's decision to re-run, whatever it named. The wait is
+# bounded and its answer is not a requirement: a role that re-ran nothing is a run the scorer
+# fails, never a rig failure, so this answers 1 and the run ends on its one turn's result.
 rerun_pressed() {
   local deadline=$((SECONDS + $1))
   while :; do
-    if jq -e -s 'any(.[]; .as == "gh" and (.argv | join(" ")
-        | test("^run rerun\\b.*(\\s|--job=)[0-9]+(\\s|$)|^api\\b(?=.*(-X|--method) ?POST\\b).*actions/(runs/[0-9]+/rerun(-failed-jobs)?|jobs/[0-9]+/rerun)([?\\s]|$)")))' \
-      "$R/calls.jsonl" >/dev/null 2>&1; then return 0; fi
+    if jq -e -s 'any(.[]; .as == "gh" and .published != null)' "$R/calls.jsonl" >/dev/null 2>&1; then
+      return 0
+    fi
     [ "$SECONDS" -lt "$deadline" ] || return 1
     sleep 2
   done
