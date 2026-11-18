@@ -3087,6 +3087,16 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
       await expect
         .poll(() => caretInRowBlock(page, blockId), { message: "Enter put no caret in the block" })
         .toBe(true);
+      // ProseMirror writes its own selection back over the page's caret 20 ms after it takes the
+      // focus, where the caret moved since the editor last read it, so a caret move pressed in
+      // that window is undone (measured in a Job like CI's: the put-back's ArrowRight lost in 2
+      // of 10 runs, and its Backspace then took nothing back). A reader's next key comes later
+      // than that; two frames outlast it.
+      await page.evaluate(async () => {
+        const frames = Promise.withResolvers<void>();
+        requestAnimationFrame(() => requestAnimationFrame(() => frames.resolve()));
+        await frames.promise;
+      });
     };
     /** One edit through the row `focus` focuses: Enter, `keys` pressed, `paste` pasted as a
      *  browser sends a paste, a `Y` typed and Escape. The document `artifactId` then stores
