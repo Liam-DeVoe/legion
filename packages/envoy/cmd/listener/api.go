@@ -389,10 +389,12 @@ const publishDeniedPrefix = "envoy: the message bus denied the publish under thi
 // room.
 const streamFullPrefix = "envoy: the message bus refused the message because its stream is full"
 
-// streamLacksSubjectPrefix opens the body of every answer this listener gives a send or publish
-// the notifications stream did not take because, as the bus last read it, the stream carries no
-// subject capturing the message's (bus.ErrStreamLacksSubject: a newer build's stream that dropped a
-// subject this build stores), so one string matches in a test and in a deployed log filter. The
+// streamLacksSubjectPrefix opens the body of every answer the send and publish routes give a send
+// or publish the notifications stream did not take because, as the bus last read it, the stream
+// carries no subject capturing the message's (bus.ErrStreamLacksSubject: a newer build's stream
+// that dropped a subject this build stores), a role send's forward and keep among them, so one
+// string matches in a test and in a deployed log filter; the webhook routes answer the error
+// itself (internal/webhook's failureOutcome). The
 // error after it names the subject and the stream's generation. It is deliberately not
 // busUnansweredPrefix: the bus answered, that no copy is kept for that subject, so "the message bus
 // did not answer" would have a monitor count it as an outage and send an operator looking for one
