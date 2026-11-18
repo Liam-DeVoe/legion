@@ -60,11 +60,11 @@ check "the variable is dropped" "$(is "$(command_of "$line")" "go test -v -count
 check "the text begins at go" "$(is "$(text_of "$line")" "go test -v -count=1 -timeout 29m ./internal/dispatch/docs/")"
 
 echo "case: a variable and the memory wrapper (the race-docs lane)"
-line='RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/'
-check "both are dropped" "$(is "$(command_of "$line")" "go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/")"
-line='RACE_MEM_LIMIT_KB=8388608 RACE_MEM_JSON_PATH="$RUNNER_TEMP/go-test-json/race-docs.json" ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/'
+line='RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 ./internal/dispatch/docs/'
+check "both are dropped" "$(is "$(command_of "$line")" "go test -json -race -count=1 ./internal/dispatch/docs/")"
+line='RACE_MEM_LIMIT_KB=8388608 RACE_MEM_JSON_PATH="$RUNNER_TEMP/go-test-json/race-docs.json" ../../.github/scripts/race_memory.py go test -json -race -count=1 ./internal/dispatch/docs/'
 check "the wrapper's own stream path is dropped though the shell expands it" \
-  "$(is "$(command_of "$line")" "go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/")"
+  "$(is "$(command_of "$line")" "go test -json -race -count=1 ./internal/dispatch/docs/")"
 
 echo "case: more than one variable before the command"
 check "each is dropped" "$(is "$(command_of 'A=1 B=2 go test ./pkg')" "go test ./pkg")"
