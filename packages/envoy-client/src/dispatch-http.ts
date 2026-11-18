@@ -651,11 +651,18 @@ interface WriteProgress {
   sawKeyedLayer: boolean;
 }
 
-/** A write: its one `Idempotency-Key`, the request as a text names it (`requestForText`), and
- *  what its attempts have shown. */
+/** A POST or PATCH call: its one `Idempotency-Key`, the request as a text names it
+ *  (`requestForText`), whether it writes anything, and what its attempts have shown. */
 interface WriteCall {
   readonly key: string;
   readonly request: string;
+  /**
+   * Whether the call writes: false for a conversion (`markdownRoundTrip`), which Dispatch runs
+   * without storing anything. Its attempts are never marked as ones that may have landed, so it
+   * keeps the answers it had before the landing reading existed: a no route to the end is the
+   * route absent, and a refusal is the refusal.
+   */
+  readonly writes: boolean;
   readonly progress: WriteProgress;
 }
 
@@ -1076,12 +1083,16 @@ export class DispatchClient {
    *  a caller compares the answer with the text it holds and refuses a text the store would
    *  change. */
   async markdownRoundTrip(markdown: string): Promise<string> {
-    const answer: MarkdownRoundTripResponse = await this.#json(
+    const { payload } = await this.#jsonAnswer<MarkdownRoundTripResponse>(
       "POST",
       ["api", "v1", "markdown", "round-trip"],
-      { markdown }
+      { markdown },
+      undefined,
+      undefined,
+      undefined,
+      { writes: false }
     );
-    return answer.markdown;
+    return payload.markdown;
   }
 
   async listProjectArtifacts(project: string, unlinked = false): Promise<Artifact[]> {
@@ -1973,10 +1984,14 @@ export class DispatchClient {
     body?: unknown,
     query?: object,
     signal?: AbortSignal,
-    key?: string
+    key?: string,
+    /** `writes: false` for a POST that writes nothing (a conversion, `markdownRoundTrip`): it is
+     *  sent as a POST is, under one key with its retries, but never read as a write that may have
+     *  landed (`WriteCall.writes`). */
+    kind: { readonly writes: boolean } = { writes: true }
   ): Promise<{ readonly status: number; readonly payload: T }> {
     const url = this.#url(path, query);
-    const write = this.#writeCall(method, url, key);
+    const write = this.#writeCall(method, url, key, kind.writes);
     return this.#noRoute(
       async () => {
         const response = await this.#send(
@@ -2061,11 +2076,17 @@ export class DispatchClient {
    * caller's own, where it has one intent across calls and processes, else one minted for this
    * call alone. A read, a PUT or a DELETE has none.
    */
-  #writeCall(method: string, url: string, key: string | undefined): WriteCall | undefined {
+  #writeCall(
+    method: string,
+    url: string,
+    key: string | undefined,
+    writes = true
+  ): WriteCall | undefined {
     if (method !== "POST" && method !== "PATCH") return undefined;
     return {
       key: key ?? crypto.randomUUID(),
       request: `${method} ${requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)}`,
+      writes,
       progress: { sent: 0, reached: false, landed: false, running: false, sawKeyedLayer: false },
     };
   }
@@ -2313,7 +2334,7 @@ export class DispatchClient {
         if (answer.echoed) KEYED_LAYER_SEEN.set(this.#baseUrl, this.#now());
         if (!answer.again) return answer.response;
         progress.reached ||= answer.reached;
-        progress.landed ||= answer.reached || answer.running;
+        progress.landed ||= write.writes && (answer.reached || answer.running);
         progress.running ||= answer.running && !upload;
         progress.sawKeyedLayer ||= answer.echoed;
       } catch (error) {
@@ -2336,7 +2357,10 @@ export class DispatchClient {
         // resolve: `DispatchUnreachableError.reachedNothing`).
         if (!unpresented) {
           progress.reached = true;
-          if (!(error instanceof DispatchUnreachableError && error.reachedNothing)) {
+          if (
+            write.writes &&
+            !(error instanceof DispatchUnreachableError && error.reachedNothing)
+          ) {
             progress.landed = true;
           }
         }

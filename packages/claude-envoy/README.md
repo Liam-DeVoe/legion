@@ -179,9 +179,15 @@ message from Dispatch's Agents page as that person's own turn.
   stores the message at most once; an attempt with no answer or a 5xx sent again under that key;
   and the listener's URL named only as `urlForText` names it, never its user info. A send that may
   have arrived is not a failure: it exits 75 (`EX_TEMPFAIL`), names the key, and prints the
-  command that sends it again under that key (`envoy-send --idempotency-key <key> <target>
-  <message>`), which the listener drops as a repeat if the first copy arrived. A refusal, a
-  listener that refused the connection or whose name did not resolve included, exits 1.
+  command that sends it again under that key, which the listener drops as a repeat if the first
+  copy arrived: `cd <dir> && ENVOY_CONFIG_FILE=<file> [ENVOY_URL=…] [ENVOY_TOKEN_FILE=…]
+  [ENVOY_SESSION_ID=…] envoy-send --idempotency-key <key> <target> <message>`, which carries what
+  chose the listener so it goes there from any shell, each word quoted so bash and zsh read it
+  alike. Where that command would hold a secret this process withholds (the message names one,
+  say), a printed copy would send a different message under the same key, so only the key is
+  printed, with how to resend the original. A resend under a key exits 75 on any failure, since
+  the send before it may have arrived. Any other refusal, a listener that refused the connection
+  or whose name did not resolve included, exits 1.
 
 ## What a delivered line carries
 

@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test"
-import { writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { EnvoySendUnconfirmedError } from "@legion/envoy-client/transport"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
@@ -220,26 +220,41 @@ test("envoy-send sends to the listener and with the bearer its envoy.json names"
   expect(String(requests[0]?.body["idempotency_key"])).toMatch(MINTED_KEY)
 })
 
-/** Runs `envoy-send` as a person does, against the stand-in listener, with a bearer file. */
-async function runEnvoySend(args: readonly string[], command?: string) {
-  const file = join(scratch, "envoy.json")
+/** The envoy.json `runEnvoySend` writes, naming the stand-in listener and `token` as its bearer. */
+function envoyConfig(token: string, port = server.port): string {
+  const file = join(scratch, `envoy-${port}.json`)
   writeFileSync(
     file,
-    JSON.stringify({
-      envoy: {
-        enabled: true,
-        url: `http://127.0.0.1:${server.port}`,
-        token: fixtureSecret("listener"),
-      },
-    }),
+    JSON.stringify({ envoy: { enabled: true, url: `http://127.0.0.1:${port}`, token } }),
   )
+  return file
+}
+
+/**
+ * Runs `envoy-send` as a person does, against the stand-in listener, with a bearer file: with
+ * `args`, or as `command` through bash. `env` replaces the environment it runs in, which is
+ * otherwise PATH, HOME and the ENVOY_CONFIG_FILE naming `token`'s envoy.json.
+ */
+async function runEnvoySend(
+  args: readonly string[],
+  options: {
+    readonly command?: string
+    readonly env?: Record<string, string>
+    readonly token?: string
+  } = {},
+) {
+  const file = envoyConfig(options.token ?? fixtureSecret("listener"))
   const send = Bun.spawn(
-    command === undefined
+    options.command === undefined
       ? ["bun", resolve(import.meta.dir, "../bin/envoy-send.ts"), ...args]
-      : ["bash", "-c", command],
+      : ["bash", "-c", options.command],
     {
       cwd: scratch,
-      env: { PATH: process.env["PATH"] ?? "", HOME: scratch, ENVOY_CONFIG_FILE: file },
+      env: options.env ?? {
+        PATH: process.env["PATH"] ?? "",
+        HOME: scratch,
+        ENVOY_CONFIG_FILE: file,
+      },
       stdout: "pipe",
       stderr: "pipe",
     },
@@ -249,7 +264,19 @@ async function runEnvoySend(args: readonly string[], command?: string) {
     new Response(send.stdout).text(),
     new Response(send.stderr).text(),
   ])
-  return { code, stdout, stderr }
+  return { code, stdout, stderr, file }
+}
+
+/** The ready-to-run resend an unconfirmed send printed, if it printed one. */
+function printedResend(stderr: string): string | undefined {
+  return /To send it again safely, run: (.+)\n/.exec(stderr)?.[1]
+}
+
+/** The ready-to-run resend an unconfirmed send printed; the row fails where it printed none. */
+function mustResend(stderr: string): string {
+  const resend = printedResend(stderr)
+  if (resend === undefined) throw new Error(`no resend command was printed: ${stderr}`)
+  return resend
 }
 
 // An unconfirmed send may have stored the message, so `envoy-send` neither calls it failed nor
@@ -267,17 +294,105 @@ test("an unconfirmed envoy-send exits 75 and prints the command that resends it 
   expect(first.stderr).not.toContain("failed")
   const key = String(requests[0]?.body["idempotency_key"])
   expect(key).toMatch(MINTED_KEY)
-  const resend = /To send it again safely, run: (.+)\n/.exec(first.stderr)?.[1]
+  const resend = mustResend(first.stderr)
   expect(resend).toBe(
-    `bun ${resolve(import.meta.dir, "../bin/envoy-send.ts")} --idempotency-key ${key} ses_receiver 'it may have landed'`,
+    `cd ${scratch} && ENVOY_CONFIG_FILE=${first.file} bun ${resolve(import.meta.dir, "../bin/envoy-send.ts")} --idempotency-key ${key} ses_receiver 'it may have landed'`,
   )
 
   // The printed command, run as printed, sends the same message under the same key.
-  const again = await runEnvoySend([], resend)
+  const again = await runEnvoySend([], { command: resend })
   expect(again.code).toBe(0)
   expect(requests).toHaveLength(3)
   expect(requests.map((one) => one.body["idempotency_key"])).toEqual([key, key, key])
   expect(requests[2]?.body["message"]).toBe("it may have landed")
+}, 30_000)
+
+// F9 (the review of 215510405b): the printed resend carries what chose the listener. Run in a
+// shell whose own settings name another listener (no ENVOY_CONFIG_FILE, an XDG_CONFIG_HOME whose
+// envoy.json names a second one), it still goes to the listener the send went to.
+test("the printed resend goes to the send's listener from a shell whose settings name another", async () => {
+  requests.length = 0
+  const other: Sent[] = []
+  const elsewhere = Bun.serve({
+    port: 0,
+    fetch: async (request) => {
+      other.push({
+        path: new URL(request.url).pathname,
+        authorization: request.headers.get("authorization"),
+        body: JSON.parse(await request.text()) as Record<string, unknown>,
+      })
+      return Response.json(stored("ses_receiver"), { status: 202 })
+    },
+  })
+  try {
+    for (let n = 0; n < 2; n++) {
+      answers.push(() => Response.json({ error: "listener restarting" }, { status: 503 }))
+    }
+    const first = await runEnvoySend(["ses_receiver", "to", "the", "first", "listener"])
+    expect(first.code).toBe(75)
+    const resend = mustResend(first.stderr)
+
+    const xdg = join(scratch, "xdg-other")
+    mkdirSync(join(xdg, "legion"), { recursive: true })
+    writeFileSync(
+      join(xdg, "legion", "envoy.json"),
+      JSON.stringify({
+        envoy: {
+          enabled: true,
+          url: `http://127.0.0.1:${elsewhere.port}`,
+          token: fixtureSecret("other"),
+        },
+      }),
+    )
+    const again = await runEnvoySend([], {
+      command: resend,
+      env: { PATH: process.env["PATH"] ?? "", HOME: scratch, XDG_CONFIG_HOME: xdg },
+    })
+    expect(again.code).toBe(0)
+    expect(other).toEqual([])
+    expect(requests).toHaveLength(3)
+    expect(new Set(requests.map((one) => one.body["idempotency_key"])).size).toBe(1)
+  } finally {
+    elsewhere.stop(true)
+  }
+}, 30_000)
+
+// F8 (the review of 215510405b): a resend under a key the send before it named is a resend of a
+// message that may have arrived, so its refusal says nothing of that earlier copy: not confirmed,
+// exit 75, the key named and the resend printed again, never "failed".
+test("a keyed resend the listener refuses is not confirmed, never failed", async () => {
+  requests.length = 0
+  answers.push(() => Response.json({ error: "no such session" }, { status: 404 }))
+  const resend = await runEnvoySend(["--idempotency-key", "k-resend-1", "ses_receiver", "hello"])
+  expect(resend.code).toBe(75)
+  expect(resend.stderr).toStartWith(
+    "Claude Envoy send not confirmed: this resend under idempotency_key k-resend-1 failed (",
+  )
+  expect(resend.stderr).toContain("and the send under that key before it may have arrived")
+  expect(resend.stderr).not.toContain("Claude Envoy send failed")
+  expect(printedResend(resend.stderr)).toContain("--idempotency-key k-resend-1 ses_receiver hello")
+  expect(requests.map((one) => one.body["idempotency_key"])).toEqual(["k-resend-1"])
+}, 30_000)
+
+// F6 (the review of 215510405b): where the message holds a secret this process withholds, the
+// printed line would read `<withheld>` in its place, and run as printed it would send a different
+// message under the same key. So no ready command is printed: the key, and how to resend the
+// original.
+test("an unconfirmed send whose message holds a held secret prints the key and no ready command", async () => {
+  requests.length = 0
+  for (let n = 0; n < 2; n++) {
+    answers.push(() => Response.json({ error: "listener restarting" }, { status: 503 }))
+  }
+  const token = fixtureSecret("listener")
+  const first = await runEnvoySend(["ses_receiver", "the", "token", "is", token], { token })
+  expect(first.code).toBe(75)
+  const key = String(requests[0]?.body["idempotency_key"])
+  expect(printedResend(first.stderr)).toBeUndefined()
+  expect(first.stderr).toContain(
+    `run envoy-send again from ${scratch} with --idempotency-key ${key}, the same target and the same message`,
+  )
+  expect(first.stderr).toContain("a printed copy could not reproduce the message")
+  expect(first.stderr).not.toContain(token)
 }, 30_000)
 
 test("a send whose only attempt was answered with an unreadable 2xx names that one attempt", async () => {

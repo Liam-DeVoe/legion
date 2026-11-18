@@ -1,16 +1,20 @@
 import { expect, test } from "bun:test"
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
-test("parses a destination and a multiword message", async () => {
-  // given
-  const module = await import("../src/send-arguments")
-  const candidate = Reflect.get(module, "parseSendArguments")
+test("parses a target session followed by the message words", async () => {
+  const { parseSendArguments } = await import("../src/send-arguments")
+  expect(parseSendArguments(["ses_target", "ready", "for", "QA"])).toEqual({
+    targetSession: "ses_target",
+    message: "ready for QA",
+  })
+})
 
-  // when
-  const output =
-    typeof candidate === "function" ? candidate(["ses_receiver", "ready", "for", "QA"]) : undefined
-
-  // then
-  expect(output).toEqual({ targetSession: "ses_receiver", message: "ready for QA" })
+test("rejects a missing target or an empty message", async () => {
+  const { parseSendArguments } = await import("../src/send-arguments")
+  expect(() => parseSendArguments(["ses_target"])).toThrow()
+  expect(() => parseSendArguments(["", "hello"])).toThrow()
 })
 
 test("takes the key an unconfirmed send named, ahead of the target", async () => {
@@ -26,9 +30,82 @@ test("takes the key an unconfirmed send named, ahead of the target", async () =>
   expect(() => parseSendArguments(["--idempotency-key"])).toThrow()
 })
 
-test("the resend command quotes each word for a POSIX shell", async () => {
+/** The zsh this row runs the resend command under: `LEGION_TEST_ZSH`, else the one on PATH. CI
+ *  installs one (`ci-job-claude-envoy.yaml`), so there a missing zsh fails the row rather than
+ *  skipping it. */
+const zsh = process.env["LEGION_TEST_ZSH"] ?? Bun.which("zsh")
+
+/** A stand-in `bun` that writes the ENVOY_CONFIG_FILE it was given and then its arguments, each
+ *  ended by a NUL, so the row reads back exactly what the shell handed it. */
+function standInBun(): string {
+  const bin = mkdtempSync(join(tmpdir(), "resend-bun-"))
+  writeFileSync(join(bin, "bun"), `#!/bin/sh\nprintf '%s\\0' "$ENVOY_CONFIG_FILE" "$@"\n`)
+  chmodSync(join(bin, "bun"), 0o755)
+  return bin
+}
+
+/** Words each shell would expand or split if they stood bare: zsh's `=word`, quotes, command
+ *  substitution, history, a leading dash, a tilde, globs, a line break, an empty message. */
+const AWKWARD = [
+  "=ls",
+  "=",
+  "a=b",
+  "plain",
+  "it's here; done",
+  "$(id)",
+  "`id`",
+  "!x",
+  "-n",
+  "~",
+  "*",
+  "two\nlines",
+  "",
+]
+
+/** Runs the resend command each awkward word makes through `argv`'s shell, and checks the stand-in
+ *  `bun` got exactly the words the send had. */
+async function sameWordsUnder(shell: string, argv: (command: string) => string[]): Promise<void> {
   const { resendCommand } = await import("../src/send-arguments")
-  expect(resendCommand("/p/envoy-send.ts", "k-1", "ses_receiver", "it's here; done")).toBe(
-    "bun /p/envoy-send.ts --idempotency-key k-1 ses_receiver 'it'\\''s here; done'",
-  )
-})
+  const bin = standInBun()
+  for (const word of AWKWARD) {
+    const command = resendCommand({
+      script: "=envoy-send.ts",
+      cwd: bin,
+      settings: [["ENVOY_CONFIG_FILE", `=${word}`]],
+      idempotencyKey: `=${word}`,
+      targetSession: word || "ses_receiver",
+      message: word,
+    })
+    const run = Bun.spawnSync(argv(command), {
+      env: { PATH: `${bin}:${process.env["PATH"] ?? ""}` },
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    expect(run.exitCode, `${shell} exited for ${JSON.stringify(word)}`).toBe(0)
+    expect(run.stdout.toString().split("\0").slice(0, -1)).toEqual([
+      `=${word}`,
+      "=envoy-send.ts",
+      "--idempotency-key",
+      `=${word}`,
+      word || "ses_receiver",
+      word,
+    ])
+  }
+}
+
+// F7 (the review of 215510405b): the printed command must give the resend exactly the words the
+// send had, under bash and under zsh alike. A bare leading `=` is read by zsh's EQUALS option as a
+// command's path (`=ls` becomes `/usr/bin/ls`), so it is quoted.
+test("the resend command gives the same words under bash", async () => {
+  await sameWordsUnder("bash", (command) => ["bash", "-c", command])
+}, 20_000)
+
+// Skipped, and reported as skipped, only off CI where no zsh is found; CI installs one, so there
+// a missing zsh fails the row.
+test.skipIf(zsh === null && process.env["CI"] !== "true")(
+  "the resend command gives the same words under zsh",
+  async () => {
+    await sameWordsUnder("zsh", (command) => [zsh ?? "zsh", "-f", "-c", command])
+  },
+  20_000,
+)

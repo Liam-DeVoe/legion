@@ -38,7 +38,9 @@ body: |-
   judged for the key (a gateway's 403 or 404 page, Dispatch's auth 401, `403 READ_ONLY_TOKEN`, a
   second `401 BROKER_TOKEN_NOT_ACTIVE`) is `DispatchWriteUnsettledError`, carrying the write's
   key as `key`, with that failure as its cause, never the refusal alone, which read as nothing
-  written and invited a resend that wrote twice.
+  written and invited a resend that wrote twice. The markdown round-trip, a POST that writes
+  nothing, is never read as a write that may have landed, so a 503 and then an old build's no
+  route leave the route absent and the upload goes on, as before this change.
 time: 2026-11-17T12:39:04Z
 custom:
     Issue: pr4140

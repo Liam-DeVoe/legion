@@ -32,24 +32,49 @@ export function parseSendArguments(arguments_: readonly string[]): SendArguments
   }
 }
 
-/** `value` as one word of a POSIX shell command: single-quoted, with each `'` closed, escaped
- *  and reopened. */
-function shellWord(value: string): string {
-  return /^[A-Za-z0-9_./:=@%+-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`
+/**
+ * `value` as one word of a POSIX shell command that bash and zsh both read as the same text:
+ * bare where every character is one neither shell expands, single-quoted otherwise, with each `'`
+ * closed, escaped and reopened. A leading `=` is quoted too: zsh's EQUALS option, on by default,
+ * reads a bare `=word` as the path of the command `word`.
+ */
+export function shellWord(value: string): string {
+  return /^[A-Za-z0-9_./:@%+-][A-Za-z0-9_./:=@%+-]*$/.test(value)
+    ? value
+    : `'${value.replaceAll("'", "'\\''")}'`
+}
+
+/** What the resend command an unconfirmed send prints is built of. */
+export interface Resend {
+  /** The command's own script (`bun <script>`). */
+  readonly script: string
+  /** The directory the send ran in: a checkout's own `.envoy/envoy.json` is read from it. */
+  readonly cwd: string
+  /**
+   * The settings, by name and value, that chose the send's listener and credential (the envoy.json
+   * it read, `ENVOY_URL`, `ENVOY_TOKEN_FILE`, the session): each is carried as `NAME=value` ahead
+   * of the command, so the resend goes where the send went from any shell it is run in.
+   */
+  readonly settings: readonly (readonly [name: string, value: string])[]
+  readonly idempotencyKey: string
+  readonly targetSession: string
+  readonly message: string
 }
 
 /**
- * The command that sends the same message again under `idempotencyKey`, as `envoy-send` was run
- * (`bun <script>`): the resend an unconfirmed send names, which the listener drops as a repeat
- * if the first copy arrived.
+ * The command that sends the same message again under its key, to the same listener, as
+ * `envoy-send` was run: `cd <cwd> && NAME=value … bun <script> --idempotency-key <key> <target>
+ * <message>`. The listener drops it as a repeat if the first copy arrived.
  */
-export function resendCommand(
-  script: string,
-  idempotencyKey: string,
-  targetSession: string,
-  message: string,
-): string {
-  return ["bun", script, IDEMPOTENCY_KEY_FLAG, idempotencyKey, targetSession, message]
-    .map(shellWord)
-    .join(" ")
+export function resendCommand(resend: Resend): string {
+  const assignments = resend.settings.map(([name, value]) => `${name}=${shellWord(value)}`)
+  const command = [
+    "bun",
+    resend.script,
+    IDEMPOTENCY_KEY_FLAG,
+    resend.idempotencyKey,
+    resend.targetSession,
+    resend.message,
+  ].map(shellWord)
+  return `cd ${shellWord(resend.cwd)} && ${[...assignments, ...command].join(" ")}`
 }

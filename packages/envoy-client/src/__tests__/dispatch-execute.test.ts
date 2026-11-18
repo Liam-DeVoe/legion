@@ -11670,6 +11670,53 @@ describe("executeDispatchTool", () => {
     expect(posts).toEqual(["/api/v1/issues/DSP-42/artifacts"]);
   });
 
+  // F10 (the review of 215510405b): the round trip is a conversion, not a write, so no answer to it
+  // is read as a write that may have landed. During a rollout, a 503 and then the old build's no
+  // route to the end leaves the route absent, and the upload goes on, as at E1's base (084a1dd3ec);
+  // read as a write, the 503 made the no route "unsettled" and the upload was refused.
+  test("uploads when the round trip answers a 503 and then no route, which says the route is absent", async () => {
+    const posts: string[] = [];
+    let trips = 0;
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([]);
+      }
+      if (pathname === "/healthz") return response({ idempotency_keys: true });
+      if (pathname === "/api/v1/markdown/round-trip") {
+        trips += 1;
+        return trips === 1
+          ? response({ error: "the database is restarting", code: "UNAVAILABLE" }, 503)
+          : response(
+              { error: "no route for POST /api/v1/markdown/round-trip", code: "NOT_FOUND" },
+              404
+            );
+      }
+      posts.push(pathname);
+      return response({
+        artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
+        version: { number: 1 },
+      });
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content: "# Notes\n\n* one\n" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+      writeRetry,
+      sleep: async () => {},
+    });
+
+    expect(trips).toBeGreaterThan(2);
+    expect(result.text).toContain("Uploaded notes.md as version 1");
+    expect(posts).toEqual(["/api/v1/issues/DSP-42/artifacts"]);
+  });
+
   // A 404 or 405 from an ingress, a proxy or a load balancer is no answer of Dispatch's, so it
   // says nothing about the route and the upload stops: reading such a page as an absent route
   // would store the respelled text this check exists to stop (review round 2, finding C).
