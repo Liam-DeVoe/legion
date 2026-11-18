@@ -1167,7 +1167,7 @@ func ReadPodFile(path string) (PodConfig, error) {
 // an account that does not exist. It refuses a controller_service_account that is no
 // ServiceAccount's name too, a DNS-1123 subdomain as the API server requires, as readClaimSource
 // refuses a claim's: no pod at boot runs as that account, so the API server would refuse the name
-// only at the controller's launch, after load, --check-config and boot had all passed it.
+// only at the controller's launch, after load, `legion config check` and boot had all passed it.
 // service_account needs no such check, since the image probe's pod runs as it at boot.
 func readPod(value *yaml.Node) (PodConfig, error) {
 	if value == nil {

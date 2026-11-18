@@ -1952,13 +1952,14 @@ func validateOutboxPayload(payload OutboxPayload) error {
 // holds an architect placed over claims of the round: those are told in a notice row (Notice) to
 // the architect that owns the held claim, which can resume them, and to the controller only where
 // no architect can act on one: that architect's claim has failed or retired or is one the daemon
-// does not supervise, whether at the sweep or before the notice row is delivered, there is no
-// owning architect, the hold is over the tree root's own architect, or the notice row to the
-// architect finishes undelivered because the listener refuses it on every attempt
-// (internal/daemon's tellUpdateStalled, architectHears and relayUpdateStalled). A hold over a
-// child's own architect claim is told to the architect above that child (NoticeStartsAtParent).
-// A row of either kind carries the round's account (validateNoticeUpdate), so a controller's row
-// an older daemon queued decodes as it did.
+// does not supervise when the sweep reads it, there is no owning architect, the hold is over the
+// tree root's own architect, or the notice row to the architect finishes undelivered in a tree
+// that does not linger — that architect's claim ended before the delivery, its session does not
+// advertise the delivery mode, the listener's NATS grant denies the forward, or the notice was
+// queued again the most times a notice is (internal/daemon's tellUpdateStalled, architectHears
+// and relayUpdateStalled). A hold over a child's own architect claim is told to the architect
+// above that child (NoticeStartsAtParent). A row of either kind carries the round's account
+// (validateNoticeUpdate), so a controller's row an older daemon queued decodes as it did.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",

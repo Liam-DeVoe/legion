@@ -8,6 +8,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"maps"
 	"slices"
 	"strings"
@@ -94,7 +95,8 @@ func (r *podUpdateRig) stallDeliveryThrough(listener stallListener) map[string][
 // refusingListener is holderPublisher where every publish to a topic in refused is answered that
 // topic's refusal, as the listener refuses a holder that does not advertise the delivery mode
 // (notify.ErrRefusedByHolder) or a forward its own NATS grant denies (notify.ErrPublishDenied),
-// on every attempt.
+// or as a listener of the deployed, older build answers a delivery the session did not confirm
+// (notify.ErrNotDelivered, receipt_timeout), on every attempt.
 type refusingListener struct {
 	*holderPublisher
 	refused map[string]error
@@ -292,5 +294,71 @@ func TestPodUpdateTellsTheControllerOfAnArchitectsHoldWhoseNoticeTheListenerRefu
 				t.Fatalf("the outbox holds %d controller notices after the architect's row ran again, want the one it was told", len(notices))
 			}
 		})
+	}
+}
+
+// A round held past its bound by an architect's suspension is told to the architect that owns the
+// held claim, and where that architect's session confirms none of its copies — a listener of the
+// deployed, older build answers each publish 504 receipt_timeout — the notice is queued again
+// until it has been queued again the most times a notice is, the last copy's answer finishes it
+// undelivered (reholdNotice), and the controller is told the round in its place, once, with the
+// architect's hold named: the sweep marked the round told when it queued the row, so no later
+// sweep would tell anyone. The architect's claim still answers, so the relayed notice lists it as
+// the sweep did. The last copy run again tells the controller nothing more.
+//
+// The negative control is the relay undone in that last answer (reholdNotice's
+// relayUpdateStalled), which publishes no update-stalled notice at all.
+func TestPodUpdateTellsTheControllerOfAnArchitectsHoldWhoseNoticeItsArchitectNeverConfirms(t *testing.T) {
+	rig := heldRoundRig(t, supervise.SuspendedByArchitect, supervise.StateReady)
+	if rows, notices := rig.rows(record.OutboxKindNotice), rig.notices(); len(rows) != 1 || len(notices) != 0 {
+		t.Fatalf("the sweep wrote %d architect notices and %d controller notices, want the one architect notice", len(rows), len(notices))
+	}
+	listener := refusingListener{holderPublisher: &holderPublisher{},
+		refused: map[string]error{rig.roleTopic(claim.RoleArchitect): confirmedAnswer(notify.ReasonReceiptTimeout, "ses_stopped")}}
+
+	// The notice and each copy it is queued again as run in turn, each finished once it has run,
+	// as the outbox finishes a row whose run returned (settle): every answer before the last
+	// queues the next copy and tells nobody. The last copy is left in the outbox to run again.
+	var told map[string][]record.Notice
+	for resends := 0; resends <= len(noticeReholdDelays); resends++ {
+		rows := rig.rows(record.OutboxKindNotice)
+		if len(rows) != 1 {
+			t.Fatalf("before copy %d the outbox holds %d architect notices, want one", resends, len(rows))
+		}
+		var queued record.Notice
+		if err := json.Unmarshal(rows[0].Payload, &queued); err != nil {
+			t.Fatalf("decode the architect notice %d: %v", rows[0].ID, err)
+		}
+		if queued.Kind != record.UpdateStalledNotice || queued.Resends != resends {
+			t.Fatalf("the architect notice is a %s queued again %d times, want an update-stalled one queued again %d times", queued.Kind, queued.Resends, resends)
+		}
+		told = rig.stallDeliveryThrough(listener)
+		if resends == len(noticeReholdDelays) {
+			break
+		}
+		if len(told) != 0 {
+			t.Fatalf("copy %d told %v, want nobody told before the last copy", resends, slices.Sorted(maps.Keys(told)))
+		}
+		if _, err := rig.pool.Exec(rig.ctx, "delete from outbox where id = $1", rows[0].ID); err != nil {
+			t.Fatalf("finish the architect notice %d: %v", rows[0].ID, err)
+		}
+	}
+	if rows := rig.rows(record.OutboxKindNotice); len(rows) != 1 {
+		t.Fatalf("the outbox holds %d architect notices after the last copy, want the last copy alone and no copy of it", len(rows))
+	}
+
+	notice := toldOn(t, told, notify.ControllerTopic(podUpdateProject))
+	if notice.Update == nil || notice.Update.Round != podUpdateRound || notice.Update.Pod != podUpdatePod {
+		t.Fatalf("the controller's notice carries %+v, want round %q of pod %q", notice.Update, podUpdateRound, podUpdatePod)
+	}
+	if want := "An architect suspended implementer (suspended). An architect that owns the issue, or the controller, can resume it."; !strings.Contains(notice.Reason, want) {
+		t.Errorf("the controller's notice says %q, want it to say %q", notice.Reason, want)
+	}
+	wantWaiting(t, record.ControllerNotice(notice),
+		map[claim.Role]bool{claim.RoleArchitect: false, claim.RoleImplementer: false, claim.RoleTester: true})
+
+	rig.stallDeliveryThrough(listener)
+	if notices := rig.notices(); len(notices) != 1 {
+		t.Fatalf("the outbox holds %d controller notices after the last copy ran again, want the one it was told", len(notices))
 	}
 }

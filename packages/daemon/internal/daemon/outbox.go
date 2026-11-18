@@ -1374,8 +1374,9 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // launch writes a fresh one. A person's spec decision in either of the two cases a notice finishes
 // undelivered because nobody will hold the role (its architect stopped with its finished tree, or
 // will not hold its role again) goes to the controller instead (parkDecision), and so does an
-// update round held past its bound whose architect's claim has ended in a tree that does not
-// linger, or whose notice the listener refuses on every attempt, as the answers below
+// update round held past its bound, in a tree that does not linger, whose architect's claim has
+// ended, whose notice the listener refuses on every attempt, or whose notice its architect's
+// session confirmed no copy of, queued again the most times a notice is, as the answers below
 // (relayUpdateStalled).
 // What the listener's answer to the publish then decides — a delivery the architect's session did
 // not confirm, a holder that cannot take the payload, a forward the listener's own NATS grant
@@ -1883,22 +1884,23 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // registered, or one that failed — holds no row either: the row ends, and the kept copy is
 // dropped once its hour ends.
 //
-// Four other executors publish to a role's topic, each with its own rules for what the publisher
+// Five other executors publish to a role's topic, each with its own rules for what the publisher
 // answers: updateAsk, through publishToRole, ends the row for a topic with no holder and retries
 // every other failure; deliverNotice, an architect's notice, holds the row for a topic with no
 // holder while the owning architect can hold its role again (noticeAnswered); roleMessage ends the
 // row for a topic with no holder, waits for a holder the listener calls unresponsive
 // (notify.ErrHolderUnresponsive), and ends the row for a holder that refuses the delivery mode
 // (notify.ErrRefusedByHolder) or a forward the listener's own NATS grant denies
-// (notify.ErrPublishDenied); and tellMerger, the merger's message of a removal from the merge queue
-// (mergeQueueRemoval) or of a change of the merge holds (mergeHoldsChanged), holds the row for a
-// topic with no holder and for an unresponsive holder while the merger's claim has neither failed
-// nor retired, and retries every other failure (merge_queue_removal.go). Each of those four
-// publishes with keep: false: deliverNotice and tellMerger hold their own row, and a kept copy
-// beside it would be a second keeper of one message; roleMessage's message is stale by the time a
-// role nobody holds is claimed; and updateAsk's round ends at its bound whether or not the role
-// answers. So whoever changes the rule for a topic with no holder must read all seven executors,
-// not this function alone.
+// (notify.ErrPublishDenied); and mergeQueueRemoval and mergeHoldsChanged, the merger's message of
+// a removal from the merge queue and of a change of the merge holds, publish through the
+// tellMerger they share, which holds the row for a topic with no holder and for an unresponsive
+// holder while the merger's claim has neither failed nor retired, and retries every other failure
+// (merge_queue_removal.go). Each of those five publishes with keep: false: deliverNotice and the
+// two through tellMerger hold their own row, and a kept copy beside it would be a second keeper of
+// one message; roleMessage's message is stale by the time a role nobody holds is claimed; and
+// updateAsk's round ends at its bound whether or not the role answers. So whoever changes the
+// rule for a topic with no holder must read all seven executors, this function's two and those
+// five, not this function alone.
 func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, topic, message, kept, noHolder string, fields ...any) error {
 	keeps, err := r.notices.PublishKept(ctx, topic, message, message, record.OutboxKey(row.ID))
 	switch {

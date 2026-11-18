@@ -924,15 +924,18 @@ func (s *supervision) roundGroup(group []supervise.Claim, mask bool) []supervise
 // controller for the rest (tellUpdateStalled), and for an architect's hold where no architect can
 // act on it: the owning architect's claim has failed or retired or is not supervised, no
 // architect owns the held claim, or the hold is over the tree root's own architect
-// (architectHears), or the notice to that architect finishes undelivered (relayUpdateStalled).
-// It is the one writer of the late-round notice, and it tells nothing before the bound: a round
-// waiting on its roles is no stall, because the bound ends that wait by itself. Its callers are
-// the readings that hold a round past its bound — a suspension that holds, no process in the
-// round's pod, two pods at once — and the act of the replacement itself that holds it, a
-// replacement the runtime refused. why is the reason each notice gives, naming that reading and
-// the holds that notice's reader is told of, and the claims a hold is over, none for a reading
-// that is no hold (stallReason). The issue is written nothing: there is no instruction for its
-// roles here, and whoever can end what holds the round reads it in a notice.
+// (architectHears). It is the sweep's one writer of the late-round notice. Where the notice to
+// an architect finishes undelivered — its claim ended before the delivery, its session does not
+// advertise the delivery mode, the listener's NATS grant denies the forward, or the notice was
+// queued again the most times a notice is — the outbox relays a notice to the controller in its
+// place, and a tree that lingers is told nothing (relayUpdateStalled). It tells nothing before
+// the bound: a round waiting on its roles is no stall, because the bound ends that wait by
+// itself. Its callers are the readings that hold a round past its bound — a suspension that
+// holds, no process in the round's pod, two pods at once — and the act of the replacement itself
+// that holds it, a replacement the runtime refused. why is the reason each notice gives, naming
+// that reading and the holds that notice's reader is told of, and the claims a hold is over, none
+// for a reading that is no hold (stallReason). The issue is written nothing: there is no
+// instruction for its roles here, and whoever can end what holds the round reads it in a notice.
 //
 // The bound runs from the round's opening and from nothing else, so one round is told at one
 // moment whatever its roles did before it: an answer moves the round's end earlier and never its
@@ -1340,9 +1343,10 @@ func (s *supervision) architectHolds(ctx context.Context, held []supervise.Claim
 // The outbox walks again when the row runs, over the machines' live view (noticeArchitect), so a
 // notice whose architect ends between the two finishes undelivered, as every notice of the issue
 // does then, and so does one the listener refuses on every attempt, the architect's session not
-// advertising the delivery mode or the listener's own grant denying the forward; in each, the
-// outbox tells the controller of the round in its place (relayUpdateStalled): the round is marked
-// told once its rows are queued, so no later sweep would tell it.
+// advertising the delivery mode or the listener's own grant denying the forward, and one whose
+// architect's session confirmed none of its copies, queued again the most times a notice is; in
+// each, the outbox tells the controller of the round in its place (relayUpdateStalled): the round
+// is marked told once its rows are queued, so no later sweep would tell it.
 func (s *supervision) architectHears(ctx context.Context, c supervise.Claim) (bool, error) {
 	if s.plan.owner == nil {
 		return false, nil

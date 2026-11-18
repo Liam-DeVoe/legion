@@ -128,9 +128,10 @@ request counts, and Dispatch asks it about the commit; a repository Dispatch's G
 installed on or cannot read counts for nothing. One record reads at most 10 linked pull requests.
 Dispatch refuses a result at a commit that none of the repositories that count holds with
 `400 RESULT_COMMIT_UNKNOWN`, naming the commit, each repository it asked, each linked pull
-request whose state, or whose repository's commit, it cannot read (at most 10, then how many
-more) and, where the bound left links unread, how many; a commit that is still only local is
-such a commit. So, for work in a second repository, link the issue to that
+request whose state it cannot read (at most 10, then how many more), every linked pull request
+whose state it read and whose repository's commit it cannot read (each spent one of the
+record's 10 reads) and, where the bound left links unread, how many; a commit that is still
+only local is such a commit. So, for work in a second repository, link the issue to that
 repository's pull request before you record a result at its head; the results read then compares
 a `before_merge` check with that pull request's head, as it does with a pull request of the
 issue's own repository. Where a read of a linked pull request or repository does not answer and

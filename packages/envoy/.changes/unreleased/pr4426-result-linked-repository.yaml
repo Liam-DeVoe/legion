@@ -10,14 +10,19 @@ body: |-
   neither does one GitHub answers 404 or 410 for, such as a mistyped link, nor one in a
   repository the GitHub App is not installed on or cannot read (GitHub's 403 that is no rate
   limit). One record reads at most 10 linked pull requests, and a refusal says how many it left
-  unread past that bound. `400 RESULT_COMMIT_UNKNOWN` names the commit and each repository that
-  Dispatch asked, and each linked pull request in a repository the App cannot read, as
+  unread past that bound. `400 RESULT_COMMIT_UNKNOWN` names the commit, each repository that
+  Dispatch asked, each linked pull request that Dispatch could not read, at most 10 and a count
+  of the rest, and every linked pull request in whose repository it could not read the commit,
+  since each of those spent one of the record's 10 reads, each as
   `owner/repo#n (repository_unreadable)`, saying to grant the App that repository or link a
   readable pull request. A read of a linked pull request or of a linked repository that does
   not answer (a rate limit, a 5xx, a timeout), where no repository is shown to hold the commit,
   refuses the record with `502 GITHUB_UNREADABLE` and stores nothing: the refusal tells the
   caller to record the result again, and a rate limit names GitHub's wait, in the sentence and
   in `Retry-After`.
+  Where Dispatch cannot read its own list of the issue's links, the record is refused with
+  `500 INTERNAL` and nothing is stored; before this change such a result was stored, or refused
+  with `400 RESULT_COMMIT_UNKNOWN`.
   The read of the pull requests GitHub names for the commit, after the write, reads the
   repository the commit is taken to be of.
 

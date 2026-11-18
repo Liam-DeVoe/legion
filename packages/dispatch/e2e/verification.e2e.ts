@@ -166,11 +166,17 @@ A check nobody has run yet reads no result.
   }
 });
 
-// SLOW(>=2s): 6.9 s - a project, its default repository, an issue linking
-// a pull request of a second repository, both repositories in the fake GitHub, a Verification
-// document of two checks and two recorded results, each record route asking that fake about the
+// SLOW(>=2s): 8.3 s, 6.2 s and 5.0 s over three one-worker runs on this pod. The 8.3 s run,
+// measured step by step, spends 7.9 s in the row's body. Seeding through the API is 1.5 s, of
+// which the issue's create is 0.77 s (0.76 s of it the server's handler, by its log) and no other
+// step is over 0.3 s; the two records are 0.37 s, the first asking the fake GitHub about the
 // issue's own repository, the linked pull request and the linked repository's commit before
-// reading through to it, then one load of the tab. The floor the row below measures is most of it.
+// reading through to it. Then the browser: a fresh context (0.18 s), its first page (0.67 s), the
+// load of the tab (1.29 s), the first assertion's wait while the dashboard makes its boot reads
+// and reads the document, its results and the linked head's check runs before the check draws
+// (2.98 s), the assertion on the other result's commit (0.37 s), the two other assertions
+// (0.18 s) and closing the context (0.32 s). The server's log shows every request answered once,
+// with no retry, sleep or timeout behind any step.
 test("a result at a linked pull request's head stands at it, and one at another commit of that repository names it", async ({
   browser,
 }) => {

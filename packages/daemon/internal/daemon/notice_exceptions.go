@@ -62,7 +62,8 @@ const (
 // There are three, as the TypeScript daemon re-sends one at most three times (processes.ts,
 // resendToRootArchitect): a holder that keeps its registration alive but never confirms a
 // delivery would otherwise be sent copies without end, and the report of its last copy is logged
-// and queues nothing.
+// and queues no copy; an update round that notice tells goes to the controller in its place
+// (relayUpdateStalled).
 var noticeReholdDelays = [...]time.Duration{30 * time.Second, pluginHeartbeat, max(listenerSessionTTL, listenerClaimStale) + time.Minute}
 
 // errNoticeException is a report the listener sent that cannot be read as the failed forward of
@@ -232,14 +233,14 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 		}
 		return nil
 	case errors.As(published, &refused):
-		if err := r.relayUpdateStalled(ctx, row, payload, tree, key, "its architect's session does not advertise the delivery mode"); err != nil {
+		if err := r.relayUpdateStalled(ctx, row.Issue, row.ID, payload, tree.root.Lingers(), key, "its architect's session does not advertise the delivery mode"); err != nil {
 			return err
 		}
 		r.log.Warn("outbox notice finished undelivered: its architect's session does not advertise the delivery mode",
 			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "holder", refused.Holder, "error", published)
 		return nil
 	case errors.As(published, &denied):
-		if err := r.relayUpdateStalled(ctx, row, payload, tree, key, "the listener's NATS grant denied the forward to its architect"); err != nil {
+		if err := r.relayUpdateStalled(ctx, row.Issue, row.ID, payload, tree.root.Lingers(), key, "the listener's NATS grant denied the forward to its architect"); err != nil {
 			return err
 		}
 		r.log.Warn("outbox notice finished undelivered: the listener's NATS grant denied the forward to its architect",
@@ -255,7 +256,7 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 		if err := r.parkDecision(ctx, row.Issue, tree.root.Key, payload, key, row.ID); err != nil {
 			return err
 		}
-		if err := r.relayUpdateStalled(ctx, row, payload, tree, key, ended); err != nil {
+		if err := r.relayUpdateStalled(ctx, row.Issue, row.ID, payload, tree.root.Lingers(), key, ended); err != nil {
 			return err
 		}
 		r.log.Info("outbox notice finished undelivered: its architect will not hold its role again",
@@ -275,9 +276,12 @@ const updateStalledRelaySource = "update-stalled-relay"
 // relayUpdateStalled tells the project's controller of an update round held past its bound whose
 // notice to an architect finishes undelivered: because that architect's claim has ended since the
 // sweep queued the row (architectEnded) — it failed, it retired, or this daemon no longer
-// supervises it — or because the listener refuses that delivery on every attempt, the architect's
+// supervises it — because the listener refuses that delivery on every attempt, the architect's
 // session not advertising the delivery mode or the listener's own NATS grant denying the forward
-// (noticeAnswered). because is which, for the log line. The sweep marked the round told when it
+// (noticeAnswered), or because no copy of the notice reached the architect's session and it has
+// been queued again the most times a notice is (reholdNotice). because is which, for the log
+// line. issue and row are the notice's issue and row, and lingers is whether the issue's tree
+// lingers or has closed, as the caller read the tree. The sweep marked the round told when it
 // queued the row (the supervision's tellUpdateStalled), so no later sweep tells it, and without
 // this the pod would wait on the hold past its bound with nobody told. The controller is the
 // reader the sweep names for an architect's hold no architect can act on (architectHears), and
@@ -291,8 +295,8 @@ const updateStalledRelaySource = "update-stalled-relay"
 // tree's record. Any other kind writes nothing. The write marks key processed in a transaction of
 // its own, as parkDecision's does, and owns the commit hook it registers (projectRecords,
 // intake.OnCommit), so the controller's lane wakes as it commits.
-func (r *outbox) relayUpdateStalled(ctx context.Context, row record.OutboxRow, notice record.Notice, tree treeSnapshot, key, because string) error {
-	if notice.Kind != record.UpdateStalledNotice || tree.root.Lingers() {
+func (r *outbox) relayUpdateStalled(ctx context.Context, issue string, row int64, notice record.Notice, lingers bool, key, because string) error {
+	if notice.Kind != record.UpdateStalledNotice || lingers {
 		return nil
 	}
 	update := notice.Update
@@ -308,9 +312,9 @@ func (r *outbox) relayUpdateStalled(ctx context.Context, row record.OutboxRow, n
 		kept.Waiting = waiting
 		update = &kept
 	}
-	relay, err := record.NewOutboxRow(row.Issue, record.ControllerNotice{Kind: notice.Kind, Reason: notice.Reason, Update: update}, r.now().UTC())
+	relay, err := record.NewOutboxRow(issue, record.ControllerNotice{Kind: notice.Kind, Reason: notice.Reason, Update: update}, r.now().UTC())
 	if err != nil {
-		return fmt.Errorf("the controller's notice of the update round of %s is a row the outbox refuses: %w", row.Issue, err)
+		return fmt.Errorf("the controller's notice of the update round of %s is a row the outbox refuses: %w", issue, err)
 	}
 	relayed := false
 	scoped, committed := intake.WithCommitHooks(ctx)
@@ -322,12 +326,12 @@ func (r *outbox) relayUpdateStalled(ctx context.Context, row record.OutboxRow, n
 		relayed = true
 		return r.records.Enqueue(scoped, tx, relay)
 	}); err != nil {
-		return fmt.Errorf("tell the controller of the update round of %s that its architect was not told: %w", row.Issue, err)
+		return fmt.Errorf("tell the controller of the update round of %s that its architect was not told: %w", issue, err)
 	}
 	committed()
 	if relayed {
 		r.log.Info("outbox update-stalled notice relayed to the controller: its architect was not told",
-			"row", row.ID, "issue", row.Issue, "key", key, "because", because)
+			"row", row, "issue", issue, "key", key, "because", because)
 	}
 	return nil
 }
@@ -371,11 +375,12 @@ func (r *outbox) noticePublished(row record.OutboxRow, payload record.Notice, ar
 // wrote the line already.
 // A copy is due at once when copyDueAtOnce says so, and otherwise after the next of
 // noticeReholdDelays. It is queued again once per delay; the failure of its last copy is logged
-// and queues nothing. Each published copy of a row is queued again once, marked processed under
-// the row's dedupe key and the copy's count: a publish whose 200 was lost is retried under the
-// same key, an earlier listener reports each failed forward under a fresh event id, and during a
-// rollout one publish can draw both a 504 from one listener and an exception from another, which
-// queue one copy between them.
+// and queues no copy, and an update round that notice tells is told to the controller in its
+// place (relayUpdateStalled). Each published copy of a row is queued again once, marked
+// processed under the row's dedupe key and the copy's count: a publish whose 200 was lost is
+// retried under the same key, an earlier listener reports each failed forward under a fresh
+// event id, and during a rollout one publish can draw both a 504 from one listener and an
+// exception from another, which queue one copy between them.
 //
 // The publish's row finishes once the listener answers, and an earlier listener reports a failed
 // forward only after its receipt window (two seconds, longer while forwards queue behind others on
@@ -394,21 +399,37 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 	issue, notice := reported.issue, reported.notice
 	topic := notify.RoleTopicPrefix + string(reported.architect)
 	held := r.supervisedClaim(reported.architect)
-	if !holdsRole(held) {
-		root, lingers, err := r.issueTree(ctx, issue)
-		if err != nil {
+	spent := notice.Resends >= len(noticeReholdDelays)
+	// The tree is read where something below turns on it: whether a claim that does not hold its
+	// role stopped with its finished tree, and whether the update round a spent notice tells
+	// reaches the controller.
+	var root string
+	var lingers bool
+	if !holdsRole(held) || spent && notice.Kind == record.UpdateStalledNotice {
+		var err error
+		if root, lingers, err = r.issueTree(ctx, issue); err != nil {
 			return err
 		}
-		if stoppedWithTree(lingers, held) {
-			if err := r.parkDecision(ctx, issue, root, notice, key, reported.row); err != nil {
+	}
+	if !holdsRole(held) && stoppedWithTree(lingers, held) {
+		if err := r.parkDecision(ctx, issue, root, notice, key, reported.row); err != nil {
+			return err
+		}
+		r.log.Info("outbox notice not re-held: its architect stopped with its finished tree",
+			"issue", issue, "kind", notice.Kind, "topic", topic, "key", key, "reason", reason, "state", held.State, "stopping", held.Stopping)
+		return nil
+	}
+	if spent {
+		// No copy reached the architect's session, and the sweep marked the round told when it
+		// queued the notice, so an update round the notice tells is told to the controller in its
+		// place, once, as where the listener refuses the notice (relayUpdateStalled). An issue no
+		// longer recorded has no tree, and nothing is relayed for it.
+		if root != "" {
+			if err := r.relayUpdateStalled(ctx, issue, reported.row, notice, lingers, key,
+				"its architect's session did not confirm the delivery, queued again the most times a notice is"); err != nil {
 				return err
 			}
-			r.log.Info("outbox notice not re-held: its architect stopped with its finished tree",
-				"issue", issue, "kind", notice.Kind, "topic", topic, "key", key, "reason", reason, "state", held.State, "stopping", held.Stopping)
-			return nil
 		}
-	}
-	if notice.Resends >= len(noticeReholdDelays) {
 		r.log.Warn("outbox notice not re-held again: it was queued again the most times a notice is",
 			"issue", issue, "kind", notice.Kind, "topic", topic, "key", key, "reason", reason, "resends", notice.Resends)
 		// No copy carries a catch-up's claims on now, so what it named is handed over rather than
