@@ -176,8 +176,9 @@ const zeroUUID = "00000000-0000-0000-0000-000000000000"
 // backfillObjectNodes writes a live node for every issue, document, ask and message written before
 // its kind's writer wrote one, and for every one a build before this one created at an address
 // whose node is gone or holds another row's live statement, under the backfill's contract: it
-// walks only the rows its marker does not mark - the marker is a live node (unmarked), and for a
-// document a removal can take a live node whose live statement is the row's own (unmarkedDocument)
+// walks only the rows its marker does not mark - the marker is a live node naming a project or
+// parties (unmarked), and for a document a removal can take such a node whose live statement is
+// the row's own (unmarkedDocument)
 // - and writes the marker in the transaction that writes the node, so a second run reads no row the
 // first one wrote. Its input is the row's own content: a node it makes is made by the row's author
 // at the row's created_at, and a node the store holds keeps the made_at and made_by it has. The
@@ -215,7 +216,7 @@ func backfillObjectNodes(ctx context.Context, database *store.Store) ([]KindBack
 		}
 		var remaining int64
 		if err := database.Pool.QueryRow(ctx, `select count(*) from (`+kind.read+`) as remaining`, kind.start, nil).Scan(&remaining); err != nil {
-			return done, fmt.Errorf("count the %s rows no live node marks: %w", kind.kind, err)
+			return done, fmt.Errorf("count the %s rows their marker does not mark: %w", kind.kind, err)
 		}
 		report.Remaining = remaining
 		report.Complete = report.Remaining == 0
@@ -237,13 +238,13 @@ func statedOf(nodes []graphstore.Node) int64 {
 	return stated
 }
 
-// readObjectNodes reads one batch of a kind's rows no live node marks, and answers the node its
+// readObjectNodes reads one batch of a kind's rows their marker does not mark, and answers the node its
 // kind's writer writes for each (graphstore.IssueNode and its siblings), caused by the row's own
 // create event where the read found one, and at the sentinel otherwise.
 func readObjectNodes(ctx context.Context, database *store.Store, kind, read, after string, limit int) ([]graphstore.Node, error) {
 	rows, err := database.Pool.Query(ctx, read, after, limit)
 	if err != nil {
-		return nil, fmt.Errorf("read the %s rows no live node marks: %w", kind, err)
+		return nil, fmt.Errorf("read the %s rows their marker does not mark: %w", kind, err)
 	}
 	defer rows.Close()
 	var nodes []graphstore.Node
@@ -254,7 +255,7 @@ func readObjectNodes(ctx context.Context, database *store.Store, kind, read, aft
 		var project, session, rootTarget *string
 		var ownEvent *int64
 		if err := rows.Scan(&id, &createdAt, &authorJSON, &project, &session, &rootAuthorJSON, &rootTarget, &ownEvent); err != nil {
-			return nil, fmt.Errorf("read a %s row no live node marks: %w", kind, err)
+			return nil, fmt.Errorf("read a %s row its marker does not mark: %w", kind, err)
 		}
 		var author model.Actor
 		if err := json.Unmarshal(authorJSON, &author); err != nil {
@@ -331,10 +332,12 @@ func derefText(value *string) string {
 // nodes after them, the order every writer of these nodes takes (a document's create, its removal,
 // the erase). A kind no writer deletes a row of takes no lock and is read again the same way.
 //
-// Under those locks it reads the nodes the store holds of the batch (heldNodes). One that is live
-// and its row's own (ownLiveStatement, for a document a removal can take; any live one for the
-// rest, whose address no later row takes) was written meanwhile, by another run of the backfill
-// that took the owner rows first, and is left as it is. A document whose node is live but not its
+// Under those locks it reads the nodes the store holds of the batch (heldNodes). One that is live,
+// its row's own (ownLiveStatement, for a document a removal can take; any live one for the rest,
+// whose address no later row takes) and naming a project or parties was written meanwhile, by
+// another run of the backfill that took the owner rows first, and is left as it is; one that is
+// live and its row's own but names neither is written again, which states its project or parties
+// alone. A document whose node is live but not its
 // row's own is one a build before this one removed and made again at the address: its node is
 // first stated gone, by the backfill, and then live, under the row's own event, as this build's
 // create states it (api's storeArtifact). A node the store holds is dated one microsecond past

@@ -69,6 +69,12 @@ func TestEachIncompleteLineNamesItsCureAndTheBackfillCuresAnUnscopedNode(t *test
 	if err != nil || !held || node.Project != "CURE" {
 		t.Errorf("after the backfill the node of CURE-1 is %+v (held %t, %v), want it in project CURE", node, held, err)
 	}
+	// The node was live and its row's own: the backfill states its project and nothing else, so
+	// its state history is the one live statement it was written with.
+	history, err := graphstore.History(ctx, database.Pool, graphstore.KindIssue, "CURE-1", graphstore.AttributeState)
+	if err != nil || len(history) != 1 || history[0].ToID != graphstore.StateLive {
+		t.Errorf("after the backfill the state history of CURE-1 is %+v, %v; want its one live statement", history, err)
+	}
 }
 
 // A removal of this build takes the document's issue row, states its node gone and deletes the
@@ -141,11 +147,12 @@ func TestTheObjectBatchWaitsForARemovalOnTheIssueRowAndWritesNoNode(t *testing.T
 // refuses (graphstore.PartiesValue), and so is a comment on it. No writer of this build writes such
 // a row, but a row of an earlier build may hold one. The backfill skips each such row, counts it in
 // the report's Skipped, and writes every other row's node, so one such row stops neither the batch
-// it falls in nor any later run; the census names the skipped document missing. A comment on it is
-// left to the comment pass, which skips it the same way.
+// it falls in nor any later run. The census names the skipped document missing, and since no
+// command writes its node, its line says so rather than sending the operator to the backfill.
 //
-// Its control is the skip taken out of the object batch: the backfill then fails on the join's
-// refusal and writes nothing more.
+// Its controls are the skip taken out of the object batch, which makes the backfill fail on the
+// join's refusal and write nothing more, and the refused party's cure taken out of the census,
+// whose line then names the backfill.
 func TestTheBackfillSkipsARowBetweenARefusedPartyAndWritesTheRest(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -181,7 +188,7 @@ func TestTheBackfillSkipsARowBetweenARefusedPartyAndWritesTheRest(t *testing.T) 
 	if err != nil {
 		t.Fatalf("read the incomplete rows: %v", err)
 	}
-	if !slices.Contains(incomplete, "artifact "+badRef+": missing"+backfillCure) {
-		t.Errorf("ProjectComplete answers %q, want it to name the skipped file missing", incomplete)
+	if !slices.Contains(incomplete, "artifact "+badRef+": missing"+refusedCure) {
+		t.Errorf("ProjectComplete answers %q, want it to name the skipped file missing, with no command to cure it", incomplete)
 	}
 }

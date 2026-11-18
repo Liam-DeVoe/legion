@@ -201,6 +201,9 @@ const movedParents = "block_parent_moved"
 //     parent moved, the retraction of the old parent and the assertion of the new; and a block
 //     reference, the pair's assertion and, at most, the retraction that ends it, which no table
 //     records once the pair is gone;
+//   - the node and three base attributes of an issue, an artifact, an ask and a message, and the
+//     gone state a document's removal states of its node, each written by its own create or
+//     removal on this branch;
 //   - dispatch://INFRA-1253's text value and rank value of each block whose text a version wrote;
 //   - dispatch://INFRA-1152's delivered_to of a message, and one tuple for each read mark, clear,
 //     dismissal and snooze. Each of the tables those four are written to keeps the newest mark of
@@ -210,19 +213,21 @@ const movedParents = "block_parent_moved"
 //     attributes: a page's part_of its role, and a session's part_of the role it claimed, with
 //     that role's held_by and the retraction that ends it, or else a page of its own with that
 //     page's base attributes and its part_of the session (R14);
-//   - dispatch://INFRA-1152's message node with its author, its parent and the tuples its target
-//     and its broadcast become, a reply's meaning tuple and its part_of, a comment's mentions, a
+//   - dispatch://INFRA-1152's message's author and parent, and the tuples its target and its
+//     broadcast become, a reply's meaning tuple and its part_of, a comment's mentions, a
 //     person's part in a thread, the delivered_to of each write to every other participant and of
 //     an ask to the person it waits on, the move of that person, the body blocks of a comment, a
 //     message and an ask with their links, and a delivery attempt's node (its spec's
 //     #b-r-kinds-move, #b-r-delivery-written, #b-r-participation and #b-r-mentions);
-//   - dispatch://INFRA-1253's issue, artifact and document version nodes, an issue's child_of and
-//     needs, a result's node with its values and tuples, its screenshots and its retraction, a
-//     component's node with its part_of, depends_on and affects, and a criterion's authored_by
-//     (#b-r-issue-relations, #b-r-result-node, #b-r-artifacts-in-tree, #b-r-reasoning-tree);
-//   - dispatch://INFRA-1150's ask node and what its events state - an edit, an answer, a
-//     resolution, a follower - a Keep, and an agent's decision and its reading (#b-r-ask-node,
-//     #b-r-decision-node, #b-r-reading);
+//   - dispatch://INFRA-1253's document version node, an artifact's part_of its issue, an issue's
+//     child_of and needs, a result's node with its values and tuples, its screenshots and its
+//     retraction, a component's node with its part_of, depends_on and affects, and a criterion's
+//     authored_by (#b-r-issue-relations, #b-r-result-node, #b-r-artifacts-in-tree,
+//     #b-r-reasoning-tree);
+//   - dispatch://INFRA-1150's ask's answer_state, question, options, authored_by, anchored_to and
+//     owned_by, and what its other events state - an edit, an answer, a resolution, a follower - a
+//     Keep, and an agent's decision and its reading (#b-r-ask-node, #b-r-decision-node,
+//     #b-r-reading);
 //   - dispatch://INFRA-1950's interaction and its frames, a lens and its finding blocks, a lens
 //     kind, a constraint and a risk (#b-r-interaction, #b-r-lens, #b-r-lens-catalogue,
 //     #b-r-constraint-risk), every one of them assumed.

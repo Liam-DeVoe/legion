@@ -243,18 +243,28 @@ var rowClass = `case
 
 // classedRows follows scopedRowsSQL: every row of scoped with its class against its node, null for
 // a complete one, and every live node of an object kind that no row of scoped stands behind, as
-// orphaned, each with whether it is a row.
+// orphaned, each with whether it is a row and whether the row names a party the store refuses
+// (refusedPartySQL).
 var classedRows = `,
-	classed (kind, id, class, is_row) as (
-		select scoped.kind, scoped.id, ` + rowClass + `, true
+	classed (kind, id, class, is_row, refused) as (
+		select scoped.kind, scoped.id, ` + rowClass + `, true, ` + refusedPartySQL("scoped.parties") + `
 		from scoped
 		left join graph_nodes n on n.kind = scoped.kind and n.id = scoped.id
 		union all
-		select n.kind, n.id, '` + classOrphaned + `', false
+		select n.kind, n.id, '` + classOrphaned + `', false, false
 		from graph_nodes n
 		where n.kind in (` + orphanKindList + `) and n.state = '` + graphstore.StateLive + `'
 		  and not exists (select 1 from scoped where scoped.kind = n.kind and scoped.id = n.id)
 	)`
+
+// refusedPartySQL is graphstore.PartiesValue's refusal spelled in SQL over the text[] expression
+// parties: whether one party is empty or holds a character unicode.IsSpace reports (whiteSpaceSQL).
+// No writer writes a node between such parties, and every pass of the backfill skips its row
+// (partiesRefused), so the census names no command that writes it.
+func refusedPartySQL(parties string) string {
+	return `exists (select 1 from unnest(` + parties + `) as listed(party)
+		where party = '' or translate(party, '` + whiteSpaceSQL + `', '') <> party)`
+}
 
 // ProjectKindReport is what the project census read of one kind: how many rows it holds, and how
 // many of them are in each class, and, for a kind whose rows only its own creates write, how many
@@ -322,11 +332,12 @@ func writeProjectCensus(w io.Writer, kinds []ProjectKindReport) {
 // differs or orphaned) and the class's cure, in one read: the rows and the nodes a read limited by
 // a node's project would answer wrongly. An empty answer is every row and every node of every kind
 // complete. The cure is the backfill for a row with no node, a node that is not the row's, or a
-// node naming neither a project nor parties (backfillCure); the erase that removes it for an
-// orphaned node, since no backfill reads a node no row stands behind (`; remove it with: ` and
-// eraseCommand's line); and none for a node that names another project or other parties than its
-// row, since a node's project never moves and only a person can tell which of the two is wrong
-// (differsCure).
+// node naming neither a project nor parties (backfillCure), but for a row that names a party the
+// store refuses, which no writer and no pass of the backfill writes a node for (refusedCure); the
+// erase that removes it for an orphaned node, since no backfill reads a node no row stands behind
+// (`; remove it with: ` and eraseCommand's line); and none for a node that names another project
+// or other parties than its row, since the backfill walks no node naming either and only a person
+// can tell which of the two is wrong (differsCure).
 func ProjectComplete(ctx context.Context, q graphstore.Queryer) ([]string, error) {
 	return projectIncomplete(ctx, q, nil)
 }
@@ -334,7 +345,8 @@ func ProjectComplete(ctx context.Context, q graphstore.Queryer) ([]string, error
 // The cures ProjectComplete ends its lines with, but an orphaned node's, which names its node.
 const (
 	backfillCure = "; run envoy-dispatch backfill-graph-store"
-	differsCure  = "; no command cures it: compare the row with its node, whose project never moves"
+	differsCure  = "; no command cures it: compare the row with its node"
+	refusedCure  = "; no command cures it: the row names a party the store refuses, one empty or holding white space"
 )
 
 // projectIncomplete is ProjectComplete's read, of at most limit lines in its order when limit is
@@ -342,7 +354,7 @@ const (
 // earlier release left without nodes holds every row of it.
 func projectIncomplete(ctx context.Context, q graphstore.Queryer, limit *int) ([]string, error) {
 	rows, err := q.Query(ctx, scopedRowsSQL+classedRows+`
-		select kind, id, class
+		select kind, id, class, refused
 		from classed
 		where class is not null
 		order by kind, id
@@ -353,13 +365,16 @@ func projectIncomplete(ctx context.Context, q graphstore.Queryer, limit *int) ([
 	}
 	var incomplete []string
 	var kind, id, class string
-	if _, err := pgx.ForEachRow(rows, []any{&kind, &id, &class}, func() error {
+	var refused bool
+	if _, err := pgx.ForEachRow(rows, []any{&kind, &id, &class, &refused}, func() error {
 		line := kind + " " + id + ": " + class
-		switch class {
-		case classOrphaned:
+		switch {
+		case class == classOrphaned:
 			line += "; remove it with: " + eraseCommand(kind, id)
-		case classDiffers:
+		case class == classDiffers:
 			line += differsCure
+		case refused:
+			line += refusedCure
 		default:
 			line += backfillCure
 		}
