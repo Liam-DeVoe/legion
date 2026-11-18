@@ -251,11 +251,15 @@ func TestTheStoredRowsReadBackFieldByField(t *testing.T) {
 // field at its zero value.
 func boardColumnsOf(row Row) Row {
 	return Row{
-		Project: row.Project, Issue: row.Issue, OpenedAt: row.OpenedAt, ClosedAt: row.ClosedAt,
-		HoursByPhase: row.HoursByPhase, WorkHours: row.WorkHours, ReviewRounds: row.ReviewRounds,
-		RootKey: row.RootKey, TreeDepth: row.TreeDepth, SlotHours: row.SlotHours, WaitingReason: row.WaitingReason,
-		WorkFirstAt: row.WorkFirstAt, WorkLastAt: row.WorkLastAt, AsOf: row.AsOf, Growth: row.Growth,
-		UpdatedAt: row.UpdatedAt,
+		Project: row.Project, Issue: row.Issue, WaitingReason: row.WaitingReason, UpdatedAt: row.UpdatedAt,
+		ClosedFacts: metrics.ClosedFacts{
+			IssueFacts: metrics.IssueFacts{
+				OpenedAt: row.OpenedAt, ClosedAt: row.ClosedAt, PhaseHours: row.PhaseHours, WorkHours: row.WorkHours,
+				ReviewRounds: row.ReviewRounds, Root: row.Root, Tree: row.Tree, TreeDepth: row.TreeDepth,
+				SlotHours: row.SlotHours, WorkFirstAt: row.WorkFirstAt, WorkLastAt: row.WorkLastAt,
+			},
+			AsOf: row.AsOf, Growth: row.Growth,
+		},
 	}
 }
 
@@ -271,15 +275,21 @@ func TestTheBoardsReadLeavesTheColumnsItDoesNotReadAtZero(t *testing.T) {
 	asOf := seeded.now
 	firstWork := asOf.Add(-3 * time.Hour)
 	row := Row{
-		Project: project, Issue: issue, OpenedAt: asOf.Add(-48 * time.Hour), RootKey: issue,
-		HoursByPhase: map[string]float64{"implementing": 2}, WorkHours: 2, SlotHours: 1,
-		WorkFirstAt: &firstWork, WorkLastAt: &asOf,
-		ParkedHours: 1, QueuedHours: 1, SlotWaitHours: 1, ImplementingAfterFirstReview: 1, TestingAfterFirstReview: 1,
-		AsOf: asOf, UpdatedAt: asOf,
-		Growth: metrics.Growth{
-			"work_hours": 1, "phase_hours.implementing": 1, "slot_hours": 1, "work_last_at": 1,
-			"parked_hours": 1, "queued_hours": 1, "slot_wait_hours": 1,
-			"implementing_hours_after_first_review": 1, "testing_hours_after_first_review": 1,
+		Project: project, Issue: issue, UpdatedAt: asOf,
+		ClosedFacts: metrics.ClosedFacts{
+			IssueFacts: metrics.IssueFacts{
+				OpenedAt: asOf.Add(-48 * time.Hour), Root: true, Tree: issue,
+				PhaseHours: map[string]float64{"implementing": 2}, WorkHours: 2, SlotHours: 1,
+				WorkFirstAt: &firstWork, WorkLastAt: &asOf,
+				ParkedHours: 1, QueuedHours: 1, SlotWaitHours: 1,
+				ImplementingHoursAfterFirstReview: 1, TestingHoursAfterFirstReview: 1,
+			},
+			AsOf: asOf,
+			Growth: metrics.Growth{
+				"work_hours": 1, "phase_hours.implementing": 1, "slot_hours": 1, "work_last_at": 1,
+				"parked_hours": 1, "queued_hours": 1, "slot_wait_hours": 1,
+				"implementing_hours_after_first_review": 1, "testing_hours_after_first_review": 1,
+			},
 		},
 	}
 	if _, err := WriteProject(t.Context(), seeded.database.Pool, ProjectWrite{Project: project, Rows: []Row{row}, Stated: []string{issue}}); err != nil {
@@ -300,8 +310,8 @@ func TestTheBoardsReadLeavesTheColumnsItDoesNotReadAtZero(t *testing.T) {
 		hours float64
 	}{
 		{"parked_hours", got.ParkedHours}, {"queued_hours", got.QueuedHours}, {"slot_wait_hours", got.SlotWaitHours},
-		{"implementing_after_first_review", got.ImplementingAfterFirstReview},
-		{"testing_after_first_review", got.TestingAfterFirstReview},
+		{"implementing_after_first_review", got.ImplementingHoursAfterFirstReview},
+		{"testing_after_first_review", got.TestingHoursAfterFirstReview},
 	} {
 		if unread.hours != 0 {
 			t.Errorf("the board's read of %s answers %s %g two hours on, which it never read: want 0", issue, unread.name, unread.hours)
@@ -311,8 +321,8 @@ func TestTheBoardsReadLeavesTheColumnsItDoesNotReadAtZero(t *testing.T) {
 		t.Errorf("the board's read of %s answers %g work hours two hours on, want the stored 2 grown to 4", issue, got.WorkHours)
 	}
 	t.Logf("%s read two hours on: work hours %g, slot hours %g, implementing %g; parked %g, queued %g, slot wait %g, after first review %g and %g",
-		issue, got.WorkHours, got.SlotHours, got.HoursByPhase["implementing"], got.ParkedHours, got.QueuedHours,
-		got.SlotWaitHours, got.ImplementingAfterFirstReview, got.TestingAfterFirstReview)
+		issue, got.WorkHours, got.SlotHours, got.PhaseHours["implementing"], got.ParkedHours, got.QueuedHours,
+		got.SlotWaitHours, got.ImplementingHoursAfterFirstReview, got.TestingHoursAfterFirstReview)
 }
 
 // readWhole is every column of the project's stored rows, by issue key, as ReadClosedIn reads a
@@ -369,10 +379,11 @@ func rowDifference(got, want Row) string {
 		{"the issue", got.Issue == want.Issue, got.Issue, want.Issue},
 		{"opened_at", got.OpenedAt.Equal(want.OpenedAt), got.OpenedAt.UTC(), want.OpenedAt.UTC()},
 		{"closed_at", sameTime(got.ClosedAt, want.ClosedAt), utc(got.ClosedAt), utc(want.ClosedAt)},
-		{"hours_by_phase", maps.Equal(got.HoursByPhase, storedMap(want.HoursByPhase)), got.HoursByPhase, want.HoursByPhase},
+		{"hours_by_phase", maps.Equal(got.PhaseHours, storedMap(want.PhaseHours)), got.PhaseHours, want.PhaseHours},
 		{"work_hours", got.WorkHours == want.WorkHours, got.WorkHours, want.WorkHours},
 		{"review_rounds", got.ReviewRounds == want.ReviewRounds, got.ReviewRounds, want.ReviewRounds},
-		{"root_key", got.RootKey == want.RootKey, got.RootKey, want.RootKey},
+		{"root_key", got.Tree == want.Tree, got.Tree, want.Tree},
+		{"root", got.Root == want.Root, got.Root, want.Root},
 		{"tree_depth", got.TreeDepth == want.TreeDepth, got.TreeDepth, want.TreeDepth},
 		{"slot_hours", got.SlotHours == want.SlotHours, got.SlotHours, want.SlotHours},
 		{"waiting_reason", got.WaitingReason == want.WaitingReason, got.WaitingReason, want.WaitingReason},
@@ -386,10 +397,10 @@ func rowDifference(got, want Row) string {
 		{"idle_by_role", maps.Equal(got.IdleByRole, storedMap(want.IdleByRole)), got.IdleByRole, want.IdleByRole},
 		{"slot_wait_hours", got.SlotWaitHours == want.SlotWaitHours, got.SlotWaitHours, want.SlotWaitHours},
 		{"sent_back", got.SentBack == want.SentBack, got.SentBack, want.SentBack},
-		{"implementing_after_first_review", got.ImplementingAfterFirstReview == want.ImplementingAfterFirstReview,
-			got.ImplementingAfterFirstReview, want.ImplementingAfterFirstReview},
-		{"testing_after_first_review", got.TestingAfterFirstReview == want.TestingAfterFirstReview,
-			got.TestingAfterFirstReview, want.TestingAfterFirstReview},
+		{"implementing_after_first_review", got.ImplementingHoursAfterFirstReview == want.ImplementingHoursAfterFirstReview,
+			got.ImplementingHoursAfterFirstReview, want.ImplementingHoursAfterFirstReview},
+		{"testing_after_first_review", got.TestingHoursAfterFirstReview == want.TestingHoursAfterFirstReview,
+			got.TestingHoursAfterFirstReview, want.TestingHoursAfterFirstReview},
 		{"children", got.Children == want.Children, got.Children, want.Children},
 		{"repo", got.Repo == want.Repo, got.Repo, want.Repo},
 		{"as_of", got.AsOf.Equal(want.AsOf), got.AsOf.UTC(), want.AsOf.UTC()},
@@ -417,11 +428,11 @@ func show(row Row) string {
 	return fmt.Sprintf("opened %s closed %v hours %v work %g rounds %d root %s depth %d slot %g waiting %q work %v to %v "+
 		"parked %g queued %g started %v merged %v bars %v idle %v slot wait %g sent back %t after review %g+%g children %d repo %q "+
 		"as of %s growth %v updated %s",
-		row.OpenedAt.UTC(), utc(row.ClosedAt), row.HoursByPhase, row.WorkHours, row.ReviewRounds,
-		row.RootKey, row.TreeDepth, row.SlotHours, row.WaitingReason,
+		row.OpenedAt.UTC(), utc(row.ClosedAt), row.PhaseHours, row.WorkHours, row.ReviewRounds,
+		row.Tree, row.TreeDepth, row.SlotHours, row.WaitingReason,
 		utc(row.WorkFirstAt), utc(row.WorkLastAt), row.ParkedHours, row.QueuedHours,
 		utc(row.StartedAt), utc(row.MergedAt), row.Bars, row.IdleByRole, row.SlotWaitHours, row.SentBack,
-		row.ImplementingAfterFirstReview, row.TestingAfterFirstReview, row.Children, row.Repo,
+		row.ImplementingHoursAfterFirstReview, row.TestingHoursAfterFirstReview, row.Children, row.Repo,
 		row.AsOf.UTC(), row.Growth, row.UpdatedAt.UTC())
 }
 

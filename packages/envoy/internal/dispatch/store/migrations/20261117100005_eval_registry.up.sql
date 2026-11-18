@@ -33,6 +33,22 @@
 --   written_via     how the version was written: seed, register, reading (a first reading under
 --                   a slug no row held) or settings.
 --   written_by      the actor who wrote it, and created_at when.
+--   set_by_person   every field of the row a person's register write has named, as the body
+--                   spells it, sorted and each once: `target`, `target_inclusive`,
+--                   `target_judges`, `owner_role`, `person`, `issue_key`, `state`, `replaced_by`,
+--                   `links`, `doc_text` and `doc_block` (R5). It is written whether or not the
+--                   write moved the field's value, and every version after it carries it forward,
+--                   whoever writes it, so the newest version alone answers whether a person has
+--                   set a field and the seed needs no read of the versions before it (evals'
+--                   takeCatalogueFields and seriesToWrite). The seed fills the catalogue's target,
+--                   its inclusiveness and its judges, a series' min_n and an eval's method on an
+--                   eval it takes over: one of the catalogue's slugs a reading or a register write
+--                   registered before any seed of its project. It reads a person's choice here
+--                   and not off the stored values, because a person who sets a target to none
+--                   while it is already none moves no value, and a seed that read the values would
+--                   write the catalogue's target over that choice. The fields of the computation
+--                   are not among them: the catalogue states those on a computed eval, which is
+--                   the one kind of eval the seed writes over.
 -- eval_versions_project, (project_key, eval_id, version desc), is the registry read of one
 -- project. evals_current is distinct on (project_key, eval_id) rather than on eval_id alone,
 -- which is the same set of rows because an eval id names its project: Postgres pushes a reader's
@@ -49,6 +65,8 @@
 --   agg             how a window folds the series' day rows: sum, ratio, quantile, max, last or
 --                   weighted_mean.
 --   links           as on eval_versions.
+--   set_by_person   as on eval_versions; on a series the one field is `min_n`, the one field of
+--                   a series a person sets on a computed eval.
 --
 -- eval_readings holds the readings, one row per value logged under an eval, with the columns of
 -- dispatch://INFRA-979/spec's readings table and links. A reading is append-only: a correction is
@@ -109,6 +127,7 @@ create table eval_versions (
     written_via text not null check (written_via in ('seed', 'register', 'reading', 'settings')),
     written_by jsonb not null,
     created_at timestamptz not null default now(),
+    set_by_person text[] not null default '{}',
     primary key (eval_id, version),
     constraint eval_versions_eval_id_check check (eval_id = project_key || '/' || slug)
 );
@@ -131,6 +150,7 @@ create table eval_series (
     agg text not null check (agg in ('sum', 'ratio', 'quantile', 'max', 'last', 'weighted_mean')),
     links jsonb not null default '[]'::jsonb check (jsonb_typeof(links) = 'array'),
     created_at timestamptz not null default now(),
+    set_by_person text[] not null default '{}',
     primary key (eval_id, series, version)
 );
 

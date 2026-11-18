@@ -161,7 +161,7 @@ func legionProjects(ctx context.Context, q Querier, self process, lost bool) (ma
 //
 // It is how the running build learns that a roll has ended, with no timer. While two builds run,
 // the older one can still write rows by its own rule, and every row carries the build that wrote
-// it (written_build, migration 20261117100026). A row the older build's rule computes none for is
+// it (written_build, migration 20261117100000). A row the older build's rule computes none for is
 // not deleted but stamped with the older build (ProjectWrite.Yielded), so it is found here too.
 // Each of the older build's writes and stamps logs an issue_facts change, whose drain notifies
 // the delivery change channel and so wakes the newer process (Deps.Deliveries), and that pass
@@ -199,7 +199,7 @@ const otherBuildsRowsQuery = `
 // issue is lives in the build as the phase-work rule does, so a filing the older build of a roll
 // wrote or stamped (FilingsWrite.Yielded) is one the newer build decides again, and once the
 // older process has stopped no filing is left that it wrote. It reads issue_filings_written_build
-// (migration 20261117100026) as otherBuildsRows reads the rows' index.
+// (migration 20261117100007) as otherBuildsRows reads the rows' index.
 func otherBuildsFilings(ctx context.Context, q Querier, build string) (map[string][]string, error) {
 	return readOtherBuilds(ctx, q, "stored filings", otherBuildsFilingsQuery, build)
 }
@@ -236,20 +236,71 @@ func readOtherBuilds(ctx context.Context, q Querier, what, query, build string) 
 }
 
 // rowsToCompute is the whole set one pass computes for a project, sorted: the rows the changes
-// touch through the issues' links now (rowsTouchedBy) and the rows of the tree a moved issue
-// left (leftTrees). It is the set the pass states before it writes, and it writes no row outside
-// it. keys is the issues the feeds named and the rows another build wrote (otherBuildsRows).
+// touch through the issues' links now (rowsTouchedBy), the rows of the tree a moved issue left
+// (leftTrees) and, where admission says the page read a move of the project's admission block,
+// the project's open rows (openRows). It is the set the pass states before it writes, and it
+// writes no row outside it. keys is the issues the feeds named and the rows another build wrote
+// (otherBuildsRows).
 //
 // moved names the issues a row of a feed took out of one tree and into another (touch). Only
 // the tree such an issue left is read from it: the links as they stand now answer for every
 // other issue a change can move, the issues below a key among them (rowsTouchedBy).
-func rowsToCompute(ctx context.Context, q Querier, project string, keys []string, moved map[string]bool, above map[string]string) ([]string, error) {
-	left, err := leftTrees(ctx, q, project, keys, moved)
+//
+// The open rows are added as they are, with no climb and no descent: the block moves a row's
+// waiting reason and no other fact (rowsOf), and each row's reason is computed from the block,
+// its own observations and the tree above it, which the population of its key reads whole
+// (metrics.ReadIssues).
+func rowsToCompute(ctx context.Context, q Querier, project string, keys []string, moved map[string]bool, admission bool, above map[string]string) ([]string, error) {
+	stored, err := leftTrees(ctx, q, project, keys, moved)
 	if err != nil {
 		return nil, err
 	}
-	return withRows(rowsTouchedBy(keys, above), left), nil
+	if admission {
+		open, err := openRows(ctx, q, project)
+		if err != nil {
+			return nil, err
+		}
+		stored = append(stored, open...)
+	}
+	return withRows(rowsTouchedBy(keys, above), stored), nil
 }
+
+// openRows is the issue of every open stored row of the project: the rows a move of the
+// project's admission block can move (readObservationPage). A row's waiting reason places its
+// issue in the daemon's line by the block (reasonOf), and the line orders work the daemon has not
+// finished; the row of an issue that closed was computed by its close, an event of its own. Each
+// open row is computed again, and upsert writes only those whose reason moved: an open row is
+// closed at the newest input its facts read (metrics.ProjectFactsClosed), so a row the block did
+// not move computes to the row the table holds and is written by nothing.
+//
+// The statement names the project and closed_at IS NULL, a range of issue_facts_closed
+// (project_key, closed_at desc, migration 20261117100000), the index the board reads the same
+// rows through (shownWhere). It runs with the planner's settings as they stand, unlike the board's
+// read (readByIndex), so where the open rows are a large share of the table the planner may scan
+// the table instead: Read records that scan at 6.3 to 10.0 ms and the range at 4.5 to 5.9 ms at
+// INFRA's size, and the pass then computes every one of those rows.
+func openRows(ctx context.Context, q Querier, project string) ([]string, error) {
+	rows, err := q.Query(ctx, openRowsQuery, project)
+	if err != nil {
+		return nil, fmt.Errorf("read the open rows of %s: %w", project, err)
+	}
+	defer rows.Close()
+	open := []string{}
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, fmt.Errorf("read the open rows of %s: %w", project, err)
+		}
+		open = append(open, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the open rows of %s: %w", project, err)
+	}
+	return open, nil
+}
+
+// openRowsQuery is openRows' read: the issue of each stored row of $1 with no close.
+const openRowsQuery = `select issue_key from issue_facts where project_key = $1 and closed_at is null`
 
 // withRows is touched, sorted, with the keys of left that it does not hold yet, in one sorted set.
 func withRows(touched, left []string) []string {

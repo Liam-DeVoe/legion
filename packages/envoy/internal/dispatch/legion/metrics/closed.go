@@ -20,7 +20,8 @@ import (
 // of a bar still open is the clock itself, and every count and every moment else stands still.
 // The stored row is therefore two numbers a fact, its value at that moment and its rate, and
 // ProjectFactsClosed measures both from the one computation (factsOf) run at two moments after
-// it. ProjectFacts stays the computation at one moment, which every other reader calls.
+// it. It is the one caller of that computation: a reader of the facts takes them closed and
+// grows them to its own clock (Grown).
 
 // growthSpan is how far apart the two moments are that each fact's growth is measured between.
 // An hour makes each whole-number rate an exact number of the four decimals every hours value is
@@ -29,8 +30,8 @@ const growthSpan = time.Hour
 
 // ClosedFacts is one issue's facts closed at AsOf, the newest input its facts read (newestInput),
 // and how fast each grows after it (Growth). The facts at any moment after AsOf are the facts
-// grown by the time between (IssueFacts.Grown), which is the value ProjectFacts answers of the
-// same inputs at that moment.
+// grown by the time between (IssueFacts.Grown), which is the value the computation (factsOf)
+// answers of the same inputs at that moment.
 //
 // The facts are the ones the computation answers just after AsOf: a span an input opened at AsOf
 // itself holds no time at AsOf and does after it, so a count that span starts - a review round, a
@@ -42,11 +43,18 @@ type ClosedFacts struct {
 	Growth Growth
 }
 
-// ProjectFactsClosed is ProjectFacts as a stored row holds it: every issue of the population with
-// Legion phase work that wanted names (every one where wanted is nil), its facts closed at the
-// newest input they read and their growth after it. It answers the same set of issues as
-// ProjectFacts, by the same selection (factsIssues), and their facts by the same rule (factsOf),
-// so no second rule computes a fact (R20).
+// FactsAt is the issue's facts at moment: the facts grown by the time from AsOf to it (Grown),
+// which a moment before AsOf closes back. A reader that must not shrink a row read behind its
+// writer's clock guards that itself (legionfacts' Row.At).
+func (c ClosedFacts) FactsAt(moment time.Time) IssueFacts {
+	return c.Grown(c.Growth, moment.Sub(c.AsOf))
+}
+
+// ProjectFactsClosed is the per-issue facts as a stored row holds them: every issue of the
+// population with Legion phase work that wanted names (every one where wanted is nil, by the one
+// selection of them, factsIssues), its facts closed at the newest input they read and their
+// growth after it. Its facts are the one computation's (factsOf), so no second rule computes a
+// fact (R20).
 //
 // Each issue is computed at two moments past its newest input, an hour apart, and its facts are
 // closed back at that input from the first of them with the rate the two measured (Grown with a
@@ -106,7 +114,7 @@ func growthBetween(first, later IssueFacts) Growth {
 			growth[name] = round(-value / growthSpan.Hours())
 		}
 	}
-	for _, name := range []string{growthWorkFirstAt, growthWorkLastAt} {
+	for _, name := range []string{growthWorkFirstAt, GrowthWorkLastAt} {
 		from, to := *first.workMoment(name), *later.workMoment(name)
 		if from == nil || to == nil {
 			continue
@@ -131,6 +139,9 @@ func growthBetween(first, later IssueFacts) Growth {
 //     `awaiting_person` (waitingOnPersonSpans), so a child reads the root's phase marks that open
 //     or close such a stretch, the root's close where the last of them leaves one open, and the
 //     root's recorded answer that cuts one of the child's own ask turns short (answeredWithin).
+//     A `null` phase mark opens and closes no stretch (phaseStretches), so it is skipped here as
+//     the timeline skips it, and the mark after it that carries a phase, or the root's close, is
+//     what ends the wait.
 //   - A root's time waiting on its children is its children's working phases over their work
 //     time (waitingOnChildrenSpans), so a root reads each child's role events, handoffs, statuses,
 //     `phase` and `slot` observations and close, which are the whole of what those spans are made
@@ -201,7 +212,11 @@ func (c *computation) newestInput(issue *Issue) time.Time {
 	} else {
 		awaiting := false
 		for _, mark := range root.Observed[legion.FieldPhase] {
-			now := legion.JSONString([]byte(mark.Value)) == legion.PhaseAwaitingPerson
+			phase := markedPhase(mark)
+			if phase == "" {
+				continue
+			}
+			now := phase == legion.PhaseAwaitingPerson
 			if now || awaiting {
 				read(mark.At)
 			}

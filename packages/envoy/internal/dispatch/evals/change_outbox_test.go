@@ -19,10 +19,10 @@ import (
 )
 
 // The eval writes record their change rows in the change log's outbox (delivery_changes_pending,
-// migrations 20261117100023 and 20261117100024) and take no change log lock, and each write's own
-// drain moves them into the log in a short transaction of its own after it commits
-// (delivery.DrainPending). R19 holds every write to at most 100 ms of the lock at the size of a
-// correction of 1,400 readings, and an intake statement behind eval writes to a median wait of at
+// migration 20261117100001) and take no change log lock, and each write's own drain moves a batch
+// of them into the log in a short transaction of its own after it commits
+// (delivery.DrainPendingBatch). R19 holds every write to at most 100 ms of the lock at the size of
+// a correction of 1,400 readings, and an intake statement behind eval writes to a median wait of at
 // most 20 ms: before the outbox the correction held it a median 1.53 s and the intake waited a
 // median 632 ms. These tests assert the structure that bounds both (no eval write's transaction
 // holds the lock, no intake statement waits on one) and log the times, since the wall clock is the
@@ -453,4 +453,59 @@ func TestACorrectionCommitsWhileTheChangeLogLockIsHeldElsewhere(t *testing.T) {
 	}
 	t.Logf("the correction committed %d change rows while the lock was held elsewhere; once let go its drain answered in %s (the samples saw %v)",
 		pending, drained.Round(time.Microsecond), holds)
+}
+
+// TestAReadingsWriteDrainsOneBatchOfAnotherWritersBacklog: with more change rows pending than two
+// batches of the drain, left by another writer (a whole-project Legion facts pass records
+// thousands, which wait for its drain), a readings write answers having moved one batch of them
+// into the log, not the whole backlog, and leaves the rest pending, its own change rows behind
+// them; the next drain moves every one of them, so nothing is lost and nothing is moved twice.
+// Before, the write's drain moved batch after batch until the outbox was empty, and the write
+// answered only then.
+func TestAReadingsWriteDrainsOneBatchOfAnotherWritersBacklog(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	minutes := func(key string, day int) json.RawMessage {
+		return row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": key, "value": 3, "measured_at": at(day, 9, 0)})
+	}
+	evalID := r.write(t, "build-minutes", alice, minutes("a", 4)).Definition.EvalID
+	// The contract the test states, written out as the delivery package's own test writes it
+	// rather than read from its drainBatch: a batch moves at most 250 rows.
+	const batchRows, backlog = 250, 700
+	if _, err := r.database.Pool.Exec(ctx, `
+		select delivery_change_log_pending('issue_facts', null, $1, $1 || '-' || n, null, null)
+		from generate_series(1, $2) n
+	`, r.project, backlog); err != nil {
+		t.Fatalf("record %d pending changes of another writer: %v", backlog, err)
+	}
+	before, err := delivery.LatestChangeSeq(ctx, r.database.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.write(t, "build-minutes", alice, minutes("b", 5))
+	moved := r.count(t, `select count(*) from delivery_changes where seq > $1`, before)
+	pending := r.count(t, `select count(*) from delivery_changes_pending`)
+	t.Logf("the readings write's drain moved %d change rows and left %d pending", moved, pending)
+	if moved == 0 || moved > batchRows || moved+pending <= backlog {
+		t.Errorf("the readings write's drain moved %d of the %d pending change rows another writer left and its own, and left %d; want one batch of at most %d moved and the rest pending",
+			moved, backlog, pending, batchRows)
+	}
+	rest, err := delivery.DrainPending(ctx, r.database.Pool)
+	if err != nil {
+		t.Fatalf("the next drain: %v", err)
+	}
+	if left := r.count(t, `select count(*) from delivery_changes_pending`); left != 0 || rest != int64(pending) {
+		t.Errorf("the next drain moved %d rows and left %d pending, want the %d the write left and none", rest, left, pending)
+	}
+	changes, err := delivery.ChangesSince(ctx, r.database.Pool, before, 10*backlog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	own := slices.ContainsFunc(changes, func(change delivery.Change) bool {
+		return change.Kind == delivery.ChangeKindEvalReadings && change.Ref == evalID
+	})
+	if len(changes) != moved+pending || !own {
+		t.Errorf("the log holds %d changes after the write, want the %d it moved and the %d the next drain moved, the write's readings change among them (%t)",
+			len(changes), moved, pending, own)
+	}
 }

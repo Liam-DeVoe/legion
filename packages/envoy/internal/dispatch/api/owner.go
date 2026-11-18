@@ -73,9 +73,10 @@ func (s *server) documentOwnerFromRequest(ctx context.Context, q queryer, r *htt
 }
 
 // errProjectNotFound is loadProject's refusal of a key no project row holds: 404
-// PROJECT_NOT_FOUND. It is one value, so a caller that answers it otherwise than a route does
-// (the live hub's evals view tells its subscribers once and stays open) matches it with errors.Is
-// and reads its code and message from it rather than spelling them again.
+// PROJECT_NOT_FOUND. It is an *apiError, so a caller that answers it otherwise than a route does
+// (the live hub tells a Legion board's or an evals view's subscribers once and keeps the view
+// open) finds it with errors.As (viewReads.refusal) and reads its code and message from it rather
+// than spelling them again.
 var errProjectNotFound = errorf(http.StatusNotFound, "PROJECT_NOT_FOUND", "project not found")
 
 // loadProject reads the project key names, errProjectNotFound where no row holds it.

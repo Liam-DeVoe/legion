@@ -187,8 +187,9 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 		view.lastDirty, view.notBefore = now, now.Add(deliveryLiveRetry)
 	default:
 		if g.epoch != epoch {
-			// The change log was reset while it read, so its position names nothing in the new one.
-			read.seq = 0
+			// The change log was reset while it read, so its position names nothing in the new
+			// one, and no change of the new log was recorded at it.
+			read.seq, read.changedAt = 0, nil
 		}
 		view.settings, view.pop, view.pipe, view.readFrom = read.settings, read.pop, read.pipe, read.from
 		view.body, view.seq, view.changedAt = &read.body, read.seq, read.changedAt
@@ -231,12 +232,13 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 // began leaves dirty set: the position may name the old log, so the marks are taken over only
 // while the generation stands at the epoch the recompute read.
 func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLiveSpec, epoch int64) (deliveryViewRead, error) {
-	ctx, pool := g.readContext(), h.server.deps.Store.Pool
+	ctx := g.readContext()
 	var read deliveryViewRead
-	var err error
-	if read.seq, err = delivery.LatestChangeSeq(ctx, pool); err != nil {
+	head, err := delivery.ChangesHead(ctx, h.server.deps.Store.Pool)
+	if err != nil {
 		return read, err
 	}
+	read.seq, read.changedAt = head.Seq, head.At
 	h.note(deliveryHubNote{what: "recompute position", view: spec.key, through: read.seq})
 	h.mu.Lock()
 	view.readingSeq, view.reading = read.seq, true
@@ -247,11 +249,6 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 		view.dirty, view.immediate = false, false
 	}
 	h.mu.Unlock()
-	if read.seq > 0 {
-		if read.changedAt, err = delivery.ChangeAt(ctx, pool, read.seq); err != nil {
-			return read, err
-		}
-	}
 	now := h.clock.Now()
 	body, err := spec.classes().read(h, ctx, spec, now, &read)
 	if err != nil {

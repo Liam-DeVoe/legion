@@ -63,13 +63,30 @@ const (
 	evalSessionQueryKey = "session"
 )
 
-// The query keys each eval read declares: the `query` tags of the query struct its route shape
-// names (routeShapes' Params), read once when the package starts. A readings write declares none.
+// evalQueryKeys is the query keys one eval read takes, read from the query struct its route shape
+// names (routeShapes' Params): every key it declares, the struct's `query` tags (queryKeysOf),
+// any other of which the read refuses (undeclaredQueryKey), and those it takes one value of, in
+// name order, each of which it refuses named twice (repeatedQueryKey): the fields that are no
+// list (oneValueQueryKeys) and the global session parameter, which every route reads one value of
+// (actingPerson). A list field there is a key the read takes any number of values of.
+type evalQueryKeys struct {
+	declared, oneValue []string
+}
+
+// evalQueryKeysOf is the query keys of params, an eval read's query struct.
+func evalQueryKeysOf(params any) evalQueryKeys {
+	oneValue := append(oneValueQueryKeys(params), evalSessionQueryKey)
+	slices.Sort(oneValue)
+	return evalQueryKeys{declared: queryKeysOf(params), oneValue: oneValue}
+}
+
+// The query keys each eval read takes (evalQueryKeysOf), read once when the package starts. A
+// readings write declares none.
 var (
-	evalListQueryKeys   = queryKeysOf(evalListQuery{})
-	evalsQueryKeys      = queryKeysOf(evalsQuery{})
-	evalDetailQueryKeys = queryKeysOf(evalDetailQuery{})
-	evalItemsQueryKeys  = queryKeysOf(evalItemsQuery{})
+	evalListQueryKeys   = evalQueryKeysOf(evalListQuery{})
+	evalsQueryKeys      = evalQueryKeysOf(evalsQuery{})
+	evalDetailQueryKeys = evalQueryKeysOf(evalDetailQuery{})
+	evalItemsQueryKeys  = evalQueryKeysOf(evalItemsQuery{})
 )
 
 // queryKeysOf is the keys params, a route's query struct, declares: each field's `query` tag.
@@ -535,17 +552,16 @@ type evalReadQuery struct {
 	offset int
 }
 
-// parseEvalReadQuery reads what every eval read takes of its query; declared is the keys the
-// reading route takes (evalListQueryKeys, evalsQueryKeys, evalDetailQueryKeys,
-// evalItemsQueryKeys), any other of which is refused (undeclaredQueryKey), as is a key named more
-// than once that the read takes one value of (repeatedQueryKey). A malformed key is 400
-// INVALID_QUERY naming it; the page is limit, 1 to evalPageMax (evalPageDefault where absent), and
-// offset, from 0.
-func parseEvalReadQuery(query url.Values, declared []string) (evalReadQuery, error) {
-	if err := undeclaredQueryKey(query, declared); err != nil {
+// parseEvalReadQuery reads what every eval read takes of its query; keys is the keys the reading
+// route takes (evalListQueryKeys, evalsQueryKeys, evalDetailQueryKeys, evalItemsQueryKeys), any
+// other of which is refused (undeclaredQueryKey), as is a key named more than once that the read
+// takes one value of (repeatedQueryKey). A malformed key is 400 INVALID_QUERY naming it; the page
+// is limit, 1 to evalPageMax (evalPageDefault where absent), and offset, from 0.
+func parseEvalReadQuery(query url.Values, keys evalQueryKeys) (evalReadQuery, error) {
+	if err := undeclaredQueryKey(query, keys.declared); err != nil {
 		return evalReadQuery{}, err
 	}
-	if err := repeatedQueryKey(query); err != nil {
+	if err := repeatedQueryKey(query, keys.oneValue); err != nil {
 		return evalReadQuery{}, err
 	}
 	ranges, err := parseEvalRanges(query)
@@ -568,21 +584,18 @@ func invalidEvalQuery(err error) error {
 	return errorf(http.StatusBadRequest, "INVALID_QUERY", "%s", err.Error())
 }
 
-// evalRepeatableQueryKeys are the query keys an eval route takes any number of values of: the
-// projects of the cross-project read and the repositories of every read. Every other key it takes
-// is one value.
-var evalRepeatableQueryKeys = []string{"project", "repo"}
-
-// repeatedQueryKey refuses a query naming more than once a key the eval routes take one value of:
-// 400 INVALID_QUERY naming the first such key in name order, nil where none is. Such a key is read
-// as its first value, so `?kind=legion&kind=ci` would be answered the Legion evals alone: a
-// question other than the one asked, as a key the route does not take would be
-// (undeclaredQueryKey).
-func repeatedQueryKey(query url.Values) error {
-	for _, key := range slices.Sorted(maps.Keys(query)) {
-		if slices.Contains(evalRepeatableQueryKeys, key) {
-			continue
-		}
+// repeatedQueryKey refuses a query naming more than once a key its route takes one value of: 400
+// INVALID_QUERY naming the first such key in the order oneValue gives them, nil where none is. A
+// delivery read's oneValue is the keys of its shape's query struct that are no list, in the order
+// the shape declares them (oneValueQueryKeys); an eval read's is those and the global session
+// parameter, in name order (evalQueryKeys), and a readings write's the session parameter alone.
+// Such a key is read as its first value, so `?kind=legion&kind=ci` would be answered the Legion
+// evals alone, and ?from=A&from=B the window from A: a question other than the one asked, as a key
+// the route does not take would be (undeclaredQueryKey). A list key of the shape (the
+// cross-project read's projects, every read's repositories, the delivery reads' facets) is taken
+// any number of times, and a delivery route passes over a key it does not read.
+func repeatedQueryKey(query url.Values, oneValue []string) error {
+	for _, key := range oneValue {
 		if err := namedOnce(query, key); err != nil {
 			return err
 		}
@@ -619,11 +632,11 @@ type evalListRequest struct {
 }
 
 // parseEvalListQuery reads the list read's query, every key but `project`, which only the
-// cross-project read takes; declared is the keys the reading route takes (evalListQueryKeys,
+// cross-project read takes; keys is the keys the reading route takes (evalListQueryKeys,
 // evalsQueryKeys), any other of which is refused (undeclaredQueryKey). A malformed key is 400
 // INVALID_QUERY naming it.
-func parseEvalListQuery(query url.Values, declared []string) (evalListRequest, error) {
-	read, err := parseEvalReadQuery(query, declared)
+func parseEvalListQuery(query url.Values, keys evalQueryKeys) (evalListRequest, error) {
+	read, err := parseEvalReadQuery(query, keys)
 	if err != nil {
 		return evalListRequest{}, err
 	}
@@ -963,7 +976,7 @@ func (s *server) logEvalReadings(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := repeatedQueryKey(query); err != nil {
+	if err := repeatedQueryKey(query, []string{evalSessionQueryKey}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

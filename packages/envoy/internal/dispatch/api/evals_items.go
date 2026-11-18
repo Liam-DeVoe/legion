@@ -455,8 +455,8 @@ func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (eval
 			return nil, err
 		}
 		filings = slices.DeleteFunc(filed, func(filing legionfacts.Filing) bool {
-			return (filedSeries && filing.Class != class) || !metrics.InCut(cut, filing.RootKey == filing.Issue) ||
-				(read.request.row != "" && filing.Issue != read.request.row)
+			return (filedSeries && filing.Class != class) || !metrics.InCut(cut, filing.Root == filing.Key) ||
+				(read.request.row != "" && filing.Key != read.request.row)
 		})
 	}
 	if !filedSeries {
@@ -465,13 +465,13 @@ func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (eval
 			return nil, err
 		}
 		closed = slices.DeleteFunc(stored, func(row legionfacts.Row) bool {
-			return !metrics.InCut(cut, row.RootKey == row.Issue) || (read.request.row != "" && row.Issue != read.request.row)
+			return !metrics.InCut(cut, row.Root) || (read.request.row != "" && row.Issue != read.request.row)
 		})
 	}
 	keysOf := func(filings []legionfacts.Filing, closed []legionfacts.Row) []string {
 		keys := make([]string, 0, len(filings)+len(closed))
 		for _, filing := range filings {
-			keys = append(keys, filing.Issue)
+			keys = append(keys, filing.Key)
 		}
 		for _, row := range closed {
 			keys = append(keys, row.Issue)
@@ -484,7 +484,7 @@ func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (eval
 		if repos, err = legionfacts.ReadRepos(ctx, pool, keysOf(filings, closed)); err != nil {
 			return nil, err
 		}
-		filings = slices.DeleteFunc(filings, func(filing legionfacts.Filing) bool { return !slices.Contains(read.request.repos, repos[filing.Issue]) })
+		filings = slices.DeleteFunc(filings, func(filing legionfacts.Filing) bool { return !slices.Contains(read.request.repos, repos[filing.Key]) })
 		closed = slices.DeleteFunc(closed, func(row legionfacts.Row) bool { return !slices.Contains(read.request.repos, repos[row.Issue]) })
 	}
 	total := len(filings) + len(closed)

@@ -74,12 +74,12 @@ type BarPart struct {
 // no issue) with the issue it was working, and the phase that issue was in at the filing, named
 // by the word a table names it by (tablePhase).
 type FiledIssue struct {
-	Key   string    `json:"key"`
-	At    time.Time `json:"at"`
-	Class string    `json:"class"`
+	Key   string
+	At    time.Time
+	Class string
 	// Filer is the role that filed it and the issue that role was working, or the controller.
-	Filer      string `json:"filer"`
-	FilerIssue string `json:"filer_issue"`
+	Filer      string
+	FilerIssue string
 	// FilerPhase is the phase the filer's issue was in when it filed, named by the word a table
 	// names it by (tablePhase): the eight words of the spec's "Phase words in tables" — `design`,
 	// `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `retro` and `merging` —,
@@ -87,7 +87,7 @@ type FiledIssue struct {
 	// for an hour the issue was out of the workflow before its close (outOfWorkflowSpans), with
 	// observations or before them, and the empty string for a moment the issue's timeline does
 	// not cover, which is what every filing by the controller carries.
-	FilerPhase string `json:"filer_phase"`
+	FilerPhase string
 }
 
 // computation is one population's per-issue facts being computed, with the timelines and views
@@ -107,7 +107,7 @@ type computation struct {
 }
 
 // newComputation is an empty computation over population, with its memoised maps made: what
-// ProjectFacts and ProjectFilings each start from.
+// ProjectFactsClosed and ProjectFilings each start from.
 func newComputation(population *Population) *computation {
 	return &computation{
 		population: population,
@@ -353,8 +353,8 @@ func firstWorkerEvent(issue *Issue) (time.Time, bool) {
 
 // barPartsOf is one issue's part of metric 2, keyed by role: its time on each of the seven bars
 // (bars), shared out over the five segments, each hour going to the first segment of the
-// precedence that holds. The per-issue facts store these parts (ProjectFacts) and PhaseTimeDay
-// adds them up across the finished issues.
+// precedence that holds. The per-issue facts store these parts (ProjectFactsClosed) and
+// PhaseTimeDay adds them up across the finished issues.
 //
 // The hours shared out are the issue's work time and nothing else (the spec's "Rule details —
 // Parked and pre-work hours in phase time": "An hour that work time to merge leaves out is on no
@@ -389,8 +389,8 @@ type reworkRow struct {
 }
 
 // reworkOf is one issue's part of metric 3, whose hours after the first review are the measure of
-// its bar spans from that review on. The per-issue facts store these parts (ProjectFacts) and
-// ReworkDay adds them up across the finished issues.
+// its bar spans from that review on. The per-issue facts store these parts
+// (ProjectFactsClosed) and ReworkDay adds them up across the finished issues.
 func (c *computation) reworkOf(issue *Issue) reworkRow {
 	phases := c.timelineOf(issue)
 	row := reworkRow{reviewRounds: reviewRounds(issue, phases), sentBack: sentBackOnce(issue, phases)}

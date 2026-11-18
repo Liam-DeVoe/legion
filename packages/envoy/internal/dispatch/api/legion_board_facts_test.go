@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -29,23 +30,30 @@ func writeLegionFacts(t *testing.T, database *store.Store, project string, now t
 	closed := now.Add(-2 * time.Hour)
 	first, last := now.Add(-6*time.Hour), now.Add(-time.Hour)
 	rows := []legionfacts.Row{{
-		Project: project, Issue: project + "-4", OpenedAt: now.Add(-9 * time.Hour),
-		HoursByPhase: map[string]float64{"implementing": 3.5, "reviewing": 1.25},
-		WorkHours:    4.75, ReviewRounds: 2, RootKey: project + "-3", TreeDepth: 1,
-		SlotHours: 4, WaitingReason: "", WorkFirstAt: &first, WorkLastAt: &last,
-		UpdatedAt: now.Add(-2 * time.Minute),
+		Project: project, Issue: project + "-4", WaitingReason: "", UpdatedAt: now.Add(-2 * time.Minute),
+		ClosedFacts: metrics.ClosedFacts{IssueFacts: metrics.IssueFacts{
+			OpenedAt:   now.Add(-9 * time.Hour),
+			PhaseHours: map[string]float64{"implementing": 3.5, "reviewing": 1.25},
+			WorkHours:  4.75, ReviewRounds: 2, Tree: project + "-3", TreeDepth: 1,
+			SlotHours: 4, WorkFirstAt: &first, WorkLastAt: &last,
+		}},
 	}, {
-		Project: project, Issue: project + "-3", OpenedAt: now.Add(-12 * time.Hour),
-		HoursByPhase: map[string]float64{"design": 2},
-		WorkHours:    2, ReviewRounds: 0, RootKey: project + "-3", TreeDepth: 0,
-		SlotHours: 6, WaitingReason: "waiting for a child", UpdatedAt: oldest,
+		Project: project, Issue: project + "-3", WaitingReason: "waiting for a child", UpdatedAt: oldest,
+		ClosedFacts: metrics.ClosedFacts{IssueFacts: metrics.IssueFacts{
+			OpenedAt:   now.Add(-12 * time.Hour),
+			PhaseHours: map[string]float64{"design": 2},
+			WorkHours:  2, ReviewRounds: 0, Root: true, Tree: project + "-3", TreeDepth: 0,
+			SlotHours: 6,
+		}},
 	}, {
 		// A closed issue of a tree no card stands in (seedLegionBoard's finished issue), which
 		// carries no entry and moves no facts_updated_at, though it is the oldest row: the board
 		// serves the facts of the open issues and of the issues it shows alone.
-		Project: project, Issue: project + "-7", OpenedAt: now.Add(-30 * time.Hour),
-		ClosedAt: &closed, HoursByPhase: map[string]float64{}, WorkHours: 0, RootKey: project + "-7",
-		UpdatedAt: now.Add(-5 * time.Minute),
+		Project: project, Issue: project + "-7", UpdatedAt: now.Add(-5 * time.Minute),
+		ClosedFacts: metrics.ClosedFacts{IssueFacts: metrics.IssueFacts{
+			OpenedAt: now.Add(-30 * time.Hour), ClosedAt: &closed, PhaseHours: map[string]float64{}, WorkHours: 0,
+			Root: true, Tree: project + "-7",
+		}},
 	}}
 	if _, err := legionfacts.WriteProject(t.Context(), database.Pool,
 		legionfacts.ProjectWrite{Project: project, Rows: rows, Whole: true}); err != nil {
@@ -110,16 +118,16 @@ func TestTheBoardCarriesOneStoredEntryPerIssueLegionWorked(t *testing.T) {
 	// Every entry is the stored row, value for value.
 	for _, key := range slices.Sorted(maps.Keys(board.Issues)) {
 		entry, row := board.Issues[key], stored[key]
-		if !maps.Equal(entry.HoursByPhase, row.HoursByPhase) {
-			t.Errorf("%s: the board's hours = %v, the stored row's = %v", key, entry.HoursByPhase, row.HoursByPhase)
+		if !maps.Equal(entry.HoursByPhase, row.PhaseHours) {
+			t.Errorf("%s: the board's hours = %v, the stored row's = %v", key, entry.HoursByPhase, row.PhaseHours)
 		}
 		if entry.WorkHours != row.WorkHours || entry.ReviewRounds != row.ReviewRounds {
 			t.Errorf("%s: the board says %g work hours over %d review rounds, the stored row %g over %d",
 				key, entry.WorkHours, entry.ReviewRounds, row.WorkHours, row.ReviewRounds)
 		}
-		if entry.RootKey != row.RootKey || entry.TreeDepth != row.TreeDepth {
+		if entry.RootKey != row.Tree || entry.TreeDepth != row.TreeDepth {
 			t.Errorf("%s: the board puts it at depth %d of %s, the stored row at depth %d of %s",
-				key, entry.TreeDepth, entry.RootKey, row.TreeDepth, row.RootKey)
+				key, entry.TreeDepth, entry.RootKey, row.TreeDepth, row.Tree)
 		}
 		if !entry.OpenedAt.Equal(row.OpenedAt) || !entry.UpdatedAt.Equal(row.UpdatedAt) {
 			t.Errorf("%s: the board's moments = %s/%s, the stored row's = %s/%s",
@@ -237,9 +245,12 @@ func TestTheBoardCarriesTheFactsOfTheIssuesItShowsAndNoOther(t *testing.T) {
 	closed := now.Add(-26 * time.Hour)
 	row := func(issue, root string, depth int, updated time.Duration, closedAt *time.Time) legionfacts.Row {
 		return legionfacts.Row{
-			Project: "INFRA", Issue: issue, OpenedAt: now.Add(-48 * time.Hour), ClosedAt: closedAt,
-			HoursByPhase: map[string]float64{"implementing": 1}, WorkHours: 1, RootKey: root,
-			TreeDepth: depth, UpdatedAt: now.Add(-updated),
+			Project: "INFRA", Issue: issue, UpdatedAt: now.Add(-updated),
+			ClosedFacts: metrics.ClosedFacts{IssueFacts: metrics.IssueFacts{
+				OpenedAt: now.Add(-48 * time.Hour), ClosedAt: closedAt,
+				PhaseHours: map[string]float64{"implementing": 1}, WorkHours: 1, Root: root == issue, Tree: root,
+				TreeDepth: depth,
+			}},
 		}
 	}
 	rows := []legionfacts.Row{

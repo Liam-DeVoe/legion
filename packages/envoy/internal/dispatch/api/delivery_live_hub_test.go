@@ -2858,7 +2858,7 @@ func TestADeliveryReadTakesItsFacetsRepeatedAndItsOtherKeysOnce(t *testing.T) {
 		}},
 		{"the Pipeline", "at", url.Values{"at": {"2026-11-14T00:00:00Z", "2026-11-07T00:00:00Z"}}, func(query url.Values) error {
 			// The check getDeliveryPipeline makes before it reads at.
-			return repeatedDeliveryKey(query, deliveryPipelineOneValueKeys)
+			return repeatedQueryKey(query, deliveryPipelineOneValueKeys)
 		}},
 	} {
 		var apiErr *apiError

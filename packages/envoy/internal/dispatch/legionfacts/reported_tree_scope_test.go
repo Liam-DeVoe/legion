@@ -73,9 +73,9 @@ func TestAChangeToAChildRecomputesTheRootItReportsAsItsTree(t *testing.T) {
 	}
 	// The observation has to have moved the child's root and the root's own hours, or the
 	// history states nothing and the check below asks the parent chain over again.
-	if stored[child].RootKey != tree {
+	if stored[child].Tree != tree {
 		t.Fatalf("%s reports the tree %s and its stored root is %q, so this test never made a rule read a reported tree",
-			child, tree, stored[child].RootKey)
+			child, tree, stored[child].Tree)
 	}
 	if sameRow(before[tree], want) {
 		t.Fatalf("%s holds one row before the observation and after it (%s), so this check cannot tell a recomputed row from a stale one",
@@ -90,6 +90,6 @@ func TestAChangeToAChildRecomputesTheRootItReportsAsItsTree(t *testing.T) {
 		t.Errorf("%s is the root %s reports as its tree and the pass left its row alone; it changed %v", tree, child, changed)
 	}
 	t.Logf("%s reports the tree %s, whose parent chain holds %s instead: the pass changed %d rows, and the root's hours by part went %v to %v, against the %v a computation of the whole project answers",
-		child, tree, parents[child], len(changed), before[tree].HoursByPhase,
-		stored[tree].HoursByPhase, want.HoursByPhase)
+		child, tree, parents[child], len(changed), before[tree].PhaseHours,
+		stored[tree].PhaseHours, want.PhaseHours)
 }

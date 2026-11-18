@@ -134,11 +134,10 @@ func computedKeys(rows []Row) []string {
 // RecordObservations), and the conflict's `do update` carries the whole row's comparison in its
 // where clause, so Postgres decides what changed and `returning` answers exactly the rows it
 // touched. updated_at moves only with a row that changed, because an unchanged row is never
-// updated at all. The comparison holds every column but updated_at, the ones migrations
-// 20261117100017 and 20261117100026 added among them, so a row an earlier build wrote without
-// them is rewritten by the first pass that computes it. The hours, the bars, the idle hours and
-// the growth are compared as jsonb, so a Go encoding that ordered an object's keys differently
-// from jsonb cannot read as a change.
+// updated at all. The comparison holds every column but updated_at, so a row whose stored values
+// differ from the computed ones in any column is rewritten by the first pass that computes it.
+// The hours, the bars, the idle hours and the growth are compared as jsonb, so a Go encoding that
+// ordered an object's keys differently from jsonb cannot read as a change.
 //
 // A row's values are closed at as_of, the newest input its facts read, and carry no clock of
 // their own (metrics.ProjectFactsClosed), so a pass that computes an issue whose inputs did not
@@ -189,7 +188,7 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 		if row.Project != project {
 			return nil, fmt.Errorf("write the Legion facts: %s and %s are two projects in one write", project, row.Project)
 		}
-		hours, err := json.Marshal(storedMap(row.HoursByPhase))
+		hours, err := json.Marshal(storedMap(row.PhaseHours))
 		if err != nil {
 			return nil, fmt.Errorf("write the Legion facts of %s: %w", row.Issue, err)
 		}
@@ -210,7 +209,7 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 		hoursByPhase[index] = string(hours)
 		workHours[index] = row.WorkHours
 		reviewRounds[index] = int32(row.ReviewRounds)
-		rootKeys[index] = row.RootKey
+		rootKeys[index] = row.Tree
 		treeDepth[index] = int32(row.TreeDepth)
 		slotHours[index] = row.SlotHours
 		waitingReason[index] = row.WaitingReason
@@ -231,8 +230,8 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 		idleByRole[index] = string(idle)
 		slotWaitHours[index] = row.SlotWaitHours
 		sentBack[index] = row.SentBack
-		implementingAfter[index] = row.ImplementingAfterFirstReview
-		testingAfter[index] = row.TestingAfterFirstReview
+		implementingAfter[index] = row.ImplementingHoursAfterFirstReview
+		testingAfter[index] = row.TestingHoursAfterFirstReview
 		children[index] = int32(row.Children)
 		repos[index] = row.Repo
 		growth[index] = string(rates)
@@ -391,7 +390,7 @@ func deleteStaleProjectRows(ctx context.Context, q Querier, write ProjectWrite, 
 // deleteRows runs one of the two deletions, or the stamp a Yielded write makes in its place, and
 // answers the keys it deleted or stamped, in the order Postgres took them. Each row it deletes or
 // stamps logs a delivery change of kind issue_facts carrying that row's close day, which the
-// table's own trigger writes on a delete as it does on a write (migration 20261117100026), so
+// table's own trigger writes on a delete as it does on a write (migration 20261117100002), so
 // every reader of the facts is told the row went, and the build a stamp hands the row to is woken
 // to compute it again.
 func deleteRows(ctx context.Context, q Querier, project, statement string, args ...any) ([]string, error) {
@@ -498,13 +497,13 @@ func readByIndex(ctx context.Context, pool *store.Pool, read func(tx pgx.Tx) err
 
 // shownWhere is Read's clause, which completes boardSelect, as three reads of the project's rows:
 // the rows of the keys given, each a probe of the primary key (project_key, issue_key); the rows
-// of the trees given, each root a range of issue_facts_root (project_key, root_key), migration
-// 20261117100026; and the open rows, the range of issue_facts_closed (project_key, closed_at
-// desc), migration 20261117100009, where closed_at is null, which a btree answers as an index
-// condition: the plan's condition of that arm names closed_at IS NULL beside the project, so the
-// range holds the project's open rows alone and never the project's whole primary-key range. The
-// planner keeps that arm on the index only because Read runs the statement with sequential scans
-// off (readByIndex): priced by itself, a scan of the whole table ties with the range once the open
+// of the trees given, each root a range of issue_facts_root (project_key, root_key); and the open
+// rows, the range of issue_facts_closed (project_key, closed_at desc), both of migration
+// 20261117100000, where closed_at is null, which a btree answers as an index condition: the
+// plan's condition of that arm names closed_at IS NULL beside the project, so the range holds the
+// project's open rows alone and never the project's whole primary-key range. The planner keeps
+// that arm on the index only because Read runs the statement with sequential scans off
+// (readByIndex): priced by itself, a scan of the whole table ties with the range once the open
 // rows are a large share of the table, and at INFRA's size the plan with the values of a board of
 // no card was that scan. Each later read leaves out what an earlier one answered rather than the
 // three being merged, so no row is answered twice and no answered row is compared with another; a
@@ -516,7 +515,7 @@ const shownWhere = `where project_key = $1 and issue_key = any($2)
 		and not (issue_key = any($2)) and not (root_key = any($3))`
 
 // ReadClosedIn answers the stored rows of the project's issues that closed from from up to to,
-// newest close first, through issue_facts_closed (migration 20261117100009), each as of at
+// newest close first, through issue_facts_closed (migration 20261117100000), each as of at
 // (Row.At): the issues an eval of the Legion measures counts in that window, every one with
 // Legion phase work since every stored row is one, each with every column. The Legion evals' day
 // rows are built from one day's, as of that day's end (evals.ReadLegionDay), and the eval items
@@ -582,19 +581,21 @@ func readRows(ctx context.Context, q Querier, project string, wide bool, where s
 	return rows, nil
 }
 
-// scanRow reads one row of readRows' columns: the board's, and the rest where wide.
+// scanRow reads one row of readRows' columns: the board's, and the rest where wide. Root is no
+// column: it is whether the issue is its own tree's root (root_key), which is how the computation
+// answers it (metrics.IssueFacts.Root).
 func scanRow(result pgx.Rows, project string, wide bool) (Row, error) {
 	row := Row{Project: project}
 	// opened_at is a nullable column, which a row this package wrote always fills.
 	var opened *time.Time
 	var hours, growth, bars, idle []byte
 	into := []any{&row.Issue, &opened, &row.ClosedAt, &hours, &row.WorkHours,
-		&row.ReviewRounds, &row.RootKey, &row.TreeDepth, &row.SlotHours, &row.WaitingReason,
+		&row.ReviewRounds, &row.Tree, &row.TreeDepth, &row.SlotHours, &row.WaitingReason,
 		&row.WorkFirstAt, &row.WorkLastAt, &row.UpdatedAt, &row.AsOf, &growth}
 	if wide {
 		into = append(into, &row.ParkedHours, &row.QueuedHours, &row.StartedAt, &row.MergedAt, &bars, &idle,
-			&row.SlotWaitHours, &row.SentBack, &row.ImplementingAfterFirstReview,
-			&row.TestingAfterFirstReview, &row.Children, &row.Repo)
+			&row.SlotWaitHours, &row.SentBack, &row.ImplementingHoursAfterFirstReview,
+			&row.TestingHoursAfterFirstReview, &row.Children, &row.Repo)
 	}
 	if err := result.Scan(into...); err != nil {
 		return Row{}, fmt.Errorf("read the Legion facts of %s: %w", project, err)
@@ -602,10 +603,11 @@ func scanRow(result pgx.Rows, project string, wide bool) (Row, error) {
 	if opened != nil {
 		row.OpenedAt = *opened
 	}
+	row.Root = row.Tree == row.Issue
 	decoded := []struct {
 		stored []byte
 		into   any
-	}{{hours, &row.HoursByPhase}, {growth, &row.Growth}, {bars, &row.Bars}, {idle, &row.IdleByRole}}
+	}{{hours, &row.PhaseHours}, {growth, &row.Growth}, {bars, &row.Bars}, {idle, &row.IdleByRole}}
 	if !wide {
 		decoded = decoded[:2]
 	}
@@ -625,7 +627,7 @@ func scanRow(result pgx.Rows, project string, wide bool) (Row, error) {
 func (row Row) narrow() Row {
 	row.ParkedHours, row.QueuedHours, row.StartedAt, row.MergedAt = 0, 0, nil, nil
 	row.Bars, row.IdleByRole, row.SlotWaitHours, row.SentBack = nil, nil, 0, false
-	row.ImplementingAfterFirstReview, row.TestingAfterFirstReview = 0, 0
+	row.ImplementingHoursAfterFirstReview, row.TestingHoursAfterFirstReview = 0, 0
 	row.Children, row.Repo = 0, ""
 	return row
 }
@@ -652,13 +654,13 @@ func upsertFilings(ctx context.Context, q Querier, project, build string, filing
 		if filing.Project != project {
 			return fmt.Errorf("write the Legion filings: %s and %s are two projects in one write", project, filing.Project)
 		}
-		keys[index] = filing.Issue
-		filedAt[index] = filing.FiledAt
-		roles[index] = filing.FilerRole
+		keys[index] = filing.Key
+		filedAt[index] = filing.At
+		roles[index] = filing.Filer
 		filers[index] = filing.FilerIssue
 		phases[index] = filing.FilerPhase
 		classes[index] = filing.Class
-		roots[index] = filing.RootKey
+		roots[index] = filing.Root
 	}
 	if err := exec(ctx, q, `
 		insert into issue_filings (issue_key, project_key, filed_at, filer_role, filer_issue,
@@ -711,7 +713,7 @@ func exec(ctx context.Context, q Querier, statement string, args ...any) error {
 func deleteStaleFilings(ctx context.Context, q Querier, write FilingsWrite) error {
 	kept := make([]string, len(write.Filings))
 	for index, filing := range write.Filings {
-		kept[index] = filing.Issue
+		kept[index] = filing.Key
 	}
 	var where string
 	args := []any{write.Project, kept}
@@ -759,8 +761,8 @@ func readFilings(ctx context.Context, q Querier, project, where string, args ...
 	var filings []Filing
 	for result.Next() {
 		filing := Filing{Project: project}
-		if err := result.Scan(&filing.Issue, &filing.FiledAt, &filing.FilerRole, &filing.FilerIssue,
-			&filing.FilerPhase, &filing.Class, &filing.RootKey); err != nil {
+		if err := result.Scan(&filing.Key, &filing.At, &filing.Filer, &filing.FilerIssue,
+			&filing.FilerPhase, &filing.Class, &filing.Root); err != nil {
 			return nil, fmt.Errorf("read the Legion filings of %s: %w", project, err)
 		}
 		filings = append(filings, filing)

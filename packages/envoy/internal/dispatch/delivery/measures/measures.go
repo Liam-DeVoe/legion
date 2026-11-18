@@ -163,13 +163,24 @@ type Result struct {
 	Daily             []DailyPoint       `json:"daily"`
 }
 
-// Target is one measure's target as the eval that states it holds it: its value and whether the
-// value itself meets it (inclusive: at least or at most, rather than above or under). Which way is
-// better is the eval's direction, fixed by its code: more deploys a day and more run success,
-// fewer failures, minutes and unowned P0 issues.
+// Target is one measure's target as the eval that states it holds it: its value, whether the value
+// itself meets it (inclusive: at least or at most, rather than above or under), which way is better
+// (the eval's direction, fixed by its code: more deploys a day and more run success, fewer
+// failures, minutes and unowned P0 issues), and the statistics it judges, each `<series>.<stat>`,
+// in the order the eval's verdict judges them (evals.JudgesOf: its target_judges, or its primary
+// series' headline statistic where it names none), so a reader names the figure a verdict is of.
+// The answer's status is the window's verdict (evals.VerdictOf); a page that judges one day of a
+// chart compares that day's value of each judge with the value the same way. The direction's enum
+// is the two directions the evals name (evals.DirectionHigherBetter, evals.DirectionLowerBetter),
+// and the judges' is every judge a register write takes of the delivery evals (evals'
+// deliveryJudges), which this package cannot import; evals'
+// TestTheTargetsDirectionEnumIsTheEvalsDirections and TestTheTargetsJudgesEnumIsEveryDeliveryJudge
+// hold each pair together.
 type Target struct {
-	Value     float64 `json:"value"`
-	Inclusive bool    `json:"inclusive"`
+	Value     float64  `json:"value"`
+	Inclusive bool     `json:"inclusive"`
+	Direction string   `json:"direction" enum:"higher_better,lower_better"`
+	Judges    []string `json:"judges" enum:"deploys.deploys,deploys.per_day,deploys.with_prs,deploys.with_prs_per_day,issues.value,minutes.max,minutes.median,minutes.n,minutes.p90,per_deploy.confirmed,per_deploy.pending,per_deploy.rate,per_deploy.rejected,per_deploy.total,per_pr.confirmed,per_pr.pending,per_pr.rate,per_pr.rejected,per_pr.reverts,per_pr.total,runs.cancelled,runs.concluded,runs.rate,runs.reached_production,upper_bound.confirmed_or_pending,upper_bound.rate"`
 }
 
 // Targets are the targets a delivery answer judges its measures by: each the target of the eval
@@ -188,7 +199,9 @@ type Targets struct {
 // 11-18, CONTRACT.md "KPI targets", set 2026-09-28), which the catalogue seeds each delivery eval's
 // target from: at least 20 deploys a day and 90% run success, under 5% failures per deploy, 45
 // minutes for every change to reach production and a 60-minute median from open to merge, and no
-// more than 0 unowned P0 issues.
+// more than 0 unowned P0 issues. Each holds its value and inclusiveness alone: the catalogue
+// states each eval's direction and judges once, beside the target it seeds from here, and a
+// delivery answer's target takes them from the eval.
 var DefaultTargets = Targets{
 	DeploysPerDay:              &Target{Value: 20, Inclusive: true},
 	ChangeFailureRate:          &Target{Value: 0.05},

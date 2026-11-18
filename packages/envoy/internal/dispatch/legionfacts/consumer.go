@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -88,7 +89,8 @@ const PassGap = 10 * time.Second
 const feedPage = 1000
 
 // The cursors, one row of issue_facts_cursor each, named for the feed it is read by. A cursor
-// holds the position of the last row of its feed a committed pass read.
+// holds the position of the last row of its feed a committed pass read and when that pass ran
+// (readCursors), and the change cursor when the change at that position was recorded.
 const (
 	eventsCursor       = "events"
 	observationsCursor = "legion_observations"
@@ -173,8 +175,12 @@ type process struct {
 //     title an event's actor carries, which decides whether the issue carries Legion phase work
 //     at all - so the pass takes the page's issues and recomputes them (readEventPage).
 //  2. The daemon's observations, woken by Deps.Observations: the phase, the slot and the wait
-//     the sampler recorded (readObservationPage).
-//  3. A pull request's merge time, woken by Deps.Deliveries (readChangePage).
+//     the sampler recorded of an issue, and the project's admission block, which every open
+//     row's waiting reason reads, so a move of the block recomputes those rows
+//     (readObservationPage).
+//  3. A pull request's merge time, woken by Deps.Deliveries: of the issue that holds the pull
+//     request now, and of the issue a move of it left with a merge no pull request backs
+//     (readChangePage).
 //
 // Two reads answer what no feed carries, both on the first page of a pass (unfed, passPage).
 // A project the running build has not read whole is read whole (legionProjects, R27): the rule
@@ -310,7 +316,7 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 	if err != nil {
 		return nil, nextPage{}, err
 	}
-	read, err := readPages(ctx, deps.Pool, cursors, safe, sched.page, unfed)
+	read, err := readPages(ctx, deps.Pool, cursors, safe, now, sched.page, unfed)
 	if err != nil {
 		return nil, nextPage{}, err
 	}
@@ -335,6 +341,14 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 	for _, page := range []feed{read.events, read.observations, read.changes} {
 		for _, touched := range page.touches {
 			if project := needed(touched.project); project != nil {
+				if touched.admission {
+					project.admission = true
+				}
+				// The project's own observations, its admission block and its settings, name
+				// no issue and so no row: a move of the block owes the open rows (admission).
+				if touched.issue == legion.AdmissionKey {
+					continue
+				}
 				project.keys[touched.issue] = true
 				if touched.moved {
 					project.moved[touched.issue] = true
@@ -416,10 +430,10 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 		computed = append(computed, one)
 	}
 
-	positions := map[string]int64{
-		eventsCursor:       read.events.position,
-		observationsCursor: read.observations.position,
-		changesCursor:      read.changes.position,
+	positions := map[string]delivery.ChangeCursor{
+		eventsCursor:       {Seq: read.events.position, ReadAt: now},
+		observationsCursor: {Seq: read.observations.position, ReadAt: now},
+		changesCursor:      {Seq: read.changes.position, At: read.changes.at, ReadAt: now},
 	}
 	changed, err := writePass(ctx, deps.Pool, computed, positions, now, self, read.changes.remapped)
 	if err != nil {
@@ -429,17 +443,19 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 }
 
 // projectWork is what one page owes one project: the issues its feeds named and the rows another
-// build wrote (keys), those of the feeds' issues a row moved between trees (touch), the filings
-// its events moved that the project owes, the ones it joined and the ones it left (feed.filings),
-// whether the project is to be computed whole (a backfill), and whether its record names a newer
-// build this process yields to (projectStanding.yielded), which the write of its rows carries
-// (ProjectWrite.Yielded).
+// build wrote (keys), those of the feeds' issues a row moved between trees (touch), whether the
+// page read a move of the project's admission block, which owes every open row of the project
+// (openRows), the filings its events moved that the project owes, the ones it joined and the ones
+// it left (feed.filings), whether the project is to be computed whole (a backfill), and whether
+// its record names a newer build this process yields to (projectStanding.yielded), which the write
+// of its rows carries (ProjectWrite.Yielded).
 type projectWork struct {
-	keys     map[string]bool
-	moved    map[string]bool
-	filed    map[string]bool
-	backfill bool
-	yielded  bool
+	keys      map[string]bool
+	moved     map[string]bool
+	admission bool
+	filed     map[string]bool
+	backfill  bool
+	yielded   bool
 }
 
 // projectPass is what one page computed for one project: the write of its rows and the write of
@@ -472,7 +488,7 @@ func computeProjectWork(ctx context.Context, pool *store.Pool, project string, w
 	if err != nil {
 		return projectPass{}, err
 	}
-	keys, err := rowsToCompute(ctx, pool, project, slices.Sorted(maps.Keys(work.keys)), work.moved, above)
+	keys, err := rowsToCompute(ctx, pool, project, slices.Sorted(maps.Keys(work.keys)), work.moved, work.admission, above)
 	if err != nil {
 		return projectPass{}, err
 	}
@@ -500,14 +516,14 @@ func computeProjectWork(ctx context.Context, pool *store.Pool, project string, w
 // much as a row that moved. A failure leaves the cursors and the marks where they were, so the
 // next pass reads the same rows again.
 //
-// The rows' and the filings' triggers record their changes in the change log's outbox (migration
-// 20261117100024) and take no lock, so the transaction never takes the change log's lock
-// (delivery.LockChanges); once it has committed, the pass moves them into the log
+// The rows' and the filings' triggers record their changes in the change log's outbox (migrations
+// 20261117100002 and 20261117100019) and take no lock, so the transaction never takes the change
+// log's lock (delivery.LockChanges); once it has committed, the pass moves them into the log
 // (delivery.DrainPending). A drain that fails is logged and fails nothing: the rows committed, and
-// their notification wakes every live hub, which drains before it reads, as the refresher does at
-// each pass. The drain's notification is also the wake of the other process of a roll, whose
-// build the project's record may name (Deps.Deliveries).
-func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, positions map[string]int64, now time.Time, self process, remapped bool) ([]string, error) {
+// the next drain of any process moves their changes (delivery.DrainPending states the bound). The
+// drain's notification is also the wake of the other process of a roll, whose build the project's
+// record may name (Deps.Deliveries).
+func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, positions map[string]delivery.ChangeCursor, now time.Time, self process, remapped bool) ([]string, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("open the Legion facts' write: %w", err)
@@ -536,7 +552,7 @@ func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, po
 	if err := markComputedWhole(ctx, tx, computed, now, self); err != nil {
 		return nil, err
 	}
-	if err := advanceCursors(ctx, tx, positions, now); err != nil {
+	if err := advanceCursors(ctx, tx, positions); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {

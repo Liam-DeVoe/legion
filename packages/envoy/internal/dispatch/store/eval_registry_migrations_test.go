@@ -50,9 +50,9 @@ func (c loggedChange) String() string {
 }
 
 // drainPending moves the change rows the eval and Legion tables' triggers recorded in the change
-// log's outbox into delivery_changes (delivery_changes_drain, migration 20261117100023), a batch
-// of 250 at a time as delivery.DrainPending does after a writer's commit, and answers how many it
-// moved.
+// log's outbox into delivery_changes (delivery_changes_drain, migration 20261117100001), a batch
+// of 250 at a time until a batch comes back short, as delivery.DrainPending does, and answers how
+// many it moved.
 func drainPending(t *testing.T, store *Store) int64 {
 	t.Helper()
 	const batch = 250

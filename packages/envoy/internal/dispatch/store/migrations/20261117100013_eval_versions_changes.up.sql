@@ -6,18 +6,19 @@
 -- migration, as 20261117100002 is for issue_facts: the transaction holds the two tables' locks
 -- alone, for milliseconds.
 --
--- Each trigger is row-level, after insert: each version is one change row, through
--- delivery_change_log (0100) under the advisory lock every other kind's trigger takes. A write
--- adds at most one version to each eval it names and to each series it names, the seed's write of
--- a whole catalogue included, so a row per version is a row per eval or series written. repo holds
--- the project key and ref the eval id, as an eval_readings row does (20261117100012); eval_series
+-- Each trigger is row-level, after insert: each version is one change row, recorded in the change
+-- log's outbox through delivery_change_log_pending (20261117100001), which takes no lock, and
+-- moved into delivery_changes by a drain (R19, delivery.DrainPending). A write adds at most one
+-- version to each eval it names and to each series it names, the seed's write of a whole
+-- catalogue included, so a row per version is a row per eval or series written. repo holds the
+-- project key and ref the eval id, as an eval_readings row does (20261117100012); eval_series
 -- holds no project column, and the project is the part of the eval id before its slash, as the
 -- eval_readings trigger reads it.
 --
 -- Both log the kind `eval_versions`: a series' version is a version of its eval as much as the
 -- definition's is, every reader of the kind reads it as "every window of this eval may read
--- otherwise", and a kind of its own would need each of them to learn it, and the kind check to be
--- rebuilt, for no reader that tells the two apart.
+-- otherwise", and a kind of its own would need each of them to learn it, and the kind check to
+-- name one more kind, for no reader that tells the two apart.
 --
 -- t_old and t_new are null. A definition or a series holds no time of its own, and a new version
 -- (a target, a unit, a direction, a fold) changes how every window of its eval reads, which is
@@ -29,7 +30,7 @@
 -- The census answers 0: two functions and two triggers, reading and rewriting no row.
 create function eval_versions_changed() returns trigger language plpgsql as $$
 begin
-  perform delivery_change_log('eval_versions', null, new.project_key, new.eval_id, null, null);
+  perform delivery_change_log_pending('eval_versions', null, new.project_key, new.eval_id, null, null);
   return null;
 end $$;
 
@@ -38,7 +39,7 @@ create trigger eval_versions_changed after insert on eval_versions
 
 create function eval_series_changed() returns trigger language plpgsql as $$
 begin
-  perform delivery_change_log('eval_versions', null, split_part(new.eval_id, '/', 1), new.eval_id, null, null);
+  perform delivery_change_log_pending('eval_versions', null, split_part(new.eval_id, '/', 1), new.eval_id, null, null);
   return null;
 end $$;
 

@@ -7,12 +7,13 @@ import (
 	"time"
 )
 
-// TestTheFirstPassOfANewBuildFillsTheWidenedColumns: the columns migration 20261117100017 adds
-// hold their defaults in every row the release before this one wrote, and the filings table is
-// empty, and the first pass of this release fills both. It does because the project's record
-// names the build that last read it whole (migration 20261117100004), and the first pass of a
-// process whose build is another one reads the project whole (legionProjects), which writes every
-// column of every row (upsert compares them all) and every filing (WriteFilings).
+// TestTheFirstPassOfANewBuildFillsTheWidenedColumns: the per-issue part columns of issue_facts
+// (parked_hours to repo, migration 20261117100000) hold their defaults in every row the release
+// before this one wrote, and the filings table is empty, and the first pass of this release fills
+// both. It does because the project's record names the build that last read it whole
+// (computed_build, migration 20261117100003), and the first pass of a process whose build is
+// another one reads the project whole (legionProjects), which writes every column of every row
+// (upsert compares them all) and every filing (WriteFilings).
 //
 // The rows the earlier release left are made here by putting every widened column of every row
 // back to its default and emptying the filings. A pass under the build that wrote the record, with

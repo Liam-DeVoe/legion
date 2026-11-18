@@ -176,14 +176,15 @@ func (c *consumer) feedHeads(t *testing.T) map[string]int64 {
 
 // statedSet is the set the pass about to run states for the project: the rows its changes touch
 // through the links as they stand (rowsTouchedBy) and the rows of the tree a moved issue left
-// (leftTrees), which is rowsToCompute, read here from the same database at the same moment.
+// (leftTrees), which is rowsToCompute of a page that read no move of the admission block, read
+// here from the same database at the same moment.
 func statedSet(t *testing.T, run *consumer, keys []string, moved map[string]bool) []string {
 	t.Helper()
 	above, err := metrics.TreeLinks(t.Context(), run.database.Pool, run.fixture.Project)
 	if err != nil {
 		t.Fatalf("read the links above the project's issues: %v", err)
 	}
-	stated, err := rowsToCompute(t.Context(), run.database.Pool, run.fixture.Project, keys, moved, above)
+	stated, err := rowsToCompute(t.Context(), run.database.Pool, run.fixture.Project, keys, moved, false, above)
 	if err != nil {
 		t.Fatalf("read the set the pass states: %v", err)
 	}
@@ -344,11 +345,11 @@ func TestAMovedParentLinkChangesTheMovedIssuesSubtree(t *testing.T) {
 		if _, stored = after[key]; !stored {
 			continue
 		}
-		if was.RootKey == is.RootKey {
-			t.Errorf("%s stands under the moved %s and its root is still %s", key, moved, is.RootKey)
+		if was.Tree == is.Tree {
+			t.Errorf("%s stands under the moved %s and its root is still %s", key, moved, is.Tree)
 		}
-		if is.RootKey != under {
-			t.Errorf("%s stands under the moved %s and its root is %s, want %s", key, moved, is.RootKey, under)
+		if is.Tree != under {
+			t.Errorf("%s stands under the moved %s and its root is %s, want %s", key, moved, is.Tree, under)
 		}
 		if !slices.Contains(changed, key) {
 			t.Errorf("%s is in the moved subtree and the pass left its row alone", key)
@@ -378,8 +379,8 @@ func TestAChildMovedBetweenClosedRootsChangesBothRootsRows(t *testing.T) {
 			t.Fatalf("%s is open, and this check needs the two roots and the child closed", key)
 		}
 	}
-	if before[child].RootKey != from {
-		t.Fatalf("%s stands under %s before the move, want %s", child, before[child].RootKey, from)
+	if before[child].Tree != from {
+		t.Fatalf("%s stands under %s before the move, want %s", child, before[child].Tree, from)
 	}
 
 	run.exec(t, "move a child to another tree", `update issues set parent_key = $1 where key = $2`, to, child)
@@ -390,8 +391,8 @@ func TestAChildMovedBetweenClosedRootsChangesBothRootsRows(t *testing.T) {
 	strayed := outside(changed, want)
 	after := run.rows(t)
 
-	if after[child].RootKey != to {
-		t.Errorf("%s moved to %s and its stored root is %s", child, to, after[child].RootKey)
+	if after[child].Tree != to {
+		t.Errorf("%s moved to %s and its stored root is %s", child, to, after[child].Tree)
 	}
 	if !slices.Contains(changed, to) {
 		t.Errorf("%s is the root %s moved to and the pass left its row alone; it changed %v", to, child, changed)
@@ -407,7 +408,7 @@ func TestAChildMovedBetweenClosedRootsChangesBothRootsRows(t *testing.T) {
 	}
 	t.Logf("%s moved from %s to %s, both closed: the pass stated %v (%d keys), %d rows changed (%v), %d of them outside that set; the child's stored root went %s to %s, the root it left holds %v and the root it joined %v",
 		child, from, to, want, len(want), len(changed), changed, len(strayed),
-		before[child].RootKey, after[child].RootKey, after[from].HoursByPhase, after[to].HoursByPhase)
+		before[child].Tree, after[child].Tree, after[from].PhaseHours, after[to].PhaseHours)
 }
 
 // TestAPassWithNoInputMovingWritesNoRowOpenOrClosed: with no input moving, passes ten minutes,
@@ -485,7 +486,7 @@ func TestAPassWithNoInputMovingWritesNoRowOpenOrClosed(t *testing.T) {
 }
 
 // factsChanges is how many changes of kind issue_facts the change log and its outbox hold, which
-// a write of a stored row records (migration 20261117100024).
+// a write of a stored row records (migration 20261117100002).
 func (c *consumer) factsChanges(t *testing.T) int {
 	t.Helper()
 	var count int

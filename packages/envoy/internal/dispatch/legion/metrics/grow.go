@@ -13,30 +13,33 @@ import (
 // growth is keyed by and the arithmetic that applies it.
 
 // Growth is how fast each of an issue's facts grows after the moment its facts are closed at, in
-// hours an hour, by the fact's name: its JSON name in IssueFacts, and for an entry of a map the
-// entry's key after a dot (`work_hours`, `phase_hours.implementing`, `bars.implementer.hours`,
-// `bars.implementer.segments.idle`, `idle_by_role.reviewer`). The two moments of measured work
-// are named `work_first_at` and `work_last_at`, and an entry of 1 for the last is a bar still
-// open, whose end runs with the clock. A fact that stands still has no entry, so the growth of a
-// closed issue is empty but for a slot it never gave up (SlotHours runs to the population's end,
-// not the issue's).
+// hours an hour, by the fact's name: its IssueFacts field's name in snake case, and for an entry
+// of a map the entry's key after a dot (`work_hours`, `phase_hours.implementing`,
+// `bars.implementer.hours`, `bars.implementer.segments.idle`, `idle_by_role.reviewer`), the
+// constants below, which the stored rows' growth column holds as its keys. The two moments of
+// measured work are named `work_first_at` and `work_last_at`, and an entry of 1 for the last is a
+// bar still open, whose end runs with the clock. A fact that stands still has no entry, so the
+// growth of a closed issue is empty but for a slot it never gave up (SlotHours runs to the
+// population's end, not the issue's).
 //
 // A rate is a whole number wherever the computation measured it: each hours fact is the measure
 // of a set of spans or a sum of such measures, and a span still open grows one hour an hour.
 type Growth map[string]float64
 
-// The names Growth keys a fact by, the facts of a map by the prefix their key follows.
+// The names Growth keys a fact by, the facts of a map by the prefix their key follows. The four
+// exported are the ones a board entry carries a rate of (api's legionBoardGrowthOf): the work
+// time, the slot hours, the last moment of measured work and each column's hours.
 const (
-	growthWorkHours      = "work_hours"
-	growthSlotHours      = "slot_hours"
+	GrowthWorkHours      = "work_hours"
+	GrowthSlotHours      = "slot_hours"
 	growthParkedHours    = "parked_hours"
 	growthQueuedHours    = "queued_hours"
 	growthSlotWaitHours  = "slot_wait_hours"
 	growthImplementing   = "implementing_hours_after_first_review"
 	growthTesting        = "testing_hours_after_first_review"
 	growthWorkFirstAt    = "work_first_at"
-	growthWorkLastAt     = "work_last_at"
-	growthPhasePrefix    = "phase_hours."
+	GrowthWorkLastAt     = "work_last_at"
+	GrowthPhasePrefix    = "phase_hours."
 	growthBarPrefix      = "bars."
 	growthBarHours       = "hours"
 	growthSegmentsPrefix = "segments."
@@ -53,8 +56,8 @@ type namedHours struct {
 // measuring a growth (hoursFacts) and applying one (addHours) both read.
 func (f *IssueFacts) scalarHours() [7]namedHours {
 	return [7]namedHours{
-		{growthWorkHours, &f.WorkHours},
-		{growthSlotHours, &f.SlotHours},
+		{GrowthWorkHours, &f.WorkHours},
+		{GrowthSlotHours, &f.SlotHours},
 		{growthParkedHours, &f.ParkedHours},
 		{growthQueuedHours, &f.QueuedHours},
 		{growthSlotWaitHours, &f.SlotWaitHours},
@@ -71,7 +74,7 @@ func (f IssueFacts) hoursFacts() map[string]float64 {
 		facts[scalar.name] = *scalar.field
 	}
 	for id, hours := range f.PhaseHours {
-		facts[growthPhasePrefix+id] = hours
+		facts[GrowthPhasePrefix+id] = hours
 	}
 	for role, bar := range f.Bars {
 		facts[growthBarPrefix+role+"."+growthBarHours] = bar.Hours
@@ -91,7 +94,7 @@ func (f *IssueFacts) workMoment(name string) **time.Time {
 	switch name {
 	case growthWorkFirstAt:
 		return &f.WorkFirstAt
-	case growthWorkLastAt:
+	case GrowthWorkLastAt:
 		return &f.WorkLastAt
 	}
 	return nil
@@ -150,7 +153,7 @@ func (f *IssueFacts) addHours(name string, delta float64) {
 			return
 		}
 	}
-	if id, phase := strings.CutPrefix(name, growthPhasePrefix); phase {
+	if id, phase := strings.CutPrefix(name, GrowthPhasePrefix); phase {
 		if f.PhaseHours == nil {
 			return
 		}

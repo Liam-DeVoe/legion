@@ -28,7 +28,7 @@ func TestTheFactsShareOutEachIssuesBarHours(t *testing.T) {
 		statusAt(hour(5), "done")
 	population := fixture(hour(-24), hour(24), root, child)
 
-	facts := ProjectFacts(population, nil)
+	facts := factsAt(population, nil)
 	// The root waited on its child from hour 3 to hour 5, and the child waited on none.
 	waited := map[string]float64{"INFRA-1": 2, "INFRA-2": 0}
 	for key, row := range facts {
@@ -60,7 +60,7 @@ func TestEveryIssueWithPhaseWorkHasFactsWhateverItsHoursAre(t *testing.T) {
 	open := newIssue("INFRA-1").worked("implementer", hour(0)).statusAt(hour(0), "in_progress")
 	instant := newIssue("INFRA-2").under("INFRA-1").worked("implementer", hour(4)).closedAt(hour(4))
 	untouched := newIssue("INFRA-3").under("INFRA-1").closedAt(hour(6))
-	facts := ProjectFacts(fixture(hour(-24), hour(8), open, instant, untouched), nil)
+	facts := factsAt(fixture(hour(-24), hour(8), open, instant, untouched), nil)
 
 	if got := facts["INFRA-1"]; got.WorkHours != 8 {
 		t.Errorf("the open issue holds %g h of work, want the eight to the population's end: %+v", got.WorkHours, got)
@@ -90,7 +90,7 @@ func TestTheFactsCountTheSlotHoursAndTheDepthInTheTree(t *testing.T) {
 	grandchild := newIssue("INFRA-3").under("INFRA-2").worked("tester", hour(5)).closedAt(hour(8)).
 		statusAt(hour(5), "in_progress").
 		statusAt(hour(8), "done")
-	facts := ProjectFacts(fixture(hour(-24), hour(24), root, child, grandchild), nil)
+	facts := factsAt(fixture(hour(-24), hour(24), root, child, grandchild), nil)
 
 	if got := facts["INFRA-1"]; got.SlotHours != 5 {
 		t.Errorf("the root held a slot for %g h, want the five from hour 2 to hour 7: %+v", got.SlotHours, got)
@@ -118,7 +118,7 @@ func TestTheFactsNameWhenAnIssueOpenedClosedAndWasWorked(t *testing.T) {
 		worked("implementer", hour(4)).closedAt(hour(4))
 	open := newIssue("INFRA-3").under("INFRA-1").openedAt(hour(1)).
 		worked("tester", hour(2)).statusAt(hour(2), "in_progress")
-	facts := ProjectFacts(fixture(hour(-24), hour(8), worked, instant, open), nil)
+	facts := factsAt(fixture(hour(-24), hour(8), worked, instant, open), nil)
 
 	got := facts["INFRA-1"]
 	if !got.OpenedAt.Equal(hour(-2)) || got.ClosedAt == nil || !got.ClosedAt.Equal(hour(6)) {
@@ -164,7 +164,7 @@ func TestTheFactsOfNamedIssuesAreTheFactsOfTheWholeProject(t *testing.T) {
 		t.Fatalf("read the named issues: %v", err)
 	}
 
-	whole, part := ProjectFacts(project, nil), ProjectFacts(named, nil)
+	whole, part := factsAt(project, nil), factsAt(named, nil)
 	if len(whole) != len(fixture.PhaseWork) {
 		t.Fatalf("the project's facts hold %d issues (%v), want the %d with Legion phase work",
 			len(whole), slices.Sorted(maps.Keys(whole)), len(fixture.PhaseWork))
@@ -201,11 +201,11 @@ func TestTheFactsOfNamedIssuesAreTheFactsOfTheWholeProject(t *testing.T) {
 		compared, worked, projectRead, len(fixture.Keys), issuesRead, len(keys))
 }
 
-// TestTheFactsOfTheWantedIssuesAreTheirFactsAmongEveryIssue: ProjectFacts asked for some issues of
-// a population computes the facts of those alone, and each equals the facts the same population
-// answers for it when every issue is computed, field by field: no issue's facts read what the
-// computation of another issue left behind. The issues asked for are every other issue of two
-// trees, an issue no Legion role worked among them, which has facts in neither.
+// TestTheFactsOfTheWantedIssuesAreTheirFactsAmongEveryIssue: the computation asked for some
+// issues of a population computes the facts of those alone, and each equals the facts the same
+// population answers for it when every issue is computed, field by field: no issue's facts read
+// what the computation of another issue left behind. The issues asked for are every other issue
+// of two trees, an issue no Legion role worked among them, which has facts in neither.
 func TestTheFactsOfTheWantedIssuesAreTheirFactsAmongEveryIssue(t *testing.T) {
 	database := storetest.Open(t)
 	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Trees: 2})
@@ -219,7 +219,7 @@ func TestTheFactsOfTheWantedIssuesAreTheirFactsAmongEveryIssue(t *testing.T) {
 			wanted[key] = true
 		}
 	}
-	every, some := ProjectFacts(population, nil), ProjectFacts(population, wanted)
+	every, some := factsAt(population, nil), factsAt(population, wanted)
 	kept := 0
 	for _, key := range slices.Sorted(maps.Keys(every)) {
 		got, computed := some[key]

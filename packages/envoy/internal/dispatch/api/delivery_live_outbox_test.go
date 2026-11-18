@@ -13,8 +13,9 @@ import (
 // not recomputed. The boot of the next server drains the outbox before it serves (cmd/dispatch's
 // main calls delivery.DrainPending), and its drain's notification wakes the hub, which reads the
 // moved change and recomputes the view, in well under the 5 s this test waits; the time from the
-// drain to the recompute is recorded. The bound R19 names for a lost change row is the next wake
-// of any live process, else the boot of the next one.
+// drain to the recompute is recorded. A pending row left by a writer killed between its commit and
+// its drain is moved by the next drain of any process, or else by the next process's boot before
+// it serves (delivery.DrainPending states the bound); this test drives the boot's.
 func TestAChangeACrashLeftPendingWakesASubscribedViewOnceTheBootDrains(t *testing.T) {
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)

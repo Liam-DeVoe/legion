@@ -63,8 +63,8 @@ func TestATreeObservationMovesAChildAndRecomputesBothRoots(t *testing.T) {
 			t.Fatalf("%s is open, and this check needs both roots closed", root)
 		}
 	}
-	if before[child].RootKey != left {
-		t.Fatalf("%s stands under %q before the observation, want %s", child, before[child].RootKey, left)
+	if before[child].Tree != left {
+		t.Fatalf("%s stands under %q before the observation, want %s", child, before[child].Tree, left)
 	}
 
 	// The observation is the only change this pass reads: no event is written on the child, so
@@ -95,9 +95,9 @@ func TestATreeObservationMovesAChildAndRecomputesBothRoots(t *testing.T) {
 	}
 	// The observation has to have moved the child between the two roots and moved the hours of
 	// each, or the history states nothing and the checks below ask the parent chain over again.
-	if stored[child].RootKey != joined {
+	if stored[child].Tree != joined {
 		t.Fatalf("%s reports the tree %s and its stored root is %q, so this test never moved it between trees",
-			child, joined, stored[child].RootKey)
+			child, joined, stored[child].Tree)
 	}
 	for _, root := range []string{left, joined} {
 		if want[root].Issue == "" {
@@ -127,6 +127,6 @@ func TestATreeObservationMovesAChildAndRecomputesBothRoots(t *testing.T) {
 	}
 	t.Logf("%s moved from %s to %s on one `tree` observation, both roots closed: the move stated %d keys (%v), %d of them the rows of the tree it left (%v); the pass changed %d rows (%v), %d of them outside the stated set; the root it left holds %v against the %v a computation of the whole project answers, and the root it joined %v against %v",
 		child, left, joined, len(stated), stated, len(leaving), leaving, len(changed), changed, len(strayed),
-		stored[left].HoursByPhase, want[left].HoursByPhase,
-		stored[joined].HoursByPhase, want[joined].HoursByPhase)
+		stored[left].PhaseHours, want[left].PhaseHours,
+		stored[joined].PhaseHours, want[joined].PhaseHours)
 }

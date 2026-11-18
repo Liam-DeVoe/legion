@@ -5,7 +5,7 @@
 // day parts built from those facts (folds.go).
 //
 // It is split the way api/delivery_pipeline.go is split: ReadProject and ReadIssues make every
-// database read a computation needs, and ProjectFacts and ProjectFilings turn that
+// database read a computation needs, and ProjectFactsClosed and ProjectFilings turn that
 // population into the facts and touch nothing, so every reader of the facts shares one body
 // rather than two implementations of the rules.
 //
@@ -152,7 +152,7 @@ type Population struct {
 }
 
 // ReadProject is the population of every issue of the project, open or closed, up to now: what
-// the per-issue facts read (ProjectFacts). Its window runs from the beginning to now, so an open
+// the per-issue facts read (factsOf). Its window runs from the beginning to now, so an open
 // issue's hours run to now, and its scope is every issue of the project. Its filings are every
 // issue a Legion session of the project ever filed (ProjectFilings), whose filers are issues of
 // the project and so inside that scope.
@@ -866,7 +866,7 @@ func (p *Population) readPhaseWork(ctx context.Context, pool *store.Pool) error 
 // hasPhaseWork is whether this read carried Legion phase work of the issue: an event of a
 // session titled `Legion <role> · <its key>`, or a handoff, among the window's scope. The rule
 // that picks which finished issues a measure counts reads this and not legion.IsLegionIssue
-// (ProjectFacts, whose issues closed in a window are the ones it finished): an issue the daemon
+// (factsIssues, whose issues closed in a window are the ones it finished): an issue the daemon
 // reports and no role ever worked finished nothing, however its tree reads.
 func (p *Population) hasPhaseWork(issue *Issue) bool {
 	return len(issue.FirstRoleEvent) > 0 || len(issue.Handoffs) > 0

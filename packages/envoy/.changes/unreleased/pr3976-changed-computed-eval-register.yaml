@@ -24,10 +24,13 @@ body: |-
   `deploy-run-success` and `unowned-p0` in the project the deploy repository is mapped to (the
   catalogue's where it maps to none), by the rule the eval routes judge by, so each verdict is the
   eval's own, and a register write of one updates their open live views. Their `targets` changed
-  shape: each is `{value, inclusive}`, or null where the target is off; every `status` field is
-  null where the target is off or nothing is measured; and the Pipeline answers `status` for its
-  two lead-time cards.
+  shape: each is `{value, inclusive, direction, judges}`, or null where the target is off, with
+  the eval's direction and the statistics its verdict judges (`<series>.<stat>`); every `status`
+  field is null where the target is off or nothing is measured; and the Pipeline answers `status`
+  for its two lead-time cards.
   They judge every statistic those six evals state, a lead time's `n` included; a target judge of
   one of them that the delivery answers state no figure of (`unowned-p0`'s `issues.n`, the count
   of stored days, or any statistic or series the eval does not state) is `400 EVAL_FIELD_INVALID`
-  naming `target_judges[i]`.
+  naming `target_judges[i]`. The Delivery page and the Pipeline name the statistics each target
+  judges under its card, and colour each day by that day's value of them, so a target judged by
+  another statistic than the catalogue's reads and colours as it is judged.

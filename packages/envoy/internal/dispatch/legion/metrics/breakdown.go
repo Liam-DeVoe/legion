@@ -10,9 +10,10 @@ import (
 
 // The per-issue Legion facts (dispatch://INFRA-2915): one issue's work hours shared out by phase,
 // the work time they come out of, its review rounds, where it stands in its tree, how long it
-// held an admission slot, and when it opened, closed and was worked. ProjectFacts is the one
-// computation of them. Every reader of these numbers calls it and keeps no rule of its own, so no
-// two views of one issue can answer different numbers.
+// held an admission slot, and when it opened, closed and was worked. factsOf is the one
+// computation of them, which ProjectFactsClosed runs for every row legionfacts stores, and every
+// reader of these numbers reads those rows and keeps no rule of its own, so no two views of one
+// issue can answer different numbers.
 //
 // The hours are shared out part by part, each hour counted once (dispatch://INFRA-979). They are
 // the bars' hours (the work time less the queued time). An hour an ask held is waiting on a
@@ -99,86 +100,71 @@ func (c *computation) issueParts(issue *Issue) (map[string]time.Duration, time.D
 type IssueFacts struct {
 	// OpenedAt and ClosedAt are the issue's own row: when it was created, and when it closed or
 	// nil while it is open.
-	OpenedAt time.Time  `json:"opened_at"`
-	ClosedAt *time.Time `json:"closed_at"`
+	OpenedAt time.Time
+	ClosedAt *time.Time
 
-	PhaseHours   map[string]float64 `json:"phase_hours"`
-	WorkHours    float64            `json:"work_hours"`
-	ReviewRounds int                `json:"review_rounds"`
-	Root         bool               `json:"root"`
-	Tree         string             `json:"tree"`
+	PhaseHours   map[string]float64
+	WorkHours    float64
+	ReviewRounds int
+	Root         bool
+	Tree         string
 
 	// TreeDepth is how many child_of links lie between the issue and the root Tree names, zero
 	// for the root itself (Population.treeDepth).
-	TreeDepth int `json:"tree_depth"`
+	TreeDepth int
 
 	// SlotHours is how long the issue held an admission slot of its own, from its own `slot`
 	// observations read as a history (Population.slotSpans): never from the daemon's
 	// `admission.active`, which names every issue holding one, children included.
-	SlotHours float64 `json:"slot_hours"`
+	SlotHours float64
 
 	// WorkFirstAt and WorkLastAt are the first and the last moment of the issue's measured work,
 	// the ends of the same bar spans PhaseHours is shared out of. Both nil for an issue whose
 	// work took no measured time. They name the days an issue's work falls in.
-	WorkFirstAt *time.Time `json:"work_first_at"`
-	WorkLastAt  *time.Time `json:"work_last_at"`
+	WorkFirstAt *time.Time
+	WorkLastAt  *time.Time
 
 	// ParkedHours and QueuedHours are two of the three things the work time took out of the
 	// issue's life; the third, its hours out of the workflow before the close, is stored nowhere
 	// (workTimeRow). StartedAt and MergedAt are its first worker event and the earliest merge of
 	// the pull requests Dispatch holds for it. Both are nil for an issue with no work time, and
 	// MergedAt for one whose merge Dispatch holds none of.
-	ParkedHours float64    `json:"parked_hours"`
-	QueuedHours float64    `json:"queued_hours"`
-	StartedAt   *time.Time `json:"started_at"`
-	MergedAt    *time.Time `json:"merged_at"`
+	ParkedHours float64
+	QueuedHours float64
+	StartedAt   *time.Time
+	MergedAt    *time.Time
 
 	// Bars is the issue's part of each of the seven bars of metric 2, keyed by role, every bar
 	// present (barPartsOf).
-	Bars map[string]BarPart `json:"bars"`
+	Bars map[string]BarPart
 
 	// SentBack and the two hours after the first review are the rest of metric 3's row
 	// (reworkOf), whose review rounds are ReviewRounds above.
-	SentBack                          bool    `json:"sent_back"`
-	ImplementingHoursAfterFirstReview float64 `json:"implementing_hours_after_first_review"`
-	TestingHoursAfterFirstReview      float64 `json:"testing_hours_after_first_review"`
+	SentBack                          bool
+	ImplementingHoursAfterFirstReview float64
+	TestingHoursAfterFirstReview      float64
 
 	// Children is how many issues of the project have this issue as their tree root, which is
 	// what metric 4 counts for a root that finished (Issue.Children).
-	Children int `json:"children"`
+	Children int
 
 	// SlotWaitHours is the hours of the issue's observed life it stood admitted with no slot of
 	// its own, parked hours left out (slotWaitHours), and IdleByRole the hours of its worked spans
 	// it held its own slot in a role's bar with that role out of a turn, for each of the six roles
 	// (idleByRole).
-	SlotWaitHours float64            `json:"slot_wait_hours"`
-	IdleByRole    map[string]float64 `json:"idle_by_role"`
+	SlotWaitHours float64
+	IdleByRole    map[string]float64
 }
 
-// ProjectFacts is every issue of the population with Legion phase work, open or closed, and its
-// facts, counted as the metrics count them: an open issue's hours run to the population's end.
-// It is the one computation of the per-issue facts — every reader of the same numbers calls this
-// and keeps no rule of its own, so a number can never differ between two views of it. A part with
-// no hours is left out of PhaseHours, which is `{}` for an issue whose work took no measured
-// time; the entry itself is there, so "has an entry" is the same question as "Legion worked it"
-// (Population.hasPhaseWork).
+// factsIssues is the issues whose facts are computed (ProjectFactsClosed), in key order: every
+// issue of the population with Legion phase work, open or closed, that wanted names, every one
+// where wanted is nil. It is the one selection of them, so "has an entry" is the same question
+// as "Legion worked it" (Population.hasPhaseWork), whatever the issue's hours are.
 //
 // wanted, where it is not nil, names the issues whose facts are computed, and no other issue's
 // are: a read of some issues (ReadIssues) holds a wider population than those issues, their
 // trees and their filings' filers, whose own facts the caller keeps none of. Each issue's facts
 // are the same whichever others are computed beside them.
-func ProjectFacts(population *Population, wanted map[string]bool) map[string]IssueFacts {
-	c := newComputation(population)
-	out := map[string]IssueFacts{}
-	for issue := range population.factsIssues(wanted) {
-		out[issue.Key] = c.factsOf(issue)
-	}
-	return out
-}
-
-// factsIssues is the issues ProjectFacts answers facts for, in key order: every issue of the
-// population with Legion phase work that wanted names, every one where wanted is nil. It is the
-// one selection of them, which ProjectFactsClosed makes too, so the two answer the same issues.
 func (p *Population) factsIssues(wanted map[string]bool) iter.Seq[*Issue] {
 	return func(yield func(*Issue) bool) {
 		for _, key := range p.Keys {
@@ -196,8 +182,11 @@ func (p *Population) factsIssues(wanted map[string]bool) iter.Seq[*Issue] {
 	}
 }
 
-// factsOf is one issue's facts: ProjectFacts answers them for every issue with Legion phase work,
-// which legionfacts stores and the Legion evals' day builders fold.
+// factsOf is one issue's facts at the population's end, counted as the metrics count them: an
+// open issue's hours run to the population's To. It is the one computation of the per-issue
+// facts, which ProjectFactsClosed runs for every issue factsIssues selects, which legionfacts
+// stores and the Legion evals' day builders fold. A part with no hours is left out of
+// PhaseHours, which is `{}` for an issue whose work took no measured time.
 func (c *computation) factsOf(issue *Issue) IssueFacts {
 	population, key := c.population, issue.Key
 	spent, _ := c.issueParts(issue)
@@ -248,7 +237,7 @@ func (c *computation) factsOf(issue *Issue) IssueFacts {
 // here, as metric 4 counts it.
 type IssueFiling struct {
 	FiledIssue
-	Root string `json:"root"`
+	Root string
 }
 
 // ProjectFilings is every filing the population read (Population.Filed), each classified by the

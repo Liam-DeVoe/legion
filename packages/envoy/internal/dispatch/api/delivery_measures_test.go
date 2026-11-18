@@ -434,8 +434,8 @@ func TestGetDeliveryMeasuresComputesTheFixture(t *testing.T) {
 	if body.Status.UnownedP0 == nil || *body.Status.UnownedP0 {
 		t.Errorf("status.unowned_p0 = %v, want false (ACME-103 has no owner)", body.Status.UnownedP0)
 	}
-	if !reflect.DeepEqual(body.Targets, measures.DefaultTargets) {
-		t.Errorf("targets = %+v, want %+v", body.Targets, measures.DefaultTargets)
+	if want := catalogueTargets(); !reflect.DeepEqual(body.Targets, want) {
+		t.Errorf("targets = %s, want the catalogue's %s", showTargets(body.Targets), showTargets(want))
 	}
 	if body.Status.DeploysPerDay == nil || *body.Status.DeploysPerDay || body.Status.MergeToProduction == nil || *body.Status.MergeToProduction {
 		t.Errorf("status = %+v, want the fixture to miss deploys a day and merge to production", body.Status)

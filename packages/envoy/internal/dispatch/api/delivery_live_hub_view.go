@@ -36,13 +36,13 @@ func invalidLiveView(code, message string) *LiveError {
 
 // parseDeliveryWindowView reads a timeline or measures view: its window, and the query the
 // matching GET route reads everything but the window from, refused where that route would refuse
-// it for naming a key it reads one value of more than once (repeatedDeliveryKey).
+// it for naming a key it reads one value of more than once (repeatedQueryKey).
 func parseDeliveryWindowView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
 	named, refusal := spec.readWindowAndQuery(view, "a "+view.Kind+" view")
 	if refusal != nil {
 		return refusal
 	}
-	if err := repeatedDeliveryKey(spec.query, deliveryWindowOneValueKeys); err != nil {
+	if err := repeatedQueryKey(spec.query, deliveryWindowOneValueKeys); err != nil {
 		return invalidLiveView("INVALID_QUERY", err.Error())
 	}
 	spec.key = view.Kind + "|" + named + "|" + spec.query.Encode()

@@ -14,8 +14,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// refresher_reads.go holds the refresher's reads of where each item a change names stands, and its
-// two writes of zero rows. Each is one statement.
+// refresher_reads.go holds the refresher's reads of where each item a change names stands, each
+// one statement, and its fill of the logged evals' zero rows (fillLoggedZeros).
 
 // eventPage is what one page of the event log names: where the events cursor now stands, whether
 // the page was full, the projects whose count of unowned P0 issues an event can have moved, and
@@ -384,7 +384,7 @@ func (s *Store) legionInputStart(ctx context.Context, project string) (*time.Tim
 
 // fillLoggedZeros writes, for each series of project's logged evals (every one where ids is nil,
 // else those of ids that are logged), the zero row of every day from the series' first day to the
-// pass's today that holds no all-repositories row of it, in one statement, and answers how many it
+// pass's today that holds no all-repositories row of it, in one insert, and answers how many it
 // wrote. Its rows are the readings write's (writer `readings`), since a logged eval's fold reads
 // those alone: a series' first day is its first such row's, which a readings write made
 // (days.go), and the zero row is the row that write leaves where every value is taken away: n 0,
@@ -397,17 +397,47 @@ func (s *Store) legionInputStart(ctx context.Context, project string) (*time.Tim
 // probes the missing days alone, where the whole span from the first day would cost a probe of
 // every day the series holds on every readings write that reaches it.
 //
-// It is one statement, whose change rows wait in the change log's outbox (migration
-// 20261117100024), so it takes no change log lock; they are moved into the log once it has
-// committed (drainChanges).
+// It takes the lock of every eval it fills first (lockEvals), as every other writer of these rows
+// takes its eval's (lockEval), and reads the listings after it: so the listing it copies is the
+// one the last register write of the eval left on every stored row (relistDays), and no register
+// write moves it until the fill commits. The insert takes its rows in the byte order of their keys
+// (eval, series, day), the order every statement that inserts or locks one eval's day rows takes
+// them in (writeDays); left to the database's collation, a series `latency` and a series `Queue`
+// would be taken in the other order. Its change rows wait in the change log's outbox (migration
+// 20261117100014), so it takes no change log lock; a batch of them is moved into the log once it
+// has committed (drainChanges).
 func (r *refresh) fillLoggedZeros(ctx context.Context, project string, ids []string) (int64, error) {
-	logged := `select eval_id from evals_current where project_key = $1 and source = $2`
-	args := []any{project, SourceLogged, r.today, r.build, writerReadings}
+	// loggedEvals is project's logged evals ($1 the project, $2 SourceLogged), which the fill reads
+	// twice, each read ending in the ids it keeps.
+	const loggedEvals = `select eval_id from evals_current where project_key = $1 and source = $2`
+	logged := loggedEvals
+	args := []any{project, SourceLogged}
 	if ids != nil {
-		logged += ` and eval_id = any($6)`
+		logged += ` and eval_id = any($3)`
 		args = append(args, ids)
 	}
-	tag, err := r.store.database.Pool.Exec(ctx, `
+	tx, err := r.store.database.Pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin the zero rows of %s's logged evals: %w", project, err)
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx, logged, args...)
+	if err != nil {
+		return 0, fmt.Errorf("read %s's logged evals: %w", project, err)
+	}
+	evalIDs, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return 0, fmt.Errorf("read %s's logged evals: %w", project, err)
+	}
+	if len(evalIDs) == 0 {
+		return 0, nil
+	}
+	if err := lockEvals(ctx, tx, evalIDs); err != nil {
+		return 0, err
+	}
+	// An eval read logged above that the seed took over before its lock was taken is computed now,
+	// so the insert reads which of them are logged again, under their locks.
+	tag, err := tx.Exec(ctx, `
 		insert into eval_days (project_key, eval_id, writer, series, repo, day, listed, n, sum, num, den, samples, built_by)
 		select stored.project_key, stored.eval_id, $5::text, stored.series, '', gap.day::date, stored.listed, 0, 0, 0, 0, '{}', $4
 		from (
@@ -415,16 +445,20 @@ func (r *refresh) fillLoggedZeros(ctx context.Context, project string, ids []str
 			       lead(day) over series_days as next_day,
 			       last_value(listed) over (series_days rows between unbounded preceding and unbounded following) as listed
 			from eval_days
-			where project_key = $1 and eval_id = any(array(`+logged+`)) and writer = $5 and repo = ''
+			where project_key = $1 and writer = $5 and repo = ''
+			  and eval_id = any(array(`+loggedEvals+` and eval_id = any($6)))
 			window series_days as (partition by eval_id, series order by day)
 		) stored
 		cross join generate_series((stored.day + 1)::timestamp,
 			least(coalesce(stored.next_day - 1, $3::date), $3::date)::timestamp, interval '1 day') as gap(day)
-		order by stored.eval_id, stored.series, gap.day
+		order by stored.eval_id collate "C", stored.series collate "C", gap.day
 		on conflict (project_key, eval_id, writer, series, repo, day) do nothing
-	`, args...)
+	`, project, SourceLogged, r.today, r.build, writerReadings, evalIDs)
 	if err != nil {
 		return 0, fmt.Errorf("write the zero rows of %s's logged evals: %w", project, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit the zero rows of %s's logged evals: %w", project, err)
 	}
 	r.store.drainChanges(ctx)
 	return tag.RowsAffected(), nil

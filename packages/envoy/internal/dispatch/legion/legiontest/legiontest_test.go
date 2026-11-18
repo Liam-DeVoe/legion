@@ -16,11 +16,12 @@ import (
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
 // TestTheSeededHistoryAnswersFactsForEveryIssueLegionWorked: a seed of the default history, read
-// back through metrics.ReadProject and shared out by metrics.ProjectFacts, answers facts for at
-// least the 200 issues the checks of this change count, and the four shapes the rig promises are
-// in it: an open issue whose hours run to the moment of the computation, an issue whose work
-// took no measured time and so holds no phase hours, an issue no Legion role worked and so has
-// no entry, and a spread of phases that reaches every column of the board.
+// back through metrics.ReadProject and shared out by metrics.ProjectFactsClosed, grown to the
+// read's end, answers facts for at least the 200 issues the checks of this change count, and the
+// four shapes the rig promises are in it: an open issue whose hours run to the moment of the
+// computation, an issue whose work took no measured time and so holds no phase hours, an issue no
+// Legion role worked and so has no entry, and a spread of phases that reaches every column of the
+// board.
 func TestTheSeededHistoryAnswersFactsForEveryIssueLegionWorked(t *testing.T) {
 	database := storetest.Open(t)
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
@@ -33,7 +34,10 @@ func TestTheSeededHistoryAnswersFactsForEveryIssueLegionWorked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the project: %v", err)
 	}
-	facts := metrics.ProjectFacts(population, nil)
+	facts := map[string]metrics.IssueFacts{}
+	for key, closed := range metrics.ProjectFactsClosed(population, nil) {
+		facts[key] = closed.FactsAt(population.To)
+	}
 	if len(facts) < 200 {
 		t.Fatalf("the facts hold %d issues of the %d seeded, want at least the 200 the checks count",
 			len(facts), len(fixture.Keys))
@@ -161,7 +165,7 @@ func TestEveryFinishedIssueOfATreeTheSamplerNeverSawHasWorkTime(t *testing.T) {
 	observedTrees := map[string]bool{}
 	for _, row := range rows {
 		if observedIssues[row.Issue] {
-			observedTrees[row.RootKey] = true
+			observedTrees[row.Tree] = true
 		}
 	}
 	var unobserved []string
@@ -178,7 +182,7 @@ func TestEveryFinishedIssueOfATreeTheSamplerNeverSawHasWorkTime(t *testing.T) {
 	checked := 0
 	var idle []string
 	for _, row := range rows {
-		if !slices.Contains(unobserved, row.RootKey) || row.ClosedAt == nil || !row.ClosedAt.After(row.OpenedAt) {
+		if !slices.Contains(unobserved, row.Tree) || row.ClosedAt == nil || !row.ClosedAt.After(row.OpenedAt) {
 			continue
 		}
 		checked++

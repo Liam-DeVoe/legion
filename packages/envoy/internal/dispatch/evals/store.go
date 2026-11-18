@@ -65,9 +65,10 @@ type writeTx struct {
 // returned.
 //
 // Every registry write logs a change for its versions, readings and day rows, whose triggers
-// record each in the change log's outbox (delivery_changes_pending, migration 20261117100024) and
+// record each in the change log's outbox (delivery_changes_pending, migration 20261117100001) and
 // take no lock, so the write never takes the change log's lock (delivery.LockChanges). Once it has
-// committed, committed moves those rows into the log (drainChanges) before the caller answers.
+// committed, committed moves a batch of the outbox into the log (drainChanges) before the caller
+// answers.
 func (s *Store) inWrite(ctx context.Context, project string, fn func(ctx context.Context, w *writeTx) error) error {
 	if s.database == nil || s.database.Pool == nil {
 		return errors.New("evals: the registry has no database")
@@ -108,8 +109,9 @@ func openWrite(ctx context.Context, tx pgx.Tx, project string) (*writeTx, error)
 }
 
 // committed is what w's commit owes, paid once its transaction has committed: the settlement of
-// each document it wrote is scheduled, the document events it appended are published, and its
-// change rows are moved into the change log (drainChanges).
+// each document it wrote is scheduled, the document events it appended are published, and a batch
+// of the change log's outbox, its own change rows among them where no backlog lies ahead of them,
+// is moved into the change log (drainChanges).
 func (s *Store) committed(ctx context.Context, w *writeTx) {
 	for _, artifactID := range w.settle {
 		s.documents.ScheduleSettlement(artifactID)
@@ -120,32 +122,46 @@ func (s *Store) committed(ctx context.Context, w *writeTx) {
 	s.drainChanges(ctx)
 }
 
-// drainChanges moves the change rows a committed write recorded in the change log's outbox into
-// the log (delivery.DrainPending), in a short transaction of its own, so a reader of the log sees
-// them once the write answers. A drain that fails is logged and fails nothing: the write
-// committed, its pending rows with it, and their notification wakes every live process's hub,
-// which drains before it reads, as the refresher's next pass does.
+// drainChanges moves one batch of the change rows committed writes recorded in the change log's
+// outbox into the log (delivery.DrainPendingBatch), the lowest ids first, in a short transaction of
+// its own. One batch and no more: every eval write drains here, a readings or register write
+// before its route answers, so a backlog another writer left (a whole-project facts pass leaves
+// thousands of rows) would otherwise be moved whole by the next write that answers a person. A
+// write that finds more than a batch ahead of its own rows leaves them pending, as it does when
+// its drain fails, which is logged and fails nothing: the write committed, its pending rows with
+// it, and the next drain of any process moves them, or else the next process's boot before it
+// serves (delivery.DrainPending states the bound).
 func (s *Store) drainChanges(ctx context.Context) {
-	if _, err := delivery.DrainPending(ctx, s.database.Pool); err != nil && ctx.Err() == nil {
+	if _, _, err := delivery.DrainPendingBatch(ctx, s.database.Pool); err != nil && ctx.Err() == nil {
 		slog.Warn("dispatch: an eval write could not move its changes into the delivery change log; the next drain moves them", "error", err)
 	}
 }
 
-// lockEval serialises, for the rest of tx, every write of one eval's versions and series: the
-// register write and a readings write that registers the eval or a series of it. Each reads the
-// newest version after taking it, in a statement of its own, so it reads the version the writer
-// before it committed, and the next version number it writes is free. A row lock on the newest
-// version would not do that: a statement that waited for it still answers the row its snapshot
-// read, the version before the one that writer added.
+// lockEval serialises, for the rest of tx, every write of one eval's versions and series and of
+// its readings' day rows: the register write, every readings write, and the zero fill of a logged
+// eval's days (lockEvals). Each reads the newest version after taking it, in a statement of its
+// own, so it reads the version the writer before it committed, and the next version number it
+// writes is free. A row lock on the newest version would not do that: a statement that waited for
+// it still answers the row its snapshot read, the version before the one that writer added. A
+// readings write that read a series' listing without it could write that listing into its day
+// rows after a register write had listed or unlisted the series and its stored rows (relistDays).
 func lockEval(ctx context.Context, tx pgx.Tx, evalID string) error {
-	if _, err := tx.Exec(ctx, lockEvalStatement, evalID); err != nil {
-		return fmt.Errorf("lock eval %s: %w", evalID, err)
+	return lockEvals(ctx, tx, []string{evalID})
+}
+
+// lockEvals takes the lock of each eval evalIDs names (lockEval), in one statement, in the byte
+// order of the ids, so two writers that each take several evals' locks through it wait on each
+// other in turn and never in a cycle. The zero fill takes them so, before it reads the evals'
+// listings or writes a day row (fillLoggedZeros).
+func lockEvals(ctx context.Context, tx pgx.Tx, evalIDs []string) error {
+	if _, err := tx.Exec(ctx, `
+		select pg_advisory_xact_lock(hashtext('eval:' || id))
+		from (select id from unnest($1::text[]) as id order by id collate "C") ids
+	`, evalIDs); err != nil {
+		return fmt.Errorf("lock the evals %v: %w", evalIDs, err)
 	}
 	return nil
 }
-
-// lockEvalStatement takes the lock of the eval $1 names (lockEval).
-const lockEvalStatement = `select pg_advisory_xact_lock(hashtext('eval:' || $1))`
 
 // definitionColumns is the column list scanDefinition reads from eval_versions or evals_current,
 // its nullable text columns read as "".

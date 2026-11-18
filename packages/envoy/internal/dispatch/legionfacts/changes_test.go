@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -32,7 +33,9 @@ func workedAt(day, hour int) time.Time {
 // workedRow is one issue's row carrying the span of its measured work and its close, nil while it
 // is open. A nil first and last is an issue with no measured work, which still has a row.
 func workedRow(issue string, first, last, closed *time.Time) Row {
-	return Row{Project: factsProject, Issue: issue, OpenedAt: factsOpened, WorkFirstAt: first, WorkLastAt: last, ClosedAt: closed}
+	return Row{Project: factsProject, Issue: issue, ClosedFacts: metrics.ClosedFacts{IssueFacts: metrics.IssueFacts{
+		OpenedAt: factsOpened, WorkFirstAt: first, WorkLastAt: last, ClosedAt: closed,
+	}}}
 }
 
 // changeLogHead is the newest change the log holds once the outbox is drained, which a check reads
@@ -170,7 +173,7 @@ func TestAFactsWriteThatMovesOnlyTheUpdatedTimeLogsNoChange(t *testing.T) {
 // rows that count the issue, which are its close day before the change and after it, because a
 // Legion day row counts an issue on its close day alone (dispatch://INFRA-2916, R26). The change's
 // t_old holds the row's closed_at before and its t_new the closed_at after, each null where the
-// issue was or is open (migration 20261117100026), so no day of the issue's work is named.
+// issue was or is open (migration 20261117100002), so no day of the issue's work is named.
 //
 // One closed issue whose work falls on two days is written, its work moved with its close where
 // it stood, its close moved two days on, reopened and closed again, and then its row deleted; an

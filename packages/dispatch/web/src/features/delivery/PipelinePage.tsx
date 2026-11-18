@@ -3,10 +3,12 @@
 // Every number, every target, every verdict and every day comes from GET /api/v1/delivery/pipeline.
 // The two lead-time cards' met/missed, which the prototype judged on the page, is the response's
 // `status`, each card's eval's own verdict by its target and the figures it judges
-// (dispatch://INFRA-2916, R5); nothing is computed here but the colour of a day's bar, which the
-// response gives no verdict of and which follows the eval's own rule, its target's inclusiveness
-// included (`lib/target.ts`). Differences, each from LEGION-567's slice 3 plan or for the same
-// reason as the measures panel's: Dispatch's sidebar replaces the prototype's row of page links;
+// (dispatch://INFRA-2916, R5), and each card names those figures and shows their values from the
+// target's `judges`; nothing is computed here but the colour of a day's bar, which the response
+// gives no verdict of and which follows the eval's own rule over that day's value of each judged
+// figure, its target's direction and inclusiveness included (`lib/target.ts`). Differences, each
+// from LEGION-567's slice 3 plan or for the same reason as the measures panel's: Dispatch's
+// sidebar replaces the prototype's row of page links;
 // the cards take the prototype's column counts at the prototype's content widths (one column, two
 // from 46rem, six from 78rem: its `md:grid-cols-2 xl:grid-cols-6` less its `px-4` page padding)
 // measured on the page's own width rather than the viewport, since beside Dispatch's sidebar the
@@ -59,7 +61,16 @@ import {
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { formatDue, formatDuration, formatRate } from "./lib/format";
 import { formatAge } from "./lib/freshness";
-import { judgedBy, type Target, targetWords } from "./lib/target";
+import {
+  dayMeets,
+  judgeWord,
+  LEAD_TIME_MINUTES,
+  leadTimeValue,
+  shownJudges,
+  type Target,
+  targetLine,
+  targetWords,
+} from "./lib/target";
 import { SourceFreshness } from "./SourceFreshness";
 import { Sparkbars } from "./Sparkbars";
 import { SpreadBars } from "./SpreadBars";
@@ -182,18 +193,18 @@ export function PipelineView({
           />
           <LeadTimeCard
             detail="DORA lead time, PRs by the day they merged"
-            judged="longest"
             met={pipeline.status.merge_to_production}
             metric="merge_to_production"
+            offJudge="minutes.max"
             target={pipeline.targets.merge_to_production_minutes}
             timing={pipeline.merge_to_production}
             title="Merge to production"
           />
           <LeadTimeCard
             detail="Opened to merged, every merged PR, by the day it merged"
-            judged="median"
             met={pipeline.status.opened_to_merge}
             metric="opened_to_merge"
+            offJudge="minutes.median"
             target={pipeline.targets.opened_to_merge_median_minutes}
             timing={pipeline.opened_to_merge}
             title="PR open to merge"
@@ -406,11 +417,16 @@ function TimingCard(props: {
   );
 }
 
-/** One of the two lead-time cards: merge to production shows the seven days' longest change, PR
- *  open to merge their median (the prototype's Pipeline.tsx MergeCard and OpenedToMergeCard), each
+/** One of the two lead-time cards (the prototype's Pipeline.tsx MergeCard and OpenedToMergeCard),
  *  met or missed as the response's `status` states, its eval's own verdict by its target and the
- *  figures it judges, and no verdict where a person turned that target off. A day's bars are
- *  coloured by the same eval's rule (`lib/target.ts`'s `judgedBy`). */
+ *  statistics it judges, and no verdict where a person turned that target off. The card names
+ *  each statistic the target judges, less those another implies (`lib/target.ts`'s
+ *  `shownJudges`), with today's and the seven days' value of it: the longest change for merge to
+ *  production, whose median it implies, and the median for PR open to merge, until someone
+ *  changes them. Where the target is off, which judges nothing, it names `offJudge`, the
+ *  statistic the card showed before targets carried their judges, so turning a target off takes
+ *  the verdict away and leaves the figures. It colours a day's bars by that day's value of every
+ *  judged statistic (`dayMeets`). */
 function LeadTimeCard(props: {
   metric: string;
   title: string;
@@ -421,12 +437,15 @@ function LeadTimeCard(props: {
   };
   target: Target;
   met: boolean | null;
-  judged: "longest" | "median";
+  offJudge: string;
 }): ReactNode {
-  const { timing, target, met, judged } = props;
+  const { timing, target, met } = props;
   const today = lastDay(timing);
   const total = timing.total;
-  const judgedValue = judged === "longest" ? total.max_minutes : total.median_minutes;
+  const line = targetLine(target, LEAD_TIME_MINUTES);
+  // The count of pull requests is a number; every other statistic of a lead time is minutes.
+  const figure = (cell: DeliveryLeadTimeCell, judge: string): string =>
+    judge === "minutes.n" ? `${cell.n}` : formatDuration(leadTimeValue(cell, judge));
   return (
     <div className={CARD} data-metric={props.metric}>
       <div className="flex items-start justify-between gap-2">
@@ -450,28 +469,27 @@ function LeadTimeCard(props: {
         />
       </div>
       <SpreadBars
-        days={timing.days ?? []}
+        days={(timing.days ?? []).map((d) => ({
+          ...d,
+          met: dayMeets(target, (judge) => leadTimeValue(d, judge)),
+        }))}
         format={formatDuration}
-        met={judgedBy(target, "lower")}
         noun="PRs"
-        target={target?.value}
+        target={line}
       />
-      <div className={`text-xs ${textSecondaryOnSurface}`}>
-        {judged === "longest" ? "Longest" : "Median"} today{" "}
-        <span className="font-semibold">
-          {formatDuration(judged === "longest" ? today.max_minutes : today.median_minutes)}
-        </span>
-        , 7 days{" "}
-        <span className={`font-semibold ${met === false ? dangerText : ""}`}>
-          {formatDuration(judgedValue)}
-        </span>
-      </div>
+      {(target === null ? [props.offJudge] : shownJudges(target)).map((judge) => (
+        <div className={`text-xs ${textSecondaryOnSurface}`} data-judge={judge} key={judge}>
+          {judgeWord(judge)} today <span className="font-semibold">{figure(today, judge)}</span>, 7
+          days{" "}
+          <span className={`font-semibold ${met === false ? dangerText : ""}`}>
+            {figure(total, judge)}
+          </span>
+        </div>
+      ))}
       <div className={`text-[11px] ${textMutedOnSurface}`}>
         {target === null
           ? "target off"
-          : judged === "longest"
-            ? `target ${targetWords(target, "lower", (m) => `${m}m`)} for every change (the dashed line)`
-            : `target median ${targetWords(target, "lower", (m) => `${m}m`)} (the dashed line)`}
+          : `target ${targetWords(target)}${line === undefined ? "" : " (the dashed line)"}`}
       </div>
     </div>
   );

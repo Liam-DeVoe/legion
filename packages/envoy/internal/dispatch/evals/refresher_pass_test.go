@@ -104,11 +104,11 @@ func TestAPrunedCursorChangeIsNoLossAndAVanishedYoungOneIs(t *testing.T) {
 		t.Fatal(err)
 	}
 	resting := cursors[changesCursor]
-	if resting.position == 0 || resting.at == nil {
-		t.Fatalf("the changes cursor rests at %d recorded %v, want a change", resting.position, resting.at)
+	if resting.Seq == 0 || resting.At == nil {
+		t.Fatalf("the changes cursor rests at %d recorded %v, want a change", resting.Seq, resting.At)
 	}
 
-	r.exec(t, "age the log past its retention", `update delivery_changes set at = now() - interval '25 hours' where seq <= $1`, resting.position)
+	r.exec(t, "age the log past its retention", `update delivery_changes set at = now() - interval '25 hours' where seq <= $1`, resting.Seq)
 	r.exec(t, "age the cursor's change with it", `update eval_days_cursor set at = now() - interval '25 hours' where name = $1`, changesCursor)
 	pruned, err := delivery.PruneChanges(ctx, r.database.Pool)
 	if err != nil {
@@ -128,7 +128,7 @@ func TestAPrunedCursorChangeIsNoLossAndAVanishedYoungOneIs(t *testing.T) {
 		t.Errorf("the pass after the cursor's young change vanished wrote %v, want every walk begun again, EVAL's Legion days among them", lost.sorted())
 	}
 	t.Logf("pruned %d changes through the cursor's %d: the pass after wrote nothing; a young change vanished: the pass after wrote %d days",
-		pruned, resting.position, len(lost.days))
+		pruned, resting.Seq, len(lost.days))
 
 	r.settle(t)
 	r.exec(t, "log a change for the cursor to rest on", `insert into delivery_changes (kind, repo, ref) values ('session_group', null, 'stall')`)
@@ -137,7 +137,7 @@ func TestAPrunedCursorChangeIsNoLossAndAVanishedYoungOneIs(t *testing.T) {
 		t.Fatal(err)
 	}
 	resting = cursors[changesCursor]
-	r.exec(t, "age the log past its retention", `update delivery_changes set at = now() - interval '25 hours' where seq <= $1`, resting.position)
+	r.exec(t, "age the log past its retention", `update delivery_changes set at = now() - interval '25 hours' where seq <= $1`, resting.Seq)
 	r.exec(t, "age the cursor's change with it", `update eval_days_cursor set at = now() - interval '25 hours' where name = $1`, changesCursor)
 	if _, err := delivery.PruneChanges(ctx, r.database.Pool); err != nil {
 		t.Fatalf("prune the log: %v", err)

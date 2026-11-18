@@ -18,17 +18,17 @@ function titles(svg: Element): string[] {
   return Array.from(svg.querySelectorAll("title")).map((title) => title.textContent ?? "");
 }
 
-const atLeast20 = (value: number) => value >= 20;
 const asNumber = (value: number) => `${value}/day`;
 
+// Each day's verdict is its caller's, judged from the day's own row: here "at least 20".
 const points: SparkbarPoint[] = [
-  { label: "2026-09-25", value: 25, partial: false },
-  { label: "2026-09-26", value: 10, partial: false },
-  { label: "2026-09-27", value: null, partial: true },
+  { label: "2026-09-25", value: 25, partial: false, met: true },
+  { label: "2026-09-26", value: 10, partial: false, met: false },
+  { label: "2026-09-27", value: null, partial: true, met: null },
 ];
 
 test("Sparkbars draws a bar per day and one dashed target line", () => {
-  render(<Sparkbars format={asNumber} max={0} met={atLeast20} points={points} target={20} />);
+  render(<Sparkbars format={asNumber} max={0} points={points} target={20} />);
   const svg = screen.getByRole("img", { name: "per-day trend" });
 
   expect(svg.getAttribute("viewBox")).toBe("0 0 30 28");
@@ -43,8 +43,8 @@ test("Sparkbars draws a bar per day and one dashed target line", () => {
   expect(Number(line?.getAttribute("y1"))).toBeCloseTo(28 - (20 / 25) * 28);
 });
 
-test("Sparkbars colours a bar that meets the target met and one that misses it missed", () => {
-  render(<Sparkbars format={asNumber} max={0} met={atLeast20} points={points} target={20} />);
+test("Sparkbars colours a day that meets the target met and one that misses it missed", () => {
+  render(<Sparkbars format={asNumber} max={0} points={points} target={20} />);
   const [meets, misses] = bars(screen.getByRole("img", { name: "per-day trend" }));
 
   expect(meets?.getAttribute("class")).toBe(chartBar.met);
@@ -54,7 +54,7 @@ test("Sparkbars colours a bar that meets the target met and one that misses it m
 });
 
 test("Sparkbars draws a one-pixel stub on a day with nothing to measure", () => {
-  render(<Sparkbars format={asNumber} max={0} met={atLeast20} points={points} target={20} />);
+  render(<Sparkbars format={asNumber} max={0} points={points} target={20} />);
   const svg = screen.getByRole("img", { name: "per-day trend" });
   const stub = bars(svg)[2];
 
@@ -69,8 +69,22 @@ test("Sparkbars draws a one-pixel stub on a day with nothing to measure", () => 
   expect(svg.querySelectorAll("g")[2]?.getAttribute("opacity")).toBe("0.4");
 });
 
+test("Sparkbars colours a day by its verdict and not by its bar: a tall bar may miss, a short one meet, and one with no verdict is neutral", () => {
+  const judgedElsewhere: SparkbarPoint[] = [
+    { label: "2026-09-25", value: 25, partial: false, met: false },
+    { label: "2026-09-26", value: 10, partial: false, met: true },
+    { label: "2026-09-27", value: 30, partial: false, met: null },
+  ];
+  render(<Sparkbars format={asNumber} max={0} points={judgedElsewhere} target={20} />);
+
+  expect(
+    bars(screen.getByRole("img", { name: "per-day trend" })).map((bar) => bar.getAttribute("class"))
+  ).toEqual([chartBar.missed, chartBar.met, chartBar.neutral]);
+});
+
 test("Sparkbars without a target draws every bar neutral and no line", () => {
-  render(<Sparkbars format={asNumber} max={30} points={points.slice(0, 2)} />);
+  const unjudged = points.slice(0, 2).map((point) => ({ ...point, met: null }));
+  render(<Sparkbars format={asNumber} max={30} points={unjudged} />);
   const svg = screen.getByRole("img", { name: "per-day trend" });
 
   expect(bars(svg).map((bar) => bar.getAttribute("class"))).toEqual([
@@ -83,16 +97,16 @@ test("Sparkbars without a target draws every bar neutral and no line", () => {
 });
 
 const asMinutes = (minutes: number) => `${minutes}m`;
-const under45 = (minutes: number) => minutes < 45;
 
+// Each day's verdict is its caller's: here "median and p90 under 45m".
 const days: SpreadBarDay[] = [
-  { day: "2026-09-25", n: 4, median_minutes: 30, p90_minutes: 40, partial: false },
-  { day: "2026-09-26", n: 3, median_minutes: 50, p90_minutes: 80, partial: false },
-  { day: "2026-09-27", n: 0, median_minutes: null, p90_minutes: null, partial: true },
+  { day: "2026-09-25", n: 4, median_minutes: 30, p90_minutes: 40, partial: false, met: true },
+  { day: "2026-09-26", n: 3, median_minutes: 50, p90_minutes: 80, partial: false, met: false },
+  { day: "2026-09-27", n: 0, median_minutes: null, p90_minutes: null, partial: true, met: null },
 ];
 
 test("SpreadBars draws the p90 behind the median each day and one dashed target line", () => {
-  render(<SpreadBars days={days} format={asMinutes} met={under45} noun="runs" target={45} />);
+  render(<SpreadBars days={days} format={asMinutes} noun="runs" target={45} />);
   const svg = screen.getByRole("img", { name: "per-day median and p90" });
 
   expect(svg.getAttribute("viewBox")).toBe("0 0 36 36");
@@ -109,8 +123,8 @@ test("SpreadBars draws the p90 behind the median each day and one dashed target 
   expect(Number(lines[0]?.getAttribute("y1"))).toBeCloseTo(36 - (45 / 80) * 36);
 });
 
-test("SpreadBars colours each bar met where its rule meets the target and missed where not", () => {
-  render(<SpreadBars days={days} format={asMinutes} met={under45} noun="runs" target={45} />);
+test("SpreadBars colours a day's two bars met where the day meets the target and missed where not", () => {
+  render(<SpreadBars days={days} format={asMinutes} noun="runs" target={45} />);
   const [p90Under, medianUnder, p90Over, medianOver] = bars(
     screen.getByRole("img", { name: "per-day median and p90" })
   );
@@ -121,22 +135,30 @@ test("SpreadBars colours each bar met where its rule meets the target and missed
   expect(medianOver?.getAttribute("class")).toBe(chartBar.missed);
 });
 
-test("SpreadBars judges a day by the rule it is handed, so a day at an inclusive target is met", () => {
-  const atTarget: SpreadBarDay[] = [
-    { day: "2026-09-25", n: 2, median_minutes: 45, p90_minutes: 45, partial: false },
+test("SpreadBars colours a day by its verdict and not by its bars: a day under the line may miss, one over it meet, and one with no verdict is neutral", () => {
+  const judgedElsewhere: SpreadBarDay[] = [
+    { day: "2026-09-25", n: 4, median_minutes: 30, p90_minutes: 40, partial: false, met: false },
+    { day: "2026-09-26", n: 3, median_minutes: 50, p90_minutes: 80, partial: false, met: true },
+    { day: "2026-09-27", n: 2, median_minutes: 45, p90_minutes: 45, partial: false, met: null },
   ];
-  const atMost45 = (minutes: number) => minutes <= 45;
-  render(<SpreadBars days={atTarget} format={asMinutes} met={atMost45} noun="runs" target={45} />);
+  render(<SpreadBars days={judgedElsewhere} format={asMinutes} noun="runs" target={45} />);
 
   expect(
     bars(screen.getByRole("img", { name: "per-day median and p90" })).map((bar) =>
       bar.getAttribute("class")
     )
-  ).toEqual([chartBar.metFaint, chartBar.met]);
+  ).toEqual([
+    chartBar.missedFaint,
+    chartBar.missed,
+    chartBar.metFaint,
+    chartBar.met,
+    chartBar.neutralFaint,
+    chartBar.neutral,
+  ]);
 });
 
 test("SpreadBars draws a stub on a day with nothing to measure, naming the noun and today", () => {
-  render(<SpreadBars days={days} format={asMinutes} met={under45} noun="runs" target={45} />);
+  render(<SpreadBars days={days} format={asMinutes} noun="runs" target={45} />);
   const svg = screen.getByRole("img", { name: "per-day median and p90" });
   const stub = bars(svg)[4];
 
@@ -152,7 +174,8 @@ test("SpreadBars draws a stub on a day with nothing to measure, naming the noun 
 });
 
 test("SpreadBars without a target draws the neutral pair and no line", () => {
-  render(<SpreadBars days={days.slice(0, 1)} format={asMinutes} noun="merges" />);
+  const unjudged = days.slice(0, 1).map((day) => ({ ...day, met: null }));
+  render(<SpreadBars days={unjudged} format={asMinutes} noun="merges" />);
   const svg = screen.getByRole("img", { name: "per-day median and p90" });
 
   expect(bars(svg).map((bar) => bar.getAttribute("class"))).toEqual([

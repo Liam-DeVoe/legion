@@ -49,7 +49,7 @@ import (
 //
 // Each issue counted is an item of the family `legion` in eval_day_members, keyed by its issue
 // key, on its close day with its repository. The day an issue leaves when it closes again on
-// another day is named by the change of its facts itself (t_old, migration 20261117100026); the
+// another day is named by the change of its facts itself (t_old, migration 20261117100002); the
 // members say where each issue below an issue whose repository or parent moved was counted
 // (subtreeCloseDays), and a write that moves a member off a day records that day owed a rewrite
 // (eval_days_owed). A filing's day is the time of its `issue.created` event, which never moves,
@@ -175,7 +175,7 @@ func (s *Store) ReadLegionDay(ctx context.Context, project string, day time.Time
 		keys = append(keys, row.Issue)
 	}
 	for _, filing := range filed {
-		keys = append(keys, filing.Issue)
+		keys = append(keys, filing.Key)
 	}
 	repos, err := legionfacts.ReadRepos(ctx, pool, keys)
 	if err != nil {
@@ -204,19 +204,17 @@ func (d LegionDay) Rows(since LegionSince) ProjectDay {
 		return byRepo[repo]
 	}
 	for _, row := range d.closed {
-		facts := row.Facts()
 		repo := d.repos[row.Issue]
-		all.finished = append(all.finished, facts)
+		all.finished = append(all.finished, row.IssueFacts)
 		if repo != "" {
-			repoInput(repo).finished = append(repoInput(repo).finished, facts)
+			repoInput(repo).finished = append(repoInput(repo).finished, row.IssueFacts)
 		}
 		result.Members = append(result.Members, Member{Family: KindLegion, RowKey: row.Issue, Repo: repo})
 	}
 	for _, filing := range d.filed {
-		one := filing.IssueFiling()
-		all.filed = append(all.filed, one)
-		if repo := d.repos[filing.Issue]; repo != "" {
-			repoInput(repo).filed = append(repoInput(repo).filed, one)
+		all.filed = append(all.filed, filing.IssueFiling)
+		if repo := d.repos[filing.Key]; repo != "" {
+			repoInput(repo).filed = append(repoInput(repo).filed, filing.IssueFiling)
 		}
 	}
 	result.Rows = d.build("", all, since)

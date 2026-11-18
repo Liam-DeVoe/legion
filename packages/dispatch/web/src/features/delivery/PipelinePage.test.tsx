@@ -87,6 +87,44 @@ function leadTimes(
 
 const RUN_URL = "https://github.com/acme/widgets/actions/runs/37000000001";
 
+type Targets = DeliveryPipelineResponse["targets"];
+
+/** The six targets as the catalogue's evals hold them, which the answer states until a person
+ *  changes one: each with its eval's direction and the statistics its verdict judges. */
+const TARGETS: { [K in keyof Targets]: NonNullable<Targets[K]> } = {
+  deploys_per_day: {
+    value: 20,
+    inclusive: true,
+    direction: "higher_better",
+    judges: ["deploys.per_day"],
+  },
+  change_failure_rate: {
+    value: 0.05,
+    inclusive: false,
+    direction: "lower_better",
+    judges: ["per_deploy.rate"],
+  },
+  merge_to_production_minutes: {
+    value: 45,
+    inclusive: false,
+    direction: "lower_better",
+    judges: ["minutes.max", "minutes.median"],
+  },
+  opened_to_merge_median_minutes: {
+    value: 60,
+    inclusive: false,
+    direction: "lower_better",
+    judges: ["minutes.median"],
+  },
+  deploy_run_success_rate: {
+    value: 0.9,
+    inclusive: true,
+    direction: "higher_better",
+    judges: ["runs.rate"],
+  },
+  unowned_p0: { value: 0, inclusive: true, direction: "lower_better", judges: ["issues.value"] },
+};
+
 const PIPELINE: DeliveryPipelineResponse = {
   days: DAYS,
   computed_at: "2026-10-02T12:00:00Z",
@@ -218,14 +256,7 @@ const PIPELINE: DeliveryPipelineResponse = {
     { n: 1, median: 59.9, p90: 59.9, max: 59.9 },
     { n: 2, median: 59.95, p90: 59.99, max: 60 }
   ),
-  targets: {
-    deploys_per_day: { value: 20, inclusive: true },
-    change_failure_rate: { value: 0.05, inclusive: false },
-    merge_to_production_minutes: { value: 45, inclusive: false },
-    opened_to_merge_median_minutes: { value: 60, inclusive: false },
-    deploy_run_success_rate: { value: 0.9, inclusive: true },
-    unowned_p0: { value: 0, inclusive: true },
-  },
+  targets: TARGETS,
   // The server's verdicts of the two cards: the longest change, 52m, misses "under 45m"; the
   // median from open to merge, 59.95m, meets "under 60m".
   status: { merge_to_production: false, opened_to_merge: true },
@@ -295,13 +326,24 @@ test("a pipeline with no staging end-to-end gate omits that card and keeps the o
   }
 });
 
+/** What a lead-time card says of each statistic its target judges, one line a judge. */
+function judged(metric: string): (string | null)[] {
+  return [...card(metric).querySelectorAll("[data-judge]")].map((line) => line.textContent);
+}
+
 test("merge to production shows the response's verdict and its target as its eval holds it", () => {
   view();
   const merge = card("merge_to_production");
   expect(merge.querySelector("[data-target-met]")?.getAttribute("data-target-met")).toBe("false");
   expect(merge.innerHTML).toContain("target missed");
   expect(merge.innerHTML).toContain("p90 38m · 1 PR<");
-  expect(merge.innerHTML).toContain("target under 45m for every change");
+  // The catalogue judges the longest change and the median, and the longest change under the
+  // target puts the median under it: the card names and shows the longest change alone, as it
+  // did before the target carried its judges.
+  expect(merge.innerHTML).toContain("target under 45m for every change (the dashed line)");
+  expect(judged("merge_to_production")).toEqual(["Longest today 38m, 7 days 52m"]);
+  expect(card("opened_to_merge").innerHTML).toContain("target median under 60m (the dashed line)");
+  expect(judged("opened_to_merge")).toEqual(["Median today 60m, 7 days 60m"]);
   for (const metric of ["pr_ci", "staging_e2e", "staging_apply", "production_apply"]) {
     expect(card(metric).innerHTML).not.toContain("target");
   }
@@ -318,7 +360,14 @@ test("merge to production shows the response's verdict and its target as its eva
 
   view({
     ...PIPELINE,
-    targets: { ...PIPELINE.targets, merge_to_production_minutes: { value: 52, inclusive: true } },
+    targets: {
+      ...TARGETS,
+      merge_to_production_minutes: {
+        ...TARGETS.merge_to_production_minutes,
+        value: 52,
+        inclusive: true,
+      },
+    },
     status: { ...PIPELINE.status, merge_to_production: true },
   });
   expect(card("merge_to_production").innerHTML).toContain("target at most 52m for every change");
@@ -326,12 +375,84 @@ test("merge to production shows the response's verdict and its target as its eva
 
   view({
     ...PIPELINE,
-    targets: { ...PIPELINE.targets, merge_to_production_minutes: null },
+    targets: { ...TARGETS, merge_to_production_minutes: null },
     status: { ...PIPELINE.status, merge_to_production: null },
   });
   const off = card("merge_to_production");
   expect(off.querySelector("[data-target-met]")?.getAttribute("data-target-met")).toBe("none");
   expect(off.innerHTML).toContain("target off");
+  // An off target judges nothing, so the card takes its verdict away and keeps the figure it
+  // showed before targets carried their judges: merge to production's longest change.
+  expect(judged("merge_to_production")).toEqual(["Longest today 38m, 7 days 52m"]);
+});
+
+// R5: a person may judge a lead-time eval by any statistic the Pipeline states, and the verdict
+// follows the judges, so the card names and shows the statistic its badge is of, in the target's
+// own direction, rather than the one the catalogue judges.
+test("a lead-time card names and shows the statistics its target judges, whichever they are", () => {
+  view({
+    ...PIPELINE,
+    targets: {
+      ...TARGETS,
+      opened_to_merge_median_minutes: {
+        value: 720,
+        inclusive: true,
+        direction: "lower_better",
+        judges: ["minutes.p90"],
+      },
+    },
+  });
+  const opened = card("opened_to_merge");
+  expect(opened.innerHTML).toContain("target p90 at most 720m (the dashed line)");
+  expect(opened.innerHTML).not.toContain("target median");
+  expect(judged("opened_to_merge")).toEqual(["P90 today 60m, 7 days 60m"]);
+  cleanup();
+
+  // Judged by its count, better higher: a number of pull requests, which the chart's minutes
+  // draw no line for.
+  view({
+    ...PIPELINE,
+    targets: {
+      ...TARGETS,
+      opened_to_merge_median_minutes: {
+        value: 2,
+        inclusive: true,
+        direction: "higher_better",
+        judges: ["minutes.n"],
+      },
+    },
+    status: { ...PIPELINE.status, opened_to_merge: true },
+  });
+  const counted = card("opened_to_merge");
+  expect(counted.innerHTML).toContain("target count at least 2<");
+  expect(judged("opened_to_merge")).toEqual(["Count today 1, 7 days 2"]);
+  expect(counted.querySelectorAll('svg[aria-label="per-day median and p90"] line')).toHaveLength(0);
+  // Today's one pull request misses "at least 2", whatever its minutes.
+  expect(todaysBars("opened_to_merge").map((bar) => bar.getAttribute("class"))).toEqual([
+    chartBar.missedFaint,
+    chartBar.missed,
+  ]);
+  cleanup();
+
+  // The longest change and the median judged better higher: neither implies the other, so the
+  // card names both and shows a line of each, where better lower it shows the longest alone.
+  view({
+    ...PIPELINE,
+    targets: {
+      ...TARGETS,
+      merge_to_production_minutes: {
+        ...TARGETS.merge_to_production_minutes,
+        direction: "higher_better",
+      },
+    },
+  });
+  expect(card("merge_to_production").innerHTML).toContain(
+    "target longest and median above 45m (the dashed line)"
+  );
+  expect(judged("merge_to_production")).toEqual([
+    "Longest today 38m, 7 days 52m",
+    "Median today 38m, 7 days 45m",
+  ]);
 });
 
 test("PR open to merge shows the response's verdict of its median", () => {
@@ -379,8 +500,11 @@ test("a lead-time card colours a day by its eval's rule, so a day at an inclusiv
     ...PIPELINE,
     opened_to_merge: atSixty,
     targets: {
-      ...PIPELINE.targets,
-      opened_to_merge_median_minutes: { value: 60, inclusive: true },
+      ...TARGETS,
+      opened_to_merge_median_minutes: {
+        ...TARGETS.opened_to_merge_median_minutes,
+        inclusive: true,
+      },
     },
     status: { ...PIPELINE.status, opened_to_merge: true },
   });
@@ -400,6 +524,52 @@ test("a lead-time card colours a day by its eval's rule, so a day at an inclusiv
     chartBar.missedFaint,
     chartBar.missed,
   ]);
+});
+
+test("a lead-time card colours a day by that day's value of the judged statistics, not by the bars it draws", () => {
+  // Today's median and p90 are under 45m, both bars under the line, and its longest change is
+  // over: judged by the longest change and the median, the day misses.
+  const longTail = leadTimes(
+    { n: 3, median: 30, p90: 40, max: 52 },
+    { n: 3, median: 30, p90: 40, max: 52 }
+  );
+  view({ ...PIPELINE, merge_to_production: longTail });
+  expect(todaysBars("merge_to_production").map((bar) => bar.getAttribute("class"))).toEqual([
+    chartBar.missedFaint,
+    chartBar.missed,
+  ]);
+  cleanup();
+
+  // Judged by its median alone, the same day meets, and under the other direction it misses.
+  const byMedian: NonNullable<Targets["merge_to_production_minutes"]> = {
+    ...TARGETS.merge_to_production_minutes,
+    judges: ["minutes.median"],
+  };
+  view({
+    ...PIPELINE,
+    merge_to_production: longTail,
+    targets: { ...TARGETS, merge_to_production_minutes: byMedian },
+  });
+  expect(todaysBars("merge_to_production").map((bar) => bar.getAttribute("class"))).toEqual([
+    chartBar.metFaint,
+    chartBar.met,
+  ]);
+  expect(card("merge_to_production").innerHTML).toContain("target median under 45m");
+  cleanup();
+
+  view({
+    ...PIPELINE,
+    merge_to_production: longTail,
+    targets: {
+      ...TARGETS,
+      merge_to_production_minutes: { ...byMedian, direction: "higher_better" },
+    },
+  });
+  expect(todaysBars("merge_to_production").map((bar) => bar.getAttribute("class"))).toEqual([
+    chartBar.missedFaint,
+    chartBar.missed,
+  ]);
+  expect(card("merge_to_production").innerHTML).toContain("target median above 45m");
 });
 
 test("lists the slowest jobs in the server's order and the jobs that failed in the last day", () => {

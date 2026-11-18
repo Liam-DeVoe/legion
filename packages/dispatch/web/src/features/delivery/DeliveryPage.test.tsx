@@ -82,12 +82,37 @@ const emptyMeasures: DeliveryMeasuresResponse = {
   flags_source: "none",
   unowned_p0: [],
   targets: {
-    deploys_per_day: { value: 20, inclusive: true },
-    change_failure_rate: { value: 0.05, inclusive: false },
-    merge_to_production_minutes: { value: 45, inclusive: false },
-    opened_to_merge_median_minutes: { value: 60, inclusive: false },
-    deploy_run_success_rate: { value: 0.9, inclusive: true },
-    unowned_p0: { value: 0, inclusive: true },
+    deploys_per_day: {
+      value: 20,
+      inclusive: true,
+      direction: "higher_better",
+      judges: ["deploys.per_day"],
+    },
+    change_failure_rate: {
+      value: 0.05,
+      inclusive: false,
+      direction: "lower_better",
+      judges: ["per_deploy.rate"],
+    },
+    merge_to_production_minutes: {
+      value: 45,
+      inclusive: false,
+      direction: "lower_better",
+      judges: ["minutes.max", "minutes.median"],
+    },
+    opened_to_merge_median_minutes: {
+      value: 60,
+      inclusive: false,
+      direction: "lower_better",
+      judges: ["minutes.median"],
+    },
+    deploy_run_success_rate: {
+      value: 0.9,
+      inclusive: true,
+      direction: "higher_better",
+      judges: ["runs.rate"],
+    },
+    unowned_p0: { value: 0, inclusive: true, direction: "lower_better", judges: ["issues.value"] },
   },
   status: {
     deploys_per_day: false,

@@ -42,11 +42,17 @@ type Querier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// Row is one issue's stored Legion facts, the row issue_facts holds. Every field is the column of
-// the same name, and the migrations state what each one means (20261117100000, 20261117100017
-// and 20261117100026).
+// Row is one issue's stored Legion facts, the row issue_facts holds: the facts the computation
+// closed at the newest input they read (metrics.ClosedFacts, embedded, so each fact has the one
+// name the computation gives it and a new fact is stored and grown with no list of its own to
+// edit), beside what no computation of the facts answers: the project and the issue, why the
+// issue waits, its repository and when the row was written. The migration that creates the table
+// states what each column means (20261117100000). A fact's column is its name in snake case but
+// for PhaseHours, which is hours_by_phase, Tree, which is root_key, and the two hours after the
+// first review, implementing_after_first_review and testing_after_first_review.
+// Root is no column: a read sets it from root_key (scanRow), as the computation answers it.
 //
-// HoursByPhase holds the board's column ids, a column with no hours left out, so an issue whose
+// PhaseHours holds the board's column ids, a column with no hours left out, so an issue whose
 // work took no measured time holds an empty map and still has a row: a row means Legion worked
 // the issue. WaitingReason is "" where the issue waits on nothing, which the column holds as
 // null, and Repo is "" where no repository resolves, which the column holds as null too.
@@ -60,52 +66,23 @@ type Querier interface {
 // closed issue). A row as stored holds the facts as of AsOf, which no clock moves; a reader gives
 // them at its own clock with At, which is the one computation a read makes.
 type Row struct {
-	Project       string
-	Issue         string
-	OpenedAt      time.Time
-	ClosedAt      *time.Time
-	HoursByPhase  map[string]float64
-	WorkHours     float64
-	ReviewRounds  int
-	RootKey       string
-	TreeDepth     int
-	SlotHours     float64
+	Project string
+	Issue   string
+	metrics.ClosedFacts
 	WaitingReason string
-	WorkFirstAt   *time.Time
-	WorkLastAt    *time.Time
-
-	ParkedHours                  float64
-	QueuedHours                  float64
-	StartedAt                    *time.Time
-	MergedAt                     *time.Time
-	Bars                         map[string]metrics.BarPart
-	IdleByRole                   map[string]float64
-	SlotWaitHours                float64
-	SentBack                     bool
-	ImplementingAfterFirstReview float64
-	TestingAfterFirstReview      float64
-	Children                     int
-	Repo                         string
-
-	AsOf      time.Time
-	Growth    metrics.Growth
-	UpdatedAt time.Time
+	Repo          string
+	UpdatedAt     time.Time
 }
 
 // Filing is one issue a Legion session filed, the row issue_filings holds (migration
-// 20261117100007): the filed issue, the project whose session filed it, when, the role and the
-// issue that filed it and the phase that issue was in, the class metric 4 gives the filing, and
-// the filed issue's tree root as it stands now. FilerIssue and FilerPhase are "" for a filing by
-// the controller, which works no issue.
+// 20261117100007): the project whose session filed it, and the filing as metric 4 classes it
+// (metrics.IssueFiling, embedded): the filed issue (Key), when (At), the role (Filer) and the
+// issue that filed it and the phase that issue was in, the class, and the filed issue's tree root
+// as it stands now (Root). FilerIssue and FilerPhase are "" for a filing by the controller, which
+// works no issue.
 type Filing struct {
-	Project    string
-	Issue      string
-	FiledAt    time.Time
-	FilerRole  string
-	FilerIssue string
-	FilerPhase string
-	Class      string
-	RootKey    string
+	Project string
+	metrics.IssueFiling
 }
 
 // computeKeys answers the rows of the named issues, each closed at the newest input its facts
@@ -177,50 +154,16 @@ func rowsOf(ctx context.Context, q Querier, population *metrics.Population, proj
 	}
 	rows := make([]Row, 0, len(keys))
 	for _, key := range keys {
-		fact := facts[key]
-		row := Row{
+		rows = append(rows, Row{
 			Project:       project,
 			Issue:         key,
+			ClosedFacts:   facts[key],
 			WaitingReason: reasonOf(line, population.Issues[key]),
 			Repo:          repos[key],
-			AsOf:          fact.AsOf,
-			Growth:        fact.Growth,
 			UpdatedAt:     now,
-		}
-		row.SetFacts(fact.IssueFacts)
-		rows = append(rows, row)
+		})
 	}
 	return rows, nil
-}
-
-// Facts is row as the Legion day builders read it: the facts metrics.ProjectFactsClosed computed
-// of the issue, which the row holds column for column (SetFacts writes them the other way), as of
-// the moment the row is of (AsOf, which a reader moves to its own clock with At).
-func (row Row) Facts() metrics.IssueFacts {
-	return metrics.IssueFacts{
-		OpenedAt: row.OpenedAt, ClosedAt: row.ClosedAt, PhaseHours: row.HoursByPhase, WorkHours: row.WorkHours,
-		ReviewRounds: row.ReviewRounds, Root: row.RootKey == row.Issue, Tree: row.RootKey, TreeDepth: row.TreeDepth,
-		SlotHours: row.SlotHours, WorkFirstAt: row.WorkFirstAt, WorkLastAt: row.WorkLastAt,
-		ParkedHours: row.ParkedHours, QueuedHours: row.QueuedHours, StartedAt: row.StartedAt, MergedAt: row.MergedAt,
-		Bars: row.Bars, SentBack: row.SentBack, ImplementingHoursAfterFirstReview: row.ImplementingAfterFirstReview,
-		TestingHoursAfterFirstReview: row.TestingAfterFirstReview, Children: row.Children,
-		SlotWaitHours: row.SlotWaitHours, IdleByRole: row.IdleByRole,
-	}
-}
-
-// SetFacts writes an issue's facts into row, column for column: the reverse of Facts, and the one
-// list of the fact columns a row takes its facts by, whether a pass writes them (rowsOf) or a
-// reader closes them at its own clock (At). Root is no column: Facts reads it from RootKey, which
-// Tree sets. Every other field of row is left as it was.
-func (row *Row) SetFacts(facts metrics.IssueFacts) {
-	row.OpenedAt, row.ClosedAt, row.HoursByPhase, row.WorkHours = facts.OpenedAt, facts.ClosedAt, facts.PhaseHours, facts.WorkHours
-	row.ReviewRounds, row.RootKey, row.TreeDepth, row.SlotHours = facts.ReviewRounds, facts.Tree, facts.TreeDepth, facts.SlotHours
-	row.WorkFirstAt, row.WorkLastAt = facts.WorkFirstAt, facts.WorkLastAt
-	row.ParkedHours, row.QueuedHours, row.StartedAt, row.MergedAt = facts.ParkedHours, facts.QueuedHours, facts.StartedAt, facts.MergedAt
-	row.Bars, row.IdleByRole, row.SlotWaitHours, row.SentBack = facts.Bars, facts.IdleByRole, facts.SlotWaitHours, facts.SentBack
-	row.ImplementingAfterFirstReview = facts.ImplementingHoursAfterFirstReview
-	row.TestingAfterFirstReview = facts.TestingHoursAfterFirstReview
-	row.Children = facts.Children
 }
 
 // filingsOf turns the population's filings into rows, classified by metric 4's own rule
@@ -228,30 +171,9 @@ func (row *Row) SetFacts(facts metrics.IssueFacts) {
 func filingsOf(population *metrics.Population, project string) []Filing {
 	filings := []Filing{}
 	for _, filed := range metrics.ProjectFilings(population) {
-		filings = append(filings, Filing{
-			Project:    project,
-			Issue:      filed.Key,
-			FiledAt:    filed.At,
-			FilerRole:  filed.Filer,
-			FilerIssue: filed.FilerIssue,
-			FilerPhase: filed.FilerPhase,
-			Class:      filed.Class,
-			RootKey:    filed.Root,
-		})
+		filings = append(filings, Filing{Project: project, IssueFiling: filed})
 	}
 	return filings
-}
-
-// IssueFiling is filing as the splitting builder reads it: the row metric 4's table names it by
-// and the filed issue's tree root (filingsOf writes them the other way).
-func (filing Filing) IssueFiling() metrics.IssueFiling {
-	return metrics.IssueFiling{
-		FiledIssue: metrics.FiledIssue{
-			Key: filing.Issue, At: filing.FiledAt, Class: filing.Class, Filer: filing.FilerRole,
-			FilerIssue: filing.FilerIssue, FilerPhase: filing.FilerPhase,
-		},
-		Root: filing.RootKey,
-	}
 }
 
 // reposStatement resolves the repository of every issue its one argument names, by the server's

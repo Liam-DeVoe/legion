@@ -29,17 +29,45 @@ func showVerdict(met *bool) string {
 	return "missed"
 }
 
+// catalogueTargets is the targets a delivery answer states where the catalogue's evals judge it,
+// as with the deploy repository mapped to no project: main's values and inclusiveness
+// (measures.DefaultTargets), each in its eval's direction and judging the statistics the
+// catalogue's target_judges name, in that order.
+func catalogueTargets() measures.Targets {
+	main := measures.DefaultTargets
+	of := func(target *measures.Target, direction string, judges ...string) *measures.Target {
+		return &measures.Target{Value: target.Value, Inclusive: target.Inclusive, Direction: direction, Judges: judges}
+	}
+	return measures.Targets{
+		DeploysPerDay:              of(main.DeploysPerDay, evals.DirectionHigherBetter, measures.SeriesDeploys+".per_day"),
+		ChangeFailureRate:          of(main.ChangeFailureRate, evals.DirectionLowerBetter, measures.SeriesPerDeploy+".rate"),
+		MergeToProductionMinutes:   of(main.MergeToProductionMinutes, evals.DirectionLowerBetter, measures.SeriesMinutes+".max", measures.SeriesMinutes+".median"),
+		OpenedToMergeMedianMinutes: of(main.OpenedToMergeMedianMinutes, evals.DirectionLowerBetter, measures.SeriesMinutes+".median"),
+		DeployRunSuccessRate:       of(main.DeployRunSuccessRate, evals.DirectionHigherBetter, measures.SeriesRuns+".rate"),
+		UnownedP0:                  of(main.UnownedP0, evals.DirectionLowerBetter, evals.SeriesUnownedP0+".value"),
+	}
+}
+
+// showTargets is a delivery answer's targets as a test message states them: as the answer's JSON
+// writes them, each target's fields rather than its pointer.
+func showTargets(targets measures.Targets) string {
+	shown, _ := json.Marshal(targets)
+	return string(shown)
+}
+
 // TestTheDeliveryVerdictsAreTheirEvalsVerdicts (R5): the measures answer and the Pipeline judge
 // their figures by the targets of the delivery evals of the project the deploy repository is
 // mapped to, which a person sets, so after register writes that move three targets onto figures of
-// a day-aligned window of seven days, inclusive or not, and turn deploy-frequency's off, each
-// verdict of the measures answer and of the Pipeline's lead-time cards is the verdict the eval route
-// states for the same window, and each target the answer states is the eval's, value and
-// inclusiveness; the target turned off is null and judges nothing. The Pipeline reads at alone, so
-// it is read at the window's last second, whose seven days are the window's. unowned-p0 is left
-// out of the comparison: its eval reads the project's stored count of each day, where the measures
-// answer counts every project's open P0 issues now. With the deploy repository mapped to no
-// project, both answers are judged by the catalogue's targets, main's (measures.DefaultTargets).
+// a day-aligned window of seven days, inclusive or not, judge pr-open-to-merge by its p90 alone,
+// and turn deploy-frequency's off, each verdict of the measures answer and of the Pipeline's
+// lead-time cards is the verdict the eval route states for the same window, and each target the
+// answer states is the eval's: value, inclusiveness, direction and the statistics its verdict
+// judges, so the page names the p90 under the card whose figure is the median by default. The
+// target turned off is null and judges nothing. The Pipeline reads at alone, so it is read at the
+// window's last second, whose seven days are the window's. unowned-p0 is left out of the
+// comparison: its eval reads the project's stored count of each day, where the measures answer
+// counts every project's open P0 issues now. With the deploy repository mapped to no project, both
+// answers are judged by the catalogue's targets, main's (catalogueTargets).
 func TestTheDeliveryVerdictsAreTheirEvalsVerdicts(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture, _ := seedEvalHistories(t, database, deps, 14)
@@ -57,11 +85,16 @@ func TestTheDeliveryVerdictsAreTheirEvalsVerdicts(t *testing.T) {
 		}
 		return *value
 	}
+	median, p90 := figure(evals.SlugPROpenToMerge, measures.SeriesMinutes, "median"), figure(evals.SlugPROpenToMerge, measures.SeriesMinutes, "p90")
+	if median >= p90 {
+		t.Fatalf("pr-open-to-merge's median %v is not under its p90 %v over %s, so no target tells a judge of the p90 from one of the median", median, p90, window)
+	}
 	for index, write := range []map[string]any{
 		{"slug": evals.SlugMergeToProduction, "target": figure(evals.SlugMergeToProduction, measures.SeriesMinutes, "max"), "target_inclusive": true},
-		// Judged by its count alone, a statistic no card shows, which the answers judge as well.
-		{"slug": evals.SlugPROpenToMerge, "target": figure(evals.SlugPROpenToMerge, measures.SeriesMinutes, "n"), "target_inclusive": true,
-			"target_judges": []string{measures.SeriesMinutes + ".n"}},
+		// Judged by its p90 alone, between the median and the p90: the p90 misses it where the
+		// median, the statistic the catalogue judges, would meet it.
+		{"slug": evals.SlugPROpenToMerge, "target": (median + p90) / 2, "target_inclusive": true,
+			"target_judges": []string{measures.SeriesMinutes + ".p90"}},
 		{"slug": evals.SlugDeployRunSuccess, "target": figure(evals.SlugDeployRunSuccess, measures.SeriesRuns, "rate"), "target_inclusive": false},
 		{"slug": evals.SlugDeployFrequency, "target": nil},
 	} {
@@ -79,14 +112,16 @@ func TestTheDeliveryVerdictsAreTheirEvalsVerdicts(t *testing.T) {
 	}
 	eval := func(slug string) (*bool, *measures.Target) {
 		item := findEval(t, after.Items, project, slug)
-		var met *bool
-		if item.Verdict != nil {
-			met = item.Verdict.Met
+		if item.Definition.Target == nil || item.Verdict == nil {
+			return nil, nil
 		}
-		if item.Definition.Target == nil {
-			return met, nil
+		judges := []string{}
+		for _, judged := range item.Verdict.Judges {
+			judges = append(judges, judged.Judge)
 		}
-		return met, &measures.Target{Value: *item.Definition.Target, Inclusive: item.Definition.TargetInclusive}
+		return item.Verdict.Met, &measures.Target{
+			Value: *item.Definition.Target, Inclusive: item.Definition.TargetInclusive, Direction: item.Definition.Direction, Judges: judges,
+		}
 	}
 	compared := 0
 	for _, check := range []struct {
@@ -116,6 +151,23 @@ func TestTheDeliveryVerdictsAreTheirEvalsVerdicts(t *testing.T) {
 	if met, _ := eval(evals.SlugMergeToProduction); met == nil || !*met {
 		t.Errorf("merge-to-production's verdict at an inclusive target equal to the window's longest change is %s, want met", showVerdict(met))
 	}
+	wantOpened := &measures.Target{Value: (median + p90) / 2, Inclusive: true, Direction: evals.DirectionLowerBetter, Judges: []string{measures.SeriesMinutes + ".p90"}}
+	for _, opened := range []struct {
+		what    string
+		target  *measures.Target
+		verdict *bool
+	}{
+		{"the measures answer", answer.Targets.OpenedToMergeMedianMinutes, answer.Status.OpenedToMerge},
+		{"the Pipeline", pipeline.Targets.OpenedToMergeMedianMinutes, pipeline.Status.OpenedToMerge},
+	} {
+		if !reflect.DeepEqual(opened.target, wantOpened) {
+			t.Errorf("%s states pr-open-to-merge's target %+v, want %+v: the p90 the write named, lower better", opened.what, opened.target, wantOpened)
+		}
+		if opened.verdict == nil || *opened.verdict {
+			t.Errorf("%s judges pr-open-to-merge %s at a target between the median %v and the p90 %v, want missed, the p90's verdict",
+				opened.what, showVerdict(opened.verdict), median, p90)
+		}
+	}
 	if answer.Targets.DeploysPerDay != nil || answer.Status.DeploysPerDay != nil {
 		t.Errorf("deploy-frequency's target is off, and the measures answer states the target %+v and the verdict %s, want null and null",
 			answer.Targets.DeploysPerDay, showVerdict(answer.Status.DeploysPerDay))
@@ -127,9 +179,9 @@ func TestTheDeliveryVerdictsAreTheirEvalsVerdicts(t *testing.T) {
 	}
 	unmapped := getDeliveryMeasures(t, handler, window)
 	unmappedPipeline := evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline?"+pipelineAt)
-	if !reflect.DeepEqual(unmapped.Targets, measures.DefaultTargets) || !reflect.DeepEqual(unmappedPipeline.Targets, measures.DefaultTargets) {
-		t.Errorf("with the deploy repository mapped to no project the targets are %+v and %+v, want the catalogue's %+v",
-			unmapped.Targets, unmappedPipeline.Targets, measures.DefaultTargets)
+	if want := catalogueTargets(); !reflect.DeepEqual(unmapped.Targets, want) || !reflect.DeepEqual(unmappedPipeline.Targets, want) {
+		t.Errorf("with the deploy repository mapped to no project the targets are %s and %s, want the catalogue's %s",
+			showTargets(unmapped.Targets), showTargets(unmappedPipeline.Targets), showTargets(want))
 	}
 	if unmapped.Status.DeploysPerDay == nil {
 		t.Error("with the deploy repository mapped to no project deploys_per_day has no verdict, want the catalogue's target to judge it")
@@ -138,10 +190,11 @@ func TestTheDeliveryVerdictsAreTheirEvalsVerdicts(t *testing.T) {
 }
 
 // TestATargetWriteMovesTheLiveDeliveryVerdicts: a register write of merge-to-production's target
-// in the project the deploy repository is mapped to reaches an open measures view and an open
-// Pipeline view: the write's version marks both, and each delta lands on its GET route's body,
-// which states the new target and its inclusiveness. The Pipeline view is pinned at the test's
-// start, the at its GET route reads, since that route reads at alone and the hub's clock runs on.
+// and judges in the project the deploy repository is mapped to reaches an open measures view and
+// an open Pipeline view: the write's version marks both, and each delta lands on its GET route's
+// body, which states the new target, its inclusiveness, the eval's direction and the judge the
+// write named. The Pipeline view is pinned at the test's start, the at its GET route reads, since
+// that route reads at alone and the hub's clock runs on.
 func TestATargetWriteMovesTheLiveDeliveryVerdicts(t *testing.T) {
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
@@ -157,12 +210,13 @@ func TestATargetWriteMovesTheLiveDeliveryVerdicts(t *testing.T) {
 	snapshots := conn.firstSnapshots(t, 5*time.Second, "m", "p")
 	rig.settle(t)
 
-	registered := evalRequest(t, rig.handler, http.MethodPost, "/api/v1/projects/HUB/evals",
-		map[string]any{"slug": evals.SlugMergeToProduction, "target": 30, "target_inclusive": true}, "merge-target")
+	registered := evalRequest(t, rig.handler, http.MethodPost, "/api/v1/projects/HUB/evals", map[string]any{
+		"slug": evals.SlugMergeToProduction, "target": 30, "target_inclusive": true, "target_judges": []string{measures.SeriesMinutes + ".p90"},
+	}, "merge-target")
 	if registered.Code != http.StatusCreated {
 		t.Fatalf("set HUB's merge-to-production target: status %d, body %s", registered.Code, registered.Body.String())
 	}
-	want := measures.Target{Value: 30, Inclusive: true}
+	want := &measures.Target{Value: 30, Inclusive: true, Direction: evals.DirectionLowerBetter, Judges: []string{measures.SeriesMinutes + ".p90"}}
 	kinds := map[string]string{"m": deliveryLiveMeasures, "p": deliveryLivePipeline}
 	// What each view's GET route reads besides what its body names: nothing for the measures view,
 	// whose body names its window, and for the pipeline view, whose body names no at, the at it was
@@ -184,7 +238,7 @@ func TestATargetWriteMovesTheLiveDeliveryVerdicts(t *testing.T) {
 		if err := json.Unmarshal(body, &shape); err != nil {
 			t.Fatalf("read the %s body's targets: %v", kind, err)
 		}
-		if got := shape.Targets.MergeToProductionMinutes; got == nil || *got != want {
+		if got := shape.Targets.MergeToProductionMinutes; !reflect.DeepEqual(got, want) {
 			t.Errorf("the live %s view states merge_to_production_minutes %+v, want %+v", kind, got, want)
 		}
 	}

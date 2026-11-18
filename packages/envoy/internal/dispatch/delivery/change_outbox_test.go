@@ -20,13 +20,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// The change log's outbox (delivery_changes_pending, migrations 20261117100023 and
-// 20261117100024) and its drain (DrainPending), and the order every path takes the change log's
-// lock in (LockChanges): first, before any row lock, or last, in the statement that ends its
-// transaction. R19 holds a path to at most 100 ms of the lock; these tests assert the structure
-// that bounds the hold (which transaction takes the lock, when, and how much a drain moves under
-// it) and log the times, since the wall clock is the build farm's measure (k20) and a busy runner
-// would fail it here.
+// The change log's outbox (delivery_changes_pending, migration 20261117100001, which the eval and
+// Legion tables' triggers record into) and its drain (DrainPending), and the order every path
+// takes the change log's lock in (LockChanges): first, before any row lock, or last, in the
+// statement that ends its transaction. R19 holds a path to at most 100 ms of the lock; these tests
+// assert the structure that bounds the hold (which transaction takes the lock, when, and how much
+// a drain moves under it) and log the times, since the wall clock is the build farm's measure
+// (k20) and a busy runner would fail it here.
 
 // The two keys of the change log's lock, pg_advisory_xact_lock(6900, 0) (LockChanges).
 const (
@@ -422,6 +422,61 @@ func TestTheDrainMovesABurstABatchPerTransaction(t *testing.T) {
 		}
 		t.Logf("the drain of %d pending changes moved them in %d transactions of %v rows; the samples saw %d of them hold the lock, for %v",
 			burst.rows, len(recorded), sizes, len(holds), held)
+	}
+}
+
+// TestADrainBatchMovesOneBatchAndSaysWhetherRowsRemain: DrainPendingBatch, the drain an eval write
+// runs before its route answers, moves one batch of the lowest pending ids and no more, and says
+// rows may remain exactly when a whole batch moved, which is when DrainPending moves another. Of
+// 260 pending changes it moves 250, then 10, then none; of 250 it moves 250 and says more may
+// remain, then finds none. Each batch is the lowest ids still pending, in id order.
+func TestADrainBatchMovesOneBatchAndSaysWhetherRowsRemain(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	clearPending(t, ctx, pool)
+	// The contract the test states, written out rather than read from drainBatch, as
+	// TestTheDrainMovesABurstABatchPerTransaction writes it.
+	const batchRows = 250
+	type batch struct {
+		moved int64
+		more  bool
+	}
+	for _, burst := range []struct {
+		rows    int
+		batches []batch
+	}{
+		{batchRows + 10, []batch{{batchRows, true}, {10, false}, {0, false}}},
+		{batchRows, []batch{{batchRows, true}, {0, false}}},
+	} {
+		project := fmt.Sprintf("ONEBATCH%d", burst.rows)
+		recordPending(t, ctx, pool, project, burst.rows)
+		taken := 0
+		for index, want := range burst.batches {
+			var head int64
+			if err := pool.QueryRow(ctx, `select coalesce(max(seq), 0) from delivery_changes`).Scan(&head); err != nil {
+				t.Fatalf("read the log's head: %v", err)
+			}
+			moved, more, err := DrainPendingBatch(ctx, pool)
+			if err != nil || moved != want.moved || more != want.more {
+				t.Errorf("batch %d of %d pending changes moved %d and said more %t (%v), want %d and %t",
+					index, burst.rows, moved, more, err, want.moved, want.more)
+			}
+			rows, err := pool.Query(ctx, `select ref from delivery_changes where seq > $1 order by seq`, head)
+			if err != nil {
+				t.Fatalf("read the moved changes: %v", err)
+			}
+			refs, err := pgx.CollectRows(rows, pgx.RowTo[string])
+			if err != nil {
+				t.Fatalf("read the moved changes: %v", err)
+			}
+			wanted := make([]string, want.moved)
+			for i := range wanted {
+				wanted[i] = fmt.Sprintf("%s-%d", project, taken+i+1)
+			}
+			if !slices.Equal(refs, wanted) {
+				t.Errorf("batch %d of %d pending changes moved %v, want the %d lowest pending ids in id order, %v", index, burst.rows, refs, want.moved, wanted)
+			}
+			taken += len(refs)
+		}
 	}
 }
 

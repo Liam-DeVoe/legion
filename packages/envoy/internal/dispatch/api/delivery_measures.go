@@ -169,15 +169,20 @@ func deliveryVerdict(entries map[string]evals.Entry, slug string, figures map[st
 	return nil
 }
 
-// deliveryTargets is the target of each eval of evals.DeliveryTargetSlugs entries holds, its value
-// and inclusiveness, null where its target is off.
+// deliveryTargets is the target of each eval of evals.DeliveryTargetSlugs entries holds, its value,
+// inclusiveness and direction and the statistics its verdict judges (evals.JudgesOf), null where
+// its target is off: every delivery answer's `targets`, so the page names and colours by the
+// figures each verdict of `status` is of, in the direction the eval states.
 func deliveryTargets(entries map[string]evals.Entry) measures.Targets {
 	target := func(slug string) *measures.Target {
-		definition := entries[slug].Definition
+		entry := entries[slug]
+		definition := entry.Definition
 		if definition.Target == nil {
 			return nil
 		}
-		return &measures.Target{Value: *definition.Target, Inclusive: definition.TargetInclusive}
+		return &measures.Target{
+			Value: *definition.Target, Inclusive: definition.TargetInclusive, Direction: definition.Direction, Judges: evals.JudgesOf(entry),
+		}
 	}
 	return measures.Targets{
 		DeploysPerDay:              target(evals.SlugDeployFrequency),

@@ -25,9 +25,9 @@ const hourTolerance = 0.1
 const issueFloor = 200
 
 // TestEveryFactEqualsTheIndependentReadingOfTheRequirement is the check of R1 itself: the one
-// computation of the per-issue facts (metrics.ProjectFacts) against a reading written from the
-// requirement's words (package independent), over one history of more than 200 issues with
-// Legion phase work.
+// computation of the per-issue facts, as the stored rows hold them (metrics.ProjectFactsClosed)
+// grown to the read's end, against a reading written from the requirement's words (package
+// independent), over one history of more than 200 issues with Legion phase work.
 //
 // It fails where the two disagree on any fact, below the floor of issues, where the history's
 // issue with no measured work is missing from either side, and where the two sides read
@@ -42,7 +42,10 @@ func TestEveryFactEqualsTheIndependentReadingOfTheRequirement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the project's population: %v", err)
 	}
-	computed := metrics.ProjectFacts(population, nil)
+	computed := map[string]metrics.IssueFacts{}
+	for key, closed := range metrics.ProjectFactsClosed(population, nil) {
+		computed[key] = closed.FactsAt(population.To)
+	}
 	computedScope := population.Project
 	computedWindow := independent.Window{From: population.From, To: population.To}
 

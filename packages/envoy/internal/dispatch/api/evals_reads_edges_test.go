@@ -187,8 +187,10 @@ func TestALegionItemShowsTheRepositoryItIsFilteredBy(t *testing.T) {
 	closed := day.Add(12 * time.Hour)
 	// The row as the facts pass wrote it while acme/old was the default.
 	if _, err := legionfacts.WriteProject(ctx, database.Pool, legionfacts.ProjectWrite{Project: "EVL", Whole: true, Rows: []legionfacts.Row{{
-		Project: "EVL", Issue: "EVL-1", OpenedAt: closed.Add(-3 * time.Hour), ClosedAt: &closed, RootKey: "EVL-1", WorkHours: 2,
-		HoursByPhase: map[string]float64{}, Bars: map[string]metrics.BarPart{}, IdleByRole: map[string]float64{}, Repo: "acme/old",
+		Project: "EVL", Issue: "EVL-1", Repo: "acme/old", ClosedFacts: metrics.ClosedFacts{IssueFacts: metrics.IssueFacts{
+			OpenedAt: closed.Add(-3 * time.Hour), ClosedAt: &closed, Root: true, Tree: "EVL-1", WorkHours: 2,
+			PhaseHours: map[string]float64{}, Bars: map[string]metrics.BarPart{}, IdleByRole: map[string]float64{},
+		}},
 	}}}); err != nil {
 		t.Fatalf("write the facts: %v", err)
 	}
@@ -240,12 +242,15 @@ func TestALegionItemsPageIsThatPageOfTheWholeRead(t *testing.T) {
 		}
 		at := day.Add(time.Duration(number) * time.Hour)
 		if number <= 3 {
-			filings = append(filings, legionfacts.Filing{Project: "EVL", Issue: key, FiledAt: at, FilerRole: "architect", FilerIssue: "EVL-4",
-				FilerPhase: "implementing", Class: "in_tree_at_design", RootKey: key})
+			filings = append(filings, legionfacts.Filing{Project: "EVL", IssueFiling: metrics.IssueFiling{FiledIssue: metrics.FiledIssue{
+				Key: key, At: at, Filer: "architect", FilerIssue: "EVL-4", FilerPhase: "implementing", Class: "in_tree_at_design",
+			}, Root: key}})
 			continue
 		}
-		rows = append(rows, legionfacts.Row{Project: "EVL", Issue: key, OpenedAt: at.Add(-time.Hour), ClosedAt: &at, RootKey: key, WorkHours: float64(number),
-			HoursByPhase: map[string]float64{}, Bars: map[string]metrics.BarPart{}, IdleByRole: map[string]float64{}, Repo: "acme/web"})
+		rows = append(rows, legionfacts.Row{Project: "EVL", Issue: key, Repo: "acme/web", ClosedFacts: metrics.ClosedFacts{IssueFacts: metrics.IssueFacts{
+			OpenedAt: at.Add(-time.Hour), ClosedAt: &at, Root: true, Tree: key, WorkHours: float64(number),
+			PhaseHours: map[string]float64{}, Bars: map[string]metrics.BarPart{}, IdleByRole: map[string]float64{},
+		}}})
 	}
 	if _, err := legionfacts.WriteProject(ctx, database.Pool, legionfacts.ProjectWrite{Project: "EVL", Whole: true, Rows: rows}); err != nil {
 		t.Fatalf("write the facts: %v", err)

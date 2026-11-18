@@ -239,23 +239,22 @@ type seedWrite struct {
 }
 
 // ensure is the seed of w's project in w's transaction. It takes the lock of every eval of the
-// catalogue, in the catalogue's order, before it reads what the project holds, so a second seed
-// of the project, a register write and a readings write of one of those evals each wait for it
-// and then read what it wrote. It then reads the newest version of each eval, the version the seed
-// last wrote, the current series and the series as the seed last wrote them, the first version of
-// an eval it takes over, and the blocks of `evals-md`; writes the missing sections and the
-// methods it takes over in one write of the document; and writes the versions. The locks are one
-// batch of statements and the versions another, each sent in one round trip and run in the order
-// it was queued: a project's first seed writes 20 versions and 95 of series, which one statement
-// each would make 115 round trips.
+// catalogue, in one statement and in the byte order of their ids (lockEvals), the order the zero
+// fill takes several evals' locks in, before it reads what the project holds, so a second seed of
+// the project, a register write, a readings write and the fill of one of those evals each wait for
+// it and then read what it wrote, and none of them waits for it in a cycle. It then reads the
+// newest version of each eval, the version the seed last wrote, the current series and the series
+// as the seed last wrote them, the first version of an eval it takes over, and the blocks of
+// `evals-md`; writes the missing sections and the methods it takes over in one write of the
+// document; and writes the versions, as one batch of statements sent in one round trip and run in
+// the order it was queued: a project's first seed writes 20 versions and 95 of series, which one
+// statement each would make 115 round trips.
 func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 	ids := make([]string, len(catalogue))
-	locks := &pgx.Batch{}
 	for i, entry := range catalogue {
 		ids[i] = EvalID(w.project, entry.definition.Slug)
-		locks.Queue(lockEvalStatement, ids[i])
 	}
-	if err := w.SendBatch(ctx, locks).Close(); err != nil {
+	if err := lockEvals(ctx, w.Tx, ids); err != nil {
 		return Seeded{}, fmt.Errorf("lock the seeded evals of %s: %w", w.project, err)
 	}
 	newest, err := readDefinitions(ctx, w.Tx, `

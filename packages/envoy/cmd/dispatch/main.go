@@ -387,11 +387,12 @@ func main() {
 
 	// The change rows an eval or Legion write recorded in the change log's outbox and never moved
 	// into delivery_changes, its process killed between its commit and its drain, are moved before
-	// this process serves (delivery.DrainPending, migration 20261117100023). Every live process's hub
-	// drains on the notification such a row sent at its commit; this boot is what moves them when
-	// none was alive, and its drain's notification wakes every hub listening by then, this process's
-	// refresher reading the moved rows on its first pass. A drain that fails is logged and the boot
-	// goes on: the hub drains before each read, and the refresher at each pass.
+	// this process serves (delivery.DrainPending, migration 20261117100001). While any process is
+	// alive, the next drain of any process moves them (delivery.DrainPending states the bound); this
+	// boot is what moves them when none was alive, and its drain's notification wakes every hub
+	// listening by then, this process's refresher reading the moved rows on its first pass. A drain
+	// that fails is logged and the boot goes on: the hub drains before each read, the refresher at
+	// each pass, and each eval write and Legion facts pass after its commit.
 	if moved, err := delivery.DrainPending(ctx, database.Pool); err != nil {
 		slog.Warn("dispatch: move the delivery changes left pending into the change log; the hub's and the refresher's drains move them", "error", err)
 	} else if moved > 0 {

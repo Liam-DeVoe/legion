@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"hash/fnv"
+	"maps"
 	"reflect"
+	"slices"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -217,7 +219,8 @@ func liveEnded(sub, reason string) LiveEnded {
 
 // LiveError refuses a frame or a subscription, by the code the matching GET route would answer
 // (INVALID_QUERY, DELIVERY_NOT_CONFIGURED, the board's INVALID_PROJECT, PROJECT_NOT_FOUND and
-// LEGION_NOT_CONFIGURED, and the evals view's INVALID_PROJECT and PROJECT_NOT_FOUND), the
+// LEGION_NOT_CONFIGURED, and the evals view's INVALID_QUERY, for a project that is no project key
+// as for a query its route refuses, and PROJECT_NOT_FOUND for a project no row holds), the
 // socket's own (INVALID_FRAME, TOO_MANY_SUBSCRIPTIONS) or an agent view's (OAUTH_SCOPE_REQUIRED,
 // SESSION_ID_INPUT, STREAM_UNAVAILABLE). Sub names the subscription it refuses, and is empty for a
 // frame Dispatch could not read a sub from.
@@ -294,8 +297,10 @@ type deliveryLiveClasses struct {
 	body reflect.Type
 	// lists are sent item by item, each item by its "id" field.
 	lists []string
-	// maps are sent entry by entry, by key.
-	maps []string
+	// maps are sent entry by entry, by key, an entry whole when its revision changes; each names
+	// the subfields of an entry its revision leaves out (they are still sent, with the rest, when
+	// the entry is).
+	maps map[string][]string
 	// counts are {facet: {value: count}}, sent count by count.
 	counts []string
 	// whole fields are sent whole when their revision changes; each names the subfields its
@@ -330,9 +335,11 @@ type deliveryLiveClasses struct {
 // own computed_at, window and freshness.
 var deliveryLiveKinds = map[string]deliveryLiveClasses{
 	deliveryLiveTimeline: {
-		body:         reflect.TypeFor[deliveryTimelineWithMeasures](),
-		lists:        []string{"prs", "runs", "session_groups"},
-		maps:         []string{"issue_titles", "session_titles", "session_pr_counts", "components"},
+		body:  reflect.TypeFor[deliveryTimelineWithMeasures](),
+		lists: []string{"prs", "runs", "session_groups"},
+		maps: map[string][]string{
+			"issue_titles": nil, "session_titles": nil, "session_pr_counts": nil, "components": nil,
+		},
 		counts:       []string{"facet_counts", "color_counts"},
 		whole:        map[string][]string{"waiting": nil, "measures": {"computed_at", "window", "freshness"}},
 		withChanges:  []string{"window"},
@@ -375,9 +382,25 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 	// The issues map is sent entry by entry, by issue key, because the facts consumer writes one
 	// issue's row per change: a whole field would resend every issue's stored facts whenever one
 	// issue's moved, and a project holds a row for every issue Legion ever worked.
+	//
+	// An entry is sent only when its stored row moved. Each read closes every open row at its own
+	// clock (legionfacts.Row.At), so an open issue's hours, work time, slot hours and last moment
+	// of work, and the as_of they are of, differ on every recompute, a sampler's read once a
+	// minute among them; the entry's revision leaves out every value the entry's growth names
+	// (legionBoardGrowth's fields, which are the entry's own names for the values it grows) and
+	// their as_of, so a recompute that moved only the clock sends no entry, where it would
+	// otherwise resend every open issue's (about 2,600 at INFRA's size), and a value that comes to
+	// grow is left out once its rate joins the growth. What the revision keeps moves whenever the
+	// stored row does: a write of a row whose values moved stamps its updated_at
+	// (legionfacts.WriteProject), and its growth, why it waits, its close and every other value
+	// the entry carries are kept as stored. The entry carries its as_of and its growth, so a page
+	// closes the values it holds at its own clock by the rule the read closes them by, and an entry
+	// that is sent goes whole, its values grown to the moment of the recompute that sent it.
 	legionBoardView: {
 		body: reflect.TypeFor[legionBoardResponse](),
-		maps: []string{"issues"},
+		maps: map[string][]string{
+			"issues": append(slices.Sorted(maps.Keys(bodyKeysOf(reflect.TypeFor[legionBoardGrowth]()))), "as_of"),
+		},
 		whole: map[string][]string{
 			"project": nil, "header": nil, "columns": nil, "settings": nil,
 		},

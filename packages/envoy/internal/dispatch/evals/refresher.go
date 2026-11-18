@@ -336,28 +336,22 @@ func (r *refresh) nextPass(ctx context.Context, pending bool) (time.Time, error)
 	return next, nil
 }
 
-// feedCursor is where one feed stands: the position the last committed pass read through; for
-// the change cursor, when the change at that position was recorded (delivery_changes.at), which
-// tells a change pruned in its time from one lost (changesLost), nil for the event cursor and for
-// a position no change holds; and when the last committed pass ran as of (updatedAt), which tells
-// a log pruned past changes no pass read while the refresher stood still.
-type feedCursor struct {
-	position  int64
-	at        *time.Time
-	updatedAt time.Time
-}
-
 // readRefresherCursors is where each feed stands, by cursor name; no row at all is a database no
-// refresher pass has committed on.
-func (s *Store) readRefresherCursors(ctx context.Context) (map[string]feedCursor, error) {
+// refresher pass has committed on. A cursor is the position the last committed pass read through
+// (Seq); for the change cursor, when the change at that position was recorded
+// (delivery_changes.at), which tells a change pruned in its time from one lost
+// (delivery.CursorLost), nil for the event cursor and for a position no change holds; and when the
+// last committed pass ran as of (ReadAt), which tells a log pruned past changes no pass read while
+// the refresher stood still.
+func (s *Store) readRefresherCursors(ctx context.Context) (map[string]delivery.ChangeCursor, error) {
 	rows, err := s.database.Pool.Query(ctx, `select name, position, at, updated_at from eval_days_cursor where name = any($1)`, refresherCursors)
 	if err != nil {
 		return nil, fmt.Errorf("read the eval day-row refresher's cursors: %w", err)
 	}
-	cursors := map[string]feedCursor{}
+	cursors := map[string]delivery.ChangeCursor{}
 	var name string
-	var cursor feedCursor
-	if _, err := pgx.ForEachRow(rows, []any{&name, &cursor.position, &cursor.at, &cursor.updatedAt}, func() error {
+	var cursor delivery.ChangeCursor
+	if _, err := pgx.ForEachRow(rows, []any{&name, &cursor.Seq, &cursor.At, &cursor.ReadAt}, func() error {
 		cursors[name] = cursor
 		return nil
 	}); err != nil {
@@ -366,28 +360,11 @@ func (s *Store) readRefresherCursors(ctx context.Context) (map[string]feedCursor
 	return cursors, nil
 }
 
-// changesHead is the change cursor at the newest change the log holds, with the time it was
-// recorded; position 0 where the log is empty.
-func (s *Store) changesHead(ctx context.Context) (feedCursor, error) {
-	head, err := delivery.LatestChangeSeq(ctx, s.database.Pool)
-	if err != nil {
-		return feedCursor{}, fmt.Errorf("read the head of the delivery changes: %w", err)
-	}
-	if head == 0 {
-		return feedCursor{}, nil
-	}
-	at, err := delivery.ChangeAt(ctx, s.database.Pool, head)
-	if err != nil {
-		return feedCursor{}, fmt.Errorf("read the delivery change at %d: %w", head, err)
-	}
-	return feedCursor{position: head, at: at}, nil
-}
-
 // commitPage moves the two cursors to the positions a page read, stamped with the moment the pass
 // ran as of, and begins again each walk the page's changes call for, in one transaction: the days
 // the page named are written before it, so a crash between the two reads the same changes again,
 // and a walk the changes begin again is recorded with the cursor that passed them.
-func (r *refresh) commitPage(ctx context.Context, cursors map[string]feedCursor, restarts []walkKey) error {
+func (r *refresh) commitPage(ctx context.Context, cursors map[string]delivery.ChangeCursor, restarts []walkKey) error {
 	tx, err := r.store.database.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin the eval day-row refresher's cursors: %w", err)
@@ -395,7 +372,7 @@ func (r *refresh) commitPage(ctx context.Context, cursors map[string]feedCursor,
 	defer tx.Rollback(ctx)
 	positions, ats := make([]int64, len(refresherCursors)), make([]*time.Time, len(refresherCursors))
 	for i, name := range refresherCursors {
-		positions[i], ats[i] = cursors[name].position, cursors[name].at
+		positions[i], ats[i] = cursors[name].Seq, cursors[name].At
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into eval_days_cursor (name, position, at, updated_at)

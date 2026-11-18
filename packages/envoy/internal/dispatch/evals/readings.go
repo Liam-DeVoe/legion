@@ -49,20 +49,24 @@ type Written struct {
 //
 // A slug no eval holds registers its eval as version 1 (written_via reading, kind experiment,
 // source logged, no target, state active, the caller as owner), with its section in the
-// project's `evals-md` document, the document created first where the project has none. Two first
-// writes of one slug register it once: each takes the eval's lock (lockEval) and writes version 1
-// with `on conflict do nothing`, and only the write that stored it writes the section. A series no
-// version holds registers too (firstSeries), listed where the eval is logged and unlisted where it
-// is computed, since a reading under a computed eval's slug is stored and answered by its items
-// alone: no day row of a computed eval is written here, and nothing here folds such a reading
-// into the eval's value.
+// project's `evals-md` document, the document created first where the project has none. Every
+// write takes the eval's lock (lockEval) before it reads the eval's definition and series, so two
+// first writes of one slug register it once: each writes version 1 with `on conflict do nothing`,
+// and only the write that stored it writes the section. A series no version holds registers too
+// (firstSeries), listed where the eval is logged and unlisted where it is computed, since a
+// reading under a computed eval's slug is stored and answered by its items alone: no day row of a
+// computed eval is written here, and nothing here folds such a reading into the eval's value. A
+// register write that lists or unlists a series of the eval takes the same lock, so it relists the
+// series' rows before this write reads the listing or after it commits, and the day rows the write
+// keeps carry the listing that stands at its commit.
 //
 // A correction (replaces) supersedes the reading it names in the same transaction. A logged
 // eval's day rows of every day the batch touches are kept in the same transaction (writeDays):
 // appended to where the batch replaces no reading of their day, and folded again from the
-// readings that stand where it does, so the write reads no stored reading but the readings it
-// replaces and the standing readings of the days it corrects. A batch that would leave a day row
-// holding a value past what a float holds is refused (CodeReadingDayOverflow).
+// readings that stand where it does or where a reading of the batch is measured at the moment of
+// the row's last value, so the write reads no stored reading but the readings it replaces and the
+// standing readings of the days it corrects or ties. A batch that would leave a day row holding a
+// value past what a float holds is refused (CodeReadingDayOverflow).
 func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error) {
 	if !slugPattern.MatchString(batch.Slug) {
 		return Written{}, refusal(CodeSlugInvalid, "slug %q is not lower-case letters, digits and hyphens starting with a letter or a digit", batch.Slug)
@@ -155,26 +159,20 @@ func foldedReadings(ctx context.Context, tx pgx.Tx, evalID string, replaced []Re
 }
 
 // registerMissing answers the eval's definition, registering the eval and every series of the
-// batch no version holds yet, under the eval's lock, which it takes only when one is missing.
-// It answers whether it registered the eval, the series it registered, in the batch's order, and
-// the newest version of every series of the eval by name, those it registered among them.
+// batch no version holds yet. It takes the eval's lock (lockEval) before it reads either, whether
+// or not anything is missing, as the register write does: so the listing of each series it
+// answers is the one the last register write of the eval committed, and no register write lists
+// or unlists a series of it until this write commits, the listing writeDays writes into the day
+// rows among what it waits for (relistDays). It answers whether it registered the eval, the
+// series it registered, in the batch's order, and the newest version of every series of the eval
+// by name, those it registered among them.
 func (s *Store) registerMissing(ctx context.Context, w *writeTx, batch Batch, rows []Reading) (Definition, bool, []Series, map[string]Series, error) {
 	evalID := EvalID(batch.Project, batch.Slug)
-	definition, found, err := newestDefinition(ctx, w.Tx, evalID)
-	if err != nil {
-		return Definition{}, false, nil, nil, err
-	}
-	series, err := currentSeries(ctx, w.Tx, evalID)
-	if err != nil {
-		return Definition{}, false, nil, nil, err
-	}
-	if found && !slices.ContainsFunc(rows, func(row Reading) bool { _, has := series[row.Series]; return !has }) {
-		return definition, false, nil, series, nil
-	}
 	if err := lockEval(ctx, w.Tx, evalID); err != nil {
 		return Definition{}, false, nil, nil, err
 	}
-	if definition, found, err = newestDefinition(ctx, w.Tx, evalID); err != nil {
+	definition, found, err := newestDefinition(ctx, w.Tx, evalID)
+	if err != nil {
 		return Definition{}, false, nil, nil, err
 	}
 	registered := false
@@ -196,7 +194,8 @@ func (s *Store) registerMissing(ctx context.Context, w *writeTx, batch Batch, ro
 			return Definition{}, false, nil, nil, err
 		}
 	}
-	if series, err = currentSeries(ctx, w.Tx, evalID); err != nil {
+	series, err := currentSeries(ctx, w.Tx, evalID)
+	if err != nil {
 		return Definition{}, false, nil, nil, err
 	}
 	var added []Series

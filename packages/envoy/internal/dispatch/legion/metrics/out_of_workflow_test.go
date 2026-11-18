@@ -181,7 +181,7 @@ func TestAnHourOutOfTheWorkflowIsOutsideTheWorkTimeAndOnNoBar(t *testing.T) {
 // first hour takes its phases from the observations, and the same issue with no observation takes
 // them from its event log. Where the daemon reports `done` exactly where the event log's statuses
 // say the issue was out of the workflow, and the phase each names after it agrees, the two
-// timelines are the same and so is every fact of the issue (ProjectFacts): the event log's
+// timelines are the same and so is every fact of the issue (factsOf): the event log's
 // stretch is laid on its timeline as the `done` the daemon reports for it.
 func TestBothTimelinesAnswerAnIssueOutOfTheWorkflowTheSameWay(t *testing.T) {
 	cases := []struct {
@@ -226,7 +226,7 @@ func TestBothTimelinesAnswerAnIssueOutOfTheWorkflowTheSameWay(t *testing.T) {
 			if !reflect.DeepEqual(events, observations) {
 				t.Errorf("the event log draws %v and the observations %v, want one timeline", events, observations)
 			}
-			eventsFacts, observationsFacts := ProjectFacts(fromEvents, nil), ProjectFacts(fromObservations, nil)
+			eventsFacts, observationsFacts := factsAt(fromEvents, nil), factsAt(fromObservations, nil)
 			if !reflect.DeepEqual(eventsFacts, observationsFacts) {
 				t.Errorf("the event log answers %+v and the observations %+v, want one answer", eventsFacts, observationsFacts)
 			}

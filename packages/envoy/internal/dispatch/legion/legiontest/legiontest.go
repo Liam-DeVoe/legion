@@ -141,8 +141,8 @@ type Fixture struct {
 	Keys []string
 	// Roots is each tree's root, in the same order.
 	Roots []string
-	// PhaseWork is the keys that carry Legion phase work, which is the set metrics.ProjectFacts
-	// answers an entry for.
+	// PhaseWork is the keys that carry Legion phase work, which is the set
+	// metrics.ProjectFactsClosed answers an entry for.
 	PhaseWork []string
 	// Open is the keys of the issues that never closed, whose hours run to the moment of the
 	// computation.
@@ -360,7 +360,7 @@ func (s *seeding) tree(index int) {
 	// keeps a reader from taking every slot holder for a root.
 	implemented := s.issue(number+1, "An implemented child", root, 2, at(2), new(at(24)))
 	s.event(implemented, "issue.created", SessionActor("architect", root), filing(root), at(2))
-	s.handOver(implemented, SessionActor("architect", root), at(4))
+	s.handOver(implemented, SessionActor("architect", root), at(3))
 	s.roleEvent(implemented, "implementer", "comment.created", `{"status":"in_progress"}`, at(4))
 	s.handoff(implemented, "implement", "implementer", at(12))
 	// Under Spec.Parked an even tree's implemented child waits in `icebox` from its implementer's
@@ -395,7 +395,7 @@ func (s *seeding) tree(index int) {
 	// one issue of the tree that reaches all three of the merger's phases.
 	reviewed := s.issue(number+2, "A reviewed child", root, 2, at(5), new(at(40)))
 	s.event(reviewed, "issue.created", SessionActor("architect", root), filing(root), at(5))
-	s.handOver(reviewed, SessionActor("architect", root), at(10))
+	s.handOver(reviewed, SessionActor("architect", root), at(6))
 	s.roleEvent(reviewed, "implementer", "comment.created", `{"status":"in_progress"}`, at(10))
 	// Under Spec.Parked an odd tree's reviewed child is parked in `backlog` for three hours of its
 	// implementing by its tree's architect, as the daemon's parkChild moves a child, and put back.
@@ -435,7 +435,7 @@ func (s *seeding) tree(index int) {
 	open := s.issue(number+3, "An open child", root, 2, at(8), nil)
 	s.fixture.Open = append(s.fixture.Open, open)
 	s.event(open, "issue.created", SessionActor("architect", root), filing(root), at(8))
-	s.handOver(open, SessionActor("architect", root), at(12))
+	s.handOver(open, SessionActor("architect", root), at(9))
 	s.roleEvent(open, "implementer", "comment.created", `{"status":"in_progress"}`, at(12))
 	s.event(open, "issue.updated", person, `{"status":"backlog"}`, at(20))
 	s.event(open, "issue.updated", person, `{"status":"in_progress"}`, at(26))
@@ -563,11 +563,22 @@ func (s *seeding) roleEvent(issue, role, kind, payload string, at time.Time) {
 // handOver writes the status write that hands an issue of a tree the sampler never saw
 // (Spec.Unobserved) to Legion, as an issue reaches Legion in production (AGENTS.md, "Handover"):
 // its move from `triage` to `todo`, by whoever hands it over, a person for an issue a person
-// filed and the tree's architect for a child it filed and releases. It falls at the hour the
-// issue's work starts, just before its first worker event, since that is the hour this history
-// admits it: in a tree the sampler saw, the same issue's first phase starts at that hour, with
-// its slot where it holds one of its own, and it never waits in the line for one (only an
-// observed root waits, under Spec.Queued).
+// filed and the tree's architect for a child it filed and releases. A person hands an issue over
+// at the hour its work starts, just before its first worker event, since that is the hour this
+// history admits it: in a tree the sampler saw, the same issue's first phase starts at that hour,
+// with its slot where it holds one of its own, and it never waits in the line for one (only an
+// observed root waits, under Spec.Queued). The architect releases each child an hour after it
+// filed it, and the child waits in `todo` until its first worker event. That wait is in no fact:
+// the work time starts at the first worker event, and before observations no hour is queue time
+// (metrics' queuedSpans).
+//
+// The child's hand-over falls strictly between its filing and its first worker event so that a
+// move of work onto the child gains it hours, as the verification's k21 drives one
+// (dispatch://INFRA-2916). A session whose newest title comes to name the child, such as the
+// root's architect retitled, makes its filing and its hand-over the child's own worker events, so
+// the child's work then starts at the filing. Its hours in `triage` before the hand-over stay out
+// of the workflow, and it gains the hours from the hand-over to its first worker event. A
+// hand-over at that event would leave the move nothing to gain.
 //
 // The write is there because before a project's first observation the metrics read where an
 // issue was out of the workflow from its statuses alone, from a `triage` status write to the next
@@ -618,7 +629,7 @@ func (s *seeding) handoff(issue, phase, role string, at time.Time) {
 	s.carriesPhaseWork(issue)
 }
 
-// carriesPhaseWork records the issue as one metrics.ProjectFacts answers an entry for, once
+// carriesPhaseWork records the issue as one metrics.ProjectFactsClosed answers an entry for, once
 // however many role events and handoffs it carries.
 func (s *seeding) carriesPhaseWork(issue string) {
 	if s.phaseWork[issue] {
