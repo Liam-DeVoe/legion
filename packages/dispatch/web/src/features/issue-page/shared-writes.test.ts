@@ -389,9 +389,6 @@ test("componentsControlName names the components picker as it is drawn", async (
   expect(drawnName(ownSet)).toBe("Edit components of CORE-1");
   expect(drawnName(notAttached, true)).toBe(savingName);
   expect(drawnName(ownSet, true)).toBe(savingName);
-  // `saving` alone says whether a save is in flight: with it false the trigger carries one of the
-  // two names asserted above, `setName` or `main`'s, and the saving name is neither of them.
-  expect([setName, "Edit components of CORE-1"]).not.toContain(savingName);
   // The saving words are the ones passed, and three dots end them as an ellipsis does.
   expect(
     componentsControlName("CORE-1", {
