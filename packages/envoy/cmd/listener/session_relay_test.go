@@ -1176,6 +1176,98 @@ accounts {
 	t.Fatalf("no ERROR says the session-consumer connection failed:\n%s", output)
 }
 
+// A listener's start opens its session relays' reply subscription (startSessionRelays) and ends
+// the process when that open fails (main), so a server that has not answered the subscription
+// yet, as a server on a loaded machine answers late, must not read as one that refused it: the
+// relays start while the server holds back every answer and has not read the subscription, and
+// once it answers again a session's done comes back on the subscription the start made and acks
+// the session's message. A start that waited for the server's answer, within nats.go's Flush bound
+// of 10 s, returned `nats: timeout` here, on which main ends the start: a listener pinned to a
+// starved CPU exited at its start that way (INFRA-4240).
+//
+// The rig runs on a server of its own (testnats.Start), frozen once every connection of the rig
+// is up (testnats.Server.Freeze): each connection stays CONNECTED, and what the client sends
+// waits in front of the server until the thaw, the subscription among it, which the server's own
+// monitoring endpoint shows it does not hold when the relays have started. The relay's waits run
+// on a held clock, as newRelayRigUnowned's do, so the frame is not sent again while the row waits
+// for its ack.
+func TestTheSessionRelaysStartWhileTheServerHasNotAnsweredTheirReplySubscription(t *testing.T) {
+	server, url := testnats.Start(t)
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("connect the listener: %v", err)
+	}
+	t.Cleanup(client.Close)
+	rig := newSessionConsumerRigOn(t, client, url)
+	relayClock := clocktest.Held()
+	cfg := rig.harness.config
+	cfg.clock = relayClock
+
+	thaw := server.Freeze(t)
+	// Cleanups run last-in first-out, so this thaw precedes the server's shutdown.
+	t.Cleanup(thaw)
+	type start struct {
+		relays *sessionRelays
+		err    error
+	}
+	starts := make(chan start, 1)
+	go func() {
+		relays, err := startSessionRelays(rig.deps.consumers, cfg)
+		starts <- start{relays: relays, err: err}
+	}()
+	started := testwait.Receive(t, "the session relays to start while the server holds back its answer to their reply subscription", starts)
+	if started.err != nil {
+		t.Fatalf("the session relays did not start while the server held back its answer to their reply subscription: %v", started.err)
+	}
+	t.Cleanup(func() { started.relays.stop(testwait.Context(t)) })
+	inbox := started.relays.replyPrefix + ">"
+	if n := subscriptionsOnServer(t, server, inbox); n != 0 {
+		t.Fatalf("the server held %d subscriptions on the reply inbox %s when the relays had started behind its freeze, want 0: the row did not hold the subscription back from it", n, inbox)
+	}
+
+	thaw()
+	relay := &relayRig{sessionConsumerRig: rig, relays: started.relays, url: url, relayClock: relayClock}
+	relay.relays.setOwned(true)
+	const sessionID = "ses_reply_subscription_answered_late"
+	standIn := startSessionStandIn(t, url, sessionID, answerDone)
+	relay.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+	stored, seq := relay.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
+	requireFrames(t, standIn.collect(t, 1), stored)
+	awaitAcked(t, rig.consumers, sessionID, seq)
+}
+
+// subscriptionsOnServer counts the subscriptions server holds on subject across all of its
+// connections, read from the server's own monitoring endpoint, which the relay a freeze stops
+// does not stand in front of.
+func subscriptionsOnServer(t *testing.T, server *testnats.Server, subject string) int {
+	t.Helper()
+	endpoint := server.MonitorURL() + "/connz?subs=detail&limit=4096"
+	response, err := http.Get(endpoint)
+	if err != nil {
+		t.Fatalf("read %s: %v", endpoint, err)
+	}
+	defer response.Body.Close()
+	var connz struct {
+		Connections []struct {
+			Subscriptions []struct {
+				Subject string `json:"subject"`
+			} `json:"subscriptions_list_detail"`
+		} `json:"connections"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&connz); err != nil {
+		t.Fatalf("decode %s: %v", endpoint, err)
+	}
+	n := 0
+	for _, connection := range connz.Connections {
+		for _, subscription := range connection.Subscriptions {
+			if subscription.Subject == subject {
+				n++
+			}
+		}
+	}
+	return n
+}
+
 // nakLadderAcker is the acker of a frame whose naks are read rather than sent: it records the
 // delay the relay asked the server for each time, as the stand-in rows read what the session was
 // sent. Nothing it answers fails, so the relay logs nothing.

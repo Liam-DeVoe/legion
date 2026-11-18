@@ -122,7 +122,8 @@ func WithInterestWatch(options ...kvwatch.Option) OpenOption {
 // the defaults: each JetStream request (the MaxWait of the JetStream context the buckets are
 // opened through, 10 s, which every bucket call waits out: bus.Bounded), each bucket's lookup and
 // create's wait for a reconnecting connection (bus.EnsureKeyValueWithin, 10 s), and the open's scan
-// of the role bucket (roleRevisions), whose consumer create waits 5 s and whose next entry 10 s
+// of the role bucket (roleRevisions), whose consumer create waits 5 s a send and is sent again for
+// as long as the server leaves it unanswered, and whose next entry waits 10 s
 // (kvwatch.ScanIdleTimeout); the scan as a whole then waits d. A test that writes through a
 // registry of its own passes what its test binary's deadline leaves, so that no bound of the
 // store's own ends a write the test then waits for; no deployment sets it. Open refuses a d that
@@ -188,6 +189,10 @@ func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The scan's consumer create is sent again for as long as the server leaves it unanswered
+	// (roleRevisions), so a server that answers late, as a loaded machine's does, delays this open,
+	// and the start that waits for it answers /healthz "starting" meanwhile; a refusal the server
+	// answers fails the open.
 	restoredRoleRevisions, err := roleRevisions(scanCtx, roleKV, opts.clock, scanIdle, opts.log, requestWait)
 	if err != nil {
 		return nil, err

@@ -17,6 +17,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -209,14 +210,14 @@ func TestAnInterestWatchWhoseFirstWatchGoesUnansweredReadsEveryInterestOnItsNext
 	}
 }
 
-// The role-revision scan's consumer create is one of the open's requests and waits the open's own
-// request wait: on a context with no deadline, as a production open's, nats.go holds one create to
-// 5 s, so the scan sends it again while the sends fit in the open's 10 s. A create that never
-// answers within that wait fails the scan naming the request and the wait, so the listener's start
-// that ends on it says why ("role revisions: create the scan's consumer: context deadline exceeded
-// (waited 10s)"), where it said a bare "context deadline exceeded". A create unanswered once is
-// answered by the next send, and the scan reads every claim. The creates are a seam's, which
-// answers each with the deadline at once.
+// The role-revision scan's consumer create is one of the open's requests: on a context with no
+// deadline, as a production open's, nats.go holds one create to 5 s, and a create that drew no
+// answer is sent again, a WARN for the one that went unanswered, no sooner than 5 s after it
+// began; the create answered next reads every claim. A create the server refuses fails the scan
+// at once, naming the refusal and no wait, since nothing waited. A context with a deadline of the
+// caller's (WithRequestWait) still bounds every send together, and a create never answered within
+// it fails naming the request and the wait, so the start that ends on it says why. The creates are
+// a seam's, which answers each at once: with the deadline, or with the refusal.
 func TestTheRoleRevisionScansConsumerCreateWaitsTheOpensRequestWait(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
@@ -233,26 +234,202 @@ func TestTheRoleRevisionScansConsumerCreateWaitsTheOpensRequestWait(t *testing.T
 
 	t.Run("a create unanswered once is sent again", func(t *testing.T) {
 		seam := &unansweredFirstWatchKV{KeyValue: roles.WatchHandle(), fails: 1}
-		revisions, err := roleRevisions(context.Background(), bus.NewKeyValue(roles.Legacy(), seam, roles.Streams()), registry.clock, kvwatch.ScanIdleTimeout, slog.Default(), openWait)
-		if err != nil || len(revisions) != 3 {
-			t.Fatalf("the scan whose first create went unanswered = %v, %v; want all 3 claims' revisions", revisions, err)
+		logs := &lockedBuffer{}
+		// The pause before the second send is armed on the scan's clock, which the row moves.
+		fake := clocktest.New(time.Now())
+		type scan struct {
+			revisions map[string]uint64
+			err       error
+		}
+		done := make(chan scan, 1)
+		go func() {
+			revisions, err := roleRevisions(context.Background(), bus.NewKeyValue(roles.Legacy(), seam, roles.Streams()), fake, kvwatch.ScanIdleTimeout, slog.New(slog.NewJSONHandler(logs, nil)), openWait)
+			done <- scan{revisions, err}
+		}()
+		got := testwait.Until(t, "the scan whose first create went unanswered to send it again and read every claim", func() (scan, bool) {
+			select {
+			case s := <-done:
+				return s, true
+			default:
+			}
+			if seam.watched.Load() == 1 && len(fake.Armed()) > 0 {
+				fake.Advance(scanCreateWait)
+			}
+			return scan{}, false
+		})
+		if got.err != nil || len(got.revisions) != 3 {
+			t.Fatalf("the scan whose first create went unanswered = %v, %v; want all 3 claims' revisions", got.revisions, got.err)
 		}
 		if sent := seam.watched.Load(); sent != 2 {
 			t.Fatalf("the scan sent its create %d times, want 2", sent)
 		}
+		if attempts := unansweredCreateWarnings(logs.String()); !slices.Equal(attempts, []float64{1}) {
+			t.Fatalf("the scan logged the unanswered create's WARN for attempts %v, want [1]:\n%s", attempts, logs.String())
+		}
 	})
 
-	t.Run("a create never answered within the wait fails naming it", func(t *testing.T) {
-		seam := &unansweredFirstWatchKV{KeyValue: roles.WatchHandle(), fails: 1 << 20}
-		_, err := roleRevisions(context.Background(), bus.NewKeyValue(roles.Legacy(), seam, roles.Streams()), registry.clock, kvwatch.ScanIdleTimeout, slog.Default(), openWait)
-		want := "role revisions: create the scan's consumer: create the watcher: context deadline exceeded (waited 10s)"
-		if err == nil || err.Error() != want || !errors.Is(err, kvwatch.ErrScanNotCreated) {
-			t.Fatalf("the scan whose create never answered = %v, want %q", err, want)
+	t.Run("a create the server refuses fails at once naming the refusal", func(t *testing.T) {
+		seam := &refusedWatchKV{KeyValue: roles.WatchHandle(), refusal: jetstream.ErrMaximumConsumersLimit}
+		logs := &lockedBuffer{}
+		_, err := roleRevisions(context.Background(), bus.NewKeyValue(roles.Legacy(), seam, roles.Streams()), registry.clock, kvwatch.ScanIdleTimeout, slog.New(slog.NewJSONHandler(logs, nil)), openWait)
+		if err == nil || !errors.Is(err, kvwatch.ErrScanNotCreated) || !errors.Is(err, jetstream.ErrMaximumConsumersLimit) ||
+			!strings.HasPrefix(err.Error(), "role revisions: create the scan's consumer: ") || strings.Contains(err.Error(), "waited") {
+			t.Fatalf("the scan whose create the server refused = %v, want the refusal named after the request, with no wait", err)
 		}
-		if sent := seam.watched.Load(); sent != 2 {
-			t.Fatalf("the scan sent its create %d times within the open's 10s, want 2 sends of nats.go's 5s", sent)
+		if sent := seam.watched.Load(); sent != 1 {
+			t.Fatalf("the scan sent the create the server refused %d times, want once", sent)
+		}
+		if attempts := unansweredCreateWarnings(logs.String()); len(attempts) != 0 {
+			t.Fatalf("a refused create logged the unanswered create's WARN for attempts %v, want none:\n%s", attempts, logs.String())
 		}
 	})
+
+	t.Run("a create never answered within a deadline of the caller's fails naming it", func(t *testing.T) {
+		seam := &unansweredFirstWatchKV{KeyValue: roles.WatchHandle(), fails: 1 << 20}
+		ended, cancel := context.WithDeadline(context.Background(), time.Now())
+		defer cancel()
+		_, err := roleRevisions(ended, bus.NewKeyValue(roles.Legacy(), seam, roles.Streams()), registry.clock, kvwatch.ScanIdleTimeout, slog.Default(), openWait)
+		want := "role revisions: create the scan's consumer: create the watcher: context deadline exceeded (waited 10s)"
+		if err == nil || err.Error() != want || !errors.Is(err, kvwatch.ErrScanNotCreated) {
+			t.Fatalf("the scan whose create never answered within its caller's deadline = %v, want %q", err, want)
+		}
+		if sent := seam.watched.Load(); sent != 1 {
+			t.Fatalf("the scan sent its create %d times within a deadline that had ended, want once", sent)
+		}
+	})
+}
+
+// A server that leaves the role-revision scan's consumer create unanswered past the 10 s an open
+// used to give it, as a server on a loaded machine answers late, does not fail the scan: each
+// create it leaves unanswered is a WARN naming the attempt, the scan is made again, and once the
+// server answers, the scan reads every claim's revision, exactly what a first create the server
+// answered would have read. A scan that gave up at the 10 s failed the open, and with it the
+// listener's start: "role revisions: create the scan's consumer: context deadline exceeded (waited
+// 10s)" ended INFRA-4240's starvation check. The creates are a seam's (heldScanCreates), which
+// holds each one, as a server that has not answered it does, until the scan's clock passes
+// nats.go's 5 s wait for it or the row answers it; the row moves that clock 15 s, three creates,
+// before it answers.
+func TestARoleRevisionScanWhoseConsumerCreateTheServerHoldsPastTenSecondsReadsEveryClaimOnceAnswered(t *testing.T) {
+	conn, cleanup := connectNATS(t)
+	defer cleanup()
+	registry, err := Open(conn, WithReplicas(1))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(registry.StopWatch)
+	roles := registry.roles()
+	want := map[string]uint64{}
+	for i := range 3 {
+		role := fmt.Sprintf("role-%d", i)
+		want[role] = putRoleClaim(t, roles.Legacy(), role, fmt.Sprintf("ses_%d", i))
+	}
+	fake := clocktest.New(time.Now())
+	seam := &heldScanCreates{KeyValue: roles.WatchHandle(), clock: fake, answered: make(chan struct{})}
+	logs := &lockedBuffer{}
+	type scan struct {
+		revisions map[string]uint64
+		err       error
+	}
+	done := make(chan scan, 1)
+	go func() {
+		revisions, err := roleRevisions(context.Background(), bus.NewKeyValue(roles.Legacy(), seam, roles.Streams()), fake, kvwatch.ScanIdleTimeout, slog.New(slog.NewJSONHandler(logs, nil)), 10*time.Second)
+		done <- scan{revisions, err}
+	}()
+	const unanswered = 3
+	for held := 1; held <= unanswered; held++ {
+		testwait.Until(t, fmt.Sprintf("the scan to send create %d, which the server holds", held), func() (struct{}, bool) {
+			select {
+			case got := <-done:
+				t.Fatalf("the scan returned %v, %v after the server held %d of its creates for %s, before the server answered any",
+					got.revisions, got.err, held-1, time.Duration(held-1)*scanCreateWait)
+			default:
+			}
+			return struct{}{}, seam.held.Load() == int32(held) && len(fake.Armed()) > 0
+		})
+		// nats.go's wait for this create runs out.
+		fake.Advance(scanCreateWait)
+	}
+	testwait.Until(t, "the scan to send the create the server answers", func() (int32, bool) {
+		select {
+		case got := <-done:
+			t.Fatalf("the scan returned %v, %v after the server held %d of its creates for %s, before the server answered any",
+				got.revisions, got.err, unanswered, unanswered*scanCreateWait)
+		default:
+		}
+		held := seam.held.Load()
+		return held, held == unanswered+1
+	})
+	close(seam.answered)
+	got := testwait.Receive(t, "the scan the server answered to return", done)
+	if got.err != nil {
+		t.Fatalf("the scan whose create the server answered after holding %d for %s failed: %v", unanswered, unanswered*scanCreateWait, got.err)
+	}
+	if !maps.Equal(got.revisions, want) {
+		t.Fatalf("the scan the server answered late read revisions %v, want every claim's stored revision %v", got.revisions, want)
+	}
+	if attempts := unansweredCreateWarnings(logs.String()); !slices.Equal(attempts, []float64{1, 2, 3}) {
+		t.Fatalf("the scan logged the unanswered create's WARN for attempts %v, want [1 2 3]:\n%s", attempts, logs.String())
+	}
+	for _, record := range jsonRecords(logs.String()) {
+		if record["level"] == "ERROR" {
+			t.Fatalf("a scan the server answered late logged an ERROR: %v", record)
+		}
+	}
+}
+
+// heldScanCreates is a role bucket's watch handle whose watches the server holds unanswered, as a
+// loaded server holds a consumer create it has not answered yet: each waits until clock passes
+// scanCreateWait, nats.go's own wait for it, and fails with the deadline as nats.go's does, or
+// until answered is closed, from when each watch is the bucket's own. held counts the watches made.
+type heldScanCreates struct {
+	jetstream.KeyValue
+	clock    *clocktest.Fake
+	answered chan struct{}
+	held     atomic.Int32
+}
+
+func (k *heldScanCreates) Watch(ctx context.Context, keys string, opts ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
+	k.held.Add(1)
+	select {
+	case <-k.answered:
+		return k.KeyValue.Watch(ctx, keys, opts...)
+	default:
+	}
+	wait := k.clock.NewTimer(scanCreateWait)
+	defer wait.Stop()
+	select {
+	case <-wait.C():
+		return nil, fmt.Errorf("create the watcher: %w", context.DeadlineExceeded)
+	case <-k.answered:
+		return k.KeyValue.Watch(ctx, keys, opts...)
+	}
+}
+
+// refusedWatchKV is a role bucket's watch handle whose every watch the server refuses with
+// refusal, its answer to the consumer create.
+type refusedWatchKV struct {
+	jetstream.KeyValue
+	refusal error
+	watched atomic.Int32
+}
+
+func (k *refusedWatchKV) Watch(context.Context, string, ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
+	k.watched.Add(1)
+	return nil, fmt.Errorf("create the watcher: %w", k.refusal)
+}
+
+// unansweredCreateWarnings is the attempt each WARN in logs names that says the role-revision
+// scan's consumer create drew no answer, in the order they were logged.
+func unansweredCreateWarnings(logs string) []float64 {
+	var attempts []float64
+	for _, record := range jsonRecords(logs) {
+		if record["level"] != "WARN" || !strings.Contains(fmt.Sprint(record["msg"]), "the scan's consumer create drew no answer") {
+			continue
+		}
+		attempt, _ := record["attempt"].(float64)
+		attempts = append(attempts, attempt)
+	}
+	return attempts
 }
 
 // jsonRecords is every JSON record in logs, one a line.

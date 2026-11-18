@@ -1288,7 +1288,10 @@ func main() {
 
 	// The registry and its cache watcher log through the listener's own handler, so its role-restore
 	// count, its warm-up and its reaper cycles are JSON records with this machine's id. Never
-	// slog.SetDefault instead: see store.WithLogger for the CloudWatch filters that breaks.
+	// slog.SetDefault instead: see store.WithLogger for the CloudWatch filters that breaks. A
+	// server that leaves the open's role-revision scan unanswered, as a loaded machine's can, delays
+	// the start here, a WARN for each attempt while /healthz answers "starting", and does not end
+	// it; a refusal the server answers ends it (store.roleRevisions).
 	registry, err := store.Open(client.Conn, store.WithReplicas(cfg.NATSReplicas), store.WithLogger(logger.Slog()), store.WithLegacySubjectCounter(legacySubjects))
 	if err != nil {
 		log.Fatal(err)
@@ -1598,7 +1601,9 @@ func main() {
 		os.Exit(1)
 	}
 	// The relay hears registrations from the moment /v1 opens, and relays once this task holds its
-	// machine's durable binding (below).
+	// machine's durable binding (below). Its reply subscription fails only where the client cannot
+	// make it: a server slow to answer it does not end the start, since the subscribe waits for no
+	// answer from the server (bus.SessionConsumers.SubscribeReplies).
 	relays, err := startSessionRelays(delivery, deliveryConfig)
 	if err != nil {
 		logger.Error("session relay reply subscription failed: no relayed frame could be answered", slog.String("error", err.Error()))

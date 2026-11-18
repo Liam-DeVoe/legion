@@ -121,38 +121,70 @@ const (
 // ctx is the scan's own (kvwatch.ScanExistingKeys): context.Background for every open but one
 // given a wait of its own (WithRequestWait), whose deadline bounds the whole scan.
 //
-// The scan's consumer create is one of the open's requests, so it waits the open's own request
-// wait, wait: on a ctx with no deadline nats.go holds each create to scanCreateWait, so a create
-// that drew no answer is sent again while the sends fit in wait (two for the 10 s of production),
-// and a scan whose consumer was never created fails naming that and the wait it spent:
+// The scan's consumer create is one of the open's requests. On a ctx with no deadline nats.go
+// holds each create to scanCreateWait. A create that drew no answer in its wait, or met the
+// connection reconnecting (scanCreateUnanswered), is a server slow to answer, as a loaded
+// machine's is, and no failure of the open: each such attempt is a WARN naming it, and the scan
+// is made again, no sooner than scanCreateWait after that attempt began, for as long as the server
+// leaves the create unanswered. No bound of the open's own ends that wait: the server's answer is
+// what the open needs, and a bound can only end the start over a create the server has not
+// refused. So the open, and the listener's start with it, waits, while the listener answers
+// /healthz "starting" (cmd/listener publishes its readiness only once Open has returned). The wait
+// ends when the server answers the create, or when the create fails any other way, which fails
+// the scan at once: a refusal the server answered, or a connection that closed, which is how a
+// stopping listener's open ends. Each attempt starts from no revisions, so the attempt that
+// completes keeps exactly what a first attempt that completed would. A ctx with a deadline
+// (WithRequestWait) bounds every attempt together, wait: once it has ended, a scan whose consumer
+// was never created fails naming that and the wait,
 // `role revisions: create the scan's consumer: context deadline exceeded (waited 10s)`.
 func roleRevisions(ctx context.Context, kv bus.KeyValue, c clock.Clock, idle time.Duration, log *slog.Logger, wait time.Duration) (map[string]uint64, error) {
-	sends := 1
-	if _, bounded := ctx.Deadline(); !bounded {
-		sends = max(1, int(wait/scanCreateWait))
-	}
-	for send := 1; ; send++ {
+	for attempt := 1; ; attempt++ {
+		began := c.Now()
 		revisions := map[string]uint64{}
 		scan, err := kvwatch.ScanExistingKeys(ctx, c, kv, jetstream.AllKeys, "role revisions", idle, log, func(entry kvwatch.Entry) error {
 			revisions[entry.Key] = entry.Revision
 			return nil
 		}, jetstream.MetaOnly())
-		if errors.Is(err, kvwatch.ErrScanNotCreated) && errors.Is(err, context.DeadlineExceeded) && send < sends {
-			continue
+		if err == nil {
+			log.Info("restored role claims", slog.Int("restored", len(revisions)), slog.Int("delete_markers", scan.Markers))
+			return revisions, nil
 		}
-		if errors.Is(err, kvwatch.ErrScanNotCreated) {
-			return nil, fmt.Errorf("%w (waited %s)", err, wait)
-		}
-		if err != nil {
+		if !scanCreateUnanswered(err) {
 			return nil, err
 		}
-		log.Info("restored role claims", slog.Int("restored", len(revisions)), slog.Int("delete_markers", scan.Markers))
-		return revisions, nil
+		if ctx.Err() == nil {
+			log.Warn(roleRevisionCreateUnanswered, slog.Int("attempt", attempt), slog.String("error", err.Error()))
+			if rest := scanCreateWait - c.Now().Sub(began); rest > 0 {
+				// Only ctx's end cuts the pause short, and that is read below.
+				_ = c.Sleep(ctx, rest)
+			}
+		}
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("%w (waited %s)", err, wait)
+		}
 	}
+}
+
+// roleRevisionCreateUnanswered is the WARN of each attempt of the role-revision scan whose
+// consumer create the server left unanswered, before the scan is made again (roleRevisions).
+const roleRevisionCreateUnanswered = "role revisions: the scan's consumer create drew no answer; the open makes the scan again and waits for it"
+
+// scanCreateUnanswered reports whether err, a role-revision scan's, is a scan whose consumer create
+// the server left unanswered (kvwatch.ErrScanNotCreated): a wait that ran out, nats.go's own
+// (context.DeadlineExceeded, nats.ErrTimeout), or a create made while the connection was
+// reconnecting, which nats.go refuses itself. Those are the failures the registry's watchers make
+// their first watch again on (kvwatch.Watcher.Start, WithFirstWatchRetry). A refusal the server
+// answered, a closed connection, and a scan that ended after its consumer was made are not.
+func scanCreateUnanswered(err error) bool {
+	return errors.Is(err, kvwatch.ErrScanNotCreated) &&
+		(errors.Is(err, context.DeadlineExceeded) || errors.Is(err, nats.ErrTimeout) ||
+			errors.Is(err, nats.ErrReconnectBufExceeded) || errors.Is(err, nats.ErrConnectionReconnecting) ||
+			errors.Is(err, nats.ErrDisconnected))
 }
 
 // scanCreateWait is how long nats.go waits for a scan's consumer create on a context with no
 // deadline: the request wait of the bucket handle's legacy push context (bus.KeyValue.WatchKeys).
+// The role-revision scan makes its attempts no oftener than this (roleRevisions).
 const scanCreateWait = 5 * time.Second
 
 // scannedRoleClaim is one role claim record as a scan of the role bucket delivered it: the key it

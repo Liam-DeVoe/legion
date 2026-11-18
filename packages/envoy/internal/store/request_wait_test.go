@@ -34,10 +34,12 @@ func waitLeft(t *testing.T) time.Duration {
 
 // A registry opened with WithRequestWait waits for the bus as long as its caller says, and for
 // nothing less: each case holds the server's answers past one of the store's own waits, and the
-// call still succeeds once the link comes back. Without the option each case fails inside the
-// hold (TestOpenFailsWhenTheRoleRevisionScanStalls is the role scan's), so a load that slows the
-// bus past those waits ends no call whose caller waits longer. That is the restart test's writer
-// in cmd/listener, which waits on its write for as long as the test binary's deadline leaves.
+// call still succeeds once the link comes back. Without the option the last two cases fail inside
+// the hold (TestOpenFailsWhenTheRoleRevisionScanStalls is the role scan's), so a load that slows
+// the bus past those waits ends no call whose caller waits longer. That is the restart test's
+// writer in cmd/listener, which waits on its write for as long as the test binary's deadline
+// leaves. The first case succeeds without the option too: the open sends a consumer create the
+// server left unanswered again until the server answers it (roleRevisions).
 func TestARegistryOpenedWithARequestWaitOutlastsAQuietLink(t *testing.T) {
 	const claims = 400
 	for _, held := range []struct {

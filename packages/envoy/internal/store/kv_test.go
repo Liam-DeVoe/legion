@@ -3667,10 +3667,11 @@ func stallingProxy(t *testing.T, target, trigger string, budget int, hold time.D
 // of the bucket instead of failing on a later request. The stalled.Flush below has to answer
 // before Open's outcome is judged, so a hold that never releases — whether edited in or produced
 // by load ending the run early — reds this test instead of passing it. That catches a PERMANENT
-// hold and nothing subtler: with budget 0 the consumer-create reply is held too, so the watch
-// fails on its own request deadline, the link still comes back, the Flush still answers and this
-// test passes on every build ("came back: context deadline exceeded"). Two other ways of reading
-// the bucket, and this package's own, against this test:
+// hold and nothing subtler. A hold with budget 0 is not this shape either: it holds the
+// consumer-create reply, so no scan is cut short; the open sends the create again until the link
+// comes back (roleRevisions), reads the whole bucket and succeeds, which reds this test though no
+// claim was missed. Two other ways of reading the bucket, and this package's own, against this
+// test:
 //
 //	Keys() plus a Get per key             FAIL  "restoring 232 of 400 claims", err=nil
 //	one watch, closed-channel check only  FAIL  "restoring 232 of 400 claims", err=nil
