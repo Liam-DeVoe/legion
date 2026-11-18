@@ -989,14 +989,15 @@ func TestACommentPostedAgainUnderItsKeyLandsOnce(t *testing.T) {
 	}
 }
 
-// flakyIdentity answers its next failures calls as down does - a sign-in issuer or a session
-// store down for a moment - and every later one as up does.
-type flakyIdentity struct {
+// outageIdentity answers its next failures calls as down does - a sign-in issuer or a session
+// store down for a moment - and every later one as up does. Where flakyIdentity answers one
+// refusal, this one answers each kind of outage's own.
+type outageIdentity struct {
 	up, down identity.Identity
 	failures *atomic.Int32
 }
 
-func (f flakyIdentity) Login(r *http.Request) (string, error) {
+func (f outageIdentity) Login(r *http.Request) (string, error) {
 	if f.failures.Add(-1) >= 0 {
 		return f.down.Login(r)
 	}
@@ -1041,14 +1042,14 @@ func TestACallerResolvedOnlyByItsRetryWritesOnce(t *testing.T) {
 	}{{
 		name: "the sign-in issuer down for a moment", status: http.StatusServiceUnavailable, code: "SIGNIN_UNAVAILABLE",
 		options: func(database *store.Store, failures *atomic.Int32) testServerOptions {
-			return testServerOptions{store: database, identity: flakyIdentity{up: headerIdentity(database), down: signInDownIdentity{}, failures: failures}}
+			return testServerOptions{store: database, identity: outageIdentity{up: headerIdentity(database), down: signInDownIdentity{}, failures: failures}}
 		},
 		credential: asUser("alice"),
 		body:       map[string]any{"body": text},
 	}, {
 		name: "a session store down for a moment", status: http.StatusInternalServerError, code: codeInternal,
 		options: func(database *store.Store, failures *atomic.Int32) testServerOptions {
-			return testServerOptions{store: database, identity: flakyIdentity{up: headerIdentity(database), down: storeDownIdentity{}, failures: failures}}
+			return testServerOptions{store: database, identity: outageIdentity{up: headerIdentity(database), down: storeDownIdentity{}, failures: failures}}
 		},
 		credential: asUser("alice"),
 		body:       map[string]any{"body": text},
@@ -1299,7 +1300,7 @@ func TestAnUploadWhoseCallerResolvesOnlyOnItsRetryStoresOneVersion(t *testing.T)
 	database := storetest.Open(t)
 	failures := new(atomic.Int32)
 	handler, _, _ := newTestServer(t, testServerOptions{store: database,
-		identity: flakyIdentity{up: headerIdentity(database), down: signInDownIdentity{}, failures: failures}})
+		identity: outageIdentity{up: headerIdentity(database), down: signInDownIdentity{}, failures: failures}})
 	issue := createTestIssue(t, handler, "KEYS", "An upload resolved on its retry")
 	upload := func() *httptest.ResponseRecorder {
 		t.Helper()
@@ -1360,7 +1361,7 @@ func TestARepeatWhoseCallerDoesNotResolveLeavesItsKeyAsItWas(t *testing.T) {
 	database := storetest.Open(t)
 	failures := new(atomic.Int32)
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{store: database,
-		identity: flakyIdentity{up: headerIdentity(database), down: signInDownIdentity{}, failures: failures}})
+		identity: outageIdentity{up: headerIdentity(database), down: signInDownIdentity{}, failures: failures}})
 	issue := createTestIssue(t, handler, "KEYS", "A key held through an outage")
 	post := func(key string) *httptest.ResponseRecorder {
 		t.Helper()
