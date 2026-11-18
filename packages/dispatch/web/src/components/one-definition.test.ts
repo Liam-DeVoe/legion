@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { flexRender as libraryFlexRender } from "@tanstack/react-table";
 
 import { stripComments } from "../__tests__/strip-comments";
+import { CONTROL } from "./control-names";
+import { flexRender } from "./DataTable";
 
 /**
  * One definition per control, and one owner for the page address (INFRA-3135).
@@ -148,7 +151,8 @@ const TABLE_MODULE = /["'`]@tanstack\/(?:react-table(?:\/[^"'`]*)?|table-core)["
  * `components/DataTable.tsx` is the web app's one TanStack table, and it re-exports `flexRender`
  * so a page that draws its own rows never reaches the library as a value. A page may still name
  * the library's types - a `ColumnDef`, a `Row`, a `SortingState` - and the project List augments
- * its column `meta` through `declare module`, which has to sit beside the columns it describes.
+ * its column `meta` through `declare module`, which has to sit beside the columns it describes:
+ * that `declare module` is allowed when it adds the `ColumnMeta` interface and nothing else.
  *
  * A statement is read whole, from where it starts to the specifier it ends at. It starts at its
  * own `import`, `export` or `declare`, or after the `;` that ends the statement before it,
@@ -175,10 +179,15 @@ function tableImportRefusals(relativePath: string, source: string): string[] {
     const declared = new RegExp(
       `^declare\\s+module\\s+["'\`]${module.replace(/[.*+?^${}()|[\]\\/-]/g, "\\$&")}["'\`]$`
     );
-    const allowed = /^(?:import|export)\s+type\b/.test(statement) || declared.test(statement);
-    if (!allowed) {
-      const statementStart = at + specifier.length - statement.length;
-      const line = source.slice(0, statementStart).split("\n").length;
+    const statementStart = at + specifier.length - statement.length;
+    const line = source.slice(0, statementStart).split("\n").length;
+    if (declared.test(statement)) {
+      if (!addsColumnMetaAlone(source.slice(at + specifier.length))) {
+        refused.push(
+          `${relativePath}:${line} declares \`${module}\` with more than the one \`ColumnMeta\` it may add — the one table is \`components/DataTable.tsx\`, which re-exports \`flexRender\``
+        );
+      }
+    } else if (!/^(?:import|export)\s+type\b/.test(statement)) {
       refused.push(
         `${relativePath}:${line} imports \`${module}\` as a value — the one table is \`components/DataTable.tsx\`, which re-exports \`flexRender\``
       );
@@ -186,6 +195,30 @@ function tableImportRefusals(relativePath: string, source: string): string[] {
   }
   TABLE_MODULE.lastIndex = 0;
   return refused;
+}
+
+/** The text from `open` (an index of `{`) to the `}` that closes it, both included; the rest of
+ *  `text` where it never closes. The text is stripped of comments already. */
+function braced(text: string, open: number): string {
+  let depth = 0;
+  for (let index = open; index < text.length; index++) {
+    if (text[index] === "{") depth++;
+    else if (text[index] === "}" && --depth === 0) return text.slice(open, index + 1);
+  }
+  return text.slice(open);
+}
+
+/** Whether the body of a `declare module` block, read from just after its specifier, holds the
+ *  one `interface ColumnMeta<…> { … }` and nothing else. */
+function addsColumnMetaAlone(afterSpecifier: string): boolean {
+  const open = afterSpecifier.indexOf("{");
+  if (open === -1 || afterSpecifier.slice(0, open).trim() !== "") return false;
+  const body = braced(afterSpecifier, open).slice(1, -1);
+  const meta = /^\s*interface\s+ColumnMeta\s*<[^{}]*>\s*/.exec(body);
+  if (meta === null) return false;
+  const rest = body.slice(meta[0].length);
+  if (!rest.startsWith("{")) return false;
+  return rest.slice(braced(rest, 0).length).trim() === "";
 }
 
 function collectFeatureFiles(dir: string): string[] {
@@ -583,4 +616,83 @@ describe("no page builds a control or an address of its own", () => {
   test.each(FEATURE_FILES)("%s draws the shared controls", (relativePath, file) => {
     expect(refusals(relativePath, readFileSync(file, "utf8"))).toEqual([]);
   });
+
+  test("a `declare module` of the table library that adds anything but `ColumnMeta` is refused", () => {
+    const declaring = (body: string) =>
+      ['import type { RowData } from "@tanstack/react-table";', "", `declare module "@tanstack/react-table" {${body}}`].join(
+        "\n"
+      );
+    const refusal =
+      "features/inbox/probe-table.ts:3 declares `@tanstack/react-table` with more than the one `ColumnMeta` it may add — the one table is `components/DataTable.tsx`, which re-exports `flexRender`";
+    expect(
+      refusals(
+        "features/inbox/probe-table.ts",
+        declaring("\n  interface TableMeta<TData extends RowData> {\n    rows: TData[];\n  }\n")
+      )
+    ).toEqual([refusal]);
+    expect(
+      refusals(
+        "features/inbox/probe-table.ts",
+        declaring(
+          "\n  interface ColumnMeta<TData extends RowData, TValue> {\n    show?: (value: TValue) => string;\n  }\n  export function useReactTable(): TData;\n"
+        )
+      )
+    ).toEqual([refusal]);
+    // The one augmentation a page may write: `ColumnMeta` alone, its body holding braces of its
+    // own, as the project List's columns write it.
+    expect(
+      refusals(
+        "features/inbox/probe-table.ts",
+        declaring(
+          "\n  interface ColumnMeta<TData extends RowData, TValue> {\n    show?: (value: string) => string;\n    order?: { first: TData; then: TValue };\n  }\n"
+        )
+      )
+    ).toEqual([]);
+  });
+
+  test("the one `declare module` of the table library is the project List's, which adds `ColumnMeta`", () => {
+    const declaring = FEATURE_FILES.filter(([, file]) =>
+      /\bdeclare\s+module\s+["'`]@tanstack\//.test(readFileSync(file, "utf8"))
+    ).map(([relativePath]) => relativePath);
+    expect(declaring).toEqual(["features/project/issues-table-columns.tsx"]);
+  });
+});
+
+describe("the shared controls are defined once, under components/", () => {
+  test("the one table re-exports the library's own `flexRender`, which a page draws its cells with", () => {
+    expect(flexRender).toBe(libraryFlexRender);
+  });
+
+  /** Each shared control, by its component's name and the `data-control` value it sets. */
+  const SHARED_CONTROLS = Object.entries({
+    ColumnFilter: CONTROL.columnFilter,
+    ColumnsMenu: CONTROL.columnsMenu,
+    ControlRow: CONTROL.controlRow,
+    DataTable: CONTROL.dataTable,
+    DisplayMenu: CONTROL.displayMenu,
+    Pager: CONTROL.pager,
+    PanelTrigger: CONTROL.panelTrigger,
+    SearchBox: CONTROL.searchBox,
+    SelectionBar: CONTROL.selectionBar,
+    TableShell: CONTROL.tableShell,
+  });
+  const CONTROL_KEYS = new Map(Object.entries(CONTROL).map(([key, value]) => [value, key]));
+
+  test.each(SHARED_CONTROLS)(
+    "%s is exported from components/ and sets its own `data-control`, and no page defines one",
+    (name, value) => {
+      const source = stripComments(
+        readFileSync(join(import.meta.dir, `${name}.tsx`), "utf8"),
+        `components/${name}.tsx`
+      );
+      expect(source).toMatch(new RegExp(`\\bexport\\s+function\\s+${name}\\b`));
+      expect(source).toMatch(new RegExp(`\\bCONTROL\\.${CONTROL_KEYS.get(value)}\\b`));
+      const definedIn = FEATURE_FILES.filter(([relativePath, file]) =>
+        new RegExp(`\\b(?:function|const|let|class)\\s+${name}\\b`).test(
+          stripComments(readFileSync(file, "utf8"), relativePath)
+        )
+      ).map(([relativePath]) => relativePath);
+      expect(definedIn).toEqual([]);
+    }
+  );
 });
