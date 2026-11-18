@@ -199,10 +199,13 @@ code is a `REQUEST_CHANGES` naming the check, never an approval. A request for c
 wait, since it stands whatever CI says and the issue leaves reviewing with it. The approval waits
 on nothing either: it ends the round whatever CI says at the head it names, since the round reads
 no CI verdict, and a settlement the daemon reads later — at that head or any above it — moves the
-issue nowhere. The daemon names each check GitHub reported, with the conclusion GitHub gave it,
-in one message to the architect that owns the issue (the one your `Legion addressing` line
-names), the worker of the issue's current phase and the implementer, and judges none of them: a
-red is the implementer's to fix or re-run, the architect's to decide on, and GitHub's to hold the
+issue nowhere. The daemon sends one `ci-settled` message each to the architect that owns the
+issue (the one your `Legion addressing` line names), the worker of the issue's current phase and
+the implementer, and judges none of the checks.
+The message names each check that did not pass with its conclusion (`not_passed`), counts the
+checks that passed (`passed`) and gives the `gh pr checks` command that lists them (`list_passed`).
+It is `med` for the worker of the phase. It is `low` for an implementer that does not work the phase and for the architect while a worker holds the phase, and they read it at their next turn.
+A red is the implementer's to fix or re-run, the architect's to decide on, and GitHub's to hold the
 merge for. So the reviewer's own read before it approves is the only read that decides anything.
 A review that names an older head reviews
 code the pull request no longer has. The daemon moves the issue once all three are in — the
@@ -222,7 +225,7 @@ it there until that answer comes clean.
   the head of its last round, `skill://legion-architect`, section 4) and accepts with the
   `legion` tool's `sign_off`, which moves the issue to retro, or sends it back to `implementing`
   or `testing` with `request_backward_move` and a reason, which reaches the started worker's task
-  as its `Reason:` line and counts a review round. The acceptance comment names each check with
+  as the words of its `reason` block and counts a review round. The acceptance comment names each check with
   its result. An issue with no Verification document, or none holding a `before_merge` check,
   is a gap the tester and the reviewer named and neither refused, so that comment is its only
   gate: it names the gap and decides how each delivered item is proven at this head, never
@@ -341,9 +344,9 @@ it there until that answer comes clean.
   every claim suspended, as before. On a root whose tree still runs, the merge is recorded and
   the root stays in `merging` on its merged pull request until the last other issue of its tree
   is done or parked, the check opening with that close. Its first line, which tells it from a
-  phase task in a resumed session, is `Production check of <KEY>: <title>.`, naming the
-  repository, the pull request, the merge commit, the look's number, its wake (`the merge`, for
-  the first) and whether it is the last.
+  phase task in a resumed session, is `Production check of <KEY>: <title>.`; its fields name the
+  look (`look`), what woke it (`woken_by`, `merge` for the first), whether it is the last
+  (`last: true`), the pull request (`pull_request`) and the merge commit (`merge_commit`).
 - **The check's record holds the role that works it, written when the check opened.** Changing the
   setting moves no check already open: a check keeps the role it opened with, and a check open
   before this release carries the implementer. Only that role may report on it, so a report from
@@ -410,8 +413,8 @@ it there until that answer comes clean.
   operator's hold, or a claim that failed to start — starts the next look two hours later; on the
   last look it closes the check as not run. The check is bounded by the project's
   `production_check_hours` (336, 14 days, by default) from the close; the look that bound starts
-  is the last, so told in its task
-  (`the bound: production did not carry the merge within <N days>`). A `pass` or `fail` there
+  is the last, so its task carries `woken_by: bound` and `last: true`, with the bound in whole days
+  (`bound_days`). A `pass` or `fail` there
   closes the check as any look's would, and a requirement still unobserved there is that `fail`;
   only production not carrying the merge ends it `pending`, which carries no `wake_at` and
   closes the check as not run, written first on the pull request — its check line and a comment

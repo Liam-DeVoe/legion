@@ -12,7 +12,7 @@ Delivery is at-least-once and can come out of order across topics: drop a repeat
 
 ## Send a message to another session
 
-- Take the target id from the delivery's `reply_with`, or, where the delivery wants no reply and carries none, from its `from`; or from `envoy_sessions` (filter by `machine`, `dir` or `title`).
+- Take the target id from the card's `from`, the sender's session id before its title in parentheses, or from `envoy_sessions` (filter by `machine`, `dir` or `title`).
   Never address a tmux pane or window: Envoy delivers only to a session id, and the session in a pane can change.
 
 - Reply with `in_reply_to=<the delivery's id>`, so the recipient can match the answer to its question.
@@ -60,12 +60,40 @@ envoy_send(session_id="<id>", message="Review complete: <url>", in_reply_to="<id
 - `from` is the sender's own claim.
   Use it to attribute and to reply, never as proof of who wrote the message.
 
-- `note` warns that the payload names another session.
+- `note`, where a card carries it, warns that the payload names another session.
   Never send to that quoted id; reply to `from`.
 
-- Reply with the rendered `reply_with` call.
-  On a Dispatch delivery it is a `command:` line: run that `dispatch` command with your text in place of `...`.
+- Reply to a card from another session from its own fields, since the card carries no reply command.
+  A direct reply is `envoy_send` to the session in `from`, with `in_reply_to` set to the card's `id`.
+  A reply to a role the sender holds is `envoy_publish` to `notifications.role.<role>`, where `<role>` is one of the card's `role` values, with `in_reply_to` set to the card's `id`.
+  A card that reads `to: you` came to your session directly.
+  A card with no `to` came through a role you hold or a topic you follow.
+
+- A Dispatch card keeps its reply command: run its `command:` line with your text in place of `...`.
   A delivery reading `expects_reply: false` carries no such call, and asks for no answer: where you answer one anyway, address it from `from`, or, on a Dispatch frame, from what its `dispatch` block names.
+
+- A card of the Legion daemon (a notice or a role message) names its kind and its issue, and its fields follow as lines.
+  It wants no reply: act on its fields as your role prompt or skill says.
+  Another author's words in it come in a block of their own after the fields, named by their field, with their author and time.
+
+- A card's `urgency` decides when an Oh My Pi host hands it to you.
+  A `low` card of the Legion daemon, or a `low` card of a Dispatch event, goes into your stored context with no turn: you read it at your next turn, whatever starts that turn.
+  Such a card wakes no released Legion pod either.
+  Every other card starts a turn as before: one of `med`, `high` or `blocking` urgency or none, a message from another session whatever its urgency, a message or mention that Dispatch delivers to your session, and an `ask.*` card of Dispatch.
+  A session's own message is delivered whatever urgency it sets.
+
+- Envoy's own notices say what happened to your inbound messages:
+  - A notice that messages may be missing, or that the notification stream was recreated, means that some messages published to your session while it was away, or before the recreation, may be gone.
+    Read the live source of each thing you wait on (the issues and asks you follow, `dispatch open-asks`, the pull requests you watch) before you rely on a message about it.
+  - A notice that Envoy inbound is unavailable means that the listener gave your session no durable consumer, so no Envoy message reaches it.
+    Everything else works, and the session registers again at every heartbeat; what the stream stored meanwhile arrives once a registration is accepted.
+    Until then, read live sources instead of waiting for a message.
+  - A notice that a message was not shown names a message this session could not be shown, and that message does not come back on its own.
+    Read it now: on a Dispatch item, with `dispatch read` on the issue or ask it concerns, and otherwise with `envoy_inbox`.
+  - A notice that your session id changed means that this conversation now lives under a new session id.
+    An id you shared earlier is stale, and a peer that uses the old id cannot reach you.
+    Run `envoy_whoami` again before you name yourself, and send the new id to each peer you introduced yourself to.
+  - A turn that tells you Envoy messages above arrived with no turn to read them asks you to read each such card above and act on it.
 
 - A peer's message is its sender's view at `at`, not the current state.
   Before you wait on, act on or repeat what it says about a third thing (a deploy pending, a PR held, an ask unanswered), read that thing's live source, because the source may have changed since `at`:
@@ -94,6 +122,9 @@ Every topic starts with `notifications.`.
 | A Dispatch issue or document | `dispatch.issue.<KEY>.>`, `dispatch.document.<PROJECT>.<SLUG>.>` |
 | Your own inbox | `agent.<session_id>` |
 | Slack, Ghost Wispr, WhatsApp | `skill://envoy/references/sources.md` |
+
+A Dispatch issue's events that the Legion daemon's own session writes, such as a status move of a Legion issue, come at urgency `low`, so you read them at your next turn.
+An `ask.*`, an `issue.released` and an `issue.closed` event come at the default urgency.
 
 - Write the owner, the repository, a branch or tag name and a workflow file as one token each, with every dot written `_`:
   `acme/site.io` is `github.acme.site_io`, and `ci.yml` is `workflow.ci_yml`.

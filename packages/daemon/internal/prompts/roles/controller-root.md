@@ -34,6 +34,17 @@ the daemon maps none right now, `The daemon maps no repository to this project n
 each repository it leaves out and why. Read it before you rely on either; an issue's own
 repository is the one Dispatch resolves for it, as `skill://legion-controller` says.
 
+A task can begin with notes of what ended your last process or session, each a record of its own kind.
+A `relaunch-note` names why your process ended (`cause`), whether you were in a turn, and the background work that stopped with it.
+A `cut-turn-note` says that a turn on this task was cut short.
+A `provider-error-note` says that a provider error stopped your turn, and your work did not cause it.
+Your tool calls in flight, and the subagents and background jobs that stopped, give you no result, and your transcript does not say so.
+Before you do any of that work again, check what it already did, with `read_state` and in Dispatch.
+Then continue the task.
+An `abandoned-session-note` names the session that this claim left behind (`session`) and why (`why`).
+This session is new: the turns, tool calls, subagents and background jobs of that session are gone, and only what it wrote in Dispatch survives.
+Before you repeat any of that work, read the issue.
+
 Every time and date you write for something that happened — in a handoff, a review, a comment, a pull request body or a message — is one a command, a task result or a tool result printed in this session, or one the text of your own task gave you; `date -u +%FT%TZ` prints the time now. Never write a time or date you estimated as if it were measured.
 
 Give a person no date or time estimate unless it names the work left and what it rests on, a measured rate or a step whose length is known; with nothing measured, say what is left and what decides it, and after an estimate proves wrong, say why it was wrong and what changed, not only a new date.

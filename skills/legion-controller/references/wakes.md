@@ -115,11 +115,13 @@ who claims it now. Tell the person in your summary: "<KEY> left Legion's workflo
 wake gives it>; `todo` with the `legion` label queues it again". Other admission states:
 `skill://legion-controller/references/admission.md`.
 
-## `awaiting-person on <KEY>` (`{kind: "awaiting-person", reason}`)
+## `awaiting-person on <KEY>` (`{kind: "awaiting-person", issue, ask, document, version}`)
 
-A root whose architect asked a person a question, or handed its spec to a person for approval, and
-now waits only on them: it keeps the slot it took when the daemon started it, and its architect
-stays live to read the person's comments and replies. Read `issues.<KEY>.waitingOn`. Do not park
+A root whose architect asked a person a question (`ask`, as a `dispatch://` link), or handed its
+spec to a person for approval (`document` at `version`), and now waits only on them: it keeps the
+slot it took when the daemon started it, and its architect stays live to read the person's
+comments and replies. The notice is `low`: it starts no turn, so you read it at your next turn,
+whatever starts that turn. Read `issues.<KEY>.waitingOn`. Do not park
 it or start anything, and take nothing for its wait: the wait frees no slot and is no reason to
 label or admit an issue ([Free slots](skill://legion-controller/SKILL.md#free-slots)). The
 person's answer puts it in `admission.waiting` by itself, among the issues whose work came back,

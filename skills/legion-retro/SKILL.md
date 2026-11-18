@@ -1,6 +1,6 @@
 ---
 name: legion-retro
-description: "Use when the Legion daemon starts you, the implementer, on `Phase: retro` after the architect accepted the reviewed head."
+description: "Use when the Legion daemon starts you, the implementer, with a task whose `phase` is `retro`, after the architect accepted the reviewed head."
 ---
 
 # Legion retro
@@ -45,8 +45,8 @@ Dispatch message (step 5) is for a finished retro only.
 1. **Read the evidence:** the issue, its checks (`dispatch results --issue <issue>`), the pull
    request, and the tester's and reviewer's handoffs
    (`dispatch handoff-read --issue <issue> --phase test`, then the review
-   at the version your task's `Handoff:` line names, `--phase review --version <n>`, the command
-   that line quotes). A pass stands for every `before_merge` check of the issue at the approved
+   at the version your task names in its `handoff_phase` and `handoff_version` fields,
+   `dispatch handoff-read --issue <issue> --phase review --version <n>`). A pass stands for every `before_merge` check of the issue at the approved
    head, from the implementer and from the tester alike, and the pull request
    body's `Checks` block carries each of those lines. A check carrying `ci_check` is CI's: the
    result that `dispatch results` derives is the pass it needs, and its CI job is its evidence

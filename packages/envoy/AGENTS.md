@@ -5099,6 +5099,8 @@ That holds for the 202 kept answer and for the 404 alike, and the sweep raises n
 The Legion daemon sends a text that its reader can act on at its next turn this way.
 An agent session always names its own session, so a `low` message from a session still wakes the role.
 Apart from that, the listener orders, holds and delivers no message by `urgency`, and the renderers show it to the reader.
+An Oh My Pi host stores a `low` card of the Legion daemon, one that names no `source_session`, in the session's context with no turn, so the session reads it at its next turn (`packages/pi-envoy/AGENTS.md`).
+Every other card from a session starts a turn as before, whatever its urgency.
 A session id or role that becomes a KV key NATS would refuse (`bus.EnsureKeyValue`) is a 413 naming its size when too long and a 400 naming the key when it holds an empty token or whitespace, or a character outside nats.go's key alphabet (`ses:bad`, `bus.ErrInvalidKey`), on every route that reads or writes one.
 Every `/v1` 4xx/5xx response, including the startup gate's 503, is JSON: `{"error":"<message>","expected":["field"]}`.
 `expected` appears when the caller must provide a field.
@@ -5904,6 +5906,7 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   Three kinds go at the default all the same: an `ask.*` event, an `issue.released` event, which the session that lost the claim must hear at once, and an `issue.closed` event, which a session outside the tree that follows the issue may wait on.
   Every other actor's event goes at the default too.
   No event copies an urgency of its own onto its envelope: an ask's urgency is for the person it asks, so its `ask.answered` reaches the asker at the default whatever the ask's urgency is.
+  An Oh My Pi host stores such a `low` card in the session's context with no turn, so the session reads it at its next turn; a message or mention that Dispatch delivers to a session, and an `ask.*` card, start a turn as before.
 
 - Dispatch issue events use `notifications.dispatch.issue.<KEY>.<type>`, carry every event, and are retained in JetStream;
   `notify` only controls agent wake and routing the same envelope to the issue's route (which also applies to a comment or ask anchored on the issue's own artifact):

@@ -4,12 +4,14 @@ Read this when a delivery field is unclear, or when a publish did not reach a se
 
 ## A rendered delivery
 
-Envoy renders an annotated delivery before its source summary and complete payload:
+Envoy renders an annotated delivery: the card's fields, then the words of the message in a block of their own.
+A card from another session:
 
 ```text
 envoy:
-  to: you (ses_example_recipient)
+  to: you
   from: 01a0bbbb-cccc-7ddd-eeee-0123456789ab (Reviewer)
+  role: legion-example-reviewer
   at: "2026-09-07T04:41:12Z"
   delivered: "2026-09-07T04:41:13Z"
   id: agent-message-2
@@ -18,23 +20,18 @@ envoy:
   expects_reply: required
   re: agent-message-1
   supersedes: agent-message-0
-  reply_with:
-    tool: envoy_send
-    args:
-      session_id: 01a0bbbb-cccc-7ddd-eeee-0123456789ab
-      in_reply_to: agent-message-2
-      message: ...
-  reply_role:
-    tool: envoy_publish
-    args:
-      topic: notifications.role.legion-reviewer
-      message: ...
   summary: Deployment needs confirmation.
-  message: "Confirm the listener health check passed.\n\nThen publish the release."
-  note: body names session 01a0cccc-dddd-7eee-ffff-0123456789ab; the sender is 01a0bbbb-cccc-7ddd-eeee-0123456789ab
+<message>
+Confirm the listener health check passed.
+
+Then publish the release.
+</message>
 ```
 
-- `to`: the local inbox that receives this delivery.
+A card of the Legion daemon names its head summary (`<kind> on <KEY>`) and gives the fields of its notice or role message as lines under `message:`, each once; the words of another author follow in a block named by their field, with `by` and `at`.
+
+- `to`: present on a card sent to your session directly, as `to: you`.
+  A card with no `to` came through a role you hold or a topic you follow.
 
 - `from`: the sending session's self-asserted id, with its session title in parentheses when the envelope carries one.
   Attribution and a direct-reply target, not an authenticated identity.
@@ -59,10 +56,14 @@ envoy:
 
 - `id`: the delivery id; pass it as `in_reply_to` when you reply.
 
+- `role`: each role the sender holds, once each, where it holds one.
+
 - `by`: the expiry deadline, when the sender set one.
 
 - `urgency`: how soon the sender asks you to act: `low`, `med`, `high` or `blocking`.
-  It is for you to read only: it does not change when a delivery reaches you, or its place among others.
+  On an Oh My Pi host, a `low` card of the Legion daemon (one that names no sender session) or a `low` card of a Dispatch event (not an `ask.*` card, and not a message or mention that Dispatch delivers to your session) goes into your stored context with no turn: you read it at your next turn, whatever starts that turn.
+  Every other card is delivered as before and starts a turn: a card of `med`, `high` or `blocking` urgency or none, and a message from another session whatever urgency its sender set.
+  On a message from another session, `urgency` is for you to read only: it does not change when that message reaches you, or its place among others.
 
 - `expects_reply`: what the sender wants back.
   `false` means nothing: do not reply, and do not acknowledge.
@@ -76,19 +77,20 @@ envoy:
 
 - `supersedes`: an earlier delivery this one replaces; act on this one in its place.
 
-- `reply_with`: the direct-reply call to the sender.
-  On a Dispatch frame it is `command:`, the `dispatch` command line that answers it, with `...` where your text goes.
+- How to reply: a card from another session carries no reply command, so reply from its fields.
+  A direct reply is `envoy_send` to the session in `from`, with `in_reply_to` set to the card's `id`.
+  A reply to a role the sender holds is `envoy_publish` to `notifications.role.<role>`, with `<role>` one of the card's `role` values, and `in_reply_to` set to the card's `id`.
+  A Dispatch frame keeps its reply command: `command:`, the `dispatch` command line that answers it, with `...` where your text goes.
   It is absent when `expects_reply` is `false`: a delivery that wants nothing back offers no way to send something.
   Where you answer one anyway, the card still names what you need — a Dispatch frame names its comment, message or ask, and an agent's delivery names its `id` and its sender.
-
-- `reply_role`: the role-publish reply call, when the sender holds a role.
-  It is absent under `false` for the same reason.
+  A card of the Legion daemon wants no reply: act on its fields as your role prompt or skill says.
 
 - `summary`: the one-line source summary.
 
-- `message`: the complete payload; it can hold several paragraphs.
+- `message`: the fields of a daemon notice or role message, as lines.
+  The words of a message from another session, and another author's words in a daemon text, come in a block after the fields (`<message>`, or the block of the field that carries them), whole.
 
-- `note`: the payload names another session; never use that quoted id as the recipient.
+- `note`: present where the payload names another session; never use that quoted id as the recipient.
 
 - `unrecognised`: present when the payload failed validation or came from an unknown source.
   It names what failed, not every unknown key.

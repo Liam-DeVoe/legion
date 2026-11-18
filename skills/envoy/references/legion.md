@@ -36,11 +36,15 @@ Read this in a Legion pane before you touch a role claim, or when a Legion role 
 
 - A role message forwarded to you is kept on your inbox in the stream, which your own durable consumer reads, so your session gets it once, also after the pane restarts or reconnects.
 
-- A role message to a released Legion role is kept for one hour, and it wakes the role.
+- A role message to a released Legion role is kept for one hour, and it wakes the role, apart from a `low` publish of the daemon's (below).
   The listener reports the wake at the keep.
   Its sweep reports the wake again every five minutes while the message has at least 20 minutes of its hour left and no live session holds the role.
   The woken session gets the message as an Envoy card with `kept_at`, and the card can come before the task the daemon gives the woken role.
   If the role is not back inside the hour, Envoy drops the message, and when the publish named a sender session, Envoy sends that session a message that names it, unless it dropped it more than an hour late.
+
+- A `low` publish of the Legion daemon's own, one that names no sender session, raises no wake.
+  The daemon sends such a text when its reader can act on it at its next turn: Envoy keeps it for a released role in the same way, and the role reads it at its next turn once it runs again.
+  A session's own message always names its sender session, so a `low` message of a session still wakes the role.
 
 - Never forward these failure payloads to an architect, because the daemon already acts on them.
 

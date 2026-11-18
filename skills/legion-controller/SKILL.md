@@ -72,7 +72,7 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | `slot-free on <KEY>`, `todo on <KEY>` | Name the free slots; take nothing |
 | `tick on <PROJECT>` | The every-turn steps, then the parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`) |
 | `unslotted on <KEY>` | Re-admit nothing; name it in your summary |
-| `awaiting-person on <KEY>` | Nothing: do not park or re-admit it, and take nothing for its slot, which it keeps while it waits |
+| `awaiting-person on <KEY>` | Nothing: do not park or re-admit it, and take nothing for its slot, which it keeps while it waits. It is `low`: it starts no turn, and you read it at your next turn |
 | `tree-stalled on <KEY>` | Read the tree and decide: ask a role what it waits on, move an issue back a phase, or park the tree only as [Rules](#rules) allows |
 | `architect-stalled on <KEY>` | Read the root's architect claim in `read_state`, then for the first arm take nothing while it is `working`, since the task reaches it when that turn ends, and name it in the day's report, or else `compact` that claim and use `fresh_session` only when it still does not take its task; for the second, `fresh_session` on a failed or retired claim; for the third, decide what the time means (`skill://legion-controller/references/wakes.md`) |
 | `parked-decision on <KEY>` | `skill://legion-controller/references/parked-decisions.md#deciding` |

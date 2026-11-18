@@ -65,7 +65,7 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 			"gh pr merge <n> --squash --match-head-commit <head> --subject '<pull request title> (#<n>)' --body ''",
 			"enqueuePullRequest", "squash_merge_commit_message",
 			"gh pr merge <n> --disable-auto", "autoMergeRequest", "dequeuePullRequest",
-			"The design gate of <tree> closed: version <n> of its <step> document (<id>)",
+			"A `gate-moved` message with `gate: closed` and `merge: held`",
 			"`HANDOFF_NOT_CURRENT_PHASE`", "`HANDOFF_STALE_GENERATION`", "`HANDOFF_NO_RUN`",
 			"`HANDOFF_ALREADY_RECORDED`", "`TREE_LINGERING`"}},
 	} {

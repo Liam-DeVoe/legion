@@ -32,7 +32,7 @@ legion({ op: "sign_off", issue: "LEGION-40" })
 ```
 
 - The issue's Dispatch status stays `needs_review` in `accepting`; `sign_off` moves it to `retro`.
-- A `catch-up` whose `reason` names an issue as waiting for your acceptance is the wake for it: it
+- A `catch-up` whose `accepting` names an issue as waiting for your acceptance is the wake for it: it
   is in `accepting`, and the `phase-finished` that moved it there may never have reached you.
   While a root's architect has failed, its notices end undelivered. While a child's own architect
   does not hold its role, the child's notices go to the architect above it. Either way, a retried
@@ -174,9 +174,8 @@ Make a conflict-resolution merge only when GitHub reports `CONFLICTING`
 (`gh pr view <n> --json mergeable,mergeStateStatus`). From `testing`, `reviewing`, `accepting`,
 `retro` and `merging` alike the daemon acts on it itself: it moves the issue back to
 `implementing`, starts the implementer, and tells you with a `checks-red` notice naming the phase
-the issue was taken out of and whose reason reads
-`the head conflicts with <base>: GitHub runs no checks on it; merge <base> forward`. You start
-nothing for it.
+the issue was taken out of (`phase`), the base the head conflicts with (`conflicts_with`) and the
+head (`head`). The notice is `low`, so you read it at your next turn. You start nothing for it.
 
 The daemon then runs the phases from `implementing`: the implementer merges the bookmark forward
 with the destination and pushes it (the procedure in
