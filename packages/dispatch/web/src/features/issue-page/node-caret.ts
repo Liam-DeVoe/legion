@@ -61,7 +61,7 @@ export function caretInBlock(host: HTMLElement, blockId: string | undefined): bo
   const block = editable === null ? null : blockIn(editable, blockId);
   if (editable === null || block === null) return false;
   editable.focus({ preventScroll: true });
-  const [start, offset] = edgesOf(block).start;
+  const [start, offset] = firstPlace(block);
   selectInEditor(start, offset, start, offset);
   return true;
 }
@@ -190,8 +190,9 @@ export function confineKey(
   blockId: string | undefined,
   event: KeyboardEvent
 ): void {
+  if (event.defaultPrevented || PASSING_KEYS[event.key] === true) return;
   const editable = editableHolding(host, event.target);
-  if (editable === null || event.defaultPrevented || PASSING_KEYS[event.key] === true) return;
+  if (editable === null) return;
   const block = blockIn(editable, blockId);
   const selected = block === null ? null : selectionIn(block);
   if (block === null || selected === null) {
@@ -311,8 +312,16 @@ const BLOCK_ID_PROPERTY = "blockId";
  * ProseMirror make each plugin's view again (`useNodeEditing.ts`). The collaborators' cursors go
  * on later in the same way, keeping every plugin the editor holds (`@legion/proof-editor`'s
  * `installCollabCursorsWhenReady`). While `heldBlock` names no block, or the document holds no
- * block of its id, no edit of the editor's own goes in. Answers what takes the plugin off again,
- * or keeps it from going on.
+ * block of its id, no edit of the editor's own goes in. Answers what lets the hold go, or keeps
+ * it from going on.
+ *
+ * A hold let go leaves its plugin on the editor, refusing nothing and looking for no block, as no
+ * plugin did. Taking it off would change the editor's plugins again: ProseMirror then makes every
+ * plugin's view again (`prosemirror-view`'s `updatePluginViews`), and y-prosemirror's view, made
+ * with no mapping, draws the whole document again from the room in one transaction
+ * (`sync-plugin.js`'s `_forceRerender`), as read in both libraries' sources. The tree lets go of
+ * its hold as it goes (`useNodeEditing.ts`), on an editor the page is about to destroy, where
+ * taking the plugin off drew the whole document - a spec of some 160 rows - again for nothing.
  */
 export function holdEditsToBlock(
   view: EditorView,
@@ -320,30 +329,30 @@ export function holdEditsToBlock(
   parts: Promise<HoldParts>,
   onHeld: () => void
 ): () => void {
-  let held: Plugin | undefined;
   let letGo = false;
   void parts.then(
     ([state, sync]) => {
       if (letGo || view.isDestroyed) return;
       const plugin: Plugin<number | undefined> = new state.Plugin<number | undefined>({
         filterTransaction: (transaction, editorState) =>
+          letGo ||
           transaction.getMeta(sync.ySyncPluginKey) !== undefined ||
           (!transaction.docChanged && !transaction.selectionSet) ||
           keepsToBlock(transaction, editorState, heldBlock(), plugin.getState(editorState)),
         // The block's start, as last found: the guess a transaction checks before it searches.
         state: {
-          apply: (transaction, start, _, { doc }) =>
-            !transaction.docChanged
-              ? start
-              : blockStart(
-                  doc,
-                  heldBlock(),
-                  start === undefined ? undefined : transaction.mapping.map(start, 1)
-                ),
+          apply: (transaction, start, _, { doc }) => {
+            if (letGo) return undefined;
+            if (!transaction.docChanged) return start;
+            return blockStart(
+              doc,
+              heldBlock(),
+              start === undefined ? undefined : transaction.mapping.map(start, 1)
+            );
+          },
           init: (_, { doc }) => blockStart(doc, heldBlock(), undefined),
         },
       });
-      held = plugin;
       view.updateState(view.state.reconfigure({ plugins: [...view.state.plugins, plugin] }));
       onHeld();
     },
@@ -351,13 +360,7 @@ export function holdEditsToBlock(
     () => undefined
   );
   return () => {
-    const plugin = held;
-    held = undefined;
     letGo = true;
-    if (plugin === undefined || view.isDestroyed) return;
-    view.updateState(
-      view.state.reconfigure({ plugins: view.state.plugins.filter((each) => each !== plugin) })
-    );
   };
 }
 
@@ -399,13 +402,17 @@ function keepsToBlock(
   const end = transaction.mapping.map(to, -1);
   const kept = transaction.doc.nodeAt(start);
   const { selection } = transaction;
+  // A transaction of no step on this very document - a selection moved, which most of them are -
+  // leaves the block's lines and all that stands around it as they were, so they are not read.
+  const unchanged = !transaction.docChanged && transaction.doc === state.doc;
   return (
     kept !== null &&
     start + kept.nodeSize === end &&
     kept.hasMarkup(block.type, attributesAsRead(block, kept), block.marks) &&
-    headingBreaks(kept) <= headingBreaks(block) &&
-    sameReading(state.doc.content.cut(0, from), transaction.doc.content.cut(0, start)) &&
-    sameReading(state.doc.content.cut(to), transaction.doc.content.cut(end)) &&
+    (unchanged ||
+      (headingBreaks(kept) <= headingBreaks(block) &&
+        sameReading(state.doc.content.cut(0, from), transaction.doc.content.cut(0, start)) &&
+        sameReading(state.doc.content.cut(to), transaction.doc.content.cut(end)))) &&
     selection.from > start &&
     selection.to < end
   );
@@ -473,7 +480,8 @@ export function selectionIntoBlock(host: HTMLElement, blockId: string | undefine
   ) {
     return;
   }
-  const { start, end } = edgesOf(block);
+  const start = firstPlace(block);
+  const end = lastPlace(block);
   const inside = (point: Point): Point => {
     if (block.contains(point[0])) return point;
     return compare(point, start) < 0 ? start : end;
@@ -494,38 +502,47 @@ function keyAtBlock(
   anchor: Point,
   focus: Point
 ): readonly [Point, Point] | null | undefined {
-  const { start, end } = edgesOf(block);
   const jump = event.ctrlKey || event.metaKey;
-  const collapsed = compare(anchor, focus) === 0;
+  const order = compare(anchor, focus);
+  const collapsed = order === 0;
   const extendTo = (edge: Point): readonly [Point, Point] => [event.shiftKey ? anchor : edge, edge];
   // The end of the selection a vertical move starts from: the focus where Shift extends the
   // selection, and otherwise the end on the move's side, where the browser collapses it to.
-  const earlier = compare(anchor, focus) <= 0 ? anchor : focus;
+  const earlier = order <= 0 ? anchor : focus;
   const later = earlier === anchor ? focus : anchor;
+  // The block's edges are looked for by the keys that move to them alone, not by every letter.
   switch (event.key) {
     case "Home":
-      return jump ? extendTo(start) : undefined;
+      return jump ? extendTo(firstPlace(block)) : undefined;
     case "End":
-      return jump ? extendTo(end) : undefined;
+      return jump ? extendTo(lastPlace(block)) : undefined;
     case "a":
     case "A":
       return (event.metaKey || (event.ctrlKey && !MAC_PLATFORM.test(navigator.platform))) &&
         !event.altKey &&
         !event.shiftKey
-        ? [start, end]
+        ? [firstPlace(block), lastPlace(block)]
         : undefined;
-    case "ArrowUp":
+    case "ArrowUp": {
+      const start = firstPlace(block);
       if (event.metaKey) return extendTo(start);
       if (!sameLine(event.shiftKey ? focus : earlier, start)) return undefined;
       return event.shiftKey ? extendTo(start) : null;
-    case "ArrowDown":
+    }
+    case "ArrowDown": {
+      const end = lastPlace(block);
       if (event.metaKey) return extendTo(end);
       if (!sameLine(event.shiftKey ? focus : later, end)) return undefined;
       return event.shiftKey ? extendTo(end) : null;
+    }
     case "ArrowLeft":
-      return (collapsed || event.shiftKey) && compare(focus, start) <= 0 ? null : undefined;
+      return (collapsed || event.shiftKey) && compare(focus, firstPlace(block)) <= 0
+        ? null
+        : undefined;
     case "ArrowRight":
-      return (collapsed || event.shiftKey) && compare(focus, end) >= 0 ? null : undefined;
+      return (collapsed || event.shiftKey) && compare(focus, lastPlace(block)) >= 0
+        ? null
+        : undefined;
     case "PageUp":
     case "PageDown":
       return null;
@@ -605,23 +622,26 @@ function selectionIn(block: HTMLElement): readonly [Point, Point] | null {
   ];
 }
 
-/** The first place and the last of `block` a caret can stand at: the start of its first text a
- *  caret can enter and the end of its last, or the block itself where it holds none. An atom's
- *  text and a collaborator's cursor label sit in `contenteditable="false"`, where a caret cannot
- *  go. */
-function edgesOf(block: HTMLElement): { readonly end: Point; readonly start: Point } {
+/** The first place of `block` a caret can stand at: the start of its first text a caret can
+ *  enter, or the block itself where it holds none. An atom's text and a collaborator's cursor
+ *  label sit in `contenteditable="false"`, where a caret cannot go. The walk stops at that text. */
+function firstPlace(block: HTMLElement): Point {
   const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
-  let first: Node | null = null;
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    if (node.parentElement?.isContentEditable === true) return [node, 0];
+  }
+  return [block, 0];
+}
+
+/** The last place of `block` a caret can stand at: the end of its last text a caret can enter,
+ *  or the block itself where it holds none (`firstPlace`). */
+function lastPlace(block: HTMLElement): Point {
+  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
   let last: Node | null = null;
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-    if (node.parentElement?.isContentEditable !== true) continue;
-    first ??= node;
-    last = node;
+    if (node.parentElement?.isContentEditable === true) last = node;
   }
-  return {
-    end: last === null ? [block, 0] : [last, last.textContent?.length ?? 0],
-    start: [first ?? block, 0],
-  };
+  return last === null ? [block, 0] : [last, last.textContent?.length ?? 0];
 }
 
 /** Where `point` stands against `edge` in the page: before it (negative), at it (zero) or after

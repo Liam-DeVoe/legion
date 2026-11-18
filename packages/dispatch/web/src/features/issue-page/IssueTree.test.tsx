@@ -1,7 +1,7 @@
 import { afterEach, expect, jest, setSystemTime, spyOn, test } from "bun:test";
 import { macBaseKeymap } from "@milkdown/kit/prose/commands";
 import { Schema } from "@milkdown/kit/prose/model";
-import { EditorState } from "@milkdown/kit/prose/state";
+import { EditorState, TextSelection } from "@milkdown/kit/prose/state";
 import { EditorView } from "@milkdown/kit/prose/view";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
@@ -3230,6 +3230,70 @@ test("the caret goes into the row's editor only once the editor holds its edits 
     );
   } finally {
     load.mockRestore();
+  }
+});
+
+// A change of the editor's plugins makes ProseMirror make every plugin's view again, and
+// y-prosemirror's then draws the whole document again from the room. The tree lets go of its hold
+// as it goes, on an editor the page is about to destroy, so a hold let go leaves its plugin on the
+// editor (`holdEditsToBlock`), and the plugin refuses no edit from then, as no plugin did.
+test("a hold let go changes none of its editor's plugins, and refuses no edit from then", async () => {
+  const room = liveRoom();
+  room.server.getXmlFragment("prosemirror").insert(0, liveBlocks().map(roomBlock));
+  const root = document.createElement("div");
+  document.body.append(root);
+  const handle = await createEditor(root, {
+    awareness: null,
+    blockSchema: compiledBlockSchema,
+    onAskBlockHosts: () => {},
+    user: { color: "#f59e0b", name: "alice" },
+    watchPicture: () => () => {},
+    ydoc: room.browser,
+  });
+  const { view } = handle;
+  // An `X` put at the start of block `id`, with the caret after it, as an edit of the editor's
+  // own: answers the blocks after it.
+  const typeAtStart = (id: string) => {
+    let at = -1;
+    view.state.doc.descendants((node, position) => {
+      if (node.attrs.blockId === id) at = position + 1;
+      return at < 0;
+    });
+    const typed = view.state.tr.insertText("X", at);
+    view.dispatch(typed.setSelection(TextSelection.create(typed.doc, at + 1)));
+    return blocksOf(view);
+  };
+  try {
+    const held = Promise.withResolvers<void>();
+    const letGo = nodeCaret.holdEditsToBlock(
+      view,
+      () => "r1",
+      nodeCaret.loadEditsHold(),
+      held.resolve
+    );
+    await held.promise;
+    const before = blocksOf(view);
+    expect(before, "the editor did not draw the document").toHaveLength(3);
+    expect(typeAtStart("r0"), "the hold let in an edit outside its block").toEqual(before);
+
+    let changes = 0;
+    const updateState = view.updateState.bind(view);
+    const updates = spyOn(view, "updateState").mockImplementation((next) => {
+      if (next.plugins !== view.state.plugins) changes += 1;
+      updateState(next);
+    });
+    try {
+      letGo();
+      expect(typeAtStart("r0"), "the hold let go refused an edit outside its block").toEqual(
+        withWords(before, "r0", "XThe words above the statement.")
+      );
+    } finally {
+      updates.mockRestore();
+    }
+    expect(changes, "letting go of the hold changed the editor's plugins").toBe(0);
+  } finally {
+    await handle.destroy();
+    root.remove();
   }
 });
 

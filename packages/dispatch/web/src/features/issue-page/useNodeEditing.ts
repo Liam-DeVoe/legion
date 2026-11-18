@@ -318,8 +318,9 @@ export function useNodeEditing({
     });
     const confining = new AbortController();
     const confine = () => {
+      if (!acts.signal.aborted) return;
       const row = box.querySelector<HTMLElement>(rowSelector);
-      if (acts.signal.aborted && row !== null) selectionIntoBlock(row, editingBlock);
+      if (row !== null) selectionIntoBlock(row, editingBlock);
     };
     // Whether the editing has ended here, with no caret placed.
     let over = false;
