@@ -1732,10 +1732,14 @@ func TestAFullBatchOfFailingEventsHoldsBackOnlyItsOwnIssue(t *testing.T) {
 	if attempts < 1 {
 		t.Fatalf("the first failing event counted %d attempts, want at least one", attempts)
 	}
+	// A held event is unpublished and carries the retry it waits on (next_attempt_at), where a
+	// fresh one carries none (batch.go's fresh rows). Comparing that retry with now() would read
+	// the clock: a scan that ran longer than retry.BaseDelay on a loaded runner leaves the retry
+	// already due and every held event uncounted, as run 44222680503 (job 134528344217) showed.
 	var held, heldAttempts, heldTimes int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*), count(*) filter (where attempt_count <> 0), count(distinct next_attempt_at)
-		from events where id = any($1) and next_attempt_at > now()
+		from events where id = any($1) and published_at is null and next_attempt_at is not null
 	`, idsOf(poison[1:])).Scan(&held, &heldAttempts, &heldTimes); err != nil {
 		t.Fatalf("read the held events: %v", err)
 	}
