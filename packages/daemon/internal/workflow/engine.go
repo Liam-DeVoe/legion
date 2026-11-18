@@ -531,8 +531,14 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 	if agent {
 		return true, nil
 	}
-	return true, e.notice(ctx, tx, issue.Key, texts.StatusReassertedRecord{NoticeHead: texts.NoticeHead{Kind: texts.StatusReasserted, Issue: issue.Key},
-		Session: fact.ActorSession, Wrote: fact.Status, Status: issue.Status})
+	return true, e.notice(ctx, tx, issue.Key, StatusReassertedNotice(issue.Key, fact.ActorSession, fact.Status, issue.Status))
+}
+
+// StatusReassertedNotice is the status-reasserted notice of issue: the session that wrote a
+// lifecycle status, the status it wrote, and the status the daemon set back.
+func StatusReassertedNotice(issue, session, wrote, status string) texts.StatusReassertedRecord {
+	return texts.StatusReassertedRecord{NoticeHead: texts.NoticeHead{Kind: texts.StatusReasserted, Issue: issue}, Session: session,
+		Wrote: wrote, Status: status}
 }
 
 // observedIssue is issue with everything an observation of fact records on it: its title, rank,
@@ -946,7 +952,7 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		return intake.Result{}, err
 	}
 	if claim.IsTreeArchitect(fact.Role, issue.Key, issue.Tree) {
-		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, workerDied(issue.Key, fact.Role, issue.Phase, nil))
+		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, WorkerDied(issue.Key, fact.Role, issue.Phase, nil))
 	}
 	if fact.Role == claim.RoleArchitect {
 		if !record.InWorkflow(*issue) {
@@ -955,7 +961,7 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 			return intake.Result{}, err
 		}
-		return intake.Result{}, e.notice(ctx, tx, issue.Key, workerDied(issue.Key, fact.Role, issue.Phase, noticeFailure(fact)))
+		return intake.Result{}, e.notice(ctx, tx, issue.Key, WorkerDied(issue.Key, fact.Role, issue.Phase, noticeFailure(fact)))
 	}
 	// The failure of the role an open check records ends the look of its closed issue's production
 	// check, as its bound would. Which role that is the check's own row says (record.ProductionCheck.Role,
@@ -975,7 +981,7 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 			if err := e.endLook(ctx, tx, check, "claim failed"); err != nil {
 				return intake.Result{}, err
 			}
-			died := workerDied(issue.Key, fact.Role, "", noticeFailure(fact))
+			died := WorkerDied(issue.Key, fact.Role, "", noticeFailure(fact))
 			died.Look = check.Looks
 			return intake.Result{}, e.notice(ctx, tx, issue.Key, died)
 		}
@@ -986,7 +992,7 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	working := issue.WorkingPhase()
 	failure := noticeFailure(fact)
 	if phase.RoleFor(working) != fact.Role {
-		died := workerDied(issue.Key, fact.Role, issue.Phase, failure)
+		died := WorkerDied(issue.Key, fact.Role, issue.Phase, failure)
 		died.Working = working
 		return intake.Result{}, e.notice(ctx, tx, issue.Key, died)
 	}
@@ -1007,18 +1013,24 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
 		return intake.Result{}, err
 	}
-	if err := e.noticeWithController(ctx, tx, issue.Key, texts.HeldRecord{NoticeHead: texts.NoticeHead{Kind: texts.Held, Issue: issue.Key},
-		Role: fact.Role, Phase: from, Hold: texts.HoldFailure, Failure: failure}); err != nil {
+	if err := e.noticeWithController(ctx, tx, issue.Key, HeldFailureNotice(issue.Key, fact.Role, from, failure)); err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.notice(ctx, tx, issue.Key, workerDied(issue.Key, fact.Role, from, failure))
+	return intake.Result{}, e.notice(ctx, tx, issue.Key, WorkerDied(issue.Key, fact.Role, from, failure))
 }
 
-// workerDied is the worker-died notice of issue that role's claim failed, at the issue's phase
+// WorkerDied is the worker-died notice of issue that role's claim failed, at the issue's phase
 // (empty where the notice names none, as a production check's look does), with the failure where
 // the daemon recorded its cause.
-func workerDied(issue string, role claim.Role, at phase.Phase, failure *record.NoticeFailure) texts.WorkerDiedRecord {
+func WorkerDied(issue string, role claim.Role, at phase.Phase, failure *record.NoticeFailure) texts.WorkerDiedRecord {
 	return texts.WorkerDiedRecord{NoticeHead: texts.NoticeHead{Kind: texts.WorkerDied, Issue: issue}, Role: role, Phase: at, Failure: failure}
+}
+
+// HeldFailureNotice is the held notice of issue that role's claim failed in the phase from, which
+// it now holds, with the failure where the daemon recorded its cause (texts.HoldFailure).
+func HeldFailureNotice(issue string, role claim.Role, from phase.Phase, failure *record.NoticeFailure) texts.HeldRecord {
+	return texts.HeldRecord{NoticeHead: texts.NoticeHead{Kind: texts.Held, Issue: issue}, Role: role, Phase: from, Hold: texts.HoldFailure,
+		Failure: failure}
 }
 
 // sessionLost tells the issue, its architect and the controller that a worker's recorded session
@@ -1044,8 +1056,13 @@ func (e *Engine) sessionLost(ctx context.Context, tx pgx.Tx, fact intake.Session
 		return intake.Result{}, err
 	}
 	e.warnOnCommit(ctx, "workflow: a worker's recorded session was in no session store", "issue", issue.Key, "role", fact.Role, "detail", fact.Detail)
-	return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, texts.SessionLostRecord{NoticeHead: texts.NoticeHead{Kind: texts.SessionLost, Issue: issue.Key},
-		Role: fact.Role, Phase: issue.Phase, Detail: fact.Detail})
+	return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, SessionLostNotice(issue.Key, fact.Role, issue.Phase, fact.Detail))
+}
+
+// SessionLostNotice is the session-lost notice of issue: the role whose recorded session is in no
+// session store, the issue's phase and the runtime's own account of the failed resume.
+func SessionLostNotice(issue string, role claim.Role, at phase.Phase, detail string) texts.SessionLostRecord {
+	return texts.SessionLostRecord{NoticeHead: texts.NoticeHead{Kind: texts.SessionLost, Issue: issue}, Role: role, Phase: at, Detail: detail}
 }
 
 // sessionStoreFault tells the issue and the controller that no worker of the issue can start
@@ -1064,12 +1081,19 @@ func (e *Engine) sessionStoreFault(ctx context.Context, tx pgx.Tx, fact intake.S
 		return intake.Result{}, err
 	}
 	e.warnOnCommit(ctx, "workflow: the session store could not be asked for a start", "issue", issue.Key, "role", fact.Role, "detail", fact.Detail)
-	notice, err := record.NoticeOf(texts.SessionStoreFaultRecord{NoticeHead: texts.NoticeHead{Kind: texts.SessionStoreFault, Issue: issue.Key},
-		Role: fact.Role, Phase: issue.Phase, Detail: fact.Detail, RetryEvery: supervise.SessionStoreRetry.String()})
+	notice, err := record.NoticeOf(SessionStoreFaultNotice(issue.Key, fact.Role, issue.Phase, fact.Detail))
 	if err != nil {
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.enqueue(ctx, tx, issue.Key, record.ControllerNotice(notice))
+}
+
+// SessionStoreFaultNotice is the session-store-fault notice of issue: the role whose start the
+// session store could not answer, the issue's phase, the runtime's own account, and how often the
+// daemon tries again (supervise.SessionStoreRetry).
+func SessionStoreFaultNotice(issue string, role claim.Role, at phase.Phase, detail string) texts.SessionStoreFaultRecord {
+	return texts.SessionStoreFaultRecord{NoticeHead: texts.NoticeHead{Kind: texts.SessionStoreFault, Issue: issue}, Role: role, Phase: at,
+		Detail: detail, RetryEvery: supervise.SessionStoreRetry.String()}
 }
 
 // memoryGuardKill tells the role whose process an issue pod's memory guard ended, or a microVM
@@ -1199,15 +1223,8 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 		}
 		// The architect's own words where it named any, beside the cause the hold already names:
 		// the controller must act on this hold, and why the architect escalated it is what it
-		// acts on. They travel in a field of their own, named in the words object as the
-		// architect's, since Reason is the word `escalated` both agents' texts branch on
-		// (record.Notice.Escalation).
-		held := texts.HeldRecord{NoticeHead: texts.NoticeHead{Kind: texts.Held, Issue: issue.Key}, Phase: issue.Hold.From,
-			Hold: texts.HoldEscalation, Reason: string(record.HoldEscalated), Escalation: fact.Reason}
-		if fact.Reason != "" {
-			held.Words = map[string]texts.WordsMeta{"escalation": {By: string(claim.RoleArchitect), At: e.now()}}
-		}
-		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, held)
+		// acts on (HeldEscalationNotice).
+		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, HeldEscalationNotice(issue.Key, issue.Hold.From, fact.Reason, e.now()))
 	}
 	if fact.Decision != intake.RetryDecision {
 		return intake.Result{}, nil
@@ -1219,6 +1236,19 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 	// line for the release both carry.
 	_, err = e.retryPhase(ctx, tx, *issue, issue.Hold.From, PhaseMove{Retried: RetriedByArchitect, Reason: fact.Reason}, false)
 	return intake.Result{}, err
+}
+
+// HeldEscalationNotice is the held notice of issue whose architect escalated its hold from the
+// phase from: the reason word escalated, which both agents' texts branch on, and the architect's
+// own words, in a field of their own (record.Notice.Escalation), named in the words object as the
+// architect's at at, where it gave any.
+func HeldEscalationNotice(issue string, from phase.Phase, words string, at time.Time) texts.HeldRecord {
+	held := texts.HeldRecord{NoticeHead: texts.NoticeHead{Kind: texts.Held, Issue: issue}, Phase: from, Hold: texts.HoldEscalation,
+		Reason: string(record.HoldEscalated), Escalation: words}
+	if words != "" {
+		held.Words = map[string]texts.WordsMeta{"escalation": {By: string(claim.RoleArchitect), At: at}}
+	}
+	return held
 }
 
 // restartPhase is the operator's retry of a phase worker through `legion claims retry` (api's
@@ -1538,7 +1568,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
-	if err := e.notice(ctx, tx, issue.Key, noticeFor(issue.Key, trigger, from, row.To, handoff, pr, reason, e.now())); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, NoticeFor(issue.Key, trigger, from, row.To, handoff, pr, reason, e.now())); err != nil {
 		return err
 	}
 	if err := e.phaseEnded(ctx, tx, issue, trigger, from, row.To, starting, pr); err != nil {
@@ -1569,7 +1599,7 @@ func phaseMove(trigger TriggerKind, from phase.Phase, handoff record.PhaseRow, r
 	return PhaseMove{}
 }
 
-// noticeFor is what a transition of issue on trigger out of from into to tells the architect: that
+// NoticeFor is what a transition of issue on trigger out of from into to tells the architect: that
 // from finished, with its worker's handoff, or, when the head started conflicting with its base
 // (TriggerConflict), the base, the head and the pull request pr, under the checks-red kind the
 // architect's prompt reads, since that is the daemon stopping the phase on something it read of
@@ -1593,7 +1623,7 @@ func phaseMove(trigger TriggerKind, from phase.Phase, handoff record.PhaseRow, r
 // them on the issue (backwardReasonRefusal). The handoff row a move writes is empty, so without
 // those words the architect reads a completion with no summary and no verdict and cannot tell it
 // from a worker that finished its phase.
-func noticeFor(issue string, trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow, pr *record.PullRequest, reason string, now time.Time) any {
+func NoticeFor(issue string, trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow, pr *record.PullRequest, reason string, now time.Time) any {
 	head := texts.NoticeHead{Kind: texts.PhaseFinished, Issue: issue}
 	switch trigger {
 	case TriggerConflict:
@@ -1639,7 +1669,7 @@ func noticeFor(issue string, trigger TriggerKind, from, to phase.Phase, handoff 
 // tester in testing, the reviewer in reviewing whether or not it completed its round, the merger
 // in merging, and the implementer in retro, which is also the role starting, told that its task for
 // the new phase follows. Accepting sends none — its role is the architect, which the conflict
-// notice tells (noticeFor). Without the message nothing tells that role: no transition stops a
+// notice tells (NoticeFor). Without the message nothing tells that role: no transition stops a
 // worker, and the daemon's next task for a role is delivered only once that role's turn ends, while
 // this message reaches its session at its next model turn and ends a wait.
 func (e *Engine) phaseEnded(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, from, to phase.Phase, starting claim.Role, pr *record.PullRequest) error {
@@ -1709,7 +1739,7 @@ func (e *Engine) row(from phase.Phase, trigger TriggerKind, target phase.Phase, 
 // now — or empty, when the issue named none or someone took its blocked-by links off while it
 // waited, which the notice's reason says instead. A tree's own root gets no notice: the
 // architect this would tell is the root's own, which the phase-finished of the move out of
-// admitted already tells (noticeFor).
+// admitted already tells (NoticeFor).
 func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, waited []string) error {
 	if err := e.gateOpened(ctx, tx, issue); err != nil {
 		return err

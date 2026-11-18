@@ -277,7 +277,7 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 			if err := a.queuePersonHandover(ctx, tx, observation.Key, "triage", "event"); err != nil {
 				return nil, nil, err
 			}
-		} else if err := a.tellControllerOf(ctx, tx, observation.Key, texts.TriageRecord{NoticeHead: texts.NoticeHead{Kind: texts.Triage, Issue: observation.Key}}); err != nil {
+		} else if err := a.tellControllerOf(ctx, tx, observation.Key, TriageNotice(observation.Key)); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -317,7 +317,7 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 		if err != nil || !free {
 			return released, nil, err
 		}
-		todo, err := controllerNotice(texts.TodoRecord{NoticeHead: texts.NoticeHead{Kind: texts.Todo, Issue: observation.Key}})
+		todo, err := controllerNotice(TodoNotice(observation.Key))
 		if err != nil {
 			return released, nil, err
 		}
@@ -394,12 +394,30 @@ func (a *Admission) wakeForFreeSlot(ctx context.Context, tx pgx.Tx, released []s
 	if err != nil || !free {
 		return err
 	}
-	notice, err := controllerNotice(texts.SlotFreeRecord{NoticeHead: texts.NoticeHead{Kind: texts.SlotFree, Issue: released[0]}})
+	notice, err := controllerNotice(SlotFreeNotice(released[0]))
 	if err != nil {
 		return err
 	}
 	_, err = a.wakeController(ctx, tx, notice, released[0], a.now())
 	return err
+}
+
+// TriageNotice is the triage controller notice of key, an issue in triage whose root no architect
+// owns. The issue is the whole of it.
+func TriageNotice(key string) texts.TriageRecord {
+	return texts.TriageRecord{NoticeHead: texts.NoticeHead{Kind: texts.Triage, Issue: key}}
+}
+
+// TodoNotice is the todo controller notice of key, an issue not handed to Legion that changed in
+// todo while a slot stood free. The issue is the whole of it.
+func TodoNotice(key string) texts.TodoRecord {
+	return texts.TodoRecord{NoticeHead: texts.NoticeHead{Kind: texts.Todo, Issue: key}}
+}
+
+// SlotFreeNotice is the slot-free controller notice of key, the first issue whose slot admission
+// released while nothing waiting took it. The issue is the whole of it.
+func SlotFreeNotice(key string) texts.SlotFreeRecord {
+	return texts.SlotFreeRecord{NoticeHead: texts.NoticeHead{Kind: texts.SlotFree, Issue: key}}
 }
 
 // controllerNotice is the controller notice that carries rec, the record of a notice kind on the

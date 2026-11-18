@@ -328,7 +328,7 @@ func TestTheGateOpeningLeavesARootWaitingOnItsBlockerWithItsSlotGivenBack(t *tes
 
 // R2: the notice that reports the move out of admitted carries no role. The gate's opening is
 // the one move out of that phase (Table), and admitted is the architect's own (phase.RoleFor), so
-// a role on the notice would tell the architect that its own phase ended. noticeFor writes the
+// a role on the notice would tell the architect that its own phase ended. NoticeFor writes the
 // notice of a move out of admitted with no role.
 func TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole(t *testing.T) {
 	pool := migratedPool(t)

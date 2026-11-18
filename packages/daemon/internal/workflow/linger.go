@@ -138,9 +138,9 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 			return err
 		}
 	}
-	var told any = texts.ChildClosedRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildClosed, Issue: issue.Key}}
+	var told any = ChildClosedNotice(issue.Key)
 	if status != "done" {
-		told = texts.ChildStatusRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildStatus, Issue: issue.Key}, Change: texts.ChangeLeft, Status: status}
+		told = ChildLeftNotice(issue.Key, status)
 	}
 	if err := e.notice(ctx, tx, issue.Key, told); err != nil {
 		return err
@@ -172,6 +172,12 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		return err
 	}
 	return e.openCheck(ctx, tx, issue, *pr, lingers)
+}
+
+// ChildLeftNotice is the child-status notice of issue, a child that left the workflow with status
+// other than done (texts.ChangeLeft).
+func ChildLeftNotice(issue, status string) texts.ChildStatusRecord {
+	return texts.ChildStatusRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildStatus, Issue: issue}, Change: texts.ChangeLeft, Status: status}
 }
 
 // releaseParkedClaim queues the row that clears the issue's Dispatch claim when the issue is

@@ -1098,18 +1098,7 @@ func (s *supervision) tellUpdateStalled(ctx context.Context, stall updateStall) 
 			"issue", stall.issue, "round", stall.round, "holds", stall.holds, "refusal", stall.refusal)
 		return
 	}
-	update := &record.UpdateStalled{Round: stall.round, Pod: stall.pod, Waiting: stall.waiting}
-	if drift := roundDrift(stall.group, stall.round); len(drift) > 0 {
-		update.Images, update.Settings = supervise.DriftFacts(drift)
-	} else {
-		update.Reasons = stall.reasons
-	}
-	notice, err := record.NoticeOf(texts.UpdateStalledRecord{
-		NoticeHead: texts.NoticeHead{Kind: texts.UpdateStalled, Issue: stall.issue},
-		Holds:      stall.holds,
-		Refusal:    stall.refusal,
-		Update:     update,
-	})
+	notice, err := record.NoticeOf(updateStalledNotice(stall))
 	if err == nil {
 		err = s.enqueue(ctx, stall.issue, record.ControllerNotice(notice))
 	}
@@ -1123,6 +1112,25 @@ func (s *supervision) tellUpdateStalled(ctx context.Context, stall updateStall) 
 	s.log.Warn("supervise: an update round is held past its bound; the controller is told", "issue", stall.issue, "round", stall.round,
 		"pod", stall.pod, "holds", stall.holds, "refusal", stall.refusal, "waiting", stall.waiting)
 	s.markUpdateTold(ctx, stall.group, stall.round)
+}
+
+// updateStalledNotice is the update-stalled notice of stall: what holds the round, the runtime's
+// refusal, and the round, with each changed image by its short digest and each changed setting by
+// its key where its claims record the items (roundDrift, supervise.DriftFacts), and the text of the
+// drift for a round an older daemon opened.
+func updateStalledNotice(stall updateStall) texts.UpdateStalledRecord {
+	update := &record.UpdateStalled{Round: stall.round, Pod: stall.pod, Waiting: stall.waiting}
+	if drift := roundDrift(stall.group, stall.round); len(drift) > 0 {
+		update.Images, update.Settings = supervise.DriftFacts(drift)
+	} else {
+		update.Reasons = stall.reasons
+	}
+	return texts.UpdateStalledRecord{
+		NoticeHead: texts.NoticeHead{Kind: texts.UpdateStalled, Issue: stall.issue},
+		Holds:      stall.holds,
+		Refusal:    stall.refusal,
+		Update:     update,
+	}
 }
 
 // markUpdateTold records on every claim of the round that this round was told, so no later tick

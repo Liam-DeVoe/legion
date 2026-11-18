@@ -1427,8 +1427,7 @@ func (w *workflowRuntime) tellReleaseWaits(ctx context.Context, repos []string, 
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
 		for _, issue := range slices.Sorted(maps.Keys(byIssue)) {
-			notice, err := record.NoticeOf(texts.ChildReleaseStalledRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildReleaseStalled, Issue: issue},
-				Stall: texts.StallRecoveredUnrecorded, Repos: repos, Unrecorded: byIssue[issue]})
+			notice, err := record.NoticeOf(recoveredUnrecordedNotice(issue, repos, byIssue[issue]))
 			if err != nil {
 				return err
 			}
@@ -1446,6 +1445,13 @@ func (w *workflowRuntime) tellReleaseWaits(ctx context.Context, repos []string, 
 	}
 	committed()
 	return nil
+}
+
+// recoveredUnrecordedNotice is the child-release-stalled notice on issue that the recovery of repos
+// left each child of unrecorded still not recorded (texts.StallRecoveredUnrecorded).
+func recoveredUnrecordedNotice(issue string, repos []string, unrecorded []texts.UnrecordedChild) texts.ChildReleaseStalledRecord {
+	return texts.ChildReleaseStalledRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildReleaseStalled, Issue: issue},
+		Stall: texts.StallRecoveredUnrecorded, Repos: repos, Unrecorded: unrecorded}
 }
 
 // recoveredOn is recoverRepositories' scope over listing: an issue records does not hold whose

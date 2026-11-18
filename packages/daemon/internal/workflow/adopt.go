@@ -211,8 +211,15 @@ func (e *Engine) tellReparented(ctx context.Context, tx pgx.Tx, issue *record.Is
 	}
 	e.logOnCommit(ctx, "workflow: a root that ran was re-parented under a live tree and stays its own tree", "issue", issue.Key,
 		"parent", fact.Parent, "tree", root.Key, "reason", ran)
-	return e.notice(ctx, tx, root.Key, texts.ChildStatusRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildStatus, Issue: root.Key},
-		Change: texts.ChangeReparented, Child: issue.Key, Parent: fact.Parent, StaysOwn: why})
+	return e.notice(ctx, tx, root.Key, ReparentedNotice(root.Key, issue.Key, fact.Parent, why))
+}
+
+// ReparentedNotice is the child-status notice on tree, the root of a live tree, that child, a root
+// that ran, is now a child of parent in Dispatch and stays a tree of its own for why (a
+// texts.StaysOwn word) (texts.ChangeReparented).
+func ReparentedNotice(tree, child, parent, why string) texts.ChildStatusRecord {
+	return texts.ChildStatusRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildStatus, Issue: tree}, Change: texts.ChangeReparented,
+		Child: child, Parent: parent, StaysOwn: why}
 }
 
 // Adopt moves issue, a recorded root AdoptionRefusal found adoptable into root's live tree, into

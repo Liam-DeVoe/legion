@@ -39,7 +39,7 @@ type FailureBudget struct {
 	Limit int `json:"limit"`
 }
 
-// PhaseFinishedRecord is the notice that a phase ended (workflow's noticeFor): the role whose
+// PhaseFinishedRecord is the notice that a phase ended (workflow's NoticeFor): the role whose
 // phase ended, the phase, the phase the issue moved to, the worker's summary (words, bounded at
 // Summary) with the handoff's reference (its phase word, its version and its commit), and the
 // tester's verdict. A worker's own move back gives its words in reason, by that role.
@@ -430,7 +430,7 @@ type DecisionMark struct {
 }
 
 // ChecksRedRecord is the notice that the head conflicts with its base and the daemon moved the
-// issue (workflow's noticeFor for a conflict): the phase it left, the base, the head and the pull
+// issue (workflow's NoticeFor for a conflict): the phase it left, the base, the head and the pull
 // request.
 type ChecksRedRecord struct {
 	NoticeHead

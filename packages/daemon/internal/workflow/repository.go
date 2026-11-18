@@ -152,6 +152,12 @@ func (e *Engine) refuseChild(ctx context.Context, tx pgx.Tx, root record.Issue, 
 		}
 	}
 	e.logOnCommit(ctx, "workflow: child not recorded; its repository is not one Legion serves", "issue", key, "tree", root.Key, "resolved", resolved, "reason", refused.Refusal)
-	return e.notice(ctx, tx, on, texts.ChildNotRecordedRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildNotRecorded, Issue: on},
-		Child: key, Resolved: resolved, Refusal: refused.Refusal})
+	return e.notice(ctx, tx, on, ChildNotRecordedNotice(on, key, resolved, refused.Refusal))
+}
+
+// ChildNotRecordedNotice is the child-not-recorded notice on issue on (the child's recorded parent
+// in the tree, else the tree's root): the child, the repository it resolved to, and the refusal.
+func ChildNotRecordedNotice(on, child, resolved, refusal string) texts.ChildNotRecordedRecord {
+	return texts.ChildNotRecordedRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildNotRecorded, Issue: on}, Child: child, Resolved: resolved,
+		Refusal: refusal}
 }

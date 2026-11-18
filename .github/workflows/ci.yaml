@@ -802,6 +802,7 @@ jobs:
               - 'packages/daemon/internal/store/**'
               - 'packages/daemon/internal/stream/*'
               - 'packages/daemon/internal/supervise/*'
+              - 'packages/daemon/internal/texts/*'
               - 'packages/daemon/internal/treelifecycle/*'
               - 'packages/daemon/internal/wait/*'
               - 'packages/daemon/internal/wakepace/*'
@@ -945,10 +946,15 @@ jobs:
               # pi-legion this suite reads. The pack and prompt probes, which read the rest of
               # it, are the plugin-pack job's.
               - 'packages/pi-legion/agents/*.md'
-              # The one page of skills/ this job still reads: the tools reference
+              # The pages of skills/ this job reads, each named alone: the tools reference
               # internal/prompts/roles_test.go:689 holds roles/mechanics/headless.md's four CI
-              # runs to, the skill that paragraph sends a role to.
+              # runs to, the skill that paragraph sends a role to, and the three pages whose
+              # passages internal/daemon/texts_steps_test.go holds to the steps taken out of the
+              # daemon's texts (a RULES row of .github/scripts/ci_job_reads.py).
               - 'skills/legion-worker/references/tools.md'
+              - 'skills/legion-architect/references/wake-routing.md'
+              - 'skills/legion-controller/SKILL.md'
+              - 'skills/legion-controller/references/wakes.md'
               - 'scripts/e2e/lib/github-apps.sh'
               # The Stage 1 proof: the script, the rig it sources, the helpers the rig runs, and
               # the two plugin manifests it copies with jq into the plugins its home holds
@@ -1122,6 +1128,7 @@ jobs:
               - '!packages/daemon/internal/testpg/**/*_test.go'
               - '!packages/daemon/internal/testtmp/**/*_test.go'
               - '!packages/daemon/internal/textcheck/**/*_test.go'
+              - '!packages/daemon/internal/texts/**/*_test.go'
               - '!packages/daemon/internal/wait/**/*_test.go'
               - '!packages/daemon/internal/wakepace/**/*_test.go'
               - '!packages/daemon/internal/workflow/**/*_test.go'
@@ -3986,6 +3993,7 @@ jobs:
               - 'packages/daemon/internal/store/**'
               - 'packages/daemon/internal/stream/*'
               - 'packages/daemon/internal/supervise/*'
+              - 'packages/daemon/internal/texts/*'
               - 'packages/daemon/internal/treelifecycle/*'
               - 'packages/daemon/internal/wait/*'
               - 'packages/daemon/internal/wakepace/*'

@@ -36,7 +36,7 @@ type roleForReader struct {
 // and the test that holds each one's behaviour. A reader is a call, or the function passed as a
 // value to a caller that calls it (internal/daemon's wiring of api.Options.RoleFor). Four of them
 // have a guard of their own for admitted, the phase RoleFor answers the architect for:
-// noticeFor writes the notice of the move out of admitted with no role (R2),
+// NoticeFor writes the notice of the move out of admitted with no role (R2),
 // Engine.leftItsPhase records no worker's completion while the issue stands at admitted, the
 // completion route's entryFence answers a completion at admitted as one of a phase its role does
 // not work, and the stalled-tree notice's reason tells an issue at admitted as standing in a phase
@@ -71,7 +71,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/engine.go", fn: "Engine.retryPhase"}:           {calls: 1, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},
 	{file: "internal/workflow/engine.go", fn: "backwardRefusal"}:             {calls: 2, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.transition"}:           {calls: 2, test: "TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody"},
-	{file: "internal/workflow/engine.go", fn: "noticeFor"}:                   {calls: 2, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"},
+	{file: "internal/workflow/engine.go", fn: "NoticeFor"}:                   {calls: 2, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"},
 	{file: "internal/workflow/engine.go", fn: "Engine.phaseEnded"}:           {calls: 1, test: "TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic"},
 	{file: "internal/workflow/gate.go", fn: "Engine.tellGateMoved"}:          {calls: 1, test: "TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened"},
 	{file: "internal/workflow/review.go", fn: "Engine.tellChecks"}:           {calls: 1, test: "TestASettlementMovesNothingAndTellsTheThreeRoles"},

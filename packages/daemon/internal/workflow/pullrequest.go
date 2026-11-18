@@ -389,8 +389,7 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 	if issue.Phase == phase.Merging {
 		return intake.Result{}, e.closeMergedTelling(ctx, tx, *issue, pr)
 	}
-	if err := e.notice(ctx, tx, issue.Key, texts.PRMergedRecord{NoticeHead: texts.NoticeHead{Kind: texts.PRMerged, Issue: issue.Key},
-		PullRequest: pullRequestRef(*pr), Phase: issue.Phase}); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, PRMergedNotice(issue.Key, *pr, issue.Phase, nil)); err != nil {
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, texts.StuckByMerge)
@@ -408,8 +407,15 @@ func (e *Engine) closeMergedTelling(ctx context.Context, tx pgx.Tx, issue record
 	if err != nil || len(waiting) == 0 {
 		return err
 	}
-	return e.notice(ctx, tx, issue.Key, texts.PRMergedRecord{NoticeHead: texts.NoticeHead{Kind: texts.PRMerged, Issue: issue.Key},
-		PullRequest: pullRequestRef(*pr), WaitingFor: waiting})
+	return e.notice(ctx, tx, issue.Key, PRMergedNotice(issue.Key, *pr, "", waiting))
+}
+
+// PRMergedNotice is the pr-merged notice of issue whose pull request pr merged: the pull request,
+// the phase the issue stood in where it was not merging (at, empty where it was), and each issue
+// the close waits for (waiting, nil where the merge closed the issue or it was not merging).
+func PRMergedNotice(issue string, pr record.PullRequest, at phase.Phase, waiting []string) texts.PRMergedRecord {
+	return texts.PRMergedRecord{NoticeHead: texts.NoticeHead{Kind: texts.PRMerged, Issue: issue}, PullRequest: pullRequestRef(pr), Phase: at,
+		WaitingFor: waiting}
 }
 
 // closeMerged closes issue, which awaits its merge in merging (or is held from merging, a hold the
@@ -479,7 +485,7 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	}
 	e.logOnCommit(ctx, "workflow: a lingering tree's member closed at its merge", "issue", issue.Key, "tree", issue.Tree, "pullRequest", pr.Number, "status", issue.Status)
 	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
-		if err := e.notice(ctx, tx, issue.Key, texts.ChildClosedRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildClosed, Issue: issue.Key}}); err != nil {
+		if err := e.notice(ctx, tx, issue.Key, ChildClosedNotice(issue.Key)); err != nil {
 			return nil, err
 		}
 	}
@@ -514,8 +520,19 @@ func (e *Engine) closed(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.notice(ctx, tx, issue.Key, texts.PRClosedUnmergedRecord{NoticeHead: texts.NoticeHead{Kind: texts.PRClosedUnmerged, Issue: issue.Key},
-		PullRequest: pullRequestRef(*pr), Phase: issue.Phase})
+	return intake.Result{}, e.notice(ctx, tx, issue.Key, PRClosedUnmergedNotice(issue.Key, *pr, issue.Phase))
+}
+
+// PRClosedUnmergedNotice is the pr-closed-unmerged notice of issue whose pull request pr closed
+// without merging: the pull request and the issue's phase (at).
+func PRClosedUnmergedNotice(issue string, pr record.PullRequest, at phase.Phase) texts.PRClosedUnmergedRecord {
+	return texts.PRClosedUnmergedRecord{NoticeHead: texts.NoticeHead{Kind: texts.PRClosedUnmerged, Issue: issue}, PullRequest: pullRequestRef(pr),
+		Phase: at}
+}
+
+// ChildClosedNotice is the child-closed notice of issue, a child that is done.
+func ChildClosedNotice(issue string) texts.ChildClosedRecord {
+	return texts.ChildClosedRecord{NoticeHead: texts.NoticeHead{Kind: texts.ChildClosed, Issue: issue}}
 }
 
 // dequeued writes the daemon's one read of a pull request that GitHub reports left the merge
@@ -660,6 +677,12 @@ func (e *Engine) pullRequestMissing(ctx context.Context, tx pgx.Tx, fact intake.
 	if err != nil || record.LetsImplementationMove(pr) {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.notice(ctx, tx, issue.Key, texts.PullRequestMissingRecord{NoticeHead: texts.NoticeHead{Kind: texts.PullRequestMissing, Issue: issue.Key},
-		HandoffCommit: fact.HandoffCommit, Repo: fact.Repo, Branch: fact.Branch})
+	return intake.Result{}, e.notice(ctx, tx, issue.Key, PullRequestMissingNotice(issue.Key, fact.HandoffCommit, fact.Repo, fact.Branch))
+}
+
+// PullRequestMissingNotice is the pull-request-missing notice of issue, whose implementer completed
+// on commit with no open pull request on branch of repo.
+func PullRequestMissingNotice(issue, commit, repo, branch string) texts.PullRequestMissingRecord {
+	return texts.PullRequestMissingRecord{NoticeHead: texts.NoticeHead{Kind: texts.PullRequestMissing, Issue: issue}, HandoffCommit: commit,
+		Repo: repo, Branch: branch}
 }

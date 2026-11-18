@@ -51,7 +51,7 @@ func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue rec
 // daemon-pane.go calls phase.RoleFor against every checkout it is built inside, and this module
 // holds one exported name for the rule again rather than two a new caller could pick between.
 // Until then this name has callers of its own inside this module, seven of them: readyWorkerTask
-// (catch_up.go), leftItsPhase and noticeFor's two reads (engine.go), tellGateMoved (gate.go),
+// (catch_up.go), leftItsPhase and NoticeFor's two reads (engine.go), tellGateMoved (gate.go),
 // tellChecks (review.go) and one test (checks_red_test.go). Each reads the same table as a
 // caller of phase.RoleFor, since that is the one definition and this forwards to it.
 func RoleFor(p phase.Phase) claim.Role {
@@ -281,7 +281,7 @@ func backwardReasonRefusal(from, to phase.Phase, reason string) (string, string)
 
 // notice tells the architect that owns the issue rec, the record of a notice kind on the list
 // (texts.PhaseFinishedRecord and the others), as the notice that carries it (record.NoticeOf); a
-// nil record (noticeFor's, for a move that tells it nothing) enqueues nothing.
+// nil record (NoticeFor's, for a move that tells it nothing) enqueues nothing.
 func (e *Engine) notice(ctx context.Context, tx pgx.Tx, issue string, rec any) error {
 	if rec == nil {
 		return nil

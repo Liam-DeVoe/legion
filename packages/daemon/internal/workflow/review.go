@@ -1135,10 +1135,16 @@ func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue string, pr *r
 		if err := e.enqueue(ctx, tx, issue, record.MessagePost{Body: message}); err != nil {
 			return err
 		}
-		if err := e.notice(ctx, tx, issue, texts.PRBlockedRecord{NoticeHead: texts.NoticeHead{Kind: texts.PRBlocked, Issue: issue},
-			Cap: e.cfg.ReviewRoundCap, Counted: counted, ConflictRounds: row.ConflictRounds}); err != nil {
+		if err := e.notice(ctx, tx, issue, PRBlockedNotice(issue, e.cfg.ReviewRoundCap, counted, row.ConflictRounds)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// PRBlockedNotice is the pr-blocked notice of issue, which reached the review round cap: the cap
+// (roundCap), the rounds counted and the conflict rounds not counted.
+func PRBlockedNotice(issue string, roundCap, counted, conflictRounds int) texts.PRBlockedRecord {
+	return texts.PRBlockedRecord{NoticeHead: texts.NoticeHead{Kind: texts.PRBlocked, Issue: issue}, Cap: roundCap, Counted: counted,
+		ConflictRounds: conflictRounds}
 }

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
@@ -172,17 +173,25 @@ func (m *Machine) tellControllerOfProviderErrors(model string, status int) {
 	if m.claim.ProviderErrorRun != providerErrorRunTold || m.deps.ProviderErrorRunReached == nil {
 		return
 	}
-	told := texts.ProviderErrorsRecord{
-		NoticeHead: texts.NoticeHead{Kind: texts.ProviderErrors, Issue: m.claim.Issue},
-		Role:       m.claim.Role,
-		Turns:      m.claim.ProviderErrorRun,
+	told := ProviderErrorsNotice(m.claim.Issue, m.claim.Role, m.claim.ProviderErrorRun, model, status)
+	m.log.Warn("supervise: a run of turns that ended in a provider error; the controller is told",
+		"providerErrorRun", m.claim.ProviderErrorRun, "model", model, "httpStatus", status)
+	m.deps.ProviderErrorRunReached(m.current(), told)
+}
+
+// ProviderErrorsNotice is the provider-errors notice of issue: the role whose run of turns ended
+// in provider errors, the count of those turns, the model the failed request went to (empty when
+// the error named none), the HTTP status the provider answered (0 for none), and promptRetryMax,
+// the longest the ladder waits between sends.
+func ProviderErrorsNotice(issue string, role claim.Role, turns int, model string, status int) texts.ProviderErrorsRecord {
+	return texts.ProviderErrorsRecord{
+		NoticeHead: texts.NoticeHead{Kind: texts.ProviderErrors, Issue: issue},
+		Role:       role,
+		Turns:      turns,
 		Model:      model,
 		HTTPStatus: status,
 		RetryEvery: promptRetryMax.String(),
 	}
-	m.log.Warn("supervise: a run of turns that ended in a provider error; the controller is told",
-		"providerErrorRun", m.claim.ProviderErrorRun, "model", model, "httpStatus", status)
-	m.deps.ProviderErrorRunReached(m.current(), told)
 }
 
 // waitsForProviderError is whether the ladder's wait is armed for the delivery of this id.

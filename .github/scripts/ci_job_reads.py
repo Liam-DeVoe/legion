@@ -474,6 +474,18 @@ RULES = {
     f"{DAEMON}/internal/daemon/supervision_test.go": [
         Read(path, "internal/daemon/supervision_test.go:1254 Glob ../stream/*.go, and :1263 parses each file it finds but the test files (:1260)")
         for path in files_but_tests(f"{DAEMON}/internal/stream")],
+    # The fourth test of dispatch://INFRA-3686's c-daemon-texts-are-facts reads the passage of each
+    # step taken out of a daemon text in its reader's prompt or skill, and the golden file of its
+    # own package. The skill files are named one by one, as the daemon-go filter names them, so an
+    # edit of another page of skills/ starts no daemon suite (dispatch://INFRA-1413).
+    f"{DAEMON}/internal/daemon/texts_steps_test.go": reads(
+        *[(path, "internal/daemon/texts_steps_test.go:328 reads each file of goldenSteps under ../../../..")
+          for path in [f"{DAEMON}/internal/prompts/go/{name}.md"
+                       for name in ("architect-common", "architect-root", "architect", "implementer", "reviewer", "tester", "worker-common")]
+          + [f"{DAEMON}/internal/prompts/roles/{name}.md"
+             for name in ("architect-root", "controller-root", "implementer", "mechanics/headless", "merger", "tester")]
+          + ["skills/legion-architect/references/wake-routing.md", "skills/legion-controller/SKILL.md",
+             "skills/legion-controller/references/wakes.md"]]),
     f"{DAEMON}/internal/intake/redelivered_test.go": [
         run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:298-299 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
     f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:855 globs it and reads each file; :955 reads one")),

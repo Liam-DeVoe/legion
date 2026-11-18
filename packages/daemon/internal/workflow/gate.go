@@ -212,8 +212,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	case issue.AwaitingPerson():
 		e.logOnCommit(ctx, "workflow: a root waiting on a person is told its open gate by its resume", "issue", issue.Key, "version", gate.LatestVersion)
 	case !sameDocument || !classify.DesignGateOpen(*stored) || stored.LatestVersion != gate.LatestVersion:
-		if err := e.notice(ctx, tx, fact.Issue, texts.DesignApprovedRecord{NoticeHead: texts.NoticeHead{Kind: texts.DesignApproved, Issue: fact.Issue},
-			GateDecision: gateDecision(fact.Issue, step, gate.LatestVersion, reviewer, gate.ApprovedMark.At)}); err != nil {
+		if err := e.notice(ctx, tx, fact.Issue, DesignApprovedNotice(fact.Issue, step, gate.LatestVersion, reviewer, gate.ApprovedMark.At)); err != nil {
 			return intake.Result{}, err
 		}
 	default:
@@ -294,6 +293,21 @@ func ChangesRequestedNotice(key string, step record.DesignStep, version int, rea
 		notice.Words = map[string]texts.WordsMeta{"reason": {By: reviewer, At: at.UTC(), Rest: rest}}
 	}
 	return notice
+}
+
+// DesignApprovedNotice is the design-approved notice of key: the person's decision that opened the
+// document step reviews at version (gateDecision).
+func DesignApprovedNotice(key string, step record.DesignStep, version int, actor string, at time.Time) texts.DesignApprovedRecord {
+	return texts.DesignApprovedRecord{NoticeHead: texts.NoticeHead{Kind: texts.DesignApproved, Issue: key},
+		GateDecision: gateDecision(key, step, version, actor, at)}
+}
+
+// CarriedGateOpenedNotice is the carried-gate-opened notice of key: the person's decision that
+// opened the gate key's root carried, whose reference names approved, the issue whose document
+// step reviews the person approved at version (gateDecision).
+func CarriedGateOpenedNotice(key, approved string, step record.DesignStep, version int, actor string, at time.Time) texts.CarriedGateOpenedRecord {
+	return texts.CarriedGateOpenedRecord{NoticeHead: texts.NoticeHead{Kind: texts.CarriedGateOpened, Issue: key},
+		GateDecision: gateDecision(approved, step, version, actor, at)}
 }
 
 // gateDecision is a person's decision on the document step reviews on key at version: who made
@@ -946,12 +960,10 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		// decision then goes to the controller instead (the outbox's parkDecision). A carried
 		// gate's notice names, by its reference, the issue whose document the person approved.
 		reviewer := fact.Actor.Name()
-		var opened any = texts.DesignApprovedRecord{NoticeHead: texts.NoticeHead{Kind: texts.DesignApproved, Issue: key},
-			GateDecision: gateDecision(key, gate.Step, fact.Version, reviewer, fact.Mark.At)}
+		var opened any = DesignApprovedNotice(key, gate.Step, fact.Version, reviewer, fact.Mark.At)
 		switch {
 		case carried:
-			opened = texts.CarriedGateOpenedRecord{NoticeHead: texts.NoticeHead{Kind: texts.CarriedGateOpened, Issue: key},
-				GateDecision: gateDecision(fact.Key, gate.Step, fact.Version, reviewer, fact.Mark.At)}
+			opened = CarriedGateOpenedNotice(key, fact.Key, gate.Step, fact.Version, reviewer, fact.Mark.At)
 		case issue.AwaitingPerson():
 			opened = nil
 			e.logOnCommit(ctx, "workflow: a root waiting on a person is told its gate's opening by its resume", "issue", key, "version", fact.Version)
