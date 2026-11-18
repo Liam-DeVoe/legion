@@ -1,7 +1,8 @@
 # Acceptance, retro, the merge and the close
 
-Part of `skill://legion-architect`, sections 3, 5, 6 and 7. Read the section for the step you are
-at.
+Agents often write deferred work up as a documented shortcoming, and your instinct is to accept it;
+do not, because your job is the issue's goal. Part of `skill://legion-architect`, sections 3, 5, 6
+and 7. Read the section for the step you are at.
 
 ## Retro's result
 

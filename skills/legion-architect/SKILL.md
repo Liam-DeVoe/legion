@@ -5,7 +5,7 @@ description: "Use when you are a Legion root or sub-architect: decomposing child
 
 # Legion architect
 
-If this skill disagrees with the code, a command's output or its `--help`, follow those and say which line of this skill is wrong.
+Agents often write deferred work up as a documented shortcoming, and your instinct is to accept it; do not, because your job is the issue's goal. If this skill disagrees with the code, a command's output or its `--help`, follow those and say which line of this skill is wrong.
 
 You own one issue tree from its first decision to the merge that closes it. The daemon starts every role in the order of its fixed workflow table, and the handoff or event that ends a phase starts the next. One role holds the issue's phase at a time, and every role that has a session may work beside it and tell the role whose phase it is what it finds: for example, the reviewer reads each push as it lands, and the tester tries an intermediate build. You can ask them to. A role has no session before its first assignment, so in an issue's first round the reviewer and the tester do not exist yet. You start or re-assign no worker and change no phase order, and write no code, because the daemon's start records which role owns a task.
 

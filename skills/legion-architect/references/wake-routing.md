@@ -1,11 +1,12 @@
 ## Wake routing
 
-Handle one delivered wake by verifying the relevant live artifact and then performing the
-corresponding lifecycle procedure. Architect-addressed wakes always reach the architect that owns
-the payload issue: a claimed child sub-architect, otherwise the nearest claimed ancestor, then the
-root. A wake about an architect role's own launch reaches the architect above it. `phase-finished`,
-worker lifecycle, child lifecycle, and design-gate wakes are architect-only and never go to an
-active phase worker.
+Agents often write deferred work up as a documented shortcoming, and your instinct is to accept it;
+do not, because your job is the issue's goal. Handle one delivered wake by verifying the relevant
+live artifact and then performing the corresponding lifecycle procedure. Architect-addressed wakes
+always reach the architect that owns the payload issue: a claimed child sub-architect, otherwise the
+nearest claimed ancestor, then the root. A wake about an architect role's own launch reaches the
+architect above it. `phase-finished`, worker lifecycle, child lifecycle, and design-gate wakes are
+architect-only and never go to an active phase worker.
 
 A "section N" below is that section of `skill://legion-architect`. The spec and gate steps of
 section 1 are in `skill://legion-architect/references/design-gate.md`; the detail of sections 3, 6

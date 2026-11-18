@@ -1,9 +1,10 @@
 # Conflicts, retargets, fingerprints, and a wrong pushed commit
 
-Part of `skill://legion-worker`. Read it when GitHub reports the pull request `CONFLICTING`, the
-controller asks you to resolve a conflict, the change needs something only the base has, the pull
-request is retargeted to a new base, you compare two heads after such a merge, or a commit you
-already pushed is wrong.
+Agents often write deferred work up as a documented shortcoming, and your instinct is to accept it;
+do not, because your job is the issue's goal. Part of `skill://legion-worker`. Read it when GitHub
+reports the pull request `CONFLICTING`, the controller asks you to resolve a conflict, the change
+needs something only the base has, the pull request is retargeted to a new base, you compare two
+heads after such a merge, or a commit you already pushed is wrong.
 Every path it cites is in cybermonklabs/legion.
 
 ## Reintegrating the base

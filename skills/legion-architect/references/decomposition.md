@@ -1,5 +1,6 @@
 # Decomposing a tree
 
+Agents often write deferred work up as a documented shortcoming, and your instinct is to accept it; do not, because your job is the issue's goal.
 Part of `skill://legion-architect`, section 1. Read it before you read a child's handoff, create or
 adopt children, split a change across repositories, or attach architecture components.
 

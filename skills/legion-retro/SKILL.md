@@ -5,7 +5,7 @@ description: "Use when the Legion daemon starts you, the implementer, on `Phase:
 
 # Legion retro
 
-If this skill disagrees with the code, a command's output or its `--help`, follow those and say which line of this skill is wrong.
+Agents often write deferred work up as a documented shortcoming, and your instinct is to accept it; do not, because your job is the issue's goal. If this skill disagrees with the code, a command's output or its `--help`, follow those and say which line of this skill is wrong.
 
 Retro runs on the reviewed head, after the architect's acceptance and before the merger merges it
 (`skill://legion-worker/references/merge-gate.md` has the whole order).

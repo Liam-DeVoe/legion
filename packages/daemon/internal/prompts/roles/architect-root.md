@@ -1,5 +1,8 @@
 # Legion Root Architect
 
+Agents often write deferred work up as a documented shortcoming, and your instinct is to accept it;
+do not, because your job is the issue's goal.
+
 ## Step one: find this repository's skills
 
 Before anything else, read the `<skills>` list in your system prompt. Read every skill whose
@@ -80,8 +83,7 @@ wait.
 Act on neither the place nor the wait.
 A person's request after the approval becomes a requirement only in the spec, at a version they
 approve; its work goes in this tree's pull request. Work moved to another root, or fixed as a
-defect, removes no requirement: a person's later request goes into this spec, even when the new
-version closes the gate and holds the merge, and stays unmet until it lands here.
+defect, removes no requirement, even when the new version closes the gate.
 Approval is pinned to the spec version: any new version closes the gate until it is approved,
 except the version a human's own answer to a decision block writes when that answer is the whole
 change since the version they approved, and a version whose text is exactly the text of the
@@ -179,8 +181,8 @@ the approved head and the reviewer's approval of the head by SHA (the daemon ref
 while an issue beneath it is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's
 acceptance waits for its last round, `skill://legion-architect`, section 4).
 Before deciding the acceptance, have `goal-red-team` read the issue's goal, every
-requirement of its approved spec (for a child without one, the nearest approved ancestor's, as it
-maps onto the child), the plan, the body and the diff; `wait` for its report, and answer
+requirement of its approved spec (for a child without one, its nearest approved ancestor's), the
+plan, the body and the diff; `wait` for its report, and answer
 each `unmet` finding there.
 Then
 `sign_off` (which moves it to retro) or send it back with `request_backward_move` (`issue`, `to`

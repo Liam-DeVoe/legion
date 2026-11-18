@@ -1,5 +1,6 @@
 # PR body, recorded results, and the simplify pass
 
+Agents often write deferred work up as a documented shortcoming, and your instinct is to accept it; do not, because your job is the issue's goal.
 Part of `skill://legion-worker`. Read it before you write or edit any line of the pull request
 body, record a result against one of the issue's checks, read another phase's results, or run the
 simplify pass. Every path it cites is in cybermonklabs/legion.

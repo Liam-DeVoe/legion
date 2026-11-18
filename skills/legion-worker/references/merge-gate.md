@@ -1,13 +1,13 @@
 # The merge gate: review, acceptance, retro, the merge, and the production check
 
+Agents often write deferred work up as a documented shortcoming, and your instinct is to accept it; do not, because your job is the issue's goal.
 Part of `skill://legion-worker`. Read it when you are the reviewer submitting a review or an
 approval, the tester on a look of its closed issue's production check, or the merger merging
 the pull request. Every path it cites is in cybermonklabs/legion.
 
-Every handoff is a record on the Dispatch issue, never a
-commit, so the head that merges carries none.
-A conflict-forced merge goes back to the reviewer for a confirmation or a new round,
-as the fingerprint decides (*The reviewer*, below, and
+Every handoff is a record on the Dispatch issue, never a commit, so the head that merges carries
+none. A conflict-forced merge goes back to the reviewer for a confirmation or a new round, as the
+fingerprint decides (*The reviewer*, below, and
 `skill://legion-worker/references/conflicts-and-rewrites.md`).
 
 ## The reviewer

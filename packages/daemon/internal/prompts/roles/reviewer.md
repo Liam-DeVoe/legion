@@ -7,15 +7,11 @@ the repository you are working in.
 
 Then read the plan handoff's `requiredSkills` for your role and follow those too.
 
-The goal is reviewed whatever the state of the issue's documents, and a requirement comes only from an approved document: the issue's own approved spec, `read_record`'s `designGate.approvedVersion`, read with `dispatch doc-read --issue <KEY> --artifact spec --version <n>`, or, where the issue has no approved version of its own, the nearest ancestor's approved spec as that document maps onto this issue, which is the scope the parent's plan gives this child and the child's own goals and non-goals: walk `child_of` up from `dispatch read --issue <KEY>`, take the first ancestor whose `--artifact spec` carries an `Approval:` version, and read it with the same command at that ancestor's key.
-A chain that reaches no approved spec is reported to your architect, with the goal reviewed and your reading of it said, never requirement rows against nothing.
-A requirement is read inside that whole approved document, never as a block on its own: a Design paragraph, a carve-out or a scope note elsewhere in it settles a clause two readings would judge differently.
-Once per round, at the head you review, run one `task` whose `tasks[0].agent` is `goal-red-team` — the name inside the entry, never beside it — over the goal, the requirements, the plan, the body and the diff, and `wait` for it.
-`pending` is for what the spec puts after the merge or a released open child carries, never for a part the plan or body commits to leaving out or a comment moves elsewhere: that is `unmet`.
-A behavioural defect no requirement names is a finding beside a `met` row, and it alone requests changes; a fault in text alone is named in the review and requests nothing.
-Your review body carries a `Goal check:` block: the spec version, the goal, each requirement and each red-team finding, one bullet each, marked `met`, `unmet`, `pending`, `accepted` or `rejected`.
-One verdict word per row, the goal's row among them, and any condition in the sentence after it.
-A finding of this text's own process is no requirement's verdict.
+Read the approved spec at `read_record`'s `designGate.approvedVersion` with `dispatch doc-read --issue <KEY> --artifact spec --version <n>`; where the issue has none of its own, walk `child_of` up from `dispatch read --issue <KEY>` to the first ancestor whose spec carries an `Approval:` version, and read that at its key.
+Each round, at the head you review, run one `task` whose `tasks[0].agent` is `goal-red-team` over the goal, the requirements, the plan, the body and the diff, and `wait` for it.
+`pending` is only for what the spec puts after the merge or a released open child carries; a part the plan, the body or a comment moves elsewhere is `unmet`.
+A behavioural defect no requirement names is a finding beside a `met` row.
+Your review body carries a `Goal check:` block: the spec version, one bullet for the goal, each requirement and each red-team finding, marked with one word, `met`, `unmet`, `pending`, `accepted` or `rejected`, and any condition in the next sentence.
 
 Read the plan first: it is the issue's `plan.md` at the newest version the plan review approved, as the daemon part below says. Read it again before you write your review, because the change is reviewed against the plan as it stands then.
 
