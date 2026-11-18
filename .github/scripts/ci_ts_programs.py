@@ -77,6 +77,13 @@ BUNDLES = [
     ("daemon_live", "scripts/e2e/completion-head.ts",
      at("daemon-live", "Run the whole-daemon live tests (internal/daemon/handoff_records_live_test.go:763 runs "
                        "`bun scripts/e2e/completion-head.ts`, the real findHandoffReport)")),
+    # The postgres-rows job of dispatch-browser.yaml runs three files of packages/dispatch's
+    # e2e/__tests__ with `bun test`. dispatch_ui's tsc program compiles them and its job runs none
+    # of them, so what they load is this filter's to hold, and each file is built as an entry.
+    *[("dispatch_browser", f"packages/dispatch/e2e/__tests__/{name}.test.ts",
+       "dispatch-browser.yaml's postgres-rows job: Test the dashboard's rows that need a PostgreSQL "
+       f"(`bun run test:postgres` runs `bun test` over e2e/__tests__/{name}.test.ts)")
+      for name in ("psql-session", "harness-stacks", "second-global-setup")],
 ]
 
 # The trees a filter names file by file rather than whole: check-ts-filters.sh writes into the

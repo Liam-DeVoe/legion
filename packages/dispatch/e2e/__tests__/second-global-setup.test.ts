@@ -69,8 +69,9 @@ test.skipIf(withoutPostgres)(
       cwd: dispatchPackage,
       env: {
         PATH: process.env.PATH ?? "",
-        // The caller's own HOME, unlike every other child in this directory: the stack builds
-        // the Go server, and a home of its own would be a cold build cache and ten minutes.
+        // The caller's own HOME, unlike every other child in this directory: where no prebuilt
+        // binary is named below, the stack builds the Go server, and a home of its own would be a
+        // cold build cache and ten minutes.
         HOME: process.env.HOME ?? "",
         TMPDIR: tmpdir(),
         // Where this machine keeps its browsers, when it keeps them anywhere but under HOME:
@@ -78,8 +79,23 @@ test.skipIf(withoutPostgres)(
         // and the child would otherwise be refused for browsers it can see perfectly well.
         // Playwright reads both of these - its registry takes `XDG_CACHE_HOME` over
         // `~/.cache` - so both travel when they are set.
+        //
+        // And what a caller with no Go hands the stacks in place of a build, which travel when
+        // they are set for the same reason: the Dispatch server (`e2e/run-server.sh`'s
+        // DISPATCH_E2E_SERVER_BIN), the real broker's three commands (`e2e/run-broker.sh`'s
+        // DISPATCH_E2E_BROKER_BIN_DIR) and the connection limit each stack's Postgres is made
+        // with (`e2e/harness-postgres.ts`'s DISPATCH_E2E_PG_CONNECTIONS), which that module
+        // otherwise reads with `go run`. The job of .github/workflows/dispatch-browser.yaml that
+        // runs this file runs in a container with no Go and sets all three; without them the
+        // child would run `go build` and `go run` there and fail.
         ...Object.fromEntries(
-          ["PLAYWRIGHT_BROWSERS_PATH", "XDG_CACHE_HOME"]
+          [
+            "PLAYWRIGHT_BROWSERS_PATH",
+            "XDG_CACHE_HOME",
+            "DISPATCH_E2E_SERVER_BIN",
+            "DISPATCH_E2E_BROKER_BIN_DIR",
+            "DISPATCH_E2E_PG_CONNECTIONS",
+          ]
             .filter((variable) => process.env[variable] !== undefined)
             .map((variable) => [variable, process.env[variable]])
         ),

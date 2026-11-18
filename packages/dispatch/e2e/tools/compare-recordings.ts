@@ -1,11 +1,12 @@
 /** `bun e2e/tools/compare-recordings.ts <fresh>`: whether a fresh recording of every stubbed
  *  row still says what the committed one says.
  *
- *  The re-record job of `.github/workflows/dispatch-browser-nightly.yaml` runs it. That job
- *  points the record mode at an empty directory of its own
- *  (`DISPATCH_E2E_STUB_RECORDINGS`, `e2e/stub/recordings.ts`) rather than letting it write over
- *  the committed set, so this can see a recording the tree holds that no row writes any more -
- *  which it could not when the fresh set was the committed set.
+ *  The `recordings` job of `.github/workflows/dispatch-browser.yaml` runs it on the full lane,
+ *  and a person re-recording the set runs it too (`packages/dispatch/README.md`). Both point the
+ *  record mode at an empty directory of their own (`DISPATCH_E2E_STUB_RECORDINGS`,
+ *  `e2e/stub/recordings.ts`) rather than letting it write over the committed set, so this can
+ *  see a recording the tree holds that no row writes any more - which it could not when the
+ *  fresh set was the committed set.
  *
  *  What it compares is the status of each route, and only that: `statusDrift`
  *  (`e2e/stub/recording.ts`) is the whole of the judgement and its header says why, and

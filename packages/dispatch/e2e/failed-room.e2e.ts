@@ -4,14 +4,12 @@
 // second half is the recovery: the room reloads, the next write lands, and the browser's own
 // paragraph is still in the document the server serves.
 //
-// It is opt-in, because it takes about 40 s of real time (a trigger holds a durable append for
-// 20 s) and it cancels a Postgres backend, so it is not part of the suite CI runs:
-//
-//   DISPATCH_FAILED_ROOM_PROBE=1 bunx playwright test \
-//     --config e2e/playwright.config.ts --project=chromium e2e/failed-room.e2e.ts
-//
-// Comparing a tree against another is what it is for: run it on this head and on the base, and
-// read the two lines it prints for the queued writer.
+// It runs in `chromium-alone`, one row at a time on a machine of its own, on the full lane of
+// .github/workflows/dispatch-browser.yaml: it takes about 40 s of real time (a trigger holds a
+// durable append for 20 s), it cancels a Postgres backend, and what it asserts rests on that
+// clock - the writer is told before its client gives up at 30 s - which three other workers on
+// the machine would move (`clockSpecNames` in e2e/configurations.ts). The lines it prints for
+// the queued writer are what a run on a change and a run on its base are read against.
 
 import {
   baseUrl,
@@ -56,9 +54,7 @@ async function releaseTheRoom(): Promise<void> {
 // included. This runs after a timeout, a Ctrl-C between tests, and a throw inside the body,
 // which the `finally` below covers on its own.
 test.afterEach(async () => {
-  if (process.env.DISPATCH_FAILED_ROOM_PROBE === "1") {
-    await releaseTheRoom();
-  }
+  await releaseTheRoom();
 });
 
 /** The backend the trigger is holding inside its `doc_updates` insert: the room's own durable
@@ -108,16 +104,11 @@ async function anchoredComment(issueKey: string, body: string, quote: string): P
 test("a writer inside the docs layer when its room fails is told, and the room recovers", async ({
   browser,
 }) => {
-  test.skip(
-    process.env.DISPATCH_FAILED_ROOM_PROBE !== "1",
-    "the failed-room probe is opt-in: it holds a durable append for 20 s and cancels a backend"
-  );
   test.setTimeout(240_000);
   // The `test` of this suite empties the database before every row (e2e/test.ts), so this
-  // repeats it. It is kept because this body is read as one procedure by hand, on two checkouts
-  // at once (the header above), and what the probe starts from is the first thing a reader of
-  // that comparison needs: a row whose 40 s are spent on one append cannot be read against
-  // another tree's run without it.
+  // repeats it. It is kept because what the probe starts from is the first thing a reader needs
+  // who holds its `FAILED-ROOM` lines against another tree's: a row whose 40 s are spent on one
+  // append cannot be read against another tree's run without it.
   await resetDatabase();
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({

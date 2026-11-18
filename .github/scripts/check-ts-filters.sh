@@ -34,11 +34,12 @@
 # scripts/e2e/completion-head.ts. What such a job loads is a runtime closure rather than
 # a tsc program, and stays a hand-kept read of ci_job_reads.py: envoy_client_dep for the
 # dispatch_browser, envoy_e2e_local, two-build and daemon-live gates, a read of its own for the
-# envoy_session_stall gate. Two parts of such closures this check does derive: every file the
+# envoy_session_stall gate. Three parts of such closures this check does derive: every file the
 # entries the two-build and daemon-live Go steps run load, from those entries' bundles (the
-# bundles, below), and the share of packages/contracts/src that dispatch_browser, the two
-# two-build gates and daemon_live load, from dispatch_ui's programs and those bundles (the listed
-# blocks, below).
+# bundles, below); every file the three e2e/__tests__ files that dispatch_browser's
+# postgres-rows job runs with `bun test` load, from their bundles too; and the share of
+# packages/contracts/src that dispatch_browser, the two two-build gates and daemon_live load,
+# from dispatch_ui's programs and those bundles (the listed blocks, below).
 #
 # THE BUNDLES. A step that runs an entry with Bun loads that entry's runtime closure, which no
 # tsc program of its job lists: the two-build job's Go step runs cmd/dispatch/twobuild_cli_test.go,

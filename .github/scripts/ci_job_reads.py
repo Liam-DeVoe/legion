@@ -369,6 +369,8 @@ BROWSER_BINARIES, BROWSER_SHARD = "binaries", "shard"
 BROWSER_ALONE, BROWSER_MP, BROWSER_MERGE = "alone", "multiprocess", "merge"
 BROWSER_EMBEDDER = "embedder"
 BROWSER_VISUAL = "visual"
+BROWSER_PG_ROWS = "postgres-rows"
+BROWSER_RECORDINGS = "recordings"
 BROWSER_SITE_SELF = reads((BROWSER_SITE, "the browser suite reads the definition of the steps it runs"))
 
 
@@ -2181,11 +2183,18 @@ BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
 # in the pinned container. That build compiles ./cmd/dispatch, which the multiprocess job's
 # pinned build step in the gate below names already, so this job adds no command of its own.
 BROWSER_VISUAL_SPECS = "Browser-test dispatch dashboard against its baselines"
-# The six steps that run the browser suite, named together wherever a Run or a read cites the
+# The Bun rows of packages/dispatch/e2e/__tests__ that need a PostgreSQL, in the postgres-rows
+# job, and the full lane's re-recording of the stubbed rows and its comparison, in the
+# recordings job.
+BROWSER_PG_ROWS_SPECS = "Test the dashboard's rows that need a PostgreSQL"
+BROWSER_RECORD_SPECS = "Re-record every stubbed row against the real harness"
+BROWSER_COMPARE_RECORDINGS = "Fail where a route no longer answers as its recording holds"
+# The steps that run the browser suite, named together wherever a Run or a read cites the
 # whole suite: one list, so a step renamed above reaches every citation of it. It is declared
-# here, below the six names, rather than beside the first of them.
+# here, below the names, rather than beside the first of them.
 BROWSER_SUITE_STEPS = (
     f"{at_browser(BROWSER_SHARD_SPECS)}, {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}, "
+    f"{at_browser(BROWSER_RECORD_SPECS, BROWSER_RECORDINGS)}, "
     f"{at_browser(BROWSER_MP_SPECS, BROWSER_MP)}, {at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)}, "
     f"{at_browser(BROWSER_EMBEDDER_SPECS, BROWSER_EMBEDDER)} and "
     f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)}"
@@ -3013,9 +3022,10 @@ GATES = [
       + bun_job("dispatch-ui")),
 
     # The browser suite, every row of it: the binaries job, the shard legs, the three `-alone`
-    # projects, the two-process job, the visual job and the merge job, all in
-    # dispatch-browser.yaml, which ci.yaml's dispatch-browser job and the nightly both call
-    # (at_browser cites their steps).
+    # projects, the re-recording of the stubbed rows, the two-process job, the visual job and the
+    # merge job, all in dispatch-browser.yaml, which ci.yaml's dispatch-browser job and the
+    # nightly both call (at_browser cites their steps); and the postgres-rows job beside them,
+    # whose Bun rows need the PostgreSQL those jobs' image carries.
     #
     # ci_filter_coverage.py's check_table reads a gate whose ci.yaml job calls a local workflow
     # over the jobs of that workflow, so dispatch-browser.yaml's go commands, `env:` blocks and
@@ -3024,9 +3034,10 @@ GATES = [
     # ENV_ALLOWED, or a `shell:`, in either job or in the file around it drops that step out of
     # the check's reduction, which then counts it as reading every Go file of the repository.
     # The gate keeps `workflow=CI`, as the docs gate does and for the same reason:
-    # dispatch-browser.yaml carries job ids of its own (binaries, shard, alone, multiprocess,
-    # merge) rather than one named for the caller, so ci.yaml is the file that holds a job named
-    # dispatch-browser, and each citation names the browser job it is in.
+    # dispatch-browser.yaml carries job ids of its own (binaries, shard, alone, postgres-rows,
+    # recordings, multiprocess, merge) rather than one named for the caller, so ci.yaml is the
+    # file that holds a job named dispatch-browser, and each citation names the browser job it
+    # is in.
     #
     # This gate lists no script Run, and cannot: a Run pinned to a script's text is reduced only
     # where nothing around the ci.yaml job can move what the script compiles, and around_job
@@ -3077,8 +3088,14 @@ GATES = [
         ], workflow=BROWSER_SITE),
     ], reads=reads(
         ("packages/dispatch/**", f"{BROWSER_SUITE_STEPS} run the suite, "
-         f"{at_browser('Build dispatch dashboard')} builds the SPA the rows read, and "
+         f"{at_browser('Build dispatch dashboard')} builds the SPA the rows read, "
+         f"{at_browser(BROWSER_COMPARE_RECORDINGS, BROWSER_RECORDINGS)} reads the committed recordings, "
+         f"{at_browser(BROWSER_PG_ROWS_SPECS, BROWSER_PG_ROWS)} runs e2e/__tests__/psql-session.test.ts, "
+         "harness-stacks.test.ts and second-global-setup.test.ts (`bun run test:postgres`), and "
          f"{at_browser(BROWSER_MERGE_STEP, BROWSER_MERGE)} merges their reports, in packages/dispatch"),
+        (TEST_FIXTURES_SRC, "packages/dispatch/e2e/__tests__/psql-session.test.ts:3-4, harness-stacks.test.ts:4-5 "
+         "and second-global-setup.test.ts:29 import @legion/test-fixtures, and "
+         f"{at_browser(BROWSER_PG_ROWS_SPECS, BROWSER_PG_ROWS)} runs all three"),
         ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:127-150 (build:web)"),
         # packages/contracts/src is no read of this table's either: the filter's listed block holds
         # the modules dispatch_ui's tsc programs compile and the dispatch command's bundle loads,

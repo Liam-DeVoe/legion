@@ -1686,6 +1686,9 @@ bun run dispatch:local
 `bun run test:web web/src`, which preloads `web/src/__tests__/register-dom.ts` and then
 `web/src/__tests__/setup.ts`, and then `bun test e2e/__tests__`, which preloads neither and runs
 as the node processes those harness tests are.
+That second half leaves out the three files whose rows need a PostgreSQL, which are
+`bun run test:postgres` and run in CI's `dispatch-browser` job rather than in `dispatch-ui`
+("Every browser row of the suite", below).
 The order of that preload list is the one order that holds: `register-dom.ts` puts happy-dom's
 DOM on the globals at the test origin `http://dispatch.test`, and a module that reads a DOM
 global while it is evaluated keeps whatever it found then — `@testing-library/dom` builds
@@ -2098,7 +2101,16 @@ shard machines, each leg running `--shard=N/4` with four workers.
 A merge group, a pull request carrying `full-ci`, a `workflow_dispatch` and the nightly
 (`.github/workflows/dispatch-browser-nightly.yaml`)
 run the `full` lane: all eight parallel projects over those same four shards, the three `-alone`
-projects each on a machine of its own at one worker, and the two-process job.
+projects each on a machine of its own at one worker, the re-recording of the stubbed rows that
+holds each committed recording to the route it read (below, "The stubbed layer"), and the
+two-process job.
+Both lanes also run the `postgres-rows` job, on the image the shard legs run in: the three files
+of `e2e/__tests__` whose rows need a PostgreSQL - `psql-session.test.ts`,
+`harness-stacks.test.ts` and `second-global-setup.test.ts` - which are `bun run test:postgres`
+and which `bun run test` leaves out.
+In an issue pod they run with the pod's server and its PostgreSQL 18:
+`DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin bun run test:postgres`, `LEGION_TEST_PG_DSN`
+being set there already.
 Each shard leg exports the worker count and the pgvector digest on the browser step's own command
 line rather than in an `env:`, for the reason that step's comment gives: a name outside
 `.github/scripts/ci_filter_coverage.py`'s `ENV_ALLOWED`, in the job's `env:` or in one of its
@@ -2106,7 +2118,7 @@ steps', drops `e2e/run-server.sh`'s `go build` out of `.github/scripts/check-ci-
 reduction.
 The `merge` job of that workflow joins every leg's blob report into one report, publishes the
 run's rows, its flake rate and the legs that did not succeed, and is the one job of the workflow
-that reports ci-ok, so a run gets one verdict and not seven.
+that reports ci-ok, so a run gets one verdict and not nine.
 The `dispatch-ui` job of `.github/workflows/ci.yaml` keeps the dashboard's typecheck, unit tests
 and build, beside the proof editor's typecheck and unit tests, and runs no browser row and no
 lint: Biome checks the whole tree once, in the `lint` job.
@@ -2201,8 +2213,7 @@ fails with a message naming the file that started the child, its command and
 how long it waited, and prints one line per child, with what that child cost,
 on the stderr of the run that started it. Two subprocesses are stated edges
 rather than bounded: the psql of `e2e/psql.ts` (the rows and hooks of
-`e2e/__tests__/psql-session.test.ts`, and the scratch databases of
-`e2e/__tests__/replace-blocks-guard.test.ts`), whose `sqlAt`
+`e2e/__tests__/psql-session.test.ts`), whose `sqlAt`
 `e2e/harness-postgres.ts` and `e2e/local-instance.ts` call too, so a bound on it
 would reach past
 `e2e/__tests__/`; and, on a machine with no `/proc`, the `ps` with which
@@ -2556,10 +2567,13 @@ Proof uses collaborative cursor decorations at the desktop `xl` breakpoint and a
 layouts intentionally omit the remote cursor plugin because its edge widget disrupts mobile
 post-update text selection; Yjs document transport and local editing remain active.
 
-`e2e/failed-room.e2e.ts` is opt-in and skipped without `DISPATCH_FAILED_ROOM_PROBE=1`: it holds
+`e2e/failed-room.e2e.ts` runs in `chromium-alone`, on the full lane of
+`.github/workflows/dispatch-browser.yaml`, one row at a time on a machine of its own: it holds
 the room's next durable append for 20 s with a `doc_updates` trigger and cancels that backend, so
-it costs about 40 s and does not belong in the suite CI runs. Run it as
-`DISPATCH_FAILED_ROOM_PROBE=1 bunx playwright test --config e2e/playwright.config.ts --project=chromium e2e/failed-room.e2e.ts`,
+it costs about 40 s, and what it asserts rests on that clock (`clockSpecNames` in
+`e2e/configurations.ts` says why it is listed with the wall-clock specs).
+One run of it alone is
+`bun run e2e -- --project=chromium-alone e2e/failed-room.e2e.ts --workers=1`,
 which starts a harness of its own on ports the OS chooses.
 It is the end-to-end check for a failed document room: the writer inside the docs layer when the
 room fails is answered `503 DOC_SERVICE_UNAVAILABLE` rather than waiting for a recovery that
@@ -2567,8 +2581,8 @@ cannot finish, the writer behind it is answered the same way or admitted once th
 reloaded, and the room then reloads with the browser's own paragraph in the document the server
 serves. The trigger it installs makes every `doc_updates` insert on that database sleep, so it is
 dropped in a `finally` and again in `test.afterEach` - a timeout or a Ctrl-C leaves nothing
-behind. Run it on a change and on its base whenever the docs layer's locking, recovery or publish
-paths move; the two runs' `FAILED-ROOM` lines are the comparison.
+behind. The `FAILED-ROOM` lines it prints are what a run on a change is read against a run on
+its base with, when the docs layer's locking, recovery or publish paths move.
 
 `e2e/fake-envoy.ts` is a stub Envoy listener the harness starts on
 `FAKE_ENVOY_PORT` (unset, a port the OS chooses, which it reports) and the only Envoy a local
@@ -3347,9 +3361,10 @@ optional. `e2e/__tests__/stub-recordings.test.ts` runs on every pull request tha
 package and holds every committed recording to
 `packages/contracts/schemas/dispatch-openapi.json`: the route, the method, the status and the
 body against that status's schema, so a response shape that changes fails on the commit that
-changes it. The re-record job of `.github/workflows/dispatch-browser-nightly.yaml` runs daily,
-re-records every stubbed row against the real harness into a directory of its own and fails
-naming each route that no longer answers as its recording holds. It compares the **status of
+changes it. The `recordings` job of `.github/workflows/dispatch-browser.yaml`, on the full lane
+that every merge group runs, re-records every stubbed row against the real harness into a
+directory of its own and fails naming each route that no longer answers as its recording
+holds. It compares the **status of
 each route** and nothing else - no body's values and no body's shape - because two recordings
 of one row never agree on an id, a counter, a time, an empty list or a nullable field, and
 masking enough of that to be green would mask what the job exists to watch (`statusDrift`,
@@ -3357,12 +3372,14 @@ masking enough of that to be green would mask what the job exists to watch (`sta
 cannot: the generated contract holds client and server to one shape at compile time, the
 contract test holds every recorded body to that shape on each pull request, this holds the
 status of each route, and the rows that stayed on the real stack hold the server's behaviour.
-The job uploads the re-recorded set, and applying it is a replacement of
+A failed run of the job uploads the re-recorded set, and applying it is a replacement of
 `e2e/__recordings__` by that artifact rather than a copy over it: a copy would leave behind
-every recording the job named as written by no row any more.
+every recording the job named as written by no row any more (`packages/dispatch/README.md`
+says how a person re-records the set on their own machine the same way).
 It finds those too - which it could not while it re-recorded over the committed set - and a
-pull request refuses one before a nightly meets it, in two halves, because no one reading can
-see them all. `bun e2e/tools/row-map.ts` reads the two listings that are the suite (below): it
+pull request refuses one before the merge group meets it, in two halves, because no one
+reading can see them all. `bun e2e/tools/row-map.ts` reads the two listings that are the suite
+(below): it
 refuses a recording no listed row owns, and a row a listing marks `skipped` owns none, which is
 every row skipped where it is declared - `test.fixme`, `test.skip(title, fn)`, a
 `describe.skip`, or a describe-level `test.skip(true)` or `test.fixme()` - none of which runs a

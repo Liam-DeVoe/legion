@@ -2517,7 +2517,8 @@ jobs:
               - 'packages/broker-client/**'
               - 'packages/envoy-client/test/**'
             # The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
-            # holds: the shards, the three `-alone` projects, the two-process job, the
+            # holds: the shards, the three `-alone` projects, the Bun rows that need a
+            # PostgreSQL, the re-recording of the stubbed rows, the two-process job, the
             # fake-embedder job, the visual review and the merge job. Every entry is something a
             # browser row reads: the dashboard and its contracts, the Dispatch server its harness
             # builds, and the two workflow files that hold the steps. The retired `dispatch` job's
@@ -2534,6 +2535,10 @@ jobs:
               - *bun_install
               - 'packages/dispatch/**'
               - 'packages/proof-editor/**'
+              # The shared test fixtures packages/dispatch/e2e/__tests__/psql-session.test.ts,
+              # harness-stacks.test.ts and second-global-setup.test.ts import, which
+              # dispatch-browser.yaml's postgres-rows job runs (`bun run test:postgres`).
+              - 'packages/test-fixtures/src/**'
               # dispatch_ui's set, which the SPA and the e2e helpers load, with the bundle of the
               # dispatch command its rows spawn (e2e/dispatch-cli.ts:8,39), dispatch_two_builds_go's
               # set (ci_ts_programs.py, LISTED, says why). Its jobs' contracts build
@@ -5561,16 +5566,18 @@ jobs:
 
   # Every browser row of the Dispatch suite, which .github/workflows/dispatch-browser.yaml
   # holds: the binaries job that builds the Go commands the lanes run, the shard legs, the three
-  # `-alone` projects a machine each, the two-process job, the fake-embedder job that runs on both
-  # lanes, the containerised visual review, and the merge job that joins the shard and alone
-  # reports into one and posts this job's ci-ok report.
+  # `-alone` projects a machine each, the job of the suite's Bun rows that need a PostgreSQL and
+  # the fake-embedder job, which both run on both lanes, the re-recording of the stubbed rows,
+  # the two-process job, the containerised visual review, and the merge job that joins the shard
+  # and alone reports into one and posts this job's ci-ok report.
   #
   # Two lanes, and which run pays for which. A pull request without the label `full-ci` runs
   # `pull-request`, the two projects a change is held to (chromium and iphone), so such a run
   # proves those two rows and no more - it is not the run that proves the suite before main.
   # Every other run - the merge group, a workflow_dispatch and a pull request carrying `full-ci`
-  # - runs `full`: every project, the three `-alone` ones and the two-process job. So the merge
-  # group is where a change meets the whole suite before it lands, and the nightly
+  # - runs `full`: every project, the three `-alone` ones, the re-recording of the stubbed rows
+  # and the two-process job. So the merge group is where a change meets the whole suite before
+  # it lands, and the nightly
   # (.github/workflows/dispatch-browser-nightly.yaml, which calls the same file with the full
   # lane, from main) runs it again on main's tip.
   #

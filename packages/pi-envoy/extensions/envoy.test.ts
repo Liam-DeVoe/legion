@@ -19791,9 +19791,11 @@ console.log(JSON.stringify(args));
   // listener of this file's own on that one port — the kernel cannot pick it, 4222 being the
   // default under proof — bound once here and held for the rows that count its connections. Where
   // something else already listens there (a local NATS), those rows skip, named; every other row
-  // of this file still runs. On GitHub Actions a held port fails this describe instead: the
-  // pi-envoy job must leave 4222 free, running its NATS service and this file's other NATS rows on
-  // another port.
+  // of this file still runs. On GitHub Actions a held port fails this describe instead, and
+  // nothing of the pi-envoy job holds it: its NATS service takes a host port Docker picks, which
+  // the job hands the omp rows as LEGION_TEST_NATS_URL (.github/workflows/ci-job-pi-envoy.yaml),
+  // and the one describe of this file that reaches a real NATS starts its own on free ports
+  // (`startEnvoyStack`); every other NATS URL here names a host no row resolves.
   const dialProbe = listenCountingDials(NATS_DEFAULT_PORT);
   const withoutDialProbe = requireOrSkip(
     `127.0.0.1:${NATS_DEFAULT_PORT} free for this file's own listener, which the rows that count ` +

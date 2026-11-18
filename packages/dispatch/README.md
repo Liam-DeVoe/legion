@@ -545,36 +545,6 @@ lists blocks while `GET /api/v1/references?to=<document>&kind=part_of` lists non
 `documents=<n> indexed=<n> not_indexed=<n>`, then each not-indexed document's reference. A document
 with no blocks counts as indexed, since it owes no nodes.
 
-`e2e/acceptance/replace-blocks.sh` drives what `doc-edit`'s `replace` does with a `with` that
-names blocks: a list written over a paragraph's whole text, a list written over the text of a
-nested list item, the refusals in a heading, in a table cell and for a `with` opening with the
-matched item's own marker, and the markdown each edit answers with. It takes the first three
-inputs, with `PROJECT` optional (unset, it makes a project of its own), and writes one issue in
-that project. The create of that project names `DISPATCH_DEFAULT_ASSIGNEE`, the person its
-unowned work lands on: the bearer acts for no person, so the server refuses a project that names
-none (`400 INVALID_PROJECT`). That input is required with `DISPATCH_URL` and no `PROJECT`; with
-`DATABASE_URL` it defaults to `alice`, whom the instance this run starts seeds and signs in; and
-with a `PROJECT` the server already holds, nothing is created and it is not read. It is the one
-driver that can start its own server: given `DATABASE_URL`, a
-loopback database of the run's own, it starts `bun run dispatch:local` and stops it again from
-its own trap. That command truncates and reseeds the database it is given, so before anything
-starts the run asks the server the connection string reaches, through `psql`, which database it
-is (`current_database()`) and which port it answers on (`inet_server_port()`), and asks the same
-through `LEGION_TEST_PG_DSN` where that is set. It refuses a connection string it gets no answer
-through, and a database of the same name as the shared one on a server it cannot prove is
-another: two names that differ pass, and two equal names pass only where both servers answered a
-port and the ports differ. It parses neither string itself, so the database it judges is the one
-libpq connects to, however the string spells it; it reads `DATABASE_URL` with no `PG*` variable
-set, as the instance reads it.
-The connection string the run is given must carry everything libpq needs to connect — host, port,
-user, password and TLS settings among them — since the run unsets every `PG*` variable before it
-starts the instance, so none survives into it.
-
-```bash
-createdb -h 127.0.0.1 -p 5433 -U legion_test dispatch_local_replace
-DATABASE_URL=postgres://legion_test@127.0.0.1:5433/dispatch_local_replace?sslmode=disable \
-  bash packages/dispatch/e2e/acceptance/replace-blocks.sh
-```
 `e2e/acceptance/create-document.sh` drives the command line's own create, the one that makes a
 document from a title with no file and no text, through the same real CLI. It takes `DISPATCH_URL`,
 the bearer and `DISPATCH_DEFAULT_ASSIGNEE`, a person who has signed in to that server: the bearer
@@ -756,13 +726,37 @@ what they fetched (`bun run e2e:stub:record`). `DISPATCH_E2E_STUB_PORT` moves th
 server off 4319, which is what a second checkout on one machine needs, since the server refuses
 to reuse one already listening rather than serve another checkout's build. And
 `DISPATCH_E2E_STUB_RECORDINGS` points a run at a set of recordings other than the committed
-one, which the nightly's re-record job uses so that it can see a committed recording no row
+one, which the full lane's `recordings` job uses so that it can see a committed recording no row
 writes any more. A fourth, `DISPATCH_E2E_STUB_ONLY=1`, is how the config carries "this run is
 the stubbed layer alone" to the rest of the run; set by hand it tells `globalSetup` to start no
 stack at all, for the whole run and real-stack projects included, which then find no server to
 address.
+
+Re-recording the committed set is a tool a person runs when a stubbed row, or the route it
+reads, changes on purpose: it runs every stubbed row once against the real harness, at one
+worker, and writes what each fetched. Record into a directory of your own and put it in the
+committed one's place, rather than over `e2e/__recordings__`: a run over the committed set
+leaves behind every recording no row writes any more. From this package, with a Postgres
+provider for the stacks (here an issue pod's PostgreSQL 18):
+
+```bash
+fresh=$(mktemp -d)
+DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin DISPATCH_E2E_STUB_RECORDINGS="$fresh" \
+  bun run e2e:stub:record
+bun e2e/tools/compare-recordings.ts "$fresh"
+rm -rf e2e/__recordings__ && cp -R "$fresh" e2e/__recordings__
+```
+
+`compare-recordings.ts` names each route whose status moved, each committed recording the run
+wrote nothing for and each recording the tree does not hold, and exits 1 on any of them, so it
+says what the diff of the replacement will hold before you read it.
+The full lane runs the same recording and comparison in every merge group (the `recordings`
+job of `.github/workflows/dispatch-browser.yaml`) and fails on a route that moved; a failed run
+uploads its fresh set as the artifact `dispatch-browser-recordings-<attempt>`, which replaces the
+committed directory the same way.
+
 The suite has fifteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
-three the `-alone` projects below take and the stubbed layer's own (`packages/dispatch/AGENTS.md`,
+four the `-alone` projects below take and the stubbed layer's own (`packages/dispatch/AGENTS.md`,
 "The stubbed layer", which the last two projects of the list run).
 `iphone` runs, from those same specs, only the tests tagged `@phone` (written at the end of the
 test's or its `test.describe`'s title); a test takes the tag when the phone viewport can change
@@ -812,21 +806,23 @@ tab holds the person's writes for another tab's sign-out on a renewed lease rath
 tab's lock.
 The last three projects run the rows whose claim is a wall-clock time, with the machine to
 themselves: `chromium-alone` runs `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts`
-(a card draws without holding the main thread for a second)
-and `e2e/agent-workspace-timing.e2e.ts` (a sleeping live view of an ordinary conversation comes
+(a card draws without holding the main thread for a second),
+`e2e/agent-workspace-timing.e2e.ts` (a sleeping live view of an ordinary conversation comes
 back inside half a second on the fastest of up to five fresh wakes, a sleeping view at the
 stream's worst case comes back inside 1.2 seconds on the fastest of up to eight fresh wakes, and
 the Agents page paints six hundred sessions inside 100 milliseconds while holding the main
-thread under 150 ms, the first load inside both of those bounds of up to twenty taken), and
+thread under 150 ms, the first load inside both of those bounds of up to twenty taken) and
+`e2e/failed-room.e2e.ts` (a writer queued behind a document room that fails is told
+`503 DOC_SERVICE_UNAVAILABLE` before its client gives up at 30 s, and the room recovers), and
 `firefox-alone` and `webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines.
-Each sets `default: false`, so a run that names no project holds none of their 51 rows, and each
+Each sets `default: false`, so a run that names no project holds none of their 52 rows, and each
 caps its own workers at one.
-What holds a reading to a quiet machine is the run being one worker wide, and the three files
+What holds a reading to a quiet machine is the run being one worker wide, and the four files
 reach that in two ways: `e2e/main-thread-hold.ts` fails a measuring row of
 `e2e/heavy-bodies.e2e.ts` or `e2e/nested-directive.e2e.ts` in a run of more than one worker,
 since four workers on one machine make a second of wall clock unmeasurable, and the rows of
-`e2e/agent-workspace-timing.e2e.ts`, which read a clock of their own, take that one worker from
-the command that runs them.
+`e2e/agent-workspace-timing.e2e.ts` and `e2e/failed-room.e2e.ts`, which read a clock of their
+own, take that one worker from the command that runs them.
 `bun run e2e:clock` is the command that runs all three projects, and it names `--workers=1`
 beside them; one file in one engine is
 `bun run e2e -- --project=chromium-alone e2e/heavy-bodies.e2e.ts --workers=1`, which names that
