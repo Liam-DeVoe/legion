@@ -1,12 +1,17 @@
 /** Rows of the mark's shape (`e2e/harness-postgres-marks.ts`) for the check
  *  `v-no-leftover-postgres` (requirement R3 of pull request #4236): which paths a start trusts a
- *  mark and what it names by (`whyUntrusted`). A mark another user wrote needs a second user,
+ *  mark and what it names by (`whyUntrusted`), and the one spelling a shell stack's mark holds its
+ *  run directory by (`e2e/postgres-mark.ts label`). A mark another user wrote needs a second user,
  *  which a test run has none of, so these rows read owners from a stubbed `lstat`. The start's
  *  removal of a dead stack's Postgres, which acts only on what these checks trust, has its rows in
  *  `harness-postgres-removal.test.ts`. */
 
 import { expect, test } from "bun:test";
-import type { Stats } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, type Stats } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import * as marks from "../harness-postgres-marks";
 
@@ -81,3 +86,43 @@ test("v-no-leftover-postgres: whyUntrusted: a directory above the path that anot
   expect(above({ kind: "link", uid: me, mode: 0o777 })).toBe("/srv is a symbolic link");
   expect(above({ kind: "directory", uid: me, mode: 0o755 })).toBeUndefined();
 });
+
+const markCommand = fileURLToPath(new URL("../postgres-mark.ts", import.meta.url));
+
+// A shell driver spells its run directory `${TMPDIR:-/tmp}/…`, so a TMPDIR that ends in `/` gives
+// it a doubled `/`: the command marks the directory that spelling names, under its one spelling,
+// as it marks the same directory spelt plain.
+test.skipIf(process.platform !== "linux")(
+  "v-no-leftover-postgres: postgres-mark.ts label marks a run directory spelt with a doubled or a trailing / under its one spelling, which a start's sweep reads as a mark",
+  () => {
+    const tmp = mkdtempSync(join(tmpdir(), "mark-label-"));
+    try {
+      const work = join(tmp, "work");
+      mkdirSync(work);
+      const real = marks.identityOf(work);
+      for (const spelt of [`${tmp}//work`, `${work}/`, work]) {
+        const label = spawnSync(
+          process.execPath,
+          [markCommand, "label", String(process.pid), spelt, "dispatch-e2e-pg-label-0"],
+          { encoding: "utf8", timeout: 120_000 }
+        );
+        expect({ spelt, status: label.status, stderr: label.stderr }).toEqual({
+          spelt,
+          status: 0,
+          stderr: "",
+        });
+        const mark = marks.markOf(label.stdout.trim().slice(`${marks.markLabel}=`.length));
+        expect({ spelt, run: mark?.run, identity: mark?.identity }).toEqual({
+          spelt,
+          run: real,
+          identity: real,
+        });
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+  // Three runs of the command, each a `bun` child that `spawnSync` bounds at 120 s, one after
+  // another: the row's own limit is their sum.
+  360_000
+);

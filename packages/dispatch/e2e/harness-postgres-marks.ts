@@ -176,9 +176,13 @@ export function labelOf(mark: Mark): string {
 
 /** The mark of the container `container` of a shell stack whose run directory is `run` and whose
  *  owner is `owner`, its driver: a container that serves on a port Docker publishes, with no socket
- *  directory, carried as its label alone (`e2e/postgres-mark.ts`). */
+ *  directory, carried as its label alone (`e2e/postgres-mark.ts`). The run directory is held by
+ *  its one spelling (`identityOf`), read here once, for both of the mark's paths: a driver spells
+ *  it `${TMPDIR:-/tmp}/…`, with a doubled `/` where `TMPDIR` ends in one, which is no path a mark
+ *  holds. Throws where `run` cannot be resolved. */
 export function containerMark(owner: Owner | null, run: string, container: string): Mark {
-  return { owner, run, identity: identityOf(run), container };
+  const identity = identityOf(run);
+  return { owner, run: identity, identity, container };
 }
 
 /** The name `socketDirectory` gives a socket directory: `pg-`, the stack's index or `template`,

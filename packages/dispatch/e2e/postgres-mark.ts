@@ -7,19 +7,22 @@
  *      prints the `--label` value that marks the container CONTAINER of the run whose work
  *      directory is RUN, whose owner is the process OWNER of this PID namespace: the shell's own
  *      `$$`, the driver whose death ends the run. The container serves on a port Docker publishes,
- *      so the mark names no socket directory. Exits 2, printing why, where OWNER is no process
- *      this one can read, RUN is no directory named by an absolute path written plain, or
- *      CONTAINER is no name Docker takes.
+ *      so the mark names no socket directory. The mark holds RUN by its one spelling
+ *      (`containerMark`), so a RUN spelt with a doubled or a trailing `/`, as a `TMPDIR` that ends
+ *      in one gives it, is marked as the directory it names. Exits 2, printing why, where OWNER is
+ *      no process this one can read, RUN is no directory named by an absolute path, or CONTAINER
+ *      is no name Docker takes.
  *    bun packages/dispatch/e2e/postgres-mark.ts sweep
  *      removes each Postgres whose mark names a process that is gone, leaves every other one, and
  *      names what it leaves (`removeLeftoverPostgres`), on stderr. Exits 0. */
 import { statSync } from "node:fs";
+import { isAbsolute } from "node:path";
 
 import {
   containerMark,
   containerName,
   labelOf,
-  plainPath,
+  type Mark,
   processOwner,
 } from "./harness-postgres-marks";
 import { removeLeftoverPostgres } from "./harness-postgres-removal";
@@ -40,12 +43,19 @@ if (command === "sweep" && args.length === 0) {
   const pid = /^\d+$/.test(ownerArg) ? Number(ownerArg) : Number.NaN;
   const owner = Number.isSafeInteger(pid) && pid > 0 ? processOwner(pid) : null;
   if (owner === null) refuse(`${ownerArg} names no process of this PID namespace it can read`);
-  if (!plainPath(run) || !statSync(run, { throwIfNoEntry: false })?.isDirectory()) {
-    refuse(`${run} is no directory named by an absolute path written plain`);
-  }
   if (!containerName.test(container))
     refuse(`${container} is no name Docker takes for a container`);
-  console.log(labelOf(containerMark(owner, run, container)));
+  // The one spelling of RUN, read once: `containerMark` throws where RUN names nothing.
+  let mark: Mark | undefined;
+  try {
+    mark = isAbsolute(run) ? containerMark(owner, run, container) : undefined;
+  } catch {
+    mark = undefined;
+  }
+  if (mark === undefined || !statSync(mark.identity, { throwIfNoEntry: false })?.isDirectory()) {
+    refuse(`${run} is no directory named by an absolute path`);
+  }
+  console.log(labelOf(mark));
 } else {
   refuse("usage: postgres-mark.ts label OWNER RUN CONTAINER | postgres-mark.ts sweep");
 }
