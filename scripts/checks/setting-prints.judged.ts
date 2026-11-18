@@ -155,16 +155,12 @@ const RESTS = {
   ),
   bootMisread: basis(
     `${DISPATCH}main.go`,
-    "if err := store.RefuseMisreadURL(boot.DatabaseURL); err != nil {",
-    "699d5d94f606"
+    'if err := pgsetting.Refuse("DATABASE_URL", boot.DatabaseURL); err != nil {',
+    "cba966fcef60"
   ),
-  misread: basis(
-    "packages/envoy/internal/dispatch/store/store.go",
-    "func misreadURL(",
-    "a5fb01a0afd1"
-  ),
+  misread: basis("packages/envoy/pgsetting/pgsetting.go", "func misread(", "e6cb69107669"),
   misreadNet: basis("packages/envoy/internal/redact/url.go", "func Misread(", "4a94bc07e988"),
-  loopback: basis(`${DISPATCH}main.go`, "func loopbackDatabase(", "cb1739b16110"),
+  loopback: basis(`${DISPATCH}main.go`, "func loopbackDatabase(", "654bd6fbf695"),
   mounted: basis(`${DISPATCH}main.go`, "func logDevSignInMounted(", "98a15d292b9a"),
   devOrigin: basis(
     "packages/envoy/internal/dispatch/routes/devsignin.go",
@@ -209,7 +205,7 @@ const RESTS = {
   transportRequest: basis(
     "packages/envoy-client/src/transport.ts",
     "const request = async (",
-    "fa815180cedd"
+    "feeb20898a23"
   ),
   transportRedirectError: basis(
     "packages/envoy-client/src/transport.ts",
@@ -221,11 +217,21 @@ const RESTS = {
     "export function redirectTarget(",
     "5c2397e44c3b"
   ),
+  transportUrlError: basis(
+    "packages/envoy-client/src/transport.ts",
+    "export class EnvoyUrlError extends Error {",
+    "f167ef4c26e8"
+  ),
+  unshownSettingUrl: basis(
+    "packages/contracts/src/setting-url.ts",
+    "export function unshownSettingUrl(",
+    "82212fe122e8"
+  ),
 };
 
 /** Why the URL of an Envoy request prints no user part, and what that rests on. */
 const TRANSPORT_URL =
-  "the URL of a request to the Envoy listener, which every line of the transport names through shownSettingUrl (EnvoyApiError, EnvoyRedirectError, the refusal of a credential that could not be minted), and of which a refused redirect reads only the origin of a Location resolved against it, which holds no user part, naming none of it for the same origin (redirectTarget)";
+  "the URL of a request to the Envoy listener, which every line of the transport names through shownSettingUrl (EnvoyApiError, EnvoyRedirectError, the refusal of a credential that could not be minted), whose base it refuses before any request when shownSettingUrl would not show it (EnvoyUrlError, named by unshownSettingUrl), and of which a refused redirect reads only the origin of a Location resolved against it, which holds no user part, naming none of it for the same origin (redirectTarget)";
 const TRANSPORT_URL_RESTS = [
   RESTS.transportAttempt,
   RESTS.transportRequest,
@@ -561,6 +567,12 @@ export const JUDGED: readonly Judged[] = [
   },
   {
     file: "packages/envoy-client/src/transport.ts",
+    text: "throw new EnvoyUrlError(baseUrl)",
+    why: "the refusal of an Envoy URL shownSettingUrl does not show, before any request: EnvoyUrlError names the URL by its length and the cause its check found (unshownSettingUrl), never a part of it",
+    rests: [RESTS.transportUrlError, RESTS.unshownSettingUrl],
+  },
+  {
+    file: "packages/envoy-client/src/transport.ts",
     text: "`/v1/sessions/${encodeURIComponent(input.sessionID)}${query}`",
     why: `a session id, percent-encoded as a path segment of a request's URL: ${TRANSPORT_URL}`,
     rests: TRANSPORT_URL_RESTS,
@@ -836,7 +848,7 @@ export const JUDGED: readonly Judged[] = [
   {
     file: `${DISPATCH}main.go`,
     text: "serves a loopback database only: DATABASE_URL names host %q",
-    why: "a host pgx read from DATABASE_URL, named only after resolveBootConfig refused a value whose user part pgx and net/url read apart (store.RefuseMisreadURL: more than one @ before the first /, a ?, # or \\ in the user part, or an @ after the first / with none before it), so both readers end the user part at the same @, before that host; a password that holds an @ and, after it, a / is read alike by both with a piece of it as the host, a limit the pull request states",
+    why: "a host pgx read from DATABASE_URL, named only after resolveBootConfig refused a value whose user part pgx and net/url read apart (pgsetting.Refuse: more than one @ before the first /, a ?, # or \\ in the user part, or an @ after the first / with none before it), so both readers end the user part at the same @, before that host; a password that holds an @ and, after it, a / is read alike by both with a piece of it as the host, a limit the pull request states",
     rests: [RESTS.bootMisread, RESTS.misread, RESTS.loopback],
   },
   {

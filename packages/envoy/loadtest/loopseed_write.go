@@ -944,7 +944,7 @@ func runLoopSeedWrite(args []string) error {
 	}
 
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, ep.pg)
+	pool, err := newPGPool(ctx, ep.pg)
 	if err != nil {
 		return err
 	}

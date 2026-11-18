@@ -642,6 +642,9 @@ jobs:
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
+              # How every opener of a Postgres connection string reads it: the daemon's store
+              # and the session database's connect refuse a misread one through it.
+              - 'packages/envoy/pgsetting/*'
               # The reasons the listener refuses a publish to a role no session holds, which the
               # daemon's notify path reads as notify.ErrNoHolder.
               - 'packages/envoy/roleholder/*'
@@ -748,6 +751,9 @@ jobs:
               - 'packages/envoy/internal/store/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
+              # How every opener of a Postgres connection string reads it (store.Open, the
+              # census, the boot's DATABASE_URL refusal).
+              - 'packages/envoy/pgsetting/*'
               - 'packages/envoy/roleholder/*'
               # internal/bus refuses a nats-server below the floor this package holds.
               - 'packages/envoy/natsversion/*'
@@ -848,6 +854,9 @@ jobs:
               # packages/envoy/migrationid is the identifier rule the daemon's embedded
               # migrations are held to, in the envoy module so both sets keep one rule.
               - 'packages/envoy/migrationid/*'
+              # How every opener of a Postgres connection string reads it: the daemon's store
+              # and the session database's connect refuse a misread one through it.
+              - 'packages/envoy/pgsetting/*'
               # packages/envoy/roleholder names the reasons the listener refuses a role publish
               # with, which internal/notify reads as notify.ErrNoHolder.
               - 'packages/envoy/roleholder/*'
@@ -2038,6 +2047,9 @@ jobs:
               - 'packages/envoy/internal/store/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
+              # How every opener of a Postgres connection string reads it (store.Open, the
+              # census, the boot's DATABASE_URL refusal).
+              - 'packages/envoy/pgsetting/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/natsversion/*'
             listener_command: &listener_command
@@ -2326,7 +2338,11 @@ jobs:
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/fold/*'
+              # The daemon's store reads its DSN through pgsetting, which names a refusal
+              # through redact.
+              - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/migrationid/*'
+              - 'packages/envoy/pgsetting/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/sessiontiming/*'
               - 'packages/envoy/subjectforms/*'
@@ -2694,6 +2710,7 @@ jobs:
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
+              - '!packages/envoy/pgsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             envoy_go:
@@ -2911,6 +2928,7 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
+              - 'packages/envoy/pgsetting/*'
               # The step takes the memory tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
               - '.github/scripts/pg-connection-ceiling.sh'
@@ -2932,6 +2950,7 @@ jobs:
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
+              - '!packages/envoy/pgsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # `go test -tags multiprocess ./cmd/dispatch`, the same closure as dispatch_memory.
@@ -2944,6 +2963,7 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
+              - 'packages/envoy/pgsetting/*'
               # The step takes the multiprocess tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
               - '.github/scripts/pg-connection-ceiling.sh'
@@ -2966,6 +2986,7 @@ jobs:
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
+              - '!packages/envoy/pgsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # The two-build job's Go step alone, behind a gate of its own (dispatch_two_builds_go):
@@ -2985,6 +3006,7 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
+              - 'packages/envoy/pgsetting/*'
               - '.github/scripts/go-tagged-tests.sh'
               - 'packages/envoy/scripts/build-dispatch-build.sh'
               - '.github/scripts/pg-connection-ceiling.sh'
@@ -3061,6 +3083,7 @@ jobs:
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
+              - '!packages/envoy/pgsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # The two-build job: its Go step's reads above, named again so the job runs for the
@@ -3081,6 +3104,7 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
+              - 'packages/envoy/pgsetting/*'
               - '.github/scripts/go-tagged-tests.sh'
               - 'packages/envoy/scripts/build-dispatch-build.sh'
               - 'packages/envoy-client/**'
@@ -3160,6 +3184,7 @@ jobs:
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
+              - '!packages/envoy/pgsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # The server-change soak (listener-server-change): `go test -tags serverchange
@@ -3259,6 +3284,7 @@ jobs:
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
+              - 'packages/envoy/pgsetting/*'
               # cmd/listener/api_test.go:176,421,465, which the soak's run compiles too.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
               # cmd/listener/api_test.go:4605, which the soak's run compiles too.
@@ -3273,6 +3299,7 @@ jobs:
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
+              - '!packages/envoy/pgsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # The local acceptance run drives the Go listener and renders every frame with the
@@ -3650,6 +3677,7 @@ jobs:
               - '!packages/envoy/loadtest/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
+              - '!packages/envoy/pgsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # The API race job. Not packages/envoy/**, as envoy_go_race has: that root was here
@@ -3792,6 +3820,7 @@ jobs:
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
+              - 'packages/envoy/pgsetting/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/natsversion/*'
               # The relayed shapes routes_shapes.go names, which this job's own package compiles.
@@ -3873,6 +3902,7 @@ jobs:
               - '!packages/envoy/internal/testport/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
+              - '!packages/envoy/pgsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # The document service's own race job. Not packages/envoy/**, as envoy_go_race has:
@@ -3942,6 +3972,7 @@ jobs:
               - 'packages/envoy/internal/stacktest/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
+              - 'packages/envoy/pgsetting/*'
               # internal/dispatch/docs/approval_carry_test.go:26.
               - 'packages/contracts/fixtures/decision-blocks/**'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
@@ -3971,6 +4002,7 @@ jobs:
               - '!packages/envoy/internal/redact/**/*_test.go'
               - '!packages/envoy/internal/stacktest/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/pgsetting/**/*_test.go'
               # END generated
             # The daemon's `legion` command, `go list -deps ./cmd/legion` in packages/daemon (its
             # embedded probes, turnscope.yml and role prompts included, and the envoy package it
@@ -4069,6 +4101,9 @@ jobs:
               # packages/envoy/migrationid is the identifier rule the daemon's embedded
               # migrations are held to, in the envoy module so both sets keep one rule.
               - 'packages/envoy/migrationid/*'
+              # How every opener of a Postgres connection string reads it: the daemon's store
+              # and the session database's connect refuse a misread one through it.
+              - 'packages/envoy/pgsetting/*'
               # packages/envoy/roleholder names the reasons the listener refuses a role publish
               # with, which internal/notify reads as notify.ErrNoHolder.
               - 'packages/envoy/roleholder/*'
@@ -4181,6 +4216,7 @@ jobs:
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
+              - 'packages/envoy/pgsetting/*'
               # The step takes the multiprocess tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
@@ -4190,6 +4226,7 @@ jobs:
               - '!packages/envoy/cmd/agent-secrets/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/pgsetting/**/*_test.go'
               # END generated
             # The Lean model of the airlock and the Go code it covers (airlock-lean): `lake build`
             # and the axiom print read the model's own project, and the two fuzz runs compile the

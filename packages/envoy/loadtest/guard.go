@@ -22,6 +22,8 @@ import (
 	"unicode"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/pgsetting"
 )
 
 // stackFile is $LOADTEST_ROOT/stack.json. stack.sh setup writes it; stack.sh rewrites the pids as it
@@ -295,9 +297,14 @@ func withoutCredentials(u *url.URL) *url.URL {
 // URL: raw must start with postgres:// or postgresql:// (the prefixes pgconn.ParseConfig checks,
 // case-sensitive; any other value goes to its keyword/value parser, whose error can quote the
 // value) and pgconn.ParseConfig, the parser pgx.Connect uses, must accept it. ParseConfig also
-// reads the PG* environment variables and may read the passfile, as pgx.Connect does.
+// reads the PG* environment variables and may read the passfile, as pgx.Connect does. A value
+// whose user part pgx and net/url read apart (pgsetting.Refuse) is not ok either: a host pgx read
+// from it can be a piece of that user part, and redactPG prints the hosts.
 func parsePG(raw string) (config *pgconn.Config, ok bool) {
 	if !strings.HasPrefix(raw, "postgres://") && !strings.HasPrefix(raw, "postgresql://") {
+		return nil, false
+	}
+	if pgsetting.Refuse("-pg", raw) != nil {
 		return nil, false
 	}
 	config, err := pgconn.ParseConfig(raw)

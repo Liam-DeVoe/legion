@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/pgsetting"
 )
 
 // DefaultGoogleOIDCIssuer is the issuer of every Google identity token, the one a machine's
@@ -1477,6 +1478,11 @@ func Load(getenv func(string) string) (Config, error) {
 		if strings.TrimSpace(req.value) == "" {
 			return Config{}, fmt.Errorf("%s is required", req.name)
 		}
+	}
+	// A user part pgx and net/url read apart is refused first, named by its length: the IAM
+	// check below names the host net/url read, which would then be a piece of the user part.
+	if err := pgsetting.Refuse("BROKER_DATABASE_URL", cfg.DatabaseURL); err != nil {
+		return Config{}, err
 	}
 	if cfg.DatabaseIAM, err = databaseIAM(cfg.DatabaseURL); err != nil {
 		return Config{}, err

@@ -11,6 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/pgsetting"
 )
 
 // LockTimeout bounds every lock wait of every migration a runner applies. A migration's
@@ -329,7 +331,9 @@ func execWatched(ctx context.Context, conn *pgx.Conn, migration Migration, signI
 		}
 		dialed, err := pgx.ConnectConfig(ctx, config)
 		if err != nil {
-			return nil, fmt.Errorf("connect the lock watch: %w", err)
+			// The configuration is the migrated connection's, whose user may be a token written
+			// where the user stands: pgx names the user and the database in front of what failed.
+			return nil, fmt.Errorf("connect the lock watch: %w", pgsetting.ConnectFailure(err))
 		}
 		return dialed, nil
 	}

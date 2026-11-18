@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/pgsetting"
 )
 
 // Every DATABASE_URL a process opens goes through Open, the server's boot and each subcommand's
@@ -28,11 +29,11 @@ func TestOpenRefusesAMisreadURLByItsLength(t *testing.T) {
 		name, value, encoded string
 		why                  redact.Misreading
 	}{
-		{"a / in the password", "postgres://" + user + ":" + first + "/" + second + "@127.0.0.1:1/x?connect_timeout=3", "postgres://" + user + ":" + first + "%2F" + second + "@127.0.0.1:1/x?connect_timeout=3", atAfterPath},
-		{"a token and a / as the user part", "postgres://" + token + "/" + first + "@127.0.0.1:1/x?connect_timeout=3", "postgres://" + token + "%2F" + first + "@127.0.0.1:1/x?connect_timeout=3", atAfterPath},
-		{"an @ in the password", "postgresql://" + user + ":" + first + "@" + second + "@127.0.0.1:1/x?connect_timeout=3", "postgresql://" + user + ":" + first + "%40" + second + "@127.0.0.1:1/x?connect_timeout=3", atsBeforePath},
-		{"a ? in the password", "postgres://" + user + ":" + first + "?" + second + "@127.0.0.1:1/x?connect_timeout=3", "postgres://" + user + ":" + first + "%3F" + second + "@127.0.0.1:1/x?connect_timeout=3", endBeforeAt},
-		{"an @ in a query with no / before it", "postgres://" + user + ":" + first + "@127.0.0.1:1?application_name=a@b", "postgres://" + user + ":" + first + "@127.0.0.1:1/?application_name=a@b&connect_timeout=3", atsBeforePath},
+		{"a / in the password", "postgres://" + user + ":" + first + "/" + second + "@127.0.0.1:1/x?connect_timeout=3", "postgres://" + user + ":" + first + "%2F" + second + "@127.0.0.1:1/x?connect_timeout=3", pgsetting.AtAfterPath},
+		{"a token and a / as the user part", "postgres://" + token + "/" + first + "@127.0.0.1:1/x?connect_timeout=3", "postgres://" + token + "%2F" + first + "@127.0.0.1:1/x?connect_timeout=3", pgsetting.AtAfterPath},
+		{"an @ in the password", "postgresql://" + user + ":" + first + "@" + second + "@127.0.0.1:1/x?connect_timeout=3", "postgresql://" + user + ":" + first + "%40" + second + "@127.0.0.1:1/x?connect_timeout=3", pgsetting.AtsBeforePath},
+		{"a ? in the password", "postgres://" + user + ":" + first + "?" + second + "@127.0.0.1:1/x?connect_timeout=3", "postgres://" + user + ":" + first + "%3F" + second + "@127.0.0.1:1/x?connect_timeout=3", pgsetting.EndBeforeAt},
+		{"an @ in a query with no / before it", "postgres://" + user + ":" + first + "@127.0.0.1:1?application_name=a@b", "postgres://" + user + ":" + first + "@127.0.0.1:1/?application_name=a@b&connect_timeout=3", pgsetting.AtsBeforePath},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Open(context.Background(), tc.value)
@@ -108,7 +109,7 @@ func TestOpenNamesAValuePgxCannotParseByItsLength(t *testing.T) {
 	}
 	controlURL := "postgres://127.0.0.1:1/x?sslmode=bogus"
 	control := open(controlURL)
-	if control != fmt.Sprintf("DATABASE_URL, a value of %d characters, %s", len(controlURL), unparsed) {
+	if control != fmt.Sprintf("DATABASE_URL, a value of %d characters, %s", len(controlURL), pgsetting.NotParsed) {
 		t.Fatalf("UNKNOWN: the control is not refused at the parse, so this test saw nothing: %q", control)
 	}
 	for name, databaseURL := range map[string]string{
@@ -116,7 +117,7 @@ func TestOpenNamesAValuePgxCannotParseByItsLength(t *testing.T) {
 		"a token as the user":   "postgres://" + token + "@127.0.0.1:1/x?sslmode=bogus",
 	} {
 		text := open(databaseURL)
-		if want := fmt.Sprintf("DATABASE_URL, a value of %d characters, %s", len(databaseURL), unparsed); text != want {
+		if want := fmt.Sprintf("DATABASE_URL, a value of %d characters, %s", len(databaseURL), pgsetting.NotParsed); text != want {
 			t.Errorf("%s: %q, want %q", name, strings.NewReplacer(user, "<USER>", password, "<PASSWORD>", token, "<TOKEN>").Replace(text), want)
 		}
 		for _, part := range []string{user, password, token} {

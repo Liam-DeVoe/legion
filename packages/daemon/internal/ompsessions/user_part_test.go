@@ -1,0 +1,45 @@
+package ompsessions
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/pgsetting"
+)
+
+// The session database's URL is read as every opener of a Postgres connection string reads it
+// (pgsetting): one whose user part pgx and net/url read apart is refused by its length and cause
+// before any connect; one pgx cannot parse is refused by its length too, since pgx's parse error
+// quotes the user; and a connect that fails names the address and no user (store.ConnectError).
+// The control is the same URL with its @ percent-encoded, which reaches the connect and is refused
+// naming the address. The user, the password and the token are made for this test.
+func TestConnectURLRefusesAMisreadURLByItsLength(t *testing.T) {
+	const (
+		user     = "made-up-user-4d18"
+		password = "not-a-secret-7f30"
+		token    = "not-a-secret-tok2c6"
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	for raw, why := range map[string]any{
+		"postgres://" + user + ":" + password + "@x@127.0.0.1:1/omp":               pgsetting.AtsBeforePath,
+		"postgres://" + token + "@127.0.0.1:1/omp?connect_timeout=3&sslmode=bogus": pgsetting.NotParsed,
+	} {
+		want := fmt.Sprintf("the session database URL %s names, a value of %d characters, %s", DSNFileVariable, len(raw), why)
+		if _, err := ConnectURL(ctx, raw); err == nil || err.Error() != want {
+			t.Errorf("%d characters: %v, want %q", len(raw), err, want)
+		}
+	}
+	encoded := "postgres://" + user + ":" + password + "%40x@127.0.0.1:1/omp?connect_timeout=3"
+	_, err := ConnectURL(ctx, encoded)
+	if err == nil || !strings.Contains(err.Error(), "connect to Postgres at 127.0.0.1:1") {
+		t.Fatalf("the control: %v, want the connect's refusal naming the address", err)
+	}
+	_, err = ConnectURL(ctx, "postgres://"+token+"@127.0.0.1:1/omp?connect_timeout=3")
+	if err == nil || !strings.Contains(err.Error(), "connect to Postgres at 127.0.0.1:1") || strings.Contains(err.Error(), token) {
+		t.Errorf("a token as the user: %v, want the connect's refusal naming the address and not the token", err)
+	}
+}

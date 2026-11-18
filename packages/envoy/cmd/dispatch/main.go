@@ -56,6 +56,7 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/listenfd"
+	"github.com/sjawhar/envoy/pgsetting"
 )
 
 const (
@@ -1196,7 +1197,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.DatabaseURL == "" {
 		return bootConfig{}, errors.New("DATABASE_URL required")
 	}
-	if err := store.RefuseMisreadURL(boot.DatabaseURL); err != nil {
+	if err := pgsetting.Refuse("DATABASE_URL", boot.DatabaseURL); err != nil {
 		return bootConfig{}, err
 	}
 	agentTokens := env.get("DISPATCH_AGENT_TOKEN")
@@ -1469,12 +1470,12 @@ func logDevSignInMounted(boot bootConfig, serverURL string) {
 // both the URL and the key=value forms, multi-host lists included, exactly as store.Open will.
 // The value may carry a user and a password, so a value pgx cannot parse is named by its length:
 // pgx's own error for it names its user. A host pgx read is named: resolveBootConfig refused a
-// value whose user part pgx and net/url read apart (store.RefuseMisreadURL) before this runs, so
-// both readers end the user part at the same @, before the host.
+// value whose user part pgx and net/url read apart (pgsetting.Refuse) before this runs, so both
+// readers end the user part at the same @, before the host.
 func loopbackDatabase(databaseURL string) error {
-	config, err := pgx.ParseConfig(databaseURL)
+	config, err := pgsetting.ParseConfig("DATABASE_URL", databaseURL)
 	if err != nil {
-		return fmt.Errorf("DATABASE_URL, a value of %d characters, is not a Postgres connection string pgx can parse", len(databaseURL))
+		return err
 	}
 	hosts := []string{config.Host}
 	for _, fallback := range config.Fallbacks {
