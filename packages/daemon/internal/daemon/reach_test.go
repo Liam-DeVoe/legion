@@ -464,6 +464,33 @@ func (r *reachRig) seenSessions() []string {
 	return slices.Sorted(maps.Keys(r.k.seen))
 }
 
+// The keeper keeps a record of each claim the daemon still holds, and of no other: a claim that is
+// gone from the daemon's claims leaves no record behind, and no write of it is tried again.
+func TestTheKeeperForgetsTheRecordOfAClaimTheDaemonNoLongerHolds(t *testing.T) {
+	r := newReachRig(t, false)
+	worker := reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer")
+	r.at(21 * time.Minute)
+	r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
+	r.sweep(worker)
+	if !r.reach(worker.Token).Unreachable() {
+		t.Fatal("the worker was not marked at 21 minutes")
+	}
+	r.k.mu.Lock()
+	r.k.dirty[worker.Token] = true
+	r.k.mu.Unlock()
+
+	// The claim retires and the store deletes it: the next sweep reads no such claim.
+	r.at(22 * time.Minute)
+	r.sweep()
+	r.k.mu.Lock()
+	_, kept := r.k.records[worker.Token]
+	_, dirty := r.k.dirty[worker.Token]
+	r.k.mu.Unlock()
+	if kept || dirty {
+		t.Fatalf("after its claim was gone the keeper still holds its record (%t) and owes its write (%t), want neither", kept, dirty)
+	}
+}
+
 // When Envoy's whole list holds no live session for 20 minutes, the daemon marks none, tells the
 // controller once and writes R6's line once; the count starts again when the list holds one.
 func TestAListWithNoLiveSessionMarksNoneAndIsToldOnce(t *testing.T) {

@@ -407,11 +407,13 @@ func (k *reachKeeper) clearNoLive(ctx context.Context) {
 // it is no reading of the list (tellLockOut). R6's line of each lock-out the worker stream no
 // longer holds is ended too: a line the last daemon opened names a connection that ended with it,
 // and this daemon's stream tells that older process to stop at its hello rather than binding it.
+// The record of a claim the sweep no longer reads is forgotten (forgetGone).
 func (k *reachKeeper) sweep(ctx context.Context, claims []supervise.Claim) {
 	if k == nil {
 		return
 	}
 	k.mu.Lock()
+	k.forgetGone(claims)
 	k.retellLockOuts(ctx)
 	k.mu.Unlock()
 	k.alerts.CloseEnded(fleetalert.NewerProcessRefused, func(token string) bool {
@@ -498,6 +500,18 @@ func (k *reachKeeper) sweep(ctx context.Context, claims []supervise.Claim) {
 	for token := range k.dirty {
 		k.storeEach(ctx, token, k.records[token])
 	}
+}
+
+// forgetGone forgets the record of each claim the daemon no longer holds, with any write of it
+// still owed: claims is every claim the sweep read, so a claim that retired and was deleted leaves
+// nothing behind in the keeper. The caller holds mu.
+func (k *reachKeeper) forgetGone(claims []supervise.Claim) {
+	held := make(map[claim.Token]bool, len(claims))
+	for _, c := range claims {
+		held[c.Token] = true
+	}
+	maps.DeleteFunc(k.records, func(token claim.Token, _ supervise.Reach) bool { return !held[token] })
+	maps.DeleteFunc(k.dirty, func(token claim.Token, _ bool) bool { return !held[token] })
 }
 
 // judge is one claim's record after this minute's read, and whether the claim is newly out of
