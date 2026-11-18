@@ -80,7 +80,7 @@ import {
   tree,
   unfoldEveryBranch,
 } from "./issue-page-g";
-import { marginSectionDisclosure } from "./issue-page-h";
+import { detailsRow, marginSectionDisclosure } from "./issue-page-h";
 import { focusedNodeId, focusInside, openEveryDeeperBranch } from "./issue-page-i";
 import {
   askFacts,
@@ -2792,6 +2792,100 @@ test("t v and t o open Details at the history and at the collaborators, and an a
     await expect(arrival).toHaveAttribute("aria-current", "true");
     await expect(arrival).toBeInViewport();
   });
+});
+
+// `t o`, and a load of `/collaborators`, put the focus on the Collaborators control (R4): Details
+// brings the control's row into its view, then focuses it. A row above it that reads what it
+// shows once Details opens - Blocked by, which reads the titles of the issues it names - grows
+// when that read lands, after the focus, and pushes the focused control down out of Details'
+// view, where the reader cannot see the focus. Found by the tester on a running build of 7c09739d
+// with a copy of a large real issue whose Blocked by names five issues: `t o` and three loads of
+// `/collaborators` each left the focused Collaborators control at 1,135 px, under Details' view
+// (53 to 900 px) at 1440 px, once the five titles landed and the row grew from 181 px to 481 px.
+// Here the titles' read is held back 1.5 s, as a slow answer is, so it lands after the focus.
+test("t o and a load of /collaborators keep the focused Collaborators control in Details' view when a row above it grows", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "An issue that waits on five others" });
+  const blockers: string[] = [];
+  for (let index = 0; index < 5; index += 1) {
+    const blocker = await createIssue({
+      project: "CORE",
+      title: `Blocker ${index}: ${"a title long enough to wrap over several lines of Details ".repeat(3)}`,
+    });
+    blockers.push(blocker.key);
+  }
+  await patchIssue(issue.key, { blocked_by: blockers });
+  const context = await reader(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize(DESKTOP);
+    await page.route("**/api/v1/reference-targets?**", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      await route.continue();
+    });
+    const collaborators = marginShell(page)
+      .locator('[data-details-row="collaborators"]')
+      .getByRole("button", { exact: true, name: PROPERTY_LABELS.collaborators });
+    const blockedBy = detailsRow(page, PROPERTY_LABELS.blocked_by);
+    // Where the focused control stands against the box Details scrolls in, once the titles are in.
+    const focusedPlace = async (how: string) => {
+      await expect(collaborators, `${how} did not focus the Collaborators control`).toBeFocused();
+      const before = (await blockedBy.boundingBox())?.height ?? 0;
+      await expect(blockedBy, "the blockers' titles never landed").toContainText("Blocker 4:");
+      // Half a second for whatever the page does about the taller row to finish: a landing that
+      // scrolls again, or a keeper that puts the control back, has done so well within it.
+      await page.waitForTimeout(500);
+      await nextFrames(page);
+      const grew = ((await blockedBy.boundingBox())?.height ?? 0) - before;
+      expect(
+        grew > 100,
+        `Blocked by grew ${Math.round(grew)} px once the titles landed, so the row proves nothing`
+      ).toBe(true);
+      const place = await collaborators.evaluate((control) => {
+        let box = control.parentElement;
+        while (
+          box !== null &&
+          !(
+            /(auto|scroll)/.test(getComputedStyle(box).overflowY) &&
+            box.scrollHeight > box.clientHeight
+          )
+        ) {
+          box = box.parentElement;
+        }
+        const view = box === null ? { bottom: innerHeight, top: 0 } : box.getBoundingClientRect();
+        const at = control.getBoundingClientRect();
+        return {
+          bottom: at.bottom,
+          focused: control === document.activeElement,
+          top: at.top,
+          viewBottom: view.bottom,
+          viewTop: view.top,
+        };
+      });
+      expect(place.focused, `${how}: the focus left the Collaborators control`).toBe(true);
+      expect(
+        place.top >= place.viewTop - 1 && place.bottom <= place.viewBottom + 1,
+        `${how}: once the blockers' titles landed, the focused Collaborators control stood at ${Math.round(place.top)} px, out of Details' view (${Math.round(place.viewTop)} to ${Math.round(place.viewBottom)})`
+      ).toBe(true);
+    };
+
+    await gotoIssue(page, `/issues/${issue.key}`);
+    await expect(tree(page)).toBeVisible();
+    await expect(marginShell(page)).toBeHidden();
+    await focusThePage(page);
+    await page.keyboard.press("t");
+    await page.keyboard.press("o");
+    await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/collaborators$`));
+    await focusedPlace("t o");
+
+    await gotoIssue(page, `/issues/${issue.key}/collaborators`);
+    await focusedPlace("a load of /collaborators");
+  } finally {
+    await context.close();
+  }
 });
 
 // `/issues/<key>/activity` opens Details at the history. The page
