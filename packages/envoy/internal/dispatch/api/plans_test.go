@@ -921,15 +921,19 @@ func TestThePlanSourceTagsNameTheStoresSources(t *testing.T) {
 }
 
 // holdsPlan closes issue, which the read of a project lists only once it is finished, and answers
-// whether that read lists a plan for it: the plans of an issue a test wrote are seen only so.
+// whether that read lists a plan for it: the plans of an issue a test wrote are seen only so. A read
+// that does not list the finished issue at all fails the test, since an answer of false would then
+// say nothing about its plan.
 func holdsPlan(t *testing.T, handler http.Handler, issue string) bool {
 	t.Helper()
 	closeIssue(t, handler, issue)
 	project, _, _ := strings.Cut(issue, "-")
-	for _, finished := range readPlans(t, handler, project, "").Issues {
+	read := readPlans(t, handler, project, "")
+	for _, finished := range read.Issues {
 		if finished.Issue == issue {
 			return finished.Plan != nil
 		}
 	}
+	t.Fatalf("the read of %s's plans does not list %s, which was just closed: %+v", project, issue, read.Issues)
 	return false
 }
