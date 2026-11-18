@@ -43,7 +43,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
-	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -119,11 +118,19 @@ type legionBoardResponse struct {
 //     until it has some; the last is the moment of the read while a bar of it is still open.
 //   - UpdatedAt is when its row was written, which the header's facts_updated_at is the oldest
 //     of.
-//   - AsOf is the moment the values are of: the moment of the read for a row that grows, which
-//     the read grew them to, and the moment the row is closed at for one that does not grow.
+//   - AsOf is the moment the values are of, for an entry whose values grow: the moment of the
+//     read, which the read grew them to (legionfacts.Row.At). It is null for an entry whose values
+//     stand still, which are its values at any clock.
 //   - Growth is how fast each value that grows after AsOf grows (legionBoardGrowth), so a holder
 //     of the entry gives each at its own clock as the read does: the value plus its rate times the
-//     hours from AsOf to that clock (legionfacts.Row.At).
+//     hours from AsOf to that clock. It is null where AsOf is: a closed issue's entry, but for a
+//     slot it never gave up, and an open issue's whose every value stands still.
+//
+// Both are null where nothing grows, as the board's other optional fields are (ClosedAt), because
+// most entries are closed issues' and each closed row's AsOf is a moment of its own, which
+// compression does not fold: carried on every entry, the two took the body of a project of
+// INFRA's size past the 300 KB compressed a first payload may reach
+// (dispatch://INFRA-979/spec#b-r14).
 type legionBoardFacts struct {
 	OpenedAt      time.Time          `json:"opened_at"`
 	ClosedAt      *time.Time         `json:"closed_at"`
@@ -137,16 +144,16 @@ type legionBoardFacts struct {
 	WorkFirstAt   *time.Time         `json:"work_first_at"`
 	WorkLastAt    *time.Time         `json:"work_last_at"`
 	UpdatedAt     time.Time          `json:"updated_at"`
-	AsOf          time.Time          `json:"as_of"`
-	Growth        legionBoardGrowth  `json:"growth"`
+	AsOf          *time.Time         `json:"as_of"`
+	Growth        *legionBoardGrowth `json:"growth"`
 }
 
 // legionBoardGrowth is how fast each value of an entry grows after its as_of, by the entry's own
 // field names: hours an hour for the work time, the slot hours and the hours of each column (a
 // column whose hours stand still left out), and for the last moment of measured work how fast it
-// moves with the clock, 1 while a bar is still open and 0 where it stands. Every rate is 0, and
-// HoursByPhase empty, for a row that does not grow: a closed issue's, but for a slot it never
-// gave up, and an open issue's whose every part stands still.
+// moves with the clock, 1 while a bar is still open and 0 where it stands. It is
+// metrics.GrowthRates field by field, and an entry carries one only where a rate is not 0
+// (legionBoardGrowthOf).
 type legionBoardGrowth struct {
 	HoursByPhase map[string]float64 `json:"hours_by_phase"`
 	WorkHours    float64            `json:"work_hours"`
@@ -154,30 +161,24 @@ type legionBoardGrowth struct {
 	WorkLastAt   float64            `json:"work_last_at"`
 }
 
-// legionBoardGrowthOf is a stored row's growth in the entry's own names. metrics.Growth keys the
-// work time, the slot hours and the last moment of work by those same names and the hours of a
-// column by its prefix and the column id, the four names legion/metrics/grow.go exports for this.
-// Its other keys name facts the entry does not carry - the bars, the idle hours by role, the
-// parked, queued and slot-wait hours, the hours after the first review - and are left out, as is
-// work_first_at: past the moment a row is closed at, the end of a bar still open is the one moment
-// that moves (legion/metrics/closed.go), so the computation gives the first moment of work no rate.
-func legionBoardGrowthOf(growth metrics.Growth) legionBoardGrowth {
-	rates := legionBoardGrowth{HoursByPhase: map[string]float64{}}
-	for name, rate := range growth {
-		switch name {
-		case metrics.GrowthWorkHours:
-			rates.WorkHours = rate
-		case metrics.GrowthSlotHours:
-			rates.SlotHours = rate
-		case metrics.GrowthWorkLastAt:
-			rates.WorkLastAt = rate
-		default:
-			if column, phase := strings.CutPrefix(name, metrics.GrowthPhasePrefix); phase {
-				rates.HoursByPhase[column] = rate
-			}
-		}
+// legionBoardGrowthOf is a read row's as_of and growth on the wire: where a value the entry
+// carries grows (metrics.GrowthRates.Grows), the moment the read closed the row at
+// (legionfacts.Row.At) and the rates the row stores of the entry's values, which metrics.Growth's
+// Rates names; and null for both where none grows.
+func legionBoardGrowthOf(row legionfacts.Row) (*time.Time, *legionBoardGrowth) {
+	rates := row.Growth.Rates()
+	if !rates.Grows() {
+		return nil, nil
 	}
-	return rates
+	asOf := row.AsOf.UTC()
+	hours := rates.PhaseHours
+	if hours == nil {
+		// {} rather than null, as the entry's own hours by column, so a page reads one shape.
+		hours = map[string]float64{}
+	}
+	return &asOf, &legionBoardGrowth{
+		HoursByPhase: hours, WorkHours: rates.WorkHours, SlotHours: rates.SlotHours, WorkLastAt: rates.WorkLastAt,
+	}
 }
 
 // legionBoardHeader is what the view's header shows: the slots in use against the cap, the live
@@ -847,12 +848,13 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 			// settings block does, so a page reads one shape.
 			hours = map[string]float64{}
 		}
+		asOf, growth := legionBoardGrowthOf(row)
 		issues[key] = legionBoardFacts{
 			OpenedAt: row.OpenedAt.UTC(), ClosedAt: legionFactTime(row.ClosedAt), HoursByPhase: hours,
 			WorkHours: row.WorkHours, ReviewRounds: row.ReviewRounds, RootKey: row.Tree,
 			TreeDepth: row.TreeDepth, SlotHours: row.SlotHours, WaitingReason: row.WaitingReason,
 			WorkFirstAt: legionFactTime(row.WorkFirstAt), WorkLastAt: legionFactTime(row.WorkLastAt),
-			UpdatedAt: row.UpdatedAt.UTC(), AsOf: row.AsOf.UTC(), Growth: legionBoardGrowthOf(row.Growth),
+			UpdatedAt: row.UpdatedAt.UTC(), AsOf: asOf, Growth: growth,
 		}
 		if header.FactsUpdatedAt == nil || row.UpdatedAt.Before(*header.FactsUpdatedAt) {
 			at := row.UpdatedAt.UTC()

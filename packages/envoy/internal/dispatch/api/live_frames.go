@@ -393,9 +393,10 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 	// grow is left out once its rate joins the growth. What the revision keeps moves whenever the
 	// stored row does: a write of a row whose values moved stamps its updated_at
 	// (legionfacts.WriteProject), and its growth, why it waits, its close and every other value
-	// the entry carries are kept as stored. The entry carries its as_of and its growth, so a page
-	// closes the values it holds at its own clock by the rule the read closes them by, and an entry
-	// that is sent goes whole, its values grown to the moment of the recompute that sent it.
+	// the entry carries are kept as stored. An entry whose values grow carries its as_of and its
+	// growth, so a page closes the values it holds at its own clock by the rule the read closes
+	// them by; one whose values stand carries null for both. An entry that is sent goes whole, its
+	// values grown to the moment of the recompute that sent it.
 	legionBoardView: {
 		body: reflect.TypeFor[legionBoardResponse](),
 		maps: map[string][]string{

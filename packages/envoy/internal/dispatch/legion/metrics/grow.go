@@ -6,11 +6,12 @@ import (
 	"time"
 )
 
-// grow.go holds how an issue's facts grow after the moment they are closed at (ClosedFacts), and
-// nothing else: the one computation a reader of a stored row makes (legionfacts' Row.At), which
-// adds each fact's growth over the time from that moment to the reader's clock. Measuring the
-// growth is the computation's (closed.go); this file is the half both sides share, the names a
-// growth is keyed by and the arithmetic that applies it.
+// grow.go holds how an issue's facts grow after the moment they are closed at (ClosedFacts): the
+// one computation a reader of a stored row makes (legionfacts' Row.At), which adds each fact's
+// growth over the time from that moment to the reader's clock, and the rates of it a Legion board
+// entry carries (Rates). Measuring the growth is the computation's (closed.go); this file is the
+// half every reader shares, the names a growth is keyed by, the arithmetic that applies it and
+// the board's reading of those names.
 
 // Growth is how fast each of an issue's facts grows after the moment its facts are closed at, in
 // hours an hour, by the fact's name: its IssueFacts field's name in snake case, and for an entry
@@ -26,25 +27,72 @@ import (
 // of a set of spans or a sum of such measures, and a span still open grows one hour an hour.
 type Growth map[string]float64
 
-// The names Growth keys a fact by, the facts of a map by the prefix their key follows. The four
-// exported are the ones a board entry carries a rate of (api's legionBoardGrowthOf): the work
-// time, the slot hours, the last moment of measured work and each column's hours.
+// The names Growth keys a fact by, the facts of a map by the prefix their key follows.
 const (
-	GrowthWorkHours      = "work_hours"
-	GrowthSlotHours      = "slot_hours"
+	growthWorkHours      = "work_hours"
+	growthSlotHours      = "slot_hours"
 	growthParkedHours    = "parked_hours"
 	growthQueuedHours    = "queued_hours"
 	growthSlotWaitHours  = "slot_wait_hours"
 	growthImplementing   = "implementing_hours_after_first_review"
 	growthTesting        = "testing_hours_after_first_review"
 	growthWorkFirstAt    = "work_first_at"
-	GrowthWorkLastAt     = "work_last_at"
-	GrowthPhasePrefix    = "phase_hours."
+	growthWorkLastAt     = "work_last_at"
+	growthPhasePrefix    = "phase_hours."
 	growthBarPrefix      = "bars."
 	growthBarHours       = "hours"
 	growthSegmentsPrefix = "segments."
 	growthIdlePrefix     = "idle_by_role."
 )
+
+// GrowthRates is how fast the facts a Legion board entry carries grow after the moment they are
+// closed at (api's legionBoardGrowth carries it field by field): the work time, the slot hours and
+// each column's hours in hours an hour, and how fast the last moment of measured work moves with
+// the clock, 1 while a bar is still open and 0 where it stands. PhaseHours holds a column only
+// where its hours grow, and is nil where no column's do.
+type GrowthRates struct {
+	WorkHours  float64
+	SlotHours  float64
+	WorkLastAt float64
+	PhaseHours map[string]float64
+}
+
+// Grows is whether any rate of r is not 0: whether any fact a board entry carries moves after the
+// moment it is closed at.
+func (r GrowthRates) Grows() bool {
+	return r.WorkHours != 0 || r.SlotHours != 0 || r.WorkLastAt != 0 || len(r.PhaseHours) != 0
+}
+
+// Rates is g's rates of the facts a Legion board entry carries (GrowthRates). g's other names are
+// facts the entry does not carry - the bars, the idle hours by role, the parked, queued and
+// slot-wait hours, the hours after the first review - and are left out, as is work_first_at: past
+// the moment a row is closed at, the end of a bar still open is the one moment that moves
+// (closed.go), so the computation gives the first moment of work no rate. A rate of 0 is left out
+// too, as a fact that stands still is, which has no entry in g.
+func (g Growth) Rates() GrowthRates {
+	var rates GrowthRates
+	for name, rate := range g {
+		if rate == 0 {
+			continue
+		}
+		switch name {
+		case growthWorkHours:
+			rates.WorkHours = rate
+		case growthSlotHours:
+			rates.SlotHours = rate
+		case growthWorkLastAt:
+			rates.WorkLastAt = rate
+		default:
+			if column, phase := strings.CutPrefix(name, growthPhasePrefix); phase {
+				if rates.PhaseHours == nil {
+					rates.PhaseHours = map[string]float64{}
+				}
+				rates.PhaseHours[column] = rate
+			}
+		}
+	}
+	return rates
+}
 
 // namedHours is one hours fact of an issue that is no entry of a map, with its name in a Growth.
 type namedHours struct {
@@ -56,8 +104,8 @@ type namedHours struct {
 // measuring a growth (hoursFacts) and applying one (addHours) both read.
 func (f *IssueFacts) scalarHours() [7]namedHours {
 	return [7]namedHours{
-		{GrowthWorkHours, &f.WorkHours},
-		{GrowthSlotHours, &f.SlotHours},
+		{growthWorkHours, &f.WorkHours},
+		{growthSlotHours, &f.SlotHours},
 		{growthParkedHours, &f.ParkedHours},
 		{growthQueuedHours, &f.QueuedHours},
 		{growthSlotWaitHours, &f.SlotWaitHours},
@@ -74,7 +122,7 @@ func (f IssueFacts) hoursFacts() map[string]float64 {
 		facts[scalar.name] = *scalar.field
 	}
 	for id, hours := range f.PhaseHours {
-		facts[GrowthPhasePrefix+id] = hours
+		facts[growthPhasePrefix+id] = hours
 	}
 	for role, bar := range f.Bars {
 		facts[growthBarPrefix+role+"."+growthBarHours] = bar.Hours
@@ -94,7 +142,7 @@ func (f *IssueFacts) workMoment(name string) **time.Time {
 	switch name {
 	case growthWorkFirstAt:
 		return &f.WorkFirstAt
-	case GrowthWorkLastAt:
+	case growthWorkLastAt:
 		return &f.WorkLastAt
 	}
 	return nil
@@ -153,7 +201,7 @@ func (f *IssueFacts) addHours(name string, delta float64) {
 			return
 		}
 	}
-	if id, phase := strings.CutPrefix(name, GrowthPhasePrefix); phase {
+	if id, phase := strings.CutPrefix(name, growthPhasePrefix); phase {
 		if f.PhaseHours == nil {
 			return
 		}
