@@ -52,8 +52,9 @@ A message published while the session was not running or its connection was down
 consumer and is relayed when the session returns, inside the stream's 72 hours, through the same
 path a frame taken live takes (the mod's write into the conversation, or the Legion bridge's
 inbox), with a last line saying when it was published while the
-connection was down (`storedText`, worded by `@legion/envoy-client/delivery-ledger`, as are the
-notices, which its `envoyNoticeText` renders in TOON as every card is); such a frame runs
+connection was down (`storedText`, worded by `@legion/envoy-client/delivery-ledger`, as is the
+notice that replaces a frame, `failureNoticeText`, which `noticeText` of
+`@legion/envoy-client/notice-text` renders in TOON as every card is); such a frame runs
 nothing. The server records
 each frame Claude Code was handed in the delivery ledger before its claim settles, and drops a
 frame the ledger holds (a repeat the relay's restart at the ack floor sent again). The state is one file per session id,

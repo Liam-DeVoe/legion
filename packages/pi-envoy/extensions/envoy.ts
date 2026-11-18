@@ -1414,29 +1414,35 @@ export default function envoyExtension(pi: PiApi): void {
   // A stored card (`UnwrittenFrames`, `stored`) raises no host event: neither the moment the host
   // settles, when one held while it was busy is handed, nor its write to the session file. So a
   // check on the host's timer looks for both (`storedCheck`), every `STORED_CHECK_MS`, from a
-  // run's end that no continuation follows, a stored card's hand-over and each heartbeat, until no
-  // stored card waits or `STORED_CHECKS` checks have run. A run that starts in between holds the
-  // card again, as the host is not settled, and its end checks again; so does the next heartbeat
-  // for a session whose file Oh My Pi has not written yet. A new arming counts the checks again
-  // from the first, and one already running goes on, so two never run side by side.
+  // run's end that no continuation follows, a stored card's hand-over and each heartbeat of a
+  // settled host, until no stored card waits or `STORED_CHECKS` checks have run. A run that starts
+  // in between holds the card again, as the host is not settled, and its end checks again; so
+  // does the next heartbeat for a session whose file Oh My Pi has not written yet. A new arming
+  // counts the checks again from the first. While one chain of checks is live
+  // (`storedCheckLive`) an arming starts no other, so two never run side by side, and a card
+  // that comes while a check awaits keeps the live chain going.
   let storedChecksLeft = 0;
+  let storedCheckLive = false;
   const checkStoredCards = (): void => {
-    const running = storedChecksLeft > 0;
     storedChecksLeft = STORED_CHECKS;
-    if (running) return;
+    if (storedCheckLive) return;
     const step = async (): Promise<void> => {
       let again = false;
       try {
         storedChecksLeft -= 1;
-        again = !shuttingDown && (await unwritten.storedCheck()) && storedChecksLeft > 0;
+        again =
+          !shuttingDown &&
+          ((await unwritten.storedCheck()) || unwritten.waitsOnStored()) &&
+          storedChecksLeft > 0;
       } finally {
         const hostContext = again ? activeSessionContext : undefined;
-        if (hostContext === undefined) storedChecksLeft = 0;
+        if (hostContext === undefined) storedCheckLive = false;
         else hostContext.setTimeout(step, STORED_CHECK_MS);
       }
     };
-    if (activeSessionContext === undefined) storedChecksLeft = 0;
-    else activeSessionContext.setTimeout(step, STORED_CHECK_MS);
+    if (activeSessionContext === undefined) return;
+    storedCheckLive = true;
+    activeSessionContext.setTimeout(step, STORED_CHECK_MS);
   };
 
   // Shows `session` a card the delivery ledger asked for (a failure notice naming a frame the
@@ -3392,10 +3398,11 @@ export default function envoyExtension(pi: PiApi): void {
       // once, since a title write that fails fails the same way at every tick.
       writeHeartbeatTitle(context);
       // A held inert card or notice, or a card the host withdrew unwritten, is handed first,
-      // while the host is settled (`hostSettled`). A stored card is checked for too: one held, and
-      // one whose session file the host may have written since.
+      // while the host is settled (`hostSettled`). A stored card is checked for too, on a settled
+      // host: one held, and one whose session file the host may have written since. A busy host
+      // is checked at its run's end (`agent_end`).
       unwritten.handBackWithdrawn();
-      if (unwritten.waitsOnStored()) checkStoredCards();
+      if (hostSettled() && unwritten.waitsOnStored()) checkStoredCards();
       if (healing) {
         // A pass that has not settled holds the queue, and with it the registration refresh that
         // is its last step. The age is measured from the last registration accepted for the

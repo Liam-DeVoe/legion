@@ -22,8 +22,9 @@ function call(toolName: string, toolCallId: string): StallCall {
   };
 }
 
-// Each notice this package builds for Legion's plugins, rendered twice from different values in
-// every field: a sentence the same in every notice of its kind is what the two would share.
+// Each notice this package builds for Legion's plugins, each variant of it rendered twice from
+// different values in every field: a sentence the same in every notice of its kind is what two
+// renderings would share.
 test("every plugin notice states its fields", () => {
   const workspace = (issue: string, restored: string) =>
     workspaceRecreatedNotice(
@@ -33,25 +34,39 @@ test("every plugin notice states its fields", () => {
   const renderings = [
     {
       declared: WORKSPACE_RECREATED_NOTICE,
-      texts: [workspace("REPO-43", "true"), workspace("CORE-7", "false")],
+      variants: [[workspace("REPO-43", "true"), workspace("CORE-7", "false")]],
     },
     {
       declared: TURN_ENDED_NOTICE,
-      texts: [
-        restartMessage(call("eval", "toolu_01Aa"), {
-          rule: { kind: "deadline", deadlineMs: 300_000, graceMs: 60_000 },
-          openMs: 412_400,
-          pastMs: 52_400,
-        }),
-        restartMessage(call("bash", "toolu_02Bb"), {
-          rule: { kind: "bound", boundMs: 900_000 },
-          openMs: 1_000_200,
-          pastMs: 100_200,
-        }),
+      variants: [
+        [
+          restartMessage(call("eval", "toolu_01Aa"), {
+            rule: { kind: "deadline", deadlineMs: 300_000, graceMs: 60_000 },
+            openMs: 412_400,
+            pastMs: 52_400,
+          }),
+          restartMessage(call("python", "toolu_03Cc"), {
+            rule: { kind: "deadline", deadlineMs: 45_000, graceMs: 15_000 },
+            openMs: 71_800,
+            pastMs: 11_800,
+          }),
+        ],
+        [
+          restartMessage(call("bash", "toolu_02Bb"), {
+            rule: { kind: "bound", boundMs: 900_000 },
+            openMs: 1_000_200,
+            pastMs: 100_200,
+          }),
+          restartMessage(call("fetch", "toolu_04Dd"), {
+            rule: { kind: "bound", boundMs: 1_800_000 },
+            openMs: 1_830_600,
+            pastMs: 30_600,
+          }),
+        ],
       ],
     },
   ] as const;
-  for (const { declared, texts } of renderings) {
-    expect(noticeProblems(declared, texts)).toEqual([]);
+  for (const { declared, variants } of renderings) {
+    expect(noticeProblems(declared, variants)).toEqual([]);
   }
 });

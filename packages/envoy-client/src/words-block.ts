@@ -1,6 +1,6 @@
 /**
- * R1's block: the words of another author, drawn after a text's fields in a block of their own.
- * The block names the author and the time where the fields of the text do not, nothing else
+ * A words block: the words of another author, drawn after a text's fields in a block of their
+ * own. The block names the author and the time where the fields of the text do not, nothing else
  * shares it, and its words cannot close it. The Legion daemon draws the blocks of its texts by the
  * same rule (`Block`, `packages/daemon/internal/texts/words.go`), so one reader reads the blocks
  * of a card and of a daemon text:
@@ -45,7 +45,9 @@ export interface ReadBlock extends Words {
 /** A text split at its first block. */
 export interface SplitText {
   /** All of the text before its first block, less the new line that joins it to the block. For
-   *  a card this is TOON that TOON's `decode` reads. The whole text where it holds no block. */
+   *  a card with fields and blocks this is TOON that TOON's `decode` reads. The whole text where
+   *  it holds no block: a card with a diff after its fields, and a card that is one sentence, are
+   *  returned whole. */
   readonly head: string;
   /** The blocks that end the text, in their order. */
   readonly blocks: readonly ReadBlock[];

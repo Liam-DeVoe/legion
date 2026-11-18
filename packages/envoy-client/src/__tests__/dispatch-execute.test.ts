@@ -12297,7 +12297,8 @@ describe("executeDispatchTool", () => {
       `Replied on ask ${askID} (comment comment-1; ask now waiting on human). ` +
         "You follow this ask: its answer and replies reach you directly. " +
         "For every event on DSP-42: envoy_subscribe notifications.dispatch.issue.DSP-42.> " +
-        "(a status move the Legion daemon writes arrives at low urgency, for your next turn)"
+        "(a status move the Legion daemon writes, apart from a close, arrives at low urgency, " +
+        "which an Oh My Pi host holds for your next turn)"
     );
     expect(result.details).toEqual({
       issue: "DSP-42",

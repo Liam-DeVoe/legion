@@ -21,9 +21,10 @@ import { type HeldReplayNotice, writtenCardIdentity } from "./missed-messages";
  * handed only to a settled host, and not while a card handed to start a turn has not started it
  * (`runStarted`). One sent while the host is busy is held, and handed at the first settled check
  * (`storedCheck`, which the extension runs after a run that does not continue, and at each
- * heartbeat) or right before a card that starts a turn. A held stored card holds back no other
- * card. With no `message_end`, a stored card is written once the session file holds its entry
- * (`storedCheck`, `UnwrittenFramesHost.storedEntries`), and it is never handed again.
+ * heartbeat that finds the host settled) or right before a card that starts a turn. A held
+ * stored card holds back no other card. With no `message_end`, a stored card is written once the
+ * session file holds its entry (`storedCheck`, `UnwrittenFramesHost.storedEntries`), and it is
+ * never handed again.
  */
 export type CardDelivery = CardMode | "inert";
 
@@ -424,8 +425,10 @@ export class UnwrittenFrames {
    * they came, and records as written each stored card of this session whose entry the session
    * file holds (`UnwrittenFramesHost.storedEntries`): the host emits no `message_end` for a
    * stored card, so that file is its one witness. The file is written from the session's first
-   * assistant message on, so a stored card handed before that waits for it. Answers whether a
-   * stored card of this session still waits, held or handed, so the caller checks again later.
+   * assistant message on, so a stored card handed before that waits for it. A card is written at
+   * the end of the branch, so the branch is read from its end, and only until each handed card is
+   * found. Answers whether a stored card of this session still waits, held or handed, so the
+   * caller checks again later.
    */
   async storedCheck(): Promise<boolean> {
     if (this.#host.settled() && !this.#turnStarting()) this.#handHeldStored();
@@ -436,10 +439,14 @@ export class UnwrittenFrames {
     );
     const entries = handed.length === 0 ? undefined : this.#host.storedEntries();
     if (entries !== undefined) {
-      const inFile = new Set(
-        entries.flatMap((entry) => unwrittenCardKeys(writtenCardIdentity(entry) ?? {}))
-      );
-      const written = handed.filter((card) => card.keys.some((key) => inFile.has(key)));
+      const unfound = new Set(handed);
+      for (let at = entries.length - 1; at >= 0 && unfound.size > 0; at -= 1) {
+        const keys = unwrittenCardKeys(writtenCardIdentity(entries[at]) ?? {});
+        for (const card of unfound) {
+          if (card.keys.some((key) => keys.includes(key))) unfound.delete(card);
+        }
+      }
+      const written = handed.filter((card) => !unfound.has(card));
       for (const card of written) this.#stopAwaitingWrite(card);
       for (const card of written) await this.#recordWritten(card);
     }

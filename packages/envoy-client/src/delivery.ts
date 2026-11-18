@@ -607,6 +607,12 @@ export function senderLabel(envelope: DeliveryEnvelope): string {
   return envelope.sender?.title === undefined ? sender : `${sender} (${envelope.sender.title})`;
 }
 
+/** Whether the Legion daemon sent `envelope`: its source is `agent`, and it names no
+ *  `source_session`. A message of a session names that session. */
+export function daemonSent(envelope: Pick<InboundEnvelope, "source" | "source_session">): boolean {
+  return envelope.source === "agent" && (envelope.source_session ?? "") === "";
+}
+
 /** The `dispatch` command line that answers a Dispatch event, which its card prints. */
 type ReplyCommand = { readonly command: string };
 
@@ -1205,7 +1211,15 @@ function withoutWords(
 function summaryOpens(text: string, summary: string | undefined): boolean {
   if (summary === undefined) return false;
   const head = summary.endsWith("…") ? summary.slice(0, -1) : summary;
-  const first = text.split("\n").find((line) => line.trim() !== "") ?? "";
+  // A payload can be long, so the scan stops at its first line that is not blank.
+  let start = 0;
+  let end = text.indexOf("\n");
+  while (end !== -1 && text.slice(start, end).trim() === "") {
+    start = end + 1;
+    end = text.indexOf("\n", start);
+  }
+  const line = end === -1 ? text.slice(start) : text.slice(start, end);
+  const first = line.trim() === "" ? "" : line;
   return first.replace(/^[ \t\r]+/, "").startsWith(head);
 }
 
@@ -1464,7 +1478,7 @@ export function renderInbound(
   // session) shows its fields as lines (`daemonFields`), and one it publishes as text (the hook
   // prompt) goes in a block. Every other source shows its payload as one `message` field.
   const sessionSent = envelope.source !== "dispatch" && (envelope.source_session ?? "") !== "";
-  const daemonSent = envelope.source === "agent" && !sessionSent;
+  const fromDaemon = daemonSent(envelope);
   let message: unknown;
   let messageText: string | undefined;
   if (
@@ -1481,11 +1495,11 @@ export function renderInbound(
     if (sessionSent) {
       if (isObject(parsedPayload)) message = parsedPayload;
       else messageText = envelope.payload;
-    } else if (daemonSent && isObject(parsedPayload) && !Array.isArray(parsedPayload)) {
+    } else if (fromDaemon && isObject(parsedPayload) && !Array.isArray(parsedPayload)) {
       const shown = daemonFields(parsedPayload, [envelope.topic, subject]);
       message = shown.fields;
       for (const { name, words } of shown.words) blocks.push(wordsBlock(name, words));
-    } else if (daemonSent && !isObject(parsedPayload)) {
+    } else if (fromDaemon && !isObject(parsedPayload)) {
       messageText = typeof parsedPayload === "string" ? parsedPayload : envelope.payload;
     } else {
       message = parsedPayload;

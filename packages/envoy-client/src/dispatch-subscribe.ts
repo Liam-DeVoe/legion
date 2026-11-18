@@ -41,11 +41,13 @@ export function followNoticeText(
 
 /**
  * What the subscribe line of an issue adds: Dispatch sends the events the Legion daemon's own
- * session writes, such as a status move of a Legion issue, at urgency `low`, which a host hands
- * to the session for its next turn.
+ * session writes, such as a status move of a Legion issue, at urgency `low`, and an Oh My Pi host
+ * holds such a card for the session's next turn. A close (`issue.closed`), a release
+ * (`issue.released`) and an ask's event come at the default urgency all the same
+ * (`daemonEventGoesLow`, packages/envoy/internal/dispatch/outbox/publisher.go).
  */
 const DAEMON_STATUS_MOVES =
-  "(a status move the Legion daemon writes arrives at low urgency, for your next turn)";
+  "(a status move the Legion daemon writes, apart from a close, arrives at low urgency, which an Oh My Pi host holds for your next turn)";
 
 /**
  * `For every event on <owner>: envoy_subscribe <topic>`, the line that subscribes a session to

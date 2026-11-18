@@ -181,8 +181,9 @@ message from Dispatch's Agents page as that person's own turn.
 Every line the server writes into the session is one Envoy envelope as the shared
 `@legion/envoy-client/delivery` renderer renders it; raw envelope bytes are never exposed.
 The rendering names the sender (`from`, its session id and title), each role the sender holds
-(`role`, once each), the time (`at`) and the event's id (`id`), each once, and `to: you` on a
-message sent to this session directly. Where the envelope carries them it names `urgency`,
+once (`role`, or `roles` where it holds more than one), the time (`at`) and the event's id (`id`),
+each once, and `to: you` on a message sent to this session directly. Where the envelope carries
+them it names `urgency`,
 `expects_reply` — what the sender wants back, as a string: `false` (nothing, so do not reply and
 do not acknowledge), `optional` or `required`, the old `none` reaching the reader as `false` — and
 `re` for a correlated inbound event. A card from another session carries no reply command: reply

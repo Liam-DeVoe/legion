@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { RenderInboundResult } from "@legion/envoy-client/delivery";
+import { daemonSent, type RenderInboundResult } from "@legion/envoy-client/delivery";
 import { type EnvoyPluginInterface, LOCAL_ENVOY_NOTICE } from "@legion/pi-shared/interface";
 import type {
   AutoCompactionEndEvent,
@@ -237,17 +237,17 @@ export type StoredCardMarker = { readonly handOver: "inert"; readonly urgency: "
  *  extension hands itself): `card`, a card; `aside`, a targeted Aside; `stored`, a `low` card. */
 export type CardMode = "card" | "aside" | "stored";
 
-/** Whether a rendered card is `low`: the daemon's (source `agent`, no `source_session`) or a
- *  Dispatch event's that is no message or mention Dispatch delivers to the session (no
- *  `delivery`) and no ask's (`ask.*`), with an envelope that says `low`. Every other card is
- *  delivered whatever its urgency: one from another session, and an ask's card, since a Dispatch
- *  that copies an ask's urgency onto its envelope must hold no answer back. */
+/** Whether a rendered card is `low`: the daemon's (`daemonSent`: source `agent`, no
+ *  `source_session`) or a Dispatch event's that is no message or mention Dispatch delivers to the
+ *  session (no `delivery`) and no ask's (`ask.*`), with an envelope that says `low`. Every other
+ *  card is delivered whatever its urgency: one from another session, and an ask's card, since a
+ *  Dispatch that copies an ask's urgency onto its envelope must hold no answer back. */
 export function lowCard(
   card: Pick<RenderInboundResult, "envelope" | "delivery" | "dispatchType">
 ): boolean {
   const { envelope } = card;
   if (envelope?.urgency !== "low") return false;
-  if (envelope.source === "agent") return (envelope.source_session ?? "") === "";
+  if (daemonSent(envelope)) return true;
   return (
     envelope.source === "dispatch" &&
     card.delivery === undefined &&

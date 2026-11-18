@@ -14,6 +14,9 @@ export interface DeclaredNotice {
 /** The longest run of characters two renderings of one field may share. */
 export const SHARED_RUN_LIMIT = 40;
 
+/** One variant of a notice kind (the fields that its notices state together), rendered twice. */
+export type RenderedVariant = readonly [string, string];
+
 /** A `key: value` line under a notice's root, as TOON writes a field (a list as `key[n]: …`). */
 const FIELD_LINE = /^ {2}([A-Za-z_][A-Za-z0-9_]*)(?:\[\d+\])?: (.*)$/;
 
@@ -54,17 +57,20 @@ export function noticeFields(text: string): Record<string, string> {
 }
 
 /**
- * What two renderings of one notice of `declared`, made from different values in every field,
- * break of the rule that a notice states the fields of its kind. Each rendering opens with its
- * root line, and every line after it is a `key: value` line whose key the kind declares (or
- * `notice`), with no key twice and one line naming the kind (`notice: <kind>`). Every declared
- * field is stated by at least one of the two, the two never hold the same value of a field, and
- * no field of the two shares a run of more than `SHARED_RUN_LIMIT` characters, which is what a
- * sentence the same in every notice of the kind would share. Empty when they break none of it.
+ * What the renderings of `declared` break of the rule that a notice states the fields of its
+ * kind. `variants` holds each variant of the kind rendered twice, from different values in every
+ * field but the one that names the variant, such as a gap notice's `cause`. Each rendering
+ * opens with its root line, and every line after it is a `key: value` line whose key the kind
+ * declares (or `notice`), with no key twice and one line naming the kind (`notice: <kind>`).
+ * Both renderings of a variant state the same fields, so each field is compared with another
+ * rendering of it. Every declared field is stated by one variant at least. No field holds the same
+ * value in every rendering that states it. No two renderings of a field share a run of more than
+ * `SHARED_RUN_LIMIT` characters, which is what a sentence the same in every notice of the kind
+ * would share. Empty when they break none of it.
  */
 export function noticeProblems(
   declared: DeclaredNotice,
-  renderings: readonly [string, string]
+  variants: readonly RenderedVariant[]
 ): string[] {
   const problems: string[] = [];
   const named = new Set(["notice", ...declared.fields]);
@@ -92,21 +98,41 @@ export function noticeProblems(
     }
     return values;
   };
-  const first = parse(renderings[0], `${declared.kind}, first rendering`);
-  const second = parse(renderings[1], `${declared.kind}, second rendering`);
-  for (const field of declared.fields) {
-    if (!first.has(field) && !second.has(field)) {
-      problems.push(`${declared.kind}: neither rendering states ${field}`);
+  // Each field's values, from every rendering that states it.
+  const stated = new Map<string, string[]>();
+  variants.forEach(([a, b], index) => {
+    const variant = `${declared.kind}, variant ${index + 1}`;
+    const first = parse(a, `${variant}, first rendering`);
+    const second = parse(b, `${variant}, second rendering`);
+    for (const key of new Set([...first.keys(), ...second.keys()])) {
+      if (first.has(key) !== second.has(key)) {
+        problems.push(`${variant}: one rendering states ${key} and the other does not`);
+      }
     }
+    for (const rendering of [first, second]) {
+      for (const [key, value] of rendering) {
+        if (key !== "notice") stated.set(key, [...(stated.get(key) ?? []), value]);
+      }
+    }
+  });
+  for (const field of declared.fields) {
+    if (!stated.has(field)) problems.push(`${declared.kind}: no rendering states ${field}`);
   }
-  for (const [key, a] of first) {
-    const b = second.get(key);
-    if (key === "notice" || b === undefined) continue;
-    if (a === b) problems.push(`${declared.kind}: both renderings hold the same ${key}: ${a}`);
-    const run = sharedRun(a, b);
-    if (run.length > SHARED_RUN_LIMIT) {
+  for (const [key, values] of stated) {
+    const [one, ...others] = values;
+    if (others.length > 0 && others.every((value) => value === one)) {
+      problems.push(`${declared.kind}: every rendering holds the same ${key}: ${one}`);
+    }
+    let longest = "";
+    values.forEach((a, index) => {
+      for (const b of values.slice(index + 1)) {
+        const run = sharedRun(a, b);
+        if (run.length > longest.length) longest = run;
+      }
+    });
+    if (longest.length > SHARED_RUN_LIMIT) {
       problems.push(
-        `${declared.kind}: the two renderings of ${key} share a run of ${run.length} characters: ${JSON.stringify(run)}`
+        `${declared.kind}: two renderings of ${key} share a run of ${longest.length} characters: ${JSON.stringify(longest)}`
       );
     }
   }

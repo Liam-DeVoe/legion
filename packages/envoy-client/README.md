@@ -32,14 +32,16 @@ whose limit must stay below something the row must not wait out says that too.
 `renderInbound(raw, sessionID, subject?)` accepts an additive Envoy envelope and returns a card:
 TOON under `envoy:`, with each recognized routing and delivery field once, then a block for each
 part of it that another author wrote. The card says `to: you` only for a direct message to the
-reader, and names neither the reader's session id nor its role. A card from another session names
-the sender's session and title (`from`), each role the sender holds once (`role`, or `roles` where
-it holds more than one), the time (`at`) and the message id (`id`). It carries no reply command:
-the `envoy_send` and `envoy_publish` descriptions say how to reply from those fields. The message's
-words follow the fields in a `<message>` block; an object a session sends shows as fields under
-`message`. A notice or role message of the Legion daemon (`from: agent`) keeps its `<kind> on
-<KEY>` summary and shows its payload's fields as lines under `message`, in the payload's order.
-It leaves out a `role` that names the reader, whose topic ends in `-<role>`. Each field that the
+reader, and names neither the reader's session id nor its role, apart from a Dispatch event's
+`target`, which names the reader's session as `you (session:<id>)`. A card from another session
+names the sender's session and title (`from`), each role the sender holds once (`role`, or `roles`
+where it holds more than one), the time (`at`) and the message id (`id`). It carries no reply
+command: the `envoy_send` and `envoy_publish` descriptions say how to reply from those fields. The
+message's words follow the fields in a `<message>` block; an object a session sends shows as
+fields under `message`. A notice or role message of the Legion daemon (`from: agent`) keeps its
+`<kind> on <KEY>` summary and shows its payload's fields as lines under `message`, in the
+payload's order. It leaves out a `role` that names the reader, whose topic ends in `-<role>`.
+Each field that the
 payload's `words` object names, by its path in the payload, is drawn in a block with the author
 and the time `words` gives, and `words` itself is not shown; a payload with no `words` shows every
 field. A role message the daemon publishes as text (the hook prompt) follows the fields in a
@@ -151,11 +153,10 @@ frame that failed because the host moved on names a session that is closed here 
 is shown or recorded for it then. It answers whether the frame was reported, so the relay settles
 a give-up nobody was told of with `nak` rather than acking a message that then exists nowhere; a
 notice shown to the session it names is reported even where the host moved before it resolved,
-and only its record waits for a host that is still on that session. `failureNoticeFields` words
-that card, and
-`envoyNoticeText` renders a notice's fields under `envoy:` in TOON, so a sender's summary that
-holds a newline stays inside its own field. Work started for one session stops, writing nothing, once
-`sessionID()` names another.
+and only its record waits for a host that is still on that session. `failureNoticeText` writes
+that card through `noticeText` (`@legion/envoy-client/notice-text`), which writes a notice's fields
+under `envoy:` in TOON, so a sender's summary that holds a newline stays inside its own field.
+Work started for one session stops, writing nothing, once `sessionID()` names another.
 
 The host policy both plugins share sits in `@legion/envoy-client/stream-topics`, so each host keeps
 only how it shows a card, how it warns, and how it persists. `replayFollowedSubjects(

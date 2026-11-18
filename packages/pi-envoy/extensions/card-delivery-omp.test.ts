@@ -1216,11 +1216,17 @@ async function fixtureExtension(name: string, source: string): Promise<string> {
   return file;
 }
 
-/** Waits until the session file holds the card that carries `card`, and returns that line. */
+/** Waits until the session file holds the card that carries `card`, and returns that line. The
+ *  host writes no session file before the session's first assistant message, so a file it has not
+ *  written yet holds no card. */
 async function storedLine(session: CardSession, card: string): Promise<string> {
-  return session.until(`the card ${card} in the session file`, async () =>
-    (await session.cardEntries()).find((entry) => entry.includes(card))
-  );
+  return session.until(`the card ${card} in the session file`, async () => {
+    const entries = await session.cardEntries().catch((error: unknown) => {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+      throw error;
+    });
+    return entries.find((entry) => entry.includes(card));
+  });
 }
 
 test.skipIf(skip)(
@@ -1255,13 +1261,14 @@ test.skipIf(skip)(
     await session.relay("the session to take the med card", daemonEnvelope(card.text, card.label));
     const second = await session.nextTurn("the turn the med card started");
     expectBefore(second.request, comment.text, card.text);
-    expect(conversation(first.request)).not.toContain(comment.text);
+    // The stored card reaches the model once: the med card's turn did not hand it again.
+    expect(conversation(second.request).split(comment.text).length - 1).toBe(1);
     second.reply([text("Read the cards.")]);
     await probe(session, second.index + 1);
 
     for (const low of [notice.text, comment.text]) {
       const { details } = StoredEntrySchema.parse(JSON.parse(await storedLine(session, low)));
-      expect(details).toEqual({ ...details, handOver: "inert", urgency: "low" });
+      expect(details).toEqual({ handOver: "inert", urgency: "low" });
     }
   },
   180_000

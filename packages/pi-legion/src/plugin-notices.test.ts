@@ -53,32 +53,46 @@ function call(toolName: string, toolCallId: string): StallCall {
   };
 }
 
-// Each notice this plugin shows its session, as it shows it, rendered twice from different
-// values in every field: a sentence the same in every notice of its kind is what the two would
-// share.
+// Each notice this plugin shows its session, as it shows it, each variant of it rendered twice
+// from different values in every field: a sentence the same in every notice of its kind is what
+// two renderings would share.
 test("every plugin notice states its fields", () => {
   const renderings = [
     {
       declared: WORKSPACE_RECREATED_NOTICE,
-      texts: [workspaceShown("REPO-43", "false"), workspaceShown("CORE-7", "true")],
+      variants: [[workspaceShown("REPO-43", "false"), workspaceShown("CORE-7", "true")]],
     },
     {
       declared: TURN_ENDED_NOTICE,
-      texts: [
-        restartShown(call("bash", "toolu_stuck"), {
-          rule: { kind: "bound", boundMs: 1_200_000 },
-          openMs: 1_260_000,
-          pastMs: 60_000,
-        }),
-        restartShown(call("eval", "toolu_01Kq"), {
-          rule: { kind: "deadline", deadlineMs: 120_000, graceMs: 300_000 },
-          openMs: 431_000,
-          pastMs: 11_000,
-        }),
+      variants: [
+        [
+          restartShown(call("bash", "toolu_stuck"), {
+            rule: { kind: "bound", boundMs: 1_200_000 },
+            openMs: 1_260_000,
+            pastMs: 60_000,
+          }),
+          restartShown(call("read", "toolu_02Lw"), {
+            rule: { kind: "bound", boundMs: 600_000 },
+            openMs: 645_000,
+            pastMs: 45_000,
+          }),
+        ],
+        [
+          restartShown(call("eval", "toolu_01Kq"), {
+            rule: { kind: "deadline", deadlineMs: 120_000, graceMs: 300_000 },
+            openMs: 431_000,
+            pastMs: 11_000,
+          }),
+          restartShown(call("python", "toolu_03Zr"), {
+            rule: { kind: "deadline", deadlineMs: 30_000, graceMs: 90_000 },
+            openMs: 127_000,
+            pastMs: 7_000,
+          }),
+        ],
       ],
     },
   ] as const;
-  for (const { declared, texts } of renderings) {
-    expect(noticeProblems(declared, texts)).toEqual([]);
+  for (const { declared, variants } of renderings) {
+    expect(noticeProblems(declared, variants)).toEqual([]);
   }
 });

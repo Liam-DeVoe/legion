@@ -26,8 +26,9 @@ export const WORKSPACE_RECREATED_VARIABLE = "LEGION_WORKSPACE_RECREATED";
 export const WORKSPACE_RESTORED_VARIABLE = "LEGION_WORKSPACE_RESTORED";
 
 /**
- * The recreated-workspace notice: the issue, the branch the workspace was made from, and whether
- * the tracked work the session had not pushed was put back (`unpushed_work: restored`) or is gone
+ * The recreated-workspace notice: the issue, the issue's branch (`legion/<KEY>`), which
+ * provisioning built the workspace from where anything was pushed to it, and whether the tracked
+ * work the session had not pushed was put back (`unpushed_work: restored`) or is gone
  * (`unpushed_work: lost`). What the agent does on it is in its role prompt.
  */
 export const WORKSPACE_RECREATED_NOTICE = noticeKind("legion", "workspace recreated", [
