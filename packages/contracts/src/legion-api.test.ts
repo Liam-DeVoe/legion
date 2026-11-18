@@ -2069,7 +2069,7 @@ test("the state golden carries a step on an ancestor's basis and whether each ro
   expect(LegionStateResponse.safeParse(notBoolean).success).toBeFalse();
 });
 
-// `legionGatedStepView`'s status as contracts 55 to 146 hold it: four words, in an enum. Every
+// `legionGatedStepView`'s status as contracts 55 to 161 hold it: four words, in an enum. Every
 // plugin parses the state with the schema of the contract it was built at, so this reader is live
 // in every pod still on an image before 162. It reads every step of the golden that stands on no
 // basis, and refuses the two words of 162 — and with them the whole state body, since

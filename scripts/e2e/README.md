@@ -2143,7 +2143,7 @@ It runs in the production cluster's namespace `legion`, against production Dispa
 The daemon runs on the devbox as the Legion daemon's restricted identity, with `bind: 0.0.0.0`, as a daemon that runs as a pod binds, and its pods dial its worker stream at `advertise_host`, the devbox's private address, and keep their Oh My Pi sessions in a scratch Postgres the run starts beside it (`session_store: postgres`:
 the daemon requires a store that keeps sessions in a database, since an issue pod's disk dies with the pod).
 Tree 1 runs the whole workflow to `done`;
-while its planner holds, the driver files two children under it, each in an issue pod and on a disk of its own, closes one as `done` and parks the other in backlog.
+while its planner holds, the driver files two children under it, each in an issue pod and on a disk of its own, closes one as `done` and moves the other to the backlog.
 Two more children are filed while tree 1 stands in `accepting`, which moves it to `awaiting_children`, where the daemon refuses its sign-off until the proof human has moved both to the backlog, one at a time; it then comes back to `implementing` for a forward merge and a full test round, and the merge closes it.
 Its `legion.yaml` names `runtime.kubernetes.plugins` with the latest published `@sjawhar/pi-legion` and `@sjawhar/pi-envoy`, resolved at run time:
 the branch-built daemon links no release plugin pair, so without it the run would boot in the degraded mode (`plugins: none` from `--check-config`) instead of the pair a stale-plugin relaunch would install, even though this run's own claims register at the branch daemon's own contract and so never go stale enough to trigger that install.

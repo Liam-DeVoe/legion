@@ -20,6 +20,9 @@ three steps that fits:
    your tree's own pull request, while you are in that code. The fix needs no choice a person must
    make, and the evidence shows the defect. Say in your handoff and in the pull request body what
    you fixed beside the issue's own work. A fix deferred to another issue is a fix nobody makes.
+   An issue with children carries no code of its own: there the fix goes into an open child's pull
+   request, or the architect that owns the issue files it as a new child
+   (`skill://legion-architect/references/decomposition.md#an-issue-with-children-has-no-code-of-its-own`).
 2. **Hand it over.** Any other clear defect goes to the controller with its evidence, as [Send a
    finding to the controller](#send-a-finding-to-the-controller) says. The controller gives it to
    the running tree whose code it is. Only when no tree owns that code does it file an issue: under

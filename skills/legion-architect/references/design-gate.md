@@ -542,9 +542,9 @@ version with no basis, in each of these cases:
 - A person asked for the root's own approval.
 
 A sentence of the root's spec then states which of these holds, in its own words: a pointer to
-decisions.md, to a list or to another passage does not stand for it. When a person asks on the issue for the root's own approval, request that approval first, then
-register that version with no basis. A person's request for the root's own approval wins over the
-basis.
+decisions.md, to a list or to another passage does not stand for it. When a person asks on the issue
+for the root's own approval, request that approval first, then register that version with no basis.
+A person's request for the root's own approval wins over the basis.
 
 ### A requirement the ancestor does not state
 

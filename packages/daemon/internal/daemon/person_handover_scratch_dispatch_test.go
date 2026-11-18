@@ -673,12 +673,15 @@ func (r *personHandoverRig) notices(key, kind string) []record.Notice {
 }
 
 // processed says whether the store holds the processed mark of source's event id
-// (record.Store.MarkProcessed), which outlasts the row it was written beside.
+// (record.Store.Processed), which outlasts the row it was written beside.
 func (r *personHandoverRig) processed(source, id string) bool {
 	r.t.Helper()
 	var marked bool
-	if err := r.pool.QueryRow(r.t.Context(), `select exists (select 1 from processed_events where source = $1 and event_id = $2)`,
-		source, id).Scan(&marked); err != nil {
+	if err := pgx.BeginFunc(r.t.Context(), r.pool, func(tx pgx.Tx) error {
+		var err error
+		marked, err = record.NewStore().Processed(r.t.Context(), tx, source, id)
+		return err
+	}); err != nil {
 		r.t.Fatalf("read the processed mark %s %s: %v", source, id, err)
 	}
 	return marked
@@ -865,12 +868,7 @@ func (r *personHandoverRig) newestEvent(key, kind string, want func(scratchEvent
 func (r *personHandoverRig) applied(event scratchEvent) {
 	r.t.Helper()
 	testwait.Eventually(r.t, fmt.Sprintf("the daemon to apply Dispatch event %s (%s, seq %d)", event.factID(), event.Type, event.Seq), func() bool {
-		var done bool
-		if err := r.pool.QueryRow(r.t.Context(), `select exists (select 1 from processed_events where source = 'dispatch' and event_id = $1)`, event.factID()).
-			Scan(&done); err != nil {
-			r.t.Fatalf("read whether the daemon applied %s: %v", event.factID(), err)
-		}
-		return done
+		return r.processed("dispatch", event.factID())
 	})
 }
 

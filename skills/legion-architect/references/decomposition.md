@@ -46,9 +46,10 @@ EOF
   (`task(agent="oracle")`) with your own issue's spec (the root spec in a root session), the
   tree's open children with their repositories and pull requests, and the proposed
   child list, each child's title and whole spec. Its mandate: *"You did not write this list. Argue
-  that each child should not exist. Name every child that is a to-do, a fix found in review, a
-  proof of the acceptance of the issue it is filed under, or a part of the architect's own work,
-  and say where it folds: an open child's pull request, or that issue's own where it has no child.
+  that each child should not exist. Name every child that is a to-do, a review fix of the issue's
+  own code, a proof of the acceptance of the issue it is filed under, or a part of the architect's
+  own work, and say where it folds: an open child's pull request, or that issue's own where it has
+  no child.
   Weigh each separate pull request against combining
   its work. Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
   Each round tests a large pull request whole again; one failure holds all the work, and the request merges late.
@@ -222,8 +223,9 @@ nothing.
 An issue with children carries no code of its own: every change of it goes into a child, and its
 pull request merges only after its children, carrying their merges
 (dispatch://INFRA-3320/ask/86ef35c1-9daf-44b8-a077-16d39f1807fe). A fix found in its work goes
-into a child too: its own pull request carries no change, so in place means an open child's pull
-request, or a new child.
+into a child too: its own pull request carries no change, so a fix that
+`skill://legion-worker/references/findings.md` step 1 puts in the tree's own pull request goes into
+an open child's pull request, or a new child.
 Where an issue whose branch already carries code needs children, that code becomes a child's too:
 file a child for it, whose work starts from those commits.
 

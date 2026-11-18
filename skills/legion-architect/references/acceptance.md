@@ -72,16 +72,17 @@ legion({ op: "sign_off", issue: "LEGION-40" })
   (`SIGNOFF_CHILD_IN_WORKFLOW`, naming each one): run each one to done. Unless the issue's pull
   request has merged, the next admission pass moves it to `awaiting_children`, and it comes back by
   itself ("A parent's head", below); otherwise sign off again once they are done.
-  Park one with `park_child` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed,
-  and say in a comment which of those it is. Ask the person about a child that can reach neither
-  `done` nor a park under that rule, and hold the acceptance until they answer. Until the person
-  answers the ask on the root about a child you moved out from under its parent, sign off neither
-  that parent nor any issue above it that you accept (`skill://legion-architect`, section 3): when
-  they say to run it, move it back under that parent and release it; when they say to stop it, close it, or move it to `icebox`
-  under the rule when they say its work should wait, citing their answer. The daemon then closes a
-  parent that is not the root at its own merge, which under this rule comes after its children's.
-  One issue beneath never holds it: one the daemon itself holds at `admitted` under an ancestor it
-  has already accepted, which starts when that ancestor closes.
+  Park one with `park_child` only when a person asked for that move, or when the work is done,
+  folded into another issue or no longer needed, and say in a comment which of those it is. Ask the
+  person about a child that can reach neither `done` nor a park under that rule, and hold the
+  acceptance until they answer. Until the person answers the ask on the root about a child you moved
+  out from under its parent, sign off neither that parent nor any issue above it that you accept
+  (`skill://legion-architect`, section 3): when they say to run it, move it back under that parent
+  and release it; when they say to stop it, close it, or move it to `icebox` under the rule when
+  they say its work should wait, citing their answer. The daemon then closes a parent that is not
+  the root at its own merge, which under this rule comes after its children's. One issue beneath
+  never holds it: one the daemon itself holds at `admitted` under an ancestor it has already
+  accepted, which starts when that ancestor closes.
 - On an issue in `awaiting_children` the daemon refuses `sign_off` and `request_backward_move`
   (`WAITING_ON_CHILDREN`, naming its open children and the start it holds): it stands in no phase
   either acts on (`skill://legion-architect`, section 3).
@@ -136,8 +137,8 @@ into the branch, pushes, and ends its forward-merge comment with the line
 `children merged: full test round`. The tester reads that line and runs a full test round of
 every check with no `ci_check`. So a parent never waits in `accepting` for a child. Move nothing
 back after a child's merge. Spend no backward move on a conflict while the parent waits: the
-return's forward merge resolves it. That wait is no reason to park a child. Move a parked child's
-criterion to the root's own pull request or a released, open child first; never downgrade it.
+return's forward merge resolves it. That wait is no reason to park a child. Move the criterion of
+a child moved to the backlog to a released, open child or a new child first; never downgrade it.
 
 Send a head back yourself when it lacks the merge of a child its checks need, or when a check in
 another repository has no pass standing since the close of a child it needs. Use

@@ -53,7 +53,7 @@ Many small pull requests each cost a workspace, an admission wait, review, CI, a
 They can conflict with each other, and dependent slices run in sequence.
 A child may wait on a sibling's merge in the same repository: release it with `--blocked-by` that sibling, and Legion holds it until the sibling is `done`.
 A repeated change is one child, never one per instance.
-A child is never a place for a to-do, a fix found in review, a proof of your own issue's acceptance or a part of your own work (`skill://legion-architect`, section 1).
+A child is never a place for a to-do, a review fix of the issue's own code, a proof of your own issue's acceptance or a part of your own work (`skill://legion-architect`, section 1).
 A child that duplicates another issue and is not yet released is never released:
 fold it by the duplicate rule of `skill://dispatch-first`, which stands because the daemon
 records a child only at its release; a released duplicate goes out with `park_child`, because
@@ -93,20 +93,19 @@ adjust open children when closures change the plan. Your issue's own first phase
 when you start, and while Dispatch shows an open child under it, one you filed and have not released
 included, it waits in `awaiting_children` with its phase stopped, and an `awaiting-children` notice
 names each child with its Dispatch status. So file every child at once, release every child that
-should run, and move each other child as section 3 of `skill://legion-architect` says, so that your
-issue's own work follows theirs and its head carries their merges (`skill://legion-architect`,
-sections 3 and 4). When a person sets your issue back to `todo` while it runs or is held, you stay
-live: your issue goes back to `admitted`, and while Dispatch shows an open child under it, its first
-phase waits and the `children-first` notice of that wait comes to you, unless the daemon already
-sent one for your issue in this run of the tree. Park between event-driven wakes; do not poll or
-manufacture progress. The daemon starts every phase of each released child itself, in the order its
-fixed workflow table sets, each phase worker as its own process with that child's context already in
-its environment; a role it starts again resumes the same session, and it starts in a new session,
-which has read none of its own earlier work, only once supervise's `forgetSession` has dropped that
-one. You start no worker. Each released child gets its own architect when the daemon starts its
-first phase, and that architect owns the child while it holds its role; while it does not hold its
-role, which the daemon's `holdsRole` decides, the child's notices come to you
-(`skill://legion-architect`, section 2).
+should run, and move each other child out, so that your issue's own work follows theirs and its head
+carries their merges (`skill://legion-architect`, sections 3 and 4). When a person sets your issue
+back to `todo` while it runs or is held, you stay live: your issue goes back to `admitted`, and
+while Dispatch shows an open child under it, its first phase waits and the `children-first` notice
+of that wait comes to you, unless the daemon already sent one for your issue in this run of the
+tree. Park between event-driven wakes; do not poll or manufacture progress. The daemon starts every
+phase of each released child itself, in the order its fixed workflow table sets, each phase worker
+as its own process with that child's context already in its environment; a role it starts again
+resumes the same session, and it starts in a new session, which has read none of its own earlier
+work, only once supervise's `forgetSession` has dropped that one. You start no worker. Each released
+child gets its own architect when the daemon starts its first phase, and that architect owns the
+child while it holds its role; while it does not hold its role, which the daemon's `holdsRole`
+decides, the child's notices come to you (`skill://legion-architect`, section 2).
 
 ## Escalation
 
@@ -127,7 +126,8 @@ Before deciding the acceptance, have `goal-red-team` read the issue's goal, ever
 requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
 each `unmet` finding there.
 Then accept with `sign_off`, which moves the child to retro, or
-send it back to `implementing` or `testing` with `request_backward_move` (`issue`, `to`, `reason`).
+send it back to `implementing` or `testing` with `request_backward_move` (`issue`, `to`, `reason`);
+a parent's code fix goes to a child.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
 `dispatch results --issue <issue>` shows. A result one of its children recorded against one of

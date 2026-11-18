@@ -119,7 +119,7 @@ is `open`, the daemon is already running the tree's phases, and you start none. 
 catch-up leaves to you is acceptance: an issue its `reason` names as waiting for your acceptance is
 in `accepting`, where no worker runs and the notice that moved it there may never have reached you,
 so read its evidence and `sign_off` it — a parent only on an approved head that carries the merges
-of every child its criteria need
+of every child its checks need
 (`skill://legion-architect/references/acceptance.md`, "A parent's head") — or send it back with
 `request_backward_move`.
 During a live session, react only to delivered wakes; do not poll.
@@ -137,7 +137,7 @@ approves the old document at the carried version or a later one; you are told so
 `carried-gate-opened`, never `design-approved`, and start nothing for it. Do nothing else about
 an old root's document: never revise it, request its approval, or register it; when the tree's
 work waits on that approval, tell the controller. Resume the tree from there; a root carried in
-`accepting` is yours to accept with `sign_off`, on a head that carries the merges its criteria
+`accepting` is yours to accept with `sign_off`, on a head that carries the merges its checks
 need (`skill://legion-architect/references/acceptance.md`, "A parent's head"),
 or to send back with `request_backward_move`, once you have read its evidence.
 

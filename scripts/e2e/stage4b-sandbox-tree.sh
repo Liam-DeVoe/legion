@@ -271,9 +271,8 @@ admission_cap=4
 # Tree 1's children that run at once: the two filed while its planner holds (issue-independence),
 # each in an issue pod of its own with an architect of its own, which its first phase start starts,
 # and each holding a slot of its own. Children 3 and 4, filed at children-first-acceptance, run
-# while the root stands in accepting and then in awaiting_children holding no slot at all, and are moved to the backlog there; with
-# tree 2 gone
-# and child 2 on the backlog they raise no peak either.
+# while the root stands in accepting and then in awaiting_children holding no slot at all, and are
+# moved to the backlog there; with tree 2 gone and child 2 on the backlog they raise no peak either.
 tree1_children=2
 # The pods the run needs placed at once, every one an issue pod: the cap's issues, since an issue
 # the daemon has started runs in one pod of its own, and an issue keeps its pod past its slot — a
@@ -390,7 +389,7 @@ child2=
 # Children 3 and 4 of tree 1 (children-first-acceptance): both are open while their root stands
 # in accepting, which moves it to awaiting_children, where they hold its sign-off, and the proof
 # human moves them to the backlog one at a time. Their pods are named so their disks can be read
-# once the parks took them.
+# once those moves took them.
 child3=
 child3_pod=
 child4=

@@ -2261,7 +2261,7 @@ package api
 // 141 (withoutAssignments), and a caller below 133 the state with no `mergeWait` on any issue,
 // the entry of 133 (withoutMergeWait), and so on down the bands that entry lists; the twenty-one
 // compose. 146's row runs before this one and the two touch no key of each other's, so a caller
-// at 146 is served the entry times and none of this entry's keys and words.
+// at 146 through 161 is served the entry times and none of this entry's keys and words.
 // The strip of `gatedSteps` is not for the key's sake: every plugin from 55 on
 // reads `status` with a strict enum of the four words and refuses the whole body for a fifth, and
 // no word of the four is true of such a step — `waiting` would send its architect to ask a person

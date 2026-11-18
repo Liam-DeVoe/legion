@@ -147,7 +147,8 @@ branch, and the tester then runs every check again. The architect's skill states
 full (`skills/legion-architect/SKILL.md`, section 3). For the same reason the daemon refuses a
 parent's acceptance, and a root's close, while an issue beneath it is still in the workflow. A
 child's own architect starts with the child's first phase, so a child it files stops the child's
-phase in this way, and the child is accepted only at a head that carries their merges.
+phase in this way, and the child is accepted only at a head that carries the merges of every child
+its checks need.
 
 ## Phase workers
 

@@ -686,24 +686,26 @@ func (e *Engine) gateRequestFound(ctx context.Context, tx pgx.Tx, fact intake.Ga
 //
 // The steps of other roots that name the document as their basis, an ancestor's approval
 // (dispatch://INFRA-3320), take the event first, apart from everything below (basisArtifact):
-// the ancestor's tree may be live, on the backlog, re-admitted by this very approval, or none, and
-// a step of a root waiting on that ancestor's request opens or ends on it whichever it is.
+// the ancestor may be in a live tree, on the backlog, re-admitted by this very approval, or
+// recorded nowhere, and a step of a root waiting on that ancestor's request opens or ends on it
+// whichever it is.
 //
-// A person's approval of a parked labelled root's primary document is that person's handover of
-// the root (personHandoverQueues), and the daemon queues the root's todo itself, as admission does
-// for a person's legion label on a root in triage (admit's queuePersonHandover): a dispatch_status
-// row observed at the status the approval found, so its delivery writes nothing once the status
-// moved, marked as a person's handover so that one such row at a time is pending for the issue
-// (record.Store.PersonHandoverPending) — a redelivery of the event, or a second approval while the
-// row waits, queues nothing, since the pending row carries the same write, and the issue's other
-// status rows suppress nothing. The root's own gate takes the approval quietly (recordHandover): it
-// records the version approved, so the re-admission the todo brings keeps no stale approval pair
-// for the new architect's start (admit's keepStaleApproval), and it writes no notice and answers no
-// wait, since the tree has no architect. The re-admission then clears the gate, and the new
-// architect's register_gate reads the approval from Dispatch, as it does for any approval Dispatch
-// already shows. Every carried copy of the gate is applied as today, since the carried tree
-// is its own. The queue is logged once it commits, under admission's message for a person's
-// handover with source approval, so the proof reads which path queued a root from that field.
+// A person's approval of the primary document of a labelled root on the backlog is that person's
+// handover of the root (personHandoverQueues), and the daemon queues the root's todo itself, as
+// admission does for a person's legion label on a root in triage (admit's queuePersonHandover): a
+// dispatch_status row observed at the status the approval found, so its delivery writes nothing
+// once the status moved, marked as a person's handover so that one such row at a time is pending
+// for the issue (record.Store.PersonHandoverPending) — a redelivery of the event, or a second
+// approval while the row waits, queues nothing, since the pending row carries the same write, and
+// the issue's other status rows suppress nothing. The root's own gate takes the approval quietly
+// (recordHandover): it records the version approved, so the re-admission the todo brings keeps no
+// stale approval pair for the new architect's start (admit's keepStaleApproval), and it writes no
+// notice and answers no wait, since the tree has no architect. The re-admission then clears the
+// gate, and the new architect's register_gate reads the approval from Dispatch, as it does for any
+// approval Dispatch already shows. Every carried copy of the gate is applied as today, since the
+// carried tree is its own. The queue is logged once it commits, under admission's message for a
+// person's handover with source approval, so the proof reads which path queued a root from that
+// field.
 func (e *Engine) dispatchArtifact(ctx context.Context, tx pgx.Tx, fact intake.DispatchArtifact) (intake.Result, error) {
 	if err := e.basisArtifact(ctx, tx, fact); err != nil {
 		return intake.Result{}, err

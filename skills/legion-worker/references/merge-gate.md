@@ -238,7 +238,9 @@ it there until that answer comes clean.
   check (*The production check after the close*, below).
   CI red at the head in `accepting` moves nothing, as it moves nothing anywhere: the daemon names
   the checks GitHub reported and leaves the decision to the roles it told. Read the head's checks
-  on GitHub yourself before you accept, and send a red head back with `request_backward_move`.
+  on GitHub yourself before you accept, and send a red head back with `request_backward_move`, or,
+  on an issue with children, file and release its code fix as a new child
+  (`skill://legion-architect`, section 6).
 
 ## Retro
 

@@ -1124,7 +1124,7 @@ const quietTimeContract = 111
 // refuses a word it does not name and with it the whole state body, so a caller below 132 is
 // served such a member without its `kind` (withoutWaitingOnIssue), which that schema takes as
 // optional. mergeWaitContract, assignmentsContract, entryTimesContract and gateBasisContract
-// stand above it, so a caller in a pod at 132 through 146 is served the word and neither
+// stand above it, so a caller in a pod at 132 through 161 is served the word and neither
 // `treeRuns` nor the gated steps of an issue a step of which stands on a basis, one at 132
 // through 145 no `entryQueuedAt`, `entryConfirmedAt` or `architectStalls` either, one at 132
 // through 140 no `assignments` either, and one at 132 no `mergeWait` either.
@@ -1181,8 +1181,8 @@ const entryTimesContract = 146
 // and a caller in no pod are served the state as it is (stateFor). entryTimesContract stands
 // right below it, and the two rows touch no key of each other's: withoutEntryTimes takes three
 // keys whatever the issue's phase, and withoutGateBasis reads no key it takes, so a caller at 146
-// is served both times and `architectStalls` and none of this contract's, and a caller below 146
-// neither.
+// through 161 is served both times and `architectStalls` and none of this contract's, and a caller
+// below 146 neither.
 const gateBasisContract = 162
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
