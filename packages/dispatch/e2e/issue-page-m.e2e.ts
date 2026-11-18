@@ -2811,7 +2811,9 @@ test("t o and a load of /collaborators keep the focused Collaborators control in
   const issue = await createIssue({ project: "CORE", title: "An issue that waits on five others" });
   const blockers: string[] = [];
   for (let index = 0; index < 5; index += 1) {
+    // `force`: the five titles are alike on purpose, and the duplicate check would refuse them.
     const blocker = await createIssue({
+      force: true,
       project: "CORE",
       title: `Blocker ${index}: ${"a title long enough to wrap over several lines of Details ".repeat(3)}`,
     });
@@ -2873,7 +2875,8 @@ test("t o and a load of /collaborators keep the focused Collaborators control in
     };
 
     await gotoIssue(page, `/issues/${issue.key}`);
-    await expect(tree(page)).toBeVisible();
+    // The issue holds no node, so its tree is drawn empty: the page is drawn once it is there.
+    await expectIssuePageDrawn(page);
     await expect(marginShell(page)).toBeHidden();
     await focusThePage(page);
     await page.keyboard.press("t");
