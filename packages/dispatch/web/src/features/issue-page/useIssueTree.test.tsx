@@ -3392,7 +3392,8 @@ function writeKeyOf(issueKey: string): readonly ["write", string] {
   return ["write", issueKey];
 }
 
-/** Another issue than the one the page draws, whose writes hold none of its reads. */
+/** Another issue than the one the page draws: its writes, begun while the page does not draw this
+ *  issue's tree, hold none of its reads. */
 const OTHER_KEY = "CORE-2";
 
 /** The margin's resolve of the comment (`useMarginItems.ts`) on `client`, which Dispatch takes in
@@ -4724,7 +4725,10 @@ function issueWriteSet(feed: "down" | "up"): RuleWay {
 /** A write that Dispatch takes, resolving the comment, and whose answer is lost 200 ms on: the
  *  write store refreshes every query the app holds inside the write (`answerlessLanding`). With
  *  `resolves` false it changes nothing Dispatch holds of the issue's reads. */
-function answerlessWrite(rig: Rig, resolves = true): MutationObserver<void, Error, void, void> {
+function answerlessWrite(
+  rig: Rig,
+  { resolves = true }: { readonly resolves?: boolean } = {}
+): MutationObserver<void, Error, void, void> {
   return new MutationObserver<void, Error, void, void>(rig.client, {
     mutationKey: writeKeyOf(KEY),
     mutationFn: async () => {
@@ -4738,35 +4742,27 @@ function answerlessWrite(rig: Rig, resolves = true): MutationObserver<void, Erro
 /** A write that Dispatch took and whose answer was lost, so it lands with none (`keyed-write.ts`'
  *  `writeUnderKey` answers `null`): the write store refreshes every query the app holds
  *  (`invalidateQueries()`, `write-store.ts`' `#landed`) inside the write, before its mutation
- *  settles. With the live feed up its event follows 150 ms on. */
-function answerlessLanding(feed: "down" | "up"): RuleWay {
+ *  settles. With the live feed up its event follows 150 ms on. With `resolves` false the write
+ *  changes nothing the issue's reads answer: the write store's refresh of every query is the one
+ *  ask of the tree and its views, which the write holds until it settles, a refused one too. */
+function answerlessLanding(
+  feed: "down" | "up",
+  { resolves = true }: { readonly resolves?: boolean } = {}
+): RuleWay {
   return {
-    words: `a write that lands in 200 ms with no answer and a refresh of every query, with the live feed ${feed}`,
+    words: `a write that lands in 200 ms with no answer and a refresh of every query${resolves ? "" : ", changing nothing the issue's reads answer"}, with the live feed ${feed}`,
     does: async (rig) => {
       if (feed === "down") await feedDown(rig);
-      const write = answerlessWrite(rig);
+      const write = answerlessWrite(rig, { resolves });
       await writeSettles(() => write.mutate(), 200);
       if (feed === "up") {
         await tick(150, 10);
         await commentsEvent(rig);
       }
     },
-    ends: treeHoldsComment("settled"),
+    ...(resolves ? { ends: treeHoldsComment("settled") } : {}),
   };
 }
-
-/** A write that lands with no answer (`answerlessLanding`) with the live feed down, and changes
- *  nothing the issue's reads answer: the write store's refresh of every query is the one ask of the
- *  tree and its views, which the write holds until it settles, a refused one too. */
-const QUIET_ANSWERLESS_LANDING: RuleWay = {
-  words:
-    "a write that lands in 200 ms with no answer and a refresh of every query, changing nothing the issue's reads answer, with the live feed down",
-  does: async (rig) => {
-    await feedDown(rig);
-    const write = answerlessWrite(rig, false);
-    await writeSettles(() => write.mutate(), 200);
-  },
-};
 
 /** A write of the page that Dispatch holds until the row lets it go: pressed now, and settled, with
  *  `onSuccess` then where given, by the function it returns. It is a write of the issue the page
@@ -4872,12 +4868,12 @@ function focusWhileWriting(words: string, meanwhile?: (rig: Rig) => Promise<void
 }
 
 /** A write of the issue out for 1.5 s while the tree is asked for again by `refetchQueries`, with
- *  the live feed up: the write holds the tree, so that ask sends nothing, and leaves nothing to
- *  hear (the app's client skips a disabled query). 200 ms after the write settles the comments
- *  are read, and 200 ms after that an event refreshes them: the tree read the event asks for
- *  begins at once, the tree's last read being past its second, and the comments read the
- *  scheduler owes, begun after it while the event marked it invalid, counts as newer and reads
- *  the tree once more. So the way reads the tree twice, both after the event. */
+ *  the live feed up: the write holds the tree, so that ask sends nothing during the hold, and
+ *  leaves nothing to hear (the app's client skips a disabled query). 200 ms after the write
+ *  settles the comments are read, and 200 ms after that an event refreshes them: the tree read
+ *  the event asks for begins at once, the tree's last read being past its second, and the
+ *  comments read the scheduler owes, begun after it while the event marked it invalid, counts as
+ *  newer and reads the tree once more. So the way reads the tree twice, both after the event. */
 const EVENT_AFTER_WAITED_READ: RuleWay = {
   words:
     "a write out for 1.5 s while the tree is read again, the comments read 200 ms after it settles and an event of the issue 200 ms later",
@@ -4913,8 +4909,9 @@ function stageSlot(rig: Rig): void {
 }
 
 /** The live feed back with its gap replayed whole while the reader is away, which asks for a
- *  refused read, then the reader coming back while a write is out, so the read waits for the
- *  write, and leaving before the write settles, so the read is given up unsent. */
+ *  refused read, then the reader coming back while a write is out and leaving before the write
+ *  settles: no read starts while the write is out, since the hold keeps the new observer from
+ *  reading, and the read stays owed. */
 const BACK_AND_GONE_WHILE_WAITING: RuleWay = {
   words:
     "the live feed back with its gap replayed whole, then the reader coming back while a write is out and leaving before it settles",
@@ -4934,8 +4931,8 @@ const BACK_AND_GONE_WHILE_WAITING: RuleWay = {
 };
 
 /** The reader coming back, pressing Retry on the refused tree's failed line while a write is out,
- *  so the Retry's read waits for the write, and leaving before the write settles, so the read is
- *  given up unsent. */
+ *  which is sent at once and refused, and leaving before the write settles: the settle while the
+ *  reader is away leaves one read owed, which the reader coming back reads. */
 const RETRY_GONE_WHILE_WAITING: RuleWay = {
   words:
     "the reader coming back, pressing Retry while a write is out and leaving before it settles",
@@ -4983,8 +4980,8 @@ function twoAnswerlessWrites(feed: "down" | "up"): RuleWay {
 }
 
 /** The stage mounting as the reader opens the issue while a write that lands with no answer
- *  (`answerlessWrite`) is out, so its first tree read waits for the write, and the write's
- *  refresh of every query lands while it waits. */
+ *  (`answerlessWrite`) is out: its first tree read is sent at once, and the write's settle reads
+ *  it once more. */
 function openDuringAnswerlessWrite(feed: "down" | "up"): RuleWay {
   return {
     words: `the reader opening the issue while a write that lands in 200 ms with no answer is out, with the live feed ${feed}`,
@@ -5001,8 +4998,9 @@ function openDuringAnswerlessWrite(feed: "down" | "up"): RuleWay {
   };
 }
 
-/** The stage mounting as the reader opens the issue while a write of another issue is out, so
- *  its first tree read waits for the write, and an event of this issue 500 ms into the wait. */
+/** The stage mounting as the reader opens the issue while a write of another issue is out, which
+ *  holds nothing: its first tree read is sent at once, and an event of this issue 500 ms on reads
+ *  it once more. */
 const OPEN_DURING_WRITE_WITH_EVENT: RuleWay = {
   words:
     "the reader opening the issue while a write of another issue is out, an event of the issue 500 ms into the wait, the write then settling",
@@ -5290,7 +5288,7 @@ const WAYS = {
   firstReadDuringOwnWrite: firstReadDuringWrite(KEY),
   firstReadDuringOtherWrite: firstReadDuringWrite(OTHER_KEY),
   secondWriteAtSettle: SECOND_WRITE_AT_SETTLE,
-  landedBlankQuietDown: QUIET_ANSWERLESS_LANDING,
+  landedBlankQuietDown: answerlessLanding("down", { resolves: false }),
   comeBackDuringWrite: COME_BACK_DURING_WRITE,
   retryRetriedDuringWrite: RETRY_RETRIED_DURING_WRITE,
 } satisfies Record<string, RuleWay>;
@@ -5858,8 +5856,8 @@ const READ_RULES: readonly ReadRule[] = [
   { read: "spec", state: "refused", observed: true, way: "landedBlankDown", now: 1 },
   { read: "tree", state: "answered", observed: true, way: "landedBlankBesideUp", now: 1 },
   { read: "tree", state: "answered", observed: true, way: "landedBlankBesideDown", now: 1 },
-  // The refresh held for the writes reads no tree or view read the writes held: each sends as
-  // they settle.
+  // The refresh held for the writes is the one read of the tree and the open view, as they
+  // settle.
   { read: "tree", state: "answered", observed: true, way: "landedBlankBesideKeepDown", now: 1 },
   { read: "spec", state: "answered", observed: true, way: "landedBlankBesideKeepDown", now: 1 },
   // A refresh asked while the writes hold the reads - the event feed's refresh of every query
@@ -5889,8 +5887,8 @@ const READ_RULES: readonly ReadRule[] = [
   { read: "plan", state: "answered", observed: false, way: "reload", now: 0, back: 1 },
   { read: "verification", state: "answered", observed: true, way: "reload", now: 1 },
   { read: "verification", state: "answered", observed: false, way: "reload", now: 0, back: 1 },
-  // A trigger whose read waited for a write and was given up unsent as the reader left is still
-  // owed: the reader coming back reads it.
+  // A trigger while the reader is away, then the reader back while a write is out and gone before
+  // it settles: no read while the write holds it, and one as the reader comes back.
   {
     read: "tree",
     state: "refused",
@@ -5899,6 +5897,8 @@ const READ_RULES: readonly ReadRule[] = [
     now: 0,
     back: 1,
   },
+  // The reader's Retry while a write is out, sent at once, then the reader gone before the write
+  // settles: one read owed, read as the reader comes back.
   {
     read: "tree",
     state: "refused",
