@@ -86,11 +86,18 @@ export function StagedDocument({
  * on the screen that less than half that room is left under it gets half the room instead, and
  * the page scrolls just as far as brings the box on screen. A scroll that reaches either end of
  * the box stops there, rather than going on to move the page.
+ *
+ * The box takes no part in scroll anchoring (`overflow-anchor: none`, as the sidebar's in
+ * `app.tsx`). The editor draws the names of the issues a document cites after the caret is in,
+ * so the words above the caret grow, and the window, anchored on a node inside the box, scrolled
+ * the page down by as much: the row being edited stood above the window, at 1440 by 900 px, until
+ * the reader typed. Where the box's own words move, the row puts the node's block back at the
+ * box's top once the drawing has settled (`holdEditorAtBlock`).
  */
 export function EditorBox({ children }: { children: ReactNode }): ReactNode {
   return (
     <div
-      className="max-h-[calc(100dvh-var(--issue-identity-height,0px)-var(--issue-composer-height,0px))] min-w-0 overflow-y-auto overscroll-contain"
+      className="max-h-[calc(100dvh-var(--issue-identity-height,0px)-var(--issue-composer-height,0px))] min-w-0 overflow-y-auto overscroll-contain [overflow-anchor:none]"
       {...{ [EDITOR_BOX_ATTRIBUTE]: "" }}
     >
       {children}
