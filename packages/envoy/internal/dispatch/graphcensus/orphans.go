@@ -36,12 +36,10 @@ var sweepActor = model.Actor{Kind: "system", ID: "dispatch-block-index"}
 func OrphanedDocumentNodes(ctx context.Context, q graphstore.Queryer, limit int) ([]string, error) {
 	rows, err := q.Query(ctx, `
 		select n.id from graph_nodes n
-		where n.kind = $1 and n.state <> $2
-		  and not exists (select 1 from artifacts a where a.ref_key = n.id)
-		  and exists (select 1 from issues i where i.key = split_part(n.id, '/', 1))
+		where n.kind = '`+graphstore.KindArtifact+`' and `+orphanedDocumentNode("n")+`
 		order by n.id
-		limit $3
-	`, graphstore.KindArtifact, graphstore.StateGone, limit)
+		limit $1
+	`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("read the orphaned document nodes: %w", err)
 	}
@@ -50,6 +48,14 @@ func OrphanedDocumentNodes(ctx context.Context, q graphstore.Queryer, limit int)
 		return nil, fmt.Errorf("read the orphaned document nodes: %w", err)
 	}
 	return orphaned, nil
+}
+
+// orphanedDocumentNode is, for the document node n, whether it is orphaned at an issue's address:
+// at any state but gone, at an address no artifacts row holds, and naming an issue.
+func orphanedDocumentNode(n string) string {
+	return n + `.state <> '` + graphstore.StateGone + `'
+		  and not exists (select 1 from artifacts a where a.ref_key = ` + n + `.id)
+		  and exists (select 1 from issues i where i.key = split_part(` + n + `.id, '/', 1))`
 }
 
 // ErrNotOrphaned is StateOrphanedGone's answer for a node it may not state gone, which it leaves

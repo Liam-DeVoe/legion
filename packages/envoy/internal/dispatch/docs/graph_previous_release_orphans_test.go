@@ -51,7 +51,8 @@ func TestARollTickStatesGoneTheNodeOfADocumentThePreviousReleaseRemoved(t *testi
 // holds the lease next runs the pass: a process's joining tick finds 25 orphaned documents, states
 // the bound of 20 gone, keeps the debt and is full; a tick of another process of the build, which
 // joins nothing and finds no other build, reads that debt, states the 5 left gone and clears it;
-// and a document orphaned after that, with nothing owed, is left for the census to name.
+// and a document removed after that, with nothing owed, is owed by its removal's event, so the
+// next tick states it gone.
 //
 // Its control is the debt cleared whatever the pass left: the second process's tick then runs no
 // pass, and the 5 stay orphaned.
@@ -76,10 +77,10 @@ func TestTheObjectPassDebtCrossesProcessesAndClearsOnceThePassFinishes(t *testin
 	}
 	writeDocumentWithItsNode(t, database, "later-md")
 	removeAsThePreviousRelease(t, database, "CORE-1/later-md")
-	if tick := awaitedBlockIndexTick(t, second); tick.OrphansGone != 0 {
-		t.Errorf("a tick with nothing owed stated %d orphan(s) gone, want none: the pass runs only while the build owes it", tick.OrphansGone)
+	if tick := awaitedBlockIndexTick(t, second); tick.OrphansGone != 1 {
+		t.Errorf("the tick after a removal's event stated %d orphan(s) gone, want the removed document's", tick.OrphansGone)
 	}
-	requireProjectComplete(t, database, []string{"artifact CORE-1/later-md: orphaned"}, "after a document orphaned with nothing owed")
+	requireProjectComplete(t, database, nil, "after the tick the removal's event owed the pass")
 }
 
 // writeDocumentWithItsNode writes a document of CORE-1 at slug with its node, as this build's

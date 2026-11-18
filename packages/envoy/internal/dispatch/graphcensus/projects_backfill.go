@@ -236,10 +236,12 @@ type ObjectPass struct {
 // WriteOwedObjectNodes is the backfill's object pass (backfillObjectNodes) without its count of
 // the rows that remain, for docs' block-index tick, which runs it while a build before this one
 // may write rows beside this one: while a process of another build serves, on the first tick
-// after it, and on each process's first tick (docs' markVersionsAnotherBuildWrote). That build
-// creates an issue, a document, an ask and a message with no node, and a conversation's file with
-// no event either, so the pass reads rows, not events: it writes, through writeObjectBatch alone,
-// the node of every row its marker does not mark, as the backfill does.
+// after it, on each process's first tick (docs' markVersionsAnotherBuildWrote), on a tick whose
+// cursor moves past an event that leaves the store a row with no node or a node with no row
+// (EventsOweObjectPass), and once a process has finished no pass for docs' objectPassInterval. That
+// build creates an issue, a document, an ask and a message with no node, and a conversation's
+// file with no event either, so the pass reads rows, not events: it writes, through
+// writeObjectBatch alone, the node of every row its marker does not mark, as the backfill does.
 //
 // It writes at most batches batches across the four kinds, zero being no bound, so one tick never
 // holds the block-index lease for the whole backlog a first deploy leaves: it answers More where it
