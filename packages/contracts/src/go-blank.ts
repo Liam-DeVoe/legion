@@ -9,13 +9,13 @@
  * scalar, `String.prototype.trim` and `strings.TrimSpace` differ on exactly two characters.
  * `trim` removes U+FEFF, which Go keeps, so `trim` calls U+FEFF blank where a Go server reads
  * content; Go removes U+0085, which `trim` keeps, so `trim` calls U+0085 content where a Go
- * server reads blank. This is the one place that pair is written out, and the lines that turn
- * on it cite this comment rather than repeating it. Its readers: `dispatch artifact`
- * (`packages/envoy-client/src/dispatch-commands/documents.ts`), against the Dispatch server's
- * blank content; a rating's `planReason` (`./legion-api.ts`, and the `legion` tool's
- * `plan_reason` in `packages/pi-shared/src/legion-phase-ops.ts`), against the daemon's; and the
- * Envoy plugin's `listenerRoleName` (`packages/pi-envoy/extensions/envoy.ts`), which trims a
- * role's name as the Envoy listener trims a claim's.
+ * server reads blank. `GO_TRIM_SPLIT` below is the one place that pair is written out, and the
+ * lines that turn on it read it or cite this comment rather than repeating it. Its readers:
+ * `dispatch artifact` (`packages/envoy-client/src/dispatch-commands/documents.ts`), against the
+ * Dispatch server's blank content; a rating's `planReason` (`./legion-api.ts`, and the `legion`
+ * tool's `plan_reason` in `packages/pi-shared/src/legion-phase-ops.ts`), against the daemon's;
+ * and the Envoy plugin's `listenerRoleName` (`packages/pi-envoy/extensions/envoy.ts`), which
+ * trims a role's name as the Envoy listener trims a claim's.
  *
  * `packages/envoy/internal/dispatch/text/refs.go` records a split of the same class in another
  * pair of sets ("The whitespace is spelled out rather than written `\s`, which means another
@@ -32,3 +32,7 @@
  */
 export const goBlankPattern =
   /^[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]*$/u;
+
+/** The two characters on which `String.prototype.trim` and Go's `strings.TrimSpace` differ:
+ * U+0085, blank to Go and content to `trim`, and U+FEFF, content to Go and blank to `trim`. */
+export const GO_TRIM_SPLIT = ["\u0085", "\uFEFF"] as const;

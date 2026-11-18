@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { GO_TRIM_SPLIT } from "./go-blank";
 
 /**
  * `fixtures/daemon-api/plan-rating-cases.json`, the daemon's verdict on each rating of a plan:
@@ -30,8 +31,7 @@ export const PlanRatingCases = z.strictObject({
     .refine((cases) => cases.some((c) => c.verdict !== "accepted"), {
       error: "the cases hold no rating the daemon refused",
     })
-    .refine(
-      (cases) => ["\u0085", "\uFEFF"].every((blank) => cases.some((c) => c.planReason === blank)),
-      { error: "the cases hold no reason of U+0085 alone, or none of U+FEFF alone" }
-    ),
+    .refine((cases) => GO_TRIM_SPLIT.every((blank) => cases.some((c) => c.planReason === blank)), {
+      error: "the cases hold no reason of one of GO_TRIM_SPLIT alone (U+0085, U+FEFF)",
+    }),
 });
