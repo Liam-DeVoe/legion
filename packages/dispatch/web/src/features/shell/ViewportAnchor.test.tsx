@@ -560,8 +560,9 @@ test("a box the browser pulls back to its end after its content shrank keeps the
  * change. In each frame the box is pulled back to its end where its content no longer reaches
  * that far, one scroll event is raised for whatever moved it since the frame before, and the
  * root's resize is observed where the list's height changed.
+ * With `ownsScrollAnchoring`, the host takes the box over.
  */
-function drawInBox(drawn: string[]) {
+function drawInBox(drawn: string[], { ownsScrollAnchoring = false } = {}) {
   const RealResizeObserver = globalThis.ResizeObserver;
   const observers: ResizeObserverCallback[] = [];
   globalThis.ResizeObserver = class {
@@ -572,7 +573,9 @@ function drawInBox(drawn: string[]) {
     observe() {}
     unobserve() {}
   } as unknown as typeof ResizeObserver;
-  const view = render(<List rows={drawn} scroller={scrollerRef} />);
+  const view = render(
+    <List ownsScrollAnchoring={ownsScrollAnchoring} rows={drawn} scroller={scrollerRef} />
+  );
   const scroller = scrollerRef.current;
   if (scroller === null) throw new Error("scroller missing");
   const end = () => Math.max(0, listTop + listHeight() - VIEWPORT_HEIGHT);
@@ -606,7 +609,10 @@ function drawInBox(drawn: string[]) {
     }
   };
   return {
-    rerender: (next: string[]) => view.rerender(<List rows={next} scroller={scrollerRef} />),
+    rerender: (next: string[]) =>
+      view.rerender(
+        <List ownsScrollAnchoring={ownsScrollAnchoring} rows={next} scroller={scrollerRef} />
+      ),
     scroller,
     settle: () => {
       frame();
@@ -1508,5 +1514,113 @@ test("the row a host keeps leaving the list lets its place go", () => {
     expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("auto");
   } finally {
     view.unmount();
+  }
+});
+
+/** Each row any of which lies in the view, by id, with its viewport top. */
+function rowsInView(): Record<string, number> {
+  const seen: Record<string, number> = {};
+  for (const row of rows()) {
+    const { bottom, top } = row.getBoundingClientRect();
+    if (bottom > 0 && top < VIEWPORT_HEIGHT) seen[row.getAttribute("data-row") ?? ""] = top;
+  }
+  return seen;
+}
+
+/** The reader's view in the cases below, in a box drawn with r70 3,000 px tall: from 3,550 to
+ *  6,550 px down the content, its control at its foot from 6,530 px. The reader scrolls to that
+ *  control, 330 px down the view, and the focus is moved to `focused`, the control or the row
+ *  itself. The reader then scrolls on until r70 lies wholly below the view, its top at 650 px, or
+ *  wholly above it, its foot at -50 px, and the box's scroll event records the place. Answers the
+ *  row in the middle of the view. */
+function scrollPastFocusedR70(
+  box: { scroller: HTMLElement; settle: () => void },
+  focused: HTMLElement,
+  side: "above" | "below"
+): string {
+  box.scroller.scrollTop = 6200;
+  box.settle();
+  focused.focus();
+  expect(controlTop("r70")).toBe(330);
+  box.scroller.scrollTop = side === "below" ? 2900 : 6600;
+  box.settle();
+  expect(document.activeElement).toBe(focused);
+  expect(viewportTop("r70")).toBe(side === "below" ? 650 : -3050);
+  const middle = rowAtDepth(box.scroller.scrollTop + VIEWPORT_HEIGHT / 2 - listTop);
+  if (middle === null) throw new Error("no row in the middle of the view");
+  return middle.getAttribute("data-row") ?? "";
+}
+
+// The focus is on a control at the foot of a tall row, and the reader scrolls on until that row
+// lies wholly below the view. The row is then cut short in a commit of its own, which the anchor
+// sees only as its root resized. The reader sees none of the row, so nothing on screen moves:
+// keeping the control's own place scrolled the box up by the cut, 2,800 px, and every row in view
+// went down out of it.
+test("a cut of the focused row wholly below the view leaves the box and the rows in view where they were", () => {
+  heights = { r70: 3000 };
+  const box = drawInBox(ids(140));
+  try {
+    const control = rowOf("r70").querySelector<HTMLElement>("button");
+    if (control === null) throw new Error("r70 button missing");
+    const middle = scrollPastFocusedR70(box, control, "below");
+    const scrolled = box.scroller.scrollTop;
+    const seen = viewportTop(middle);
+    expect(seen).toBe(300);
+
+    // r70 is cut to 200 px.
+    heights = { r70: 200 };
+    box.settle();
+    expect(box.scroller.scrollTop).toBe(scrolled);
+    expect(viewportTop(middle)).toBe(seen);
+  } finally {
+    box.unmount();
+  }
+});
+
+// The same with the row wholly above the view, the focus on the row itself, and the host taking
+// the box over, so the browser's own scroll anchoring is off there. The cut takes every row under
+// r70 up by 2,800 px and leaves r70's top where it was: keeping that top let the rows in view go up
+// out of it. The first row in view is kept instead, and the box follows it.
+test("a cut of the focused row wholly above the view, in a box the host takes over, leaves the rows in view where they were", () => {
+  heights = { r70: 3000 };
+  const box = drawInBox(ids(140), { ownsScrollAnchoring: true });
+  try {
+    const middle = scrollPastFocusedR70(box, rowOf("r70"), "above");
+    const seen = viewportTop(middle);
+    expect(seen).toBe(300);
+    expect(box.scroller.style.getPropertyValue("overflow-anchor")).toBe("none");
+
+    // r70 is cut to 200 px.
+    heights = { r70: 200 };
+    box.settle();
+    expect(viewportTop(middle)).toBe(seen);
+  } finally {
+    box.unmount();
+  }
+});
+
+// A commit draws a new row between the focused row, wholly outside the view, and the view: under
+// r70 where r70 lies above the view, over it where r70 lies below. The new row lands outside the
+// view, and no row in view moves. Keeping r70's place moved every row in view by the new row's
+// height: down where r70 lies above the view, up where it lies below.
+test("a row a commit draws between a focused row wholly outside the view and the view moves no row in view", () => {
+  for (const side of ["below", "above"] as const) {
+    heights = { r70: 3000 };
+    const box = drawInBox(ids(140));
+    try {
+      const control = rowOf("r70").querySelector<HTMLElement>("button");
+      if (control === null) throw new Error("r70 button missing");
+      scrollPastFocusedR70(box, control, side);
+      const seen = rowsInView();
+
+      const next = ids(140);
+      next.splice(side === "below" ? 69 : 70, 0, "new");
+      box.rerender(next);
+      expect(rowsInView(), `r70 ${side} the view`).toEqual(seen);
+      box.settle();
+      expect(rowsInView(), `r70 ${side} the view, once the frame has run`).toEqual(seen);
+    } finally {
+      box.unmount();
+    }
   }
 });
