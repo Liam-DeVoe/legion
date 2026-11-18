@@ -158,7 +158,7 @@ func TestTheTickNoticeCarriesTheHeldIssues(t *testing.T) {
 	// `admission.held` over its own candidate read rather than copied from the notice above.
 	var held map[string]record.HeldReason
 	inTx(t, pool, func(tx pgx.Tx) {
-		state, err := projection.Project(context.Background(), tx, record.NewStore(), testProject,
+		state, err := projection.Project(context.Background(), tx, record.NewStore(), testProject, 0,
 			admission.engine.GatedSteps(), nil, nil, nil, nil, fixedNow)
 		if err != nil {
 			t.Fatalf("project the state: %v", err)

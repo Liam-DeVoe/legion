@@ -49,6 +49,17 @@ func NewStore() *Postgres { return &Postgres{} }
 // among them, queues none, since a row it wrote would be neither sent nor deleted.
 func (s *Postgres) PublishState(run string) { s.stateRun.Store(&run) }
 
+// StateRun is the run id the state events carry and whether they are on (PublishState). A writer
+// whose event costs a judgement of its own before its statement, the admission pass's block
+// (QueueAdmissionBlock), reads it first, so that with the events off it judges nothing.
+func (s *Postgres) StateRun() (string, bool) {
+	run := s.stateRun.Load()
+	if run == nil {
+		return "", false
+	}
+	return *run, true
+}
+
 func (s *Postgres) MarkProcessed(ctx context.Context, tx pgx.Tx, source, eventID string) (bool, error) {
 	tag, err := tx.Exec(ctx, `insert into processed_events (source, event_id) values ($1, $2)
 		on conflict (source, event_id) do nothing`, source, eventID)

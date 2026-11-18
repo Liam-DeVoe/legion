@@ -5,7 +5,6 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"maps"
 	"slices"
 	"time"
 
@@ -41,8 +40,10 @@ import (
 // entry each issue's view carries is the role that works its current phase (phase.RoleFor), and
 // the two handshake times beside them are that role's claim's, but for a tree's own root, whose
 // times are its architect's claim's in every phase (supervise.Claim.Handshake). now is the instant
-// the held rows are read at (record.Store.HeldRows) and their waits are measured from.
-func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, steps []record.DesignStep, experiments []config.Experiment, claims []supervise.Claim, stranded []supervise.Claim, reports map[claim.Token]capabilities.Report, now time.Time) (api.State, error) {
+// the held rows are read at (record.Store.HeldRows) and their waits are measured from. cap is the
+// deployment's admission cap (config.Config.AdmissionCap), which the admission block carries
+// beside the lists judged under it (blockers.JudgeAdmission).
+func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap int, steps []record.DesignStep, experiments []config.Experiment, claims []supervise.Claim, stranded []supervise.Claim, reports map[claim.Token]capabilities.Report, now time.Time) (api.State, error) {
 	issues, err := s.Issues(ctx, tx)
 	if err != nil {
 		return api.State{}, err
@@ -123,13 +124,11 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	}
 
 	slotViews := make(map[string]api.SlotView, len(slots))
-	active := make([]string, 0, len(slots))
 	for _, slot := range slots {
 		if _, known := knownIssues[slot.Issue]; !known {
 			continue
 		}
 		slotViews[slot.Issue] = api.SlotView{Index: slot.Index, AdmittedAt: slot.AdmittedAt}
-		active = append(active, slot.Issue)
 	}
 
 	projected := api.State{Issues: make(map[string]api.Issue, len(issues))}
@@ -335,52 +334,38 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		projected.Issues[current.Issue] = view
 	}
 
-	// Everything admission is judged from is judged over this project's own records. The state
-	// lists every project's issues, for the sake of a claim on an issue of another, while the
-	// cap, the waiting line and the tick read the project's own live records alone
-	// (record.Store.LiveIssues, admit's pass): another project's queued root, and its root a
-	// person has answered, would otherwise stand in this project's `admission.waiting`, and
-	// whatever either waits on in its `blocked`, as work this daemon neither runs nor admits.
-	// They reach one read at all because the issues table is one table shared by every daemon of
-	// the database (the issue slots migration, "shared by every daemon of the database").
+	// Each issue's own reading of admission — its place in the waiting line and why it is not
+	// working now — is read over this project's own records. The state lists every project's
+	// issues, for the sake of a claim on an issue of another, while admission reads the project's
+	// own records alone: another project's queued root, and its root a person has answered, would
+	// otherwise read as work this daemon neither runs nor admits. They reach one read at all
+	// because the issues table is one table shared by every daemon of the database (the issue
+	// slots migration, "shared by every daemon of the database").
 	own := make([]record.Issue, 0, len(issues))
 	for _, issue := range issues {
 		if issue.Project == project {
 			own = append(own, issue)
 		}
 	}
-	facts, err := record.ReadLineFacts(ctx, tx, s, project, own, steps)
+	// The admission block is the one judgement of it, which the admission pass's state event
+	// carries too (blockers.JudgeAdmission): the project's live records and its own slots, the
+	// waiting line those leave, what blocks and what holds its issues, its live trees and the cap,
+	// read in this transaction's snapshot like every other fact here. The line it judged, the
+	// mirror rows it judged the links from and the facts it read are what each issue's view
+	// below is read from, so a member's place and every issue's `why` come from the judgement
+	// whose lists the block serves.
+	judged, err := blockers.JudgeAdmission(ctx, tx, s, project, steps, cap, now)
 	if err != nil {
 		return api.State{}, err
 	}
-	// What Legion is waiting for, judged from the mirror of what Dispatch says the issues it
-	// judges wait on, read in this transaction's snapshot like every other fact here, through the
-	// one judgement admission itself promotes from (blockers.JudgeLine): the rows of every issue
-	// a blocker can hold, the children-first wait, the line those two leave, and the rows of the
-	// issues the line names. The deciders' own judgement (blockers.Blocked) then names exactly
-	// the roots admission skips, the issues it holds back and the parents whose children go
-	// first.
-	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, s, project, own, slots, facts, nil, now)
-	if err != nil {
-		return api.State{}, err
-	}
-	projected.Admission.Active = active
-	// The roots of the live trees, which no slot says any more: a slot counts one issue the
-	// daemon has started, and a tree is live before the daemon has started anything of it — a
-	// root waiting in the line for its tree to be opened holds no row, and neither does a child
-	// of it. The pass's own facts already name every lifecycle, so this costs no further read. A
-	// lifecycle is keyed by the project token (record.ReadLifecycles) and this pass reads them
-	// all under this daemon's, so another project's root would be judged against a lifecycle
-	// that is not its own.
-	trees := record.LiveRoots(own, facts)
-	projected.Admission.Trees = slices.Sorted(maps.Keys(trees))
-	projected.Admission.Waiting = make([]string, len(line))
+	projected.Admission = api.AdmissionOf(judged.Block)
+	rows, facts, line, trees := judged.Rows, judged.Facts, judged.Line, judged.Live
 	// Each issue the line names carries its own place in it (contract 58), counted from 1 at the
 	// front, beside the length of the list it stands in. Nothing is filtered out: a member a
 	// Dispatch link blocks stands in the line and takes its place like every other member, and
 	// what holds it is `admission.blocked` beside this. Every issue of the line has a view here
-	// already, so the place is set where the key is listed: the line is built from `own`, the
-	// issues of this project among the issues the loop above gave a view to, each of them.
+	// already, so the place is set where the key is listed: the line is built from the project's
+	// live records, each of them an issue of `own` the loop above gave a view to.
 	//
 	// Beside the place, each member carries the line's own fields for a program to read
 	// (api.WaitingLineView): the part it waits in and why, its place within that part and the
@@ -396,7 +381,6 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	}
 	for i, entry := range line {
 		key := entry.Issue.Key
-		projected.Admission.Waiting[i] = key
 		holds := entry.Holds
 		view := projected.Issues[key]
 		view.WaitingLine = &api.WaitingLineView{
@@ -433,14 +417,6 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		view.WaitingLine.Reason = waitingLineReason(entry, parts[entry.Part], other)
 		projected.Issues[key] = view
 	}
-	projected.Admission.Blocked = blockers.Blocked(rows, own, line, record.ChildWaitRows(facts.ChildWaits))
-	// What the daemon runs nothing of and queues nowhere, beside the two lists above: every
-	// record of this project the daemon holds in the workflow (record.InWorkflow) that stands in
-	// neither the active set nor the line, with the one word for why (record.HeldList). The rows
-	// the pass itself left behind are its fourth answer, and the ladder answers for a candidate
-	// no drop site saw, over the same facts and the same line these lists are built from, so one
-	// issue reads one word here and in the controller's tick.
-	projected.Admission.Held = record.HeldList(own, slots, line, dropped, facts)
 	// Why each issue that is not working now is not working, one rendered answer on its own view.
 	// It is decided here, after the line and `blocked` are both in hand, because three of the four
 	// states are read off them, and from the two judgements this pass still holds apart — the
@@ -457,8 +433,8 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// slot since dispatch://INFRA-2560, so no list of the three places it and the answer turns
 	// on whether its tree runs at all (whyStates, atWorkPastReview). They are read from the
 	// records and the facts this pass already holds, so the reading costs no query, and they
-	// are the same roots record.LiveRoots is read from above — live is wider than running,
-	// and a parked root's tree is neither.
+	// are read from the same facts as the live trees of the block (record.LiveRoots) — live is
+	// wider than running, and a parked root's tree is neither.
 	whyStates(&projected, own, record.RunningRoots(own, facts), stranded, rows, facts.ChildWaits)
 	// Every issue of a live tree carries that tree's quiet time (contract 111): `treeMovedAt`,
 	// the newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long

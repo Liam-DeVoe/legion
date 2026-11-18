@@ -176,13 +176,42 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 // (adoptChildren) is the one fact admission refuses. A Dispatch issue fact's Reread is written
 // first (applyReread), before anything of the fact itself is recorded or promoted. The entry
 // sweep (intake.EntrySweep) is the one fact that promotes nothing: it converges the phase
-// entries and does no more (convergeEntries).
+// entries and does no more (convergeEntries). Every fact, the sweep's included, ends with the
+// project's admission block written where the fact moved it (queueAdmissionBlock).
 func (a *Admission) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
 	released, refusal, err := a.applyFact(ctx, tx, fact)
 	if err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{Refusal: refusal}, a.wakeForFreeSlot(ctx, tx, released)
+	if err := a.wakeForFreeSlot(ctx, tx, released); err != nil {
+		return intake.Result{}, err
+	}
+	return intake.Result{Refusal: refusal}, a.queueAdmissionBlock(ctx, tx)
+}
+
+// queueAdmissionBlock ends every admission pass, Apply's on each fact and Reconcile's at boot.
+// With the state events on (record.Store.StateRun) it judges the project's admission block afresh,
+// after every write of the transaction, the workflow handler's ahead of this one included, through
+// the one judgement the state route serves the block from (blockers.JudgeAdmission), and writes it
+// where it differs from the block last written, which queues its state event in the same statement
+// (record.Store.QueueAdmissionBlock): a pass that leaves the block as it was writes nothing. With
+// the events off it judges nothing, so a daemon that publishes no state pays nothing for it.
+//
+// It runs whatever the fact, the entry sweep's included, which promotes nothing: a fact the pass
+// promotes nothing on can still move the block — a Dispatch rank or a blocker link the mirror
+// wrote, a phase the workflow wrote — and a block that moves with no write at all (a held word
+// read against the clock, record.HeldTreeClosed) moves at the sweep's next minute at the latest.
+func (a *Admission) queueAdmissionBlock(ctx context.Context, tx pgx.Tx) error {
+	run, on := a.store.StateRun()
+	if !on {
+		return nil
+	}
+	judged, err := blockers.JudgeAdmission(ctx, tx, a.store, a.project, a.engine.GatedSteps(), a.cap, a.now())
+	if err != nil {
+		return err
+	}
+	_, err = a.store.QueueAdmissionBlock(ctx, tx, a.project, run, judged.Block)
+	return err
 }
 
 // applyFact is Apply's work, and reports the issues whose slots it released and the refusal of a
@@ -427,7 +456,7 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	own := ownSlots(issues, slots)
+	own := record.OwnSlots(issues, slots)
 	rows, facts, line, _, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, own, facts, nil, a.now())
 	if err != nil {
 		return false, err
@@ -567,7 +596,7 @@ func (a *Admission) tickRows(ctx context.Context, tx pgx.Tx) ([]record.HeldIssue
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	own := ownSlots(issues, slots)
+	own := record.OwnSlots(issues, slots)
 	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, own, facts, nil, a.now())
 	if err != nil {
 		return nil, nil, nil, err
@@ -823,7 +852,8 @@ func (a *Admission) silentWorkers(ctx context.Context, tx pgx.Tx, issues []recor
 }
 
 // Reconcile applies the bounded Dispatch boot read to existing records, then fills newly available
-// capacity using the same promotion effects Apply emits. It performs no Dispatch I/O itself.
+// capacity using the same promotion effects Apply emits, and ends as Apply does, with the admission
+// block written where it moved (queueAdmissionBlock). It performs no Dispatch I/O itself.
 //
 // The read is a snapshot with no actor on it: in it, a session's own status write during a restart
 // looks exactly like a human's move. Dispatch says how far each issue's event log has run, so a
@@ -882,7 +912,10 @@ func (a *Admission) Reconcile(ctx context.Context, tx pgx.Tx, summaries []intake
 	if err != nil {
 		return err
 	}
-	return a.wakeForFreeSlot(ctx, tx, released)
+	if err := a.wakeForFreeSlot(ctx, tx, released); err != nil {
+		return err
+	}
+	return a.queueAdmissionBlock(ctx, tx)
 }
 
 // parentsFirst orders a Dispatch listing by how many of each issue's ancestors the listing itself
@@ -1592,7 +1625,7 @@ func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record
 func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues []record.Issue,
 	slots []record.Slot, facts record.LineFacts,
 ) ([]string, error) {
-	own := ownSlots(issues, slots)
+	own := record.OwnSlots(issues, slots)
 	inUse := len(own)
 	var released []string
 	for _, slot := range own {
@@ -1706,14 +1739,14 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// blockers.JudgeLine): each with the one word for why (record.HeldReason), written by the walk
 	// that built the line, so the stalled-tree measure below reads those words rather than
 	// walking the project's issues again.
-	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, nil, a.now())
+	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, record.OwnSlots(issues, slots), facts, nil, a.now())
 	if err != nil {
 		return 0, released, err
 	}
 	// The issues this judgement finds waiting give their rows back before the line is promoted,
-	// so this pass's own line and its ownSlots read the state after the release: an issue that
-	// waits holds none of the cap's slots, and the slot it gives back is offered to the line on
-	// this very pass rather than the next one.
+	// so this pass's own line and its own slots (record.OwnSlots) read the state after the
+	// release: an issue that waits holds none of the cap's slots, and the slot it gives back is
+	// offered to the line on this very pass rather than the next one.
 	waiting, err := a.releaseSlotsForWaits(ctx, tx, issues, slots, facts)
 	if err != nil {
 		return 0, append(released, waiting...), err
@@ -1724,12 +1757,12 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		return 0, released, err
 	}
 	// One re-read and one second judgement answer for both releases: each took rows away, and
-	// what the promotion loop and ownSlots must read is the state after the last of them.
+	// what the promotion loop and record.OwnSlots must read is the state after the last of them.
 	if len(waiting) > 0 || unslotted {
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
 			return 0, released, err
 		}
-		if rows, facts, line, dropped, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows, a.now()); err != nil {
+		if rows, facts, line, dropped, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, record.OwnSlots(issues, slots), facts, rows, a.now()); err != nil {
 			return 0, released, err
 		}
 	}
@@ -1762,7 +1795,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	}
 	admitted := 0
 	for {
-		own := ownSlots(issues, slots)
+		own := record.OwnSlots(issues, slots)
 		stopped, opened, resumed := false, false, false
 		for _, candidate := range line {
 			issue := candidate.Issue
@@ -2039,7 +2072,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
 			return admitted, released, err
 		}
-		if rows, facts, line, _, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows, a.now()); err != nil {
+		if rows, facts, line, _, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, record.OwnSlots(issues, slots), facts, rows, a.now()); err != nil {
 			return admitted, released, err
 		}
 	}
@@ -2444,23 +2477,6 @@ func (a *Admission) release(ctx context.Context, tx pgx.Tx, position intake.Disp
 		a.mu.Unlock()
 	})
 	return append(released, returned...), nil
-}
-
-// ownSlots is the slots of issues, this project's. The slots table is shared by every project's
-// daemon, and a slot's index is unique across it (0004_record), so the next index is chosen over
-// every slot while the cap counts this project's alone.
-func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
-	known := make(map[string]struct{}, len(issues))
-	for _, issue := range issues {
-		known[issue.Key] = struct{}{}
-	}
-	own := make([]record.Slot, 0, len(slots))
-	for _, slot := range slots {
-		if _, ok := known[slot.Issue]; ok {
-			own = append(own, slot)
-		}
-	}
-	return own
 }
 
 // startMidPhaseMembers brings back the roles that have run of every member of the tree promotion

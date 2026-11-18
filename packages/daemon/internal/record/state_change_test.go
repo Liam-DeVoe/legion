@@ -111,7 +111,7 @@ func (r *changeRig) view(t *testing.T, key string) routeFields {
 	var state api.State
 	if err := pgx.BeginTxFunc(ctx, r.st.Pool(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		var err error
-		state, err = projection.Project(ctx, tx, record.NewStore(), changeProject, nil, nil, nil, nil, nil, time.Now().UTC())
+		state, err = projection.Project(ctx, tx, record.NewStore(), changeProject, 0, nil, nil, nil, nil, nil, time.Now().UTC())
 		return err
 	}); err != nil {
 		t.Fatalf("project the state: %v", err)

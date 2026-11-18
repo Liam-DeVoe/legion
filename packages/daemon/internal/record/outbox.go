@@ -1137,7 +1137,8 @@ type StateFieldChange struct {
 
 // StateAdmission is the whole admission block the state route serves (api.Admission), written
 // when an admission pass changed it. Project and Run are a StateChange's. The block is raw JSON
-// because this package cannot import api: its producer encodes the route's own type.
+// because this package cannot import api: its producer encodes AdmissionBlock, whose JSON is the
+// route's own (QueueAdmissionBlock).
 type StateAdmission struct {
 	Project   string          `json:"project"`
 	Run       string          `json:"run"`

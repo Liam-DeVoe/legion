@@ -2634,7 +2634,7 @@ type source struct {
 // store through it. Every read that starts from Issues or QueuedRootsUnder is within this
 // filtered set. Slots are not filtered here: a slot's index is unique across every project's
 // slots, so admission chooses the next one over all of them and counts only its own against its
-// cap (admit.ownSlots). The outbox's claim is scoped in its SQL instead, because the lease it
+// cap (record.OwnSlots). The outbox's claim is scoped in its SQL instead, because the lease it
 // takes is itself the damage.
 //
 // It is also where the outbox learns of its rows: every write that makes a row due — Enqueue, and
@@ -2642,8 +2642,9 @@ type source struct {
 // the transaction's commit hooks (intake.OnCommit), so no lane runs a row it cannot yet read, and
 // no lane polls for one. A write of an issue or a slot — PutIssue, PutSlot, ReleaseSlot and
 // ReleaseSlotForWait — wakes the project's state lane the same way, since the store queues the
-// state event of such a write itself. wake is nil where there is no workflow to wake: the
-// API-only daemon, the state route's reads and the stranded report.
+// state event of such a write itself, and so does a write of the admission block that queued its
+// event (QueueAdmissionBlock). wake is nil where there is no workflow to wake: the API-only
+// daemon, the state route's reads and the stranded report.
 type projectRecords struct {
 	record.Store
 	project string
@@ -2782,6 +2783,19 @@ func (s projectRecords) ReleaseSlotForWait(ctx context.Context, tx pgx.Tx, issue
 	return nil
 }
 
+// QueueAdmissionBlock writes the admission block, and where the write queued its state event,
+// wakes the project's state lane once the transaction commits, as PutIssue does. The admission
+// pass writes the block at the end of every pass and almost every pass leaves it as it was, which
+// queues nothing, so the lane is woken for the pass that queued a row and for no other.
+func (s projectRecords) QueueAdmissionBlock(ctx context.Context, tx pgx.Tx, project, run string, block record.AdmissionBlock) (bool, error) {
+	queued, err := s.Store.QueueAdmissionBlock(ctx, tx, project, run, block)
+	if err != nil || !queued {
+		return queued, err
+	}
+	s.wakeOnCommit(ctx, s.stateLane())
+	return true, nil
+}
+
 // stateLane names the project's state lane to wakeOnCommit: every state row of the project
 // carries the bare project key in its issue column, so that key and any state kind name the lane.
 func (s projectRecords) stateLane() record.OutboxRow {
@@ -2846,7 +2860,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if err != nil {
 		return api.State{}, nil, err
 	}
-	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, s.experiments, claims, stranded, s.reports(), now)
+	state, err := projection.Project(ctx, tx, records, s.project, s.admissionCap, s.gatedSteps, s.experiments, claims, stranded, s.reports(), now)
 	if err != nil {
 		return api.State{}, nil, err
 	}
@@ -2890,7 +2904,6 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		StartedAt:     s.startedAt,
 	}
 	state.Settings = s.settings
-	state.Admission.Cap = s.admissionCap
 	controller, _, err := s.store.ControllerTx(ctx, tx, s.projectToken)
 	if err != nil {
 		return api.State{}, nil, err
