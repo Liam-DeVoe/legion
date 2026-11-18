@@ -191,8 +191,15 @@ func (s *server) runReplay(ctx context.Context, replay heldReplay, held *heldPos
 		request.Header.Set("Authorization", "Bearer held-replay")
 	}
 	answer := &replayAnswer{header: http.Header{}}
-	s.mux.ServeHTTP(answer, request)
+	s.serveMounted(answer, request)
 	return answer, nil
+}
+
+// serveMounted serves request on the routes the server mounts, as it serves one from outside. It
+// is the one call of the mounted routes a route makes, so the route guards stop here
+// (keyedWriteGuardStops) and walk each mounted route as a route of its own.
+func (s *server) serveMounted(answer http.ResponseWriter, request *http.Request) {
+	s.mux.ServeHTTP(answer, request)
 }
 
 // captureCaller is the caller r resolved, kept for a replay.

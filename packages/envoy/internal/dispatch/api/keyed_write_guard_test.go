@@ -54,6 +54,10 @@ var keyedWriteGuardStops = map[string]string{
 	// (repo, number) and hold what GitHub says, so a repeat after a takeover writes exactly the
 	// same rows; a failure is only logged, and the result is never undone for it.
 	"api.server.readThroughPullRequests": "stores what GitHub says about a commit's pull requests, after the result marked its key",
+	// A held text's post runs the write it kept through the mounted routes (held_replay.go). The
+	// server's mux is a RouteMux, so a call of its ServeHTTP reaches every handler of the module;
+	// the one route the replay runs is a route of the table, which the guard walks as its own.
+	"api.server.serveMounted": "runs one mounted route, which the guard walks as a route of its own",
 	// The pool itself: its statement methods are what the guard looks for at their call sites.
 	"store.Pool.Exec": "", "store.Pool.Query": "", "store.Pool.QueryRow": "", "store.Pool.SendBatch": "",
 	"store.Pool.CopyFrom": "", "store.Pool.Begin": "", "store.Pool.BeginTx": "", "store.Pool.begin": "",
