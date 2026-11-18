@@ -55,6 +55,11 @@ type messageBody struct {
 
 // sendResponse is the answer to a targeted send. Duplicate reports that JetStream already held
 // this message, so the stream stored nothing new; the publish still reached the agent's subject.
+// The envelope is then the copy the stream holds, read back at the sequence its duplicate verdict
+// named (publishHeld): its event_id, its issued_at and its body are that copy's, not those of the
+// envelope the route built for this request, which no stored message carries. A copy that cannot
+// be read is the 503 with Retry-After: 1 that writeBusUnavailable writes under
+// storedCopyUnreadablePrefix, never an envelope the stream does not hold.
 // What recognises that repeat, and for how long, is stated on DELIVERY_DUPLICATE_WINDOW_MS in
 // @legion/contracts (contracts.DeliveryDuplicateWindow here). It can only be true for a send whose
 // dedupe key names the upstream event (contracts.DedupeKeyNamesTheUpstreamEvent): one of
@@ -65,10 +70,11 @@ type messageBody struct {
 // Absent means false, which is what an older listener's answer reads as.
 type sendResponse struct {
 	contracts.Envelope
-	// ExpectsReply is this answer's expects_reply, written in the dialect the request spoke
-	// (expectsReplyAnswer). It shadows the embedded envelope's own field: of two fields sharing
-	// one JSON name encoding/json writes the shallower, so these bytes are what the answer
-	// carries and every sendResponse built below fills them.
+	// ExpectsReply is this answer's expects_reply: the answered envelope's, written in the
+	// dialect the request spoke where the two agree (expectsReplyAnswer). It shadows the embedded
+	// envelope's own field: of two fields sharing one JSON name encoding/json writes the
+	// shallower, so these bytes are what the answer carries and every sendResponse built below
+	// fills them.
 	ExpectsReply json.RawMessage `json:"expects_reply,omitempty"`
 	Recipient    string          `json:"recipient"`
 	// RecipientState is the state the recipient's record puts it in at the moment the send was
@@ -145,12 +151,12 @@ func lastSeenOf(sessions *session.SessionRegistry, sessionID string, entry sessi
 // role and the message waits on the role's kept lane until KeptUntil for the next session that
 // holds it live; 404, nothing was kept. Each field is left out when it is empty, so a role send
 // carries no recipient count and a publish to a topic the stream captures carries the envelope
-// and its counts alone.
+// and its counts alone, and Duplicate where the stream already held the message.
 type publishResponse struct {
 	contracts.Envelope
-	// ExpectsReply is this answer's expects_reply, written in the dialect the request spoke
-	// (expectsReplyAnswer), shadowing the embedded envelope's own field exactly as
-	// sendResponse.ExpectsReply does.
+	// ExpectsReply is this answer's expects_reply: the answered envelope's, written in the
+	// dialect the request spoke where the two agree (expectsReplyAnswer), shadowing the embedded
+	// envelope's own field exactly as sendResponse.ExpectsReply does.
 	ExpectsReply json.RawMessage `json:"expects_reply,omitempty"`
 	Holder       string          `json:"holder,omitempty"`
 	HolderState  session.State   `json:"holder_state,omitempty"`
@@ -177,6 +183,14 @@ type publishResponse struct {
 	// sends neither, its answer naming its holder. An older client reads neither field.
 	Recipients          *int `json:"recipients,omitempty"`
 	RecipientsConnected *int `json:"recipients_connected,omitempty"`
+	// Duplicate reports that the stream already held a publish to a topic it captures under this
+	// one's message id, so it stored nothing new and the envelope is the copy it holds
+	// (publishHeld), as a send's Duplicate reports it (sendResponse). Only a publish whose dedupe
+	// key names its event gets a message id (contracts.DedupeKeyNamesTheUpstreamEvent), so only
+	// such a repeat gets it: the shared transport's, under the idempotency_key it mints once per
+	// message, among them. A role send never carries it. Absent means false, which is what an
+	// older listener's answer reads as.
+	Duplicate bool `json:"duplicate,omitempty"`
 }
 
 type subscribeResponse struct {
@@ -389,6 +403,15 @@ const publishDeniedPrefix = "envoy: the message bus denied the publish under thi
 // room.
 const streamFullPrefix = "envoy: the message bus refused the message because its stream is full"
 
+// storedCopyUnreadablePrefix opens the body of the 503 a send or a topic publish is answered when
+// the stream already held the message and the copy it holds could not be read back
+// (errStoredCopyUnread, publishHeld), so one string matches in a test and in a deployed log
+// filter. It is deliberately not busUnansweredPrefix: the bus answered the publish, and the read
+// may have been answered too, with a denial or a message that is not the copy. The message is
+// stored, and the only answer that names it is that copy, so the route answers no envelope and
+// asks for the same request again, which gets the copy once it can be read.
+const storedCopyUnreadablePrefix = "envoy: the stream already holds this message, so the answer is its stored copy"
+
 // grantGuardPrefix opens the error of the answer POST /v1/roles/set gives a soft claim the grant
 // guard refused (roleGrantGuarded): a role held under the claimant's own session id whose renewal
 // is older than the live window, while the role claim copy's last whole read is past its repair
@@ -430,7 +453,18 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // bus-unavailable 503 too, with a 503 and Retry-After of its own under streamFullPrefix: the bus
 // answered, so the body must not say it did not, but the same message is taken once the stream
 // has room, so the caller's retry is right.
+//
+// A message the stream already held whose stored copy could not be read (errStoredCopyUnread) is
+// answered first of all, a 503 with Retry-After under storedCopyUnreadablePrefix, whatever the
+// read met: its error names that cause in its text and wraps none of it, so a read the server
+// denied is not the publish's 403, and the stored message is not lost to a refusal no retry gets
+// past.
 func writeBusUnavailable(w http.ResponseWriter, err error) int {
+	if errors.Is(err, errStoredCopyUnread) {
+		w.Header().Set("Retry-After", "1")
+		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", storedCopyUnreadablePrefix, err))
+		return http.StatusServiceUnavailable
+	}
 	if errors.Is(err, bus.ErrPublishDenied) {
 		writeJSONError(w, http.StatusForbidden, fmt.Sprintf("%s: %s", publishDeniedPrefix, err))
 		return http.StatusForbidden
@@ -573,26 +607,42 @@ func (body messageBody) message(expectsReply contracts.ExpectsReply) contracts.M
 	}
 }
 
-// expectsReplyAnswer is the expects_reply an answer to one request writes: the request's own
-// bytes, so each sender reads back the dialect it spoke - the literal false, "optional",
-// "required", or the old string "none" - and nil for a request that said nothing about a reply
-// or wrote null, whose answer omits the field as it always has. The route refuses anything else
+// expectsReplyAnswer is the expects_reply an answer to one request writes for the envelope it
+// answers, whose own value is answered: the request's own bytes where they read as that value, so
+// each sender reads back the dialect it spoke - the literal false, "optional", "required", or the
+// old string "none" - and nil where both say nothing about a reply, a request that wrote null
+// among them, whose answer omits the field as it always has. The route refuses anything else
 // (validateMessageBody) before an answer is built, and the envelope those same bytes were parsed
-// into carries the one new vocabulary whichever spelling they used.
+// into carries the one new vocabulary whichever spelling they used, so for the envelope a route
+// built from the request the answer is always the request's own bytes.
+//
+// The answered envelope is another one only where the stream or a role's kept lane already held
+// the message, and answers its stored copy (publishHeld, roleSend.kept): a repeat under the same
+// key whose request asked for another reply than the copy carries is answered the copy's value,
+// in the one new vocabulary, since the answer names the stored message and not the request.
 //
 // Answering the request's own spelling is what keeps the ingress leniency's promise whole. A
 // plugin build old enough to write "none" holds an EnvelopeSchema whose expects_reply is the
 // three-word enum (packages/contracts/src/envelope.ts), and it parses this very answer
 // (packages/envoy-client/src/transport.ts): a literal false there fails that parse, so its send
-// is reported unconfirmed and re-sent, and its publish throws. The echo is the answer's alone -
-// every envelope this listener puts on the bus carries the one new vocabulary - and it goes with
-// the leniency itself, on the same count ParseExpectsReply's comment names: once no deployment
-// pins a plugin build old enough to write "none".
-func expectsReplyAnswer(requested json.RawMessage) json.RawMessage {
-	if len(requested) == 0 || string(requested) == "null" {
+// is reported unconfirmed and re-sent, and its publish throws. Such a plugin re-sends the body it
+// sent, so a repeat of its own reads back its own word. The echo is the answer's alone - every
+// envelope this listener puts on the bus carries the one new vocabulary - and it goes with the
+// leniency itself, on the same count ParseExpectsReply's comment names: once no deployment pins
+// a plugin build old enough to write "none".
+func expectsReplyAnswer(requested json.RawMessage, answered contracts.ExpectsReply) json.RawMessage {
+	if spoken, err := contracts.ParseExpectsReply(requested); err == nil && spoken == answered {
+		if spoken == contracts.ExpectsReplyUnset {
+			return nil
+		}
+		return requested
+	}
+	written, err := json.Marshal(answered)
+	if err != nil {
+		// The unset value, which is never written, and a value no decoded envelope carries.
 		return nil
 	}
-	return requested
+	return written
 }
 
 // senderStamp is the sender a send or a publish carries: the session, the machine and directory it
@@ -934,13 +984,13 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusConflict, outcomeSessionStopped, "the session is stopped")
 			return
 		}
-		ack, err := d.client.PublishAckWithin(ctx, item)
-		charge.published(ack, err)
+		// After a duplicate verdict item is the copy the stream holds, which this route answers
+		// and its record line names; a copy that cannot be read is the 503 that asks again.
+		duplicate, err := publishHeld(ctx, d.client, charge, &item)
 		if err != nil {
 			record.refuseBusUnavailable(w, err)
 			return
 		}
-		duplicate := ack.Duplicate
 		// Counted here, and only here: the send is accepted and the stream has stored it. A
 		// publish the bus refused stored nothing, and a duplicate the stream recognised stored
 		// nothing new, so neither is a message now waiting for a session that stopped answering,
@@ -950,7 +1000,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		}
 		record.accept(w, sendResponse{
 			Envelope:       item,
-			ExpectsReply:   expectsReplyAnswer(body.ExpectsReply),
+			ExpectsReply:   expectsReplyAnswer(body.ExpectsReply, item.ExpectsReply),
 			Recipient:      targetSession,
 			RecipientState: recipientState,
 			State:          state,
@@ -1169,6 +1219,15 @@ const publishDedupePrefix = "publish."
 // which writes this route's one line per request with the answer; a confirmed send answers through
 // it too.
 //
+// A publish to a topic the stream captures that the stream answers as a duplicate - a repeat whose
+// dedupe key names its event (contracts.DedupeKeyNamesTheUpstreamEvent), such as one under the
+// same idempotency_key the shared transport mints, which the route makes the minted dedupe key
+// publish.<key>, and so the same message id - stored nothing new, and is answered 200 with
+// duplicate and the copy the stream holds, read back at the sequence the verdict named
+// (publishHeld), as the send route answers its own repeat: never the envelope built for the
+// repeat, whose event_id no stored message carries. A copy that cannot be read is the 503 with
+// Retry-After: 1 under storedCopyUnreadablePrefix.
+//
 // After the refusal of a topic no stream subject captures, a message of an agent session whose
 // count under the operator's sender limit is empty is the 429 refuseSenderRateLimited writes, with
 // no holder resolved, nothing kept, no wake reported and nothing stored (senderLimit.admit). The
@@ -1283,9 +1342,6 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, err.Error())
 			return
 		}
-		// The answer's own expects_reply, read from the request before any path answers: the three
-		// of them below each write it, and none of them changes the envelope that goes on the bus.
-		expectsReply := expectsReplyAnswer(request.ExpectsReply)
 		// Every topic that would deliver to no session is refused by name: a session reads
 		// only what its own consumer holds, so such a publish would reach nobody, now or later;
 		// nothing retries into success, so it is the 400 the refusals above answer rather than a
@@ -1314,7 +1370,7 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			// give-up (roleSend.noHolder) rather than to the envelope, which travels on to the
 			// holder and back in this route's own answer. No flag at all means keep, so every
 			// publisher that sets none is unchanged.
-			sendToRole(ctx, w, record, d, item, expectsReply, role, request.Keep == nil || *request.Keep, arrived)
+			sendToRole(ctx, w, record, d, item, request.ExpectsReply, role, request.Keep == nil || *request.Keep, arrived)
 			return
 		}
 		// The counts are of the moment the message is published, and are read from memory alone
@@ -1328,13 +1384,20 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(sendRequestBudget))
 		defer cancel()
 		item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
-		ack, err := d.client.PublishAckWithin(ctx, item)
-		charge.published(ack, err)
+		// After a duplicate verdict item is the copy the stream holds, which this route answers
+		// and its record line names; a copy that cannot be read is the 503 that asks again.
+		duplicate, err := publishHeld(ctx, d.client, charge, &item)
 		if err != nil {
 			record.refuseBusUnavailable(w, err)
 			return
 		}
-		record.accept(w, publishResponse{Envelope: item, ExpectsReply: expectsReply, Recipients: recipients, RecipientsConnected: connected})
+		record.accept(w, publishResponse{
+			Envelope:            item,
+			ExpectsReply:        expectsReplyAnswer(request.ExpectsReply, item.ExpectsReply),
+			Recipients:          recipients,
+			RecipientsConnected: connected,
+			Duplicate:           duplicate,
+		})
 	}
 }
 

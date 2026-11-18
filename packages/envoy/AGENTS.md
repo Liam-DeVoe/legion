@@ -4749,6 +4749,13 @@ Each item below names an endpoint and its method, then its contract, and an item
   only those can ever answer `duplicate`: a send that declares `github`, `slack` or `ghostwispr` carries a `SourceEventID` minted for it, which its dedupe key does not name (`contracts.DedupeKeyNamesTheUpstreamEvent`);
   the field is omitted (read as false) otherwise, which is also what an older listener answers.
   It means "the stream already held this MsgId", which includes the publish path's own reconnect retry whose first attempt landed and lost its acknowledgement.
+  A `duplicate` answer's envelope is the copy the stream holds, never the one the route built for the repeat (`publishHeld`, `cmd/listener/stored_copy.go`):
+  the route mints a new `event_id` for every send, so a repeat's own envelope names no stored message, and the route reads the copy back at the sequence the duplicate verdict named (`bus.StoredAck.Sequence`, `bus.Client.NextStoredMessage` on the envelope's topic, within the same 3.5 s budget) and answers its `event_id`, `issued_at`, body and every other field, `expects_reply` in the request's own spelling where the two agree (`expectsReplyAnswer`).
+  The request's record line names that copy's `event_id` too.
+  The copy is that message only at that very sequence and with the request's dedupe key and topic (`storedCopy`);
+  a read that fails or does not answer, a verdict with sequence 0 (a clustered nats-server of the 2.11 line, which the start floor below still admits, could answer one; a read at 0 would hand back the subject's first message), and a sequence that no longer holds the copy (an operator's delete, or the edge of the 72-hour age, which equals the duplicate window) are answered `503 {"error":"envoy: the stream already holds this message, so the answer is its stored copy: <reason>"}` with `Retry-After: 1` and no envelope, recorded `outcome=stored_copy_unreadable`.
+  The same request again gets the copy once it can be read, and once the stream has forgotten the id of a copy it no longer holds a repeat stores a new copy and answers its own envelope.
+  Dispatch and `@legion/envoy-client` still record or show no `event_id` for a `duplicate` answer, since an older listener answers a repeat with its own new envelope.
   A message NATS cannot take whole is a 413 naming its size against the server's max payload, and a topic NATS does not accept (one holding whitespace or an empty token) a 400.
   The route takes the caller's `source` and idempotency key as given (`contracts.AgentSendEnvelope`), so any caller can send a `source: "dispatch"` frame under the key a Dispatch send will use, which a core-NATS host then drops as a repeat when the real send or its Retry arrives.
   That key is not secret: a comment mention's is `<comment id>:<target>:<the mention's mode>` (`model.CommentMentionIdempotencyKey`), and the comment id rides the `comment.created` envelope on the issue's owner topic.
@@ -4781,6 +4788,9 @@ Each item below names an endpoint and its method, then its contract, and an item
   A role topic is answered once the stream stored the forward, or once 4 s from the request's arrival have passed (`publishDeliveryWindow`), and publishes no delivery exception: the sender has the answer.
   Only a store the route itself made counts:
   the route keeps its own record of each session it stored a dedupe key for (`listenerDeps.confirmed`, 10 minutes), which a later send of the key reads, apart from the delivery handlers' dedupe cache.
+
+- A publish to a topic the stream captures that the stream already held (one whose dedupe key names its event, such as one under the same UUID `idempotency_key`) is answered `200` with `duplicate: true` and the copy the stream holds, as a send's repeat is answered (above), and `503` under the same rules when that copy cannot be read back.
+  A role send's answer never carries `duplicate`.
 
 - A topic that does not begin with `notifications.` is refused `400 {"error":"topic must begin with notifications.","expected":["topic"]}` and nothing is published, which closes the raw-subject route a bearer could otherwise use to write the listener's own key-value buckets
   — the role-claim records among them — and reach `$JS.API.*`.
@@ -4833,7 +4843,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   the publish goes ahead), and the JetStream path relies on nats.go's own check instead, whose request returns the context's error before it sends anything;
   a topic the stream captures answers it as that 503.
   Every answer is written with the route's one `listener publish` record line (`requestRecord`, `request_record.go`), its `outcome` naming it:
-  `accepted` (the kept 202 among them), `invalid_request`, `too_large`, `bus_unavailable`, `publish_denied`, `role_unclaimed`, `role_lapsed`, `role_claim_unreadable`, `capability_refused`, `delivery_failed`, `stream_full` or `sender_rate_limited` (the `429` of "Sender limit" above).
+  `accepted` (the kept 202 among them), `invalid_request`, `too_large`, `bus_unavailable`, `publish_denied`, `role_unclaimed`, `role_lapsed`, `role_claim_unreadable`, `capability_refused`, `delivery_failed`, `stream_full`, `stored_copy_unreadable` or `sender_rate_limited` (the `429` of "Sender limit" above).
   A message NATS cannot take whole is a 413 naming its size against the server's max payload, and a topic NATS does not accept (one holding whitespace or an empty token) a 400.
 
 - `/v1/roles/<role>` (GET)

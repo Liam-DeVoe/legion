@@ -56,6 +56,11 @@ const (
 	// (bus.ErrStreamFull). It is not outcomeBusUnavailable: the bus answered, that the stream is
 	// full, so an operator reading the record looks at the stream's size, not for an outage.
 	outcomeStreamFull requestOutcome = "stream_full"
+	// outcomeStoredCopyUnreadable is a send or a topic publish the stream answered as a duplicate
+	// of a copy it holds, which the listener could not read back to answer (errStoredCopyUnread,
+	// publishHeld): the 503 with Retry-After: 1 under storedCopyUnreadablePrefix. It is not
+	// outcomeBusUnavailable: the bus answered the publish, and the message is stored.
+	outcomeStoredCopyUnreadable requestOutcome = "stored_copy_unreadable"
 	// outcomeSenderRateLimited is a send or publish of an agent session whose count under the
 	// operator's sender limit was empty (sender_limit.go), answered 429 before the route read a
 	// session, resolved a role, reported a wake or stored anything, so no other record holds the
@@ -134,12 +139,15 @@ func (rec *requestRecord) refuseWith(w http.ResponseWriter, status int, outcome 
 // status it wrote implies: 413 is the caller's own oversized message, 400 the subject or key NATS
 // will not take however often it is sent, 403 the publish this listener's own grant denies, and
 // anything else the bus not answering. The status is read back from the write rather than
-// classified a second time here, so the pair cannot drift, with one exception: a full stream
-// (bus.ErrStreamFull) shares its 503 with the bus not answering, so the error tells it apart.
+// classified a second time here, so the pair cannot drift, with two exceptions: a full stream
+// (bus.ErrStreamFull) and a stored copy that could not be read back (errStoredCopyUnread) share
+// their 503 with the bus not answering, so the error tells them apart.
 func (rec *requestRecord) refuseBusUnavailable(w http.ResponseWriter, err error) {
 	status := writeBusUnavailable(w, err)
 	outcome := outcomeBusUnavailable
 	switch {
+	case errors.Is(err, errStoredCopyUnread):
+		outcome = outcomeStoredCopyUnreadable
 	case errors.Is(err, bus.ErrStreamFull):
 		outcome = outcomeStreamFull
 	case status == http.StatusRequestEntityTooLarge:

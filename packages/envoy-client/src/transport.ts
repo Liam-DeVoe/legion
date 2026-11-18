@@ -189,7 +189,7 @@ const ErrorWireSchema = z.object({
  * `.extend` drops anything not declared here, so a field the listener sends and this schema does
  * not know never reaches a caller.
  *
- * `recipient`, `recipient_state`, `state`, `last_seen` and `duplicate` are a send's
+ * `recipient`, `recipient_state`, `state` and `last_seen` are a send's
  * (`cmd/listener/api.go`'s `sendResponse`). `recipient_state` is the target's registry state and
  * stays the strict three-value enum every deployed plugin parses. `state` is what the listener's
  * connection check found: `connected`, or `stopped` when no plugin of the target holds its relay
@@ -197,8 +197,10 @@ const ErrorWireSchema = z.object({
  * closed pair, as this file reads a delivery answer's `reason`, so a word a later listener adds
  * still parses: only `stopped` is stopped, and anything else is the connected reading every
  * release gave before the state existed. `duplicate` says the listener already stored a send
- * under this target and idempotency key, so this one stored nothing new; absent reads as false,
- * as an older listener's answer does.
+ * under this target and idempotency key, or a topic publish under this idempotency key, so this
+ * one stored nothing new; a current listener then answers the stored copy's envelope and an older
+ * one the envelope it built for the repeat. Absent reads as false, and an older listener's
+ * publish answer never carries it.
  *
  * `holder` and `holder_state` are a role publish's, under the two names every role answer uses
  * (`publishResponse`). A publish to a topic the stream captures stores one copy that each

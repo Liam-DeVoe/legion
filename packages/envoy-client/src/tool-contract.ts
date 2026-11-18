@@ -315,9 +315,11 @@ const STORED_ONCE =
  * silent is what an agent judges the wait by.
  *
  * A `duplicate` answer is a resend of a message the listener already stored under the same
- * idempotency key. It stored nothing this time, so this answer's event id names no stored copy
- * and the line leaves the id out; the target's state still chooses the verb, because a stopped
- * target's one stored copy is waiting rather than delivered.
+ * idempotency key. It stored nothing this time. A current listener answers the stored copy, whose
+ * event id is the first send's, but an older one answers the event id it minted for the resend,
+ * which names no stored copy, and the answer does not say which listener wrote it, so the line
+ * leaves the id out; the target's state still chooses the verb, because a stopped target's one
+ * stored copy is waiting rather than delivered.
  *
  * `confirmed` is false only for a listener too old to echo the recipient, which is also too old
  * to answer a state, so the unconfirmed note belongs to the connected line alone.
