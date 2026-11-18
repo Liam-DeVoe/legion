@@ -47,6 +47,8 @@ func (b *registrationBroker) KeepPodSession(ctx context.Context, s supervise.Pod
 	return func() { stopped.Store(true) }, err
 }
 
+func (*registrationBroker) ReleasePodSessions(context.Context, []string) error { return nil }
+
 func (b *registrationBroker) registrations() []registration {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -421,6 +423,10 @@ func (c clientRegistrar) KeepPodSession(ctx context.Context, s supervise.PodSess
 	return c.client.KeepPodSession(ctx, agentsecrets.PodSessionRenewal{
 		PodUID: s.PodUID, Session: s.Session, Thumbprint: s.Thumbprint, Generation: int64(s.Generation), Token: s.Token, After: c.renewals.after, Bound: s.Bound,
 	})
+}
+
+func (c clientRegistrar) ReleasePodSessions(ctx context.Context, names []string) error {
+	return c.client.ReleasePodSessions(ctx, names)
 }
 
 // TestEachRegistrationCarriesItsRolesThumbprint: two roles of one issue pod read the same exchange

@@ -364,8 +364,14 @@ A daemon releases the session names it registered at
 which answers `401` for a token that does not verify, `403 ACCOUNT_NOT_LISTED` for an account
 `BROKER_SERVICE_LOGINS` does not list, and `429` with `Retry-After`. `BROKER_POD_REGISTRARS` does
 not gate a release, since a release touches only the caller's own registrations, so a registrar
-whose entry was taken out still releases what it registered. Today's Legion daemon does not call
-this route yet, so the exchange honours each of its registrations until it lapses.
+whose entry was taken out still releases what it registered. The Legion daemon calls this route
+from an operator's `legion claims release-names` when its `exchange_audience` is set: before it
+frees any of a claim's names, it sends the session ids among them in one call, tries it up to three
+times, a second and then two apart, and frees them only after a `200` whose `sessions` counts the
+distinct names it sent. Any other answer frees nothing: the daemon refuses the release `503`, which
+a run again can change, or `502` for a `4xx` other than `404`, `405` and `429`, which a run again
+answers the same. A daemon with no `exchange_audience` registers no pod session and makes no
+release call.
 
 The body is `{"sessions": ["<name>", ...]}`. A list that is missing, `null` or empty, or that holds
 more than 4096 entries counted as sent, is `400 SESSIONS_INVALID`, and a body over 1 MiB is

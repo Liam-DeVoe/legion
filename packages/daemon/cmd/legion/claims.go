@@ -359,6 +359,10 @@ func runClaimsForgetSession(ctx context.Context, args []string, stdout, stderr i
 // nothing of them (api's releaseNames): what a claim refused a new session at the most names one
 // claim may hold needs, often right after a forget-session. A refusal names each enrollment the
 // broker still carries and when it ends; nothing is freed then, and the operator runs it again.
+// Where the daemon registers pod sessions (exchange_audience), the broker releases the session
+// names among them first, and a broker that does not answer that release (503) or refuses it (502)
+// frees nothing either. Each refusal is printed as every one is, the daemon's status and sentence
+// (operatorCall.request), and the command fails.
 func runClaimsReleaseNames(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	c := newClaimsCall("release-names", stdout, stderr)
 	token := c.flags.String("claim", "", "the claim's token (required)")

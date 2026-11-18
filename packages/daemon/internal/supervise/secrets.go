@@ -80,8 +80,15 @@ type ExpiredTokenError interface{ TokenExpired() bool }
 // written, again and again on r.After, until stop is called or ctx ends. stop returns only once a
 // write in flight has been answered, without cancelling it. The daemon's is agentsecrets.Client's
 // own KeepPodSession, which logs each write naming the pod and the session.
+//
+// ReleasePodSessions is the broker's release of session names (Machine.ReleaseNames, envoy's POST
+// /v1/oauth/exchange/pod-sessions/release): nil only once the broker answered that every name is
+// released, so that from then on it refuses each exchange under them that a registration of this
+// daemon's admitted. Any other answer releases nothing: a PermanentError is a refusal a retry
+// cannot change, unless it is a RouteUnservedError, a broker with no such route.
 type Registrar interface {
 	KeepPodSession(ctx context.Context, r PodSession) (stop func(), err error)
+	ReleasePodSessions(ctx context.Context, names []string) error
 }
 
 // PodSession is one pod's registration to trade under one session name, bound to the role's own
