@@ -74,8 +74,8 @@ import (
 // it. Only the newest review carries this way: when it requests changes no approval stands, and
 // an older approval was superseded by it.
 // N holds A's text when N's markdown is A's stored markdown byte for byte. An A that another
-// renderer version stored, or that no renderer version stamped (anotherRenderer), is compared as
-// this build renders it: a renderer change (pmdoc.RendererVersion) leaves every version stored
+// renderer version stored, or that no renderer version stamped (pmdoc.OtherRenderer), is compared
+// as this build renders it: a renderer change (pmdoc.RendererVersion) leaves every version stored
 // before it in its renderer's spelling of its tree, so N also holds A's text when A's markdown,
 // read and rendered again by this build, is N's (readsAs), though N's diff against A shows the
 // spelling the change made. An A this renderer version wrote is compared byte for byte alone. A
@@ -396,7 +396,7 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 // restoresVersionText reports whether markdown, the text a new version of artifactID is written
 // with, or the text a version rendered with its open blocks shown resolved (reopenedApproval),
 // holds the stored text of its version earlier: byte for byte, or, where another renderer version
-// stored that text or none stamped it (anotherRenderer), as stored text this build reads and
+// stored that text or none stamped it (pmdoc.OtherRenderer), as stored text this build reads and
 // renders again as markdown (readsAs), so a renderer change between the two versions leaves the
 // text held. A version that stores no markdown, a file's, holds no text and compares false. The
 // first read takes the stored text's stamp, and the text itself only where its size is
@@ -421,7 +421,7 @@ func restoresVersionText(ctx context.Context, tx pgx.Tx, artifactID string, earl
 	if sized != nil && *sized == markdown {
 		return true, nil
 	}
-	if !anotherRenderer(stamp) {
+	if !pmdoc.OtherRenderer(stamp) {
 		return false, nil
 	}
 	var stored string

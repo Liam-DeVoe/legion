@@ -78,6 +78,16 @@ func ReadsAs(stored, rendering string) bool {
 	return err == nil && SameRendering(again, rendering)
 }
 
+// OtherRenderer reports whether stamp, the renderer version a stored rendering was written at (a
+// document version's renderer_version), names a renderer other than this build's
+// (RendererVersion): another renderer version's, or none, for a rendering stored before
+// renderings were stamped or with no stamp. Such a rendering may spell the tree it holds otherwise
+// than this build does, so where its bytes are not this build's rendering it is compared with that
+// rendering by ReadsAs; a rendering this renderer version stored is compared byte for byte.
+func OtherRenderer(stamp *int) bool {
+	return stamp == nil || *stamp != RendererVersion
+}
+
 // readBack is what doc's markdown, its tables' spans adding at most spanCells cells (render),
 // reads back as (ParseRendering).
 func readBack(doc *Node, spanCells int) (*Node, error) {

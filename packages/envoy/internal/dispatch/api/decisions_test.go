@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -463,6 +464,126 @@ func TestAKeptDecisionWaitsForReviewAgainWhenABlockLeavesOrJoinsIt(t *testing.T)
 	}
 	if len(left.Links) != 0 {
 		t.Fatalf("the decision the paragraph left still holds %v", linkTargets(left))
+	}
+}
+
+// listDecision is the decision of the renderer change tests: an agent decision whose paragraph
+// links the spec block hold-it and which ends in a loose list, whose blank lines between items a
+// renderer change spells otherwise (respellVersion).
+const listDecision = "Ship the notices in three steps"
+
+// keptAcrossARendererChange is newDecisionsFixture with listDecision written into decisions.md,
+// kept by alice, and then left as a build of another renderer version leaves a decision it kept:
+// the version that wrote the decision stored in that renderer's spelling of the same tree,
+// stamped stamp (respellVersion), and the keep holding the sum of the decision's text in that
+// spelling beside that version. A keep holds no text, so the view reads the kept text from that
+// version. It fails t unless the view reads the decision kept, waiting for no review, with its
+// link not out of date, since this build reads that text as the decision's own: the renderer
+// changed and nobody changed the decision.
+func keptAcrossARendererChange(t *testing.T, stamp *int) (decisionsFixture, model.Decision) {
+	t.Helper()
+	fixture := newDecisionsFixture(t)
+	handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID
+	version := editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{{
+		"op":       "insert",
+		"markdown": "## " + listDecision + "\n\nShapes dispatch://" + key + "/spec#b-hold-it.\n\n- first\n\n- second\n\n- third",
+		"before":   "## Replaced",
+	}})
+	written := decisionNamed(t, readIssueDecisions(t, handler, key), listDecision)
+	if written.ChangedVersion != version.Number || fmt.Sprint(linkTargets(written)) != "[hold-it]" {
+		t.Fatalf("the decision = %#v, want it changed at version %d and linking hold-it", written, version.Number)
+	}
+	keepBlock(t, handler, id, written.BlockID, written.TextSHA256)
+
+	stored := respellVersion(t, database, id, version.Number, stamp)
+	first, second := strings.Index(written.Text, "- first\n"), strings.Index(written.Text, "- second\n")
+	if first < 0 || second < first {
+		t.Fatalf("the decision's text = %q, want a list whose first two items are first and second", written.Text)
+	}
+	kept := written.Text[:first] + "- first\n" + written.Text[second:]
+	if !strings.Contains(stored, kept+"\n") {
+		t.Fatalf("version %d = %q, want it to hold the decision as %q", version.Number, stored, kept)
+	}
+	if _, err := database.Pool.Exec(context.Background(), `
+		update decision_keeps set text_sha256 = $3 where artifact_id = $1 and block_id = $2
+	`, id, written.BlockID, decisionTextSum(kept)); err != nil {
+		t.Fatalf("keep the decision as another renderer version spelled it: %v", err)
+	}
+
+	decision := decisionNamed(t, readIssueDecisions(t, handler, key), listDecision)
+	if decision.Text != written.Text {
+		t.Fatalf("the decision's text = %q, want %q: the version's spelling is no part of it", decision.Text, written.Text)
+	}
+	if decision.Kept == nil || decision.Kept.ChangedVersion != version.Number || decision.WaitingReview {
+		t.Fatalf("the decision kept as another renderer version spelled it = %#v, want it kept at version %d and waiting for no review",
+			decision, version.Number)
+	}
+	if stale := staleTargets(decision); len(stale) != 0 {
+		t.Fatalf("the decision kept as another renderer version spelled it marks %v out of date", stale)
+	}
+	return fixture, decision
+}
+
+// A renderer change (pmdoc.RendererVersion) leaves every version stored before it in its
+// renderer's spelling of the document, and a keep holds only the sum of the text it agreed with,
+// so a decision kept before the change sums otherwise in this build's spelling. The version its
+// keep names, stamped with another renderer version or with none, holds the kept text, and this
+// build reads that text as the decision's: the decision stays kept, waiting for no review, and the
+// spec block it links stays up to date (keptAcrossARendererChange).
+func TestADecisionKeptBeforeARendererChangeStaysKept(t *testing.T) {
+	another := pmdoc.RendererVersion - 1
+	for _, test := range []struct {
+		name  string
+		stamp *int
+	}{
+		{"stamped with another renderer version", &another},
+		{"stamped with none", nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			keptAcrossARendererChange(t, test.stamp)
+		})
+	}
+}
+
+// A decision kept before a renderer change whose content changed since waits for review again,
+// and the spec block it links is out of date: the kept text its keep's version holds reads as
+// another text than the decision's now.
+func TestADecisionKeptBeforeARendererChangeWaitsOnceItsContentChanges(t *testing.T) {
+	another := pmdoc.RendererVersion - 1
+	fixture, kept := keptAcrossARendererChange(t, &another)
+	handler, key := fixture.handler, fixture.issue.Key
+	editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{
+		{"op": "replace", "find": "third", "with": "third, after measuring"},
+	})
+	changed := decisionNamed(t, readIssueDecisions(t, handler, key), listDecision)
+	if !strings.Contains(changed.Text, "third, after measuring") {
+		t.Fatalf("the decision's text = %q, want the changed item", changed.Text)
+	}
+	if changed.Kept == nil || changed.Kept.ChangedVersion != kept.Kept.ChangedVersion || !changed.WaitingReview {
+		t.Fatalf("after its content changed the decision = %#v, want it kept at version %d and waiting for review",
+			changed, kept.Kept.ChangedVersion)
+	}
+	if got := fmt.Sprint(staleTargets(changed)); got != "[hold-it]" {
+		t.Fatalf("after its content changed the decision marks %v out of date, want hold-it", staleTargets(changed))
+	}
+}
+
+// A decision kept before a renderer change whose heading changed since waits for review again:
+// the version its keep names holds no decision of that heading, so it holds no kept text of this
+// decision to compare.
+func TestADecisionKeptBeforeARendererChangeWaitsOnceItsKeepsVersionHoldsNoSuchHeading(t *testing.T) {
+	another := pmdoc.RendererVersion - 1
+	fixture, kept := keptAcrossARendererChange(t, &another)
+	handler, key := fixture.handler, fixture.issue.Key
+	const renamed = listDecision + ", one a week"
+	editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{
+		{"op": "replace", "find": listDecision, "with": renamed},
+	})
+	decision := decisionNamed(t, readIssueDecisions(t, handler, key), renamed)
+	if decision.BlockID != kept.BlockID || decision.Kept == nil ||
+		decision.Kept.ChangedVersion != kept.Kept.ChangedVersion || !decision.WaitingReview {
+		t.Fatalf("after its heading changed the decision = %#v, want %s kept at version %d and waiting for review",
+			decision, kept.BlockID, kept.Kept.ChangedVersion)
 	}
 }
 

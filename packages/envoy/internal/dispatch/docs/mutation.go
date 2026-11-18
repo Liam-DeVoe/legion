@@ -1435,7 +1435,7 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 	// it, and its markdown reads as this rendering too, since an edit the room holds that its
 	// persistence has not stored yet is in no update row. Either way the line feeds the two end in
 	// no longer count (pmdoc.SameRendering).
-	if !anotherRenderer(latest.rendererVersion) {
+	if !pmdoc.OtherRenderer(latest.rendererVersion) {
 		changed, err := contentChangedSinceVersion(ctx, tx, artifactID, latest.docUpdateVersion)
 		if err != nil {
 			return VersionResult{}, err
@@ -1478,13 +1478,6 @@ func readsAs(stored, markdown string) bool {
 		countDocumentRender(again)
 	}
 	return err == nil && pmdoc.SameRendering(again, markdown)
-}
-
-// anotherRenderer reports whether stamp, a version's renderer_version, names a renderer other
-// than this build's (pmdoc.RendererVersion): another renderer version's, or none, for a version
-// written before versions were stamped or with no render stamp (RenderStamp).
-func anotherRenderer(stamp *int) bool {
-	return stamp == nil || *stamp != pmdoc.RendererVersion
 }
 
 // prevalidateLiveOperations performs database-backed table-anchor checks
@@ -2273,7 +2266,7 @@ type latestVersionRow struct {
 // The read is made only for such a version and only once the bytes differ, so a document whose
 // latest version this renderer version wrote pays nothing for it.
 func (v latestVersionRow) holds(rendering string) bool {
-	return v.markdown == rendering || anotherRenderer(v.rendererVersion) && readsAs(v.markdown, rendering)
+	return v.markdown == rendering || pmdoc.OtherRenderer(v.rendererVersion) && readsAs(v.markdown, rendering)
 }
 
 func latestVersion(ctx context.Context, tx pgx.Tx, artifactID string) (latestVersionRow, error) {

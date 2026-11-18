@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -223,8 +224,9 @@ func (s *server) specOpenQuestions(
 
 // readDecisions builds every decision of the decisions document: its sections from the document's
 // own blocks, its links from the block graph (refs.BlockLinks), its asks from the block mentions
-// its blocks hold, and its keeps from decision_keeps. specID is "" when the issue has no spec, and
-// every decision then has no links.
+// its blocks hold, and its keeps from decision_keeps, a keep's text read through the version it
+// names where its sum is not the decision's (markKeptAcrossRenderers). specID is "" when the
+// issue has no spec, and every decision then has no links.
 //
 // reader is the answer's own, and each decision registers its text with it once the slice has
 // stopped growing, as the open questions beside them do (specOpenQuestions): a shaping registers
@@ -307,10 +309,62 @@ func (s *server) readDecisions(
 	for index := range decisions {
 		reader.text(&decisions[index].TextTree, decisions[index].Text)
 	}
+	if err := s.markKeptAcrossRenderers(ctx, document.ID, decisions, keys); err != nil {
+		return nil, err
+	}
 	if err := s.markStaleLinks(ctx, document.ID, markdown, decisions, keys); err != nil {
 		return nil, err
 	}
 	return decisions, nil
+}
+
+// markKeptAcrossRenderers decides waiting_review for each agent decision whose keep holds another
+// sum than its text's. A keep holds the sum of the text it agreed with and the version the
+// decision then stood at (decision_keeps), not the text, and that version's stored markdown holds
+// the text. A renderer change (pmdoc.RendererVersion) leaves every version stored before it in its
+// renderer's spelling of the document, so a decision kept before the change sums otherwise in this
+// build's spelling though nobody changed it. Such a decision is kept when another renderer
+// version stored the version its keep names, or none stamped it (pmdoc.OtherRenderer), that
+// version's text of the decision (decisionSums, named by its sectionKey) has the keep's sum,
+// which makes it the text the keep agreed with, and this build reads that text as the decision's
+// text now (pmdoc.ReadsAs). The decision waits for review otherwise: a version that holds no such
+// text - the decision's heading changed since, or a block left the decision after that version -
+// and kept text that reads otherwise alone, as text citing a footnote another section defines
+// does, leave it waiting, as a version this renderer version stored does.
+//
+// Every version the keeps name is read in one query, and only a keep whose version another
+// renderer version stored pays a parse and a render.
+func (s *server) markKeptAcrossRenderers(
+	ctx context.Context, artifactID string, decisions []model.Decision, keys []sectionKey,
+) error {
+	numbers := map[int]bool{}
+	for _, decision := range decisions {
+		if decision.WaitingReview && decision.Kept != nil {
+			numbers[decision.Kept.ChangedVersion] = true
+		}
+	}
+	if len(numbers) == 0 {
+		return nil
+	}
+	versions, err := s.decisionSumsAt(ctx, artifactID, sortedNumbers(numbers))
+	if err != nil {
+		return err
+	}
+	for i := range decisions {
+		decision := &decisions[i]
+		if !decision.WaitingReview || decision.Kept == nil {
+			continue
+		}
+		version, read := versions[decision.Kept.ChangedVersion]
+		if !read || !version.otherRenderer {
+			continue
+		}
+		kept, held := version.decisions[keys[i]]
+		if held && kept.sum == decision.Kept.TextSHA256 && pmdoc.ReadsAs(kept.text, decision.Text) {
+			decision.WaitingReview = false
+		}
+	}
+	return nil
 }
 
 // markStaleLinks decides each link's `stale`: the decision's own text changed after it first
@@ -327,7 +381,10 @@ func (s *server) readDecisions(
 // leave the link as it is: the view marks nothing it cannot read, as the block index's first
 // pass over a document marks nothing. Each decision is named across versions by its heading and
 // its occurrence among the decisions of that heading (sectionKey), the same pair the view's own
-// walk gives it, so a document that carries one heading twice still names each of them.
+// walk gives it, so a document that carries one heading twice still names each of them. A
+// version another renderer version stored, or none stamped, holds the decision's text where this
+// build reads its text of the decision as the text now (storedDecisions.holds), so a renderer
+// change, which leaves every version stored before it in its renderer's spelling, marks no link.
 func (s *server) markStaleLinks(
 	ctx context.Context, artifactID, markdown string, decisions []model.Decision, keys []sectionKey,
 ) error {
@@ -351,7 +408,7 @@ func (s *server) markStaleLinks(
 	for _, number := range atTime {
 		numbers[number] = true
 	}
-	sums, err := s.decisionSumsAt(ctx, artifactID, sortedNumbers(numbers))
+	versions, err := s.decisionSumsAt(ctx, artifactID, sortedNumbers(numbers))
 	if err != nil {
 		return err
 	}
@@ -359,32 +416,44 @@ func (s *server) markStaleLinks(
 	for i := range decisions {
 		decision := &decisions[i]
 		now, ok := current[keys[i]]
-		if !ok {
+		if !ok || len(decision.Links) == 0 {
 			continue
 		}
+		// One decision's links mostly name the same few versions, and a version another renderer
+		// version stored is compared by a parse and a render, so each version is compared with
+		// the decision once.
+		compared := map[int]bool{}
+		heldAt := func(number int) (bool, bool) {
+			version, read := versions[number]
+			if !read {
+				return false, false
+			}
+			held, done := compared[number]
+			if !done {
+				held = version.holds(keys[i], now)
+				compared[number] = held
+			}
+			return true, held
+		}
 		for j := range decision.Links {
-			decision.Links[j].Stale = staleLink(now, keys[i], decision.Links[j], sums, atTime)
+			decision.Links[j].Stale = staleLink(decision.Links[j], heldAt, atTime)
 		}
 	}
 	return nil
 }
 
-// staleLink is that rule for one link, over the sums markStaleLinks read. A time keys those
-// reads by its own instant (UnixNano), since a time read back from Postgres is the same instant
-// in another `time.Time` value, which no map matches.
+// staleLink is that rule for one link, over the versions markStaleLinks read: heldAt reports
+// whether the document holds the version of that number, and whether that version holds the
+// decision's text now (storedDecisions.holds). A time keys atTime by its own instant (UnixNano),
+// since a time read back from Postgres is the same instant in another `time.Time` value, which no
+// map matches.
 //
 // A version this document does not hold leaves the link as it is. A version it holds that gives
-// this decision no sum - its heading was renamed since, or that version carried fewer decisions
-// of that heading - is text that differs from the text now, which it is.
-func staleLink(
-	now string,
-	key sectionKey,
-	link model.DecisionLink,
-	sums map[int]map[sectionKey]string,
-	atTime map[int64]int,
-) bool {
-	atCreated, read := sums[link.CreatedVersion]
-	if !read || atCreated[key] == now {
+// this decision no text - its heading was renamed since, or that version carried fewer decisions
+// of that heading - holds text that differs from the text now, which it does.
+func staleLink(link model.DecisionLink, heldAt func(number int) (read, held bool), atTime map[int64]int) bool {
+	read, held := heldAt(link.CreatedVersion)
+	if !read || held {
 		return false
 	}
 	if link.To.ChangedAt == nil {
@@ -399,8 +468,8 @@ func staleLink(
 		// change of the decision came after it.
 		return true
 	}
-	atChange, read := sums[number]
-	return read && atChange[key] != now
+	read, held = heldAt(number)
+	return read && !held
 }
 
 // versionsAtTimes is, for each time, the document's greatest version written at or before it:
@@ -443,17 +512,36 @@ func (s *server) versionsAtTimes(
 	return at, rows.Err()
 }
 
-// decisionSumsAt is each named version's decisions, with the sum of each one's text: the
-// version's own stored markdown, cut by the same rule as the document as it stands.
+// storedDecisions is one stored version's decisions, cut from its markdown (decisionSums), and
+// whether another renderer version stored that markdown or none stamped it (pmdoc.OtherRenderer):
+// such a version may spell a decision otherwise than this build does though its tree is the same.
+type storedDecisions struct {
+	otherRenderer bool
+	decisions     map[sectionKey]decisionCut
+}
+
+// holds reports whether this version holds now, the text of the decision key as the document
+// stands: its text of that decision has now's sum, or, for a version of another renderer version,
+// this build reads its text of that decision as now's text (pmdoc.ReadsAs). Only a version of
+// another renderer version whose sum differs pays the parse and the render. A version that gives
+// the decision no text holds none of it.
+func (v storedDecisions) holds(key sectionKey, now decisionCut) bool {
+	stored, ok := v.decisions[key]
+	return ok && (stored.sum == now.sum || v.otherRenderer && pmdoc.ReadsAs(stored.text, now.text))
+}
+
+// decisionSumsAt is each named version's decisions, each one's text and its sum: the version's
+// own stored markdown, cut by the same rule as the document as it stands, read beside the
+// renderer version that stored it.
 func (s *server) decisionSumsAt(
 	ctx context.Context, artifactID string, numbers []int,
-) (map[int]map[sectionKey]string, error) {
-	sums := map[int]map[sectionKey]string{}
+) (map[int]storedDecisions, error) {
+	versions := map[int]storedDecisions{}
 	if len(numbers) == 0 {
-		return sums, nil
+		return versions, nil
 	}
 	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select number, coalesce(markdown, '') from artifact_versions
+		select number, renderer_version, coalesce(markdown, '') from artifact_versions
 		where artifact_id = $1::uuid and number = any($2::int[])
 	`, artifactID, numbers)
 	if err != nil {
@@ -462,28 +550,40 @@ func (s *server) decisionSumsAt(
 	defer rows.Close()
 	for rows.Next() {
 		var number int
+		var stamp *int
 		var markdown string
-		if err := rows.Scan(&number, &markdown); err != nil {
+		if err := rows.Scan(&number, &stamp, &markdown); err != nil {
 			return nil, err
 		}
-		sums[number] = decisionSums(markdown)
+		versions[number] = storedDecisions{
+			otherRenderer: pmdoc.OtherRenderer(stamp),
+			decisions:     decisionSums(markdown),
+		}
 	}
-	return sums, rows.Err()
+	return versions, rows.Err()
 }
 
-// decisionSums cuts a document's markdown into its decisions and sums each one's text. It cuts
-// by the rule the block walk cuts the document that stands by (decisionSections): a `##` heading
-// outside `## Replaced` and a `###` heading under it opens a decision, a heading of its own
-// level or higher closes it - `#` included, which opens none - and a deeper heading is text of
-// the decision it stands in.
+// decisionCut is one decision as a document's markdown holds it: its text, with the blank lines
+// at its end removed, and that text's sum (decisionTextSum).
+type decisionCut struct {
+	text string
+	sum  string
+}
+
+// decisionSums cuts a document's markdown into its decisions and gives each one's text and the
+// sum of that text. It cuts by the rule the block walk cuts the document that stands by
+// (decisionSections): a `##` heading outside `## Replaced` and a `###` heading under it opens a
+// decision, a heading of its own level or higher closes it - `#` included, which opens none - and
+// a deeper heading is text of the decision it stands in.
 //
 // A stored version holds no block id, so a decision is keyed by its heading and by how many
 // decisions before it carry that heading (sectionKey): a document that carries one heading twice,
 // which a replaced decision made again does, is two decisions here as it is two in the view,
-// rather than one the sum cannot name. Its sum is taken over the section's text with the blank
-// lines at its end removed, so the same section of two versions sums alike whatever follows it.
-func decisionSums(markdown string) map[sectionKey]string {
-	sums := map[sectionKey]string{}
+// rather than one the sum cannot name. Its text is the section's with the blank lines at its end
+// removed, so the same section of two versions sums alike whatever follows it; the text is a
+// slice of markdown, so the cut copies nothing.
+func decisionSums(markdown string) map[sectionKey]decisionCut {
+	cuts := map[sectionKey]decisionCut{}
 	seen := map[string]int{}
 	type section struct {
 		key   sectionKey
@@ -498,7 +598,8 @@ func decisionSums(markdown string) map[sectionKey]string {
 		if open == nil {
 			return
 		}
-		sums[open.key] = decisionTextSum(strings.TrimRight(markdown[open.start:end], "\n"))
+		text := strings.TrimRight(markdown[open.start:end], "\n")
+		cuts[open.key] = decisionCut{text: text, sum: decisionTextSum(text)}
 		open = nil
 	}
 	for _, line := range strings.SplitAfter(markdown, "\n") {
@@ -537,7 +638,7 @@ func decisionSums(markdown string) map[sectionKey]string {
 		offset += len(line)
 	}
 	closeAt(len(markdown))
-	return sums
+	return cuts
 }
 
 // sectionKey names one decision of a document across its versions: its heading, and how many

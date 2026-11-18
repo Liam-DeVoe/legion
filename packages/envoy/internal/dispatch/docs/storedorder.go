@@ -403,7 +403,7 @@ func foldStoredOrder(ctx context.Context, tx pgx.Tx, artifactID string, since ti
 			if !differs {
 				continue
 			}
-			if current.renders && anotherRenderer(written.rendererVersion) {
+			if current.renders && pmdoc.OtherRenderer(written.rendererVersion) {
 				respelled = append(respelled, respelledVersion{at: len(report.Mismatches), number: written.number, fold: current.markdown})
 			}
 			report.Mismatches = append(report.Mismatches, mismatch)
