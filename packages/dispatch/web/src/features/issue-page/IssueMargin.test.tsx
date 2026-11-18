@@ -348,7 +348,7 @@ test("the blocked-by editor refuses Cancel and Escape while the save is out", as
     expect(
       cancel,
       "Cancel is drawn as a control while the save it would leave is out"
-    ).toBeDisabled();
+    ).toHaveAttribute("aria-disabled", "true");
     await user.click(cancel);
     expect(
       screen.getByLabelText("Issues CORE-1 waits on"),
