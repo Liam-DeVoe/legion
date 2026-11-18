@@ -365,7 +365,7 @@ func setOnce(nodes map[string]map[string]any, key, id string, write map[string]a
 // once, and the answer is 200 with the plan as it stands after the write. It does not refuse a
 // plan for its generation, its source or its document, as Dispatch does: dispatch.PlanWrite names
 // the generation and the source on every write, the default plan names no document (workflow's
-// defaultPlan), and no test sends the board a plan whose values Dispatch refuses, so a second
+// defaultPlan), and no test sends the board a plan Dispatch refuses for those values, so a second
 // copy of Dispatch's rules here would refuse nothing that reaches it.
 func (b *liveDispatch) putPlan(key, id string, req *http.Request, w http.ResponseWriter) {
 	write, ok := b.daemonWrite(key, "a plan", req, w)
@@ -503,7 +503,10 @@ func TestTheBoardRefusesAnIDOfAnotherIssue(t *testing.T) {
 		return string(text)
 	}
 	before := held()
-	if status, answer := put(first, "/steps/"+step+"/rating", map[string]any{"rating": 4, "rating_reason": "The plan fit the work."}); status != http.StatusBadRequest || !strings.Contains(answer, `"code":"STEP_INPUT"`) {
+	// rating is the one rating write the control and the two refused ratings send: a fresh map each
+	// time, since put names the writer in the map it is given.
+	rating := func() map[string]any { return map[string]any{"rating": 4, "rating_reason": "The plan fit the work."} }
+	if status, answer := put(first, "/steps/"+step+"/rating", rating()); status != http.StatusBadRequest || !strings.Contains(answer, `"code":"STEP_INPUT"`) {
 		t.Errorf("control: a rating of %s's step record under %s = %d %s, want 400 STEP_INPUT, the rating refused for the record's kind", first, first, status, strings.TrimSpace(answer))
 	}
 	for _, refused := range []struct {
@@ -512,8 +515,8 @@ func TestTheBoardRefusesAnIDOfAnotherIssue(t *testing.T) {
 		code       string
 	}{
 		{"a write of " + first + "'s step record", "/steps/" + step, map[string]any{"model": "claude-opus"}, "STEP_OTHER_ISSUE"},
-		{"a rating of " + first + "'s retro record", "/steps/" + retro + "/rating", map[string]any{"rating": 4, "rating_reason": "The plan fit the work."}, "STEP_OTHER_ISSUE"},
-		{"a rating of " + first + "'s step record", "/steps/" + step + "/rating", map[string]any{"rating": 4, "rating_reason": "The plan fit the work."}, "STEP_OTHER_ISSUE"},
+		{"a rating of " + first + "'s retro record", "/steps/" + retro + "/rating", rating(), "STEP_OTHER_ISSUE"},
+		{"a rating of " + first + "'s step record", "/steps/" + step + "/rating", rating(), "STEP_OTHER_ISSUE"},
 		{"a write of " + first + "'s plan", "/plans/" + plan, map[string]any{"generation": 2, "source": "default", "tasks": []any{map[string]any{"id": "default", "steps": []any{"tester"}}}}, "PLAN_OTHER_ISSUE"},
 	} {
 		if status, answer := put(other, refused.path, refused.write); status != http.StatusConflict || !strings.Contains(answer, `"code":"`+refused.code+`"`) {
