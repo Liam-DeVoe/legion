@@ -385,6 +385,33 @@ func TestAFileIsBinaryByItsOwnContentAlone(t *testing.T) {
 			held:  map[string]string{"notes.lock": "\x00\n"},
 			added: map[string]string{"notes.lock": "\x00\n" + named},
 		},
+		// A file the destination holds, which .gitattributes marks -diff or binary, is diffed when
+		// the commit changes it, and git's own diff of it writes "Binary files ... differ" and no
+		// line where the diff is not read as text: the line the commit adds is read all the same.
+		{
+			name:  "a line added to a file the destination holds, which .gitattributes marks -diff",
+			held:  map[string]string{".gitattributes": "notes.lock -diff\n", "notes.lock": "a line of ordinary prose\n"},
+			added: map[string]string{"notes.lock": "a line of ordinary prose\n" + named},
+			want:  refused,
+		},
+		{
+			name:  "a line added to a file the destination holds, which .gitattributes marks binary",
+			held:  map[string]string{".gitattributes": "notes.lock binary\n", "notes.lock": "a line of ordinary prose\n"},
+			added: map[string]string{"notes.lock": "a line of ordinary prose\n" + named},
+			want:  refused,
+		},
+		// git reads a file as binary where a zero byte is in its first 8000 bytes, wherever in
+		// them it is (xdiff-interface.c's buffer_is_binary), and as text where the first is past
+		// them.
+		{
+			name:  "a file whose first zero byte is at 300, inside its first 8000 bytes",
+			added: map[string]string{"notes.lock": named + strings.Repeat("a", 300-len(named)) + "\x00\n"},
+		},
+		{
+			name:  "a file whose first zero byte is at 8000, past its first 8000 bytes",
+			added: map[string]string{"notes.lock": named + strings.Repeat("a", 8000-len(named)) + "\x00\n"},
+			want:  refused,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repo, base, head := pushOf(t, tc.held, tc.side, tc.added, nil)
@@ -562,6 +589,14 @@ func TestACommitsFileAboveTheBoundRefusesThePush(t *testing.T) {
 			added: map[string]string{"big.md": "a line of the commit\n"},
 			failure: func(commit string) string {
 				return failed + "the parent of commit " + short(commit) + "'s file big.md is 100 bytes, more than the 64 bytes a commit's file is read up to"
+			},
+		},
+		{
+			name:  "the commit's text file above the bound, which the parent's file it is diffed against is not",
+			held:  map[string]string{"big.md": "a line of the parent\n"},
+			added: map[string]string{"big.md": big},
+			failure: func(commit string) string {
+				return failed + "commit " + short(commit) + "'s file big.md is 100 bytes, more than the 64 bytes a commit's file is read up to"
 			},
 		},
 		{
