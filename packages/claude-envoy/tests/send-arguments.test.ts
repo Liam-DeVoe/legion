@@ -30,9 +30,9 @@ test("takes the key an unconfirmed send named, ahead of the target", async () =>
   expect(() => parseSendArguments(["--idempotency-key"])).toThrow()
 })
 
-/** The zsh this row runs the resend command under: `LEGION_TEST_ZSH`, else the one on PATH. CI
- *  installs one (`ci-job-claude-envoy.yaml`), so there a missing zsh fails the row rather than
- *  skipping it. */
+/** The zsh this row runs the resend command under: `LEGION_TEST_ZSH`, else the one on PATH.
+ *  GitHub Actions' claude-envoy job installs one (`ci-job-claude-envoy.yaml`), so there a missing
+ *  zsh fails the row rather than skipping it. */
 const zsh = process.env["LEGION_TEST_ZSH"] ?? Bun.which("zsh")
 
 /** A stand-in `bun` that writes the ENVOY_CONFIG_FILE it was given and then its arguments, each
@@ -100,9 +100,10 @@ test("the resend command gives the same words under bash", async () => {
   await sameWordsUnder("bash", (command) => ["bash", "-c", command])
 }, 20_000)
 
-// Skipped, and reported as skipped, only off CI where no zsh is found; CI installs one, so there
-// a missing zsh fails the row.
-test.skipIf(zsh === null && process.env["CI"] !== "true")(
+// Skipped, and reported as skipped, where no zsh is found, except on GitHub Actions
+// (`GITHUB_ACTIONS`), whose job installs one, so there a missing zsh fails the row. `CI` is no
+// such sign: an agent's tool shell sets `CI=true` on a dev box with no zsh.
+test.skipIf(zsh === null && process.env["GITHUB_ACTIONS"] !== "true")(
   "the resend command gives the same words under zsh",
   async () => {
     await sameWordsUnder("zsh", (command) => [zsh ?? "zsh", "-f", "-c", command])
