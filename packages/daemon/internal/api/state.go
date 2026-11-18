@@ -510,6 +510,11 @@ type Issue struct {
 	Key        string      `json:"key"`
 	Generation uint64      `json:"generation"`
 	Phase      phase.Phase `json:"phase"`
+	// StepRole is the role that works the issue's running step where the issue stands at step or
+	// its hold took it out of step (record.Issue.StepRole): a role of the deployment, which no
+	// phase names, so the phase alone does not say who works the issue. Absent at every other
+	// phase, whose role the phase names (phase.RoleFor).
+	StepRole string `json:"stepRole,omitempty"`
 	// Status is the status the daemon means the issue to have and writes to Dispatch
 	// (record.Issue.Status). It is not the status Dispatch shows: that is
 	// record.Issue.DispatchStatus, which this state does not carry. The two differ while a status
@@ -615,7 +620,8 @@ type Issue struct {
 	MemoryDrawMode string     `json:"memoryDrawMode,omitempty"`
 	MemoryDrawnAt  *time.Time `json:"memoryDrawnAt,omitempty"`
 	// PhaseEntry is the number of the phase entry the role of the issue's current phase stands on
-	// (record.PhaseRow.Entry, the role phase.RoleFor names for that phase), and GivenEntry the
+	// (record.PhaseRow.Entry, the role phase.RoleFor names for that phase, and at step the role
+	// of the running step, StepRole), and GivenEntry the
 	// entry of the last task that role's claim was queued (supervise.Claim.GivenEntry). The daemon
 	// sends the entry's own work to a role whose given number is below the entry its row names, on
 	// every admission pass and on a sweep of its own each minute (workflow.OwedEntry, admit's
