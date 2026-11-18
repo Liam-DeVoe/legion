@@ -1027,8 +1027,9 @@ AIRLOCK_BUILD_STEP = "Build the Lean model"
 AIRLOCK_AXIOMS_STEP = "Print the theorems' axioms"
 AIRLOCK_AXIOMS_SCRIPT = f"{ENVOY}/scripts/airlock-lean-axioms.sh"
 # The document service's race step runs under .github/scripts/race_memory.py, which fails it with
-# a log when the race binary's memory passes RACE_MEM_LIMIT_KB (ci.yaml's comment on the step says
-# why), so its line is a shell assignment and a script, not a go command the simple form reduces.
+# a log when the race binary's memory passes RACE_MEM_LIMIT_KB (the step's comment in
+# ci-job-envoy-go-race-docs.yaml says why), so its line is a shell assignment and a script, not a
+# go command the simple form reduces.
 RACE_DOCS_STEP = "Race-test the document service"
 RACE_DOCS_SCRIPT = ("RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py "
                     "go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/")
@@ -2646,8 +2647,9 @@ GATES = [
       + install_jj("pi-legion") + install_omp("pi-legion") + setup_go("pi-legion", f"{DAEMON}/go.mod")
       + bun_job("pi-legion")),
 
-    # The dashboard's and the proof editor's fast checks (ci.yaml's comment on dispatch-ui says
-    # what they are). No go command runs here.
+    # The dashboard's and the proof editor's fast checks
+    # (.github/ci-notes/ci.md#the-dashboards-and-the-proof-editors-lint-typecheck-unit-tests-build-and
+    # says what they are). No go command runs here.
     gate("dispatch_ui", "dispatch-ui", reads=reads(
         ("packages/dispatch/**", f"{at('dispatch-ui', 'Typecheck dispatch dashboard')}, test, build, check:classes and check:asset-sizes in packages/dispatch"),
         ("packages/proof-editor/**", f"{at('dispatch-ui', 'Typecheck proof editor')} and test; packages/dispatch/web/vite.config.ts:127-150"),
@@ -2806,17 +2808,18 @@ GATES = [
          "jobs takes its retry ladder, and the blobs-refused mode makes no request"),
         # The container the shard and alone jobs run in, and what decides which bytes it is.
         # No step reads these three: the `container:` key does, before the first step runs, so
-        # the citation is that key's own line rather than a step of the job.
+        # the citation is the two jobs that carry that key rather than a step of either.
         (".github/ci-images.yaml",
-         "dispatch-browser.yaml:81 (shard) and :169 (alone) run in the image at the digest the "
+         "dispatch-browser.yaml's shard and alone jobs run in the image at the digest the "
          "one `built:` row of this file carries, so a row that moves moves what those two jobs "
          "run inside"),
         (".github/docker/browser.Dockerfile",
          "the Dockerfile that image is built from: its bytes are the browsers, their host "
-         "packages and the PostgreSQL the lanes of dispatch-browser.yaml:81 and :169 start"),
+         "packages and the PostgreSQL the lanes of dispatch-browser.yaml's shard and alone jobs "
+         "start"),
         (".github/workflows/browser-image.yaml",
          "the build that publishes that image: its labels, platforms and action pins decide the "
-         "bytes the row at dispatch-browser.yaml:81 and :169 names"),
+         "bytes of the image dispatch-browser.yaml's shard and alone jobs pin"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
     ) + envoy_client_dep("imported by packages/envoy-client/bin/dispatch.ts, which "
                          "packages/dispatch/e2e/inbox-cli.e2e.ts:328 runs")
@@ -2887,7 +2890,8 @@ GATES = [
 
     # envoy-go's fast half: its format and generated-code checks, the shell-script tests,
     # the vet of the module as darwin compiles it, and the build and pack of the envoy commands
-    # (ci.yaml's comment on envoy-go-checks says why they are split out), with the tests of the
+    # (.github/ci-notes/ci.md#envoy-gos-fast-half-the-go-format-check-the-two-generated-code-checks-the
+    # says why they are split out), with the tests of the
     # architecture-note and spec-file rules and their commands, the note check over this
     # repository's notes through the composite action, the spec-file check over its spec
     # directory through the other one, and the guard that no CI file compares the spec files with

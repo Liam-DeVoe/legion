@@ -43,8 +43,9 @@
 # a draft is marked ready, and on the merge queue's group, where that job finds the queued pull
 # request with find-pr-payload.sh; that job's own check run carries the verdict as pr-title on
 # each. It runs in pr-title.yaml when a pull request is edited and when a review on it is
-# submitted or edited, the two events ci.yaml does not run on (that file's header says why it
-# runs on no other); its tests are in check-private-names.test.sh.
+# submitted or edited, the two events ci.yaml does not run on
+# (.github/ci-notes/ci.md#why-the-router-runs-on-these-events-and-no-others says why it runs on no
+# other); its tests are in check-private-names.test.sh.
 set -euo pipefail
 
 event=${GITHUB_EVENT_PATH:?GITHUB_EVENT_PATH must name the pull request event payload}

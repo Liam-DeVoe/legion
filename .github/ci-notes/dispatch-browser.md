@@ -945,6 +945,11 @@ and its pull is counted at the 120 s the browser step spent before the stack's f
 on the run that found it: 240 + 314 + 120 = 674 s, 11 min 14 s, rounded up to the 12 minutes
 below.
 
+#4383 counted the steps without a budget at 314 s, the five columns' figure before the sixth
+was added (240 + 314 + 120 = 674 s), where #2856 had already re-measured them at 333 s over the
+six columns above, the sixth being run 42614920253 (job 129152410516). So the sum is
+240 + 333 + 120 = 693 s, 11 min 33 s, and the budget stays 12 minutes.
+
 ## Why the visual job restores go-envoy-test
 
 go-envoy-test, restored only, for the reason the binaries job's step of this name gives:
@@ -1032,7 +1037,8 @@ handed them anything. The verdict step below names it as it names the rest.
 
 ## Why the merge job runs on arm64
 
-arm64, for the reason the comment on ci.yaml's `changes` job gives (INFRA-4222). This job
+arm64, for the reason .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64
+gives (INFRA-4222). This job
 runs JavaScript actions, `bunx playwright merge-reports` and two scripts over gh and jq, with
 the runner image's own node, python3, gh and jq. The one toolchain it installs is Bun, from
 the aarch64 row of .github/actions/setup-bun that ci.yaml's tool-fallback-arm job proves.

@@ -4,8 +4,10 @@
 # deletes it, and prints the server's own log for whichever of those did not happen.
 #
 # Who runs it: the step "Wait for the S3-compatible server" of
-# .github/workflows/dispatch-browser.yaml's shard job, whose comment says why a bucket alone is
-# not enough to wait for. It takes no argument. $RUNNER_TEMP is where the step before it
+# .github/workflows/dispatch-browser.yaml's shard job;
+# .github/ci-notes/dispatch-browser.md#why-the-stores-readiness-wait-writes-reads-and-deletes-an-object
+# says why a bucket alone is not enough to wait for. It takes no argument. $RUNNER_TEMP is where
+# the step before it
 # redirected the server's log, which is what a job in a container has in place of `docker logs`.
 #
 # Run from anywhere: .github/scripts/dispatch-browser-wait-for-store.sh

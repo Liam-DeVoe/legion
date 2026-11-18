@@ -15,9 +15,7 @@ jobs:
   tool-fallback:
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/ci-job-tool-fallback.md#the-jobs-budget-and-the-bound-every-install-step-carries
-    # Each install step's 11 min: twice the 326 s maximum, rounded up to the minute the key takes.
-    # That is 12, and a job its own limit cuts off reports `cancelled`, which ci-ok fails, so the
-    # limit carries ten minutes over the sum.
+    # 1 + 2 + 1 + 1 + 2 + 1 + 3 + 1 = 12 min + 10 = 22 min; an install step's 2 x 326 s -> 11 min.
     timeout-minutes: 22
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

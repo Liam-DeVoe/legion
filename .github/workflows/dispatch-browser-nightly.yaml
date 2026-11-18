@@ -108,7 +108,8 @@ jobs:
     # This job stays on the runner rather than in the browser image the shard and alone jobs
     # moved into, for the reason the multiprocess job stays: nothing can make it launch an
     # engine other than Chromium, so it keeps that one download, and it runs `go` through the
-    # harness, which a `container:` job may not (that job's head says why).
+    # harness, which a `container:` job may not
+    # (.github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget says why).
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -130,8 +131,9 @@ jobs:
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
-      # The step of this name in .github/workflows/dispatch-browser.yaml's shard job, for the
-      # reason it gives: Playwright's Node runner reads `@legion/contracts` out of a build this
+      # The step of this name in .github/workflows/dispatch-browser.yaml's shard job, for the reason
+      # .github/ci-notes/dispatch-browser.md#why-every-job-that-runs-the-suite-builds-contracts-first
+      # gives: Playwright's Node runner reads `@legion/contracts` out of a build this
       # checkout has to make before the config loads, of the entries Dispatch imports alone.
       - name: Build contracts for dispatch e2e
         run: bun run build:dispatch

@@ -4,8 +4,10 @@
 # A row nothing reads fails the job, since its digest is then pinned and read by no install.
 #
 # Who runs it: the step "Print every row beside the two call sites that read its digest" of
-# .github/workflows/ci-job-tool-fallback.yaml's tool-fallback job, whose comment says why one
-# literal is the evidence. It takes no argument. That job checks this repository out in its first
+# .github/workflows/ci-job-tool-fallback.yaml's tool-fallback job;
+# .github/ci-notes/ci-job-tool-fallback.md#why-every-row-is-printed-beside-the-two-call-sites-that-read-its-digest
+# says why one literal is the evidence. It takes no argument. That job checks this repository
+# out in its first
 # step, above every step below it, so this script is in the checkout when the step runs.
 #
 # Run from the repository root: .github/scripts/tool-fallback-row-call-sites.sh

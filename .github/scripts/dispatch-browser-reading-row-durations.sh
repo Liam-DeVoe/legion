@@ -3,8 +3,10 @@
 # median and a 95th percentile, read from the merged report's passing results alone.
 #
 # Who runs it: the step "Reading four, the row durations" of
-# .github/workflows/dispatch-browser.yaml's merge job, whose comment says which results the
-# reading takes and why a failed or a skipped row is none of them. It takes no argument: it reads
+# .github/workflows/dispatch-browser.yaml's merge job;
+# .github/ci-notes/dispatch-browser.md#what-reading-four-measures-and-which-rows-it-reads says
+# which results the reading takes and why a failed or a skipped row is none of them. It takes no
+# argument: it reads
 # $RUNNER_TEMP/report.json, the report the merge step wrote, writes $RUNNER_TEMP/durations.txt,
 # one line per passing result, and adds its table to $GITHUB_STEP_SUMMARY. A run with no merged
 # report is a warning and exit 0 here, reading one having already said why there is none.

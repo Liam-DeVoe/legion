@@ -1163,6 +1163,11 @@ therefore test nothing and post nothing; the jobs of it that do run are `ci-ok` 
 and each concludes the failure such an attempt must get in a step instead (the comment above
 each one's `if:` says why).
 
+## Why the daemon's Go suite has an output of its own
+
+The daemon's Go suite, a job of its own since dispatch://INFRA-1413: the test job used
+to carry it behind the output above, so a change to a shell script ran it too.
+
 ## Why the plugin pack has an output of its own
 
 The one test of that suite that packs the two plugin releases, in a job of its own: its
@@ -1888,7 +1893,9 @@ single refusal. The steps, and why those hosts, are in the called file.
 ## Why the worker-image job grants every scope the called workflow declares
 
 GitHub refuses a run whose calling job grants less than the called workflow's jobs declare,
-whatever their `if:` (release.yaml's worker_image job says the same): its workflow-level block
+whatever their `if:`
+(.github/ci-notes/release.md#why-the-worker-image-call-declares-every-scope-worker-imageyaml-names
+says the same): its workflow-level block
 (the build's packages: write, and the actions: read and checks: write of its ci-ok-report
 step) and its `attest` job's id-token and attestations: write. A pull request run still skips
 `attest` (its `if:` requires `github.event_name != 'pull_request'`), and, passing no

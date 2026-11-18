@@ -1445,9 +1445,9 @@ check "fails" "$(is "$status" 1)"
 check "asks for the Run" \
   "$(contains "$out" 'job rows of .github/workflows/suite.yaml, which job suite calls step "Vet the library" runs `go vet ./lib`, which no Run in ci_job_reads.py lists')"
 
-# The three comments of dispatch-browser.yaml that tell a reader to keep a name out of a step's
-# `env:` rest on this: the called file's env: and shell: reach the gate's go commands, so one
-# the check cannot read drops them to everything a go command can read.
+# The rule of .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
+# for a step's `env:` rests on this: the called file's env: and shell: reach the gate's go commands,
+# so one the check cannot read drops them to everything a go command can read.
 echo "case: a name outside ENV_ALLOWED in the called workflow's step env"
 root=$(fixture called-workflow-env)
 calls_workflow "$root"
@@ -1468,8 +1468,8 @@ check "fails" "$(is "$status" 1)"
 check "names the shell" "$(contains "$out" 'step "Build the app" runs under shell: `bash`')"
 check "and falls to every Go file of the repository" "$(contains "$out" 'mod/other/other.go')"
 
-# A `#` line is not a command. dispatch-browser.yaml's install steps say in a comment that the
-# job writes nothing to $GITHUB_ENV, and reading that as a write would be exactly backwards.
+# A `#` line is not a command. A step's comment may say that the job writes nothing to
+# $GITHUB_ENV, and reading that as a write would be exactly backwards.
 echo "case: a comment naming \$GITHUB_ENV in the called workflow's step"
 root=$(fixture called-workflow-env-comment)
 calls_workflow "$root"

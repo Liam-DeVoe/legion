@@ -4,7 +4,8 @@
 # directory the upload after it takes.
 #
 # Who runs it: the step "What the run left behind" of .github/workflows/dispatch-browser.yaml's
-# shard job, whose comment says why it runs on every leg and not on a failed one alone. It takes
+# shard job; .github/ci-notes/dispatch-browser.md#what-the-shard-job-collects-after-a-run says why
+# it runs on every leg and not on a failed one alone. It takes
 # no argument: $RUNNER_TEMP is where the browser step before it wrote the run directory, the
 # sampler's two files and the store's log.
 #

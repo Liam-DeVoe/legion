@@ -4,10 +4,11 @@
 # and the list reporter's lines in the step's own log.
 #
 # Who runs it: the step "Merge the legs' blob reports into one report" of
-# .github/workflows/dispatch-browser.yaml's merge job, whose comment says why that report is the
-# source check-slow-rows.ts reads. It takes no argument. It reads the directory the step before
-# it wrote, $RUNNER_TEMP/selected-blobs/blob-report, which holds one attempt per leg, and writes
-# $RUNNER_TEMP/report-html and $RUNNER_TEMP/report.json: the upload step reads both, and
+# .github/workflows/dispatch-browser.yaml's merge job;
+# .github/ci-notes/dispatch-browser.md#what-the-merged-reports-three-outputs-are-for says why that
+# report is the source check-slow-rows.ts reads. It takes no argument. It reads the directory the
+# step before it wrote, $RUNNER_TEMP/selected-blobs/blob-report, which holds one attempt per leg,
+# and writes $RUNNER_TEMP/report-html and $RUNNER_TEMP/report.json: the upload step reads both, and
 # readings one, two and four and the verdict step read the JSON report.
 #
 # The step keeps its working directory, packages/dispatch, which is the package whose Playwright

@@ -96,7 +96,8 @@ jobs:
       # go-docs is a cache family of its own. This build compiles the daemon's legion command and
       # envoy's dispatch, broker and agent-secrets commands. envoy-e2e-local's go-envoy entry
       # holds the listener and natsd alone, so one key for both let whichever job saved first own
-      # it. ci.yaml's header says how every family is kept. This step restores go-docs in the form
+      # it. .github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs says
+      # how every family is kept. This step restores go-docs in the form
       # docs/solutions/github/join-a-job-to-the-ci-router.md gives: off main by the prefix too, on
       # main by the exact key alone. The save-cache input names the one caller that writes the
       # entry, and that caller is docs-pages.yaml.

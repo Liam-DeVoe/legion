@@ -5,8 +5,10 @@
 # that is not there is a pass for nothing.
 #
 # Who runs it: the step "Check the package holds the blob of every mirrored row" of
-# .github/workflows/ci-job-tool-fallback.yaml's tool-fallback job, whose comment says why a cold
-# row is a refusal here where the filler leaves one green. It takes no argument. That job checks
+# .github/workflows/ci-job-tool-fallback.yaml's tool-fallback job;
+# .github/ci-notes/ci-job-tool-fallback.md#why-the-packages-blob-is-read-for-every-mirrored-row says
+# why a cold row is a refusal here where the filler leaves one green. It takes no argument. That
+# job checks
 # this repository out in its first step, above every step below it, so this script is in the
 # checkout when the step runs.
 #

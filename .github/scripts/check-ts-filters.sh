@@ -25,8 +25,9 @@
 # The gates left out are the ones whose job runs TypeScript but no typecheck, so there is no
 # program to derive: `dispatch_browser`, whose jobs are the browser suite itself, sharded and in
 # two-process mode, in the workflow ci.yaml's dispatch-browser job calls (the dashboard's and the
-# proof editor's typechecks are dispatch_ui's, and ci.yaml's comment on dispatch-ui says why they
-# were split out), `envoy_session_stall`,
+# proof editor's typechecks are dispatch_ui's, and
+# .github/ci-notes/ci.md#the-dashboards-and-the-proof-editors-lint-typecheck-unit-tests-build-and
+# says why they were split out), `envoy_session_stall`,
 # whose job builds and runs the stall entries, `envoy_e2e_local`, whose live proof renders
 # with @legion/envoy-client at run time, and `dispatch_two_builds` and `dispatch_two_builds_go`,
 # the two-build job's gates, whose job runs the browser suite against two builds and whose Go

@@ -1157,8 +1157,7 @@ def job_reason(job: dict) -> str:
     """The first step of the job whose run: writes $GITHUB_ENV or $GITHUB_PATH or runs `go env -w`,
     which reach every later go command of the job without showing on its line, or ''. Read line by
     line through script_lines, as a step's go commands are: a `#` line is not a command, so a step
-    whose comment names $GITHUB_ENV to say it writes none (dispatch-browser.yaml's install steps)
-    writes none here either."""
+    whose comment names $GITHUB_ENV to say it writes none writes none here either."""
     for step in job.get("steps") or []:
         for line in script_lines(str(step.get("run", ""))):
             written = ENV_WRITE.search(line)

@@ -4,7 +4,8 @@
 # the browser step already wrote there.
 #
 # Who runs it: the step "What the run left behind" of .github/workflows/dispatch-browser.yaml's
-# alone job, whose comment says why it runs on every leg and not on a failed one alone. It takes
+# alone job; .github/ci-notes/dispatch-browser.md#what-the-alone-job-collects-after-a-run says why
+# it runs on every leg and not on a failed one alone. It takes
 # no argument: $RUNNER_TEMP is where the browser step before it wrote the run directory and the
 # sampler's two files.
 #

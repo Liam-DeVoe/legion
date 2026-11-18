@@ -95,8 +95,7 @@ jobs:
       # .github/scripts/check-ci-filters.sh refuses an output naming a filter .github/ci-filters.yaml does not hold.
       typecheck: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.typecheck }}
       test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.test }}
-      # The daemon's Go suite, a job of its own since dispatch://INFRA-1413: the test job used
-      # to carry it behind the output above, so a change to a shell script ran it too.
+      # why: .github/ci-notes/ci.md#why-the-daemons-go-suite-has-an-output-of-its-own
       daemon_go_tests: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.daemon_go_tests }}
       # why: .github/ci-notes/ci.md#why-the-plugin-pack-has-an-output-of-its-own
       plugin_pack: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.plugin_pack }}
@@ -600,7 +599,7 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # The Dispatch API under the race detector, on a runner of its own (the lane's comment above
+  # The Dispatch API under the race detector, on a runner of its own (.github/ci-notes/ci.md#the-race-lane-what-it-runs-why-it-is-three-jobs-and-what-is-not-in-it
   # says why). Its tests drive the store, so the job carries the lane's Postgres service.
   envoy-go-race-api:
     needs: changes
@@ -806,7 +805,7 @@ jobs:
   # why: .github/ci-notes/ci.md#the-pr-title-job-what-it-checks-and-why-it-posts-nothing
   pr-title:
     if: ${{ !github.event.pull_request.draft && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
-    # arm64, as the comment on changes' runs-on says.
+    # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     # why: .github/ci-notes/ci.md#what-the-pr-title-jobs-scopes-are-for
@@ -841,7 +840,7 @@ jobs:
   # why: .github/ci-notes/ci.md#the-merge-queues-cancel-act-mains-queue-builds-each-group-on-top
   cancel-started:
     if: ${{ github.event_name == 'merge_group' && github.run_attempt == '1' }}
-    # arm64, as the comment on changes' runs-on says.
+    # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     permissions:
@@ -907,7 +906,7 @@ jobs:
       - worker-image
       - browser-image
     if: ${{ always() }}
-    # arm64, as the comment on changes' runs-on says.
+    # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     permissions:

@@ -13,7 +13,9 @@
 # the visual job's own step "Read the connections the visual stack's Postgres must allow" reads
 # outside this step's budget and hands on as `${{ steps.connections.outputs.connections }}`; it
 # becomes DISPATCH_E2E_PG_CONNECTIONS below. It is an argument rather than a key of the step's
-# `env:`, for the reason the shard job's head gives: a step `env:` key outside
+# `env:`, for the reason
+# .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
+# gives: a step `env:` key outside
 # ci_filter_coverage.py's ENV_ALLOWED drops that job out of check-ci-filters.sh's reduction of
 # what a go command compiles. The step keeps its own `timeout-minutes` and its working
 # directory, packages/dispatch, which is where e2e/visual-run.sh is run from below.
@@ -34,8 +36,8 @@ connections=$1
 
 # $RUNNER_TEMP holds everything this step writes, the run directory of the stack
 # e2e/visual-run.sh starts among it. TMPDIR and that stack's Postgres image are
-# exported on the command line, not in this step's `env:`, for the reason the job's
-# head gives.
+# exported on the command line, not in this step's `env:`, for the reason
+# .github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets gives.
 export TMPDIR="$RUNNER_TEMP"
 # pgvector, the copy in ghcr.io/cybermonklabs/legion/ci (.github/ci-images.yaml),
 # started per stack by e2e/harness-postgres.ts. The shard and alone jobs take their

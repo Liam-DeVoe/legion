@@ -4,8 +4,10 @@
 # reads apart from a leg whose rows failed.
 #
 # Who runs it: the step "Reading three, the leg exits with no failed row" of
-# .github/workflows/dispatch-browser.yaml's merge job, whose comment says why that difference is
-# worth a reading of its own. It takes no argument: it reads $RUNNER_TEMP/jobs.json, which
+# .github/workflows/dispatch-browser.yaml's merge job;
+# .github/ci-notes/dispatch-browser.md#why-a-leg-that-exits-red-with-no-failed-row-is-named-apart
+# says why that difference is worth a reading of its own. It takes no argument: it reads
+# $RUNNER_TEMP/jobs.json, which
 # reading one wrote, and the legs' blob reports in $RUNNER_TEMP/selected-blobs/blob-report, and
 # it writes $RUNNER_TEMP/unhappy-jobs.tsv, a merged report per unhappy leg under
 # $RUNNER_TEMP/leg-<leg>, and the list it adds to $GITHUB_STEP_SUMMARY. A run with no jobs list

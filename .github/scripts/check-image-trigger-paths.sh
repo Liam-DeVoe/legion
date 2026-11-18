@@ -232,7 +232,8 @@ EQUALS_TRUE = re.compile(r"needs\.([\w-]+)\.outputs\.([\w-]+)\s*==\s*'true'")
 # `github.run_attempt == '1'` is neutral in the same sense: a re-run attempt runs on the commit
 # attempt 1 ran on, so a term that admits attempt 1 alone narrows by attempt and never by path,
 # and every change still reaches the build on its first attempt. ci.yaml's merge-group runs carry
-# it (the comment above its `changes` job says why a re-run of a group must do nothing). Only
+# it (.github/ci-notes/ci.md#what-the-changes-job-selects-and-the-two-terms-every-job-carries says
+# why a re-run of a group must do nothing). Only
 # that one comparison is admitted: `github.run_attempt` against any other value, or against
 # nothing at all, can skip the first attempt of a change, so it stays refused.
 DRAFT = re.compile(r"!\s*github\.event\.pull_request\.draft", re.I)

@@ -4,7 +4,8 @@
 # `timeout-minutes`, which leaves the same outcome behind.
 #
 # Who runs it: the step "Check all eight installs with nowhere to go failed, and failed in their
-# own time" of .github/workflows/ci-job-tool-fallback.yaml's tool-fallback job, whose comment says
+# own time" of .github/workflows/ci-job-tool-fallback.yaml's tool-fallback job;
+# .github/ci-notes/ci-job-tool-fallback.md#why-the-control-step-reads-the-clock-as-well says
 # why the clock is read here at all. It takes no argument and reads sixteen variables the step's
 # own `env:` map sets, each from a step of that job: CRANE, CHANGIE, JJ, BUN, ELAN, UV,
 # PULUMI_DOCKER and PULUMI_CLI, the `outcome` of each install with nowhere to go, and CRANE_AT,

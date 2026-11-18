@@ -13,7 +13,8 @@
 # not passed. Each is `success`, `skipped`, `failure` or `cancelled`, and the last two are what
 # this script fails on, by job name.
 #
-# They are arguments rather than keys of the step's `env:`, for the reason the shard job's head
+# They are arguments rather than keys of the step's `env:`, for the reason
+# .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
 # gives: a step `env:` key outside ci_filter_coverage.py's ENV_ALLOWED drops that job out of
 # check-ci-filters.sh's reduction of what a go command compiles.
 #

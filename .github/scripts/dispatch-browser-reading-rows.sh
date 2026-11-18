@@ -14,16 +14,18 @@
 # jobs. It is never an argument: an argument is on the process's command line, which every
 # process of the runner can read in /proc while the step runs.
 #
-# The conclusion is an argument rather than a key of the step's `env:`, for the reason the shard
-# job's head gives: a step `env:` key outside ci_filter_coverage.py's ENV_ALLOWED drops that job
+# The conclusion is an argument rather than a key of the step's `env:`, for the reason
+# .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
+# gives: a step `env:` key outside ci_filter_coverage.py's ENV_ALLOWED drops that job
 # out of check-ci-filters.sh's reduction of what a go command compiles. GH_TOKEN is in that set,
 # so that reason does not hold for the token, which is a key of the step's `env:`.
 #
 # It reads $RUNNER_TEMP/selected-blobs, which holds one blob report and one row count per leg,
 # and $RUNNER_TEMP/report.json, the merged report; it writes $RUNNER_TEMP/jobs.json, which
 # reading three reads, and the table and the figures it adds to $GITHUB_STEP_SUMMARY. The step
-# keeps its own `timeout-minutes`, which the job's head sizes against the ladder the read goes
-# through.
+# keeps its own `timeout-minutes`, which
+# .github/ci-notes/dispatch-browser.md#the-merge-jobs-measured-steps-and-its-budget sizes against
+# the ladder the read goes through.
 #
 # The step runs it from the repository root and carries no working directory of its own: the
 # call to .github/scripts/dispatch-browser-run-reads.sh below is relative to that root.
@@ -47,7 +49,8 @@ counts="$RUNNER_TEMP/selected-blobs/rows"
 report="$RUNNER_TEMP/report.json"
 jobs="$RUNNER_TEMP/jobs.json"
 # What the step "Download every leg's blob report" concluded. It is read here, in the
-# body, rather than in a step `env:` block, for the reason the shard job's head gives
+# body, rather than in a step `env:` block, for the reason
+# .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget gives
 # and which the step's `GH_TOKEN` need not follow, that key being in ENV_ALLOWED. The missing-blob
 # message reads it: a download that was refused is why no blob arrived for any leg.
 downloaded=$1
