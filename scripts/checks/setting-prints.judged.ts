@@ -184,7 +184,42 @@ const RESTS = {
     "func refuseRemoteNATS(",
     "98ece7f415b9"
   ),
+  envoyConfigUrl: basis(
+    "packages/envoy-client/src/envoy-settings.ts",
+    "if (namedUrl !== undefined && httpUrl(namedUrl) === undefined) {",
+    "d30dfeb0e11e"
+  ),
+  transportAttempt: basis(
+    "packages/envoy-client/src/transport.ts",
+    "const attemptOnce = async (",
+    "0c71d3fde0d5"
+  ),
+  transportRequest: basis(
+    "packages/envoy-client/src/transport.ts",
+    "const request = async (",
+    "fa815180cedd"
+  ),
+  transportRedirectError: basis(
+    "packages/envoy-client/src/transport.ts",
+    "export class EnvoyRedirectError extends Error {",
+    "5b2eac9f6bcb"
+  ),
+  redirectTargetFn: basis(
+    "packages/envoy-client/src/redirect.ts",
+    "export function redirectTarget(",
+    "5c2397e44c3b"
+  ),
 };
+
+/** Why the URL of an Envoy request prints no user part, and what that rests on. */
+const TRANSPORT_URL =
+  "the URL of a request to the Envoy listener, which every line of the transport names through shownSettingUrl (EnvoyApiError, EnvoyRedirectError, the refusal of a credential that could not be minted), and of which a refused redirect reads only the origin of a Location resolved against it, which holds no user part, naming none of it for the same origin (redirectTarget)";
+const TRANSPORT_URL_RESTS = [
+  RESTS.transportAttempt,
+  RESTS.transportRequest,
+  RESTS.transportRedirectError,
+  RESTS.redirectTargetFn,
+];
 
 // biome-ignore-start lint/suspicious/noTemplateCurlyInString: each entry quotes a part of a source line, placeholders included
 export const JUDGED: readonly Judged[] = [
@@ -494,6 +529,24 @@ export const JUDGED: readonly Judged[] = [
     text,
     why: "a failed read of the answers, whose errors name the Dispatch URL through shownSettingUrl",
   })),
+  {
+    file: "packages/envoy-client/src/transport.ts",
+    text: "const url = `${baseUrl}${path}`;",
+    why: TRANSPORT_URL,
+    rests: TRANSPORT_URL_RESTS,
+  },
+  {
+    file: "packages/envoy-client/src/transport.ts",
+    text: "`/v1/sessions/${encodeURIComponent(input.sessionID)}${query}`",
+    why: `a session id, percent-encoded as a path segment of a request's URL: ${TRANSPORT_URL}`,
+    rests: TRANSPORT_URL_RESTS,
+  },
+  {
+    file: "packages/claude-envoy/bin/envoy-send.ts",
+    text: "throw new Error(`Envoy is off: ${envoy.error ?? envoy.notice}`)",
+    why: CONFIG,
+    rests: [RESTS.envoyConfigUrl, RESTS.httpUrlSchema],
+  },
   {
     file: "packages/envoy-client/src/transport.ts",
     text: "body: JSON.stringify(body),",
