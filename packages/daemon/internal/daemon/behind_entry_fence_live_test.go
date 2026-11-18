@@ -33,11 +33,11 @@
 // working copy while another role of the issue is in a turn (supervise's sendPending), so the
 // implementer's task waits for that turn to end; the tester's completions come instead from a
 // turn of its own, begun while the implementer works and so before the new entry's task could
-// reach it. Neither of the moves the daemon makes on its own serves here. A CI red moves no issue,
-// since the daemon judges no check, so the proof publishes no settlement; and the daemon reads a
-// head's mergeability at its start, after a handoff, and for an approved review round in reviewing
-// alone, so a head that starts conflicting with its base while the tester tests is not read until
-// the next handoff (dispatch://INFRA-3164). The move back into testing is the reviewer's own
+// reach it. The proof raises the entry with a backward move rather than with a move the daemon
+// makes on its own: a CI red moves no issue, since the daemon judges no check, so the proof
+// publishes no settlement; and a head that starts conflicting with its base, which the daemon reads
+// on a push to the base among other facts (workflow's askMergeStateFor), is a proof of its own
+// (conflict_no_takeover_live_test.go). The move back into testing is the reviewer's own
 // request over POST /legion/v1/phase/backward, from reviewing, under a grant its registered
 // session minted, because the engine takes a backward move from no role but the one running the
 // issue's phase (workflow's Engine.backward, BACKWARD_REFUSED).

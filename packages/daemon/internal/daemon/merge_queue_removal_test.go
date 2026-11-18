@@ -821,8 +821,8 @@ func (g *dequeueGitHub) write(w http.ResponseWriter, value any) bool {
 // noticeListener, which takes every publish, with the 404 the listener answers for a role topic no
 // live session holds (writeRoleHolderError, packages/envoy/cmd/listener/api.go, which notify
 // decodes as ErrNoHolder) for each merger's topic, counted, until the test says a session holds
-// that topic (holds). It is conflict_no_takeover_live_test.go's conflictListener in a build of
-// the package every test run compiles, which that live proof's is not.
+// that topic (holds). It answers as conflict_no_takeover_live_test.go's conflictListener does, and
+// counts each refusal where that one keeps the refused publish.
 type dequeueListener struct {
 	notices  *noticeListener
 	mu       sync.Mutex
