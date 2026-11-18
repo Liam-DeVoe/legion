@@ -846,6 +846,32 @@ cache or fetchable. With the variable unset the rows skip and say so. It is a te
 no batch reads it, and it is not the base label's checkout, which `SKILL_SCENARIOS_BASE_CHECKOUT`
 names for the rows that read the base label's own contract.
 
+### Which of the world's answers are pinned, and to what
+
+The world claims to answer as production does only where a pin holds it to production. Each pin
+is derived by a script in the rig from a reading of production, and keeps names, kinds, statuses
+and error texts, never production's values:
+
+| Pin | What it holds | Read from | Made by |
+| --- | --- | --- | --- |
+| `production-shapes.json` | the exit, stderr and answer shape of the 5 reads of a branch a ruleset alone protects, the 90 distinct reads INFRA-764's round 25 made, and the `read_record` record | cybermonklabs/legion `main` at 2026-11-17T15:59:18Z, its pull request #2827 at about 15:40Z, and a Legion issue pod's own record at 16:49Z that day | `production-shapes.ts` |
+| `rest-required.json` | the required field tree of the success answer of each REST operation the world serves | github/rest-api-description at `DESCRIPTION_COMMIT` (`c9c95fe34ced`) | `rest-required.ts` |
+| `graphql-schema.json` | the field and return type of each GraphQL type the world serves, which the world's query check reads | GitHub's introspection at 2026-11-17T21:20:23Z | `graphql-schema.ts` |
+| each label's own `LegionStateResponse` | every state body the daemon stand-in can serve, parsed before the label starts | the label's own checkout | `services_up`'s `label_contract` |
+
+The issue workspace's git configuration is held line for line to a Legion issue pod's clone, as
+read on 2026-11-17 (the paragraph on a worker world's issue workspace, above), and the base's
+ruleset to production's seven rules (*The base's ruleset*, below). Some answers rest on one live
+measurement each, named where the answer is described: a reply to a reply filed in its thread,
+one App's update of another's review, GitHub's 404 body for an endpoint it does not serve, and
+the merge state of an approved, green head on a merge-queue base. A few are stated as
+unmeasured: GitHub's 404 for another App's read of a pending review by id, and the
+rule-violation lines of a refused push beyond the three measured. Two differences are named
+residuals rather than defects: the `remote.origin.vcs` key that carries the world's remote, and
+a review's `url`, which gh asks for only past a pull request's 100th review. **A read with no
+pin, and an answer this section and the sections below do not name, is not claimed to answer as
+production does.**
+
 ### What the gh world keeps, and where it stops
 
 The gh stand-in answers GitHub from the world's seed and the effect of every call the run made,
