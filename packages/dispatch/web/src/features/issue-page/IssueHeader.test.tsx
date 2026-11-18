@@ -1268,10 +1268,11 @@ test("the actions group closes once Tab takes the focus out of it", async () => 
 });
 
 /** Opens the header's actions group from the keyboard, as a reader does: the focus on its control,
- *  then Enter. Answers the control, the group it names and the group's actions. */
+ *  then Enter, then one Tab onto the group's first action. Answers that first action, the control
+ *  and the group it names. */
 async function openIssueActionsByKey(user: UserEvent): Promise<{
-  actions: HTMLElement[];
   control: HTMLElement;
+  first: HTMLElement;
   group: HTMLElement;
 }> {
   const control = await screen.findByRole("button", { name: "Issue actions" });
@@ -1280,9 +1281,11 @@ async function openIssueActionsByKey(user: UserEvent): Promise<{
   await waitFor(() => expect(control).toHaveAttribute("aria-expanded", "true"));
   const group = document.getElementById(control.getAttribute("aria-controls") ?? "");
   if (group === null) throw new Error("the actions control names no group");
-  const actions = within(group).getAllByRole("button");
-  expect(actions.length).toBeGreaterThan(0);
-  return { actions, control, group };
+  const [first] = within(group).getAllByRole("button");
+  if (first === undefined) throw new Error("the actions group holds no action");
+  await user.tab();
+  expect(first).toHaveFocus();
+  return { control, first, group };
 }
 
 // Shift+Tab from the group's first action takes the focus back to the group's control, which
@@ -1294,9 +1297,7 @@ test("the actions group stays open as Shift+Tab takes the focus from its first a
   const view = renderHeader();
 
   try {
-    const { actions, control } = await openIssueActionsByKey(user);
-    await user.tab();
-    expect(actions[0]).toHaveFocus();
+    const { control } = await openIssueActionsByKey(user);
     await user.tab({ shift: true });
     expect(control).toHaveFocus();
     expect(control).toHaveAttribute("aria-expanded", "true");
@@ -1315,11 +1316,7 @@ test("the actions group stays open as the window loses the focus from one of its
   const view = renderHeader();
 
   try {
-    const { actions, control } = await openIssueActionsByKey(user);
-    await user.tab();
-    const action = actions[0];
-    if (action === undefined) throw new Error("the actions group holds no action");
-    expect(action).toHaveFocus();
+    const { control, first: action } = await openIssueActionsByKey(user);
     // What a browser sends as its window loses the focus, with no relatedTarget and the focus
     // left where it was: user-event has no form for a window's blur.
     fireEvent.blur(action, { relatedTarget: null });
@@ -1341,9 +1338,7 @@ test("the actions group closes once a focus moved by code goes to a control outs
   const view = renderHeader();
 
   try {
-    const { actions, control, group } = await openIssueActionsByKey(user);
-    await user.tab();
-    expect(actions[0]).toHaveFocus();
+    const { control, group } = await openIssueActionsByKey(user);
     const status = within(screen.getByTestId("issue-state-actions")).getByRole("combobox", {
       name: "Status",
     });

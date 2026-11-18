@@ -2275,43 +2275,49 @@ test("the header's menu gives the focus back to its control on Escape and after 
   });
 });
 
-/** What keeps the focused element from a reader's sight against the header's actions menu, the
- *  element whose id is `menuId`: nothing, or each of the focus on the page's body, the focus
- *  inside the menu, the menu's box over the focused element's, and another element drawn at the
- *  focused element's centre. A hidden menu covers nothing. */
-async function focusUnseen(page: Page, menuId: string): Promise<string[]> {
-  // The one caller polls this until it answers nothing, so one instant's answer is safe here.
-  const read = await page.evaluate((id) => {
-    const menu = document.getElementById(id);
-    if (menu === null) throw new Error(`no element carries the actions menu's id ${id}`);
-    const focused = document.activeElement;
-    if (focused === null || focused === document.body) return null;
-    const boxOf = (element: Element) => {
-      const { height, width, x, y } = element.getBoundingClientRect();
-      return { height, width, x, y };
-    };
-    const box = boxOf(focused);
-    const drawn = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
-    const name = focused.getAttribute("aria-label") ?? focused.textContent ?? "";
-    return {
-      box,
-      drawn: drawn === null ? "nothing" : drawn.outerHTML.slice(0, 120),
-      inMenu: menu.contains(focused),
-      menu: menu.checkVisibility() ? boxOf(menu) : null,
-      onTop: drawn !== null && focused.contains(drawn),
-      what: `${focused.tagName.toLowerCase()} "${name.trim()}"`,
-    };
-  }, menuId);
-  if (read === null) return ["the focus is on the page's body"];
-  const unseen: string[] = [];
-  if (read.inMenu) unseen.push(`the focus is on ${read.what}, inside the menu`);
-  if (read.menu !== null && !boxesApart(read.box, read.menu)) {
-    unseen.push(
-      `the menu at ${JSON.stringify(read.menu)} covers ${read.what} at ${JSON.stringify(read.box)}`
-    );
-  }
-  if (!read.onTop) unseen.push(`${read.drawn} is drawn at the centre of ${read.what}`);
-  return unseen;
+/** Waits for the focused element to be in a reader's sight against the header's actions menu, the
+ *  element whose id is `menuId`: the focus off the page's body and outside the menu, the menu's
+ *  box apart from the focused element's, and the focused element itself drawn at its centre. A
+ *  hidden menu covers nothing. `message` names the press that moved the focus there. */
+async function expectFocusInSight(page: Page, menuId: string, message: string): Promise<void> {
+  /** What keeps the focused element from sight: nothing, or each check above that fails. */
+  const keptFromSight = async (): Promise<string[]> => {
+    // Each read is inside the poll below, which reads again until this answers nothing, so one
+    // instant's answer is safe here.
+    const read = await page.evaluate((id) => {
+      const menu = document.getElementById(id);
+      if (menu === null) throw new Error(`no element carries the actions menu's id ${id}`);
+      const focused = document.activeElement;
+      if (focused === null || focused === document.body) return null;
+      const boxOf = (element: Element) => {
+        const { height, width, x, y } = element.getBoundingClientRect();
+        return { height, width, x, y };
+      };
+      const box = boxOf(focused);
+      const drawn = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+      const onTop = drawn !== null && focused.contains(drawn);
+      const name = focused.getAttribute("aria-label") ?? focused.textContent ?? "";
+      return {
+        box,
+        drawn: onTop ? "" : (drawn?.outerHTML.slice(0, 120) ?? "nothing"),
+        inMenu: menu.contains(focused),
+        menu: menu.checkVisibility() ? boxOf(menu) : null,
+        onTop,
+        what: `${focused.tagName.toLowerCase()} "${name.trim()}"`,
+      };
+    }, menuId);
+    if (read === null) return ["the focus is on the page's body"];
+    const unseen: string[] = [];
+    if (read.inMenu) unseen.push(`the focus is on ${read.what}, inside the menu`);
+    if (read.menu !== null && !boxesApart(read.box, read.menu)) {
+      unseen.push(
+        `the menu at ${JSON.stringify(read.menu)} covers ${read.what} at ${JSON.stringify(read.box)}`
+      );
+    }
+    if (!read.onTop) unseen.push(`${read.drawn} is drawn at the centre of ${read.what}`);
+    return unseen;
+  };
+  await expect.poll(keptFromSight, { message }).toEqual([]);
 }
 
 // The header's ⋯ menu closes once Tab takes the focus on out of it, as the ARIA menu-button
@@ -2328,7 +2334,7 @@ test("the header's menu closes once Tab takes the focus out of it, leaving the f
 }) => {
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
-    await page.setViewportSize(viewportAt(IPHONE_13.width));
+    await page.setViewportSize(IPHONE_13);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectHeaderDrawn(page);
     const header = issueHeader(page);
@@ -2357,11 +2363,7 @@ test("the header's menu closes once Tab takes the focus out of it, leaving the f
       trigger,
       "the menu stayed open once Tab took the focus out of it at 390 px"
     ).toHaveAttribute("aria-expanded", "false");
-    await expect
-      .poll(() => focusUnseen(page, menuId), {
-        message: "the control the first Tab out of the menu reached is not in sight at 390 px",
-      })
-      .toEqual([]);
+    await expectFocusInSight(page, menuId, "the first Tab out of the menu left the focus unseen");
     // On from there to the title's heading and then the Status, each found by its role and name.
     for (const [what, target] of [
       ["the title's heading", header.getByRole("heading", { level: 1 })],
@@ -2370,11 +2372,7 @@ test("the header's menu closes once Tab takes the focus out of it, leaving the f
       let reached = false;
       for (let press = 1; press <= 6 && !reached; press += 1) {
         await page.keyboard.press("Tab");
-        await expect
-          .poll(() => focusUnseen(page, menuId), {
-            message: `the control Tab ${press} on towards ${what} reached is not in sight at 390 px`,
-          })
-          .toEqual([]);
+        await expectFocusInSight(page, menuId, `Tab ${press} toward ${what} left the focus unseen`);
         // Each Tab moves the focus before its press resolves, so one read says where it went.
         reached = await target.evaluate((element) => element === document.activeElement);
       }
