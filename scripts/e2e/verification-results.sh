@@ -96,10 +96,11 @@ evidence=''
 timeout_hook=''
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
-# Twice the longest green run on record since #4000 added the three cases of a bare `-`, rounded
-# up to the minute: 4 green e2e.yaml jobs up to 2026-11-15 (2 of them in green runs, both on that
-# pull request), the longest proof step 148 s (run 43547760198, that pull request's own).
-proof_guard 300
+# Twice the longest green run on record, rounded up to the minute: 20 green e2e.yaml jobs (4 of
+# them in green runs) up to 2026-11-18, the longest proof step 151 s (run 44096585513, a nightly
+# of main that carries #4000's three cases of a bare `-`), which the 300 it had before held only
+# 1.99 times.
+proof_guard 360
 
 # DISPATCH_BIN is this script's input, read before the sweep below drops every DISPATCH_* variable.
 # VERIFICATION_RESULTS_E2E_DISPATCH_CLI, its other input, is read beside it; the sweep leaves it.
