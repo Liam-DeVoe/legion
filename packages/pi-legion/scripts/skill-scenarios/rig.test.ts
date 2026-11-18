@@ -1268,7 +1268,7 @@ describe("launch", () => {
     );
     writeFileSync(
       path.join(bin, "bwrap"),
-      `#!/bin/bash\n: >"${run}/view"\nwhile [ "$1" != -- ]; do printf '%s\\n' "$1" >>"${run}/view"; shift; done\nshift\nexec "$@"\n`,
+      `#!/bin/bash\n: >"${run}/view"\nif [ "$1" = --args ]; then tr '\\0' '\\n' <&"$2" >>"${run}/view"; shift 2; fi\nwhile [ "$1" != -- ]; do printf '%s\\n' "$1" >>"${run}/view"; shift; done\nshift\nexec "$@"\n`,
       { mode: 0o755 }
     );
     const standIns = `
@@ -1324,6 +1324,10 @@ sleep() { command sleep 0.05; }`;
       ...["--unshare-pid", "--proc", "/proc", "--die-with-parent", "--chdir", `${run}/cwd`],
     ]);
     expect(read("session")).toBe("t-0123456789abcdef\n");
+    // The view, which names every label's checkout, is in no file of the run and on no command line
+    // the agent's /proc shows: bwrap reads it from a file under <work>, which its view hides.
+    expect(read("launch.sh")).not.toContain(checkout);
+    expect(read("launch.sh")).toContain(" --args 3 -- ");
   });
 });
 

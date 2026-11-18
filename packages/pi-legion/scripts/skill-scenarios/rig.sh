@@ -684,8 +684,11 @@ launch() {
   # are shared by every run, and in the third round 27 agents wrote scratch files there under fixed
   # names (`/tmp/lweval1_review.json` by five), which another run could read. Every label's
   # checkout is an empty tmpfs too, so no agent reads another label's texts by a path no tool call
-  # names (`find / -name …`): it runs from its label's packed plugins alone. bwrap reaches the
-  # namespaces through the user namespace AppArmor lets it make.
+  # names (`find / -name …`): it runs from its label's packed plugins alone. The view lists every
+  # label's checkout, so bwrap reads it from <work>/views/<id> (--args), which the agent's tmpfs on
+  # <work> hides, and neither launch.sh nor bwrap's own command line, which the agent's /proc shows
+  # as its process 1, holds it. bwrap reaches the namespaces through the user namespace AppArmor
+  # lets it make.
   bwrap=$(command -v bwrap) || fail "bwrap is not on PATH: a run's agent runs in a PID namespace and a view of <work> of its own"
   view=(--dev-bind / / --tmpfs "$work" --bind "$R" "$R" --bind "$R/tmp" /tmp --tmpfs /var/tmp --tmpfs /dev/shm)
   for record in "$maps"/profiles/*/checkout; do
@@ -698,6 +701,8 @@ launch() {
     [ ! -e "$dir" ] || view+=(--ro-bind "$dir" "$dir")
   done
   view+=(--unshare-pid --proc /proc --die-with-parent --chdir "$R/cwd")
+  mkdir -p "$work/views"
+  printf '%s\0' "${view[@]}" >"$work/views/${R##*/}"
   session=$tag-${R##*/}
   [ $# = 0 ] || extra=" $(printf '%q ' "$@")" extra=${extra% }
   [ ! -f "$R/system-args" ] || system=" $(<"$R/system-args")"
@@ -705,7 +710,7 @@ launch() {
 #!/usr/bin/env bash
 cd $(printf %q "$R/cwd")
 mapfile -t vars <$(printf %q "$R/pane.env")
-exec $(printf %q "$scope") --user --scope --quiet -p MemoryMax=$(printf %q "$memory_max") -p MemorySwapMax=0 -- $(printf %q "$bwrap") $(printf '%q ' "${view[@]}")-- env -i "\${vars[@]}" mise x $(printf %q "$pin") -- $(printf %q "$omp") -p "\$(cat $(printf %q "$R/prompt.txt"))"$extra$system --session-dir $(printf %q "$R/sessions") >$(printf %q "$R/out.txt") 2>&1
+exec $(printf %q "$scope") --user --scope --quiet -p MemoryMax=$(printf %q "$memory_max") -p MemorySwapMax=0 -- $(printf %q "$bwrap") --args 3 -- env -i "\${vars[@]}" mise x $(printf %q "$pin") -- $(printf %q "$omp") -p "\$(cat $(printf %q "$R/prompt.txt"))"$extra$system --session-dir $(printf %q "$R/sessions") 3<$(printf %q "$work/views/${R##*/}") >$(printf %q "$R/out.txt") 2>&1
 EOF
   chmod +x "$R/launch.sh"
   : >"$R/out.txt"
