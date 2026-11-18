@@ -44,7 +44,7 @@ type projection struct {
 	// so the report says what it checked rather than only what it found.
 	note string
 	rows string
-	// nodes is the live nodes of the kind. It names no state: liveNodes wraps it.
+	// nodes is the kind's nodes at any state. It names no state: presentNodes wraps it.
 	nodes string
 	// names is a select of one text column, the kind's row side, which the census reads once for
 	// the run (readNames) and which rows and pastBound read as $1, rather than reading it again in
@@ -605,7 +605,7 @@ func readNames(ctx context.Context, tx pgx.Tx, kind, names string) ([]string, er
 //
 // A difference is reported by its cause and by the row it was found at, in both directions: a
 // projection row naming no node, naming a node the store does not hold or naming one it holds
-// gone; a row whose shared fields disagree with its node's; and a live node no row projects.
+// gone; a row whose shared fields disagree with its node's; and a node not gone no row projects.
 //
 // Two writes can state one fact twice by design and nothing here reads wrong for it: a tuple at
 // the source_event sentinel is outside both repeat keys, and the backfill writes every fact it
@@ -707,7 +707,7 @@ func censusOfKind(ctx context.Context, tx pgx.Tx, held projection, args []any) (
 	}
 	if err := tx.QueryRow(ctx, `select
 		(select count(*) from (`+held.rows+`) rows (row_label, node_kind, node_address, digest)),
-		(select count(*) from (`+liveNodes(held)+`) nodes (id, digest)),
+		(select count(*) from (`+presentNodes(held)+`) nodes (id, digest, state)),
 		(select count(*) from (`+rowDifferences(held)+`) rows_found),
 		(select count(*) from (`+nodeDifferences(held)+`) nodes_found),
 		(`+pastBound+`)`, args...,
@@ -730,45 +730,51 @@ func censusOfKind(ctx context.Context, tx pgx.Tx, held projection, args []any) (
 	return kind, nil
 }
 
-// liveNodes is the kind's node side bound to the live state: a node the store holds gone is no
-// node a row may project, and the row side holds it to that separately (goneNodeCause).
-func liveNodes(held projection) string {
-	return `select id, digest from (` + held.nodes + `) node (id, digest)
-		where exists (select 1 from graph_nodes live
-		              where live.kind = '` + held.nodeKind + `' and live.id = node.id
-		                and live.state = '` + graphstore.StateLive + `')`
+// presentNodes is the kind's node side bound to every state but gone: a node the store holds gone
+// is no node a row may project, and the row side holds it to that separately. Any other state is
+// a node a row projects, so a state a later release adds, such as dispatch://INFRA-1950's
+// proposed, settled and overtaken (R8 of dispatch://INFRA-1149), reads here as live does. It
+// answers each node's state beside its digest, which nodeDifferences names a node with.
+func presentNodes(held projection) string {
+	return `select node.id, node.digest, present.state from (` + held.nodes + `) node (id, digest)
+		join graph_nodes present on present.kind = '` + held.nodeKind + `' and present.id = node.id
+		                        and present.state <> '` + graphstore.StateGone + `'`
 }
 
 // rowDifferences reads the row side against the store: every row that names no node, names one
 // the store does not hold, names one it holds gone, or disagrees with its node's digest. The
 // gone test is its own cause rather than a missing node, because a row projecting a node the
-// store has ended is a different defect from a row projecting nothing.
+// store has ended is a different defect from a row projecting nothing, and it is the one test
+// of a node's state here: a row may project a node at any other state.
 func rowDifferences(held projection) string {
 	return `
 		select case
 			when row.node_kind is null or row.node_address is null then 'the row names no node'
 			when node.kind is null then 'the row names a node the store does not hold'
-			when node.state <> '` + graphstore.StateLive + `'
+			when node.state = '` + graphstore.StateGone + `'
 				then 'the row names a node the store holds ' || node.state
 			else 'the row and its node disagree: the row digests ' || row.digest
-			     || ' and the node ' || coalesce(live.digest, '(none)')
+			     || ' and the node ' || coalesce(present.digest, '(none)')
 		end,
 		row.row_label
 		from (` + held.rows + `) row (row_label, node_kind, node_address, digest)
 		left join graph_nodes node on node.kind = row.node_kind and node.id = row.node_address
-		left join (` + liveNodes(held) + `) live (id, digest) on live.id = row.node_address
+		left join (` + presentNodes(held) + `) present (id, digest, state) on present.id = row.node_address
 		where row.node_kind is null or row.node_address is null or node.kind is null
-		   or node.state <> '` + graphstore.StateLive + `'
-		   or row.digest is distinct from live.digest
+		   or node.state = '` + graphstore.StateGone + `'
+		   or row.digest is distinct from present.digest
 		order by 2, 1`
 }
 
-// nodeDifferences reads the store against the row side: every live node of the kind no row
-// projects.
+// nodeDifferences reads the store against the row side: every node of the kind not gone that no
+// row projects, named with the state it is at, so a live one reads as `a live node no row
+// projects`.
 func nodeDifferences(held projection) string {
 	return `
-		select 'a live node no row projects', '` + held.nodeKind + ` ' || node.id
-		from (` + liveNodes(held) + `) node (id, digest)
+		select case when node.state ~ '^[aeiou]' then 'an ' else 'a ' end || node.state
+		       || ' node no row projects',
+		       '` + held.nodeKind + ` ' || node.id
+		from (` + presentNodes(held) + `) node (id, digest, state)
 		where not exists (
 			select 1 from (` + held.rows + `) row (row_label, node_kind, node_address, digest)
 			where row.node_kind = '` + held.nodeKind + `' and row.node_address = node.id)

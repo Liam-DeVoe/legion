@@ -90,9 +90,9 @@ var personNodesTied = `
 	)`
 
 // personPageShownQuery is whether the page of the person $1 names answers anyone but that person
-// (R15 of dispatch://INFRA-1149): the store holds the person live and visible to the reader whose
-// acting credential is bound at $2 (refs.VisibilityArg), and the person is tied to at least one
-// node, not gone, that the reader may see (personNodesTied). Each tied node is held to the
+// (R15 of dispatch://INFRA-1149): the store holds the person, not gone, and visible to the reader
+// whose acting credential is bound at $2 (refs.VisibilityArg), and the person is tied to at least
+// one node, not gone, that the reader may see (personNodesTied). Each tied node is held to the
 // predicate of its own kind, read off the one row the store holds of it (refs.VisibleRow), and a
 // node the store holds no row of is visible, as refs.VisibleKind reads one. A node of a kind the
 // registry holds no predicate for counts for nobody, as VisibleKind refuses one: $3 is every kind
@@ -102,7 +102,7 @@ var personNodesTied = `
 var personPageShownQuery = personNodesTied + `
 	select exists (
 		select 1 from graph_nodes
-		where kind = '` + graphstore.KindPerson + `' and id = $1 and state = '` + graphstore.StateLive + `'
+		where kind = '` + graphstore.KindPerson + `' and id = $1 and state <> '` + graphstore.StateGone + `'
 		  and ` + refs.VisibleRow("graph_nodes", "$2") + `
 	) and exists (
 		select 1
