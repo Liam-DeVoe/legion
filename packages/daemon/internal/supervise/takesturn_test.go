@@ -9,11 +9,14 @@ package supervise
 // act, not from the start.
 
 import (
+	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -578,34 +581,98 @@ func TestTurnOutcomeAheadOfItsTurnStartIsFinishedWhenTheStoreRefusedItsStartAndF
 	}
 }
 
-// refusedTakeBack is a claim whose take's turn ended in a provider error of status, reported as
-// the store went away: it took the report's own write and refused every write after it, so the
-// report is applied and the take-back, the ladder's step and any failure of the claim are written
-// nowhere. ahead is a report that comes ahead of its turn's start frame, so the store refused the
-// start the report made too (startedUnseen); otherwise the report follows the turn's end. The
-// store answers again after the report. Across a restart, the daemon restarts over what the store
-// holds and the worker's shim says hello: the claim's first decision.
-func refusedTakeBack(t *testing.T, status int, restart, ahead bool) *harness {
+// cutOffStore is the store going away part way through a decision: it takes the next takes
+// writes of the claim and its delivery, whatever their kind, and refuses each one after them with
+// errBoom. A negative takes is a store that takes every write.
+type cutOffStore struct {
+	Store
+	mu    sync.Mutex
+	takes int
+}
+
+func (s *cutOffStore) set(takes int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.takes = takes
+}
+
+func (s *cutOffStore) admit() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case s.takes < 0:
+		return nil
+	case s.takes == 0:
+		return errBoom
+	}
+	s.takes--
+	return nil
+}
+
+func (s *cutOffStore) PutClaim(ctx context.Context, c Claim) error {
+	if err := s.admit(); err != nil {
+		return err
+	}
+	return s.Store.PutClaim(ctx, c)
+}
+
+func (s *cutOffStore) PutDelivery(ctx context.Context, token claim.Token, d Delivery) error {
+	if err := s.admit(); err != nil {
+		return err
+	}
+	return s.Store.PutDelivery(ctx, token, d)
+}
+
+func (s *cutOffStore) PutClaimAndDelivery(ctx context.Context, c Claim, d Delivery) error {
+	if err := s.admit(); err != nil {
+		return err
+	}
+	return s.Store.PutClaimAndDelivery(ctx, c, d)
+}
+
+func (s *cutOffStore) RetireDelivery(ctx context.Context, c Claim, deliveryID string) error {
+	if err := s.admit(); err != nil {
+		return err
+	}
+	return s.Store.RetireDelivery(ctx, c, deliveryID)
+}
+
+// providerErrorAsTheStoreGoes is a claim whose take's turn ended in a provider error of status,
+// reported as the store went away: from the report on, the store takes takes writes — the
+// report's own the first of them — and refuses each one after them, and it answers again once
+// the report is decided. ahead is a report that comes ahead of its turn's start frame, so the
+// report starts that turn itself (startedUnseen); otherwise the report follows the turn's end.
+// It answers the task's number and the report's error.
+func providerErrorAsTheStoreGoes(t *testing.T, status, takes int, ahead bool) (*harness, uint64, error) {
 	t.Helper()
+	cut := &cutOffStore{takes: -1}
+	through := func(d *Deps) { cut.Store, d.Store = d.Store, cut }
 	var h *harness
 	if ahead {
-		h = newHarnessOf(t, queuedClaim(), currentPlugin)
+		h = newHarnessOf(t, queuedClaim(), currentPlugin, through)
 		h.reach(StateReady)
 		h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText, Phase: phase.Implementing, Generation: 7, Entry: 1})
 	} else {
-		h = workingClaim(t, currentPlugin)
+		h = workingClaim(t, currentPlugin, through)
 		h.mustQuiet(StreamTurnEnd{Claim: h.token})
 	}
 	number := h.pending().Number
-	h.store.fail("PutDelivery", errBoom)
-	// PutClaim calls onPut holding the store's lock, after its own failure check.
-	h.store.onPut = func(Claim) { h.store.failures["PutClaim"] = errBoom }
-	if err := h.reportTurn(number, &ProviderError{Message: "the provider answered an error", Status: status}); !errors.Is(err, errBoom) {
+	cut.set(takes)
+	err := h.reportTurn(number, &ProviderError{Message: "the provider answered an error", Status: status})
+	cut.set(-1)
+	return h, number, err
+}
+
+// refusedTakeBack is providerErrorAsTheStoreGoes with a store that takes the report's own write
+// and refuses every write after it, so the report is applied and the take-back, the ladder's step
+// and any failure of the claim are written nowhere. Across a restart, the daemon restarts over
+// what the store holds and the worker's shim says hello: the claim's first decision.
+func refusedTakeBack(t *testing.T, status int, restart, ahead bool) *harness {
+	t.Helper()
+	h, number, err := providerErrorAsTheStoreGoes(t, status, 1, ahead)
+	if !errors.Is(err, errBoom) {
 		t.Fatalf("the report whose take-back the store refused = %v, want %v", err, errBoom)
 	}
-	h.store.onPut = nil
-	h.store.fail("PutClaim", nil)
-	h.store.fail("PutDelivery", nil)
 	stored := h.store.load(h.token)
 	if p := stored.Pending; p == nil || !p.taken() || p.turnStarted() == ahead || p.ProviderErrorRetries != 0 {
 		t.Fatalf("the store holds %+v, want its take standing, its turn started %v, with no ladder step", p, !ahead)
@@ -645,11 +712,20 @@ func (h *harness) wantLadderOwedLine(restart bool) {
 // keeps the handshake's confirmation of the take's entry, as any provider error's does: the turn
 // started on the take's text (giveBackTake).
 //
+// The take-back, the ladder's step and the claim's run are one write (takeToLadder), so they land
+// together or not at all: a store that goes away right after that write leaves a restarted
+// daemon a task taken back with its step, owing nothing, whose next take carries the provider
+// error's note; one that refuses it leaves the take standing with no step, which the restart owes
+// the ladder (above).
+//
 // The negative controls: the ladder stopped at the take-back's refused write (takeToLadder
 // returning it) leaves the task in the same daemon with no step and no wait, and the claim a 400
 // ended running; the restored machine with no ladder owed (NewMachine without ladderOwed) leaves
-// the take standing, its turn over, with nothing to take it back; and a restored take awaiting
-// its turn taken back with that turn unstarted gives back the entry's confirmation.
+// the take standing, its turn over, with nothing to take it back; a restored take awaiting its
+// turn taken back with that turn unstarted gives back the entry's confirmation; and the take-back
+// written apart from the step (takeBack's own write, then providerErrorClears'), with the second
+// write refused, leaves the store a take-back with no step, which a restart gives again with no
+// note.
 func TestTurnOutcomeOfAProviderErrorWhoseTakeBackTheStoreRefusedTakesTheTaskToTheLadder(t *testing.T) {
 	clears := func(t *testing.T, h *harness, restart bool) {
 		t.Helper()
@@ -691,4 +767,21 @@ func TestTurnOutcomeOfAProviderErrorWhoseTakeBackTheStoreRefusedTakesTheTaskToTh
 			h.wantLadderOwedLine(restart)
 		})
 	}
+	t.Run("across a daemon restart, the take-back and the ladder's step written together", func(t *testing.T) {
+		h, _, _ := providerErrorAsTheStoreGoes(t, 529, 2, false)
+		stored := h.store.load(h.token)
+		if p := stored.Pending; p == nil || p.taken() || p.ProviderErrorRetries != 1 || p.ProviderErrorNote == "" || stored.ProviderErrorRun != 1 {
+			t.Fatalf("the store holds a run of %d and %+v, want the take-back, the ladder's step and the run written together",
+				stored.ProviderErrorRun, p)
+		}
+		h.restart()
+		h.connect()
+		if taken := h.wantPrompts(2)[1]; !strings.Contains(taken.Message, providerErrorCause(529)) {
+			t.Fatalf("the take after the restart was answered %q, want the provider error's note in front of the task", taken.Message)
+		}
+		if p := h.pending(); p.ProviderErrorRetries != 1 || h.claim().ProviderErrorRun != 1 {
+			t.Fatalf("after the restart the task is %+v with a run of %d, want one step and a run of one", p, h.claim().ProviderErrorRun)
+		}
+		h.wantLadderOwedLine(false)
+	})
 }

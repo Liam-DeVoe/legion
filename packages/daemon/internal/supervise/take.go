@@ -1220,14 +1220,22 @@ func (c Claim) sawLatestWrite() bool {
 // What the take-back establishes holds in memory at once, whether or not its write lands: a
 // write that fails leaves the delivery unsaved, and settle writes it again, with the claim.
 func (m *Machine) takeBack(ctx context.Context, cause string) error {
-	m.disarm(TimerFinish)
-	p := m.claim.Pending
-	claimMoved := m.clearTake(p, cause)
-	m.rewrite = valueRewrite{number: p.Number, cause: TaskValueRetake}
-	if claimMoved {
+	if m.takeBackInMemory(cause) {
 		return m.putClaimAndPendingOwed(ctx)
 	}
 	return m.putPending(ctx)
+}
+
+// takeBackInMemory is takeBack with no write: the take goes from the delivery and the claim in
+// memory, for a caller that writes them in a write of its own, together with what it decides
+// next — the ladder's step, which must land with the take-back or not at all (takeToLadder). It
+// answers whether the claim moved with it (giveBackTake).
+func (m *Machine) takeBackInMemory(cause string) (claimMoved bool) {
+	m.disarm(TimerFinish)
+	p := m.claim.Pending
+	claimMoved = m.clearTake(p, cause)
+	m.rewrite = valueRewrite{number: p.Number, cause: TaskValueRetake}
+	return claimMoved
 }
 
 // startTakesTurn is the write of a turn's start that is the turn of the pending task's accepted

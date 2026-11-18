@@ -90,7 +90,7 @@ func TestAnUnappliedTurnOutcomeRoundTripsMarked(t *testing.T) {
 // reads what an applied report did to the claim's pending task (supervise's owedReport). An entry
 // an older daemon stored without them reads back with none of them, as a report that named no
 // task and no provider error, which is how that daemon read it.
-func TestAClaimsTurnOutcomesKeepTheTaskAndTheProviderErrorTheyNamed(t *testing.T) {
+func TestTaskNumberAndProviderErrorOfAClaimsTurnOutcomesAreKept(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")

@@ -75,9 +75,16 @@ func (m *Machine) providerErrored(ctx context.Context, pe ProviderError) error {
 }
 
 // takeToLadder is what a provider error's turn does to the task whose take it ran on, once the
-// claim's run of such turns counts it (providerErrored): the take goes back (takeBack), and the
-// status either holds the issue, failing the claim, or puts the task on the ladder
+// claim's run of such turns counts it (providerErrored): the take goes back, and the status
+// either holds the issue, failing the claim, or puts the task on the ladder
 // (providerErrorClears).
+//
+// On the ladder the take-back is written with the ladder's step and the claim's run of
+// provider-error turns in one store call (takeBackInMemory, providerErrorClears), so they land
+// together or not at all: a take-back written alone, with the step's write refused after it,
+// would leave a task a restarted daemon reads as taken back with no step — owing nothing, it
+// would be given again with no note and its sends uncounted — and the report that decided it is
+// applied, so its worker's report sent again is a repeat that decides nothing.
 //
 // Each step holds in memory whether or not its write lands, as the take-back does: a take-back
 // whose write the store refused is still a take-back, which the next decision writes (settle,
@@ -87,11 +94,12 @@ func (m *Machine) providerErrored(ctx context.Context, pe ProviderError) error {
 // is written does it from the record (Claim.owedReport, Machine.ladderOwed).
 func (m *Machine) takeToLadder(ctx context.Context, status int) error {
 	cause := providerErrorCause(status)
-	err := m.takeBack(ctx, takenBackProviderError)
 	if holdsTheIssue(status) {
+		err := m.takeBack(ctx, takenBackProviderError)
 		return errors.Join(err, m.fail(ctx, CauseProviderError, "a provider error that cannot clear ended this claim's turn: "+cause))
 	}
-	return errors.Join(err, m.providerErrorClears(ctx, cause))
+	m.takeBackInMemory(takenBackProviderError)
+	return m.providerErrorClears(ctx, cause)
 }
 
 // ladderOwedLine is the line of a claim a daemon start restored over a provider error's report
@@ -125,12 +133,13 @@ func holdsTheIssue(status int) bool {
 
 // providerErrorClears keeps the task on the claim and arms the next step of the ladder for it:
 // the delivery counts one more attempt, carries the sentence the next accepted take of it is
-// given (Delivery.ProviderErrorNote), and is written with the claim's run of provider-error turns
-// in one transaction. Its timer's firing is what writes the value again (promptRetryDue); until
-// then a take of it is refused (claimHold), and a newer task queued meanwhile replaces it rather
-// than waiting behind it (queue). The step and its wait stand whether or not the write lands: a
-// write the store refused leaves the delivery unsaved and the claim write owed, and the next
-// decision makes it (settle, repair) — the wait's own firing, at the latest.
+// given (Delivery.ProviderErrorNote), and is written with the take-back that came before it and
+// the claim's run of provider-error turns in one store call (takeToLadder). Its timer's firing is
+// what writes the value again (promptRetryDue); until then a take of it is refused (claimHold),
+// and a newer task queued meanwhile replaces it rather than waiting behind it (queue). The step
+// and its wait stand whether or not the write lands: a write the store refused leaves the
+// delivery unsaved and the claim write owed, and the next decision makes it (settle, repair) —
+// the wait's own firing, at the latest.
 func (m *Machine) providerErrorClears(ctx context.Context, cause string) error {
 	p := m.claim.Pending
 	p.ProviderErrorRetries++
