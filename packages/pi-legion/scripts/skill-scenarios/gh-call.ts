@@ -19,8 +19,12 @@ import { z } from "zod";
  * `head`, the pull request's head when the run began, the implementer's code commit. This is the
  * one schema of that file: the gh stand-in, the daemon stand-in, the pane composer
  * (worker-pane.ts) and the scorer each read it here, so no part of the run reads a world another
- * part would refuse. No key has a default: fixture_write writes all six, so a world missing one
- * is a world the rig wrote wrongly, which every reader refuses rather than guess. */
+ * part would refuse. No key of those six has a default: fixture_write writes all six, so a world
+ * missing one is a world the rig wrote wrongly, which every reader refuses rather than guess.
+ * `logins` is the bot of each role App the world's roles call GitHub as (rest-objects.ts's
+ * `roleApp`: `implement`, `review`), which every answer naming the account a call's token acts as
+ * reads (gh-threads.ts's `loginOf`); a world.json written before it named them reads every role as
+ * the world's GraphQL viewer, the review App's bot, as every world then answered. */
 export const World = z.looseObject({
   key: z.string(),
   repo: z.string(),
@@ -28,6 +32,7 @@ export const World = z.looseObject({
   branch: z.string(),
   base: z.string(),
   head: z.string(),
+  logins: z.object({ implement: z.string(), review: z.string() }).optional(),
 });
 export type World = z.infer<typeof World>;
 
@@ -56,19 +61,27 @@ export function worldOf(runDir: string, program: string): World {
 }
 
 /** Whether `arg` is the reviews route of `repo`'s pull request: `repos/<owner>/<repo>/pulls/<n>/
- * reviews`, with or without the leading slash `gh api` takes either way, and of that repository
- * alone. It is the create of a review as a POST and the read of the reviews already there as a
- * GET. A route read without the repository counts a review submitted anywhere as this round's
- * verdict, and a review of another repository's pull request approves nothing of this one: the
- * deep pass of 2026-11-10 moved a recorded submission to
- * `repos/sjawhar/legion-smoke/pulls/1/reviews` and the run still scored one. The stand-in matches
- * its routes on the pull request's number alone, so it answers such a call as GitHub would answer
- * the right one, and the agent is never told: a review this rule reads off another repository's
- * pull request is no review of this round at all. Which runs submitted to a repository their
- * world has not got, where those names came from, and why every part of the rig now reads the
- * world's own: rig.sh's worker world comment. */
+ * reviews`, with or without the leading slash `gh api` takes either way and the query string it
+ * lets a caller append, and of that repository alone. It is the create of a review as a POST and
+ * the read of the reviews already there as a GET. A route read without the repository counts a
+ * review submitted anywhere as this round's verdict, and a review of another repository's pull
+ * request approves nothing of this one: the deep pass of 2026-11-10 moved a recorded submission
+ * to `repos/sjawhar/legion-smoke/pulls/1/reviews` and the run still scored one. The stand-in
+ * matches its routes on the pull request's number alone, so it answers such a call as GitHub
+ * would answer the right one, and the agent is never told: a review this rule reads off another
+ * repository's pull request is no review of this round at all. Which runs submitted to a
+ * repository their world has not got, where those names came from, and why every part of the rig
+ * now reads the world's own: rig.sh's worker world comment.
+ *
+ * A query string on a POST is the create all the same: GitHub's REST reference reads a POST's
+ * parameters from its JSON body ("For POST, PATCH, PUT, and DELETE requests, parameters not
+ * included in the URL should be encoded as JSON", *Getting started with the REST API*) and names
+ * no query parameter of this endpoint, and gh sends the call's fields as that body whatever the
+ * path carries. Not measured, since a create is a write: GitHub's documented behaviour. Read
+ * with the path alone, a create of `…/reviews?x=1` was answered the route's frozen `{id:6001}` and
+ * exit 0 and kept no review (INFRA-764's class search of writes, 2026-11-18). */
 export function reviewsRoute(arg: string, repo: string): boolean {
-  return /^\/?repos\/(.+)\/pulls\/\d+\/reviews$/.exec(arg)?.[1] === repo;
+  return /^\/?repos\/(.+)\/pulls\/\d+\/reviews(?:\?.*)?$/.exec(arg)?.[1] === repo;
 }
 
 /** The id `arg` submits on `repo`'s pull request, or undefined when it submits none:
@@ -210,6 +223,28 @@ export function endpointOf(argv: readonly string[]): string | undefined {
  * gh takes either way and without its query string, "" for a call that names none. */
 export function endpointPath(argv: readonly string[]): string {
   return (endpointOf(argv) ?? "").replace(/^\//, "").split("?")[0] ?? "";
+}
+
+/** The flags of `gh run view` and `gh run watch` that take the argument after them as their
+ * value, as gh 2.98.0's `--help` of each names them; every other flag of the two takes none. */
+const RUN_VALUE_FLAGS = [
+  ...["-R", "--repo", "-a", "--attempt", "-j", "--job", "-q", "--jq", "--json"],
+  ...["-t", "--template", "-i", "--interval"],
+];
+
+/** The run a `gh run view` or `gh run watch` names: its first argument after the command that is
+ * no flag and no flag's value, or undefined for a call that names none, which gh refuses where no
+ * terminal can pick one (gh-standin.ts's `runRefusal`, health.ts's NO_RUN). */
+export function runNamed(argv: readonly string[]): string | undefined {
+  for (let index = 2; index < argv.length; index++) {
+    const arg = argv[index] ?? "";
+    if (arg.startsWith("-")) {
+      if (RUN_VALUE_FLAGS.includes(arg)) index++;
+      continue;
+    }
+    return arg;
+  }
+  return undefined;
 }
 
 /** A JSON object as a body's fields build it, with no prototype: a key the call names is the

@@ -225,8 +225,16 @@ import {
   takenCompletions,
 } from "./completion-answers";
 import { judgedOnDaemon, labelCheckout, labelRoutes, serves } from "./daemon-pane";
-import { endpointPath, isPost, methodOf, readWorld, reviewsRoute, submitsReview } from "./gh-call";
-import { routeOf } from "./gh-routes";
+import {
+  endpointPath,
+  isPost,
+  methodOf,
+  readWorld,
+  reviewsRoute,
+  runNamed,
+  submitsReview,
+} from "./gh-call";
+import { isObject, routeOf } from "./gh-routes";
 import { type GhSelectors, ghTargetOf, namesOwnerOutside, runSelectors } from "./gh-selectors";
 import { graphqlOf, type Recorded, type ThreadRoute, threadCall, threadState } from "./gh-threads";
 import { FIELD_REFUSED, PULL_NOT_FOUND } from "./gh-view";
@@ -593,11 +601,12 @@ const RecordedCall = z.looseObject({
 });
 type RecordedCall = z.infer<typeof RecordedCall>;
 /** A route of the world's fixtures.json, as rig.sh's fixture_write writes it and the gh stand-in
- * matches it; the stand-in rewrites the file on a body edit and keeps these three. */
+ * matches it; the stand-in rewrites the file on a body edit and keeps these four. */
 const Route = z.looseObject({
   match: z.string(),
   exit: z.number().optional(),
   stderr: z.string().optional(),
+  answer: z.string().optional(),
 });
 type Route = z.infer<typeof Route>;
 const Fixtures = z.looseObject({ routes: z.array(Route) });
@@ -618,7 +627,9 @@ const OWN_READ = /\/compare\/[^?]+\.\.\.|\/pulls\/\d+\/reviews\/\d+(?:\?|$)/;
  *     (CREATE_422); one that left a review was taken, as above;
  *   - a call a route matched is the route's refusal where the route has a status of its own (its
  *     stderr's first line; JOBS_404 for the jobs of a run and USER_403 for the user a token is,
- *     each read off the call), and otherwise was
+ *     each read off the call; and for the route whose `run` answer the stand-in refuses `gh run
+ *     view` and `gh run watch` with, RUN_404 for a call naming a run and the refusal of the
+ *     command for one naming none, read off the call by gh-call.ts's `runNamed`), and otherwise was
  *     answered, its status being its `--jq`'s or `--json`'s over that answer, gh's exit on the
  *     errors of a GraphQL answer, or the refusal production gives where the stand-in reads the
  *     route's answer from the run and finds nothing there (a review, a ref or a commit the world
@@ -654,6 +665,12 @@ function ghRefusal(
     if (call.handler === "unrouted") return UNROUTED;
     const route = routes.find((one) => one.match === call.route);
     if (route?.exit === undefined || route.exit === 0) return undefined;
+    if (route.answer === "run")
+      return runNamed(argv) !== undefined
+        ? RUN_404
+        : argv[1] === "watch"
+          ? WATCH_ID_REQUIRED
+          : VIEW_ID_REQUIRED;
     const refusal = (route.stderr ?? `exit ${route.exit}`).split("\n")[0];
     const reads = (path: RegExp) => argv[0] === "api" && argv.some((arg) => path.test(arg));
     if (refusal === "gh: Not Found (HTTP 404)" && reads(JOBS)) return JOBS_404;
@@ -735,7 +752,8 @@ function writes(call: Recorded): boolean {
 /** Rule 20: the first write of calls.jsonl that no route or answer of the world models (`writes`).
  * The gh stand-in records what answered each call (gh-standin.ts's `handler`), and a write it
  * answered with no route and no answer of its own (`unrouted`) was refused 404 where GitHub
- * answers it: the world could not take it. A record from before the stand-in kept `handler` is
+ * answers it: the world could not take it. A write it answered with a success that kept nothing
+ * of it (`keptNothing`) is named too. A record from before the stand-in kept `handler` is
  * read by the route that answered: a write the world's catch-all write route answered
  * (CATCH_ALL_WRITE), which no answer of that world took either — it filed no comment in a review
  * thread when the run's calls are replayed over the world's threads (gh-threads.ts's
@@ -759,7 +777,7 @@ export function unmodelledWrite(run: Pick<Run, "dir">): string | undefined {
   const threads = threadState(at, []);
   for (const [index, line] of readFileSync(file, "utf8").split("\n").entries()) {
     if (line.trim() === "") continue;
-    const call = JSON.parse(line) as Partial<Recorded> & { by?: string };
+    const call = JSON.parse(line) as Partial<Recorded> & { by?: string; body?: string };
     if (!Array.isArray(call.argv)) continue;
     const recorded: Recorded = { ...call, argv: call.argv };
     // The threads as the world held them before this call, moved by every call before it in the
@@ -769,6 +787,8 @@ export function unmodelledWrite(run: Pick<Run, "dir">): string | undefined {
     const named = `${CALLS}:${index + 1}, \`gh ${call.argv.join(" ").slice(0, 160)}\` of the ${call.by ?? "unnamed role"}, exited ${call.exit}`;
     if (call.handler === "unrouted")
       return `unmodelled write: ${named}: no route or answer of the world models it, so it was refused 404 where GitHub takes it`;
+    if (keptNothing(recorded, call.body, routes))
+      return `unmodelled write: ${named}: \`${call.handler}\` answered it a success that kept nothing of it, which no answer of the world models`;
     const submits =
       world !== undefined && call.argv.some((arg) => submitsReview(arg, world.repo) !== undefined);
     if (
@@ -780,6 +800,33 @@ export function unmodelledWrite(run: Pick<Run, "dir">): string | undefined {
       return `unmodelled write: ${named}: the route every write once fell to (\`${CATCH_ALL_WRITE}\`) answered it a success that changed nothing, and no answer of its world models it`;
   }
   return undefined;
+}
+
+/** Whether the gh stand-in answered `call`, a write, by what keeps nothing of it (its record's
+ * `handler`, and `body`, the pull request body it kept): a route's frozen answer (`route`), which
+ * models no write but a `gh pr edit` that kept the body it sent; the pull request's answer to a
+ * PATCH that kept no body (`pull-request`); or the graph's answer to a mutation one of whose
+ * fields the world's graph holds no answer for (`graph`). Each is a success that changed nothing,
+ * as INFRA-764's class search of writes found four spellings answered (2026-11-18): the create
+ * of `…/reviews?x=1` by the create route's frozen `{id:6001}`, a PATCH of `…/pulls/<n>?x=1` by
+ * the pull request with its old body, `gh pr edit --body ""` by the pull request's URL, and a
+ * mutation sent to `gh api /graphql` by an empty answer. The stand-in models each now, so a record
+ * holding one is a record written before it. */
+function keptNothing(
+  call: Recorded,
+  body: string | undefined,
+  routes: readonly ThreadRoute[]
+): boolean {
+  if (call.handler === "route") return body === undefined;
+  if (call.handler === "pull-request") return methodOf(call.argv) === "PATCH" && body === undefined;
+  if (call.handler !== "graph") return false;
+  const graph = routes.find((route) => isObject(route.graph))?.graph;
+  const mutation = isObject(graph) && isObject(graph.mutation) ? graph.mutation : {};
+  const operation = graphqlOf(call).operation;
+  return (
+    operation?.type === "mutation" &&
+    operation.selections.some((one) => one.kind !== "field" || !(one.name in mutation))
+  );
 }
 
 /** The run's own Dispatch server's output, under the run directory: rig.sh's own_dispatch gives

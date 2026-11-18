@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs";
 import {
   type CheckRun,
   checkRunsOn,
+  endpointOf,
   endpointPath,
   FIELD_FLAGS,
   FILE_FIELD_FLAGS,
@@ -30,7 +31,7 @@ import {
   type World,
 } from "./gh-call";
 import { argumentsOf, type GraphError, isObject, type Operation, readGraphql } from "./gh-routes";
-import { checkRunApp } from "./rest-objects";
+import { checkRunApp, roleApp } from "./rest-objects";
 
 /** A JSON object of the world's, as GitHub's schema names it: a review thread, a review comment,
  * the answer of a call. */
@@ -71,7 +72,16 @@ export function recordedCalls(record: string): Recorded[] {
  * with (gh-routes.ts's `readGraphql`), and every other field as a variable — a `-F` typed as gh
  * types one (`true`, `false`, `null`, an integer, the text of an `@file`), a `-f` as written — or
  * an `--input`'s own `variables`. `operation` is undefined for a query GitHub refuses, which it
- * runs none of — `refused` holds its errors — and for GraphQL the world does not read. */
+ * runs none of — `refused` holds its errors — and for GraphQL the world does not read.
+ *
+ * A call to the endpoint written otherwise — `gh api /graphql`, `gh api 'graphql?…'` — is no
+ * GraphQL call of gh's (gh reads one only where the endpoint is `graphql` itself) but a POST of
+ * its fields to GitHub's GraphQL endpoint, which runs the `query` field of that body and reads
+ * its variables from the body's `variables` alone, so a field gh would have sent as a variable
+ * is none. Measured on 2026-11-18 from an INFRA issue pod (implementer-reads.json): `gh api
+ * /graphql -f query='query{viewer{login}}'` and `gh api 'graphql?x=1' …` answered the viewer as
+ * `gh api graphql` does, and `gh api /graphql -f query='query($n:Int!){…}' -F n=2827` was answered
+ * `Variable $n of type Int! was provided invalid value`. */
 export function graphqlOf(call: Recorded): {
   operation: Operation | undefined;
   variables: Record<string, unknown>;
@@ -81,7 +91,7 @@ export function graphqlOf(call: Recorded): {
   const sources = call.files ?? {};
   let query = "";
   let variables: Record<string, unknown> = {};
-  if (flagValue(argv, ["--input"]) !== undefined) {
+  if (flagValue(argv, ["--input"]) !== undefined || endpointOf(argv) !== "graphql") {
     const sent = sentBody(call) ?? {};
     if (typeof sent.query === "string") query = sent.query;
     if (isObject(sent.variables)) variables = sent.variables;
@@ -140,11 +150,26 @@ export interface ThreadWorld {
 /** The login the run's token acts as: the world's GraphQL `viewer`, which GitHub answers a role
  * App's token with its bot's login, where its REST `user` is GitHub's 403 to an App (measured on
  * 2026-11-17 from a Legion pod: `gh api user` exit 1, `Resource not accessible by integration`;
- * `gh api graphql -f query='query{viewer{login}}'` the App's bot). */
+ * `gh api graphql -f query='query{viewer{login}}'` the App's bot). It is the review App's bot,
+ * which a call naming no role, and a world naming no App's (`loginOf`), acts as. */
 export function worldLogin(routes: readonly ThreadRoute[]): string {
   const graph = routes.find((route) => isObject(route.graph))?.graph;
   const query = isObject(graph) && isObject(graph.query) ? graph.query : {};
   return isObject(query.viewer) && typeof query.viewer.login === "string" ? query.viewer.login : "";
+}
+/** The login a call of `role`'s pane acts as: the bot of the App whose installation token that
+ * pane holds (rest-objects.ts's `roleApp`: the implement App for the implementer and the merger,
+ * the review App for every other role), as world.json names each App's (`logins`), and the
+ * world's own (`worldLogin`) for a call naming no role or a world naming no App's. GitHub answers
+ * each token as its own App's bot — measured on 2026-11-18 from two INFRA issue pods, `gh api
+ * graphql -f query='{viewer{login}}'` read the review App's bot with the tester's token
+ * (prod-reads-19.json) and the implement App's with the implementer's (implementer-reads.json) —
+ * so the viewer a call reads, and the author of every comment, reply, resolution and review a
+ * call makes, is that bot. Before this every role read the review App's bot, so an implementer
+ * that told its own replies by the viewer read them as the reviewer's. */
+export function loginOf(at: ThreadWorld, role: string | undefined): string {
+  const app = roleApp(role);
+  return (app === "" ? undefined : at.world?.logins?.[app]) ?? worldLogin(at.routes);
 }
 /** The pull request as the world's `gh pr view` route holds it, or an empty object. */
 export function heldPullRequest(routes: readonly ThreadRoute[]): Json {
@@ -153,15 +178,16 @@ export function heldPullRequest(routes: readonly ThreadRoute[]): Json {
 }
 /** The comments `calls` posted on the pull request's conversation, oldest first: each `gh pr
  * comment` of the world's repository and each POST of `repos/<repo>/issues/<n>/comments` exiting
- * 0, with the body it posted and when it posted it. The gh stand-in answers the conversation from
+ * 0, with the body it posted, when it posted it and the role whose pane posted it (`by`, whose App
+ * GitHub names the comment's author, `loginOf`). The gh stand-in answers the conversation from
  * these and the HTTP stand-in counts them on the pull request, so the two read one conversation. */
 export function conversationOf(
   world: World | undefined,
   calls: readonly Recorded[]
-): { body: string; at: string }[] {
+): { body: string; at: string; by: string | undefined }[] {
   if (world === undefined) return [];
   const path = `repos/${world.repo}/issues/${world.pr}/comments`;
-  const posted: { body: string; at: string }[] = [];
+  const posted: { body: string; at: string; by: string | undefined }[] = [];
   for (const call of calls) {
     const { argv } = call;
     if (call.as !== "gh" || call.exit !== 0) continue;
@@ -181,7 +207,7 @@ export function conversationOf(
       const sent = sentBody({ argv, stdin: call.stdin, files: call.files }) ?? {};
       text = typeof sent.body === "string" ? sent.body : undefined;
     }
-    if (text !== undefined) posted.push({ body: text, at: call.at ?? "" });
+    if (text !== undefined) posted.push({ body: text, at: call.at ?? "", by: call.by });
   }
   return posted;
 }
@@ -213,10 +239,12 @@ export const OWN_REVIEW = 6_000_000;
 const FIRST_COMMENT = 9001;
 /** The pull request's review threads as they stand (`threadState`), each in the shape GitHub's
  * GraphQL answers a `PullRequestReviewThread` in, with its comments as `PullRequestReviewComment`s,
- * and the databaseId the next comment the run makes is given. */
+ * the databaseId the next comment the run makes is given, and how many reviews the run has
+ * created so far (`createsReview`), which numbers the next one (`createdReviewId`). */
 export interface Threads {
   readonly list: Json[];
   next: number;
+  reviews: number;
 }
 /** A number GitHub reads out of a field: a JSON number, or the digits a `-f` field sends as text,
  * which gh sends as a string and GitHub reads as the number it names. */
@@ -253,15 +281,40 @@ function seededThreads(routes: readonly ThreadRoute[]): Json[] {
 export function threadState(at: ThreadWorld, calls: readonly Recorded[]): Threads {
   const list = seededThreads(at.routes);
   const seeded = list.flatMap(commentsOf).map((comment) => numberOf(comment.databaseId) ?? 0);
-  const state: Threads = { list, next: Math.max(FIRST_COMMENT - 1, ...seeded) + 1 };
+  const state: Threads = { list, next: Math.max(FIRST_COMMENT - 1, ...seeded) + 1, reviews: 0 };
   for (const call of calls) threadCall(at, state, call);
   return state;
 }
+/** Whether `call` created a review on `repo`'s pull request: a POST of its reviews route
+ * (gh-call.ts's `reviewsRoute`) the gh stand-in answered with a review (the record's `review`). A
+ * create GitHub refuses left none, and a submit is no create. */
+export function createsReview(call: Recorded, repo: string): boolean {
+  return (
+    call.review !== undefined &&
+    isPost(call.argv) &&
+    call.argv.some((arg) => reviewsRoute(arg, repo)) &&
+    !call.argv.some((arg) => submitsReview(arg, repo) !== undefined)
+  );
+}
+/** The id GitHub gives the review `call` creates, the run having created `earlier` before it: the
+ * id the world's create route answers with (rig.sh's fixture_write: 6001, approved_world's 5002),
+ * counted on by one for each review the run created before, since GitHub gives every review an id
+ * of its own. Every create once took the route's one id, so a second create replaced the first in
+ * every read by id, in the REST list and in `gh pr view`, while the review decision counted both
+ * (INFRA-764's class search of writes, 2026-11-18). Undefined where the route answers no id. */
+export function createdReviewId(
+  at: ThreadWorld,
+  call: Pick<Recorded, "route">,
+  earlier: number
+): number | undefined {
+  const base = numberOf(routeAnswer(at.routes, call.route)?.id);
+  return base === undefined ? undefined : base + earlier;
+}
 /** A review comment the run makes, as GitHub's GraphQL answers one: its two ids, its author (the
- * login the run's token acts as), where it stands, when it was made, the review it belongs to —
- * the one it was made in, or the review of its own GitHub files it in (OWN_REVIEW) — the comment
- * it replies to and the commit it is on. A comment of a pending review is pending until that
- * review is submitted. */
+ * bot of the App the call's role acts as, `loginOf`), where it stands, when it was made, the
+ * review it belongs to — the one it was made in, or the review of its own GitHub files it in
+ * (OWN_REVIEW) — the comment it replies to and the commit it is on. A comment of a pending review
+ * is pending until that review is submitted. */
 function newComment(
   at: ThreadWorld,
   state: Threads,
@@ -273,6 +326,7 @@ function newComment(
     review: number | undefined;
     replyTo: Json | undefined;
     at: string;
+    by: string | undefined;
     pending: boolean;
   }
 ): Json {
@@ -285,7 +339,7 @@ function newComment(
     databaseId,
     fullDatabaseId: String(databaseId),
     body: made.body,
-    author: { login: worldLogin(at.routes) },
+    author: { login: loginOf(at, made.by) },
     authorAssociation: "NONE",
     path: made.path,
     line: made.line,
@@ -339,7 +393,7 @@ function newThread(comment: Json, side: unknown, startLine: number | null): Json
  * is no refusal GitHub gives, and a world that refused one gave the agent a refusal production
  * does not. The `in_reply_to` of `POST …/pulls/<n>/comments` is read the same way, which is not
  * measured. */
-function replyIn(at: ThreadWorld, state: Threads, thread: Json, body: string, made: string): Json {
+function replyIn(at: ThreadWorld, state: Threads, thread: Json, body: string, call: Recorded): Json {
   const first = commentsOf(thread)[0];
   const comment = newComment(at, state, {
     body,
@@ -348,7 +402,8 @@ function replyIn(at: ThreadWorld, state: Threads, thread: Json, body: string, ma
     commit: first === undefined ? "" : commitOf(first),
     review: undefined,
     replyTo: first,
-    at: made,
+    at: call.at ?? "",
+    by: call.by,
     pending: false,
   });
   thread.comments = [...commentsOf(thread), comment];
@@ -421,8 +476,8 @@ export function threadCall(
           comment.state = "SUBMITTED";
       return undefined;
     }
-    if (!isPost(argv) || !argv.some((arg) => reviewsRoute(arg, repo))) return undefined;
-    const review = numberOf(routeAnswer(at.routes, call.route)?.id);
+    if (!createsReview(call, repo)) return undefined;
+    const review = createdReviewId(at, call, state.reviews++);
     const sent = sentBody(call) ?? {};
     for (const one of Array.isArray(sent.comments) ? sent.comments.filter(isObject) : []) {
       const comment = newComment(at, state, {
@@ -433,6 +488,7 @@ export function threadCall(
         review,
         replyTo: undefined,
         at: made,
+        by: call.by,
         pending: call.review.state === "PENDING",
       });
       state.list.push(newThread(comment, one.side, numberOf(one.start_line) ?? null));
@@ -448,7 +504,7 @@ export function threadCall(
     if (sent.in_reply_to !== undefined && sent.in_reply_to !== null) {
       const found = threadOfComment(state, numberOf(sent.in_reply_to));
       if (found === undefined) return { refused: NOT_FOUND, documentation: COMMENT_DOCS };
-      const reply = replyIn(at, state, found.thread, body, made);
+      const reply = replyIn(at, state, found.thread, body, call);
       return { rest: { thread: found.thread, comment: reply } };
     }
     const commit = typeof sent.commit_id === "string" ? sent.commit_id : "";
@@ -468,6 +524,7 @@ export function threadCall(
       review: undefined,
       replyTo: undefined,
       at: made,
+      by: call.by,
       pending: false,
     });
     const thread = newThread(comment, sent.side, numberOf(sent.start_line) ?? null);
@@ -481,7 +538,7 @@ export function threadCall(
     const sent = sentBody(call) ?? {};
     const body = typeof sent.body === "string" ? sent.body : "";
     if (body === "") return { refused: COMMENT_BODY };
-    const reply = replyIn(at, state, found.thread, body, made);
+    const reply = replyIn(at, state, found.thread, body, call);
     return { rest: { thread: found.thread, comment: reply } };
   }
   if (endpoint !== "graphql") return undefined;
@@ -525,7 +582,7 @@ export function threadCall(
       Object.assign(thread, {
         isResolved: true,
         isCollapsed: true,
-        resolvedBy: { login: worldLogin(at.routes) },
+        resolvedBy: { login: loginOf(at, call.by) },
         viewerCanResolve: false,
         viewerCanUnresolve: true,
       });
@@ -534,7 +591,7 @@ export function threadCall(
       const body = typeof given.body === "string" ? given.body : "";
       fields.push({
         alias,
-        payload: { clientMutationId, comment: replyIn(at, state, thread, body, made) },
+        payload: { clientMutationId, comment: replyIn(at, state, thread, body, call) },
       });
     }
   }
@@ -572,23 +629,24 @@ export interface SubmittedReview {
 /** The pull request's reviews, oldest first: each the world held (its reviews route's answer,
  * rig.sh's fixture_write), by its author, then each the run's record holds, in the state and at
  * the head the gh stand-in answered its create or its submit with (`Recorded`'s `review`), by
- * the login the run's token acts as (`worldLogin`), the user the world answers each review the
- * run creates with. A pending create and its submit are two entries, of which the submit alone
- * decides anything. */
+ * the bot of the App the role that made it acts as (`loginOf`), the user the world answers each
+ * review the run creates with. A pending create and its submit are two entries, of which the
+ * submit alone decides anything. */
 export function submittedReviews(at: ThreadWorld, calls: readonly Recorded[]): SubmittedReview[] {
   const { world } = at;
   const listed =
     world === undefined
       ? undefined
       : routeFor(at.routes, ["api", `repos/${world.repo}/pulls/${world.pr}/reviews`])?.stdout;
-  const login = worldLogin(at.routes);
   return [
     ...(Array.isArray(listed) ? listed.filter(isObject) : []).map((review) => ({
       login: isObject(review.user) ? String(review.user.login ?? "") : "",
       state: String(review.state ?? ""),
       head: String(review.commit_id ?? ""),
     })),
-    ...calls.flatMap((call) => (call.review === undefined ? [] : [{ login, ...call.review }])),
+    ...calls.flatMap((call) =>
+      call.review === undefined ? [] : [{ login: loginOf(at, call.by), ...call.review }]
+    ),
   ];
 }
 /** The states a review decides its reviewer's standing with: a comment and a pending review

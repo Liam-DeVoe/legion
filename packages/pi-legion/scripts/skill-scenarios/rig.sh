@@ -3437,9 +3437,15 @@ $2
 # so the graph's `mutation` names the two GitHub serves a role and holds no answer of its own. The
 # world holds no workflow run and no commit status: its checks are check runs of no Actions
 # workflow, so the runs list and the statuses are empty, a run's jobs and `gh run view`/`gh run
-# watch` are GitHub's and gh's refusals for a run that is not there, which health.ts declares for
-# every role (GH_DECLARED's NO_RUN) since a role that meets one meets production, and the combined
-# status reads `pending`, as GitHub's does for a head with none.
+# watch` are GitHub's and gh's refusals for a run that is not there (the stand-in's `run` answer
+# prints gh's lines, the run's URL or gh's usage, as measured on 2026-11-18), which health.ts
+# declares for every role (GH_DECLARED's NO_RUN) since a role that meets one meets production,
+# and the combined status reads `pending`, as GitHub's does for a head with none. `gh auth status`
+# is gh's text for the pane's own gh configuration (the stand-in's `auth-status` answer).
+# world.json names the bot of each role App (`logins`, role_identity's names), which every
+# answer naming the account a call's token acts as — the GraphQL viewer, the author of a review,
+# a comment, a reply or a resolution the call makes — reads for the role that made the call
+# (gh-threads.ts's `loginOf`), as GitHub answers each App's token as its own bot.
 #
 # A write is answered only where the world models it, each by a route of its own that names its
 # verb (`methods`, read with the score's own reader: gh sends a call carrying a field or an
@@ -3450,9 +3456,10 @@ $2
 # with the body alone), an inline review comment, the REST reply under one, a comment on the
 # conversation (the REST POST, or `gh pr comment`) and the two GraphQL mutations the graph holds.
 # Each is answered as GitHub answers it from the world's state (gh-standin.ts): the create with
-# the review (id 6001, its URL and the user whose token the run calls with, where a world names
-# no create route of its own), whose state, head and body the stand-in adds from the call
-# (`reviewCreate`, `reviewRead`); the PATCH with the pull request carrying the body it left. Every
+# the review (id 6001 for the run's first, where a world names no create route of its own, and
+# the next id for each create after it; its URL; the bot of the App the call's role acts as),
+# whose state, head and body the stand-in adds from the call (`reviewCreate`, `reviewRead`); the
+# PATCH with the pull request carrying the body it left. Every
 # other write — another path, another verb on a read's path (each read route takes GET alone), a
 # mutation the graph holds no answer for, `gh pr review`, `ready`, `merge`, `close`, `create` and
 # an edit of anything but the body — matches no route and is refused as GitHub refuses an
@@ -3596,14 +3603,14 @@ fixture_write() {
          documentation_url:"https://docs.github.com/rest/users/users#get-the-authenticated-user",
          status:"403"},
        stderr:"gh: Resource not accessible by integration (HTTP 403)\n", exit:1},
-      {match:"^gh auth status", methods:["GET"], stdout:{login:$login}},
-      {match:"^gh run (view|watch) ([^ ]+ )*[0-9]+( |$)", stderr:"failed to get run: HTTP 404: Not Found\n", exit:1},
-      {match:"^gh run view", stderr:"run or job ID required when not running interactively\n", exit:1},
-      {match:"^gh run watch", stderr:"run ID required when not running interactively\n", exit:1}
+      {match:"^gh auth status( |$)", methods:["GET"], answer:"auth-status"},
+      {match:"^gh run (view|watch)( |$)", answer:"run", exit:1}
     ])}' >"$R/fixtures.json"
   jq -n --arg key "$worker_key" --arg repo "$worker_repo" --arg base "$worker_base" \
     --argjson pr "$worker_pr" --arg head "$C1" \
-    '{key:$key, repo:$repo, pr:$pr, branch:("legion/" + $key), base:$base, head:$head}' >"$R/world.json"
+    --arg implementer "$(role_identity implementer)" --arg reviewer "$(role_identity reviewer)" \
+    '{key:$key, repo:$repo, pr:$pr, branch:("legion/" + $key), base:$base, head:$head,
+      logins:{implement:($implementer | split("\t")[0]), review:($reviewer | split("\t")[0])}}' >"$R/world.json"
 }
 
 # concluded_checks prints the check runs GitHub reports on a head whose CI has finished, in the

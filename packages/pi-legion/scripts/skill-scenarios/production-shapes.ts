@@ -21,10 +21,14 @@
 // to (daemon-standin.test.ts). Its two maps keyed by a name of the issue's are pinned as lists
 // (`rolesListed`), so the pin names no role and no pair of phases.
 //
-//   bun production-shapes.ts <ruleset reads dir> <production reads json> <read_record json> <out json>
+//   bun production-shapes.ts <ruleset reads dir> <production reads json> <read_record json> \
+//     [<later reads json>...] <out json>
 //
-// writes the pin from the three sets of production reads INFRA-764 made, then formats it as the
-// repository's biome does.
+// writes the pin from the sets of production reads INFRA-764 made, then formats it as the
+// repository's biome does: the reads of a branch a ruleset protects, the distinct reads of round
+// 25, the issue record, and each later set of reads (`LaterReads`): the tester's reads of every
+// read the world served with no pin (prod-reads-19.json, 2026-11-18) and the implementer's of the
+// ones that set does not hold (implementer-reads.json, 2026-11-18).
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -72,17 +76,27 @@ export function pinnedReads(): PinnedRead[] {
   return [...pin().values()];
 }
 
+/** `text` with each placeholder (`<name>`) filled from `values`. A placeholder `values` does not
+ * fill throws, naming `read`. */
+function filled(read: PinnedRead, text: string, values: Readonly<Record<string, string>>): string {
+  return text.replace(/<(\w+)>/g, (whole, name: string) => {
+    const value = values[name];
+    if (value === undefined) throw new Error(`${read.name}: no value for ${whole}`);
+    return value;
+  });
+}
+
 /** `read`'s command, after its `gh`, with each placeholder filled from `values`, so a row reads
  * the world with the very call production was read with. A placeholder `values` does not fill
  * throws. */
 export function argvOf(read: PinnedRead, values: Readonly<Record<string, string>>): string[] {
-  return read.command.slice(1).map((word) =>
-    word.replace(/<(\w+)>/g, (whole, name: string) => {
-      const value = values[name];
-      if (value === undefined) throw new Error(`${read.name}: no value for ${whole}`);
-      return value;
-    })
-  );
+  return read.command.slice(1).map((word) => filled(read, word, values));
+}
+
+/** `read`'s stderr with each placeholder filled from `values`: the line gh printed, naming the
+ * world's repository, branch and the rest where production's named its own. */
+export function stderrOf(read: PinnedRead, values: Readonly<Record<string, string>>): string {
+  return filled(read, read.stderr, values);
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -246,17 +260,103 @@ const RecordRead = z.object({ note: z.string(), record: z.unknown() });
  * letters starting in lower case, each a list or not. */
 const RECORD_PATH = /^\.$|^(\.[a-z][A-Za-z]*(\[\])*)+$/;
 
+/** A later set of production reads, as INFRA-764 kept each: where it was read (`repo`), the pull
+ * requests it read (`pull_requests`, by a name of the set's own), and each read with the item of
+ * the unpinned list it reads (`item`), its name, the command it was run with, when, its exit, its
+ * stderr and its whole answer, parsed where it is JSON. */
+const LaterReads = z.object({
+  source: z.string(),
+  repo: z.string(),
+  pull_requests: z.record(z.string(), z.string()).optional(),
+  reads: z.array(
+    z.object({
+      item: z.string(),
+      name: z.string(),
+      command: z.array(z.string()),
+      read_at: z.string(),
+      exit: z.number(),
+      stderr: z.string(),
+      answer: z.unknown(),
+    })
+  ),
+});
+
+/** A commit's SHA as a command names one. */
+const SHA = /\b[0-9a-f]{40}\b/g;
+
+/** The reads of one later set (`LaterReads`), each with production's values written as
+ * placeholders in its name, its command and its stderr — which, unlike round 25's, carries them:
+ * a `gh run view` names the run's URL on the repository, and `gh pr checks` the pull request's
+ * branch — and the values the set's leak check looks for. The values are read off the set itself:
+ * the repository; each pull request's number; the two sides of a comparison its commands name,
+ * `<base>` and `<head>`, and any other commit they name as `<head>`, of which one alone may be
+ * named; each branch its answers name a pull request's head by (`headRefName`), `<branch>`, which
+ * production's names with an issue key of its deployment; an App's slug a filter names
+ * (`app/<app>`); and a file's path (`<path>`). */
+function laterReads(file: string): {
+  reads: PinnedRead[];
+  values: string[];
+  answers: unknown[];
+} {
+  const set = LaterReads.parse(JSON.parse(readFileSync(file, "utf8")));
+  const [owner = "", repo = ""] = set.repo.split("/");
+  const numbers = Object.values(set.pull_requests ?? {});
+  const commands = set.reads.map(({ command }) => command.join(" ")).join("\n");
+  const bases = new Set(
+    [...commands.matchAll(/compare\/([0-9a-f]{40})\.\.\./g)].map((found) => found[1] ?? "")
+  );
+  const heads = new Set([...commands.matchAll(SHA)].map(([sha]) => sha).filter((sha) => !bases.has(sha)));
+  if (bases.size > 1 || heads.size > 1)
+    throw new Error(`${file} names more than one base or head commit, which one placeholder cannot tell apart`);
+  const branches = new Set(
+    set.reads.flatMap(({ answer }) =>
+      isObject(answer) && typeof answer.headRefName === "string" ? [answer.headRefName] : []
+    )
+  );
+  const apps = new Set([...commands.matchAll(/\bapp\/([\w-]+)/g)].map((found) => found[1] ?? ""));
+  const placeholders = (text: string) => {
+    let written = text
+      .replaceAll(`${owner}/${repo}`, "<owner>/<repo>")
+      .replaceAll(`"${owner}"`, '"<owner>"')
+      .replaceAll(`"${repo}"`, '"<repo>"')
+      .replace(new RegExp(`^(\\w+)=${owner}$`), "$1=<owner>")
+      .replace(new RegExp(`^(\\w+)=${repo}$`), "$1=<repo>")
+      .replace(/\/contents\/[^?\s]+/, "/contents/<path>")
+      .replace(/\bapp\/[\w-]+/g, "app/<app>");
+    for (const sha of bases) written = written.replaceAll(sha, "<base>");
+    for (const sha of heads) written = written.replaceAll(sha, "<head>");
+    for (const branch of branches) written = written.replaceAll(branch, "<branch>");
+    for (const number of numbers)
+      written = written.replace(new RegExp(`(?<![\\w])${number}(?![\\w])`, "g"), "<number>");
+    return written;
+  };
+  return {
+    reads: set.reads.map((read) => ({
+      name: placeholders(read.name),
+      command: read.command.map(placeholders),
+      read_at: read.read_at,
+      exit: read.exit,
+      stderr: placeholders(read.stderr),
+      shape: shapeOf(read.answer),
+    })),
+    values: [owner, ...bases, ...heads, ...branches, ...apps],
+    answers: set.reads.map(({ answer }) => answer),
+  };
+}
+
 /** The pin of the sets of production reads: `rulesetDir`, one `NAME.json`, `NAME.err` and
  * `NAME.exit` per read of a branch a ruleset alone protects, with its README naming when they were
  * read; `readsFile`, every distinct read of a pull request INFRA-764's round 25 made, with its
  * `substitutions` naming the production values its commands carry and its README when it was read;
+ * each of `laterFiles`, a later set of reads (`laterReads`), each read with the time it was made;
  * and, where one is given, `recordFile`, one `read_record` of a Legion issue with a note naming
  * when it was read, pinned last under `RECORD_READ` by its shape alone (`rolesListed`). Throws
  * where a value of production would be left in the pin. */
 export function derive(
   rulesetDir: string,
   readsFile: string,
-  recordFile?: string
+  recordFile?: string,
+  laterFiles: readonly string[] = []
 ): z.infer<typeof Pin> {
   const readme = (dir: string) => readFileSync(path.join(dir, "README.txt"), "utf8");
   const rulesetAt = /read at (\d{4}-\d\d-\d\dT[\d:]+Z)/.exec(readme(rulesetDir))?.[1];
@@ -343,7 +443,9 @@ export function derive(
       shape: shapeOf(read.answer),
     };
   });
-  const reads = [...rulesetReads, ...prReads];
+  const later = laterFiles.map(laterReads);
+  for (const set of later) answers.push(...set.answers);
+  const reads = [...rulesetReads, ...prReads, ...later.flatMap((set) => set.reads)];
   if (recordFile !== undefined) {
     const { note, record } = RecordRead.parse(JSON.parse(readFileSync(recordFile, "utf8")));
     const readAt = /read (\d{4}-\d\d-\d\dT[\d:]+Z)/.exec(note)?.[1];
@@ -373,10 +475,23 @@ export function derive(
   if (unique.size !== reads.length) throw new Error("two reads share a name");
   const pin = {
     made_by:
-      "production-shapes.ts (bun production-shapes.ts <ruleset reads dir> <production reads json> <read_record json> <out json>), from INFRA-764's production reads of a branch a ruleset alone protects, of every distinct read round 25's runs made, and of one issue's record as the legion tool's read_record answers it, each read from a Legion issue pod with the role App token its gh gives",
+      "production-shapes.ts (bun production-shapes.ts <ruleset reads dir> <production reads json> <read_record json> [<later reads json>...] <out json>), from INFRA-764's production reads of a branch a ruleset alone protects, of every distinct read round 25's runs made, of one issue's record as the legion tool's read_record answers it, and of each read the world served with no pin, each read from a Legion issue pod with the role App token its gh gives",
     reads,
   };
-  const text = JSON.stringify(pin);
+  // gh's own words — the group and the command a call names (`gh auth status`, `gh pr view`) and
+  // a `--json` list of its fields — are never a value of production's, while an answer can hold
+  // one of them as a value (round 25's check runs name GitHub Actions' App, whose `events` list
+  // `milestone` and `status`), so they are left out of what the check reads. A `gh api` call's
+  // endpoint is no word of gh's, and stays.
+  const text = JSON.stringify({
+    ...pin,
+    reads: reads.map((read) => ({
+      ...read,
+      command: read.command.map((word, at) =>
+        read.command[at - 1] === "--json" || (read.command[1] !== "api" && at <= 2) ? "" : word
+      ),
+    })),
+  });
   const leaked = [
     owner,
     given.head,
@@ -384,6 +499,7 @@ export function derive(
     given.review,
     given.comment,
     ...ids,
+    ...later.flatMap((set) => set.values),
     ...answers.flatMap(leaves),
   ].filter((value) => value !== "" && text.includes(value));
   if (leaked.length > 0)
@@ -409,20 +525,23 @@ function leaves(answer: unknown): string[] {
 }
 
 if (import.meta.main) {
-  const [rulesetDir, readsFile, recordFile, out, ...rest] = Bun.argv.slice(2);
+  const args = Bun.argv.slice(2);
+  const [rulesetDir, readsFile, recordFile] = args;
+  const out = args.at(-1);
   if (
     rulesetDir === undefined ||
     readsFile === undefined ||
     recordFile === undefined ||
     out === undefined ||
-    rest.length > 0
+    args.length < 4
   ) {
     console.error(
-      "usage: bun production-shapes.ts <ruleset reads dir> <production reads json> <read_record json> <out json>"
+      "usage: bun production-shapes.ts <ruleset reads dir> <production reads json> <read_record json> [<later reads json>...] <out json>"
     );
     process.exit(2);
   }
-  writeFileSync(out, `${JSON.stringify(derive(rulesetDir, readsFile, recordFile), null, 2)}\n`);
+  const pin = derive(rulesetDir, readsFile, recordFile, args.slice(3, -1));
+  writeFileSync(out, `${JSON.stringify(pin, null, 2)}\n`);
   const formatted = Bun.spawnSync(["bunx", "biome", "format", "--write", out], {
     stdout: "inherit",
     stderr: "inherit",

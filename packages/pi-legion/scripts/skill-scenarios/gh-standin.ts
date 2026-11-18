@@ -80,6 +80,7 @@ import {
   methodOf,
   reviewsRoute,
   routeFor,
+  runNamed,
   sentBody,
   submitsReview,
   submittedState,
@@ -110,9 +111,12 @@ import {
 import {
   commentsOf,
   conversationOf,
+  createdReviewId,
+  createsReview,
   graphqlOf,
   heldPullRequest,
   type Json,
+  loginOf,
   mergeableOf,
   mergeStateOf,
   NOT_FOUND,
@@ -124,7 +128,6 @@ import {
   type ThreadWorld,
   threadCall,
   threadState,
-  worldLogin,
 } from "./gh-threads";
 // What gh prints for a pull request — the fields `--json` takes, the objects it reads a review and
 // a comment as, its text views — from the pull request as this stand-in reads the world's.
@@ -274,7 +277,11 @@ const readSource = async (source: string) =>
 // A pull request body edit: `gh pr edit` takes it from `-b/--body` or `-F/--body-file`, a
 // `gh api -X PATCH repos/<o>/<r>/pulls/<n>` from a `body` field or an `--input` JSON object.
 // The verb is the one the score reads (`methodOf`), so `--method=patch` is the PATCH `-X PATCH`
-// is.
+// is. The path may carry a query string, which GitHub's PATCH does not read: its REST reference
+// reads a PATCH's parameters from the JSON body and names no query parameter of "Update a pull
+// request" (GitHub's documented behaviour; a write is not measured). Read with the path alone, a
+// PATCH of `…/pulls/<n>?x=1` sending a body was answered the old body and exit 0 and kept nothing
+// (INFRA-764's class search of writes, 2026-11-18).
 const prEdit = as === "gh" && args[0] === "pr" && args[1] === "edit";
 /** A `gh pr comment`, whose `-F/--body-file` names the file of the comment it posts, which the
  * record keeps so the conversation it leaves can be read back (`conversation`). */
@@ -283,7 +290,7 @@ const prPatch =
   as === "gh" &&
   args[0] === "api" &&
   methodOf(args) === "PATCH" &&
-  args.some((arg) => /^\/?repos\/[^/]+\/[^/]+\/pulls\/\d+$/.test(arg));
+  args.some((arg) => /^\/?repos\/[^/]+\/[^/]+\/pulls\/\d+(?:\?.*)?$/.test(arg));
 let body: string | undefined;
 /** The body this call left the pull request with, once the routes serve it. */
 let kept: string | undefined;
@@ -303,8 +310,12 @@ for (const index of args.keys()) {
   const source = valueAt(args, index, INPUT_FLAGS);
   const field = valueAt(args, index, FIELD_FLAGS);
   // A flag with nothing after it, and one written against an empty value, names no file and no
-  // field.
-  if (edited) body = edited;
+  // field. `gh pr edit --body ""` names the empty body, which gh sends and GitHub keeps: gh's
+  // `pr edit` sends the body of every `--body` the call names, empty or not (its `Editable`
+  // marks a flag the call names edited, whatever its value), and GitHub's `updatePullRequest`
+  // sets the body it is sent. Not measured, since an edit is a write. The empty body was read as
+  // none, and the edit was answered the pull request's URL and exit 0 with the body unchanged.
+  if (edited !== undefined) body = edited;
   else if (bodyFile) {
     files[bodyFile] = await readSource(bodyFile);
     body = files[bodyFile];
@@ -336,10 +347,24 @@ const joined = `${as} ${args.join(" ")}`;
 /** The verb gh sends this call with, which the routes that answer one verb and not another are
  * chosen by (`Fixtures`). */
 const verb = methodOf(args);
+/** The GraphQL operation this call sends to GitHub's GraphQL endpoint, in any spelling of it:
+ * `gh api graphql`, which gh reads as a GraphQL call of its own, and `gh api /graphql` or
+ * `graphql?…`, which gh posts as any other path and GitHub runs all the same (gh-threads.ts's
+ * `graphqlOf`, which reads each as gh sends it). A mutation sent the second way was answered
+ * empty and exit 0 whatever it named, the graph never read, so one the world does not model
+ * changed nothing as a success (INFRA-764's class search of writes, 2026-11-18). */
 const graphqlCall =
-  as === "gh" && args[0] === "api" && endpointOf(args) === "graphql"
+  as === "gh" && args[0] === "api" && endpointPath(args) === "graphql"
     ? graphqlOf({ argv: args, files, stdin })
     : undefined;
+/** Whether gh reads this call as GraphQL of its own (`gh api graphql`): it pages a query that
+ * takes `$endCursor`, and it reads GitHub's `errors` as a failure, printing each message and
+ * exiting 1. Posted to the endpoint by another spelling, the call is a REST call to gh, which
+ * prints GitHub's answer, errors and all, and exits 0: measured on 2026-11-18
+ * (implementer-reads.json), a query naming a variable it was not sent printed GitHub's errors
+ * with exit 0 through `gh api /graphql` and with exit 1 and `gh: <message>` through `gh api
+ * graphql`. */
+const graphMode = graphqlCall !== undefined && endpointOf(args) === "graphql";
 /** The route `routeFor` chooses for this call by that verb, the path it writes and the call's
  * whole text (the rule the daemon stand-in reads this world by too). */
 const matched = routeFor(routes, args, as);
@@ -759,14 +784,16 @@ function reviewSubmission(): Record<string, unknown> | undefined {
   const text = typeof body.body === "string" && body.body !== "" ? body.body : pending.body;
   return reviewObject({ ...pending, state, body: text, at });
 }
+/** The role this call's pane names (LEGION_ROLE), undefined where it names none. */
+const role = process.env.LEGION_ROLE || undefined;
 /** The App whose token this call's pane calls GitHub with (rest-objects.ts's `roleApp`). */
-const viewer = roleApp(process.env.LEGION_ROLE || undefined);
+const viewer = roleApp(role);
 /** One review this run created on the world's pull request, as this stand-in answered it: the
- * world's answer to its create (the id, the URL and the user whose token the run calls with), the
- * state and the head the create — and, once it was submitted, the submit — were answered with,
- * the body it carries and when it was made, or, once it was submitted, when it was submitted, and
- * the App whose token created it (`app`). Its inline comments are threads of the pull request
- * (`threadState`). */
+ * world's answer to its create (its URL), the id GitHub gave it (gh-threads.ts's
+ * `createdReviewId`), the state and the head the create — and, once it was submitted, the submit
+ * — were answered with, the body it carries and when it was made, or, once it was submitted, when
+ * it was submitted, the App whose token created it (`app`) and that App's bot, its author
+ * (`login`). Its inline comments are threads of the pull request (`threadState`). */
 type OwnReview = {
   answer: Record<string, unknown>;
   id: string;
@@ -775,6 +802,7 @@ type OwnReview = {
   body: string;
   at: string;
   app: string;
+  login: string;
 };
 /** Whether this call sees `review`: GitHub shows a review still pending to the account that wrote
  * it alone, and every other review to every account. Before this, a reviewer's pending review was
@@ -805,15 +833,13 @@ function shown(review: OwnReview): boolean {
  * An update (`PUT …/reviews/<id>`, recorded by the route that models it, `handler`
  * `review-update`) changes the body of the review it names as it stands then — one this run
  * created, or one the world held — where GitHub took it: a body that is not empty, on a review
- * there. A later create under the same id is a new review with the body it carries. A record from
- * before the world modelled the update, whose catch-all answered one and changed nothing, holds
- * no such call.
+ * there. A record from before the world modelled the update, whose catch-all answered one and
+ * changed nothing, holds no such call.
  *
- * The id is the one the create's own answer carried, read from the route the stand-in matched
- * that call to (`routeAnswer`), since the worlds answer a create with ids of their own: 5002 in
- * `approved_world` and 6001 in every other world (rig.sh). An id written here would answer for
- * one world and refuse the other. Every create of a world is answered with that one id, so the
- * review under an id is the last this run created with it. */
+ * Each create's id is the one GitHub gives it (gh-threads.ts's `createdReviewId`): the id the
+ * world's create route answers with — 5002 in `approved_world`, 6001 in every other world
+ * (rig.sh) — counted on by one for each review the run created before it, so no create hides
+ * another. Its author is the bot of the App that created it (gh-threads.ts's `loginOf`). */
 function ownReviews(repo: string): {
   byId: Map<string, OwnReview>;
   pending: OwnReview | undefined;
@@ -827,6 +853,7 @@ function ownReviews(repo: string): {
       String(isObject(review) ? review.id : "")
     )
   );
+  let created = 0;
   for (const call of recordedCalls(RECORD)) {
     const { argv } = call;
     if (argv[0] !== "api") continue;
@@ -852,10 +879,10 @@ function ownReviews(repo: string): {
       }
       continue;
     }
-    if (!argv.some((arg) => reviewsRoute(arg, repo))) continue;
+    if (!createsReview(call, repo)) continue;
     const answer = routeAnswer(routes, call.route);
-    const id = answer?.id;
-    if (answer === undefined || (typeof id !== "number" && typeof id !== "string")) continue;
+    const id = createdReviewId(threadWorld, call, created++);
+    if (answer === undefined || id === undefined) continue;
     const review = {
       answer,
       id: String(id),
@@ -863,6 +890,7 @@ function ownReviews(repo: string): {
       body: text ?? "",
       at: call.at ?? "",
       app,
+      login: loginOf(threadWorld, call.by),
     };
     byId.set(review.id, review);
     if (review.state === "PENDING") pending.set(app, review);
@@ -983,13 +1011,14 @@ function reviewRead(): Record<string, unknown> | undefined {
   return review === undefined || !shown(review) ? undefined : reviewObject(review);
 }
 /** A review this run created as GitHub answers it (`reviewJson`): the world's answer to its
- * create, with the state, the head and the body it has now, and the time it was submitted once it
- * is no longer pending. */
+ * create, with its own id and author, the state, the head and the body it has now, and the time
+ * it was submitted once it is no longer pending. */
 function reviewObject(review: OwnReview): Record<string, unknown> {
   const { answer, state, head, body, at: made } = review;
   return reviewJson({
     ...answer,
     id: Number(review.id),
+    user: { login: review.login },
     state,
     commit_id: head,
     body,
@@ -1001,6 +1030,9 @@ function reviewObject(review: OwnReview): Record<string, unknown> {
 const threadWorld: ThreadWorld = { routes, world };
 const calls = recordedCalls(RECORD);
 const threads = threadState(threadWorld, calls);
+/** The login this call's token acts as: the bot of its pane's role App (gh-threads.ts's
+ * `loginOf`), the GraphQL viewer it reads and the author of what it writes. */
+const callerLogin = loginOf(threadWorld, role);
 /** What GitHub computes of the pull request at `head` from its base's rules, as GraphQL names it
  * (gh-threads.ts): its review decision (null for none), its merge state and whether it merges. */
 function pullStatus(head: string): {
@@ -1163,9 +1195,27 @@ function headRuns(): ReportedRun[] | undefined {
     ? undefined
     : reportedRuns(checkRunsOn(routes, repo, tip), tip);
 }
-/** `gh pr checks`, as gh prints it to a pipe: one line per check, its name, `pass`, `fail`,
- * `skipping` or `pending`, the seconds it ran and its link; and gh's own exit, 8 while a check is
- * pending and 1 once one failed. Undefined for any other call, and for a run with no world. */
+/** How gh writes the time a check ran (Go's `time.Duration` string, to the second: `8s`, `10m52s`,
+ * `1h0m5s`), and `0` for one with no start or end or that ran no time. */
+function elapsed(started: string | undefined, completed: string | undefined): string {
+  const seconds =
+    started === undefined || completed === undefined
+      ? 0
+      : Math.round((Date.parse(completed) - Date.parse(started)) / 1000);
+  if (!(seconds > 0)) return "0";
+  const [hours, minutes] = [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60];
+  if (hours > 0) return `${hours}h${minutes}m${seconds % 60}s`;
+  return minutes > 0 ? `${minutes}m${seconds % 60}s` : `${seconds}s`;
+}
+/** `gh pr checks`, as gh 2.98.0 prints it to a pipe: one line per check, five fields a tab apart —
+ * its name, `pass`, `fail`, `skipping` or `pending`, the time it ran (`elapsed`), its link and
+ * its description, which gh reads of a status and never of a check run, so the line ends in a tab
+ * — failed checks first and then by name, as gh sorts them (a pass and a skip it sorts with a
+ * comparison that orders neither, whose order this does not copy); and gh's own exit, 8 while a
+ * check is pending and 1 once one failed. Measured on 2026-11-18 (prod-reads-19.json): #4326's
+ * checks printed `changes\tpass\t8s\t<link>\t`, `dispatch-two-builds / …\tpass\t10m52s\t<link>\t`
+ * and each skipped job `skipping\t0`, exit 0; the world printed `<seconds>s` and no description.
+ * Undefined for any other call, and for a run with no world. */
 function prChecks(): { text: string; status: number } | undefined {
   if (as !== "gh" || args[0] !== "pr" || args[1] !== "checks") return undefined;
   const runs = headRuns();
@@ -1179,12 +1229,16 @@ function prChecks(): { text: string; status: number } | undefined {
           : ["success", "neutral"].includes(run.conclusion ?? "")
             ? "pass"
             : "fail";
-    const seconds =
-      run.started_at === undefined || run.completed_at === undefined
-        ? 0
-        : Math.round((Date.parse(run.completed_at) - Date.parse(run.started_at)) / 1000);
-    return { bucket, line: `${run.name}\t${bucket}\t${seconds}s\t${run.details_url}` };
+    const time = elapsed(run.started_at, run.completed_at);
+    return { bucket, run, line: `${run.name}\t${bucket}\t${time}\t${run.details_url}\t` };
   });
+  const order = (one: string, other: string) => (one < other ? -1 : one > other ? 1 : 0);
+  lines.sort(
+    (one, other) =>
+      Number(other.bucket === "fail") - Number(one.bucket === "fail") ||
+      order(one.run.name, other.run.name) ||
+      order(one.run.details_url, other.run.details_url)
+  );
   const buckets = lines.map(({ bucket }) => bucket);
   return {
     text: lines.map(({ line }) => line).join("\n"),
@@ -1268,9 +1322,10 @@ const pullAuthor = () => (isObject(pullRest().user) ? (pullRest().user as Json) 
  * every review its REST list holds (`restReviews`), in that order. */
 const reviewNodes = once(() => restReviews(heldReviews()).map(reviewNode));
 /** The conversation's comments as GitHub's GraphQL holds them (gh-view.ts's `commentNode`), read
- * by the login the call's token acts as: every comment its REST list holds (`restIssueComments`). */
+ * by the login the call's token acts as (`callerLogin`): every comment its REST list holds
+ * (`restIssueComments`). */
 const commentNodes = once(() =>
-  restIssueComments(heldIssueComments()).map((comment) => commentNode(comment, worldLogin(routes)))
+  restIssueComments(heldIssueComments()).map((comment) => commentNode(comment, callerLogin))
 );
 /** The latest review of each reviewer (gh-view.ts's `latestReviews`). */
 const latestNodes = () =>
@@ -1654,12 +1709,16 @@ function conversation() {
   return conversationOf(world, recordedCalls(RECORD));
 }
 /** The conversation comment at `index` of `conversation()`, as GitHub's REST API answers it
- * (`issue-comment`): made by the login the run's token acts as, through its App. */
-function issueComment(comment: { body: string; at: string }, index: number) {
+ * (`issue-comment`): made by the bot of the role App whose pane posted it (`by`, gh-threads.ts's
+ * `loginOf`), through that App. */
+function issueComment(
+  comment: { body: string; at: string; by: string | undefined },
+  index: number
+) {
   const id = 8001 + index;
   const url = String(heldPullRequest(routes).url ?? "");
   const api = `https://api.github.com/repos/${world?.repo}/issues`;
-  const login = worldLogin(routes);
+  const login = loginOf(threadWorld, comment.by);
   return {
     url: `${api}/comments/${id}`,
     html_url: `${url}#issuecomment-${id}`,
@@ -2048,10 +2107,15 @@ function fromRun(kind: string, held: unknown): unknown {
     case "conversation-comment": {
       const sent = sentBody({ argv: args, stdin, files }) ?? {};
       if (typeof sent.body !== "string" || sent.body === "") refuse(CONVERSATION_BODY);
-      return issueComment({ body: sent.body, at }, conversation().length);
+      return issueComment({ body: sent.body, at, by: role }, conversation().length);
     }
     case "pr-comment":
-      return issueComment({ body: "", at }, conversation().length).html_url;
+      return issueComment({ body: "", at, by: role }, conversation().length).html_url;
+    case "auth-status":
+      verbatim = true;
+      return authStatus();
+    case "run":
+      return runRefusal();
     case "review-submit":
     case "review-comment":
     case "comment-reply":
@@ -2059,6 +2123,101 @@ function fromRun(kind: string, held: unknown): unknown {
       refuse(NOT_FOUND);
   }
   return held;
+}
+/** `gh auth status` as gh 2.98.0 prints it to a pipe for the pane's own gh configuration
+ * (`$GH_CONFIG_DIR/hosts.yml`, which the daemon renders for a role's claim: packages/daemon's
+ * `ghconfig.Hosts`, daemon-pane.ts's `RIG_GH_TOKEN`): the host, the account the file names and
+ * the file, the account active, the protocol git uses, and the token masked after its last `_`,
+ * or whole with `-t`/`--show-token`; `-a`/`--active` prints the one account the same. An
+ * installation token holds no scopes, so gh prints no `Token scopes` line for it. Measured on
+ * 2026-11-18 from two INFRA issue pods (prod-reads-19.json): exit 0, nothing on stderr, and
+ * `github.com`, `  ✓ Logged in to github.com account x-access-token (<GH_CONFIG_DIR>/hosts.yml)`,
+ * `  - Active account: true`, `  - Git operations protocol: https`, `  - Token: ghs_***…` on
+ * stdout. The world printed `{"login":"widgets-reviewer[bot]"}` to every role. Any other flag
+ * (`--json`, `--hostname` of another host) is refused as a call the world does not model, and a
+ * pane with no hosts.yml is the rig's own fault, which ends the call with 2, naming the file. */
+function authStatus(): string {
+  if (args.slice(2).some((arg) => !["-a", "--active", "-t", "--show-token"].includes(arg))) {
+    handler = "unrouted";
+    refuse(NOT_FOUND);
+  }
+  const dir = process.env.GH_CONFIG_DIR ?? "";
+  const file = `${dir.replace(/\/+$/, "")}/hosts.yml`;
+  const read: unknown = existsSync(file) ? Bun.YAML.parse(readFileSync(file, "utf8")) : {};
+  const host = isObject(read) && isObject(read["github.com"]) ? read["github.com"] : {};
+  const token = typeof host.oauth_token === "string" ? host.oauth_token : "";
+  if (dir === "" || token === "") {
+    process.stderr.write(
+      `gh: ${file} names no github.com token, so gh auth status has no account to show (daemon-pane.ts's workerPane renders it)\n`
+    );
+    exit(2);
+  }
+  const prefix = token.slice(0, token.lastIndexOf("_") + 1);
+  const shown =
+    args.includes("-t") || args.includes("--show-token")
+      ? token
+      : `${prefix}${"*".repeat(token.length - prefix.length)}`;
+  return [
+    "github.com",
+    `  ✓ Logged in to github.com account ${String(host.user ?? "")} (${file})`,
+    "  - Active account: true",
+    `  - Git operations protocol: ${String(host.git_protocol ?? "https")}`,
+    `  - Token: ${shown}`,
+    "",
+  ].join("\n");
+}
+/** gh's refusal of `gh run view` and `gh run watch` naming no run, where no terminal can pick one:
+ * the line and the command's usage, measured on 2026-11-18 (implementer-reads.json). */
+const VIEW_ID_REQUIRED = `run or job ID required when not running interactively
+
+Usage:  gh run view [<run-id>] [flags]
+
+Flags:
+  -a, --attempt uint      The attempt number of the workflow run
+      --exit-status       Exit with non-zero status if run failed
+  -j, --job string        View a specific job ID from a run
+  -q, --jq expression     Filter JSON output using a jq expression
+      --json fields       Output JSON with the specified fields
+      --log               View full log for either a run or specific job
+      --log-failed        View the log for any failed steps in a run or specific job
+  -t, --template string   Format JSON output using a Go template; see "gh help formatting"
+  -v, --verbose           Show job steps
+  -w, --web               Open run in the browser
+  
+`;
+const WATCH_ID_REQUIRED = `run ID required when not running interactively
+
+Usage:  gh run watch <run-id> [flags]
+
+Flags:
+      --compact        Show only relevant/failed steps
+      --exit-status    Exit with non-zero status if run fails
+  -i, --interval int   Refresh interval in seconds (default 3)
+  
+`;
+/** `gh run view` and `gh run watch` in a world that holds no workflow run (its checks are check
+ * runs of no Actions workflow), each exit 1 with nothing on stdout: naming a run, GitHub's 404 for
+ * it as gh prints it, with the URL gh read it at, on the repository the call names (`-R`, the
+ * pane's GH_REPO, else the world's); naming none, gh's refusal and usage. Measured on 2026-11-18:
+ * `gh run view 1` and `gh run watch 1` printed `failed to get run: HTTP 404: Not Found
+ * (https://api.github.com/repos/<owner>/<repo>/actions/runs/1?exclude_pull_requests=true)`
+ * (prod-reads-19.json), and the two with no id the texts above. The world printed the first line
+ * of each alone. A job or an attempt (`--job`, `--attempt`) reads another endpoint, which is not
+ * measured, so a call naming one is refused as a call the world does not model. */
+function runRefusal(): never {
+  if (flagValue(args, ["-j", "--job", "-a", "--attempt"]) !== undefined) {
+    handler = "unrouted";
+    refuse(NOT_FOUND);
+  }
+  const id = runNamed(args);
+  if (id === undefined)
+    refuseWith(undefined, args[1] === "watch" ? WATCH_ID_REQUIRED : VIEW_ID_REQUIRED, 1);
+  const repo = onGithub(flagValue(args, REPO_FLAGS) ?? process.env.GH_REPO ?? world?.repo ?? "");
+  refuseWith(
+    undefined,
+    `failed to get run: HTTP 404: Not Found (https://api.github.com/repos/${repo}/actions/runs/${id}?exclude_pull_requests=true)\n`,
+    1
+  );
 }
 /** What the pull request is read from at `head` (rest-objects.ts's `PullFacts`): the world's
  * repository, number and branches, the base's tip on the run's remote, and how many comments its
@@ -2273,11 +2432,11 @@ if (kept !== undefined) output = withBody(output, kept);
 // three of its fields are the call's own and no world's (`reviewCreate`): the state, which is
 // `PENDING` for a create that names no event and the state its event leaves the review in for one
 // that does, the head it was created at, and its body; a review created with an event was
-// submitted by that call. The world's route carries what is the world's — the id it answers every
-// create with, the URL and the user whose token the run calls with — since a review a run created
-// has no id of this file's own. The create answered with neither state nor head is what left a
-// round reading back `{id, html_url}`: it could not tell whether its approval had been submitted,
-// and it submitted again.
+// submitted by that call. Its id is GitHub's for it (gh-threads.ts's `createdReviewId`: the
+// world's route's id, counted on for each review the run created before), its author the bot
+// whose token made the call (`callerLogin`), and the rest — its URL — the world's route's. The
+// create answered with neither state nor head is what left a round reading back `{id,
+// html_url}`: it could not tell whether its approval had been submitted, and it submitted again.
 if (
   created !== undefined &&
   typeof output === "object" &&
@@ -2286,8 +2445,11 @@ if (
 ) {
   handler = "review create";
   const { state, head, body: written } = created;
+  const id = createdReviewId(threadWorld, { route: route?.match ?? null }, threads.reviews);
   output = reviewJson({
     ...output,
+    ...(id === undefined ? {} : { id }),
+    user: { login: callerLogin },
     state,
     body: written,
     ...(head === undefined ? {} : { commit_id: head }),
@@ -2433,10 +2595,18 @@ function graphAnswer(
       files: { get: prFiles, enumerable: true },
     }
   );
-  const root = { ...query, repository: { ...repository, pullRequest: pullNode } };
+  // The viewer is the bot of the App whose token this call's pane holds (gh-threads.ts's
+  // `loginOf`): every role read the review App's, the one the world's graph names.
+  const root = {
+    ...query,
+    viewer: { ...(isObject(query.viewer) ? query.viewer : {}), login: callerLogin },
+    repository: { ...repository, pullRequest: pullNode },
+  };
   const variables = { ...call.variables };
   const pages =
-    args.includes("--paginate") && operation.variables.some(({ name }) => name === "endCursor");
+    graphMode &&
+    args.includes("--paginate") &&
+    operation.variables.some(({ name }) => name === "endCursor");
   const answers: GraphAnswer[] = [];
   for (let page = 0; page < 100; page++) {
     const answer = executeGraphql(operation, root, variables);
@@ -2519,8 +2689,10 @@ else text = texts.join("\n");
 // own, then `gh: ` and each error's message on a line of its own, and exits 1: measured on
 // 2026-11-17, a query naming two pull requests GitHub has not got printed its body, then `gh:
 // Could not resolve to a PullRequest with the number of 999999.` and on the next line the second
-// message alone (and so did the two fields of a query its schema has not got).
-const graphErrors = (graphPages ?? []).flatMap((page) => page.errors ?? []);
+// message alone (and so did the two fields of a query its schema has not got). gh reads the
+// errors so only where it reads the call as GraphQL (`graphMode`); posted by another spelling of
+// the endpoint, the body is the whole answer and the call exits 0.
+const graphErrors = graphMode ? (graphPages ?? []).flatMap((page) => page.errors ?? []) : [];
 if (text !== "")
   process.stdout.write(
     (verbatim || graphErrors.length > 0) && filter === undefined

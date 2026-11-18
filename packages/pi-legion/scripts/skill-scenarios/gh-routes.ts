@@ -274,7 +274,9 @@ export type Selection =
 export interface Operation {
   readonly type: "query" | "mutation" | "subscription";
   readonly name: string | undefined;
-  readonly variables: readonly { name: string; type: string }[];
+  /** Each variable the operation declares, its type and where its `$` stands, which GitHub's
+   * refusal of a variable the call does not send names. */
+  readonly variables: readonly { name: string; type: string; loc: Location }[];
   readonly selections: readonly Selection[];
 }
 
@@ -286,7 +288,7 @@ export interface Operation {
 export interface GraphError {
   readonly type?: string;
   readonly path?: readonly string[];
-  readonly extensions?: Readonly<Record<string, string>>;
+  readonly extensions?: Readonly<Record<string, unknown>>;
   readonly locations?: readonly Location[];
   readonly message: string;
 }
@@ -587,10 +589,11 @@ function parseDocument(text: string): Operation {
     const type = start.kind === "LCURLY" ? "query" : (start.text as Operation["type"]);
     if (start.kind !== "LCURLY") advance();
     const named = at("LPAREN") || at("LCURLY") || at("DIR_SIGN") ? undefined : name();
-    const variables: { name: string; type: string }[] = [];
+    const variables: { name: string; type: string; loc: Location }[] = [];
     if (at("LPAREN")) {
       advance();
       while (!at("RPAREN")) {
+        const loc = token?.at ?? last;
         expect("VAR_SIGN");
         const variable = name();
         expect("COLON");
@@ -600,7 +603,7 @@ function parseDocument(text: string): Operation {
           value();
         }
         if (at("DIR_SIGN")) throw new Unread();
-        variables.push({ name: variable, type: declared });
+        variables.push({ name: variable, type: declared, loc });
       }
       advance();
     }
@@ -782,7 +785,10 @@ export function argumentsOf(
  * measured on 2026-11-17, `…{pullRequest(number:999999){number} name}}` was answered with the
  * pull request null, the repository's name, and the error's `type`, `path`, `locations` and
  * `message`, in that order); a field the graph does not hold is null. A variable the operation
- * declares non-null and the call does not send is GitHub's refusal of the whole query. */
+ * declares non-null and the call does not send is GitHub's refusal of the whole query, with no
+ * data: its `extensions` (the value it was given, null, and why that is no value), the place of
+ * its `$` and its message, in that order, as measured on 2026-11-18 (implementer-reads.json, `gh
+ * api graphql -f query='query($n:Int!){…}'` with no `n`). */
 export function executeGraphql(
   operation: Operation,
   graph: Json,
@@ -797,6 +803,11 @@ export function executeGraphql(
     return {
       errors: [
         {
+          extensions: {
+            value: null,
+            problems: [{ path: [], explanation: "Expected value to not be null" }],
+          },
+          locations: [missing.loc],
           message: `Variable $${missing.name} of type ${missing.type} was provided invalid value`,
         },
       ],
@@ -1066,7 +1077,8 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   },
   {
     route: "GH auth status",
-    answer: "world.json: the login the run's token acts as",
+    answer:
+      "the pane's gh configuration: gh's text, the account its hosts.yml names and the token masked",
     evidence: { world: "the identity read every gh session can make" },
   },
   {
@@ -1076,13 +1088,16 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   { route: "GH pr list", answer: "world.json: the one pull request open on the issue branch" },
   { route: "GH pr diff", answer: "the remote: the issue branch against the base" },
   { route: "GH pr checks", answer: "the world's check runs of the branch's tip" },
-  { route: "GH run view", answer: "gh's refusal: the world holds no workflow run" },
-  { route: "GH run watch", answer: "gh's refusal: the world holds no workflow run" },
+  { route: "GH run view", answer: "gh's refusal: the world holds no workflow run, or no run named" },
+  { route: "GH run watch", answer: "gh's refusal: the world holds no workflow run, or no run named" },
   {
     route: "GRAPHQL query repository.pullRequest.reviewThreads",
     answer: "the world's review threads and every call calls.jsonl records on them, paged",
   },
-  { route: "GRAPHQL query viewer.login", answer: "world.json: the login the run's token acts as" },
+  {
+    route: "GRAPHQL query viewer.login",
+    answer: "world.json: the bot of the App the calling role's token is",
+  },
   {
     route: "GRAPHQL query repository.pullRequest",
     answer: "world.json and the remote: the pull request at the branch's tip, in no merge queue",

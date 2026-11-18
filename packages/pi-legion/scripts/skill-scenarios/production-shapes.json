@@ -1,5 +1,5 @@
 {
-  "made_by": "production-shapes.ts (bun production-shapes.ts <ruleset reads dir> <production reads json> <read_record json> <out json>), from INFRA-764's production reads of a branch a ruleset alone protects, of every distinct read round 25's runs made, and of one issue's record as the legion tool's read_record answers it, each read from a Legion issue pod with the role App token its gh gives",
+  "made_by": "production-shapes.ts (bun production-shapes.ts <ruleset reads dir> <production reads json> <read_record json> [<later reads json>...] <out json>), from INFRA-764's production reads of a branch a ruleset alone protects, of every distinct read round 25's runs made, of one issue's record as the legion tool's read_record answers it, and of each read the world served with no pin, each read from a Legion issue pod with the role App token its gh gives",
   "reads": [
     {
       "name": "branches-main",
@@ -3935,6 +3935,1897 @@
         ".data.repository.pullRequest.reviewThreads.nodes[].comments.nodes[].body": "string",
         ".data.repository.pullRequest.reviewThreads.nodes[].comments.nodes[].author": "object",
         ".data.repository.pullRequest.reviewThreads.nodes[].comments.nodes[].author.login": "string"
+      }
+    },
+    {
+      "name": "gh api GET actions/runs",
+      "command": ["gh", "api", "repos/<owner>/<repo>/actions/runs?per_page=2"],
+      "read_at": "2026-11-18T08:43:10Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".total_count": "number",
+        ".workflow_runs": "array",
+        ".workflow_runs[]": "object",
+        ".workflow_runs[].id": "number",
+        ".workflow_runs[].name": "string",
+        ".workflow_runs[].node_id": "string",
+        ".workflow_runs[].head_branch": "string",
+        ".workflow_runs[].head_sha": "string",
+        ".workflow_runs[].path": "string",
+        ".workflow_runs[].display_title": "string",
+        ".workflow_runs[].run_number": "number",
+        ".workflow_runs[].event": "string",
+        ".workflow_runs[].status": "string",
+        ".workflow_runs[].conclusion": "null",
+        ".workflow_runs[].workflow_id": "number",
+        ".workflow_runs[].check_suite_id": "number",
+        ".workflow_runs[].check_suite_node_id": "string",
+        ".workflow_runs[].url": "string",
+        ".workflow_runs[].html_url": "string",
+        ".workflow_runs[].pull_requests": "array",
+        ".workflow_runs[].pull_requests[]": "object",
+        ".workflow_runs[].pull_requests[].url": "string",
+        ".workflow_runs[].pull_requests[].id": "number",
+        ".workflow_runs[].pull_requests[].number": "number",
+        ".workflow_runs[].pull_requests[].head": "object",
+        ".workflow_runs[].pull_requests[].head.ref": "string",
+        ".workflow_runs[].pull_requests[].head.sha": "string",
+        ".workflow_runs[].pull_requests[].head.repo": "object",
+        ".workflow_runs[].pull_requests[].head.repo.id": "number",
+        ".workflow_runs[].pull_requests[].head.repo.url": "string",
+        ".workflow_runs[].pull_requests[].head.repo.name": "string",
+        ".workflow_runs[].pull_requests[].base": "object",
+        ".workflow_runs[].pull_requests[].base.ref": "string",
+        ".workflow_runs[].pull_requests[].base.sha": "string",
+        ".workflow_runs[].pull_requests[].base.repo": "object",
+        ".workflow_runs[].pull_requests[].base.repo.id": "number",
+        ".workflow_runs[].pull_requests[].base.repo.url": "string",
+        ".workflow_runs[].pull_requests[].base.repo.name": "string",
+        ".workflow_runs[].created_at": "string",
+        ".workflow_runs[].updated_at": "string",
+        ".workflow_runs[].actor": "object",
+        ".workflow_runs[].actor.login": "string",
+        ".workflow_runs[].actor.id": "number",
+        ".workflow_runs[].actor.node_id": "string",
+        ".workflow_runs[].actor.avatar_url": "string",
+        ".workflow_runs[].actor.gravatar_id": "string",
+        ".workflow_runs[].actor.url": "string",
+        ".workflow_runs[].actor.html_url": "string",
+        ".workflow_runs[].actor.followers_url": "string",
+        ".workflow_runs[].actor.following_url": "string",
+        ".workflow_runs[].actor.gists_url": "string",
+        ".workflow_runs[].actor.starred_url": "string",
+        ".workflow_runs[].actor.subscriptions_url": "string",
+        ".workflow_runs[].actor.organizations_url": "string",
+        ".workflow_runs[].actor.repos_url": "string",
+        ".workflow_runs[].actor.events_url": "string",
+        ".workflow_runs[].actor.received_events_url": "string",
+        ".workflow_runs[].actor.type": "string",
+        ".workflow_runs[].actor.user_view_type": "string",
+        ".workflow_runs[].actor.site_admin": "boolean",
+        ".workflow_runs[].run_attempt": "number",
+        ".workflow_runs[].referenced_workflows": "array",
+        ".workflow_runs[].run_started_at": "string",
+        ".workflow_runs[].triggering_actor": "object",
+        ".workflow_runs[].triggering_actor.login": "string",
+        ".workflow_runs[].triggering_actor.id": "number",
+        ".workflow_runs[].triggering_actor.node_id": "string",
+        ".workflow_runs[].triggering_actor.avatar_url": "string",
+        ".workflow_runs[].triggering_actor.gravatar_id": "string",
+        ".workflow_runs[].triggering_actor.url": "string",
+        ".workflow_runs[].triggering_actor.html_url": "string",
+        ".workflow_runs[].triggering_actor.followers_url": "string",
+        ".workflow_runs[].triggering_actor.following_url": "string",
+        ".workflow_runs[].triggering_actor.gists_url": "string",
+        ".workflow_runs[].triggering_actor.starred_url": "string",
+        ".workflow_runs[].triggering_actor.subscriptions_url": "string",
+        ".workflow_runs[].triggering_actor.organizations_url": "string",
+        ".workflow_runs[].triggering_actor.repos_url": "string",
+        ".workflow_runs[].triggering_actor.events_url": "string",
+        ".workflow_runs[].triggering_actor.received_events_url": "string",
+        ".workflow_runs[].triggering_actor.type": "string",
+        ".workflow_runs[].triggering_actor.user_view_type": "string",
+        ".workflow_runs[].triggering_actor.site_admin": "boolean",
+        ".workflow_runs[].jobs_url": "string",
+        ".workflow_runs[].logs_url": "string",
+        ".workflow_runs[].check_suite_url": "string",
+        ".workflow_runs[].artifacts_url": "string",
+        ".workflow_runs[].cancel_url": "string",
+        ".workflow_runs[].rerun_url": "string",
+        ".workflow_runs[].previous_attempt_url": "null",
+        ".workflow_runs[].workflow_url": "string",
+        ".workflow_runs[].head_commit": "object",
+        ".workflow_runs[].head_commit.id": "string",
+        ".workflow_runs[].head_commit.tree_id": "string",
+        ".workflow_runs[].head_commit.message": "string",
+        ".workflow_runs[].head_commit.timestamp": "string",
+        ".workflow_runs[].head_commit.author": "object",
+        ".workflow_runs[].head_commit.author.name": "string",
+        ".workflow_runs[].head_commit.author.email": "string",
+        ".workflow_runs[].head_commit.committer": "object",
+        ".workflow_runs[].head_commit.committer.name": "string",
+        ".workflow_runs[].head_commit.committer.email": "string",
+        ".workflow_runs[].repository": "object",
+        ".workflow_runs[].repository.id": "number",
+        ".workflow_runs[].repository.node_id": "string",
+        ".workflow_runs[].repository.name": "string",
+        ".workflow_runs[].repository.full_name": "string",
+        ".workflow_runs[].repository.private": "boolean",
+        ".workflow_runs[].repository.owner": "object",
+        ".workflow_runs[].repository.owner.login": "string",
+        ".workflow_runs[].repository.owner.id": "number",
+        ".workflow_runs[].repository.owner.node_id": "string",
+        ".workflow_runs[].repository.owner.avatar_url": "string",
+        ".workflow_runs[].repository.owner.gravatar_id": "string",
+        ".workflow_runs[].repository.owner.url": "string",
+        ".workflow_runs[].repository.owner.html_url": "string",
+        ".workflow_runs[].repository.owner.followers_url": "string",
+        ".workflow_runs[].repository.owner.following_url": "string",
+        ".workflow_runs[].repository.owner.gists_url": "string",
+        ".workflow_runs[].repository.owner.starred_url": "string",
+        ".workflow_runs[].repository.owner.subscriptions_url": "string",
+        ".workflow_runs[].repository.owner.organizations_url": "string",
+        ".workflow_runs[].repository.owner.repos_url": "string",
+        ".workflow_runs[].repository.owner.events_url": "string",
+        ".workflow_runs[].repository.owner.received_events_url": "string",
+        ".workflow_runs[].repository.owner.type": "string",
+        ".workflow_runs[].repository.owner.user_view_type": "string",
+        ".workflow_runs[].repository.owner.site_admin": "boolean",
+        ".workflow_runs[].repository.html_url": "string",
+        ".workflow_runs[].repository.description": "null",
+        ".workflow_runs[].repository.fork": "boolean",
+        ".workflow_runs[].repository.url": "string",
+        ".workflow_runs[].repository.forks_url": "string",
+        ".workflow_runs[].repository.keys_url": "string",
+        ".workflow_runs[].repository.collaborators_url": "string",
+        ".workflow_runs[].repository.teams_url": "string",
+        ".workflow_runs[].repository.hooks_url": "string",
+        ".workflow_runs[].repository.issue_events_url": "string",
+        ".workflow_runs[].repository.events_url": "string",
+        ".workflow_runs[].repository.assignees_url": "string",
+        ".workflow_runs[].repository.branches_url": "string",
+        ".workflow_runs[].repository.tags_url": "string",
+        ".workflow_runs[].repository.blobs_url": "string",
+        ".workflow_runs[].repository.git_tags_url": "string",
+        ".workflow_runs[].repository.git_refs_url": "string",
+        ".workflow_runs[].repository.trees_url": "string",
+        ".workflow_runs[].repository.statuses_url": "string",
+        ".workflow_runs[].repository.languages_url": "string",
+        ".workflow_runs[].repository.stargazers_url": "string",
+        ".workflow_runs[].repository.contributors_url": "string",
+        ".workflow_runs[].repository.subscribers_url": "string",
+        ".workflow_runs[].repository.subscription_url": "string",
+        ".workflow_runs[].repository.commits_url": "string",
+        ".workflow_runs[].repository.git_commits_url": "string",
+        ".workflow_runs[].repository.comments_url": "string",
+        ".workflow_runs[].repository.issue_comment_url": "string",
+        ".workflow_runs[].repository.contents_url": "string",
+        ".workflow_runs[].repository.compare_url": "string",
+        ".workflow_runs[].repository.merges_url": "string",
+        ".workflow_runs[].repository.archive_url": "string",
+        ".workflow_runs[].repository.downloads_url": "string",
+        ".workflow_runs[].repository.issues_url": "string",
+        ".workflow_runs[].repository.pulls_url": "string",
+        ".workflow_runs[].repository.milestones_url": "string",
+        ".workflow_runs[].repository.notifications_url": "string",
+        ".workflow_runs[].repository.labels_url": "string",
+        ".workflow_runs[].repository.releases_url": "string",
+        ".workflow_runs[].repository.deployments_url": "string",
+        ".workflow_runs[].head_repository": "object",
+        ".workflow_runs[].head_repository.id": "number",
+        ".workflow_runs[].head_repository.node_id": "string",
+        ".workflow_runs[].head_repository.name": "string",
+        ".workflow_runs[].head_repository.full_name": "string",
+        ".workflow_runs[].head_repository.private": "boolean",
+        ".workflow_runs[].head_repository.owner": "object",
+        ".workflow_runs[].head_repository.owner.login": "string",
+        ".workflow_runs[].head_repository.owner.id": "number",
+        ".workflow_runs[].head_repository.owner.node_id": "string",
+        ".workflow_runs[].head_repository.owner.avatar_url": "string",
+        ".workflow_runs[].head_repository.owner.gravatar_id": "string",
+        ".workflow_runs[].head_repository.owner.url": "string",
+        ".workflow_runs[].head_repository.owner.html_url": "string",
+        ".workflow_runs[].head_repository.owner.followers_url": "string",
+        ".workflow_runs[].head_repository.owner.following_url": "string",
+        ".workflow_runs[].head_repository.owner.gists_url": "string",
+        ".workflow_runs[].head_repository.owner.starred_url": "string",
+        ".workflow_runs[].head_repository.owner.subscriptions_url": "string",
+        ".workflow_runs[].head_repository.owner.organizations_url": "string",
+        ".workflow_runs[].head_repository.owner.repos_url": "string",
+        ".workflow_runs[].head_repository.owner.events_url": "string",
+        ".workflow_runs[].head_repository.owner.received_events_url": "string",
+        ".workflow_runs[].head_repository.owner.type": "string",
+        ".workflow_runs[].head_repository.owner.user_view_type": "string",
+        ".workflow_runs[].head_repository.owner.site_admin": "boolean",
+        ".workflow_runs[].head_repository.html_url": "string",
+        ".workflow_runs[].head_repository.description": "null",
+        ".workflow_runs[].head_repository.fork": "boolean",
+        ".workflow_runs[].head_repository.url": "string",
+        ".workflow_runs[].head_repository.forks_url": "string",
+        ".workflow_runs[].head_repository.keys_url": "string",
+        ".workflow_runs[].head_repository.collaborators_url": "string",
+        ".workflow_runs[].head_repository.teams_url": "string",
+        ".workflow_runs[].head_repository.hooks_url": "string",
+        ".workflow_runs[].head_repository.issue_events_url": "string",
+        ".workflow_runs[].head_repository.events_url": "string",
+        ".workflow_runs[].head_repository.assignees_url": "string",
+        ".workflow_runs[].head_repository.branches_url": "string",
+        ".workflow_runs[].head_repository.tags_url": "string",
+        ".workflow_runs[].head_repository.blobs_url": "string",
+        ".workflow_runs[].head_repository.git_tags_url": "string",
+        ".workflow_runs[].head_repository.git_refs_url": "string",
+        ".workflow_runs[].head_repository.trees_url": "string",
+        ".workflow_runs[].head_repository.statuses_url": "string",
+        ".workflow_runs[].head_repository.languages_url": "string",
+        ".workflow_runs[].head_repository.stargazers_url": "string",
+        ".workflow_runs[].head_repository.contributors_url": "string",
+        ".workflow_runs[].head_repository.subscribers_url": "string",
+        ".workflow_runs[].head_repository.subscription_url": "string",
+        ".workflow_runs[].head_repository.commits_url": "string",
+        ".workflow_runs[].head_repository.git_commits_url": "string",
+        ".workflow_runs[].head_repository.comments_url": "string",
+        ".workflow_runs[].head_repository.issue_comment_url": "string",
+        ".workflow_runs[].head_repository.contents_url": "string",
+        ".workflow_runs[].head_repository.compare_url": "string",
+        ".workflow_runs[].head_repository.merges_url": "string",
+        ".workflow_runs[].head_repository.archive_url": "string",
+        ".workflow_runs[].head_repository.downloads_url": "string",
+        ".workflow_runs[].head_repository.issues_url": "string",
+        ".workflow_runs[].head_repository.pulls_url": "string",
+        ".workflow_runs[].head_repository.milestones_url": "string",
+        ".workflow_runs[].head_repository.notifications_url": "string",
+        ".workflow_runs[].head_repository.labels_url": "string",
+        ".workflow_runs[].head_repository.releases_url": "string",
+        ".workflow_runs[].head_repository.deployments_url": "string",
+        ".workflow_runs[].referenced_workflows[]": "object",
+        ".workflow_runs[].referenced_workflows[].path": "string",
+        ".workflow_runs[].referenced_workflows[].sha": "string",
+        ".workflow_runs[].referenced_workflows[].ref": "string"
+      }
+    },
+    {
+      "name": "gh api GET actions/runs/{id}/jobs (missing run)",
+      "command": ["gh", "api", "repos/<owner>/<repo>/actions/runs/1/jobs"],
+      "read_at": "2026-11-18T08:43:11Z",
+      "exit": 1,
+      "stderr": "gh: Not Found (HTTP 404)\n",
+      "shape": {
+        ".": "object",
+        ".message": "string",
+        ".documentation_url": "string",
+        ".status": "string"
+      }
+    },
+    {
+      "name": "gh api GET compare diff media",
+      "command": [
+        "gh",
+        "api",
+        "repos/<owner>/<repo>/compare/<base>...<head>",
+        "-H",
+        "Accept: application/vnd.github.v3.diff"
+      ],
+      "read_at": "2026-11-18T08:43:12Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "string"
+      }
+    },
+    {
+      "name": "gh api GET git/ref/{ref}",
+      "command": ["gh", "api", "repos/<owner>/<repo>/git/ref/heads/main"],
+      "read_at": "2026-11-18T08:43:13Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".ref": "string",
+        ".node_id": "string",
+        ".url": "string",
+        ".object": "object",
+        ".object.sha": "string",
+        ".object.type": "string",
+        ".object.url": "string"
+      }
+    },
+    {
+      "name": "gh api GET contents directory",
+      "command": ["gh", "api", "repos/<owner>/<repo>/contents/<path>?ref=<head>"],
+      "read_at": "2026-11-18T08:43:14Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "array",
+        ".[]": "object",
+        ".[].name": "string",
+        ".[].path": "string",
+        ".[].sha": "string",
+        ".[].size": "number",
+        ".[].url": "string",
+        ".[].html_url": "string",
+        ".[].git_url": "string",
+        ".[].download_url": "null",
+        ".[].type": "string",
+        ".[]._links": "object",
+        ".[]._links.self": "string",
+        ".[]._links.git": "string",
+        ".[]._links.html": "string"
+      }
+    },
+    {
+      "name": "gh api GET contents directory raw",
+      "command": [
+        "gh",
+        "api",
+        "repos/<owner>/<repo>/contents/<path>?ref=<head>",
+        "-H",
+        "Accept: application/vnd.github.raw"
+      ],
+      "read_at": "2026-11-18T08:43:15Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "array",
+        ".[]": "object",
+        ".[].name": "string",
+        ".[].path": "string",
+        ".[].sha": "string",
+        ".[].size": "number",
+        ".[].url": "string",
+        ".[].html_url": "string",
+        ".[].git_url": "string",
+        ".[].download_url": "null",
+        ".[].type": "string",
+        ".[]._links": "object",
+        ".[]._links.self": "string",
+        ".[]._links.git": "string",
+        ".[]._links.html": "string"
+      }
+    },
+    {
+      "name": "gh api user",
+      "command": ["gh", "api", "user"],
+      "read_at": "2026-11-18T08:43:15Z",
+      "exit": 1,
+      "stderr": "gh: Resource not accessible by integration (HTTP 403)\n",
+      "shape": {
+        ".": "object",
+        ".message": "string",
+        ".documentation_url": "string",
+        ".status": "string"
+      }
+    },
+    {
+      "name": "gh auth status",
+      "command": ["gh", "auth", "status"],
+      "read_at": "2026-11-18T08:43:16Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "string"
+      }
+    },
+    {
+      "name": "gh pr list (text)",
+      "command": ["gh", "pr", "list", "--repo", "<owner>/<repo>", "--limit", "3"],
+      "read_at": "2026-11-18T08:43:17Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "string"
+      }
+    },
+    {
+      "name": "gh pr list --base main (text)",
+      "command": ["gh", "pr", "list", "--repo", "<owner>/<repo>", "--base", "main", "--limit", "3"],
+      "read_at": "2026-11-18T08:43:18Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "string"
+      }
+    },
+    {
+      "name": "gh pr list --author app/<app> (text)",
+      "command": [
+        "gh",
+        "pr",
+        "list",
+        "--repo",
+        "<owner>/<repo>",
+        "--author",
+        "app/<app>",
+        "--limit",
+        "3"
+      ],
+      "read_at": "2026-11-18T08:43:19Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "string"
+      }
+    },
+    {
+      "name": "gh pr list --state all (text)",
+      "command": ["gh", "pr", "list", "--repo", "<owner>/<repo>", "--state", "all", "--limit", "3"],
+      "read_at": "2026-11-18T08:43:20Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "string"
+      }
+    },
+    {
+      "name": "gh pr diff",
+      "command": ["gh", "pr", "diff", "<number>", "--repo", "<owner>/<repo>"],
+      "read_at": "2026-11-18T08:43:22Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "string"
+      }
+    },
+    {
+      "name": "gh pr diff --name-only",
+      "command": ["gh", "pr", "diff", "<number>", "--repo", "<owner>/<repo>", "--name-only"],
+      "read_at": "2026-11-18T08:43:23Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "string"
+      }
+    },
+    {
+      "name": "gh pr checks (merged, all concluded)",
+      "command": ["gh", "pr", "checks", "<number>", "--repo", "<owner>/<repo>"],
+      "read_at": "2026-11-18T08:43:25Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "string"
+      }
+    },
+    {
+      "name": "gh pr checks (open)",
+      "command": ["gh", "pr", "checks", "<number>", "--repo", "<owner>/<repo>"],
+      "read_at": "2026-11-18T08:43:26Z",
+      "exit": 1,
+      "stderr": "no checks reported on the '<branch>' branch\n",
+      "shape": {
+        ".": "string"
+      }
+    },
+    {
+      "name": "gh run view (missing id)",
+      "command": ["gh", "run", "view", "1", "--repo", "<owner>/<repo>"],
+      "read_at": "2026-11-18T08:43:27Z",
+      "exit": 1,
+      "stderr": "failed to get run: HTTP 404: Not Found (https://api.github.com/repos/<owner>/<repo>/actions/runs/1?exclude_pull_requests=true)\n",
+      "shape": {
+        ".": "string"
+      }
+    },
+    {
+      "name": "gh run watch (missing id)",
+      "command": ["gh", "run", "watch", "1", "--repo", "<owner>/<repo>"],
+      "read_at": "2026-11-18T08:43:28Z",
+      "exit": 1,
+      "stderr": "failed to get run: HTTP 404: Not Found (https://api.github.com/repos/<owner>/<repo>/actions/runs/1?exclude_pull_requests=true)\n",
+      "shape": {
+        ".": "string"
+      }
+    },
+    {
+      "name": "gh api graphql viewer.login",
+      "command": ["gh", "api", "graphql", "-f", "query={viewer{login}}"],
+      "read_at": "2026-11-18T08:43:29Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".data": "object",
+        ".data.viewer": "object",
+        ".data.viewer.login": "string"
+      }
+    },
+    {
+      "name": "gh api graphql repository and pullRequest fields the world's graph holds",
+      "command": [
+        "gh",
+        "api",
+        "graphql",
+        "-f",
+        "query=query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){name nameWithOwner defaultBranchRef{name} pullRequest(number:$n){isInMergeQueue mergeQueueEntry{state position}}}}",
+        "-F",
+        "o=<owner>",
+        "-F",
+        "r=<repo>",
+        "-F",
+        "n=<number>"
+      ],
+      "read_at": "2026-11-18T08:43:29Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".data": "object",
+        ".data.repository": "object",
+        ".data.repository.name": "string",
+        ".data.repository.nameWithOwner": "string",
+        ".data.repository.defaultBranchRef": "object",
+        ".data.repository.defaultBranchRef.name": "string",
+        ".data.repository.pullRequest": "object",
+        ".data.repository.pullRequest.isInMergeQueue": "boolean",
+        ".data.repository.pullRequest.mergeQueueEntry": "null"
+      }
+    },
+    {
+      "name": "gh api graphql timelineItems",
+      "command": [
+        "gh",
+        "api",
+        "graphql",
+        "-f",
+        "query=query{repository(owner:\"<owner>\",name:\"<repo>\"){pullRequest(number:<number>){timelineItems(first:20){nodes{__typename}}}}}"
+      ],
+      "read_at": "2026-11-18T08:43:30Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".data": "object",
+        ".data.repository": "object",
+        ".data.repository.pullRequest": "object",
+        ".data.repository.pullRequest.timelineItems": "object",
+        ".data.repository.pullRequest.timelineItems.nodes": "array",
+        ".data.repository.pullRequest.timelineItems.nodes[]": "object",
+        ".data.repository.pullRequest.timelineItems.nodes[].__typename": "string"
+      }
+    },
+    {
+      "name": "gh pr view --json additions",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "additions"
+      ],
+      "read_at": "2026-11-18T08:43:31Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".additions": "number"
+      }
+    },
+    {
+      "name": "gh pr view --json assignees",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "assignees"
+      ],
+      "read_at": "2026-11-18T08:43:32Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".assignees": "array"
+      }
+    },
+    {
+      "name": "gh pr view --json author",
+      "command": ["gh", "pr", "view", "<number>", "--repo", "<owner>/<repo>", "--json", "author"],
+      "read_at": "2026-11-18T08:43:33Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".author": "object",
+        ".author.is_bot": "boolean",
+        ".author.login": "string"
+      }
+    },
+    {
+      "name": "gh pr view --json autoMergeRequest",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "autoMergeRequest"
+      ],
+      "read_at": "2026-11-18T08:43:34Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".autoMergeRequest": "null"
+      }
+    },
+    {
+      "name": "gh pr view --json baseRefName",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "baseRefName"
+      ],
+      "read_at": "2026-11-18T08:43:35Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".baseRefName": "string"
+      }
+    },
+    {
+      "name": "gh pr view --json baseRefOid",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "baseRefOid"
+      ],
+      "read_at": "2026-11-18T08:43:36Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".baseRefOid": "string"
+      }
+    },
+    {
+      "name": "gh pr view --json body",
+      "command": ["gh", "pr", "view", "<number>", "--repo", "<owner>/<repo>", "--json", "body"],
+      "read_at": "2026-11-18T08:43:37Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".body": "string"
+      }
+    },
+    {
+      "name": "gh pr view --json changedFiles",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "changedFiles"
+      ],
+      "read_at": "2026-11-18T08:43:38Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".changedFiles": "number"
+      }
+    },
+    {
+      "name": "gh pr view --json closed",
+      "command": ["gh", "pr", "view", "<number>", "--repo", "<owner>/<repo>", "--json", "closed"],
+      "read_at": "2026-11-18T08:43:39Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".closed": "boolean"
+      }
+    },
+    {
+      "name": "gh pr view --json closedAt",
+      "command": ["gh", "pr", "view", "<number>", "--repo", "<owner>/<repo>", "--json", "closedAt"],
+      "read_at": "2026-11-18T08:43:40Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".closedAt": "null"
+      }
+    },
+    {
+      "name": "gh pr view --json closingIssuesReferences",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "closingIssuesReferences"
+      ],
+      "read_at": "2026-11-18T08:43:41Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".closingIssuesReferences": "array"
+      }
+    },
+    {
+      "name": "gh pr view --json comments",
+      "command": ["gh", "pr", "view", "<number>", "--repo", "<owner>/<repo>", "--json", "comments"],
+      "read_at": "2026-11-18T08:43:42Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".comments": "array",
+        ".comments[]": "object",
+        ".comments[].id": "string",
+        ".comments[].author": "object",
+        ".comments[].author.login": "string",
+        ".comments[].authorAssociation": "string",
+        ".comments[].body": "string",
+        ".comments[].createdAt": "string",
+        ".comments[].includesCreatedEdit": "boolean",
+        ".comments[].isMinimized": "boolean",
+        ".comments[].minimizedReason": "string",
+        ".comments[].reactionGroups": "array",
+        ".comments[].url": "string",
+        ".comments[].viewerDidAuthor": "boolean"
+      }
+    },
+    {
+      "name": "gh pr view --json commits",
+      "command": ["gh", "pr", "view", "<number>", "--repo", "<owner>/<repo>", "--json", "commits"],
+      "read_at": "2026-11-18T08:43:43Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".commits": "array",
+        ".commits[]": "object",
+        ".commits[].authoredDate": "string",
+        ".commits[].authors": "array",
+        ".commits[].authors[]": "object",
+        ".commits[].authors[].email": "string",
+        ".commits[].authors[].id": "string",
+        ".commits[].authors[].login": "string",
+        ".commits[].authors[].name": "string",
+        ".commits[].committedDate": "string",
+        ".commits[].messageBody": "string",
+        ".commits[].messageHeadline": "string",
+        ".commits[].oid": "string"
+      }
+    },
+    {
+      "name": "gh pr view --json createdAt",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "createdAt"
+      ],
+      "read_at": "2026-11-18T08:43:44Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".createdAt": "string"
+      }
+    },
+    {
+      "name": "gh pr view --json deletions",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "deletions"
+      ],
+      "read_at": "2026-11-18T08:43:45Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".deletions": "number"
+      }
+    },
+    {
+      "name": "gh pr view --json files",
+      "command": ["gh", "pr", "view", "<number>", "--repo", "<owner>/<repo>", "--json", "files"],
+      "read_at": "2026-11-18T08:43:46Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".files": "array",
+        ".files[]": "object",
+        ".files[].path": "string",
+        ".files[].additions": "number",
+        ".files[].deletions": "number",
+        ".files[].changeType": "string"
+      }
+    },
+    {
+      "name": "gh pr view --json fullDatabaseId",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "fullDatabaseId"
+      ],
+      "read_at": "2026-11-18T08:43:47Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".fullDatabaseId": "string"
+      }
+    },
+    {
+      "name": "gh pr view --json headRefName",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "headRefName"
+      ],
+      "read_at": "2026-11-18T08:43:48Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".headRefName": "string"
+      }
+    },
+    {
+      "name": "gh pr view --json headRefOid",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "headRefOid"
+      ],
+      "read_at": "2026-11-18T08:43:50Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".headRefOid": "string"
+      }
+    },
+    {
+      "name": "gh pr view --json headRepository",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "headRepository"
+      ],
+      "read_at": "2026-11-18T08:43:51Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".headRepository": "object",
+        ".headRepository.id": "string",
+        ".headRepository.name": "string",
+        ".headRepository.nameWithOwner": "string"
+      }
+    },
+    {
+      "name": "gh pr view --json headRepositoryOwner",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "headRepositoryOwner"
+      ],
+      "read_at": "2026-11-18T08:43:52Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".headRepositoryOwner": "object",
+        ".headRepositoryOwner.id": "string",
+        ".headRepositoryOwner.login": "string"
+      }
+    },
+    {
+      "name": "gh pr view --json id",
+      "command": ["gh", "pr", "view", "<number>", "--repo", "<owner>/<repo>", "--json", "id"],
+      "read_at": "2026-11-18T08:43:53Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".id": "string"
+      }
+    },
+    {
+      "name": "gh pr view --json isCrossRepository",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "isCrossRepository"
+      ],
+      "read_at": "2026-11-18T08:43:54Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".isCrossRepository": "boolean"
+      }
+    },
+    {
+      "name": "gh pr view --json isDraft",
+      "command": ["gh", "pr", "view", "<number>", "--repo", "<owner>/<repo>", "--json", "isDraft"],
+      "read_at": "2026-11-18T08:43:55Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".isDraft": "boolean"
+      }
+    },
+    {
+      "name": "gh pr view --json labels",
+      "command": ["gh", "pr", "view", "<number>", "--repo", "<owner>/<repo>", "--json", "labels"],
+      "read_at": "2026-11-18T08:43:56Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".labels": "array"
+      }
+    },
+    {
+      "name": "gh pr view --json latestReviews",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "latestReviews"
+      ],
+      "read_at": "2026-11-18T08:43:57Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".latestReviews": "array",
+        ".latestReviews[]": "object",
+        ".latestReviews[].id": "string",
+        ".latestReviews[].author": "object",
+        ".latestReviews[].author.login": "string",
+        ".latestReviews[].authorAssociation": "string",
+        ".latestReviews[].body": "string",
+        ".latestReviews[].submittedAt": "string",
+        ".latestReviews[].includesCreatedEdit": "boolean",
+        ".latestReviews[].reactionGroups": "array",
+        ".latestReviews[].state": "string",
+        ".latestReviews[].commit": "object",
+        ".latestReviews[].commit.oid": "string"
+      }
+    },
+    {
+      "name": "gh pr view --json maintainerCanModify",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "maintainerCanModify"
+      ],
+      "read_at": "2026-11-18T08:43:58Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".maintainerCanModify": "boolean"
+      }
+    },
+    {
+      "name": "gh pr view --json mergeCommit",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "mergeCommit"
+      ],
+      "read_at": "2026-11-18T08:43:59Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".mergeCommit": "null"
+      }
+    },
+    {
+      "name": "gh pr view --json mergeStateStatus",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "mergeStateStatus"
+      ],
+      "read_at": "2026-11-18T08:44:00Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".mergeStateStatus": "string"
+      }
+    },
+    {
+      "name": "gh pr view --json mergeable",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "mergeable"
+      ],
+      "read_at": "2026-11-18T08:44:01Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".mergeable": "string"
+      }
+    },
+    {
+      "name": "gh pr view --json mergedAt",
+      "command": ["gh", "pr", "view", "<number>", "--repo", "<owner>/<repo>", "--json", "mergedAt"],
+      "read_at": "2026-11-18T08:44:02Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".mergedAt": "null"
+      }
+    },
+    {
+      "name": "gh pr view --json mergedBy",
+      "command": ["gh", "pr", "view", "<number>", "--repo", "<owner>/<repo>", "--json", "mergedBy"],
+      "read_at": "2026-11-18T08:44:02Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".mergedBy": "null"
+      }
+    },
+    {
+      "name": "gh pr view --json milestone",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "milestone"
+      ],
+      "read_at": "2026-11-18T08:44:03Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".milestone": "null"
+      }
+    },
+    {
+      "name": "gh pr view --json number",
+      "command": ["gh", "pr", "view", "<number>", "--repo", "<owner>/<repo>", "--json", "number"],
+      "read_at": "2026-11-18T08:44:04Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".number": "number"
+      }
+    },
+    {
+      "name": "gh pr view --json potentialMergeCommit",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "potentialMergeCommit"
+      ],
+      "read_at": "2026-11-18T08:44:05Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".potentialMergeCommit": "null"
+      }
+    },
+    {
+      "name": "gh pr view --json projectCards",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "projectCards"
+      ],
+      "read_at": "2026-11-18T08:44:06Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".projectCards": "null"
+      }
+    },
+    {
+      "name": "gh pr view --json projectItems",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "projectItems"
+      ],
+      "read_at": "2026-11-18T08:44:07Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".projectItems": "array"
+      }
+    },
+    {
+      "name": "gh pr view --json reactionGroups",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "reactionGroups"
+      ],
+      "read_at": "2026-11-18T08:44:08Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".reactionGroups": "array"
+      }
+    },
+    {
+      "name": "gh pr view --json reviewDecision",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "reviewDecision"
+      ],
+      "read_at": "2026-11-18T08:44:09Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".reviewDecision": "string"
+      }
+    },
+    {
+      "name": "gh pr view --json reviewRequests",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "reviewRequests"
+      ],
+      "read_at": "2026-11-18T08:44:10Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".reviewRequests": "array"
+      }
+    },
+    {
+      "name": "gh pr view --json reviews",
+      "command": ["gh", "pr", "view", "<number>", "--repo", "<owner>/<repo>", "--json", "reviews"],
+      "read_at": "2026-11-18T08:44:12Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".reviews": "array",
+        ".reviews[]": "object",
+        ".reviews[].id": "string",
+        ".reviews[].author": "object",
+        ".reviews[].author.login": "string",
+        ".reviews[].authorAssociation": "string",
+        ".reviews[].body": "string",
+        ".reviews[].submittedAt": "string",
+        ".reviews[].includesCreatedEdit": "boolean",
+        ".reviews[].reactionGroups": "array",
+        ".reviews[].state": "string",
+        ".reviews[].commit": "object",
+        ".reviews[].commit.oid": "string",
+        ".reviews[].url": "string"
+      }
+    },
+    {
+      "name": "gh pr view --json state",
+      "command": ["gh", "pr", "view", "<number>", "--repo", "<owner>/<repo>", "--json", "state"],
+      "read_at": "2026-11-18T08:44:13Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".state": "string"
+      }
+    },
+    {
+      "name": "gh pr view --json statusCheckRollup",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "statusCheckRollup"
+      ],
+      "read_at": "2026-11-18T08:44:14Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".statusCheckRollup": "array"
+      }
+    },
+    {
+      "name": "gh pr view --json title",
+      "command": ["gh", "pr", "view", "<number>", "--repo", "<owner>/<repo>", "--json", "title"],
+      "read_at": "2026-11-18T08:44:15Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".title": "string"
+      }
+    },
+    {
+      "name": "gh pr view --json updatedAt",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "updatedAt"
+      ],
+      "read_at": "2026-11-18T08:44:16Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".updatedAt": "string"
+      }
+    },
+    {
+      "name": "gh pr view --json url",
+      "command": ["gh", "pr", "view", "<number>", "--repo", "<owner>/<repo>", "--json", "url"],
+      "read_at": "2026-11-18T08:44:17Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".url": "string"
+      }
+    },
+    {
+      "name": "gh pr view --json statusCheckRollup (a pull request with check runs)",
+      "command": [
+        "gh",
+        "pr",
+        "view",
+        "<number>",
+        "--repo",
+        "<owner>/<repo>",
+        "--json",
+        "statusCheckRollup"
+      ],
+      "read_at": "2026-11-18T08:44:27Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".statusCheckRollup": "array",
+        ".statusCheckRollup[]": "object",
+        ".statusCheckRollup[].__typename": "string",
+        ".statusCheckRollup[].completedAt": "string",
+        ".statusCheckRollup[].conclusion": "string",
+        ".statusCheckRollup[].detailsUrl": "string",
+        ".statusCheckRollup[].name": "string",
+        ".statusCheckRollup[].startedAt": "string",
+        ".statusCheckRollup[].status": "string",
+        ".statusCheckRollup[].workflowName": "string"
+      }
+    },
+    {
+      "name": "gh api GET commits/{sha} sha media",
+      "command": [
+        "gh",
+        "api",
+        "repos/<owner>/<repo>/commits/<head>",
+        "-H",
+        "Accept: application/vnd.github.sha"
+      ],
+      "read_at": "2026-11-18T08:55:24Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "string"
+      }
+    },
+    {
+      "name": "gh api GET commits/{sha}/pulls",
+      "command": ["gh", "api", "repos/<owner>/<repo>/commits/<head>/pulls"],
+      "read_at": "2026-11-18T08:55:25Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "array",
+        ".[]": "object",
+        ".[].url": "string",
+        ".[].id": "number",
+        ".[].node_id": "string",
+        ".[].html_url": "string",
+        ".[].diff_url": "string",
+        ".[].patch_url": "string",
+        ".[].issue_url": "string",
+        ".[].number": "number",
+        ".[].state": "string",
+        ".[].locked": "boolean",
+        ".[].title": "string",
+        ".[].user": "object",
+        ".[].user.login": "string",
+        ".[].user.id": "number",
+        ".[].user.node_id": "string",
+        ".[].user.avatar_url": "string",
+        ".[].user.gravatar_id": "string",
+        ".[].user.url": "string",
+        ".[].user.html_url": "string",
+        ".[].user.followers_url": "string",
+        ".[].user.following_url": "string",
+        ".[].user.gists_url": "string",
+        ".[].user.starred_url": "string",
+        ".[].user.subscriptions_url": "string",
+        ".[].user.organizations_url": "string",
+        ".[].user.repos_url": "string",
+        ".[].user.events_url": "string",
+        ".[].user.received_events_url": "string",
+        ".[].user.type": "string",
+        ".[].user.user_view_type": "string",
+        ".[].user.site_admin": "boolean",
+        ".[].body": "string",
+        ".[].created_at": "string",
+        ".[].updated_at": "string",
+        ".[].closed_at": "string",
+        ".[].merged_at": "string",
+        ".[].merge_commit_sha": "string",
+        ".[].assignees": "array",
+        ".[].requested_reviewers": "array",
+        ".[].requested_teams": "array",
+        ".[].labels": "array",
+        ".[].labels[]": "object",
+        ".[].labels[].id": "number",
+        ".[].labels[].node_id": "string",
+        ".[].labels[].url": "string",
+        ".[].labels[].name": "string",
+        ".[].labels[].color": "string",
+        ".[].labels[].default": "boolean",
+        ".[].labels[].description": "string",
+        ".[].labels[].archived_at": "null",
+        ".[].labels[].archived_by": "null",
+        ".[].milestone": "null",
+        ".[].draft": "boolean",
+        ".[].commits_url": "string",
+        ".[].review_comments_url": "string",
+        ".[].review_comment_url": "string",
+        ".[].comments_url": "string",
+        ".[].statuses_url": "string",
+        ".[].head": "object",
+        ".[].head.label": "string",
+        ".[].head.ref": "string",
+        ".[].head.sha": "string",
+        ".[].head.user": "object",
+        ".[].head.user.login": "string",
+        ".[].head.user.id": "number",
+        ".[].head.user.node_id": "string",
+        ".[].head.user.avatar_url": "string",
+        ".[].head.user.gravatar_id": "string",
+        ".[].head.user.url": "string",
+        ".[].head.user.html_url": "string",
+        ".[].head.user.followers_url": "string",
+        ".[].head.user.following_url": "string",
+        ".[].head.user.gists_url": "string",
+        ".[].head.user.starred_url": "string",
+        ".[].head.user.subscriptions_url": "string",
+        ".[].head.user.organizations_url": "string",
+        ".[].head.user.repos_url": "string",
+        ".[].head.user.events_url": "string",
+        ".[].head.user.received_events_url": "string",
+        ".[].head.user.type": "string",
+        ".[].head.user.user_view_type": "string",
+        ".[].head.user.site_admin": "boolean",
+        ".[].head.repo": "object",
+        ".[].head.repo.id": "number",
+        ".[].head.repo.node_id": "string",
+        ".[].head.repo.name": "string",
+        ".[].head.repo.full_name": "string",
+        ".[].head.repo.private": "boolean",
+        ".[].head.repo.owner": "object",
+        ".[].head.repo.owner.login": "string",
+        ".[].head.repo.owner.id": "number",
+        ".[].head.repo.owner.node_id": "string",
+        ".[].head.repo.owner.avatar_url": "string",
+        ".[].head.repo.owner.gravatar_id": "string",
+        ".[].head.repo.owner.url": "string",
+        ".[].head.repo.owner.html_url": "string",
+        ".[].head.repo.owner.followers_url": "string",
+        ".[].head.repo.owner.following_url": "string",
+        ".[].head.repo.owner.gists_url": "string",
+        ".[].head.repo.owner.starred_url": "string",
+        ".[].head.repo.owner.subscriptions_url": "string",
+        ".[].head.repo.owner.organizations_url": "string",
+        ".[].head.repo.owner.repos_url": "string",
+        ".[].head.repo.owner.events_url": "string",
+        ".[].head.repo.owner.received_events_url": "string",
+        ".[].head.repo.owner.type": "string",
+        ".[].head.repo.owner.user_view_type": "string",
+        ".[].head.repo.owner.site_admin": "boolean",
+        ".[].head.repo.html_url": "string",
+        ".[].head.repo.description": "null",
+        ".[].head.repo.fork": "boolean",
+        ".[].head.repo.url": "string",
+        ".[].head.repo.forks_url": "string",
+        ".[].head.repo.keys_url": "string",
+        ".[].head.repo.collaborators_url": "string",
+        ".[].head.repo.teams_url": "string",
+        ".[].head.repo.hooks_url": "string",
+        ".[].head.repo.issue_events_url": "string",
+        ".[].head.repo.events_url": "string",
+        ".[].head.repo.assignees_url": "string",
+        ".[].head.repo.branches_url": "string",
+        ".[].head.repo.tags_url": "string",
+        ".[].head.repo.blobs_url": "string",
+        ".[].head.repo.git_tags_url": "string",
+        ".[].head.repo.git_refs_url": "string",
+        ".[].head.repo.trees_url": "string",
+        ".[].head.repo.statuses_url": "string",
+        ".[].head.repo.languages_url": "string",
+        ".[].head.repo.stargazers_url": "string",
+        ".[].head.repo.contributors_url": "string",
+        ".[].head.repo.subscribers_url": "string",
+        ".[].head.repo.subscription_url": "string",
+        ".[].head.repo.commits_url": "string",
+        ".[].head.repo.git_commits_url": "string",
+        ".[].head.repo.comments_url": "string",
+        ".[].head.repo.issue_comment_url": "string",
+        ".[].head.repo.contents_url": "string",
+        ".[].head.repo.compare_url": "string",
+        ".[].head.repo.merges_url": "string",
+        ".[].head.repo.archive_url": "string",
+        ".[].head.repo.downloads_url": "string",
+        ".[].head.repo.issues_url": "string",
+        ".[].head.repo.pulls_url": "string",
+        ".[].head.repo.milestones_url": "string",
+        ".[].head.repo.notifications_url": "string",
+        ".[].head.repo.labels_url": "string",
+        ".[].head.repo.releases_url": "string",
+        ".[].head.repo.deployments_url": "string",
+        ".[].head.repo.created_at": "string",
+        ".[].head.repo.updated_at": "string",
+        ".[].head.repo.pushed_at": "string",
+        ".[].head.repo.git_url": "string",
+        ".[].head.repo.ssh_url": "string",
+        ".[].head.repo.clone_url": "string",
+        ".[].head.repo.svn_url": "string",
+        ".[].head.repo.homepage": "string",
+        ".[].head.repo.size": "number",
+        ".[].head.repo.stargazers_count": "number",
+        ".[].head.repo.watchers_count": "number",
+        ".[].head.repo.language": "string",
+        ".[].head.repo.has_issues": "boolean",
+        ".[].head.repo.has_projects": "boolean",
+        ".[].head.repo.has_downloads": "boolean",
+        ".[].head.repo.has_wiki": "boolean",
+        ".[].head.repo.has_pages": "boolean",
+        ".[].head.repo.has_discussions": "boolean",
+        ".[].head.repo.forks_count": "number",
+        ".[].head.repo.mirror_url": "null",
+        ".[].head.repo.archived": "boolean",
+        ".[].head.repo.disabled": "boolean",
+        ".[].head.repo.open_issues_count": "number",
+        ".[].head.repo.license": "object",
+        ".[].head.repo.license.key": "string",
+        ".[].head.repo.license.name": "string",
+        ".[].head.repo.license.spdx_id": "string",
+        ".[].head.repo.license.url": "string",
+        ".[].head.repo.license.node_id": "string",
+        ".[].head.repo.allow_forking": "boolean",
+        ".[].head.repo.is_template": "boolean",
+        ".[].head.repo.web_commit_signoff_required": "boolean",
+        ".[].head.repo.has_pull_requests": "boolean",
+        ".[].head.repo.pull_request_creation_policy": "string",
+        ".[].head.repo.topics": "array",
+        ".[].head.repo.visibility": "string",
+        ".[].head.repo.forks": "number",
+        ".[].head.repo.open_issues": "number",
+        ".[].head.repo.watchers": "number",
+        ".[].head.repo.default_branch": "string",
+        ".[].base": "object",
+        ".[].base.label": "string",
+        ".[].base.ref": "string",
+        ".[].base.sha": "string",
+        ".[].base.user": "object",
+        ".[].base.user.login": "string",
+        ".[].base.user.id": "number",
+        ".[].base.user.node_id": "string",
+        ".[].base.user.avatar_url": "string",
+        ".[].base.user.gravatar_id": "string",
+        ".[].base.user.url": "string",
+        ".[].base.user.html_url": "string",
+        ".[].base.user.followers_url": "string",
+        ".[].base.user.following_url": "string",
+        ".[].base.user.gists_url": "string",
+        ".[].base.user.starred_url": "string",
+        ".[].base.user.subscriptions_url": "string",
+        ".[].base.user.organizations_url": "string",
+        ".[].base.user.repos_url": "string",
+        ".[].base.user.events_url": "string",
+        ".[].base.user.received_events_url": "string",
+        ".[].base.user.type": "string",
+        ".[].base.user.user_view_type": "string",
+        ".[].base.user.site_admin": "boolean",
+        ".[].base.repo": "object",
+        ".[].base.repo.id": "number",
+        ".[].base.repo.node_id": "string",
+        ".[].base.repo.name": "string",
+        ".[].base.repo.full_name": "string",
+        ".[].base.repo.private": "boolean",
+        ".[].base.repo.owner": "object",
+        ".[].base.repo.owner.login": "string",
+        ".[].base.repo.owner.id": "number",
+        ".[].base.repo.owner.node_id": "string",
+        ".[].base.repo.owner.avatar_url": "string",
+        ".[].base.repo.owner.gravatar_id": "string",
+        ".[].base.repo.owner.url": "string",
+        ".[].base.repo.owner.html_url": "string",
+        ".[].base.repo.owner.followers_url": "string",
+        ".[].base.repo.owner.following_url": "string",
+        ".[].base.repo.owner.gists_url": "string",
+        ".[].base.repo.owner.starred_url": "string",
+        ".[].base.repo.owner.subscriptions_url": "string",
+        ".[].base.repo.owner.organizations_url": "string",
+        ".[].base.repo.owner.repos_url": "string",
+        ".[].base.repo.owner.events_url": "string",
+        ".[].base.repo.owner.received_events_url": "string",
+        ".[].base.repo.owner.type": "string",
+        ".[].base.repo.owner.user_view_type": "string",
+        ".[].base.repo.owner.site_admin": "boolean",
+        ".[].base.repo.html_url": "string",
+        ".[].base.repo.description": "null",
+        ".[].base.repo.fork": "boolean",
+        ".[].base.repo.url": "string",
+        ".[].base.repo.forks_url": "string",
+        ".[].base.repo.keys_url": "string",
+        ".[].base.repo.collaborators_url": "string",
+        ".[].base.repo.teams_url": "string",
+        ".[].base.repo.hooks_url": "string",
+        ".[].base.repo.issue_events_url": "string",
+        ".[].base.repo.events_url": "string",
+        ".[].base.repo.assignees_url": "string",
+        ".[].base.repo.branches_url": "string",
+        ".[].base.repo.tags_url": "string",
+        ".[].base.repo.blobs_url": "string",
+        ".[].base.repo.git_tags_url": "string",
+        ".[].base.repo.git_refs_url": "string",
+        ".[].base.repo.trees_url": "string",
+        ".[].base.repo.statuses_url": "string",
+        ".[].base.repo.languages_url": "string",
+        ".[].base.repo.stargazers_url": "string",
+        ".[].base.repo.contributors_url": "string",
+        ".[].base.repo.subscribers_url": "string",
+        ".[].base.repo.subscription_url": "string",
+        ".[].base.repo.commits_url": "string",
+        ".[].base.repo.git_commits_url": "string",
+        ".[].base.repo.comments_url": "string",
+        ".[].base.repo.issue_comment_url": "string",
+        ".[].base.repo.contents_url": "string",
+        ".[].base.repo.compare_url": "string",
+        ".[].base.repo.merges_url": "string",
+        ".[].base.repo.archive_url": "string",
+        ".[].base.repo.downloads_url": "string",
+        ".[].base.repo.issues_url": "string",
+        ".[].base.repo.pulls_url": "string",
+        ".[].base.repo.milestones_url": "string",
+        ".[].base.repo.notifications_url": "string",
+        ".[].base.repo.labels_url": "string",
+        ".[].base.repo.releases_url": "string",
+        ".[].base.repo.deployments_url": "string",
+        ".[].base.repo.created_at": "string",
+        ".[].base.repo.updated_at": "string",
+        ".[].base.repo.pushed_at": "string",
+        ".[].base.repo.git_url": "string",
+        ".[].base.repo.ssh_url": "string",
+        ".[].base.repo.clone_url": "string",
+        ".[].base.repo.svn_url": "string",
+        ".[].base.repo.homepage": "string",
+        ".[].base.repo.size": "number",
+        ".[].base.repo.stargazers_count": "number",
+        ".[].base.repo.watchers_count": "number",
+        ".[].base.repo.language": "string",
+        ".[].base.repo.has_issues": "boolean",
+        ".[].base.repo.has_projects": "boolean",
+        ".[].base.repo.has_downloads": "boolean",
+        ".[].base.repo.has_wiki": "boolean",
+        ".[].base.repo.has_pages": "boolean",
+        ".[].base.repo.has_discussions": "boolean",
+        ".[].base.repo.forks_count": "number",
+        ".[].base.repo.mirror_url": "null",
+        ".[].base.repo.archived": "boolean",
+        ".[].base.repo.disabled": "boolean",
+        ".[].base.repo.open_issues_count": "number",
+        ".[].base.repo.license": "object",
+        ".[].base.repo.license.key": "string",
+        ".[].base.repo.license.name": "string",
+        ".[].base.repo.license.spdx_id": "string",
+        ".[].base.repo.license.url": "string",
+        ".[].base.repo.license.node_id": "string",
+        ".[].base.repo.allow_forking": "boolean",
+        ".[].base.repo.is_template": "boolean",
+        ".[].base.repo.web_commit_signoff_required": "boolean",
+        ".[].base.repo.has_pull_requests": "boolean",
+        ".[].base.repo.pull_request_creation_policy": "string",
+        ".[].base.repo.topics": "array",
+        ".[].base.repo.visibility": "string",
+        ".[].base.repo.forks": "number",
+        ".[].base.repo.open_issues": "number",
+        ".[].base.repo.watchers": "number",
+        ".[].base.repo.default_branch": "string",
+        ".[]._links": "object",
+        ".[]._links.self": "object",
+        ".[]._links.self.href": "string",
+        ".[]._links.html": "object",
+        ".[]._links.html.href": "string",
+        ".[]._links.issue": "object",
+        ".[]._links.issue.href": "string",
+        ".[]._links.comments": "object",
+        ".[]._links.comments.href": "string",
+        ".[]._links.review_comments": "object",
+        ".[]._links.review_comments.href": "string",
+        ".[]._links.review_comment": "object",
+        ".[]._links.review_comment.href": "string",
+        ".[]._links.commits": "object",
+        ".[]._links.commits.href": "string",
+        ".[]._links.statuses": "object",
+        ".[]._links.statuses.href": "string",
+        ".[].author_association": "string",
+        ".[].auto_merge": "null",
+        ".[].assignee": "null",
+        ".[].active_lock_reason": "null"
+      }
+    },
+    {
+      "name": "gh run view (no id)",
+      "command": ["gh", "run", "view", "--repo", "<owner>/<repo>"],
+      "read_at": "2026-11-18T08:55:25Z",
+      "exit": 1,
+      "stderr": "run or job ID required when not running interactively\n\nUsage:  gh run view [<run-id>] [flags]\n\nFlags:\n  -a, --attempt uint      The attempt number of the workflow run\n      --exit-status       Exit with non-zero status if run failed\n  -j, --job string        View a specific job ID from a run\n  -q, --jq expression     Filter JSON output using a jq expression\n      --json fields       Output JSON with the specified fields\n      --log               View full log for either a run or specific job\n      --log-failed        View the log for any failed steps in a run or specific job\n  -t, --template string   Format JSON output using a Go template; see \"gh help formatting\"\n  -v, --verbose           Show job steps\n  -w, --web               Open run in the browser\n  \n",
+      "shape": {
+        ".": "string"
+      }
+    },
+    {
+      "name": "gh run watch (no id)",
+      "command": ["gh", "run", "watch", "--repo", "<owner>/<repo>"],
+      "read_at": "2026-11-18T08:55:26Z",
+      "exit": 1,
+      "stderr": "run ID required when not running interactively\n\nUsage:  gh run watch <run-id> [flags]\n\nFlags:\n      --compact        Show only relevant/failed steps\n      --exit-status    Exit with non-zero status if run fails\n  -i, --interval int   Refresh interval in seconds (default 3)\n  \n",
+      "shape": {
+        ".": "string"
+      }
+    },
+    {
+      "name": "gh api graphql viewer.login (implement App token)",
+      "command": ["gh", "api", "graphql", "-f", "query=query{viewer{login}}"],
+      "read_at": "2026-11-18T08:55:26Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".data": "object",
+        ".data.viewer": "object",
+        ".data.viewer.login": "string"
+      }
+    },
+    {
+      "name": "gh api /graphql viewer.login",
+      "command": ["gh", "api", "/graphql", "-f", "query=query{viewer{login}}"],
+      "read_at": "2026-11-18T08:55:27Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".data": "object",
+        ".data.viewer": "object",
+        ".data.viewer.login": "string"
+      }
+    },
+    {
+      "name": "gh api graphql?x=1 viewer.login",
+      "command": ["gh", "api", "graphql?x=1", "-f", "query=query{viewer{login}}"],
+      "read_at": "2026-11-18T08:55:28Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".data": "object",
+        ".data.viewer": "object",
+        ".data.viewer.login": "string"
+      }
+    },
+    {
+      "name": "gh api /graphql with a -F variable",
+      "command": [
+        "gh",
+        "api",
+        "/graphql",
+        "-f",
+        "query=query($n:Int!){repository(owner:\"<owner>\",name:\"<repo>\"){pullRequest(number:$n){number}}}",
+        "-F",
+        "n=<number>"
+      ],
+      "read_at": "2026-11-18T08:55:29Z",
+      "exit": 0,
+      "stderr": "",
+      "shape": {
+        ".": "object",
+        ".errors": "array",
+        ".errors[]": "object",
+        ".errors[].extensions": "object",
+        ".errors[].extensions.value": "null",
+        ".errors[].extensions.problems": "array",
+        ".errors[].extensions.problems[]": "object",
+        ".errors[].extensions.problems[].path": "array",
+        ".errors[].extensions.problems[].explanation": "string",
+        ".errors[].locations": "array",
+        ".errors[].locations[]": "object",
+        ".errors[].locations[].line": "number",
+        ".errors[].locations[].column": "number",
+        ".errors[].message": "string"
+      }
+    },
+    {
+      "name": "gh api graphql with no variable it declares",
+      "command": [
+        "gh",
+        "api",
+        "graphql",
+        "-f",
+        "query=query($n:Int!){repository(owner:\"<owner>\",name:\"<repo>\"){pullRequest(number:$n){number}}}"
+      ],
+      "read_at": "2026-11-18T08:55:29Z",
+      "exit": 1,
+      "stderr": "gh: Variable $n of type Int! was provided invalid value\n",
+      "shape": {
+        ".": "object",
+        ".errors": "array",
+        ".errors[]": "object",
+        ".errors[].extensions": "object",
+        ".errors[].extensions.value": "null",
+        ".errors[].extensions.problems": "array",
+        ".errors[].extensions.problems[]": "object",
+        ".errors[].extensions.problems[].path": "array",
+        ".errors[].extensions.problems[].explanation": "string",
+        ".errors[].locations": "array",
+        ".errors[].locations[]": "object",
+        ".errors[].locations[].line": "number",
+        ".errors[].locations[].column": "number",
+        ".errors[].message": "string"
       }
     },
     {
