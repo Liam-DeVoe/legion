@@ -3,12 +3,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   type FinishedIssue,
+  LEGION_PLAN_RATING_LEAST,
+  LEGION_PLAN_RATING_MOST,
   type PlanRating,
   type PlanRecord,
   PROJECT_KEY_RULE,
   type ProjectPlans,
 } from "@legion/contracts";
-import { LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST } from "@legion/contracts/legion-api";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   type FakeDispatchServer,
@@ -264,10 +265,9 @@ describe("dispatch plans", () => {
     ]);
   });
 
-  // Each rating prints out of the most of the scale, which the command types and the contract
-  // states as the daemon's. The ratings here are the contract's two ends and the one above its
-  // least, in an order no sort of their scores or step ids gives, so a line that printed a rating
-  // out of another number, or out of itself, reads differently.
+  // Each rating prints out of the most of the contract's scale. The ratings here are the scale's
+  // two ends and the one above its least, in an order no sort of their scores or step ids gives, so
+  // a line that printed a rating out of another number, or out of itself, reads differently.
   test("each rating prints out of the most of the contract's scale", async () => {
     const [least, most] = [LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST];
     const answer: ProjectPlans = {

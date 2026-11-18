@@ -7,6 +7,7 @@ import {
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
 } from "./dispatch-api-limits";
+import { LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST } from "./legion-roles";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";
 
 export interface DispatchToolSpec {
@@ -2303,10 +2304,10 @@ export const dispatchToolSpecs = [
       "failed steps. An issue is finished when its status is done and Dispatch closed it. The " +
       "first line is `<PROJECT>: <n> finished issues`. Then each issue prints one line: `<KEY> " +
       "closed <closed_at> plan <source> (<n> tasks: <steps of the first task>) ratings " +
-      '<rating>/5 "<reason>"[, <rating>/5 "<reason>" ...] time <h>h<m>m failed steps <n>`. ' +
+      `<rating>/${LEGION_PLAN_RATING_MOST} "<reason>"[, <rating>/${LEGION_PLAN_RATING_MOST} "<reason>" ...] time <h>h<m>m failed steps <n>\`. ` +
       "source is default (Legion's default steps) or owner (the plan the issue's owner wrote), " +
-      "and the plan is the one of the issue's newest run. A rating is 1 (the plan cost the " +
-      "work) to 5 (the plan fit the work), one for each retro in the order the retros ran, and " +
+      `and the plan is the one of the issue's newest run. A rating is ${LEGION_PLAN_RATING_LEAST} (the plan cost the ` +
+      `work) to ${LEGION_PLAN_RATING_MOST} (the plan fit the work), one for each retro in the order the retros ran, and ` +
       "its reason prints as a JSON string. time runs from the first start of the issue's steps " +
       "to the last end, in whole hours and minutes rounded down. failed steps counts the runs " +
       "of a step that failed, retros and merges left out. An issue with no plan prints plan " +

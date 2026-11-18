@@ -1,6 +1,13 @@
 import { z } from "zod";
 import { goBlankPattern } from "./go-blank";
-import { DISPATCH_KEY_PATTERN, GATED_STEPS, LEGION_ROLES } from "./legion-roles";
+import {
+  DISPATCH_KEY_PATTERN,
+  GATED_STEPS,
+  LEGION_PLAN_RATING_LEAST,
+  LEGION_PLAN_RATING_MOST,
+  LEGION_PLAN_REASON_MAX,
+  LEGION_ROLES,
+} from "./legion-roles";
 
 /**
  * The Legion daemon's HTTP API, as its readers see it.
@@ -1605,17 +1612,10 @@ export const LegionControllerGrantRequest = z.strictObject({
   secret: nonEmptyString,
 });
 
-/** The scale of a plan's rating, `planRating`: the whole numbers from 1 (the plan cost the work)
- * to 5 (the plan fit the work), as the daemon holds it (api's planRatingLeast and planRatingMost).
- * The plugin's `plan_rating` reads these, and the contract test holds them to the daemon's own,
- * which its golden test writes to `fixtures/daemon-api/plan-rating.json`. */
-export const LEGION_PLAN_RATING_LEAST = 1;
-export const LEGION_PLAN_RATING_MOST = 5;
-
-/** The most characters the reason of a plan's rating holds, counted as Unicode code points as the
- * daemon counts them (api's planReasonMax, held to it the same way): Dispatch's record of the
- * retro takes one to 2,000. */
-export const LEGION_PLAN_REASON_MAX = 2000;
+/** The scale of a plan's rating and the most characters of its reason, defined once in
+ * `legion-roles.ts` and re-exported here beside the request schema that holds a completion to
+ * them. */
+export { LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST, LEGION_PLAN_REASON_MAX };
 
 /** A plan rating's scale on `rating`, a number schema of the reader's: a whole number from
  * `LEGION_PLAN_RATING_LEAST` to `LEGION_PLAN_RATING_MOST`, each check refused with `refusal` where
