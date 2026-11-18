@@ -19,10 +19,16 @@ import { issueCollaboratorsQuery } from "../../api/queries";
 import type { Agent, IssueCollaboratorAgent, IssueCollaboratorLegionAgent } from "../../api/types";
 import { AgentListRefilling } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
+import { useTooltips } from "../../components/tooltips";
 import {
   borderDefault,
   dangerText,
+  focusBorder,
   inputClasses,
+  pageHairBorder,
+  pageInkText,
+  pageMutedText,
+  pagePaperBg,
   selectedCardBorder,
   surfaceMutedHoverBg,
   surfaceRecessedBg,
@@ -36,6 +42,24 @@ import type { TextEditRange } from "./block-spans";
 import type { AcceptedMention } from "./composer-model";
 import { mentionText, survivingMentions } from "./send-request";
 import { useAgents } from "./useAgents";
+
+/**
+ * Each colour the field draws inside `NoTooltips` (`components/tooltips.tsx`), the new issue
+ * page's, by the role `main`'s colour has: the label is its muted words, and the box is the
+ * page's field, its hairline rule on the paper with the ink and a quiet placeholder, which keeps
+ * `main`'s focus rule, the application's one focus indicator; the mentions a draft holds are the
+ * ink in the hairline rule. The `@` picker keeps `main`'s colours.
+ *
+ * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
+ * pairs each text class with the nearest enclosing ground of the same file across both branches
+ * of a ternary: a page colour written beside `main`'s would pair `main`'s words with the page's
+ * paper and the page's words with `main`'s field.
+ */
+const ON_PAGE = {
+  field: `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`,
+  label: pageMutedText,
+  mentions: `${pageHairBorder} ${pageInkText}`,
+} as const;
 
 export interface MentionOption {
   readonly capabilities: readonly string[];
@@ -358,6 +382,7 @@ export function MentionField({
   options,
   stoppedOptions,
   placeholder,
+  readOnly = false,
 }: {
   readonly body: string;
   /** Takes no typing: a draft whose own send is out, which the host shows the reader rather than
@@ -395,11 +420,16 @@ export function MentionField({
   /** What the empty box says it takes, where the host has words for it (an ask's answer box
    *  names what the picked option asks of the reader). */
   readonly placeholder?: string;
+  /** Takes no typing and keeps the focus it holds: inside `NoTooltips`, an ask card's box while
+   *  the card's own write is out, where `disabled` would drop the focus to the body
+   *  (`AskAnswerArea`). */
+  readonly readOnly?: boolean;
   /** The roles the host's issue records that nobody is running (`stoppedRoleOptions`), offered
    *  under "Not running" after the live options. Undefined where the host has no issue to read
    *  them from, which is every host but the issue's own composer. */
   readonly stoppedOptions?: readonly MentionOption[];
 }): ReactNode {
+  const tooltips = useTooltips();
   const element = useRef<HTMLTextAreaElement | null>(null);
   const [autocomplete, setAutocomplete] = useState<{ query: string; start: number }>();
   /** Which option the arrows are on, none until a key moves it: the first ArrowDown takes the
@@ -654,13 +684,15 @@ export function MentionField({
 
   return (
     <>
-      <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
+      <label
+        className={`block text-sm font-medium ${tooltips ? textSecondaryOnSurface : ON_PAGE.label}`}
+      >
         {labelHidden ? null : label}
         <textarea
           aria-activedescendant={activeId}
           aria-controls={open ? listboxId : undefined}
           aria-label={label}
-          className={`mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inline ? "min-h-11 resize-none" : "min-h-24"} ${inputClasses(true)} ${textPrimaryOnSurface}`}
+          className={`mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inline ? "min-h-11 resize-none" : "min-h-24"} ${tooltips ? `${inputClasses(true)} ${textPrimaryOnSurface}` : ON_PAGE.field}`}
           disabled={disabled}
           onChange={(event) => changed(event.target.value, event.target.selectionStart)}
           onDrop={onDrop}
@@ -675,6 +707,7 @@ export function MentionField({
           onKeyDown={onKeyDown}
           onPaste={onPaste}
           placeholder={placeholder}
+          readOnly={readOnly}
           ref={bodyFieldRef}
           rows={1}
           value={body}
@@ -684,10 +717,17 @@ export function MentionField({
       {activeMentions.length === 0 ? null : (
         <ul
           aria-label="Mention targets"
-          className={`flex flex-wrap gap-2 text-xs ${textPrimaryOnSurface}`}
+          className={`flex flex-wrap gap-2 text-xs ${tooltips ? textPrimaryOnSurface : ""}`}
         >
           {activeMentions.map((mention) => (
-            <li className="rounded-full border px-2 py-1" key={mention.target}>
+            <li
+              className={
+                tooltips
+                  ? "rounded-full border px-2 py-1"
+                  : `max-w-full rounded-full border px-2 py-1 [overflow-wrap:anywhere] ${ON_PAGE.mentions}`
+              }
+              key={mention.target}
+            >
               {mention.text} · <code>{mention.target}</code>
             </li>
           ))}

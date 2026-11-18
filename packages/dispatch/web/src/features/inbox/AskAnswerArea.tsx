@@ -8,8 +8,9 @@ import {
 } from "react";
 
 import type { ArtifactOwner } from "../../api/client";
+import { useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
-import { textMutedOnSurface } from "../../theme/classes";
+import { pageQuietText, textMutedOnSurface } from "../../theme/classes";
 import { type DraftUpload, DraftUploadStatus } from "../artifacts/ArtifactUpload";
 import {
   MentionField,
@@ -26,6 +27,14 @@ import type { Draft } from "./draft-store";
 export interface AskAnswerActions<Name extends string = string> {
   readonly reasonId: Readonly<Record<Name, string>>;
 }
+
+/** The line that says why a send refuses, inside `NoTooltips` (`components/tooltips.tsx`): the
+ *  new issue page's quiet words, which qualify the field above them. It stands in this table, as
+ *  `AskCard`'s colours do, so `theme/text-on-background.test.ts` pairs none of `main`'s words
+ *  with the page's ground. */
+const ON_PAGE = {
+  reason: pageQuietText,
+} as const;
 
 /**
  * The one answer area of an ask: the Conversation tab's own body field and `@` picker
@@ -54,6 +63,7 @@ export function AskAnswerArea<Name extends string>({
   labelHidden = false,
   onDraftChange,
   placeholder,
+  readOnly = false,
   refusals,
   upload,
   uploadOwner,
@@ -76,6 +86,9 @@ export function AskAnswerArea<Name extends string>({
   readonly labelHidden?: boolean;
   readonly onDraftChange: Dispatch<SetStateAction<Draft>>;
   readonly placeholder?: string;
+  /** Inside `NoTooltips`, the host refuses the draft while its own write is out: the field keeps
+   *  the focus, `readOnly` in place of `disabled`, and takes no paste, drop or Ctrl/Cmd+Enter. */
+  readonly readOnly?: boolean;
   /** Why each of the host's buttons refuses the draft as it stands, by the name the host knows it
    *  by: each reason is shown on one line under the field, and `actions` is handed that line's id
    *  for the button's `refusalShownBy`. */
@@ -89,6 +102,7 @@ export function AskAnswerArea<Name extends string>({
    *  project. Without one the field takes a paste as text. */
   readonly uploadOwner?: ArtifactOwner;
 }): ReactNode {
+  const tooltips = useTooltips();
   // Everything the `@` picker needs, from the one place both its hosts take it
   // (`useMentionOptions`): the registry is kept fresh through the shell's one poller while the
   // picker is open and read again the moment it opens, exactly as the Conversation tab's
@@ -121,16 +135,27 @@ export function AskAnswerArea<Name extends string>({
         listing={listing}
         mentions={draft.mentions}
         onChange={({ body, mentions }) => onDraftChange({ mentions, text: body })}
-        onDrop={uploadOwner === undefined ? undefined : (event) => upload.drop(event, uploadOwner)}
+        onDrop={
+          uploadOwner === undefined
+            ? undefined
+            : (event) => {
+                if (!readOnly) upload.drop(event, uploadOwner);
+              }
+        }
         // A draft sent before its upload lands would go without the picture; the buttons say the
         // upload is what holds them (`busy`), and this key says nothing at all.
-        onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading })}
+        onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading || readOnly })}
         onPaste={
-          uploadOwner === undefined ? undefined : (event) => upload.paste(event, uploadOwner)
+          uploadOwner === undefined
+            ? undefined
+            : (event) => {
+                if (!readOnly) upload.paste(event, uploadOwner);
+              }
         }
         onPickerOpenChange={onPickerOpenChange}
         options={options}
         placeholder={placeholder}
+        readOnly={readOnly}
         stoppedOptions={stoppedOptions}
       />
       <DraftUploadStatus upload={upload} />
@@ -138,7 +163,11 @@ export function AskAnswerArea<Name extends string>({
           description its button carries (`RefusableButton`'s `refusalShownBy`). */}
       {(Object.entries(refusals) as [Name, string | null][]).map(([name, reason]) =>
         reason === null ? null : (
-          <p className={`text-xs ${textMutedOnSurface}`} id={reasonId[name]} key={name}>
+          <p
+            className={`text-xs ${tooltips ? textMutedOnSurface : ON_PAGE.reason}`}
+            id={reasonId[name]}
+            key={name}
+          >
             {reason}
           </p>
         )

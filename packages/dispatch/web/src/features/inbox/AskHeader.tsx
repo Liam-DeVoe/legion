@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import type { Ask, AskResolution, AskUrgency, Comment } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
+import { useTooltips } from "../../components/tooltips";
 import {
   askBlockPill,
   badgeBlocking,
@@ -9,6 +10,12 @@ import {
   badgeLow,
   badgeMed,
   calloutSuccessTimestampText,
+  pageFailedText,
+  pageLabelChip,
+  pageMutedText,
+  pagePaperBg,
+  pageQuietText,
+  pageStateText,
   surfaceBg,
   textMutedOnSurface,
   textMutedOnSurfaceMuted,
@@ -81,6 +88,34 @@ const URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
   med: badgeMed.text,
 };
 
+/**
+ * Each colour the card's header draws inside `NoTooltips` (`components/tooltips.tsx`), the new
+ * issue page's, by the role `main`'s colour has, as `AskCard`'s own elements draw theirs: the
+ * provenance line is the quiet words that qualify the question, whose turn it is the muted grey
+ * a reader acts on, the state label the page's label chip, and the urgency notch stands on the
+ * page's paper in the colour of its level (`PAGE_URGENCY_NOTCH_TEXT`).
+ *
+ * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
+ * pairs each text class with the nearest enclosing ground of the same file across both branches
+ * of a ternary: a page colour written beside `main`'s would pair `main`'s words with the page's
+ * paper and the page's words with `main`'s card.
+ */
+const ON_PAGE = {
+  muted: pageMutedText,
+  notch: pagePaperBg,
+  quiet: pageQuietText,
+  state: pageLabelChip,
+} as const;
+
+/** The urgency notch's words inside `NoTooltips`, matching `AskCard`'s `PAGE_URGENCY_ACCENT` on
+ *  the page's paper. */
+const PAGE_URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
+  blocking: pageFailedText,
+  high: pageStateText.waiting,
+  low: pageQuietText,
+  med: "text-page-question",
+};
+
 /** Whether the header draws its urgency notch, which hangs over the top edge of the card's own
  *  frame: that frame must be positioned and leave a row of room above it. A card inside a
  *  decision block draws none - the block's header has the urgency pill. */
@@ -134,7 +169,9 @@ export function AskHeader(props: AskHeaderProps): ReactNode {
 function NamedAskHeader(props: AskHeaderProps & { ask: Ask }): ReactNode {
   const agentText = useAgentText();
   const { author } = props.ask;
-  const label = agentText.label(author);
+  // `author` is `label` everywhere but inside `NoTooltips`, where it is the name `AgentName`
+  // draws there: a session nothing names is the page's word for an agent, never its short id.
+  const label = agentText.author(author);
   return (
     <DrawnAskHeader
       {...props}
@@ -189,9 +226,12 @@ interface AskHeaderFacts {
   readonly urgencyPill: ReactNode;
 }
 
+/** `tooltips` is false inside `NoTooltips`, where the notch and the state label draw in the new
+ *  issue page's colours (`ON_PAGE`). */
 function askHeaderFacts(
   { ask, block, carded = false, inBlock = false, owner }: AskHeaderProps,
-  asker: AskHeaderAsker | undefined
+  asker: AskHeaderAsker | undefined,
+  tooltips: boolean
 ): AskHeaderFacts {
   const reference = ask === undefined ? undefined : itemRoute("ask", ask, owner);
   const urgency = block?.urgency ?? ask?.urgency;
@@ -221,7 +261,7 @@ function askHeaderFacts(
     ask === undefined || !hasUrgencyNotch(ask, inBlock) ? null : (
       <span
         aria-hidden="true"
-        className={`absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase ${surfaceBg} ${URGENCY_NOTCH_TEXT[askUrgency(ask.urgency)]}`}
+        className={`absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase ${tooltips ? `${surfaceBg} ${URGENCY_NOTCH_TEXT[askUrgency(ask.urgency)]}` : `${ON_PAGE.notch} ${PAGE_URGENCY_NOTCH_TEXT[askUrgency(ask.urgency)]}`}`}
         data-ask-urgency-notch=""
       >
         {URGENCY_LABELS[askUrgency(ask.urgency)].toUpperCase()}
@@ -233,7 +273,7 @@ function askHeaderFacts(
   const stateLabel =
     state === undefined || carded || block?.malformed === true ? null : (
       <span
-        className={`inline-block rounded-full px-2.5 py-1 text-xs font-medium ${badgeLow.bg} ${badgeLow.text}`}
+        className={`inline-block rounded-full px-2.5 py-1 text-xs font-medium ${tooltips ? `${badgeLow.bg} ${badgeLow.text}` : ON_PAGE.state}`}
         data-ask-state-label=""
         // The handle the rows that read how an ask ended have always found its badge by.
         data-testid={
@@ -290,17 +330,20 @@ function AskHeaderRow({
 type PlaceProps = AskHeaderProps & {
   asker: AskHeaderAsker | undefined;
   facts: AskHeaderFacts;
+  /** False inside `NoTooltips` (`components/tooltips.tsx`). */
+  tooltips: boolean;
 };
 
 function DrawnAskHeader(props: AskHeaderProps & { asker: AskHeaderAsker | undefined }): ReactNode {
-  const facts = askHeaderFacts(props, props.asker);
+  const tooltips = useTooltips();
+  const facts = askHeaderFacts(props, props.asker, tooltips);
   if (props.place === "block") {
-    return <BlockAskHeader {...props} facts={facts} />;
+    return <BlockAskHeader {...props} facts={facts} tooltips={tooltips} />;
   }
   if (props.place === "card") {
-    return <CardAskHeader {...props} facts={facts} />;
+    return <CardAskHeader {...props} facts={facts} tooltips={tooltips} />;
   }
-  return <RecordAskHeader {...props} facts={facts} />;
+  return <RecordAskHeader {...props} facts={facts} tooltips={tooltips} />;
 }
 
 /** A decision block's own portalled header, with nothing of its own between the anchor and the
@@ -364,7 +407,9 @@ function BlockAskHeader({ ask, asker, facts, leading, trailing }: PlaceProps): R
 }
 
 /** The Inbox card, in both variants: whose turn it is, who asked and when, in one group whose
- *  names truncate. */
+ *  names truncate. Inside `NoTooltips` no title gives back what an ellipsis cut, and a name and
+ *  an instant are values, which wrap there: each name breaks anywhere inside its own part of the
+ *  group, which still holds its one line, so no separator opens a line there either. */
 function CardAskHeader({
   ask,
   asker,
@@ -374,11 +419,22 @@ function CardAskHeader({
   inBlock = false,
   lastReply,
   leading,
+  tooltips,
   trailing,
 }: PlaceProps): ReactNode {
   const author = ask?.author;
   const session = author?.kind === "session" ? author : undefined;
   const turnHolder = ask === undefined ? null : askTurnHolder(ask, lastReply);
+  // The asker's name, cut with its tooltip where one is drawn; inside `NoTooltips`, where no
+  // tooltip gives back what an ellipsis cut, it is a value that breaks anywhere instead.
+  const askerName = (name: ReactNode) =>
+    tooltips ? (
+      <TruncatedText className="min-w-0" title={asker?.title ?? "asked"}>
+        {name}
+      </TruncatedText>
+    ) : (
+      <span className="min-w-0 [overflow-wrap:anywhere]">{name}</span>
+    );
   return (
     <div {...facts.attributes}>
       {facts.notch}
@@ -387,7 +443,7 @@ function CardAskHeader({
       )}
       {children}
       <div
-        className={`@container mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs ${textMutedOnSurface}`}
+        className={`@container mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs ${tooltips ? textMutedOnSurface : ON_PAGE.quiet}`}
         data-ask-card-row=""
       >
         {/* The label and the provenance are one group whose names truncate, and the copy
@@ -418,7 +474,9 @@ function CardAskHeader({
             meets them (the Inbox at 1280 px, the margin, a phone), reading the line and the
             asker by their own marks (`data-ask-card-row`, `data-ask-card-asked`). */}
         <span className="flex min-w-0 items-center gap-x-1.5 @max-ask-card-two-lines:flex-wrap">
-          <span className="flex min-w-0 items-center gap-x-1.5 whitespace-nowrap @max-ask-card-line:flex-wrap @max-ask-card-line:[&>[data-ask-state-label]]:py-0 @max-ask-card-two-lines:contents">
+          <span
+            className={`flex min-w-0 items-center gap-x-1.5 ${tooltips ? "whitespace-nowrap " : ""}@max-ask-card-line:flex-wrap @max-ask-card-line:[&>[data-ask-state-label]]:py-0 @max-ask-card-two-lines:contents`}
+          >
             <AskHeaderRow
               facts={facts}
               leading={leading}
@@ -427,7 +485,7 @@ function CardAskHeader({
                   <>
                     {turnHolder === null ? null : (
                       <span
-                        className={`${turnHolder === "you" ? "shrink-0" : "min-w-0 shrink-[1.5] truncate @max-ask-card-line:flex-1"} font-semibold ${textSecondaryOnSurface}`}
+                        className={`${turnHolder === "you" ? "shrink-0" : `min-w-0 shrink-[1.5] ${tooltips ? "truncate" : "[overflow-wrap:anywhere]"} @max-ask-card-line:flex-1`} font-semibold ${tooltips ? textSecondaryOnSurface : ON_PAGE.muted}`}
                         data-testid={`turn-${ask.id}`}
                       >
                         Waiting on{" "}
@@ -444,24 +502,17 @@ function CardAskHeader({
                       data-ask-card-asked=""
                     >
                       {session === undefined || control === undefined ? (
-                        <TruncatedText className="min-w-0" title={asker?.title ?? "asked"}>
-                          {asker === undefined ? "asked" : <AgentName actor={author} />}
-                        </TruncatedText>
+                        askerName(asker === undefined ? "asked" : <AgentName actor={author} />)
                       ) : (
                         // The asker's control keeps its name and opens the session's copy
                         // handles; the component's live link sits beside it, outside the
                         // control. `whitespace-pre` keeps the space before an attribution
-                        // suffix, which a flex item would drop.
+                        // suffix, which a flex item would drop; inside `NoTooltips`
+                        // `whitespace-pre-wrap` keeps it too, and lets the name wrap.
                         <AgentName
                           actor={session}
-                          className="flex min-w-0 items-center whitespace-pre"
-                          control={(name) =>
-                            control(
-                              <TruncatedText className="min-w-0" title={asker?.title ?? "asked"}>
-                                {name}
-                              </TruncatedText>
-                            )
-                          }
+                          className={`flex min-w-0 items-center ${tooltips ? "whitespace-pre" : "whitespace-pre-wrap"}`}
+                          control={(name) => control(askerName(name))}
                           kind="control"
                         />
                       )}

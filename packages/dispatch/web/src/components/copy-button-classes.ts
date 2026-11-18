@@ -15,8 +15,11 @@
  */
 
 /** The box both forms stand in: a 44 px tap target, 32 px from `md`, its content in one row
- *  centred on the box's height. */
-export const copyBoxClassName = "inline-flex min-h-11 shrink-0 items-center rounded-lg md:min-h-8";
+ *  centred on the box's height. Whether the box keeps its width is each form's own: the icon-only
+ *  one always does, and the one that shows its value does everywhere but inside `NoTooltips`,
+ *  where the value it draws wraps and the box narrows to its line (`CopyButton`). */
+export const copyBoxClassName = "inline-flex min-h-11 items-center rounded-lg md:min-h-8";
 
-/** The icon-only button's box: the base, no narrower than it is tall, the icon centred in it. */
-export const copyIconBoxClassName = `${copyBoxClassName} min-w-11 justify-center md:min-w-8`;
+/** The icon-only button's box: the base, no narrower than it is tall and never giving up that
+ *  width, the icon centred in it. */
+export const copyIconBoxClassName = `${copyBoxClassName} min-w-11 shrink-0 justify-center md:min-w-8`;

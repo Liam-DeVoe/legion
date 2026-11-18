@@ -13,11 +13,19 @@ import {
 
 import { type ArtifactOwner, api, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import { usersQuery } from "../../api/queries";
-import type { AnswerAskInput, Ask, AskRead, Comment, CreateCommentInput } from "../../api/types";
+import type {
+  AnswerAskInput,
+  Ask,
+  AskRead,
+  AskUrgency,
+  Comment,
+  CreateCommentInput,
+} from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
+import { usePageWords, useTooltips } from "../../components/tooltips";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   askUrgencyAccent,
@@ -27,6 +35,16 @@ import {
   inlineWarningText,
   linkHoverText,
   linkText,
+  pageHairBorder,
+  pageInkFill,
+  pageInkText,
+  pageLabelChip,
+  pageLineBorder,
+  pageMutedText,
+  pagePaneBg,
+  pagePaperBg,
+  pageQuietText,
+  pageStateText,
   primaryButton,
   secondaryButton,
   textMutedHoverToSecondary,
@@ -36,7 +54,13 @@ import {
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
 import type { MentionFieldHandle } from "../conversation/MentionField";
-import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
+import {
+  badgeSelectBadge,
+  badgeSelectOverlay,
+  badgeSelectPageBadge,
+  badgeSelectPageWrapper,
+  badgeSelectWrapper,
+} from "../issue/badge-select";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, type DocumentOwner, itemRoute } from "../refs/routes";
@@ -57,7 +81,7 @@ import {
 import { AskHeader, hasUrgencyNotch } from "./AskHeader";
 import { AskChoiceRow } from "./AskOptionRow";
 import { AskRecipients } from "./AskRecipients";
-import { AskThread } from "./AskThread";
+import { AskThread, UnsentBox } from "./AskThread";
 import { AskThreadDisclosure } from "./AskThreadDisclosure";
 import type { OwnedAsk } from "./ask-name";
 import { askUrgency, URGENCY_LABELS } from "./ask-urgency";
@@ -66,7 +90,6 @@ import type { Draft } from "./draft-store";
 import { EarlierApproval } from "./EarlierApproval";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { askWaitingOnPerson } from "./list-row";
-import { UnsentText } from "./UnsentText";
 import { useAskAnswerForm } from "./useAskAnswerForm";
 import { useAskHandOn } from "./useAskHandOn";
 
@@ -142,6 +165,48 @@ export interface AskCardProps {
   currentReplyId?: string;
 }
 
+/** What the unsent answer's box says, on today's pages and inside `NoTooltips` alike. */
+const UNSENT_ANSWER_WHY =
+  "This question closed before you sent your answer, so it was not sent. Your text is here to copy.";
+
+/**
+ * Each colour the card's own elements draw inside `NoTooltips`, the new issue page's, by the
+ * role `main`'s colour has: the card is the page's paper inside its hairline rule; the question
+ * is the ink, what a reader acts on the muted grey, what qualifies it the quiet grey, a link
+ * the ink, and a question that changed under the reader the page's warning, its waiting
+ * orange; Ask back instead is filled with the ink, as the page's one filled control is, and
+ * Cancel is its header control's rule and muted words. What the card's children draw - the
+ * header (`AskHeader`), the answer area and the buttons it holds (`AskAnswerArea`,
+ * `RefusableButton`), the recipients, the thread, the options, the earlier approval, the
+ * unsent answer's box (`UnsentBox`) - is theirs.
+ *
+ * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
+ * pairs each text class with the nearest enclosing ground of the same file across both branches
+ * of a ternary: a page colour written beside `main`'s would pair `main`'s words with the page's
+ * paper and the page's words with `main`'s card. Each pair here is one `theme/classes.ts`
+ * registers for the page.
+ */
+const ON_PAGE = {
+  action: `${pageLineBorder} ${pageMutedText}`,
+  filled: `${pageInkFill} refused:cursor-not-allowed refused:bg-page-hair refused:text-page-muted`,
+  frame: `${pageHairBorder} ${pagePaperBg}`,
+  ink: pageInkText,
+  link: pageInkText,
+  muted: pageMutedText,
+  quiet: pageQuietText,
+  quietAct: `${pageQuietText} hover:text-page-muted`,
+  warning: pageStateText.waiting,
+} as const;
+
+/** The card's urgency accent inside `NoTooltips`, in the new issue page's colours: blocking
+ *  the failed red, high the waiting orange, med the questions' blue, low the hairline grey. */
+const PAGE_URGENCY_ACCENT: Record<AskUrgency, string> = {
+  blocking: "border-l-page-failed",
+  high: "border-l-page-waiting",
+  low: "border-l-page-hair",
+  med: "border-l-page-question",
+};
+
 /** Moves focus from inside the form to the nearest focusable ancestor (in the Inbox, the row, so
  *  j/k/Escape still start from the same place) instead of letting it fall to the document body. */
 function handOffFocus(form: HTMLElement): void {
@@ -209,11 +274,12 @@ function useFormRef(): [
  * card, a sibling ask block - and holding that ask would pull it into the reader's list. A
  * card drawn where no list can drop it registers with nobody.
  */
-function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): ReactNode {
+export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): ReactNode {
   const [wanted, setWanted] = useState(false);
   const people = useQuery({ ...usersQuery(), enabled: wanted });
   const want = () => setWanted(true);
   const write = useAskHandOn(ask);
+  const page = usePageWords();
   const onLive = useContext(AskHandOnLiveContext);
   const live = write.pending || write.failed;
   useEffect(() => {
@@ -239,12 +305,27 @@ function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): Re
   const handedOnBy = ask.asked_of_by ?? "";
   const handedOnAt = ask.asked_of_at ?? null;
   const tone = waitingOn === "" ? badgeLow : badgePrimary;
+  // Inside `NoTooltips` each colour is one of the new issue page's: the line is its quiet words,
+  // and the badge its label chip, or the quiet words on the same ground while `waitingOn` is
+  // empty (the ask names no login), as the assignee's badge is drawn there.
+  const badgeTone =
+    page === null
+      ? `${tone.bg} ${tone.text}`
+      : waitingOn === ""
+        ? `${pagePaneBg} ${pageQuietText}`
+        : pageLabelChip;
+  // Inside `NoTooltips` who the ask waits on and who handed it on are values, so each breaks
+  // anywhere and the badge's wrapper narrows to the line rather than keep its width; the select
+  // still covers the badge however many lines it takes (`badgeSelectPageWrapper`).
   return (
     <div
-      className={`mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs ${textMutedOnSurface}`}
+      className={`mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs ${page === null ? textMutedOnSurface : pageQuietText}`}
     >
-      <span className={badgeSelectWrapper}>
-        <span aria-hidden="true" className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
+      <span className={page === null ? badgeSelectWrapper : badgeSelectPageWrapper}>
+        <span
+          aria-hidden="true"
+          className={`${page === null ? badgeSelectBadge : badgeSelectPageBadge} ${badgeTone}`}
+        >
           {write.pending
             ? "Handing on…"
             : waitingOn === ""
@@ -286,7 +367,7 @@ function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): Re
         </select>
       </span>
       {handedOnBy === "" || handedOnAt === null ? null : (
-        <span>
+        <span className={page === null ? undefined : "min-w-0 max-w-full [overflow-wrap:anywhere]"}>
           handed on by {handedOnBy} <Timestamp at={handedOnAt} />
         </span>
       )}
@@ -461,6 +542,91 @@ export function AskCard({
       handOffFocus(form);
     }
   });
+  const tooltips = useTooltips();
+  // Inside `NoTooltips` the card refuses its form from the press of an answer or a clarification
+  // until that write is done with: while it is out, and, once it lands, until a read of the ask's
+  // thread newer than the landing is drawn (`awaitingRead`). Until then the form on the page is
+  // stale: after an answer that landed with no body to show, its options are still picked, and
+  // Answer would send a second answer. A landing that starts no read of the thread ends the
+  // refusal as it lands (a first answer that comes back with its body, whose record replaces the
+  // form at once), and so does a read that fails, so the card never stays refused. Each control it
+  // refuses - the answer box, Answer (Save answer), Ask back, Ask back instead, Answer with it
+  // anyway, the Cancel of a change, and the options with Other - is `aria-disabled` in place of
+  // `disabled`: the box is `readOnly`, and the options are refused by their group. `disabled`
+  // drops the focus to the body in a browser; this way the control the reader pressed keeps it.
+  // A press of any of them does nothing then, and neither does Ctrl+Enter, a paste or a drop in
+  // the box, or the form's submit. Each is drawn from the form as it stood when the refusal began
+  // (`held`): the landing empties the box and closes the choice a question-shaped answer offers,
+  // and the control that would leave the page or say a new refusal with that - Ask back, its text
+  // gone, or Ask back instead - stays on the page, refused as it was pressed. So the hand-off
+  // above moves no focus while the card refuses, and nothing holding the focus leaves. The one
+  // move of the focus comes as the refusal ends: the form's hand-off, or Ask back instead's, as
+  // it leaves the page; a focus the reader moved out of the form meanwhile stays where they put
+  // it. An upload still out still disables a send, on both sides, and a refusal of the draft
+  // (`answerRefusal`, `clarificationRefusal`) refuses it on both sides with its reason. Outside
+  // `NoTooltips` each is `disabled` while the write is out and no longer.
+  const holdsFocus = !tooltips;
+  // The newest write of the form that has landed, by when it was sent: 0 while none has.
+  const landedWrite = Math.max(
+    mutation.isSuccess ? mutation.submittedAt : 0,
+    clarification.isSuccess ? clarification.submittedAt : 0
+  );
+  // The landing is recorded while rendering, React's pattern for state derived from a change (as
+  // `seededFor` is): an effect would let one render between the landing and the record reach the
+  // screen, and a press then would be taken. `readAfter` is when the thread read on the page at
+  // the landing was made; the card waits for a newer one while the thread is being read. Outside
+  // `NoTooltips` nothing waits, so nothing is recorded and the card renders as it does there.
+  const [landing, setLanding] = useState<{ readAfter: number | null; write: number }>({
+    readAfter: null,
+    write: landedWrite,
+  });
+  const landedNow = landedWrite > landing.write;
+  let readAfter = landedNow ? threadQuery.dataUpdatedAt : landing.readAfter;
+  const awaitingRead =
+    holdsFocus &&
+    readAfter !== null &&
+    threadQuery.isFetching &&
+    threadQuery.dataUpdatedAt <= readAfter;
+  if (!awaitingRead) readAfter = null;
+  if (holdsFocus && (landedNow || readAfter !== landing.readAfter)) {
+    setLanding({ readAfter, write: Math.max(landedWrite, landing.write) });
+  }
+  // The one flag every refusal of the form reads: outside `NoTooltips` it is `isSubmitting`.
+  const refusing = isSubmitting || awaitingRead;
+  const refusedWhileOut = holdsFocus && refusing;
+  const disabledWhileOut = !holdsFocus && isSubmitting;
+  // What a refused control is drawn from, recorded while rendering as the landing is, in the
+  // first render that refuses: the press, before the landing empties the box.
+  const formNow = { answerRefusal, choice: questionChoice, clarificationRefusal };
+  const [heldForm, setHeldForm] = useState<typeof formNow | null>(null);
+  const held = refusedWhileOut ? (heldForm ?? formNow) : null;
+  if (held !== heldForm) setHeldForm(held);
+  const answerRefusalShown = held === null ? answerRefusal : held.answerRefusal;
+  const clarificationRefusalShown =
+    held === null ? clarificationRefusal : held.clarificationRefusal;
+  const choiceShown = held === null ? questionChoice : held.choice;
+  // A send this card draws keeps the focus while the card refuses, unless an upload holds it:
+  // that one is `disabled` on both sides (`busy`).
+  const sendRefusedWhileOut = refusedWhileOut && !uploading;
+  // Ask back instead takes the focus as it is drawn. Outside `NoTooltips` its callback is a new
+  // one at each render, which focuses it again at each render. Inside it is this one callback,
+  // stable across renders as `useFormRef`'s is, which focuses it once: a focus taken at each
+  // render would move the reader's focus while a write is out - from Answer with it anyway, say,
+  // whose answer is out. The choice leaves the page, and the button with it, as the
+  // clarification lands outside `NoTooltips`, and inside once the ask is read again after it; a
+  // focus the button still holds then goes where the form's own hand-off puts it, not to the
+  // body.
+  const focusAskBackInstead = useCallback(
+    (button: HTMLButtonElement | null) => {
+      if (button === null) return undefined;
+      button.focus();
+      return () => {
+        const form = formRef.current;
+        if (form !== null && document.activeElement === button) handOffFocus(form);
+      };
+    },
+    [formRef]
+  );
   // A block ask the server indexed with no pending author has an empty label and reads as
   // "asked", with no session handles to open.
   const sessionAuthor = displayedAsk.author.kind === "session" ? displayedAsk.author : undefined;
@@ -558,29 +724,34 @@ export function AskCard({
    *  compact card shows over a closed note disclosure. Only its own send, or an upload the draft
    *  is waiting on, disables it; every other reason it cannot be pressed it states and refuses.
    *  The upload it waits on is the card's (`uploading`), not the box's, so both places are held
-   *  by the same picture and neither can be drawn without the gate. */
+   *  by the same picture and neither can be drawn without the gate. Inside `NoTooltips` its own
+   *  send, and the read after it, refuse it holding the focus (`sendRefusedWhileOut`). */
   const submitButton = (shownBy: string | undefined) => (
     <RefusableButton
       busy={answerBusy ?? (uploading ? answerLabel : undefined)}
       className="min-h-11"
-      refusal={answerRefusal}
+      refusal={answerRefusalShown}
       refusalShownBy={shownBy}
+      refusedWhileOut={sendRefusedWhileOut}
       type="submit"
     >
       {answerLabel}
     </RefusableButton>
   );
   const answerActions = ({ reasonId }: AskAnswerActions<AnswerRefusalName>): ReactNode =>
-    questionChoice ? (
+    choiceShown ? (
       // The pair a question-shaped answer offers is two more sends of this card, so a picture
       // the draft is still taking holds them both, in the shape their siblings keep: the label
       // stands and the press is taken away until the upload lands (`submitButton`, Ask back).
       <fieldset aria-label="Question-shaped answer" className="flex gap-2">
         <button
-          className={`min-h-11 ${primaryButton}`}
-          disabled={isSubmitting || uploading}
-          onClick={sendClarification}
-          ref={(node) => node?.focus()}
+          aria-disabled={sendRefusedWhileOut || undefined}
+          className={`min-h-11 ${tooltips ? primaryButton : `rounded-lg px-3 py-2 text-sm font-semibold ${ON_PAGE.filled}`}`}
+          disabled={disabledWhileOut || uploading}
+          onClick={() => {
+            if (!refusing) sendClarification();
+          }}
+          ref={tooltips ? (node) => node?.focus() : focusAskBackInstead}
           type="button"
         >
           {clarification.isPending ? "Sending…" : "Ask back instead"}
@@ -589,8 +760,9 @@ export function AskCard({
           busy={mutation.isPending ? "Answering…" : uploading ? "Answer with it anyway" : undefined}
           look="secondary"
           onPress={() => sendAnswer(answerText)}
-          refusal={answerRefusal}
+          refusal={answerRefusalShown}
           refusalShownBy={reasonId.anyway}
+          refusedWhileOut={sendRefusedWhileOut}
         >
           Answer with it anyway
         </RefusableButton>
@@ -600,9 +772,16 @@ export function AskCard({
         {submitButton(reasonId.answer)}
         {changing ? (
           <button
-            className={secondaryButton}
-            disabled={isSubmitting}
-            onClick={cancelChanging}
+            aria-disabled={refusedWhileOut || undefined}
+            className={
+              tooltips
+                ? secondaryButton
+                : `min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${ON_PAGE.action}`
+            }
+            disabled={disabledWhileOut}
+            onClick={() => {
+              if (!refusing) cancelChanging();
+            }}
             type="button"
           >
             Cancel
@@ -612,8 +791,9 @@ export function AskCard({
             busy={clarification.isPending ? "Sending…" : uploading ? "Ask back" : undefined}
             look="secondary"
             onPress={sendClarification}
-            refusal={clarificationRefusal}
+            refusal={clarificationRefusalShown}
             refusalShownBy={reasonId.askBack}
+            refusedWhileOut={sendRefusedWhileOut}
           >
             Ask back
           </RefusableButton>
@@ -627,7 +807,7 @@ export function AskCard({
   const answerArea = (
     <AskAnswerArea
       actions={answerActions}
-      disabled={isSubmitting}
+      disabled={disabledWhileOut}
       draft={answerDraft}
       fieldRef={answerFieldRef}
       handle="data-ask-answer"
@@ -636,15 +816,18 @@ export function AskCard({
       labelHidden={!reasonRequired}
       onDraftChange={changeDraft}
       placeholder={answerPlaceholder}
+      // Inside `NoTooltips`, while the card refuses, the box is read-only in place of disabled
+      // and takes no paste, drop or Ctrl+Enter.
+      readOnly={refusedWhileOut}
       // Every name the card's buttons know, whichever pair is drawn: a reason that is null
       // shows no line, so the two the other pair uses cost the card nothing.
       refusals={
-        questionChoice
-          ? { answer: null, anyway: answerRefusal, askBack: null }
+        choiceShown
+          ? { answer: null, anyway: answerRefusalShown, askBack: null }
           : {
-              answer: answerRefusal,
+              answer: answerRefusalShown,
               anyway: null,
-              askBack: changing ? null : clarificationRefusal,
+              askBack: changing ? null : clarificationRefusalShown,
             }
       }
       upload={upload}
@@ -672,11 +855,11 @@ export function AskCard({
           owner={askOwner}
         />
         {unsentAnswer === "" ? null : (
-          <UnsentText
+          <UnsentBox
             className="mt-3"
             testId="ask-unsent-answer"
             text={unsentAnswer}
-            why="This question closed before you sent your answer, so it was not sent. Your text is here to copy."
+            why={UNSENT_ANSWER_WHY}
           />
         )}
         {answerFailure === null ? null : <QueryError message={answerFailure.message} />}
@@ -692,7 +875,7 @@ export function AskCard({
       className={
         inBlock
           ? "relative mt-3"
-          : `relative rounded-xl border-l-4 shadow-sm ${isCompact ? "px-3 pt-4 pb-3" : "px-4 pt-5 pb-4"} ${notched ? "mt-3" : ""} ${card} ${askUrgencyAccent[urgency]}`
+          : `relative rounded-xl border-l-4 shadow-sm ${isCompact ? "px-3 pt-4 pb-3" : "px-4 pt-5 pb-4"} ${notched ? "mt-3" : ""} ${tooltips ? `${card} ${askUrgencyAccent[urgency]}` : `${ON_PAGE.frame} ${PAGE_URGENCY_ACCENT[urgency]}`}`
       }
       // The one handle on a card as a whole, carrying the question the card draws: a page-level
       // key that must not fire while the reader is answering an ask (the issue page's priority
@@ -715,7 +898,7 @@ export function AskCard({
         control={(name) => (
           <button
             aria-expanded={handlesOpen}
-            className={`flex min-w-0 items-center gap-1 ${textMutedHoverToSecondary}`}
+            className={`flex min-w-0 items-center gap-1 ${tooltips ? textMutedHoverToSecondary : ON_PAGE.quietAct}`}
             onClick={() => setHandlesOpen((open) => !open)}
             type="button"
           >
@@ -754,25 +937,29 @@ export function AskCard({
         displayedAsk.block_id === undefined ||
         displayedAsk.block_id === null ||
         displayedAsk.block_artifact === undefined ? null : (
-          <p className={`mt-2 text-sm ${linkText} ${linkHoverText}`}>
+          <p className={`mt-2 text-sm ${tooltips ? `${linkText} ${linkHoverText}` : ON_PAGE.link}`}>
             <AskBlockLink ask={displayedAsk} />
           </p>
         )}
         <div>
           {isApproval ? (
             <p
-              className={`text-[10px] font-semibold uppercase tracking-wide ${textMutedOnSurface}`}
+              className={`text-[10px] font-semibold uppercase tracking-wide ${tooltips ? textMutedOnSurface : ON_PAGE.quiet}`}
             >
               Approval requested
             </p>
           ) : null}
           {isApproval && documentLink ? (
-            <p className={`mt-1 text-sm ${linkText} ${linkHoverText}`}>
+            <p
+              className={`mt-1 text-sm ${tooltips ? `${linkText} ${linkHoverText}` : ON_PAGE.link}`}
+            >
               <AskApprovalLink ask={displayedAsk} />
             </p>
           ) : null}
           {inBlock ? null : (
-            <div className={`text-[15px] leading-relaxed font-medium ${textPrimaryOnSurface}`}>
+            <div
+              className={`text-[15px] leading-relaxed font-medium ${tooltips ? textPrimaryOnSurface : ON_PAGE.ink}`}
+            >
               <MarkdownBody
                 markdown={displayedAsk.question}
                 source={source}
@@ -802,7 +989,7 @@ export function AskCard({
       <AskEditHistory ask={displayedAsk} edits={edits} />
       {referencedByNode}
       {askChanged ? (
-        <p className={`mt-3 text-sm font-medium ${inlineWarningText}`}>
+        <p className={`mt-3 text-sm font-medium ${tooltips ? inlineWarningText : ON_PAGE.warning}`}>
           This question changed while you were answering. Review the latest wording and confirm your
           answer again; your draft text is still here.
         </p>
@@ -810,19 +997,32 @@ export function AskCard({
       {/* The options and the answer box sit where the order puts a thread's reply box: under
           the question in Newest first, at the foot of the card in Oldest first. */}
       {answerFirst ? null : threadNode}
-      <form className="mt-3 space-y-3" onSubmit={submit} ref={trackForm}>
+      <form
+        className="mt-3 space-y-3"
+        // While the card refuses a submit sends nothing: inside `NoTooltips` a press of Answer,
+        // or Enter in an option, still reaches it then (`refusing`).
+        onSubmit={(event) => {
+          if (refusing) event.preventDefault();
+          else submit(event);
+        }}
+        ref={trackForm}
+      >
         {(displayedAsk.options ?? []).length === 0 ? null : (
-          <fieldset className="min-w-0 space-y-2">
+          // Inside `NoTooltips`, while the card refuses, the options are refused by their group's
+          // `aria-disabled`, which ARIA passes to each option in it: an option row puts no
+          // attribute of its own on its input (`AskChoiceRow`).
+          <fieldset aria-disabled={refusedWhileOut || undefined} className="min-w-0 space-y-2">
             <legend className="sr-only">Answer options</legend>
             {(displayedAsk.options ?? []).map((option) => (
               <AskChoiceRow
                 checked={selected.includes(option.label)}
-                disabled={isSubmitting}
+                disabled={disabledWhileOut}
                 hotkey
                 key={option.label}
                 multiple={displayedAsk.multiple}
                 name={`ask-${displayedAsk.id}`}
                 onChange={() => {
+                  if (refusing) return;
                   selectRealOption(option.label);
                   if (isCompact)
                     setOwnWordsOpen(requiresReason(option.label) || trimmedAnswer !== "");
@@ -833,10 +1033,11 @@ export function AskCard({
             {isApproval ? null : (
               <AskChoiceRow
                 checked={otherSelected}
-                disabled={isSubmitting}
+                disabled={disabledWhileOut}
                 multiple={displayedAsk.multiple}
                 name={`ask-${displayedAsk.id}`}
                 onChange={() => {
+                  if (refusing) return;
                   toggleOther();
                   if (isCompact && !otherSelected) setOwnWordsOpen(true);
                 }}
@@ -854,9 +1055,12 @@ export function AskCard({
               // here rather than disappearing with the note it was pasted into.
               <div className="space-y-2">
                 <DraftUploadStatus upload={upload} />
-                {answerRefusal === null ? null : (
-                  <p className={`text-xs ${textMutedOnSurface}`} id={loneAnswerReasonId}>
-                    {answerRefusal}
+                {answerRefusalShown === null ? null : (
+                  <p
+                    className={`text-xs ${tooltips ? textMutedOnSurface : ON_PAGE.quiet}`}
+                    id={loneAnswerReasonId}
+                  >
+                    {answerRefusalShown}
                   </p>
                 )}
                 {submitButton(loneAnswerReasonId)}
@@ -866,7 +1070,7 @@ export function AskCard({
               <button
                 aria-controls={`${answerFieldId}-disclosure`}
                 aria-expanded={ownWordsOpen}
-                className={`min-h-11 text-sm font-medium ${textSecondaryOnSurface}`}
+                className={`min-h-11 text-sm font-medium ${tooltips ? textSecondaryOnSurface : ON_PAGE.muted}`}
                 // The Inbox's Enter opens this disclosure to reach the answer box behind it,
                 // and finds the control by this handle, as it finds the box by
                 // `data-ask-answer` and an option by `data-ask-option` (`Inbox.tsx`).
