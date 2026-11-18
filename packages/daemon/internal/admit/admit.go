@@ -622,8 +622,9 @@ func (a *Admission) logUnclassified(rows []record.HeldIssue, issues []record.Iss
 }
 
 // phaseWorker is one candidate of a repair over phase workers: the issue, the root of its tree
-// as the live records hold it, the role that works the issue's phase and that role's claim
-// token. The entry repair holds a root's own architect in the same shape (rootArchitectOf).
+// as the live records hold it, the role that works the issue's phase and the claim of the agent
+// that works that role's step (record.WorkerClaimOf). The entry repair holds a root's own
+// architect in the same shape (rootArchitectOf).
 type phaseWorker struct {
 	issue record.Issue
 	root  record.Issue
@@ -636,7 +637,9 @@ type phaseWorker struct {
 // the record shows under way in a tree that does not linger. project is the project's claim
 // token (claim.ProjectToken), and byKey is the project's live records by key, which the tree
 // roots are read from and which the slot repair walks its slots and its issues past review
-// through.
+// through. entries is the caller's one batched read of the phases rows of its candidates
+// (record.Store.PhaseEntries), which the claim of the role's worker is read from
+// (record.WorkerClaimOf): a keyed agent on a step of another role is that step's worker.
 //
 // Its two callers are the repairs over phase workers: the tick's silent list (silentWorkers,
 // through phaseWorkers) and the selection of the roles behind the entry their phases row names
@@ -662,7 +665,7 @@ type phaseWorker struct {
 // than failing the whole fact, as the wait reconcile passes over such a root (workflow's
 // ReconcileAwaiting).
 func (a *Admission) phaseWorkerOf(project string, issue record.Issue, byKey map[string]record.Issue,
-	facts record.LineFacts,
+	facts record.LineFacts, entries map[record.PhaseRole]record.PhaseEntry,
 ) (phaseWorker, bool) {
 	if issue.Project != a.project {
 		return phaseWorker{}, false
@@ -678,7 +681,7 @@ func (a *Admission) phaseWorkerOf(project string, issue record.Issue, byKey map[
 	if !rooted || root.Lingers() {
 		return phaseWorker{}, false
 	}
-	token, err := claim.NewToken(project, issue.Key, role)
+	token, err := record.WorkerClaimOf(project, issue.Key, role, entries)
 	if err != nil {
 		return phaseWorker{}, false
 	}
@@ -686,9 +689,9 @@ func (a *Admission) phaseWorkerOf(project string, issue record.Issue, byKey map[
 }
 
 // phaseWorkers is, of candidates, every one phaseWorkerOf selects, with that role's run: the
-// candidates of the tick's silent list (silentWorkers). The runs are one batched
-// record.RoleRuns call and never a call per candidate, because a tick runs over the whole
-// project.
+// candidates of the tick's silent list (silentWorkers). The phases rows the claims are read from
+// are one batched read (workerEntries) and the runs one batched record.RoleRuns call, never a
+// call per candidate, because a tick runs over the whole project.
 func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []record.Issue,
 	byKey map[string]record.Issue, facts record.LineFacts,
 ) ([]phaseWorker, map[claim.Token]record.RoleRun, error) {
@@ -696,10 +699,14 @@ func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []re
 	if err != nil {
 		return nil, nil, err
 	}
+	entries, err := a.workerEntries(ctx, tx, candidates)
+	if err != nil {
+		return nil, nil, err
+	}
 	var workers []phaseWorker
 	var keys []record.RoleRunKey
 	for _, issue := range candidates {
-		worker, selected := a.phaseWorkerOf(project, issue, byKey, facts)
+		worker, selected := a.phaseWorkerOf(project, issue, byKey, facts, entries)
 		if !selected {
 			continue
 		}
@@ -714,6 +721,33 @@ func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []re
 		return nil, nil, err
 	}
 	return workers, runs, nil
+}
+
+// workerEntries is the phases rows of every issue of issues that phaseWorkerOf can select — an
+// issue of this project whose phase has a worker role — read in one statement
+// (record.Store.PhaseEntries), and no statement where there is none: the rows the claim of each
+// candidate's worker is read from (record.WorkerClaimOf).
+func (a *Admission) workerEntries(ctx context.Context, tx pgx.Tx, issues []record.Issue) (map[record.PhaseRole]record.PhaseEntry, error) {
+	keys := make([]string, 0, len(issues))
+	seen := make(map[string]struct{}, len(issues))
+	for _, issue := range issues {
+		if issue.Project != a.project || workflow.OpenPhaseRole(issue.Phase) == "" {
+			continue
+		}
+		if _, dup := seen[issue.Key]; dup {
+			continue
+		}
+		seen[issue.Key] = struct{}{}
+		keys = append(keys, issue.Key)
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	entries, err := a.store.PhaseEntries(ctx, tx, keys)
+	if err != nil {
+		return nil, fmt.Errorf("read the phases rows of %d phase workers: %w", len(keys), err)
+	}
+	return entries, nil
 }
 
 // rootArchitectOf is issue's own architect as a holder the entry repair weighs (owedEntryRoles),
@@ -2523,16 +2557,20 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 			return err
 		}
 	}
-	type roleToken struct {
+	// comeBack is one claim of a member the promotion brings back: the member's phase owner, which
+	// the promotion starts on its phase's work, or another stored claim, which comes back on a start
+	// that names it and carries no task.
+	type comeBack struct {
 		role  claim.Role
 		token claim.Token
+		owner bool
 	}
 	type midPhaseMember struct {
 		issue record.Issue
 		// owner is the role whose phase the member stands in, empty where that phase is the
 		// tree architect's.
-		owner claim.Role
-		roles []roleToken
+		owner  claim.Role
+		claims []comeBack
 	}
 	// The first pass reads each member where its record leaves it and names every role run the
 	// second pass judges; the one read of them stands between the two, so no row is written on a
@@ -2579,27 +2617,41 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 			}
 		}
 		standing := midPhaseMember{issue: member, owner: owner}
-		for _, role := range claim.Roles {
-			// The tree's architect is promotion's own start, with the task that hands it its
-			// tree; a member's own sub-architect is no phase worker and comes back with the rest.
-			if claim.IsTreeArchitect(role, member.Key, member.Tree) {
-				continue
-			}
-			token, err := claim.NewToken(project, member.Key, role)
+		// The phase's owner is the claim the promotion's start reaches (PromotedWorkerClaim): the
+		// agent of the step the member stands in, which can be a keyed agent on a step of another
+		// role. Its token's refusal stays the fact's, as it was: the phase's own role is the
+		// member's work rather than a session brought back.
+		var ownerToken claim.Token
+		if owner != "" {
+			token, err := a.engine.PromotedWorkerClaim(ctx, tx, member, owner)
 			if err != nil {
-				// An issue whose key yields no claim token holds no claim row at all, so no role
-				// of it has ever run and none of the roles this brings back is started, as the
-				// slot repair passes over such an issue rather than failing the whole fact
-				// (resumeSlottedWorkers). The phase's own role is the member's work rather than
-				// a session brought back, and its token's refusal stays the fact's, as it was.
-				if role != owner {
-					continue
-				}
 				return err
 			}
-			standing.roles = append(standing.roles, roleToken{role: role, token: token})
-			keys = append(keys, record.RoleRunKey{Token: token, Issue: member.Key, Role: role, Generation: member.Generation})
+			ownerToken = token
+			standing.claims = append(standing.claims, comeBack{role: owner, token: token, owner: true})
+			keys = append(keys, record.RoleRunKey{Token: token, Issue: member.Key, Role: owner, Generation: member.Generation})
 		}
+		// Every other stored claim of the member comes back with the tree, on a start that names it
+		// with its stored role (record.Store.IssueClaims): one claim gets one start, and no row of
+		// this walk names a role alone, whose claim a keyed agent can share with another role. A
+		// claim row is the durable record that a claim has run, so a role that never ran gets
+		// nothing. The tree's architect is promotion's own start, with the task that hands it its
+		// tree; a member's own sub-architect is no phase worker and comes back with the rest.
+		stored, err := a.store.IssueClaims(ctx, tx, project, member.Key)
+		if err != nil {
+			return err
+		}
+		for _, c := range stored {
+			if c.Token == ownerToken || claim.IsTreeArchitect(c.Role, member.Key, member.Tree) {
+				continue
+			}
+			standing.claims = append(standing.claims, comeBack{role: c.Role, token: c.Token})
+		}
+		// The starts go in the order of the roles (claim.Roles), the owner among them, as one start
+		// for each role did before a claim could be an agent of another role's name.
+		slices.SortStableFunc(standing.claims, func(x, y comeBack) int {
+			return cmp.Or(cmp.Compare(roleOrder(x.role), roleOrder(y.role)), cmp.Compare(x.token, y.token))
+		})
 		members = append(members, standing)
 		return nil
 	}
@@ -2632,21 +2684,15 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 			}
 		}
 		promoted := false
-		for _, held := range standing.roles {
-			run := runs[held.token]
-			if held.role != standing.owner {
-				// No claim row, so the role has never run: there is no session to bring back and
-				// no task this start could carry, and the one it would make could only ever be
-				// woken by a message.
-				if run.Claim == nil {
-					continue
-				}
-				if err := a.enqueue(ctx, tx, member.Key, record.SuperviseRequest{Op: "start", Tree: member.Tree, Role: held.role,
+		for _, held := range standing.claims {
+			if !held.owner {
+				if err := a.enqueue(ctx, tx, member.Key, record.SuperviseRequest{Op: "start", Tree: member.Tree, Role: held.role, Claim: held.token,
 					Generation: member.Generation, Phase: member.Phase}, now); err != nil {
 					return err
 				}
 				continue
 			}
+			run := runs[held.token]
 			if !workflow.StartFor(run, root, member.Generation, member.Phase) {
 				continue
 			}
@@ -2678,6 +2724,15 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		}
 	}
 	return nil
+}
+
+// roleOrder is role's place in claim.Roles, and a place after every role of Legion for a role
+// that is none of them.
+func roleOrder(role claim.Role) int {
+	if i := slices.Index(claim.Roles, role); i >= 0 {
+		return i
+	}
+	return len(claim.Roles)
 }
 
 // owedEntryRole is one role the entry work is owed to: the issue whose current phase it is the
@@ -2921,22 +2976,23 @@ func (a *Admission) readSlotHolders(ctx context.Context, tx pgx.Tx, issues []rec
 		read.holders = append(read.holders, slotHolder{phaseWorker: held, admittedAt: admittedAt})
 		keys = append(keys, record.RoleRunKey{Token: held.token, Issue: held.issue.Key, Role: held.role, Generation: held.issue.Generation})
 	}
+	// The candidates are gathered first and their phases rows read in one statement before any is
+	// weighed, because the claim of each candidate's phase worker is read from its row
+	// (phaseWorkerOf): a keyed agent on a step of another role is that step's worker.
+	type candidate struct {
+		issue      record.Issue
+		admittedAt time.Time
+		// architectOnly is a root released for a wait, whose architect alone is held.
+		architectOnly bool
+	}
+	var candidates []candidate
 	seen := make(map[string]struct{}, len(slots))
 	take := func(issue record.Issue, admittedAt time.Time) {
 		if _, already := seen[issue.Key]; already {
 			return
 		}
 		seen[issue.Key] = struct{}{}
-		if worker, selected := a.phaseWorkerOf(project, issue, byKey, facts); selected {
-			hold(worker, admittedAt)
-		}
-		// The architect of a root is weighed beside the phase's worker, because two roles can
-		// stand on one issue: a root at admitted holds no phase worker at all, and a root a
-		// hand-over carried in has both its phase's worker and an architect that has still to
-		// be told the tree is its own.
-		if architect, selected := a.rootArchitectOf(project, issue); selected {
-			hold(architect, admittedAt)
-		}
+		candidates = append(candidates, candidate{issue: issue, admittedAt: admittedAt})
 	}
 	for _, slot := range slots {
 		if issue, recorded := byKey[slot.Issue]; recorded {
@@ -2960,25 +3016,41 @@ func (a *Admission) readSlotHolders(ctx context.Context, tx pgx.Tx, issues []rec
 		if _, already := seen[issue.Key]; already {
 			continue
 		}
-		architect, selected := a.rootArchitectOf(project, issue)
-		if !selected || !record.TreeRuns(issue, facts.Lifecycles[issue.Key], facts.Gates[issue.Key]) {
+		if _, selected := a.rootArchitectOf(project, issue); !selected || !record.TreeRuns(issue, facts.Lifecycles[issue.Key], facts.Gates[issue.Key]) {
 			continue
 		}
 		seen[issue.Key] = struct{}{}
-		hold(architect, time.Time{})
+		candidates = append(candidates, candidate{issue: issue, architectOnly: true})
+	}
+	if len(candidates) == 0 {
+		return read, nil
+	}
+	weighed := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		weighed = append(weighed, c.issue.Key)
+	}
+	if read.entries, err = a.store.PhaseEntries(ctx, tx, weighed); err != nil {
+		return slotReading{}, fmt.Errorf("read the phase entries of %d slot holders: %w", len(weighed), err)
+	}
+	for _, c := range candidates {
+		if !c.architectOnly {
+			if worker, selected := a.phaseWorkerOf(project, c.issue, byKey, facts, read.entries); selected {
+				hold(worker, c.admittedAt)
+			}
+		}
+		// The architect of a root is weighed beside the phase's worker, because two roles can
+		// stand on one issue: a root at admitted holds no phase worker at all, and a root a
+		// hand-over carried in has both its phase's worker and an architect that has still to
+		// be told the tree is its own.
+		if architect, selected := a.rootArchitectOf(project, c.issue); selected {
+			hold(architect, c.admittedAt)
+		}
 	}
 	if len(keys) == 0 {
 		return read, nil
 	}
 	if read.runs, err = a.store.RoleRuns(ctx, tx, keys); err != nil {
 		return slotReading{}, err
-	}
-	weighed := make([]string, 0, len(read.holders))
-	for _, holder := range read.holders {
-		weighed = append(weighed, holder.issue.Key)
-	}
-	if read.entries, err = a.store.PhaseEntries(ctx, tx, weighed); err != nil {
-		return slotReading{}, fmt.Errorf("read the phase entries of %d slot holders: %w", len(weighed), err)
 	}
 	return read, nil
 }
@@ -3264,9 +3336,10 @@ func (a *Admission) convergeEntries(ctx context.Context, tx pgx.Tx) error {
 //
 // A row the fences keep is weighed once more, against the claim it would start: a stop that
 // outlived the row's own start ends the row too, since the row's retry would otherwise start
-// the stopped worker again the moment a slot came (stopOutlivedStart). That second read is one
-// batched RoleClaims call over the rows the fences kept, and no read at all when they kept none:
-// the rule reads nothing of the queued rows beside those claims.
+// the stopped worker again the moment a slot came (stopOutlivedStart). The claim a row would
+// start is the claim of its role's worker (record.WorkerClaimOf). The second read is one batched
+// PhaseEntries call and one batched RoleClaims call over the rows the fences kept, and no read at
+// all when they kept none: the rule reads nothing of the queued rows beside those claims.
 //
 // It runs before the waiting line is judged, and so before the cap loop hands out any slot
 // (promoteHolds). That is what keeps the line and this repair from disagreeing: the line offers
@@ -3296,16 +3369,8 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 		root, rooted := byKey[issue.Tree]
 		if recorded && rooted && !record.OutOfWorkflow(issue.Status) && !root.Lingers() &&
 			owed.Generation == issue.Generation && owed.Phase == issue.Phase {
-			// The fences keep this row, so it stands for the stop rule below. A row whose issue
-			// and role yield no claim token has no run to read, as the slot repair's holders have
-			// none (resumeSlottedWorkers): it stays owed and the rule passes over it rather than
-			// failing the whole fact.
-			token, err := claim.NewToken(project, owed.Issue, owed.Role)
-			if err != nil {
-				continue
-			}
-			kept = append(kept, owedRow{owed: owed, token: token})
-			tokens = append(tokens, token)
+			// The fences keep this row, so it stands for the stop rule below.
+			kept = append(kept, owedRow{owed: owed})
 			continue
 		}
 		// No live lease holds the row (record.Store.OwedStarts), so the token it carries is
@@ -3321,6 +3386,33 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 				"role", owed.Role, "phase", owed.Phase, "generation", owed.Generation)
 		})
 	}
+	if len(kept) == 0 {
+		return finished, nil
+	}
+	// The claim each kept row would start is the claim of its role's worker
+	// (record.WorkerClaimOf), read from the rows' phases rows in one statement: a keyed agent on a
+	// step of another role is that step's worker. A row whose issue and role yield no claim token
+	// has no run to read, as the slot repair's holders have none (resumeSlottedWorkers): it stays
+	// owed and the rule passes over it rather than failing the whole fact.
+	owedIssues := make([]string, 0, len(kept))
+	for _, keptRow := range kept {
+		owedIssues = append(owedIssues, keptRow.owed.Issue)
+	}
+	entries, err := a.store.PhaseEntries(ctx, tx, owedIssues)
+	if err != nil {
+		return finished, fmt.Errorf("read the phases rows of %d held starts: %w", len(owedIssues), err)
+	}
+	weighed := kept[:0]
+	for _, keptRow := range kept {
+		token, err := record.WorkerClaimOf(project, keptRow.owed.Issue, keptRow.owed.Role, entries)
+		if err != nil {
+			continue
+		}
+		keptRow.token = token
+		weighed = append(weighed, keptRow)
+		tokens = append(tokens, token)
+	}
+	kept = weighed
 	if len(tokens) == 0 {
 		return finished, nil
 	}

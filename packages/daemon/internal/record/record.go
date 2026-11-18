@@ -674,7 +674,8 @@ type PhaseRole struct {
 // PhaseEntry is what a batched read of many issues' phases rows answers for one of them
 // (Store.PhaseEntries): the entry the row names, the moment the transition raised it and whether
 // its task is one to send as written, which are the three fields of PhaseRow a pass over every
-// slot holder reads. RaisedAt is zero on a row no entry has been raised on, where Entry is zero
+// slot holder reads, and the claim the row names with the task of the step it runs, which
+// WorkerClaimOf reads. RaisedAt is zero on a row no entry has been raised on, where Entry is zero
 // too.
 type PhaseEntry struct {
 	Entry    int64
@@ -685,6 +686,9 @@ type PhaseEntry struct {
 	// keeps a root the answer's own pass promoted past admitted in the reach, in every phase that
 	// carries a run but awaiting_person, where the answer to the new wait raises an entry of its own.
 	Verbatim bool
+	// Claim and StepTask are the row's PhaseRow.Claim and PhaseRow.StepTask.
+	Claim    claim.Token
+	StepTask string
 }
 
 // ReviewDecision is what one review decided: its state (changes_requested or approved), its body,
@@ -2335,6 +2339,13 @@ func WorkerClaim(project, issue string, role claim.Role, rows []PhaseRow) (claim
 		return row.Claim, nil
 	}
 	return claim.NewToken(project, issue, role)
+}
+
+// WorkerClaimOf is WorkerClaim over entries, a batched read of many issues' phases rows
+// (Store.PhaseEntries), for a pass over many issues that reads their rows in one statement.
+func WorkerClaimOf(project, issue string, role claim.Role, entries map[PhaseRole]PhaseEntry) (claim.Token, error) {
+	entry := entries[PhaseRole{Issue: issue, Role: role}]
+	return WorkerClaim(project, issue, role, []PhaseRow{{Issue: issue, Role: role, Claim: entry.Claim, StepTask: entry.StepTask}})
 }
 
 // Lingers says whether the root lingers after its close: its linger deadline is set, and
