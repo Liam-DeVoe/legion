@@ -22,13 +22,18 @@ body: |-
   presents it; one with none lets the request go without a credential in the reserve. A listener
   that wants a credential answers that request 401 at its auth gate, and the call's error names
   both the 401 and why the credential could not be minted; a send so refused is refused, never
-  "may or may not have arrived", since nothing was stored. Any other answer, a 403 included, is
-  the listener's own. A caller whose wait ends before any trade has ended is told the trade is
-  still unanswered (`TradeUnansweredError`), not the runtime's "The operation timed out.". A
-  Dispatch write whose credential cannot present a later attempt after one that may have reached
-  Dispatch, or that fails while Dispatch may still be running an earlier attempt (one cut off for
-  silence), is `DispatchWriteUnsettledError` with that failure as its cause, never the broker's or
-  the transport's error alone, which read as nothing written and invited a resend that wrote twice.
+  "may or may not have arrived", since nothing was stored, and so is a send whose connection was
+  refused or whose listener's name did not resolve. An unconfirmed send names the attempts it
+  made. Any other answer, a 403 included, is the listener's own. A caller whose wait ends before
+  any trade has ended is told the trade is still unanswered (`TradeUnansweredError`), not the
+  runtime's "The operation timed out.". A Dispatch write keeps one idempotency key across every
+  send of the call — its attempts, the re-send after `401 BROKER_TOKEN_NOT_ACTIVE`, and each
+  retry after an old build's answer of no route, which used to mint a new key and could write
+  twice. Once an attempt shows it reached Dispatch (a 5xx or `409 KEY_IN_FLIGHT` answer, or a
+  silence cut, an upload's included), a later credential that cannot present, a last attempt's
+  transport failure, or an answer of no route to the end is `DispatchWriteUnsettledError` with
+  that failure as its cause, never the broker's, the transport's or the rolling release's error
+  alone, which read as nothing written and invited a resend that wrote twice.
 time: 2026-11-17T12:39:04Z
 custom:
     Issue: pr4140

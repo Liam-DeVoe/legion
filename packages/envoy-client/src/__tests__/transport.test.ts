@@ -1583,6 +1583,28 @@ describe("EnvoyClient", () => {
     );
   });
 
+  // A refused connection, or a name that does not resolve, reached no listener, so nothing was
+  // stored: the send is refused, in the transport's own words, never "may or may not have
+  // arrived" with a resend to make.
+  test("a send to a listener that refuses its connection on every attempt is refused, not unconfirmed", async () => {
+    let calls = 0;
+    const client = createEnvoyClient({
+      baseUrl: "http://listener",
+      fetch: (async () => {
+        calls += 1;
+        throw Object.assign(new TypeError("Unable to connect"), { code: "ECONNREFUSED" });
+      }) as unknown as typeof fetch,
+    });
+    const error = await client
+      .send({ sourceSessionID: "ses_source", targetSessionID: "ses_target", message: "hello" })
+      .catch((caught: unknown) => caught);
+    expect(calls).toBe(2);
+    expect(error).not.toBeInstanceOf(EnvoySendUnconfirmedError);
+    expect((error as Error).message).toBe(
+      "POST http://listener/v1/messages/send got no answer: ECONNREFUSED"
+    );
+  });
+
   test("a send whose 2xx answer does not parse is not confirmed delivered", async () => {
     const recorded = recordFetch([new Response("{", { status: 200 })]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });

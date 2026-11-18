@@ -220,6 +220,80 @@ test("envoy-send sends to the listener and with the bearer its envoy.json names"
   expect(String(requests[0]?.body["idempotency_key"])).toMatch(MINTED_KEY)
 })
 
+/** Runs `envoy-send` as a person does, against the stand-in listener, with a bearer file. */
+async function runEnvoySend(args: readonly string[], command?: string) {
+  const file = join(scratch, "envoy.json")
+  writeFileSync(
+    file,
+    JSON.stringify({
+      envoy: {
+        enabled: true,
+        url: `http://127.0.0.1:${server.port}`,
+        token: fixtureSecret("listener"),
+      },
+    }),
+  )
+  const send = Bun.spawn(
+    command === undefined
+      ? ["bun", resolve(import.meta.dir, "../bin/envoy-send.ts"), ...args]
+      : ["bash", "-c", command],
+    {
+      cwd: scratch,
+      env: { PATH: process.env["PATH"] ?? "", HOME: scratch, ENVOY_CONFIG_FILE: file },
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  )
+  const [code, stdout, stderr] = await Promise.all([
+    send.exited,
+    new Response(send.stdout).text(),
+    new Response(send.stderr).text(),
+  ])
+  return { code, stdout, stderr }
+}
+
+// An unconfirmed send may have stored the message, so `envoy-send` neither calls it failed nor
+// exits with a refusal's 1: it exits 75, names the key, and prints the command that sends it again
+// under that key, which the listener drops as a repeat if the first copy arrived. Before, it
+// printed "failed", exited 1 and took no key, so the only resend it could make was a new message.
+test("an unconfirmed envoy-send exits 75 and prints the command that resends it under the same key", async () => {
+  requests.length = 0
+  for (let n = 0; n < 2; n++) {
+    answers.push(() => Response.json({ error: "listener restarting" }, { status: 503 }))
+  }
+  const first = await runEnvoySend(["ses_receiver", "it", "may", "have", "landed"])
+  expect(first.code).toBe(75)
+  expect(first.stderr).toStartWith("Claude Envoy send not confirmed: ")
+  expect(first.stderr).not.toContain("failed")
+  const key = String(requests[0]?.body["idempotency_key"])
+  expect(key).toMatch(MINTED_KEY)
+  const resend = /To send it again safely, run: (.+)\n/.exec(first.stderr)?.[1]
+  expect(resend).toBe(
+    `bun ${resolve(import.meta.dir, "../bin/envoy-send.ts")} --idempotency-key ${key} ses_receiver 'it may have landed'`,
+  )
+
+  // The printed command, run as printed, sends the same message under the same key.
+  const again = await runEnvoySend([], resend)
+  expect(again.code).toBe(0)
+  expect(requests).toHaveLength(3)
+  expect(requests.map((one) => one.body["idempotency_key"])).toEqual([key, key, key])
+  expect(requests[2]?.body["message"]).toBe("it may have landed")
+}, 30_000)
+
+test("a send whose only attempt was answered with an unreadable 2xx names that one attempt", async () => {
+  requests.length = 0
+  answers.push(() => new Response("stored, but not as JSON", { status: 202 }))
+  const refused = await sendEnvoyMessage({
+    baseUrl: `http://127.0.0.1:${server.port}`,
+    credential: undefined,
+    targetSession: "ses_receiver",
+    message: "one attempt",
+  }).catch((error: unknown) => error)
+  expect(refused).toBeInstanceOf(EnvoySendUnconfirmedError)
+  expect((refused as EnvoySendUnconfirmedError).attempts).toBe(1)
+  expect((refused as Error).message).toContain("on its only attempt")
+})
+
 test("envoy-send with no Envoy configured refuses, saying why, and sends nothing", async () => {
   requests.length = 0
   const missing = join(scratch, "absent", "envoy.json")

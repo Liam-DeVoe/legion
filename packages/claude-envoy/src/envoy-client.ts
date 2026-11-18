@@ -9,6 +9,9 @@ export type SendEnvoyMessageOptions = {
   readonly credential: RequestCredential | undefined
   readonly targetSession: string
   readonly message: string
+  /** The key the send goes under: the one an unconfirmed send named, to resend it safely. One is
+   *  minted where none is given. */
+  readonly idempotencyKey?: string
 }
 
 /**
@@ -31,11 +34,12 @@ export async function sendEnvoyMessage(options: SendEnvoyMessageOptions): Promis
     fetch: globalThis.fetch,
     credential: options.credential,
   })
-  // No source session: the body names none, as `envoy-send` never has, and the listener stamps
-  // the message `agent` from the credential it was sent with.
+  // No source session: the body names none, as `envoy-send` never has. The listener records the
+  // message as an agent's (`source` is `agent`) with no sending session, and stamps no sender.
   await client.send({
     sourceSessionID: "",
     targetSessionID: options.targetSession,
     message: options.message,
+    ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),
   })
 }

@@ -873,6 +873,8 @@ type RequestOptions = {
    * may have acted on.
    */
   readonly onNotSent?: () => void;
+  /** Called as each attempt starts, so a caller can say how many it made. */
+  readonly onAttempt?: () => void;
   /**
    * The session this call acts for, where its body names one the listener binds to the
    * credential: a subscribe, an unsubscribe, a deregistration, a role claim, and a
@@ -973,7 +975,10 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         signal: deadline,
       });
     } catch (error) {
-      return { unanswered: noAnswer(init.method, url, error) };
+      // A name that did not resolve, or a connection nothing took, sent nothing to any listener:
+      // retried as an unanswered attempt is, but never one the listener may have acted on.
+      const failed = noAnswer(init.method, url, error);
+      return neverReached(error) ? { notSent: failed } : { unanswered: failed };
     }
     if (unminted !== undefined && response.status === 401) {
       // The listener wanted the credential this machine could not mint: a listener that requires
@@ -1010,6 +1015,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     const url = `${baseUrl}${path}`;
     const tries = options.retry === false ? 1 : attempts;
     for (let attempt = 0; attempt < tries; attempt += 1) {
+      options.onAttempt?.();
       const outcome = await attemptOnce(
         url,
         init,
@@ -1136,6 +1142,9 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       // stored nothing, so where no earlier attempt may have, the send was refused.
       let unanswered = false;
       let notSent = false;
+      // The attempts this send made, which the unconfirmed error names: fewer than the client's
+      // where an answer ends the send early, such as a 2xx whose body does not parse.
+      let made = 0;
       let response: z.infer<typeof EnvelopeResponseSchema>;
       try {
         const answer = await post(
@@ -1152,6 +1161,9 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
             onUnanswered: () => {
               unanswered = true;
             },
+            onAttempt: () => {
+              made += 1;
+            },
             onNotSent: () => {
               notSent = true;
             },
@@ -1165,7 +1177,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       } catch (error) {
         const refused = notSent || (error instanceof EnvoyApiError && error.details.status < 500);
         if (refused && !unanswered) throw error;
-        throw new EnvoySendUnconfirmedError(input.targetSessionID, idempotencyKey, attempts, error);
+        throw new EnvoySendUnconfirmedError(input.targetSessionID, idempotencyKey, made, error);
       }
       return {
         envelope: response,
@@ -1318,6 +1330,19 @@ function messageMetadata(input: MessageMetadataInput) {
  */
 function sourceSession(sessionID: string | undefined) {
   return sessionID === undefined || sessionID === "" ? {} : { source_session: sessionID };
+}
+
+/** The codes a fetch fails with when nothing took its connection: Bun 1.4 answers a refused
+ *  connection `ECONNREFUSED`, and a name that does not resolve `ENOTFOUND` or `EAI_AGAIN` with the
+ *  syscall `getaddrinfo`. A reset or a timeout after the request was written is none of these. */
+const NOT_CONNECTED = new Set(["ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH"]);
+
+/** Whether a fetch's failure says its request reached no listener at all (`NOT_CONNECTED`, or a
+ *  name lookup that failed), so nothing the call asked can have been done. */
+function neverReached(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const { code, syscall } = error as { code?: unknown; syscall?: unknown };
+  return syscall === "getaddrinfo" || (typeof code === "string" && NOT_CONNECTED.has(code));
 }
 
 /**

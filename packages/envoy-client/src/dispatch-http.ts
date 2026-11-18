@@ -598,6 +598,42 @@ class WriteAttemptSilent extends Error {
   }
 }
 
+/**
+ * What a write's attempts have shown so far, across every run of its attempt loop: the dead
+ * token's re-send (`#send`) and each no-route retry (`#noRoute`) run the loop again under the
+ * write's one key, and an attempt of an earlier run may have landed.
+ */
+interface WriteProgress {
+  /** How many attempts went out: a credential that could not present one sent nothing. */
+  sent: number;
+  /**
+   * Whether an attempt may have reached Dispatch: an answer that may have, a silence cut, or a
+   * transport failure, which may be a reset after the request was written. A refusal or a
+   * deadline that ends the write is read against it (`#unsettled`, `#ended`).
+   */
+  reached: boolean;
+  /**
+   * Whether an attempt shows that it reached Dispatch: an answer that may have (a 5xx, `409
+   * KEY_IN_FLIGHT`) or a silence cut. A later attempt that fails without an answer of its own —
+   * its credential, its transport, an old build's answer of no route — then leaves the write
+   * unsettled. A transport failure alone is not this, so a write to a Dispatch that refuses its
+   * connection on every attempt is told it is unreachable.
+   */
+  landed: boolean;
+  /** Whether Dispatch may still be running an attempt: one was cut off for silence (an upload's
+   *  excepted, which keeps the schedule) or answered 409 KEY_IN_FLIGHT. */
+  running: boolean;
+  /** Whether the call saw Dispatch's keyed layer judge the write, which the unsettled message
+   *  says. */
+  sawKeyedLayer: boolean;
+}
+
+/** A write: its one `Idempotency-Key` and what its attempts have shown. */
+interface WriteCall {
+  readonly key: string;
+  readonly progress: WriteProgress;
+}
+
 /** One attempt's answer to a write, as the retry loop reads it. */
 interface WriteAnswer {
   /** The answer to hand on, its body still unread. */
@@ -1912,19 +1948,27 @@ export class DispatchClient {
     key?: string
   ): Promise<{ readonly status: number; readonly payload: T }> {
     const url = this.#url(path, query);
-    return this.#noRoute(async () => {
-      const response = await this.#send(
-        method,
-        url,
-        body === undefined
-          ? undefined
-          : { content: JSON.stringify(body), type: "application/json" },
-        undefined,
-        signal,
-        key
-      );
-      return { status: response.status, payload: await this.#response<T>(method, url, response) };
-    }, signal);
+    const write = this.#writeCall(method, key);
+    return this.#noRoute(
+      async () => {
+        const response = await this.#send(
+          method,
+          url,
+          body === undefined
+            ? undefined
+            : { content: JSON.stringify(body), type: "application/json" },
+          undefined,
+          signal,
+          write
+        );
+        return {
+          status: response.status,
+          payload: await this.#response<T>(method, url, response),
+        };
+      },
+      signal,
+      write
+    );
   }
 
   /**
@@ -1932,21 +1976,62 @@ export class DispatchClient {
    * for …") sent again, as the same request, after each of `NO_ROUTE_RETRY_DELAYS_MS`: while a
    * release rolls out, two builds of Dispatch answer, and the next attempt may reach the build
    * that serves the route. No handler ran, so this is safe for every method; a write's repeat
-   * carries a key of its own (`#send`), as a first attempt does. After the last attempt it throws
-   * `DispatchNoRouteError`. An abort of the client's signal, or of the call's own `signal`, during
-   * a wait rejects at once with the abort's reason and sends nothing more.
+   * goes under the write's one key (`write`, made by `#writeCall` above this retry), so a build
+   * that already committed an earlier attempt answers it from that key rather than writing twice.
+   * After the last attempt it throws `DispatchNoRouteError`. An abort of the client's signal, or
+   * of the call's own `signal`, during a wait rejects at once with the abort's reason and sends
+   * nothing more.
    *
    * A client built with `retryNoRoute: false` runs `attempt` once instead and throws its answer
    * of no route as it came (the `DispatchServiceError` `isNoRoute` recognises), so a caller with
    * an answer of its own to a missing route — a back-off of its own — reaches it at once.
+   *
+   * A write that ends on no route after an attempt that shows it reached Dispatch
+   * (`WriteProgress.landed`) may have landed on the build that serves the route, so it throws
+   * `DispatchWriteUnsettledError` with the no-route answer as its cause, never the rolling
+   * release's "try again", which reads as nothing written.
    */
-  #noRoute<T>(attempt: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-    if (!this.#retryNoRoute) return attempt();
-    return retryNoRoute(attempt, isNoRoute, {
-      exhausted: () => new DispatchNoRouteError(),
-      signal: signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal]),
-      sleep: this.#sleep,
-    });
+  async #noRoute<T>(
+    attempt: () => Promise<T>,
+    signal?: AbortSignal,
+    write?: WriteCall
+  ): Promise<T> {
+    try {
+      if (!this.#retryNoRoute) return await attempt();
+      return await retryNoRoute(attempt, isNoRoute, {
+        exhausted: () => new DispatchNoRouteError(),
+        signal: signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal]),
+        sleep: this.#sleep,
+      });
+    } catch (error) {
+      if (
+        write === undefined ||
+        !write.progress.landed ||
+        !(error instanceof DispatchNoRouteError || isNoRoute(error))
+      ) {
+        throw error;
+      }
+      throw new DispatchWriteUnsettledError(
+        error as DispatchServiceError,
+        write.progress.sent,
+        undefined,
+        write.progress.sawKeyedLayer
+      );
+    }
+  }
+
+  /**
+   * A write's one key and what its attempts have shown, made once per call above its no-route
+   * retries, so every attempt of every send of the call goes under one `Idempotency-Key`: the
+   * caller's own, where it has one intent across calls and processes, else one minted for this
+   * call alone. A read, a PUT or a DELETE has none.
+   */
+  #writeCall(method: string, key: string | undefined): WriteCall | undefined {
+    if (method !== "POST" && method !== "PATCH") return undefined;
+    return {
+      key: key ?? crypto.randomUUID(),
+      progress: { sent: 0, reached: false, landed: false, running: false, sawKeyedLayer: false },
+    };
   }
 
   /** An upload to an owner's artifact route: a file as multipart, and everything else as JSON -
@@ -1975,13 +2060,25 @@ export class DispatchClient {
     key?: string
   ): Promise<T> {
     const url = this.#url(path);
-    return this.#noRoute(async () => {
-      const encoded = new Response(form);
-      const type = encoded.headers.get("Content-Type") ?? "multipart/form-data";
-      const content = new Uint8Array(await encoded.arrayBuffer());
-      const response = await this.#send(method, url, { content, type }, undefined, undefined, key);
-      return this.#response<T>(method, url, response);
-    });
+    const write = this.#writeCall(method, key);
+    return this.#noRoute(
+      async () => {
+        const encoded = new Response(form);
+        const type = encoded.headers.get("Content-Type") ?? "multipart/form-data";
+        const content = new Uint8Array(await encoded.arrayBuffer());
+        const response = await this.#send(
+          method,
+          url,
+          { content, type },
+          undefined,
+          undefined,
+          write
+        );
+        return this.#response<T>(method, url, response);
+      },
+      undefined,
+      write
+    );
   }
 
   /**
@@ -1997,7 +2094,10 @@ export class DispatchClient {
    * per `#send`, and a second such answer is returned as any other refusal is; each no-route
    * retry (`#noRoute`) runs `#send` afresh, so it may send its request again once after such an
    * answer of its own. A trade the broker refuses throws out of the second presentation, so the
-   * call fails in the broker's own words, which name `agent-secrets login` after a revoke.
+   * call fails in the broker's own words, which name `agent-secrets login` after a revoke —
+   * unless an earlier attempt of the write shows it reached Dispatch, when the write is
+   * unsettled (`#credentialFailed`). A write (`write`) carries its one key and its progress
+   * through both sends.
    */
   async #send(
     method: string,
@@ -2005,14 +2105,10 @@ export class DispatchClient {
     body?: EncodedBody,
     accept = "application/json",
     signal?: AbortSignal,
-    callerKey?: string
+    write?: WriteCall
   ): Promise<Response> {
-    // A write's key is the call's, so the request sent again after a dead token is the same
-    // intent to Dispatch as the first.
-    const key =
-      method === "POST" || method === "PATCH" ? (callerKey ?? crypto.randomUUID()) : undefined;
     const send = async (): Promise<Response> =>
-      this.#sendPresenting(method, url, body, accept, signal, key);
+      this.#sendPresenting(method, url, body, accept, signal, write);
     const answer = await send();
     if (this.#credential.stale === undefined || !(await tokenNotLive(answer))) return answer;
     this.#credential.stale();
@@ -2020,17 +2116,19 @@ export class DispatchClient {
   }
 
   /**
-   * One request, presenting the credential for it. A read, a PUT or a DELETE (no `key`) goes
+   * One request, presenting the credential for it. A read, a PUT or a DELETE (no `write`) goes
    * once, and `signal` aborts it beside the client's own signal. A write (POST or PATCH) carries
-   * `key` as its `Idempotency-Key`: the caller's own, where it has one intent across calls and
-   * processes, else one minted for this call alone (`#send`), so all its attempts are one intent
-   * to Dispatch, which runs it once and answers a repeat with the answer it stored, while two
-   * calls are two writes. Each attempt sends the same encoded body. While an attempt gets no
-   * definitive answer (`writeAnswer`, a transport failure, or `writeRetry.silenceMs` without
-   * progress, `#attempt`) the write asks again under its key, paced by `writeRetry`, and the first
-   * definitive answer is the call's: a 2xx, a replay of one included, or a refusal. The call's
-   * deadline and its caller's cancellation end the attempts at once, whether a fetch or a pause
-   * is under way (`#ended`).
+   * its call's one key as its `Idempotency-Key` (`WriteCall`, made by `#writeCall` above every
+   * re-send of the call), so all its attempts are one intent to Dispatch, which runs it once and
+   * answers a repeat with the answer it stored, while two calls are two writes. Each attempt
+   * sends the same encoded body. While an attempt gets no definitive answer (`writeAnswer`, a
+   * transport failure, or `writeRetry.silenceMs` without progress, `#attempt`) the write asks
+   * again under its key, paced by `writeRetry`, and the first definitive answer is the call's: a
+   * 2xx, a replay of one included, or a refusal. The call's deadline and its caller's
+   * cancellation end the attempts at once, whether a fetch or a pause is under way (`#ended`).
+   * What the attempts showed is kept on the call's `WriteProgress`, so a run of this loop that
+   * follows another (a dead token's re-send, a no-route retry) reads an earlier run's attempt
+   * that may have landed.
    *
    * It asks again only against a Dispatch this process has lately seen run the keyed layer: a
    * Dispatch without the layer would run a repeat as a second write, so its 5xx — which can come
@@ -2048,27 +2146,34 @@ export class DispatchClient {
     body: EncodedBody | undefined,
     accept: string,
     signal: AbortSignal | undefined,
-    key: string | undefined
+    write: WriteCall | undefined
   ): Promise<Response> {
     // The credential is presented once here, and again for each attempt the write loop makes
     // below: a key-bound scheme signs one proof per request, so one presentation is one proof
     // sent, never a second minted and discarded. It is asked before the loop so a credential
     // that cannot answer throws here, out of the loop's reach, rather than being taken for a
-    // failed attempt.
+    // failed attempt; a write sent again whose earlier attempt shows it reached Dispatch is then
+    // unsettled (`#credentialFailed`).
     const headers: Record<string, string> = { Accept: accept };
     // The call's own deadline and the client's, which the credential is given too, less the
     // request's reserve (`#credentialSignal`): a broker credential waiting on a pod's missing
     // registration stops at it, naming the session, and one whose renewal goes unanswered answers
     // with the live token in hand while the request can still be sent with it.
     const limit = signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal]);
-    let presented = await this.#credential.headers(
-      method,
-      url,
-      undefined,
-      this.#credentialSignal(limit)
-    );
+    const request = `${method} ${requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)}`;
+    let presented: Readonly<Record<string, string>>;
+    try {
+      presented = await this.#credential.headers(
+        method,
+        url,
+        undefined,
+        this.#credentialSignal(limit)
+      );
+    } catch (error) {
+      throw write === undefined ? error : this.#credentialFailed(error, request, write.progress);
+    }
     if (body !== undefined) headers["Content-Type"] = body.type;
-    if (key === undefined) {
+    if (write === undefined) {
       return this.#fetch(url, {
         method,
         headers: { ...headers, ...presented },
@@ -2076,10 +2181,10 @@ export class DispatchClient {
         ...(body === undefined ? {} : { body: body.content }),
       });
     }
+    const { key, progress } = write;
     headers[IDEMPOTENCY_KEY_HEADER] = key;
     const { pausesMs, withinMs, silenceMs, inFlightPauseMs, inFlightWithinMs } = this.writeRetry;
     const pause = this.writeRetry.pause ?? pauseFor;
-    const request = `${method} ${requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)}`;
     const started = this.#now();
     // An upload, a body of `STREAMED_BODY_MIN` or more that goes out as a stream (`attemptBody`),
     // sends that whole body again on every repeat, so it keeps the schedule alone and never enters
@@ -2093,16 +2198,6 @@ export class DispatchClient {
     const upload = bodyBytes >= STREAMED_BODY_MIN;
     // No ask starts later than this: the client's deadline counts from when it was made.
     const lastAsk = this.#madeAt + inFlightWithinMs;
-    let reached = false;
-    // Whether Dispatch may still be running an attempt: one was cut off for silence or answered
-    // 409 KEY_IN_FLIGHT. Its keyed layer finishes that run whatever this call does, so the call
-    // keeps asking for its stored answer under `inFlightWithinMs`.
-    let running = false;
-    // Whether this call ever saw the keyed layer judge the write (an echoed key, or `/healthz`),
-    // which the unsettled message says. Whether it may ask again is decided afresh each time.
-    let sawKeyedLayer = false;
-    // How many attempts went out: a credential that could not present one sent nothing.
-    let sentAttempts = 0;
     for (let attempt = 1; ; attempt++) {
       let answer: WriteAnswer | undefined;
       let thrown: unknown;
@@ -2126,13 +2221,14 @@ export class DispatchClient {
           }
         }
         const sent = { ...headers, ...presented };
-        sentAttempts += 1;
+        progress.sent += 1;
         answer = await writeAnswer(await this.#attempt(url, method, sent, body, silenceMs), key);
         if (answer.echoed) KEYED_LAYER_SEEN.set(this.#baseUrl, this.#now());
         if (!answer.again) return answer.response;
-        reached ||= answer.reached;
-        running ||= answer.running && !upload;
-        sawKeyedLayer ||= answer.echoed;
+        progress.reached ||= answer.reached;
+        progress.landed ||= answer.reached || answer.running;
+        progress.running ||= answer.running && !upload;
+        progress.sawKeyedLayer ||= answer.echoed;
       } catch (error) {
         // A deadline or a cancellation is the caller's limit, never a reason to ask again; the
         // attempt's own silence cut is such a reason, as a transport failure is.
@@ -2141,37 +2237,47 @@ export class DispatchClient {
           !(error instanceof WriteAttemptSilent) &&
           (this.#signal.aborted || name === "AbortError" || name === "TimeoutError")
         ) {
-          const mayHaveReached = unpresented ? reached || running : true;
-          throw this.#ended(error, request, sentAttempts, mayHaveReached, sawKeyedLayer);
+          const mayHaveReached = unpresented ? progress.landed : true;
+          throw this.#ended(error, request, progress.sent, mayHaveReached, progress.sawKeyedLayer);
         }
         thrown = error;
         // A credential that failed sent nothing, so it is no attempt that may have reached
-        // Dispatch; the loop still asks it again on the schedule, as the broker may come back.
-        if (!unpresented) reached = true;
-        running ||= error instanceof WriteAttemptSilent && !upload;
+        // Dispatch; the loop still asks it again on the schedule, as the broker may come back. A
+        // silence cut shows the attempt reached Dispatch, which may still be running it.
+        if (!unpresented) progress.reached = true;
+        if (error instanceof WriteAttemptSilent) {
+          progress.landed = true;
+          progress.running ||= !upload;
+        }
       }
-      const scheduled = running
+      const scheduled = progress.running
         ? Math.min(pausesMs[attempt - 1] ?? inFlightPauseMs, inFlightPauseMs)
         : pausesMs[attempt - 1];
       const wait = Math.max(
         scheduled ?? 0,
         answer === undefined ? 0 : retryAfterMs(answer.response)
       );
-      const latest = Math.min(started + (running ? inFlightWithinMs : withinMs), lastAsk);
+      const latest = Math.min(started + (progress.running ? inFlightWithinMs : withinMs), lastAsk);
       // Only a Dispatch that runs the keyed layer may be asked again: against any other a repeat
       // would be a second write. The `/healthz` probe takes time of its own, and a timer can fire
       // late on a loaded host, so the bound is read again after each of them.
       let again = scheduled !== undefined && this.#now() + wait <= latest;
       if (again) {
         again = answer?.echoed || (await this.#runsKeyedLayer(answer?.unjudged ?? false));
-        sawKeyedLayer ||= again;
+        progress.sawKeyedLayer ||= again;
         again &&= this.#now() + wait <= latest;
       }
       if (again) {
         try {
           await pause(wait, this.#signal);
         } catch (error) {
-          throw this.#ended(error, request, sentAttempts, reached, sawKeyedLayer);
+          throw this.#ended(
+            error,
+            request,
+            progress.sent,
+            progress.reached,
+            progress.sawKeyedLayer
+          );
         }
         again = this.#now() <= latest;
       }
@@ -2183,37 +2289,53 @@ export class DispatchClient {
             method,
             url,
             answer.response,
-            reached,
-            sentAttempts,
-            sawKeyedLayer
+            progress.reached,
+            progress.sent,
+            progress.sawKeyedLayer
           );
         }
         if (thrown instanceof WriteAttemptSilent) {
           throw new DispatchWriteUnsettledError(
             thrown,
-            sentAttempts,
+            progress.sent,
             `${request} ${thrown.message}`,
-            sawKeyedLayer
+            progress.sawKeyedLayer
           );
         }
-        // A credential that could not present another attempt after one that may have reached
-        // Dispatch, or any failure while Dispatch may still be running an earlier attempt (one cut
-        // off for silence, or answered 409 KEY_IN_FLIGHT): the write may have landed, so the
-        // caller is told it is unsettled, never the broker's or the transport's error alone, which
-        // reads as nothing written and invites a resend under a new key.
-        if (thrown instanceof Error && ((unpresented && reached) || running)) {
+        if (unpresented) throw this.#credentialFailed(thrown, request, progress);
+        // Any other failure of the last attempt (its transport) after an attempt that shows it
+        // reached Dispatch — an answer that may have (a 5xx, 409 KEY_IN_FLIGHT) or a silence cut,
+        // an upload's included: the write may have landed, so the caller is told it is
+        // unsettled, never "unreachable", which reads as nothing written and invites a resend
+        // under a new key.
+        if (thrown instanceof Error && progress.landed) {
           throw new DispatchWriteUnsettledError(
             thrown,
-            sentAttempts,
-            unpresented
-              ? `${request} could not present its credential for another attempt (${thrown.message})`
-              : `${request} failed on its last attempt (${thrown.message})`,
-            sawKeyedLayer
+            progress.sent,
+            `${request} failed on its last attempt (${thrown.message})`,
+            progress.sawKeyedLayer
           );
         }
         throw thrown;
       }
     }
+  }
+
+  /**
+   * What a write throws when its credential cannot present an attempt: where an earlier attempt
+   * shows it reached Dispatch (`WriteProgress.landed`), the write may have landed, so it is
+   * `DispatchWriteUnsettledError` with the credential's failure as its cause, never the broker's
+   * error alone, which reads as nothing written and invites a resend under a new key; otherwise
+   * nothing of the write went out, and the credential's own error stands.
+   */
+  #credentialFailed(error: unknown, request: string, progress: WriteProgress): unknown {
+    if (!progress.landed || !(error instanceof Error)) return error;
+    return new DispatchWriteUnsettledError(
+      error,
+      progress.sent,
+      `${request} could not present its credential for another attempt (${error.message})`,
+      progress.sawKeyedLayer
+    );
   }
 
   /**

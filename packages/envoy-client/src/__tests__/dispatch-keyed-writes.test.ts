@@ -937,6 +937,132 @@ describe("DispatchClient's writes", () => {
     expect(error).toBeInstanceOf(TradeRetryingError);
   });
 
+  // A1. A 5xx may have come after Dispatch committed the write, so a write whose later attempts
+  // then fail in transport may have landed: unsettled, never "unreachable", which reads as nothing
+  // written and invites a resend under a new key.
+  test("a transport failure after a 5xx that may have reached Dispatch leaves the write unsettled", async () => {
+    const { fetchImpl, sent } = scripted([
+      page(502, "Bad Gateway"),
+      ...Array.from({ length: 4 }, () => new TypeError("fetch failed")),
+    ]);
+
+    const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
+
+    expect(sent).toHaveLength(5);
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect(error.message).toStartWith(
+      "POST http://dispatch.test/api/v1/issues/DSP-1/comments failed on its last attempt " +
+        "(Dispatch at http://dispatch.test is unreachable: TypeError (message withheld)."
+    );
+  });
+
+  // A1 for an upload: its silence cut keeps the five-attempt schedule rather than the in-flight
+  // asking, but the cut attempt may still have landed all the same.
+  test("a transport failure after an upload's silence cut leaves the upload unsettled", async () => {
+    const { retry, stall } = stalling();
+    const { fetchImpl, sent } = scripted([
+      stall,
+      ...Array.from({ length: 4 }, () => new TypeError("fetch failed")),
+    ]);
+
+    const error = await failure(
+      client(fetchImpl, retry).artifact("DSP-1", {
+        name: "build.tar",
+        file: new Blob([new Uint8Array(1 << 20)]),
+        actor,
+      })
+    );
+
+    expect(sent.length).toBeGreaterThan(1);
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect(error.message).toContain("failed on its last attempt (Dispatch at");
+  });
+
+  // A2. Dispatch answers a dead token 401 BROKER_TOKEN_NOT_ACTIVE before any handler runs, and the
+  // client presents afresh and sends again. An earlier attempt of that write cut off for silence
+  // may still have landed, so a credential that then cannot present is unsettled too.
+  test("a dead token's re-send whose credential fails after a silent attempt leaves the write unsettled", async () => {
+    const { retry, stall } = stalling();
+    const { fetchImpl, sent } = scripted([
+      stall,
+      refusal(
+        401,
+        "BROKER_TOKEN_NOT_ACTIVE",
+        "the secrets broker does not hold this token as live"
+      ),
+    ]);
+    let stale = false;
+    const credential: RequestCredential = {
+      scheme: "DPoP",
+      headers: () => {
+        if (stale) {
+          throw new TradeRetryingError("the secrets broker refused the connection to the trade");
+        }
+        return { Authorization: "DPoP live-token" };
+      },
+      stale: () => {
+        stale = true;
+      },
+      secret: () => "live-token",
+    };
+
+    const error = await failure(
+      new DispatchClient("http://dispatch.test", credential, fetchImpl, {
+        writeRetry: retry,
+      }).comment("DSP-1", comment)
+    );
+
+    expect(sent).toHaveLength(2);
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect((error as DispatchWriteUnsettledError).last).toBeInstanceOf(TradeRetryingError);
+  });
+
+  // A3. While a release rolls out, an attempt that reached the new build and lost its answer can be
+  // followed by an old build's no-route answer. The no-route retry sends the write again under the
+  // key it already carries, so the new build answers it from that key rather than writing twice.
+  test("a no-route retry after a silent attempt sends the write again under its own key", async () => {
+    const { retry, stall } = stalling();
+    const { fetchImpl, sent } = scripted(
+      [
+        stall,
+        refusal(404, "NOT_FOUND", "no route for POST /api/v1/issues/DSP-1/comments"),
+        replayed(),
+      ],
+      { echo: (request) => request !== 2 }
+    );
+
+    await expect(
+      new DispatchClient("http://dispatch.test", bearerCredential("secret"), fetchImpl, {
+        writeRetry: retry,
+        sleep: async () => {},
+      }).comment("DSP-1", comment)
+    ).resolves.toEqual(posted);
+
+    expect(sent).toHaveLength(3);
+    expect(new Set(sent.map((request) => request.headers["Idempotency-Key"])).size).toBe(1);
+  });
+
+  // A3, exhausted: every later send meets an old build, so the write may have landed on the new
+  // one and the call cannot say: unsettled, never the rolling release's "try again".
+  test("a write whose later sends all meet no route after a silent attempt is unsettled", async () => {
+    const { retry, stall } = stalling();
+    const noRoute = () =>
+      refusal(404, "NOT_FOUND", "no route for POST /api/v1/issues/DSP-1/comments");
+    const { fetchImpl } = scripted([stall, ...Array.from({ length: 10 }, noRoute)], {
+      echo: (request) => request === 1,
+    });
+
+    const error = await failure(
+      new DispatchClient("http://dispatch.test", bearerCredential("secret"), fetchImpl, {
+        writeRetry: retry,
+        sleep: async () => {},
+      }).comment("DSP-1", comment)
+    );
+
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect(error.message).toContain("may or may not have taken effect");
+  });
+
   // A Dispatch not known to run the keyed layer is never asked twice, however long the call has.
   test("a silent attempt against a Dispatch not known to run the keyed layer is its only one", async () => {
     const { retry, stall } = stalling();

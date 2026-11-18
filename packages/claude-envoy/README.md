@@ -177,8 +177,11 @@ message from Dispatch's Agents page as that person's own turn.
   section. With Envoy off it sends nothing and exits 1, saying why. It sends through envoy-client's
   own send (`createEnvoyClient().send`): one idempotency key on every attempt, so the listener
   stores the message at most once; an attempt with no answer or a 5xx sent again under that key;
-  a send that may have arrived reported as such, with the key that resends it safely; and the
-  listener's URL named only as `urlForText` names it, never its user info.
+  and the listener's URL named only as `urlForText` names it, never its user info. A send that may
+  have arrived is not a failure: it exits 75 (`EX_TEMPFAIL`), names the key, and prints the
+  command that sends it again under that key (`envoy-send --idempotency-key <key> <target>
+  <message>`), which the listener drops as a repeat if the first copy arrived. A refusal, a
+  listener that refused the connection or whose name did not resolve included, exits 1.
 
 ## What a delivered line carries
 

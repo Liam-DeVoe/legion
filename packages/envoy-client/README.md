@@ -607,11 +607,13 @@ them, covers the issue; with Envoy off or no answer from the listener it names n
 `dispatch-first.ts` reads the `dispatch-first` skill from a plugin's staged `skills/` and wraps it in
 `DISPATCH_FIRST_MARKER`, the text pi-envoy and claude-envoy inject into a session with Dispatch.
 
-Every write `DispatchClient` makes carries one key. `#send`, which every JSON, multipart and file
-call goes through, mints a `crypto.randomUUID()` `Idempotency-Key` per `POST` and `PATCH` call and
-sends it on every attempt of that call, so Dispatch runs the write once however many attempts
-reach it and answers a repeat with the first answer (`packages/envoy/cmd/dispatch/README.md`,
-"Keyed writes"); a `GET`, `PUT` or `DELETE` carries none and is sent once. The body is encoded once
+Every write `DispatchClient` makes carries one key. Each JSON and multipart call mints a
+`crypto.randomUUID()` `Idempotency-Key` per `POST` and `PATCH` call, once, above every re-send of
+the call (`#writeCall`), and sends it on every attempt: the write's own attempts, the re-send after
+`401 BROKER_TOKEN_NOT_ACTIVE`, and each retry after an old build's answer of no route. So Dispatch
+runs the write once however many attempts reach it and answers a repeat with the first answer
+(`packages/envoy/cmd/dispatch/README.md`, "Keyed writes"); a `GET`, `PUT` or `DELETE` carries none
+and is sent once. The body is encoded once
 for the whole call, a multipart form under a boundary of its own, since a retry whose bytes differ
 from the first attempt's is a different request to Dispatch and its key is refused. A transport
 failure, any 5xx, a 408, a 429 and Dispatch's `409 KEY_IN_FLIGHT` (`retriesUnderKey`, the rule
@@ -638,7 +640,12 @@ that. When the write ends with no definitive answer after this call saw the keye
 it, the error says Dispatch finishes an attempt it received, and to read the write back before
 sending it again, since a new command sends it under a new key. The call's deadline and
 its cancellation end the write at once and are never retried. Any other answer - a 2xx, a replay,
-`422 KEY_REUSED`, another 4xx - is the answer, at once.
+`422 KEY_REUSED`, another 4xx - is the answer, at once. Once an attempt shows it reached Dispatch
+(a 5xx or `409 KEY_IN_FLIGHT` answer, or a silence cut, an upload's included), what ends the write
+without an answer of its own - a credential that cannot present another attempt, the last
+attempt's transport failure, or an answer of no route on every later send - is
+`DispatchWriteUnsettledError` with that failure as its cause: the write may have landed. A
+transport failure on every attempt shows no landing, and is told as Dispatch being unreachable.
 
 A write is asked again only against a Dispatch this process has lately seen run the keyed layer,
 since an earlier Dispatch ignores the header and would run a retried write a second time. A
@@ -873,7 +880,9 @@ such as one a revoke ended before it lapsed. `DispatchClient` then tells the cre
 more time. A write goes again under the same `Idempotency-Key`. It does this once for each send:
 a second such answer is the call's refusal, but a request Dispatch answers with no route is sent
 again (a release may be rolling out), and each of those sends may be sent once more after such an
-answer of its own. If the broker refuses the new trade, the call fails in the broker's words.
+answer of its own. If the broker refuses the new trade, the call fails in the broker's words,
+unless an earlier attempt of the write shows it reached Dispatch: then the write is
+`DispatchWriteUnsettledError`, since it may have landed.
 
 A sign-in reaches the sessions that start after it. The broker holds a session name for one
 identity for 90 days after the name's last token. So a session that traded as the machine cannot
