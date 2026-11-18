@@ -105,7 +105,15 @@ func (h *harness) unsentAsk(round string) Delivery {
 // first.
 func (h *harness) olderDaemonsAsk(round string, sent bool, set ...func(*Delivery)) Delivery {
 	h.t.Helper()
-	h.markAsked(round)
+	// The older daemon marked the claim asked when it queued this ask, whatever the claim's state,
+	// and the restart restores that record, so the mark is written as that daemon wrote it, beside
+	// the ask, rather than through this daemon's PublishUpdateAsk, which marks a running claim only.
+	stored := h.store.load(h.token)
+	at := h.clock.Now()
+	stored.UpdateTaskedAt = &at
+	if err := h.store.PutClaim(h.ctx, stored); err != nil {
+		h.t.Fatalf("store the older daemon's mark of its ask of %s: %v", round, err)
+	}
 	ask := Delivery{ID: updateTaskID(round), Task: UpdateTask(round, testReasons, epoch.Add(time.Hour)),
 		QueuedAt: h.clock.Now()}
 	if sent {
@@ -331,9 +339,11 @@ func (h *harness) markAsked(round string) {
 // dispatch://INFRA-4131 R4), and the mark is written where the publish is (PublishUpdateAsk).
 // An ask that reached a session marks the claim at the clock, durably, and the next ask of the
 // round publishes nothing; an ask no session took marks nothing and the next ask publishes again;
-// a round the claim is not in is published nothing; a publish that fails marks nothing; and a
-// mark the store does not take stays in memory, owed, so the next ask writes it and publishes
-// nothing, and answers an error until the write lands.
+// a round the claim is not in is published nothing; a suspended or failed claim, whose agent is
+// not running, is published nothing and marked nothing, since a publish to its topic raises the listener's role
+// wake; a publish that fails marks nothing; and a mark the store does not take stays in memory,
+// owed, so the next ask writes it and publishes nothing, and answers an error until the write
+// lands.
 func TestPodUpdatePublishUpdateAskMarksOnlyAnAskThatReachedASession(t *testing.T) {
 	t.Run("a delivered ask marks the claim once, and a later ask of the round publishes nothing", func(t *testing.T) {
 		h := updateHarness(t, PodUpdateContract)
@@ -389,6 +399,41 @@ func TestPodUpdatePublishUpdateAskMarksOnlyAnAskThatReachedASession(t *testing.T
 		}
 		if reached.calls != 0 || h.claim().UpdateTaskedAt != nil {
 			t.Fatalf("the ask of another round published %d times and marked %v, want neither", reached.calls, h.claim().UpdateTaskedAt)
+		}
+	})
+
+	for _, by := range []SuspendSource{SuspendedByDaemon, SuspendedByOperator} {
+		t.Run("a claim suspended by "+string(by)+" is published nothing and marked nothing", func(t *testing.T) {
+			h := updateHarness(t, PodUpdateContract)
+			h.reach(StateIdle)
+			h.must(RequestSuspend{Claim: h.token, By: by})
+			h.wantState(StateSuspended)
+			h.openUpdate(testRound, testReasons)
+			reached := &askPublisher{delivered: true}
+			if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskNotRunning {
+				t.Fatalf("the ask of the suspended claim = %v, %v; want it refused as not running", outcome, err)
+			}
+			if c, stored := h.claim(), h.store.load(h.token); reached.calls != 0 || c.UpdateTaskedAt != nil || stored.UpdateTaskedAt != nil {
+				t.Fatalf("the ask of the suspended claim published %d times and marked %v (stored %v), want neither", reached.calls, c.UpdateTaskedAt, stored.UpdateTaskedAt)
+			}
+		})
+	}
+
+	t.Run("a failed claim, which keeps its round, is published nothing and marked nothing", func(t *testing.T) {
+		h := updateHarness(t, PodUpdateContract)
+		h.reach(StateIdle)
+		h.openUpdate(testRound, testReasons)
+		for turn := 1; turn <= testLimits().LaunchFailures; turn++ {
+			h.report(uint64(turn), true, "provider refused the turn")
+		}
+		h.wantState(StateFailed)
+		h.wantRound(testRound)
+		reached := &askPublisher{delivered: true}
+		if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskNotRunning {
+			t.Fatalf("the ask of the failed claim = %v, %v; want it refused as not running", outcome, err)
+		}
+		if reached.calls != 0 || h.claim().UpdateTaskedAt != nil {
+			t.Fatalf("the ask of the failed claim published %d times and marked %v, want neither", reached.calls, h.claim().UpdateTaskedAt)
 		}
 	})
 

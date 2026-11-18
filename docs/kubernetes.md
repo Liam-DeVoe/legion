@@ -6066,6 +6066,7 @@ A claim that is queued, launching, registered but not ready, or suspended has no
 The first sweep after its agent is ready asks it.
 The message can reach a role in the middle of a turn, and it tells the role to act at once.
 A role that no live session holds — one whose pod an idle release took, or one a suspension let go — is not revived to read it, and the round does not wait for that role past its bound.
+An ask the sweep queued before its claim was suspended, released or failed is not published when its row runs (`supervise.UpdateAskNotRunning`), and its row finishes with nothing marked: the listener raises the role's wake for a publish to a holder that has lapsed, so a publish would bring a released pod back only to be asked about the pod the round replaces.
 A ready session claims its role's topic inside its first turn or at the first-turn bound, so a message published inside that window finishes undelivered, and the next sweep asks that role again.
 A `failed` claim is the exception: it runs no turn on the pod, so the round asks it nothing and does not wait for it (`askedClaims`); what it left unpushed goes with the disk, and a retry brings it back into the round as any other claim.
 No claim is left out of a round for the contract its plugin records:

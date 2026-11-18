@@ -1631,6 +1631,12 @@ const (
 	UpdateAskAlreadyDelivered
 	// UpdateAskOutOfRound is an ask of a round the claim is not in: nothing is published.
 	UpdateAskOutOfRound
+	// UpdateAskNotRunning is an ask of a claim whose agent process is not running, because the
+	// claim is suspended (by the idle release among the rest) or failed: nothing is
+	// published and nothing is marked, so the sweep asks the claim again once its agent is ready. A publish would not be
+	// lost there: the listener raises the role's wake for a publish to a holder that has lapsed, so
+	// it would bring a released pod back only to be asked about the pod the round replaces.
+	UpdateAskNotRunning
 )
 
 // PublishUpdateAsk publishes one ask of the claim's update round through publish, and marks the
@@ -1655,7 +1661,10 @@ const (
 //  2. The claim is read under the lock: a claim no longer in round is published nothing, and so
 //     is one an earlier ask of round already reached. Two rows of one round — a row left by an
 //     older daemon beside the sweep's own — therefore deliver one ask between them, whichever
-//     order they run in and whichever of them finds a holder.
+//     order they run in and whichever of them finds a holder. A claim whose agent process is not
+//     running, a suspended or failed claim, is published nothing and marked nothing (UpdateAskNotRunning):
+//     the listener raises a role wake for a publish to a lapsed holder, so a publish would bring
+//     a released pod back to be asked, and the sweep asks the claim once its agent is ready.
 //  3. The publish runs under the lock, so nothing else of this claim reads or writes the mark
 //     between the publish and the mark. The section holds the lock for at most the owed write's
 //     repair, the publish and the mark's write: the claim-write deadline twice and notify's
@@ -1696,6 +1705,8 @@ func (m *Machine) PublishUpdateAsk(ctx context.Context, round string, publish fu
 		return UpdateAskAlreadyDelivered, fmt.Errorf("the mark of the ask of round %s that reached the role waits on a claim write the store has not taken", round)
 	case m.claim.UpdateTaskedAt != nil:
 		return UpdateAskAlreadyDelivered, nil
+	case m.claim.State == StateSuspended || m.claim.State == StateFailed:
+		return UpdateAskNotRunning, nil
 	}
 	delivered, err := publish(ctx)
 	if err != nil {

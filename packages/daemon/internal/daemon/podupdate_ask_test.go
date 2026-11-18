@@ -196,10 +196,14 @@ func (w *wakeCountingTrees) taken() int {
 	return w.takes
 }
 
-// The ask wakes nothing (dispatch://INFRA-2981 R1). A role whose pod an idle release took holds
-// no live session, so its topic answers notify.ErrNoHolder and the row finishes there: no pod
-// wake is taken, no process is resumed, and the claim stays released. The round ends at its
-// bound whether or not that role answers. The negative control is c-one-channel's: an executor
+// The ask wakes nothing (dispatch://INFRA-2981 R1), and it publishes nothing to a claim whose
+// agent is not running: the listener raises the role's wake for a publish to a holder that has
+// lapsed, so a publish to a role whose pod an idle release took would bring the pod back to be
+// asked. The row finishes with nothing published and nothing marked, so the sweep asks the claim
+// again once its agent is ready: no pod wake is taken, no process is resumed, and the claim stays
+// released. The publisher here would take the ask, as a listener that answers the publish does,
+// so the control is the check removed (supervise.Machine.PublishUpdateAsk): the ask is then
+// published and the claim marked asked. c-one-channel's control is the other half: an executor
 // that called wakeForDelivery first, as phaseEnded does, takes a wake and resumes the claim here.
 func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
 	rig := newIdleRig(t)
@@ -214,7 +218,8 @@ func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
 	}
 	trees := &wakeCountingTrees{outboxTrees: rig.runner.trees}
 	rig.runner.trees = trees
-	rig.runner.notices = &outboxPublisher{err: fmt.Errorf("publish to the implementer's topic: %w", notify.ErrNoHolder)}
+	publisher := &outboxPublisher{}
+	rig.runner.notices = publisher
 	resumes := len(rig.rt.CallsOf("Resume"))
 
 	row := mustOutboxRow(t, rig.issue.Key, record.UpdateAsk{Role: claim.RoleImplementer, Round: askedRound, Pod: askedPod, Text: askedText}, time.Now())
@@ -223,6 +228,12 @@ func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
 		t.Fatalf("the ask to a released role = %v, want the row finished", err)
 	}
 
+	if published := publisher.publishes(); len(published) != 0 {
+		t.Errorf("the ask published %+v to the released role, want nothing: a publish raises the role's wake", published)
+	}
+	if got := rig.machine.Claim(); got.UpdateTaskedAt != nil {
+		t.Errorf("the claim is marked asked at %v, want no mark: the ask reached nobody, and the sweep asks again once the agent is ready", got.UpdateTaskedAt)
+	}
 	if n := trees.taken(); n != 0 {
 		t.Errorf("the ask took %d pod wakes, want none: a released pod is not brought back to be asked", n)
 	}

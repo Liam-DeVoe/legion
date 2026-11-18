@@ -1683,10 +1683,12 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // waits behind no architect notice of its issue.
 //
 // It wakes nothing, where phaseEnded, hookPrompt and mergeQueueRemoval call wakeForDelivery
-// first. A role whose pod an idle release took is not brought back to be asked: its topic has no
-// holder, so its ask is lost as every ask that reached no session is (below), the sweep asks the
-// claim again once its agent is ready again, and the round ends at its bound whether or not the
-// role answers.
+// first, and it publishes nothing to a claim whose agent process is not running, a suspended
+// claim (by the idle release among the rest) or a failed one (supervise.UpdateAskNotRunning):
+// the listener raises the role's wake for a publish to a holder that has lapsed, so a publish
+// there would bring a released pod back only to be asked about the pod the round replaces. Such a row finishes with
+// nothing marked, as an ask that reached no session does (below), the sweep asks the claim again
+// once its agent is ready again, and the round ends at its bound whether or not the role answers.
 //
 // An outbox row cannot be withdrawn, and the round it names can end while the row waits. So the
 // row reads the claim before it publishes, through the machine's view as every other read of a
@@ -1754,6 +1756,10 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 		r.log.Info("outbox update ask finished without a publish: an earlier ask of its round reached the role", fields...)
 	case supervise.UpdateAskOutOfRound:
 		r.updateAskLeftRound(row, payload, token, machine.View().UpdateRound)
+	case supervise.UpdateAskNotRunning:
+		view := machine.View()
+		r.log.Info("outbox update ask finished without a publish: the claim's agent is not running",
+			append(fields, "state", string(view.State), "suspendedBy", string(view.SuspendedBy))...)
 	}
 	return nil
 }
