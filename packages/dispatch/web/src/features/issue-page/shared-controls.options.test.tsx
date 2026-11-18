@@ -4,6 +4,8 @@ import { useQuery } from "@tanstack/react-query";
 import {
   act,
   type BoundFunctions,
+  // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for a blur while the window has no focus and an Escape that ends an IME composition, neither of which user-event has a form for
+  fireEvent,
   type queries,
   type RenderResult,
   waitFor,
@@ -4147,6 +4149,59 @@ test("inside NoTooltips a repository row keeps the box and its refused draft whe
   }
 });
 
+/** Blurs `holder` as a switch to another tab or window blurs the control that holds the focus:
+ *  the document has no focus then, no control takes it, and the document keeps it on `holder`. */
+async function blurWithTheWindow(holder: HTMLElement): Promise<void> {
+  const hasFocus = spyOn(document, "hasFocus").mockReturnValue(false);
+  try {
+    fireEvent.blur(holder);
+  } finally {
+    hasFocus.mockRestore();
+  }
+  await settleReads();
+}
+
+// A switch to another tab or window is not the reader leaving the box opened from a repository
+// row's text: inside `NoTooltips` the box stays drawn, opened from "None" or from the
+// repository's text, and the focus stays on it, or on its clear control where the reader had
+// moved it, for the reader's return.
+test("inside NoTooltips a repository box keeps itself and its focus when the window loses the focus", async () => {
+  const user = userEvent.setup();
+  const clearName = "Clear the repository of CORE-1";
+  for (const [name, repo] of ROW_TEXTS) {
+    const view = draw(
+      <RepoControl inRow issueKey="CORE-1" project="CORE" repo={repo} resolvedRepo={repo} />,
+      "inside"
+    );
+    try {
+      await settleReads();
+      const scope = within(view.container);
+      await user.click(scope.getByRole("button", { name }));
+      const box = scope.getByRole("combobox", { name: "Repository of CORE-1" });
+      expect(document.activeElement).toBe(box);
+      // The focus in the box starts the mappings' read, which lands before what follows.
+      await settleReads();
+
+      await blurWithTheWindow(box);
+      expect(scope.queryByRole("combobox", { name: "Repository of CORE-1" })).toBe(box);
+      expect(scope.queryByRole("button", { name })).toBeNull();
+      expect(document.activeElement).toBe(box);
+      if (repo === null) continue;
+
+      await user.tab();
+      const clear = scope.getByRole("button", { name: clearName });
+      expect(document.activeElement).toBe(clear);
+      await blurWithTheWindow(clear);
+      expect(scope.queryByRole("combobox", { name: "Repository of CORE-1" })).toBe(box);
+      expect(scope.queryByRole("button", { name: clearName })).toBe(clear);
+      expect(scope.queryByRole("button", { name })).toBeNull();
+      expect(document.activeElement).toBe(clear);
+    } finally {
+      undraw(view);
+    }
+  }
+});
+
 // Add closes the priority's form and draws the add control in its place, refused while Add's
 // write is out, and inside `NoTooltips` until the read of the issue after it is drawn as well:
 // there the write returns its reads, and it stops pending only once they land. Inside, the add
@@ -5888,6 +5943,141 @@ test("inside NoTooltips Escape on an editor's Save or Cancel closes the editor a
         escapes.stop();
         undraw(view);
       }
+    }
+  }
+});
+
+/** A control a reader types or picks a draft in, as Details on a phone draws it. */
+interface DraftControl {
+  readonly surface: Surface;
+  /** The control as the page draws it, open or not yet. */
+  readonly node: ReactNode;
+  /** What the reader types or picks in the control's field. */
+  readonly draft: string;
+  /** Opens the control if it is not open, puts `draft` in its field, and answers that field,
+   *  which holds the focus. */
+  readonly open: (
+    view: RenderResult,
+    user: UserEvent,
+    draft: string
+  ) => Promise<HTMLInputElement | HTMLSelectElement>;
+  /** The control's field while the control is open, else null. */
+  readonly fieldOf: (view: RenderResult) => HTMLElement | null;
+}
+
+/** Each control a reader types or picks a draft in that its own Escape closes: the route and
+ *  parent editors, the repository box opened from a row of Details, and the priority's form, whose
+ *  Escape is the form's on both sides of `NoTooltips`. */
+const DRAFT_CONTROLS: readonly DraftControl[] = [
+  ...FIELD_EDITORS.map(
+    ([field, label]): DraftControl => ({
+      draft: field === "route" ? "role:reviewer" : "CORE-12",
+      fieldOf: (view) => within(view.container).queryByRole("textbox", { name: label }),
+      node: <OpenFieldForm field={field} onClose={() => undefined} />,
+      open: async (view, user, draft) => {
+        const box = within(view.container).getByRole("textbox", {
+          name: label,
+        }) as HTMLInputElement;
+        await waitFor(() => expect(document.activeElement).toBe(box));
+        await user.clear(box);
+        await user.keyboard(draft);
+        return box;
+      },
+      surface: "inside",
+    })
+  ),
+  {
+    draft: "acme/web",
+    fieldOf: (view) =>
+      within(view.container).queryByRole("combobox", { name: "Repository of CORE-1" }),
+    node: <RepoControl inRow issueKey="CORE-1" project="CORE" repo={null} resolvedRepo={null} />,
+    open: async (view, user, draft) => {
+      const scope = within(view.container);
+      const none = scope.getByRole("button", {
+        name: `${CONTROL_LABELS.none}, Repository of CORE-1`,
+      });
+      // The sheet's first focus lands on the row's text before the case presses anything.
+      await waitFor(() => expect(document.activeElement).toBe(none));
+      await settleReads();
+      await user.keyboard("{Enter}");
+      const box = scope.getByRole("combobox", { name: "Repository of CORE-1" }) as HTMLInputElement;
+      // The focus in the box starts the mappings' read, which lands before what follows.
+      await settleReads();
+      await user.keyboard(draft);
+      return box;
+    },
+    surface: "inside",
+  },
+  ...(["inside", "outside"] as const).map(
+    (surface): DraftControl => ({
+      draft: "evals-now",
+      fieldOf: (view) =>
+        within(view.container).queryByRole("combobox", {
+          name: CONTROL_LABELS.priority_to_advance,
+        }),
+      node: addablePriorityLine(surface),
+      open: async (view, user, draft) => {
+        // The sheet's first focus lands on the add control before the case presses anything.
+        await waitFor(() => expect(document.activeElement).toBe(addControlOf(view, surface)));
+        await user.click(addControlOf(view, surface));
+        const picker = (await pickerOf(view)) as HTMLSelectElement;
+        await waitFor(() => expect(within(picker).getAllByRole("option")).toHaveLength(3));
+        await user.selectOptions(picker, draft);
+        return picker;
+      },
+      surface,
+    })
+  ),
+];
+
+// An Escape that ends an IME composition gives up what the reader was composing, not the control
+// they compose in: each control a reader types or picks a draft in stays open with the draft and
+// the focus in its field, and the press goes on unmarked and unstopped, as the key registry
+// leaves it, so it closes nothing around the control either - neither Details, a sheet on a phone
+// that closes on Escape, nor a panel listening on `document`. A plain Escape then closes the
+// control and not the sheet, as before.
+test("an Escape that ends an IME composition leaves each open control and its draft", async () => {
+  const user = userEvent.setup();
+  for (const control of DRAFT_CONTROLS) {
+    // What each Escape closed, in order.
+    const closed: string[] = [];
+    // Each Escape that went on past the control to `document`, where a panel listens.
+    const reached: KeyboardEvent[] = [];
+    const onDocument = (event: KeyboardEvent) => {
+      if (event.key === "Escape") reached.push(event);
+    };
+    document.addEventListener("keydown", onDocument);
+    const escapes = recordEscapes();
+    const view = draw(
+      <KeymapProvider>
+        <EscapeSheet onClose={() => closed.push("sheet")}>{control.node}</EscapeSheet>
+      </KeymapProvider>,
+      control.surface
+    );
+    try {
+      const field = await control.open(view, user, control.draft);
+      expect(field.value).toBe(control.draft);
+      expect(document.activeElement).toBe(field);
+
+      // user-event has no form for this: it cannot mark a key as an IME composition.
+      fireEvent.keyDown(field, { isComposing: true, key: "Escape" });
+      await settleReads();
+      expect(control.fieldOf(view)).toBe(field);
+      expect(field.value).toBe(control.draft);
+      expect(document.activeElement).toBe(field);
+      expect(escapes.presses.map((event) => event.defaultPrevented)).toEqual([false]);
+      expect(reached).toHaveLength(1);
+      expect(closed).toEqual([]);
+
+      await user.keyboard("{Escape}");
+      expect(control.fieldOf(view)).toBeNull();
+      expect(escapes.presses.map((event) => event.defaultPrevented)).toEqual([false, true]);
+      expect(reached).toHaveLength(1);
+      expect(closed).toEqual([]);
+    } finally {
+      escapes.stop();
+      document.removeEventListener("keydown", onDocument);
+      undraw(view);
     }
   }
 });
