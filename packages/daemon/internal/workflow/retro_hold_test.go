@@ -347,3 +347,35 @@ func TestAParentWhoseSignOffIsNotItsLastStepIsHeldBeforeItsRetro(t *testing.T) {
 		}
 	})
 }
+
+// A parent whose last step is of a role the deployment defines, `implementer checker`, passes it
+// while a child is in the workflow beneath it and is held before its retro. The child's leave starts
+// the implementer's retro once, with the report of the checker's step, the role of the task's last
+// step, as the pass into the retro would have given it: its commit and its verdict.
+func TestAHeldRetroAfterADeploymentStepGetsItsReport(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Step)
+	stepChild(t, pool, heldParentChild, phase.Implementing, nil)
+	seedStepsAt(t, pool, root.Key, root.Generation, 2, map[string]string{"checker": "testing"}, "implementer", "checker")
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: "checker", Claim: "checker-claim", HandoffCommit: sha, Verdict: "pass",
+		StepTask: "a", StepPlace: 2})
+
+	move(t, pool, engine, root.Key, TriggerStepPassed, record.TaskPlace{}, record.PhaseRow{})
+	if held := issueOf(t, pool, engine, root.Key); held.Phase != phase.Held || held.Hold == nil || held.Hold.Reason != record.HoldForChildren {
+		t.Fatalf("%s after the checker's pass stands in %s with hold %+v, want held before its retro for its children", root.Key, held.Phase, held.Hold)
+	}
+
+	childLeavesDone(t, pool, engine)
+
+	starts := startsIn(t, pool, root.Key, claim.RoleImplementer, phase.Retro)
+	if len(starts) != 1 {
+		t.Fatalf("the release wrote %d starts of the retro, want one", len(starts))
+	}
+	for _, says := range []string{" Handoff commit: " + sha + ".", " Tester's verdict: pass."} {
+		if !strings.Contains(starts[0].Task, says) {
+			t.Fatalf("the retro's task = %q, want it to say %q", starts[0].Task, says)
+		}
+	}
+}
