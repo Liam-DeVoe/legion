@@ -755,16 +755,17 @@ test("the approval chip's keys press its own actions, and only while those take 
 });
 
 // The header's focus keeper gives a control of the Request changes dialog, lost as the dialog
-// shuts, to the document's chip, as it gives one of the chip's two actions (`chipOfLostAction`).
-// The dialog gives the focus back to the header's Request changes as it shuts; once the request is
-// answered the header draws neither action, so the focus falls from the dialog's own control: its
-// submit, which reads "Submitting…" while the change request is written, its text box, which
-// holds the reader's reason, or its Cancel. No action draws the words of any of them, so only
-// their place inside the dialog sends the focus to the chip rather than to "Issue actions". Where
-// the reader sent a change request, the chip also hands the focus to itself once the read after
-// it removes Request changes (`ApprovalChip`), so the first three rows below hold where the focus
-// ends, whichever of the two moves it; the rows after them, where nothing was sent, are the
-// keeper's alone.
+// shuts, to the document's chip (`chipOfLostAction`). The dialog gives the focus back to the
+// header's Request changes as it shuts; once the request is answered the header draws neither
+// action, so the focus falls from the dialog's own control: its submit, which reads "Submitting…"
+// while the change request is written, its text box, which holds the reader's reason, or its
+// Cancel. The keeper reads only where the lost control stood, never its words: a control that
+// stood inside the box `ApprovalChip` draws the chip in - its two actions, and its dialogs'
+// submit, text box and Cancel - goes to that chip, whatever it reads, rather than to "Issue
+// actions". Where the reader sent a change request, the chip also hands the focus to itself once
+// the read after it removes Request changes (`ApprovalChip`), so the first three rows below hold
+// where the focus ends, whichever of the two moves it; the rows after them, where nothing was
+// sent, are the keeper's alone.
 
 /** The reason each case types into the dialog: no action of the chip draws these words. */
 const CHANGE_REASON = "Name the rollback path.";
