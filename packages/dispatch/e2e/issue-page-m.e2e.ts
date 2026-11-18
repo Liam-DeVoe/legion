@@ -1613,15 +1613,25 @@ test("more pressed by keyboard opens a turn's words in place, its head where it 
     await gotoIssue(page, `/issues/${issue.key}/activity`);
     const turn = historyItem(page, long.id);
     const more = turn.locator("[data-node-more]");
-    // A turn is cut once it shows: the reader scrolls to it first.
+    // A turn in view, wholly or in part, keeps its whole length, and is cut to six lines once it
+    // lies wholly outside the view (`clamp-measurer.ts`). So the reader scrolls to the long turn,
+    // which shows whole, then back up with the wheel, the pointer on the history, until it lies
+    // wholly below the view, its head 40 px under the window's foot, which is the view a cut is
+    // measured against. It is cut there, and the reader scrolls to it again.
     await turn.scrollIntoViewIfNeeded();
+    await nextFrames(page);
+    const view = await historyViewport(page);
+    const panel = await historyPanel(page).boundingBox();
+    await page.mouse.move((panel?.x ?? 0) + 40, (view.top + view.bottom) / 2);
+    const shown = Math.round((await turn.boundingBox())?.y ?? 0);
+    const screen = await page.evaluate(() => window.innerHeight);
+    await page.mouse.wheel(0, shown - screen - 40);
     await expect(more, "the long turn is not cut, so the row proves nothing").toContainText(
       CONTROL_LABELS.read_more
     );
+    await turn.scrollIntoViewIfNeeded();
     // The reader moves the focus to "more" and scrolls the history a little, the pointer on it.
     await more.focus();
-    const view = await historyViewport(page);
-    const panel = await historyPanel(page).boundingBox();
     await page.mouse.move((panel?.x ?? 0) + 40, (view.top + view.bottom) / 2);
     await page.mouse.wheel(0, 40);
     await nextFrames(page);
