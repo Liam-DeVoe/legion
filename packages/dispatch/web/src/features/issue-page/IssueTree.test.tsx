@@ -2984,19 +2984,32 @@ test("Tab from the row's editor goes past a control another block draws to the f
 
 // Shift+Tab from the row's editor goes past every control the editor draws outside the node's
 // block to the row, the outline's one tab stop, and the editing ends there as Escape's does, the
-// focus staying on the row. The document stays as it was.
+// focus staying on the row. The document stays as it was. Shift+Tab steps back from the editable
+// to what stands before it in the page's order, never into the blocks it holds, so the control
+// it passes over here is drawn before the editable, inside the box: the references button of the
+// block above the node's (`doc/ProofDocument.tsx`'s "Block references"), in an aside the case
+// draws there, as the references-button case below draws one after the editable.
 test("Shift+Tab from the row's editor goes to the row past a control another block draws, and ends the editing", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  const { editable, view } = await editLive(user, [
-    taskServing("t0", "The task above the statement."),
-    paragraph("r1", "A statement of the spec."),
-    taskServing("t2", "The task below the statement."),
-  ]);
+  const { editable, view } = await editLive(user);
   const row = editable.closest<HTMLElement>("[data-node-row]");
-  if (row === null) throw new Error("the statement's row does not hold the editor");
+  const box = editable.closest<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
+  if (row === null || box === null) throw new Error("the statement's row does not hold the editor");
+  const aside = document.createElement("aside");
+  aside.setAttribute("aria-label", "Block references");
+  const above = document.createElement("button");
+  above.type = "button";
+  above.setAttribute("aria-label", "1 references on block r0");
+  above.setAttribute("data-block-references", "r0");
+  aside.append(above);
+  box.prepend(aside);
   const before = blocksOf(view);
   await user.tab({ shift: true });
+  expect(
+    document.activeElement === above,
+    "Shift+Tab stopped on the references button of the block above"
+  ).toBe(false);
   expect(
     document.activeElement === row,
     "Shift+Tab from the row's editor did not go to the row"
@@ -3181,6 +3194,37 @@ test("a references button of a block inside the node's block is a tab stop of th
       stops.flatMap((stop) => stop.getAttribute("data-block-references") ?? []),
       "the references buttons Tab stops at are not those of the node's block and the block in it"
     ).toEqual(["p1", "r1"]);
+  } finally {
+    row.remove();
+  }
+});
+
+// The editor draws a mermaid block's "Mermaid source" toggle as a `summary` of its own
+// `contenteditable="false"`, right inside the block's editable `details` (`@legion/proof-editor`'s
+// `mermaid-code-block-view.ts`), and the browser stops at it for Tab, as it does at no link of the
+// editable's text. A callout may hold a mermaid block, so the toggle of one in the node's block is
+// a tab stop of the row's editor, while the link in the block's words is not, and neither is the
+// toggle of a mermaid block beside it, another block's.
+test("a mermaid block's source toggle inside the node's block is a tab stop of the row's editor, and one beside it is not", () => {
+  const row = document.createElement("div");
+  const mermaid = `<div class="proof-code-block proof-mermaid-block"><div class="proof-mermaid-preview" contenteditable="false" hidden></div><div class="proof-mermaid-status" contenteditable="false" hidden></div><details class="proof-mermaid-source" open><summary class="proof-mermaid-source-summary" contenteditable="false">Mermaid source</summary><pre class="proof-code-block-pre" data-language="mermaid"><code>graph TD</code></pre></details></div>`;
+  row.innerHTML = `<div ${EDITOR_BOX_ATTRIBUTE}><div contenteditable="true"><p data-block-id="r0">Above.</p><section data-block-id="r1"><p>The statement, after <a href="#b-r0">the words above</a>.</p>${mermaid}</section><section data-block-id="t2">${mermaid}</section></div></div>`;
+  document.body.append(row);
+  try {
+    const editable = row.querySelector('[contenteditable="true"]');
+    if (editable === null) throw new Error("the stand-in draws no editable");
+    const stops = nodeCaret.tabStopsFrom(row, "r1", editable, false) ?? [];
+    /** Each stop inside the row, by its element and the block it stands in. */
+    const named = stops
+      .filter((stop) => row.contains(stop))
+      .map((stop) => {
+        const block = stop.closest("[data-block-id]")?.getAttribute("data-block-id");
+        return `${stop.localName} in ${block ?? "no block"}`;
+      });
+    expect(
+      named,
+      "the stops Tab takes from the row's editor are not the source toggle of the node's block alone"
+    ).toEqual(["summary in r1"]);
   } finally {
     row.remove();
   }

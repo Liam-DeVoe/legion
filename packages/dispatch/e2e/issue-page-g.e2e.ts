@@ -739,6 +739,8 @@ test("a long row in the first view is drawn cut on the first frame it is drawn i
       await page.setViewportSize(size);
       await openIssue(page, seeded.key);
       await page.waitForFunction(() => (window.__firstViewFrames?.length ?? 0) > 60);
+      // The wait above saw more than 60 frames recorded, and the script stops recording once it
+      // holds 61, so one read holds every frame the checks below read.
       const frames = await page.evaluate(() => window.__firstViewFrames ?? []);
       const [first] = frames;
       if (first === undefined) throw new Error(`${where} the row was never drawn`);
@@ -792,6 +794,8 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
           message: "a row draws its author other than by the stored actor's name and kind",
         })
         .toEqual([]);
+      // The poll above waited until every row drew its stored author, and nothing moved since,
+      // so one read lists the rows that poll saw.
       const rows = await drawnRows(page);
       const where = `at ${size.width} px`;
       for (const row of rows) {
@@ -819,6 +823,8 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
     const unknown = await rowBody(statement)
       .locator("[data-node-author] svg[data-glyph]")
       .getAttribute("data-glyph");
+    // The rows drew their stored authors at both widths above, and since then only the width and
+    // the focus moved, which leave each row's margin shape as drawn, so one read gives each one.
     const rows = await drawnRows(page);
     expect(
       new Set([
