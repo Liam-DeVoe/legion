@@ -29,6 +29,7 @@ go run ./cmd/writing-check dataset pack --snapshot <file> --verdicts <file> --se
 go run ./cmd/writing-check dataset build (--snapshot <file> --verdicts <file> --seed N [--confirmed <file> --confirmed-seed N] | --from <bundle>) --out <dir>
 go run ./cmd/writing-check dataset sessions --manifest <export manifest.json> --cases <build dir> --out <dir>
 go run ./cmd/writing-check dataset owner-texts (--snapshot <file> | --from <bundle>) --out <dir>
+go run ./cmd/writing-check dataset followups --from <bundle> --cases <build dir> --out <dir>
 go run ./cmd/writing-check dataset named (--doc <issue>/<document>@<version>[,<version>...] | --ask <issue>/<ask id>)... --out <dir>
 cmd/writing-check/export-sessions.sh --sessions <sessions.tsv> --exclude <exclude.txt> --out <dir>
 go run ./cmd/writing-check harness probe [--calls 20] [--out <file>] <model flags>
@@ -787,6 +788,8 @@ text. The work has these steps:
 6. `sessions` checks that export and gives each case its place in its writer session.
 7. `owner-texts` writes each text that the owner wrote himself, with its time, from the snapshot.
    `harness score --vocabulary` reads it.
+8. `followups` writes what the owner did after the text that each case reads, from the bundle and
+   the cases. It also writes the question cases' explanations as answer cases.
 
 The dataset is a file artifact of INFRA-3231. It is never a file of this repository.
 `dataset/DATASET` holds the end time, the seed and the SHA-256 of each input and each output.
@@ -1109,6 +1112,78 @@ Each line holds one text as a case holds a text: `key`, `event_id`, `event_type`
 time of the event that wrote it), `kind`, `actor_kind`, `actor`, `text` and `sha256`.
 `owner-texts` prints the count of texts and the file's SHA-256.
 
+### followups
+
+| Flag | Meaning |
+| --- | --- |
+| `--from` | The bundle that `build` read: the tarball, its manifest, or a directory that holds one of them. |
+| `--cases` | The cases that `build` wrote from that bundle: the build directory, or its `cases.jsonl.gz`. |
+| `--out` | The directory for the output files. |
+
+`followups` writes what the owner did after the text that each case reads. It is the ground truth
+of INFRA-3231's dataset check: did he understand the agent's text? It loads the snapshot and the
+verdicts as `build` does, and finds each case's texts by the keys and events that the case
+records. It refuses a case whose texts the snapshot does not hold, because such cases were built
+from another bundle. It calls no model.
+
+It reads the question, answer and plain cases. The text whose reception a case shows is its
+subject:
+
+- For a question case, the subject is the explanation: the agent's first reply to the owner's
+  question (see "The reply walk"). When no agent text replies to the question, the subject is
+  null.
+- For an answer or a plain case, the subject is the case's own agent text.
+
+The owner's next texts are his own texts written after the subject, at most 5, from these parts
+in this order. Each part is in event order.
+
+1. `reply_chain`: the texts whose chain of parents reaches the subject: its replies, their
+   replies, and on.
+2. `thread`: the rest of the subject's thread.
+3. `conversation`: for a message on no issue, the rest of its conversation with that session.
+4. `issue`: his texts on the subject's issue written within 72 hours after it.
+
+`followups.jsonl.gz` holds one line for each case, by case id:
+
+| Field | Meaning |
+| --- | --- |
+| `case_id`, `group`, `part`, `split_group`, `tree` | As the case holds them. |
+| `subject`, `subject_role` | The subject as a case holds a text, or null; and `explanation` or `agent_text`. |
+| `subject_found` | For an explanation, how the reply walk found it: `direct_reply`, `thread` or `conversation`. |
+| `question`, `asked_about` | For a question case, the owner's question (`key`, `event_id`, `time`, `text`), and the `key` and `event_id` of the agent text he asked about. |
+| `next` | The owner's next texts. Each has `key`, `event_id`, `time`, `kind`, `text` (cut at 4,000 bytes), the `verdict` and `words` that the verdicts file gives it, `replies_to_subject` (its chain of parents reaches the subject), `where` (its part, from the list above) and `seconds_after` the subject. |
+| `acts` | The owner's acts that wrote no text (an ask he answered by options alone, a review with no reason) on the subject or on a text of its thread, after the subject: `event_id`, `event_type`, `time`, `target` and `selected`. |
+| `agent_texts_before_next` | How many agent texts the subject's thread holds between the subject and the first next text. For a message on no issue, it counts its conversation. It is null when there is no next text. |
+
+`explanations/` is a dataset in the format of `build`. `harness score --cases <out>/explanations`
+grades each explanation as it grades an answer case. Its `sessions.tsv` is the session list for
+`export-sessions.sh` and `sessions`, as for a build. It holds one answer case for each explanation
+that can be a case (an agent text of an R1 kind, with words):
+
+- The id is `answer/<explanation key>@<event id>`.
+- `agent_text`, `kind`, `conversation`, `writer_session`, `write_time`, `record` and `found` are
+  set as `build` sets them for an answer case.
+- `question` is the owner's question, with its verdict. `owner_reply` is his first next text,
+  with its verdict, when there is one.
+- `tree`, `split_group` and `part` are the question case's.
+- `of_question` lists the ids of the question cases whose explanation it is. Two question cases
+  can have one explanation.
+
+The directory also holds `documents.jsonl.gz` (each document version that a record names and the
+snapshot holds; a record marks a version that the snapshot does not hold as `missing`),
+`sessions.tsv` (each writer session of the explanations, its cut the latest `write_time` of its
+cases) and `counts.json`. `counts.json` holds the question cases with an explanation and with
+none, the cases, the parts, the sessions listed, the SHA-256 of the cases file that `followups`
+read, and the SHA-256 of each file it wrote. It holds no text.
+
+`followups` prints, for each group and part, the cases, the subjects found, and the cases with a
+next text, with an act, and with neither. Then it prints the question cases with no explanation,
+the explanations written, and the SHA-256 of each file.
+
+`TestFollowupsReadWhatTheOwnerDidNext` builds a snapshot in code. It checks a question case whose
+explanation and the owner's reply to it are found, an owner text written before the subject, an
+answer by an option alone, and a plain case's later reply in its thread.
+
 ### named
 
 `named` builds cases from the document versions that `--doc` lists and the asks that `--ask`
@@ -1341,6 +1416,24 @@ imports `llm`. So a call that sends session text to a model of another family do
 `TestOnlyTheClaudeClientTakesSessionText` and `TestSessionTextCannotBeReadOutsideItsPackage` hold
 that guarantee.
 
+A grader of another family reads no session text. `score --grader <Foundry deployment>
+--grader-no-session` grades again another run's cases with a Foundry deployment of `prices.yaml`
+(such as `grok-4.7`), so a second grader's agreement with the run's grader can be measured: it
+needs `--readers-from`, and, for a change other than 1, `--texts-from`, so its run calls no
+reader, no writer and no candidate, and makes only the deployment's grading calls, with no
+fallback. Each request is the one the run builds for a case with no session part: the same
+system prompt, schema and user message, with `HasSession` false and no `writer_session` tag. The
+grader is a `llm.Foundry` client, which takes an `llm.Request` and has no method that takes a
+`SessionText`, and the run reads no session part at all, so `--sessions` is optional. `added`,
+for the texts of a change that plays the writer (2, 3, 5, 6, 7a), is not graded, since the
+writer's session is an input of the new text; `run.json` lists it under `skipped_judgements`
+with the reason, and `scores.md` says so. Each grade's `input_sha256` names the deployment, so
+`--grades-from` never takes a Claude grade for it. `run.json` records `grader_family: foundry`
+and `session_part: none`, and `scores.md` says so. Such a run grades the cases of the run
+`--readers-from` names, which `--sample` then draws from, so it can grade a sample of a sample
+run; it refuses the held-out part, a candidate's own texts (R2), and a `--grader-timeout` below
+10 minutes (its default).
+
 A case's session part is its session's rows before the case's place, the newest
 `--session-chars` bytes (default 30,000). It keeps what the people and agents said, what the
 writer did and saw, and compaction summaries. It leaves out the writer's thinking, notices that a
@@ -1367,17 +1460,19 @@ model's id, or when no call answers. Then `probe` exits 1. `--out` also writes t
 | `--local`, `--loaded` | The `local.json` of `harness local` and the `loaded.jsonl` of `harness load`, for a change that holds 2 to 6. |
 | `--rounds`, `--unedited` | Change 3: the reviews of one text (default 2), after which the writer's last edit posts; and what posts for a case with no session, as `DISPATCH_REVIEWER_UNEDITED` says (`rewrite`, the default, or `as_written`). |
 | `--writer-order` | The order of the writer's user message, for a change that plays the writer: `session-last` (the default), Dispatch's record, the writer's text and Dispatch's message, then the session part; or `session-first`, the record and the session part, then the text and the message (see "The prompt cache"). `run.json` records it as `writer_order`. A change that plays no writer refuses `session-first`. |
-| `--cases`, `--sessions` | The build directory of `dataset build`, or the directory of `dataset named`, and the directory of `dataset sessions`. |
+| `--cases`, `--sessions` | The build directory of `dataset build`, or the directory of `dataset named`, and the directory of `dataset sessions` (optional under `--grader-no-session`). |
 | `--out` | The run's directory, or under `--models` the directory that holds each model's run directory. A run continues the cases that have no result in it, and refuses a directory whose `run.json` records other parameters. |
 | `--part` | `development` (the default), or `held_out`, which only this flag selects. |
 | `--groups` | The case groups to score (default all four; `question` alone for a change that holds 6). |
-| `--sample`, `--sample-seed` | A stratified sample of about this many cases (see below), drawn by the seed. |
+| `--sample`, `--sample-seed` | A stratified sample of about this many cases (see below), drawn by the seed: under `--grader-no-session`, from the cases of `--readers-from`. |
 | `--seed`, `--draws` | The bootstrap's seed (default 3231) and resamples (default 10,000). |
 | `--session-chars` | The bytes of a case's session that a grading call reads. |
 | `--exposure-log`, `--commit`, `--new-run` | The exposure log (default `$TMPDIR/infra-3231-impl/harness/exposure.log`), a held-out run's commit (default `git rev-parse HEAD`), and the reason for a second held-out run of a cell at one commit (see below). |
 | `--figures-only` | Compute the figures from the results the directory holds, and call no model. |
 | `--grader-inputs` | The grader's input modes (see "Grader inputs"): `final` (the default), `full` or `trimmed`, then any `,<judgement>=full` or `,<judgement>=trimmed`. |
-| `--grader` | The grading model of this run in place of `candidates.yaml`'s grader, with the same fallbacks: a Claude model with a row in `prices.yaml` that is no candidate, not the writer, not the fresh reader and no fallback grader (R2). `run.json` and the figures record it as the grader. |
+| `--grader` | The grading model of this run in place of `candidates.yaml`'s grader, with the same fallbacks: a Claude model with a row in `prices.yaml` that is no candidate, not the writer, not the fresh reader and no fallback grader (R2). `run.json` and the figures record it as the grader. With `--grader-no-session`, a Foundry deployment of `prices.yaml` with no fallback (see "Session text"). |
+| `--grader-no-session` | The grader reads no session part. Required with, and only with, a Foundry `--grader`; it needs `--readers-from`, and `--texts-from` for a change other than 1 (see "Session text"). |
+| `--grader-timeout` | The time bound of one attempt of a grading call: default 180 s for a Claude grader (llm's), and 10 minutes, the least it takes, for a grader of another family. Retries are as for every call. |
 | `--readers-from` | A run directory whose fresh readers' answers this run grades again, for each case whose text is the same: two runs that compare graders grade the same answers. A reused answer's call is that run's and is not counted again. |
 | `--grades-from` | Run directories, comma-separated. For each case whose text is the same, byte for byte, as a text one of those runs graded, this run takes that run's answers and grades that read the same inputs, and calls no model for them (see "Grades of another run"). |
 | `--vocabulary` | The `owner-texts.jsonl.gz` of `dataset owner-texts`. The `undefined` judgement then reads the words of each case's text that the owner wrote himself before the case (see "The owner's own words"). |
@@ -1433,7 +1528,8 @@ with no candidate has none, and no call.
 A judgement the grader (`claude-opus-5`) refuses on every try goes to the fallback graders of
 `candidates.yaml` in order (`claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-5`), Claude
 models that are no candidate and play no other role. The grade keeps each refused call and names
-the model that graded it. `--grader` replaces the grader for one run, and keeps the fallbacks.
+the model that graded it. `--grader` replaces the grader for one run, and keeps the fallbacks; a
+Foundry grader of `--grader-no-session` has none.
 
 `run.json` holds the parameters; `cases.jsonl` one line for each case, written as it ends, with
 the text the person sees after the change (`text`, the string `text_sha256` hashes: an ask's
@@ -1609,7 +1705,9 @@ agree on the cases both graded with no error: the same verdict; for a list judge
 within 1 of each other (beside it, whether both find any, and the mean count difference); for
 `answer_start`, both find the answer within 5 words, or neither. Each agreement has the 95%
 interval of the scores. Two runs of one grader on the same reader answers (`--readers-from`)
-give the grader's repeatability; a full-input and a trimmed run give their agreement. `score
+give the grader's repeatability; a full-input and a trimmed run give their agreement; a run of a
+grader of another family (`--grader-no-session`) and the run it grades again give the two
+graders' agreement, on the cases both hold, so on its sample alone. `score
 --repeatability` puts a judgement's repeatability beside each of its scores in `scores.md`.
 
 ### Grader inputs

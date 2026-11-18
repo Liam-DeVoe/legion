@@ -157,10 +157,18 @@ type scorer struct {
 	vocabulary *Vocabulary
 	// only are the judgements the run gives; empty, it gives every one.
 	only []Judgement
+	// skipped are the judgements the run does not give, each with the reason run.json records
+	// (RunParams.SkippedJudgements): those a grader that reads no session part cannot grade.
+	skipped map[Judgement]string
+	// noExport says the run read no session export (--grader-no-session with no --sessions):
+	// each case's session status is not_read.
+	noExport bool
 }
 
 // wants is whether the run gives judgement j.
-func (s *scorer) wants(j Judgement) bool { return len(s.only) == 0 || slices.Contains(s.only, j) }
+func (s *scorer) wants(j Judgement) bool {
+	return (len(s.only) == 0 || slices.Contains(s.only, j)) && s.skipped[j] == ""
+}
 
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
@@ -226,7 +234,11 @@ func (s *scorer) prepare(ctx context.Context, c *Case, change Change) *caseRun {
 		d := session.Digest()
 		res.SessionSHA256 = hex.EncodeToString(d[:])
 	}
-	if res.SessionStatus == "" {
+	switch {
+	case res.SessionStatus != "":
+	case s.noExport:
+		res.SessionStatus = "not_read"
+	default:
 		res.SessionStatus = "no_place"
 	}
 	applied, err := change.Apply(ctx, c)
@@ -278,13 +290,20 @@ func (s *scorer) prepare(ctx context.Context, c *Case, change Change) *caseRun {
 	if prior.TextSHA256 != res.TextSHA256 {
 		prior = CaseResult{}
 	}
+	// A run with no reader (a grader of another family, which grades the answers --readers-from
+	// names again) calls none: a reading it holds no answer for fails the case.
+	var unread []string
 	read := func(j Judgement, to **Answer, done *Answer, same []*Answer, text string, firstParagraph bool) {
 		r := reading{j: j, to: to}
-		if done != nil && done.Error == "" {
+		switch {
+		case done != nil && done.Error == "":
 			a := *done
 			a.Reused = true
 			r.taken = &a
-		} else {
+		case s.reader == nil:
+			unread = append(unread, string(j))
+			return
+		default:
 			r.call = s.reader.call(text, question, reply || firstParagraph, firstParagraph)
 			r.taken = r.call.reused(same)
 		}
@@ -299,6 +318,11 @@ func (s *scorer) prepare(ctx context.Context, c *Case, change Change) *caseRun {
 			first = text
 		}
 		read(JFirstParagraph, &res.FirstParagraphReader, prior.FirstParagraphReader, earlierFirstReaders, first, true)
+	}
+	if len(unread) > 0 {
+		res.Error = fmt.Sprintf("the run --readers-from names holds no answer of the fresh reader to this text for %s, and this run calls no reader", strings.Join(unread, ", "))
+		res.Time = time.Now().UTC().Format(time.RFC3339)
+		return cr
 	}
 	// planned are the judgements the case gets, the readings' first, each with the reader's
 	// answer where the case takes it.
@@ -414,13 +438,20 @@ type RunParams struct {
 	Groups  []string `json:"groups"`
 	// Judgements are the judgements the run gives (--judgements), absent when it gives all.
 	Judgements []string `json:"judgements,omitempty"`
-	// Sample is the stratified sample the run scores, absent for the whole part.
+	// Sample is the stratified sample the run scores, absent for the whole part; under
+	// --grader-no-session, a sample of the cases of the run --readers-from names.
 	Sample *Sample           `json:"sample,omitempty"`
 	Models map[string]string `json:"models"`
 	// GraderInputs are the grader's input modes (--grader-inputs, every judgement named), and
 	// ReadersFrom the run whose readers' answers this run grades again.
 	GraderInputs string `json:"grader_inputs"`
 	ReadersFrom  string `json:"readers_from,omitempty"`
+	// GraderFamily and SessionPart are a grader of another family's (--grader-no-session):
+	// foundry, and none, for a grader that reads no session part; absent for a Claude grader.
+	// SkippedJudgements are the judgements such a grader does not give, each with the reason.
+	GraderFamily      string               `json:"grader_family,omitempty"`
+	SessionPart       string               `json:"session_part,omitempty"`
+	SkippedJudgements map[Judgement]string `json:"skipped_judgements,omitempty"`
 	// GradesFrom are the runs whose answers and grades this run takes for the same text and
 	// inputs, and VocabularySHA256 the SHA-256 of the owner's texts the undefined judgement
 	// reads his own words from.
@@ -546,6 +577,14 @@ func checkParams(out string, params RunParams) error {
 	return nil
 }
 
+// foreignGraderTimeout bounds one attempt of a call of a grader of another family where
+// --grader-timeout sets none, and is the least bound it may set: grok-4.7's calls had run past the
+// reviewer's bound of 120 s.
+const foreignGraderTimeout = 10 * time.Minute
+
+// sessionPartNone is the session part run.json records for a grader that reads none.
+const sessionPartNone = "none"
+
 func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("writing-check harness score", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -572,7 +611,9 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	newRun := fs.String("new-run", "", "the reason for a second held-out run of a cell at one commit: a change, with a candidate or with none, that a run at that commit scored")
 	figuresOnly := fs.Bool("figures-only", false, "compute the figures from the results the output directory holds, calling no model")
 	inputsFlag := fs.String("grader-inputs", "final", "the grader's input modes: final, full or trimmed, then any ,<judgement>=full|trimmed")
-	graderFlag := fs.String("grader", "", "the grading model of this run in place of candidates.yaml's roles.grader, with the same fallbacks: a Claude model with a row in prices.yaml that is no candidate and plays no other role (default: roles.grader)")
+	graderFlag := fs.String("grader", "", "the grading model of this run in place of candidates.yaml's roles.grader, with the same fallbacks: a Claude model with a row in prices.yaml that is no candidate and plays no other role; or, with --grader-no-session, a Foundry deployment of prices.yaml, with no fallback (default: roles.grader)")
+	noSession := fs.Bool("grader-no-session", false, "the grader reads no writer session part: required with, and only with, a --grader of another family (a Foundry deployment), which also needs --readers-from and, for a change other than 1, --texts-from, so the run calls no reader, no writer and no candidate. Each request is the one the run builds for a case with no session part; added, for the texts of a change that plays the writer, is not graded; --sessions is optional; and the cases are those of the run --readers-from names, which --sample draws from")
+	graderTimeout := fs.Duration("grader-timeout", 0, "the time bound of one attempt of a grading call (0: llm's default, 180s, for a Claude grader, and 10m for a grader of another family, which takes no bound below 10m)")
 	readersFrom := fs.String("readers-from", "", "a run directory whose readers' answers this run grades again, for the cases whose text is the same")
 	gradesFrom := fs.String("grades-from", "", "run directories, comma-separated, whose answers and grades this run takes, calling no model, for each case whose text and whose reader's and grader's inputs are the same")
 	vocabulary := fs.String("vocabulary", "", "the owner-texts.jsonl.gz that writing-check dataset owner-texts wrote: the undefined judgement reads the words of each text that the owner wrote himself before the case")
@@ -600,7 +641,9 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if *textsFrom != "" {
 		var given []string
 		fs.Visit(func(f *flag.Flag) {
-			if slices.Contains(textsFlags, f.Name) {
+			// A grader that reads no session part draws its own sample of the cases of
+			// --readers-from.
+			if slices.Contains(textsFlags, f.Name) && (!*noSession || (f.Name != "sample" && f.Name != "sample-seed")) {
 				given = append(given, "--"+f.Name)
 			}
 		})
@@ -613,7 +656,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		}
 		p := sources[0].params
 		*changeFlag, *part, *groupsFlag, *sessionChars = p.Change, p.Part, strings.Join(p.Groups, ","), p.SessionChars
-		if p.Sample != nil {
+		if p.Sample != nil && !*noSession {
 			*sampleSize, *sampleSeed = p.Sample.Size, p.Sample.Seed
 		}
 	}
@@ -641,8 +684,10 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		plan = nil
 	}
 	switch {
-	case *casesDir == "" || *sessionsDir == "" || *out == "" || fs.NArg() > 0:
-		return usage("--cases, --sessions and --out are required, and nothing else")
+	case *casesDir == "" || (*sessionsDir == "" && !*noSession) || *out == "" || fs.NArg() > 0:
+		return usage("--cases, --sessions (optional under --grader-no-session) and --out are required, and nothing else")
+	case *graderTimeout < 0:
+		return usage("--grader-timeout must not be below 0")
 	case *part != PartDevelopment && *part != PartHeldOut:
 		return usage("--part is development or held_out")
 	case slices.ContainsFunc(groups, func(g string) bool { return !slices.Contains(Groups, g) }):
@@ -723,7 +768,41 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err != nil {
 		return fail(err)
 	}
-	if cfg, err = cfg.WithGrader(*graderFlag, false); err != nil {
+	// A grader of another family reads no session part, and grades again what another run's
+	// reader answered and its change wrote, so the run makes that model's grading calls alone,
+	// none of which carries session text (R2).
+	foreign := cfg.Prices.Prices[*graderFlag].Family == llm.FamilyFoundry
+	switch {
+	case foreign && !*noSession:
+		return usage(fmt.Sprintf("--grader %q is a Foundry deployment, which session text never reaches (R2): give --grader-no-session", *graderFlag))
+	case *noSession && !foreign:
+		return usage("--grader-no-session is for a --grader of another family, a Foundry deployment of prices.yaml: a Claude grader reads the session part as candidates.yaml's grader does")
+	case foreign && *readersFrom == "":
+		return usage(fmt.Sprintf("--grader %q grades again the fresh reader's answers of another run, so its run calls no reader: give --readers-from", *graderFlag))
+	case foreign && plan != nil:
+		return usage(fmt.Sprintf("--grader %q grades again the texts of another run, so its run calls no writer and no candidate: give --texts-from for change %s", *graderFlag, change.Name()))
+	case foreign && *part != PartDevelopment:
+		return usage(fmt.Sprintf("--grader %q grades again runs of the development part alone: a held-out run is graded by candidates.yaml's grader", *graderFlag))
+	case foreign && *graderTimeout != 0 && *graderTimeout < foreignGraderTimeout:
+		return usage(fmt.Sprintf("--grader-timeout for a grader of another family is at least %s", foreignGraderTimeout))
+	}
+	var skipped map[Judgement]string
+	if foreign {
+		if cfg, err = cfg.WithNoSessionGrader(*graderFlag); err != nil {
+			return usage(err.Error())
+		}
+		for _, src := range sources {
+			if m, ok := cfg.Candidate(src.params.Model); ok && m.ID == *graderFlag {
+				return usage(fmt.Sprintf("--grader %q wrote the texts of --texts-from %s: a grader grades no output it wrote (R2)", *graderFlag, src.dir))
+			}
+		}
+		// added counts the facts of the new text that its inputs do not hold. A change that
+		// plays the writer wrote its texts with the writer's session, an input that this grader
+		// does not read, so it cannot tell a fact of the session from an added one.
+		if textsPlan != nil && textsPlan.writer() {
+			skipped = map[Judgement]string{JAdded: fmt.Sprintf("change %s plays the writer, whose session part is an input of the new text, and the grader reads no session part", change.Name())}
+		}
+	} else if cfg, err = cfg.WithGrader(*graderFlag, false); err != nil {
 		return usage(err.Error())
 	}
 	started := time.Now()
@@ -731,12 +810,16 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err != nil {
 		return fail(err)
 	}
-	sessionsSHA, err := fileSHA256(filepath.Join(*sessionsDir, "sessions-counts.json"))
-	if err != nil {
-		return fail(err)
+	// A run of a grader that reads no session part needs no session export; with none, its
+	// run.json records no sessions_counts_sha256.
+	sessionsSHA := ""
+	if *sessionsDir != "" {
+		if sessionsSHA, err = fileSHA256(filepath.Join(*sessionsDir, "sessions-counts.json")); err != nil {
+			return fail(err)
+		}
 	}
 	if len(sources) > 0 {
-		if p := sources[0].params; p.CasesSHA256 != casesSHA || p.SessionsSHA != sessionsSHA {
+		if p := sources[0].params; p.CasesSHA256 != casesSHA || (*sessionsDir != "" && p.SessionsSHA != sessionsSHA) {
 			return usage(fmt.Sprintf("--texts-from %s scored other cases or sessions than --cases and --sessions hold: its run.json records cases_sha256 %s and sessions_counts_sha256 %s", *textsFrom, p.CasesSHA256, p.SessionsSHA))
 		}
 	}
@@ -795,11 +878,18 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return fail(err)
 	}
 	selected := selectCases(ds.Cases, groups, 0, 0)
+	if foreign {
+		// A run that calls no reader grades the cases of the run --readers-from names.
+		selected = slices.DeleteFunc(selected, func(c *Case) bool { _, ok := priorReaders[c.ID]; return !ok })
+	}
 	params := RunParams{
 		Change: change.Name(), Part: *part, Groups: groups, GraderInputs: inputs.String(), ReadersFrom: *readersFrom,
 		GradesFrom: gradesDirs, VocabularySHA256: vocabularySHA, AddedGrader: *addedGrader,
 		PromptsSHA256: PromptsDigest(), CasesSHA256: casesSHA, SessionsSHA: sessionsSHA, SessionChars: *sessionChars,
 		UncachedInputPerMinute: mf.uncachedPerMinute,
+	}
+	if foreign {
+		params.GraderFamily, params.SessionPart, params.SkippedJudgements = llm.FamilyFoundry, sessionPartNone, skipped
 	}
 	if plan != nil {
 		if len(plan.changes()) > 1 || plan.name != plan.steps[0] {
@@ -829,7 +919,7 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		selected, sample = drawSample(selected, *sampleSize, *sampleSeed)
 		params.Sample = &sample
 	}
-	if len(sources) > 0 {
+	if len(sources) > 0 && !foreign {
 		drawn, _ := json.Marshal(params.Sample)
 		recorded, _ := json.Marshal(sources[0].params.Sample)
 		if string(drawn) != string(recorded) {
@@ -935,28 +1025,50 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	for i, c := range selected {
 		ids[i] = c.ID
 	}
-	places, err := claude.ReadPlaces(*sessionsDir)
-	if err != nil {
-		return fail(err)
+	var places map[string]claude.Place
+	if *sessionsDir != "" {
+		if places, err = claude.ReadPlaces(*sessionsDir); err != nil {
+			return fail(err)
+		}
 	}
 	var uncached llm.PaceUse
 	if !*figuresOnly && len(todo) > 0 {
-		sessions, err := claude.CachedExcerpts(*sessionsDir, ids, *sessionChars, filepath.Join(*out, "session-excerpts.jsonl.gz"))
-		if err != nil {
-			return fail(fmt.Errorf("the session parts: %w", err))
+		// A grader that reads no session part reads no session export: the run holds no
+		// session text.
+		var sessions map[string]claude.SessionText
+		if !foreign {
+			if sessions, err = claude.CachedExcerpts(*sessionsDir, ids, *sessionChars, filepath.Join(*out, "session-excerpts.jsonl.gz")); err != nil {
+				return fail(fmt.Errorf("the session parts: %w", err))
+			}
 		}
 		runner, err := mf.runner()
 		if err != nil {
 			return usage(err.Error())
 		}
-		grader, err := mf.grader(cfg, inputs, runner)
+		// The grader's calls share the run's bound and pacer, with their own time bound.
+		graderRunner, bound := runner, *graderTimeout
+		if bound == 0 && foreign {
+			bound = foreignGraderTimeout
+		}
+		if bound != 0 {
+			own := *runner
+			own.Timeout = bound
+			graderRunner = &own
+		}
+		grader, err := mf.grader(cfg, inputs, graderRunner)
 		if err != nil {
 			return usage(err.Error())
 		}
 		grader.Added = *addedGrader
-		readerModel, err := mf.claudeClient(cfg, cfg.Models.Roles.Reader, runner)
-		if err != nil {
-			return usage(err.Error())
+		// A grader of another family grades the answers of --readers-from: the run has no
+		// reader.
+		var reader *Reader
+		if !foreign {
+			readerModel, err := mf.claudeClient(cfg, cfg.Models.Roles.Reader, runner)
+			if err != nil {
+				return usage(err.Error())
+			}
+			reader = &Reader{Model: readerModel}
 		}
 		if run != nil {
 			if err := run.connect(ctx, mf, inst, runner, sessions, ds, selected); err != nil {
@@ -970,8 +1082,8 @@ func runScore(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 				l.change = runs[i]
 			}
 		}
-		s := &scorer{ds: ds, reader: &Reader{Model: readerModel}, grader: grader,
-			sessions: sessions, places: places, readersFrom: priorReaders, gradesFrom: priorGrades, vocabulary: ownWords, only: only}
+		s := &scorer{ds: ds, reader: reader, grader: grader, sessions: sessions, places: places, readersFrom: priorReaders,
+			gradesFrom: priorGrades, vocabulary: ownWords, only: only, skipped: skipped, noExport: *sessionsDir == ""}
 		if err := scoreAll(ctx, s, lanes, todo, mf.concurrency, stderr, started); err != nil {
 			return fail(err)
 		}

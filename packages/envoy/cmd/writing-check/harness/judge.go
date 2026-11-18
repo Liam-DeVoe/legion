@@ -510,9 +510,15 @@ const graderMaxTokens = 8192
 // Grader gives the judgements, with the grading model of candidates.yaml. Fallbacks, in order,
 // grade a judgement that every model before them refuses on every try (llm's retries), and the
 // grade names the model that graded it.
+//
+// Foundry, where it is set, is the one model of the grader, in place of Model and Fallbacks: a
+// grader of another family (score --grader-no-session), which reads no session part. Each of its
+// requests is the one the grader builds for a case with no session part (context), and it takes
+// the request alone (call), never the session part, which package llm cannot name.
 type Grader struct {
 	Model     *claude.Client
 	Fallbacks []*claude.Client
+	Foundry   *llm.Foundry
 	Inputs    GraderInputs
 	// Added is the added grader's variant (--added-grader): AddedOld, or "", sends the lost and
 	// the added requests as they were.
@@ -524,6 +530,22 @@ type Grader struct {
 // judgement.
 func NewGrader(model *claude.Client, fallbacks []*claude.Client, inputs GraderInputs) *Grader {
 	return &Grader{Model: model, Fallbacks: fallbacks, Inputs: inputs, phrases: stoppedPhrases()}
+}
+
+// NewNoSessionGrader is the grader of the Foundry deployment model, with no fallback, reading the
+// context inputs gives each judgement, the session part aside.
+func NewNoSessionGrader(model *llm.Foundry, inputs GraderInputs) *Grader {
+	return &Grader{Foundry: model, Inputs: inputs, phrases: stoppedPhrases()}
+}
+
+// context is the context judgement j reads: its input mode's, with no session part for a grader
+// that reads none (Foundry).
+func (g *Grader) context(j Judgement) contextParts {
+	c := g.Inputs.context(j)
+	if g.Foundry != nil {
+		c.Session = false
+	}
+	return c
 }
 
 // Grade gives one judgement. A call that fails is a Grade with its Error.
@@ -623,7 +645,7 @@ func (g *Grader) request(spec judgementSpec, in GradeInput) (gradeRequest, error
 		r.digest = g.digest(r.req, r.session)
 		return r, err
 	}
-	r.parts = in.parts(g.Inputs.context(in.Judgement))
+	r.parts = in.parts(g.context(in.Judgement))
 	inputsFirst := inputsFirstLayout(g.addedGrader(in.Judgement))
 	r.data = promptData{
 		HasQuestion: r.parts.Question, HasRecord: r.parts.Record, HasSession: r.parts.Session, WriterAnswer: r.parts.WriterAnswer,
@@ -646,16 +668,30 @@ func (g *Grader) request(spec judgementSpec, in GradeInput) (gradeRequest, error
 	return r, err
 }
 
-// digest is the requestDigest of a call that the grader's models may make.
+// digest is the requestDigest of a call that the grader's models may make: the Foundry
+// deployment of a grader that reads no session part, else the Claude model and its fallbacks.
 func (g *Grader) digest(req llm.Request, session claude.SessionText, extra ...string) string {
-	return requestDigest(append([]*claude.Client{g.Model}, g.Fallbacks...), req, session, extra...)
+	models := []digestModel{g.Foundry}
+	if g.Foundry == nil {
+		models = []digestModel{g.Model}
+		for _, f := range g.Fallbacks {
+			models = append(models, f)
+		}
+	}
+	return requestDigest(models, req, session, extra...)
+}
+
+// digestModel is what requestDigest reads of a model: its id and its effort.
+type digestModel interface {
+	Name() string
+	Model() agentloop.Model
 }
 
 // requestDigest is the SHA-256 of what a call reads: each model it may call, in order, with its
 // effort; the request's system prompt, user message, schema and bound; extra, what else decides
 // the call (an --added-grader variant's name and parts), none for the old request; and the
 // session part, where the call reads one.
-func requestDigest(models []*claude.Client, req llm.Request, session claude.SessionText, extra ...string) string {
+func requestDigest(models []digestModel, req llm.Request, session claude.SessionText, extra ...string) string {
 	h := sha256.New()
 	write := func(s string) { fmt.Fprintf(h, "%d:%s\n", len(s), s) }
 	for _, m := range models {
@@ -672,8 +708,20 @@ func requestDigest(models []*claude.Client, req llm.Request, session claude.Sess
 }
 
 // call makes r's call with the grader's model, then with each fallback while every model before
-// it refuses, and answers the calls that ended on a refusal.
+// it refuses, and answers the calls that ended on a refusal. A grader of another family (Foundry)
+// takes r.req alone, with what follows the session part, and has no fallback: its requests hold
+// no session part (context), and one that held one would be graded on less input than it names,
+// so it is an error.
 func (g *Grader) call(ctx context.Context, r gradeRequest) (llm.Response, []Call, error) {
+	if g.Foundry != nil {
+		if !r.session.Empty() {
+			return llm.Response{}, nil, fmt.Errorf("%s: a grader of another family reads no session part", r.req.Purpose)
+		}
+		req := r.req
+		req.User += r.after
+		resp, err := g.Foundry.Call(ctx, req)
+		return resp, nil, err
+	}
 	call := func(model *claude.Client) (llm.Response, error) {
 		if !r.session.Empty() {
 			return model.CallWithSession(ctx, r.req, r.session, r.after)
@@ -868,7 +916,7 @@ func (r *Reader) call(text, question string, reply, firstParagraph bool) readerC
 		purpose = "reader:first_paragraph"
 	}
 	req := llm.Request{Purpose: purpose, System: system, User: tag("text", text) + tag("question", question), MaxTokens: 1024}
-	return readerCall{model: r.Model, req: req, digest: requestDigest([]*claude.Client{r.Model}, req, claude.SessionText{})}
+	return readerCall{model: r.Model, req: req, digest: requestDigest([]digestModel{r.Model}, req, claude.SessionText{})}
 }
 
 // reused is the answer of done with no error to the call's same inputs (InputSHA256), marked

@@ -3,12 +3,10 @@ package harness
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"regexp"
 	"strconv"
 	"strings"
 
-	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/cmd/writing-check/harness/llm"
 )
 
@@ -116,15 +114,8 @@ func (g *Grader) gradeSentences(ctx context.Context, spec judgementSpec, in Grad
 		list, _ := json.MarshalIndent(chunk, "", " ")
 		req := base
 		req.User = tag("candidates", string(list))
-		resp, err := g.Model.Call(ctx, req)
-		for _, fallback := range g.Fallbacks {
-			var callErr *llm.CallError
-			if !errors.As(err, &callErr) || callErr.Fault != agentloop.FaultRefusal {
-				break
-			}
-			grade.Refused = append(grade.Refused, callOf(resp))
-			resp, err = fallback.Call(ctx, req)
-		}
+		resp, refused, err := g.call(ctx, gradeRequest{req: req})
+		grade.Refused = append(grade.Refused, refused...)
 		total = addCall(total, callOf(resp))
 		if err != nil {
 			grade.Call, grade.Error = &total, err.Error()

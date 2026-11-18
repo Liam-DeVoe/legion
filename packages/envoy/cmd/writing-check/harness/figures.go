@@ -401,6 +401,14 @@ func (f Figures) markdown() string {
 	fmt.Fprintf(&b, "Every interval is 95%%: a cluster bootstrap over the split groups (%d draws, seed %d), or the exact bound over the groups where no failure or no success is seen.\n",
 		f.Run.Draws, f.Run.Seed)
 	fmt.Fprintf(&b, "Grader inputs: %s.\n", p.GraderInputs)
+	if p.SessionPart != "" {
+		fmt.Fprintf(&b, "grader_family: %s, session_part: %s: the grader is of another family and read no writer session part; each request is the one the run builds for a case with none, and the fresh reader's answers are those of %s (--readers-from).\n", p.GraderFamily, p.SessionPart, p.ReadersFrom)
+	}
+	for _, j := range Judgements {
+		if reason := p.SkippedJudgements[j]; reason != "" {
+			fmt.Fprintf(&b, "Not graded: %s, since %s.\n", j, reason)
+		}
+	}
 	if p.VocabularySHA256 != "" {
 		fmt.Fprintf(&b, "The undefined judgement read the words of each text that the owner wrote himself before it (owner texts SHA-256 %s).\n", p.VocabularySHA256)
 	}

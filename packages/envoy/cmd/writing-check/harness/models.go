@@ -82,8 +82,20 @@ func (m *modelFlags) claudeClient(cfg Config, model ModelEntry, runner *llm.Runn
 	return claude.New(m.gateway, m.keyFile, model.ID, model.Effort, price.agentloop(), runner)
 }
 
-// grader is the grader of the config, with its fallbacks, reading the context inputs give.
+// foundryTokens is the Entra token source of a Foundry account; a test replaces it with a
+// stand-in's, which signs in nowhere.
+var foundryTokens = llm.FoundryConfig.Tokens
+
+// grader is the grader of the config, with its fallbacks, reading the context inputs give. A
+// Foundry grader (Config.WithNoSessionGrader) is a grader that reads no session part, with none.
 func (m *modelFlags) grader(cfg Config, inputs GraderInputs, runner *llm.Runner) (*Grader, error) {
+	if g := cfg.Models.Roles.Grader; g.Family == llm.FamilyFoundry {
+		tokens, err := foundryTokens(m.foundryConfig())
+		if err != nil {
+			return nil, err
+		}
+		return NewNoSessionGrader(llm.NewFoundry(m.foundryConfig(), tokens, g.ID, g.Effort, cfg.Prices.Prices[g.ID].agentloop(), runner), inputs), nil
+	}
 	model, err := m.claudeClient(cfg, cfg.Models.Roles.Grader, runner)
 	if err != nil {
 		return nil, err
