@@ -807,6 +807,13 @@ const senderStampReadTimeout = 1 * time.Second
 //   - A stopped target whose request set connected_only: 409 "the session is stopped", with
 //     nothing stored.
 //
+// Every 200 is written only once the stream has acknowledged the copy it holds: the target's agent
+// subject is one this build stores, which bus.Client.PublishAckWithin keeps on JetStream whatever
+// the deployed stream captures, so a stopped answer means the message waits in the stream for the
+// session. A publish the stream did not acknowledge, a newer build's stream that captures no
+// subject of the target's among them, is the bus's 503 with nothing stored, which asks the sender
+// to send the message again.
+//
 // The entry is read from the session store itself and not merely from this listener's cache of
 // it: only the store's word that the key is gone can make a record-based stopped answer or a 404,
 // and a store or a bus that did not answer earns the 503 that asks the sender to try the same

@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
 	"slices"
+	"strings"
 	"testing"
 
 	natsgo "github.com/nats-io/nats.go"
@@ -151,6 +153,142 @@ func TestADeliveryExceptionOnALaneOnlyTheDeployedStreamCapturesIsStoredOnce(t *t
 	}
 }
 
+// A delivery exception on a lane this build stores is stored under its one-copy message id also
+// while the listener's last read of the deployed stream's subjects left that lane out: the stream
+// may have captured it again since that read, and the publish takes JetStream all the same, since
+// this build stores the lane (bus.Client.UsesCoreTransport). Judged on the deployed subjects
+// alone, the lane would be published under each exception's own dedupe key, and every listener's
+// report of the one stored message would be kept.
+func TestADeliveryExceptionOnALaneThisBuildStoresIsStoredOnceWhateverTheListenerLastRead(t *testing.T) {
+	const (
+		reason = "delivery_failed"
+		origin = "origin-1"
+	)
+	topic := contracts.LegacyAgentSubject("ses_stale_exception")
+	lane := bus.ExceptionTopicPrefix + topic
+	if !bus.StreamCaptures(lane) {
+		t.Fatalf("this build compiles no subject capturing %s; the test needs one it does", lane)
+	}
+	var dropped, restored []string
+	for _, carried := range bus.StreamCarriedSubjects() {
+		if bus.SubjectContains(carried, lane) {
+			restored = append(restored, carried)
+			continue
+		}
+		dropped = append(dropped, carried)
+	}
+	url := testnats.URL(t)
+	deployNewerBuildsStreamOf(t, url, dropped)
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("connect the listener: %v", err)
+	}
+	t.Cleanup(client.Close)
+	// The newer build puts the lane back after the listener read the subjects.
+	js := client.JS()
+	info, err := js.StreamInfo(bus.Stream)
+	if err != nil {
+		t.Fatalf("read %s: %v", bus.Stream, err)
+	}
+	config := info.Config
+	config.Subjects = append(config.Subjects, restored...)
+	if _, err := js.UpdateStream(&config); err != nil {
+		t.Fatalf("the newer build puts %v back on %s: %v", restored, bus.Stream, err)
+	}
+	item := listenerTestEnvelope(topic, "exception-stale-lane")
+	// Two listeners raise the exception for the one stored message, each from its own durable.
+	for range 2 {
+		if err := publishDeliveryException(client, item, reason, "ses_stale_exception", origin); err != nil {
+			t.Fatalf("publish the delivery exception: %v", err)
+		}
+	}
+	if client.DeployedStreamCaptures(lane) {
+		t.Fatalf("the listener has read the subjects again, so this test no longer covers a read that left %s out", lane)
+	}
+	info, err = js.StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: lane})
+	if err != nil {
+		t.Fatalf("read %s: %v", bus.Stream, err)
+	}
+	if got := info.State.Subjects[lane]; got != 1 {
+		t.Fatalf("the stream holds %d exceptions on %s, want 1", got, lane)
+	}
+	stored, err := js.GetLastMsg(bus.Stream, lane)
+	if err != nil {
+		t.Fatalf("read the exception on %s: %v", lane, err)
+	}
+	if got, want := stored.Header.Get(natsgo.MsgIdHdr), "exception."+reason+"."+origin; got != want {
+		t.Fatalf("stored message id = %q, want %q", got, want)
+	}
+}
+
+// A send to a stopped session is answered 200 only once the stream holds the message, also while
+// the deployed stream is a newer build's, which this build leaves as it is, that captures no subject
+// of the session's: the send is then refused with the bus's 503, nothing is stored, and the sender
+// keeps the message to send again. A stopped answer tells the sender the message is kept for the
+// session, which reads only what its own consumer holds, so a 200 over a publish that stored nothing
+// - over core NATS, the transport the deployed subjects alone would choose - would lose the message
+// under an answer that says it was kept. The negative control runs first: the same send over a
+// newer build's stream that still captures the subject is the 200 stopped answer with one copy
+// stored, so the refusal is the missing subject's doing and not the rig's.
+func TestASendIsAnsweredStoppedOnlyOnceTheStreamHoldsIt(t *testing.T) {
+	const target = "ses_deployed_stream_drops_agent"
+	subject := contracts.LegacyAgentSubject(target)
+	if !bus.StreamCaptures(subject) {
+		t.Fatalf("this build compiles no subject capturing %s; the test needs one it does", subject)
+	}
+	var dropped []string
+	for _, carried := range bus.StreamCarriedSubjects() {
+		if !bus.SubjectContains(carried, subject) {
+			dropped = append(dropped, carried)
+		}
+	}
+	for _, tc := range []struct {
+		name     string
+		subjects []string
+		status   int
+		stored   uint64
+	}{
+		{"the deployed stream captures the subject", bus.StreamCarriedSubjects(), http.StatusOK, 1},
+		{"the deployed stream captures no subject of it", dropped, http.StatusServiceUnavailable, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			url := testnats.URL(t)
+			deployNewerBuildsStreamOf(t, url, tc.subjects)
+			client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
+			if err != nil {
+				t.Fatalf("connect the listener: %v", err)
+			}
+			t.Cleanup(client.Close)
+			if got, want := client.DeployedStreamCaptures(subject), tc.stored == 1; got != want {
+				t.Fatalf("the listener reads the deployed stream as capturing %s: %t, want %t", subject, got, want)
+			}
+			rig := newKnownSessionRigOn(t, client, url)
+			// An entry recording consumer delivery whose relay subject nothing holds, so the probe
+			// reads the session stopped.
+			if err := rig.deps.sessions.Put(target, session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine", Delivery: session.DeliveryConsumer}); err != nil {
+				t.Fatalf("write the session entry of %s: %v", target, err)
+			}
+
+			answer := rig.send(t, target, nil)
+
+			stored := rig.storedOn(t, subject)
+			t.Logf("status %d, %d copies on %s, body %s", answer.status, stored, subject, answer.raw)
+			if answer.status == http.StatusOK && stored == 0 {
+				t.Fatalf("the send was answered 200 (%s) and the stream holds no copy on %s", answer.raw, subject)
+			}
+			if answer.status != tc.status || stored != tc.stored {
+				t.Fatalf("status %d, body %s, %d copies on %s; want %d and %d", answer.status, answer.raw, stored, subject, tc.status, tc.stored)
+			}
+			if answer.status == http.StatusOK && answer.State != sessionStateStopped {
+				t.Fatalf("state %q, want %s: nothing holds the session's relay subject", answer.State, sessionStateStopped)
+			}
+			if answer.status != http.StatusOK && !strings.HasPrefix(answer.Error, busUnansweredPrefix) {
+				t.Fatalf("the refusal reads %q, want it to open with %q", answer.Error, busUnansweredPrefix)
+			}
+		})
+	}
+}
+
 // connectToNewerBuildsStream starts a server, creates on it the stream a newer build carrying
 // extra leaves (deployNewerBuildsStream), and connects this build's listener client to it, which
 // owns the stream and leaves it as it is.
@@ -167,10 +305,17 @@ func connectToNewerBuildsStream(t *testing.T, extra ...string) *bus.Client {
 }
 
 // deployNewerBuildsStream creates the notifications stream on the server url names as a newer
-// build leaves it: every subject this build carries and extra, under a generation above any this
-// build stamps, so a start of this build that owns the stream leaves it as it is. It carries the
-// stream's identity, which a consumer registration answers with.
+// build leaves it: every subject this build carries and extra (deployNewerBuildsStreamOf).
 func deployNewerBuildsStream(t *testing.T, url string, extra ...string) {
+	t.Helper()
+	deployNewerBuildsStreamOf(t, url, append(bus.StreamCarriedSubjects(), extra...))
+}
+
+// deployNewerBuildsStreamOf creates the notifications stream on the server url names as a newer
+// build carrying subjects leaves it, under a generation above any this build stamps, so a start of
+// this build that owns the stream leaves it as it is, a subject of this build's the newer one left
+// out included. It carries the stream's identity, which a consumer registration answers with.
+func deployNewerBuildsStreamOf(t *testing.T, url string, subjects []string) {
 	t.Helper()
 	conn := testnats.Connect(t, url)
 	defer conn.Close()
@@ -180,7 +325,7 @@ func deployNewerBuildsStream(t *testing.T, url string, extra ...string) {
 	}
 	if _, err := js.AddStream(&natsgo.StreamConfig{
 		Name:      bus.Stream,
-		Subjects:  append(bus.StreamCarriedSubjects(), extra...),
+		Subjects:  subjects,
 		Retention: natsgo.LimitsPolicy,
 		Discard:   natsgo.DiscardNew,
 		Storage:   natsgo.FileStorage,

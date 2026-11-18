@@ -313,10 +313,11 @@ func deliveryExceptionEnvelope(item contracts.Envelope, reason, recipientSession
 // which keeps nothing: the report of a team message reached only a reader subscribed at that
 // moment, where the stream's copy reaches a session's consumer whenever that session comes back.
 // origin, when not empty, identifies the stored message the exception is about (exceptionOrigin):
-// an exception on a lane the deployed stream captures (bus.Client.DeployedStreamCaptures, the
-// judgement its transport takes too) then carries Nats-Msg-Id exception.<reason>.<origin>, so the
-// stream keeps one copy however many listeners raise it for that message, each from its own
-// durable, a lane only a newer build's subjects capture among them.
+// an exception on a lane that takes JetStream (bus.Client.UsesCoreTransport, which judges the
+// subjects the deployed stream captures and those this build stores) then carries Nats-Msg-Id
+// exception.<reason>.<origin>, so the stream keeps one copy however many listeners raise it for
+// that message, each from its own durable, a lane only a newer build's subjects capture among
+// them, and one this build stores that the listener last read the deployed stream without.
 //
 // It runs inside a delivery handler, which has no request deadline of its own, so it keeps the
 // publish's own bound and carries the original payload whatever its size.
@@ -325,7 +326,7 @@ func publishDeliveryException(client *bus.Client, item contracts.Envelope, reaso
 	if err != nil {
 		return err
 	}
-	if origin != "" && client.DeployedStreamCaptures(exception.Topic) {
+	if origin != "" && !client.UsesCoreTransport(exception.Topic) {
 		// The stream keeps one copy however many listeners raise it, each from its own durable.
 		if err := client.PublishStoredAs(context.Background(), exception.Topic, exception, "exception."+reason+"."+origin); err != nil {
 			return fmt.Errorf("publish delivery exception: %w", err)

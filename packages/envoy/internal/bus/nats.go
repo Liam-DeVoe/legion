@@ -413,7 +413,8 @@ func Dial(name string, urls []string, environment func(string) (string, bool), o
 // publisher owns (ConnectOwningStream), and leaves the stream itself alone. It reads the subjects
 // of the deployed stream at connect (at its first connection, with WithConnectInBackground),
 // waiting at most firstStreamSubjectsRead for them, and again every streamSubjectsRefresh, so it
-// publishes each topic on the transport the deployed stream calls for (UsesCoreTransport).
+// publishes each topic on the transport the deployed stream calls for, a topic this build stores
+// keeping JetStream whatever the deployed stream captures (UsesCoreTransport).
 //
 // Every client, from Connect or ConnectOwningStream, connects as the NATS user the environment
 // names: NATS_NKEY_SEED_FILE or NATS_NKEY_SEED (nkeyCredential). An unusable seed is an error
@@ -1626,20 +1627,27 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 	}
 }
 
-// UsesCoreTransport reports whether topic travels over core NATS rather than JetStream: any
-// notification topic the deployed stream does not capture (DeployedStreamCaptures), every role
-// lane and its exception lane among them, which the stream must never retain
-// (TestStreamConfigExcludesRoleLanes) and which take core NATS even from a stream that still
-// captures them. The rest of the core topics are ad-hoc topics such as
+// UsesCoreTransport reports whether topic travels over core NATS rather than JetStream: a
+// notification topic neither this build (StreamCaptures) nor the deployed stream
+// (DeployedStreamCaptures) captures, every role lane and its exception lane among them, which the
+// stream must never retain (TestStreamConfigExcludesRoleLanes) and which take core NATS even from
+// a stream that still captures them. The rest of the core topics are ad-hoc topics such as
 // notifications.lxspec.probe.all, or the exception lane of one. JetStream answers a publish to a
 // subject no stream captures only with "no responders", and not at all while a core subscriber
 // holds the subject, since that subscriber is handed the acknowledgement request: the publish
 // would wait out its whole deadline for an acknowledgement that never comes, after the subscribers
 // had already received the message. A subject outside NotificationTopicPrefix keeps JetStream. The
-// listener's publish route answers 400 to a core topic other than a role lane (ReachesNoSession),
+// listener's publish route answers 400 to a topic that reaches no session (ReachesNoSession),
 // since no session's consumer would hold it.
+//
+// A topic this build captures keeps JetStream whatever the deployed stream captures, since this
+// build must store it: a session reads only what its own consumer holds, so a copy sent over core
+// NATS is kept for nobody, and the publish's nil error would tell its caller that a message no
+// consumer will ever hold was stored. Where the deployed stream, a newer build's that this build
+// leaves as it is, has dropped the topic's subject, the stored publish fails for want of the
+// stream's acknowledgement, and its caller is answered that failure.
 func (c *Client) UsesCoreTransport(topic string) bool {
-	return strings.HasPrefix(topic, NotificationTopicPrefix) && !c.DeployedStreamCaptures(topic)
+	return strings.HasPrefix(topic, NotificationTopicPrefix) && !StreamCaptures(topic) && !c.DeployedStreamCaptures(topic)
 }
 
 // DeployedStreamCaptures reports whether the deployed stream retains a publish to topic for a
@@ -1667,9 +1675,9 @@ func (c *Client) DeployedStreamCaptures(topic string) bool {
 }
 
 // ReachesNoSession reports whether a topic a caller names would deliver to no session at all: a
-// notification topic the deployed stream does not capture (UsesCoreTransport) that is not a role
-// lane. A session receives what its own consumer delivers, which is what the stream stored, so a
-// publish to such a topic reaches nobody, now or later, and an interest in it would be stored and
+// notification topic the deployed stream does not capture (DeployedStreamCaptures) that is not a
+// role lane. A session receives what its own consumer delivers, which is what the stream stored, so
+// a publish to such a topic reaches nobody, now or later, and an interest in it would be stored and
 // deliver nothing. POST /v1/messages/publish refuses such a publish by name, since its sender is
 // there to read the answer, and POST /v1/interests/subscribe leaves such a topic out of the
 // registration and names it in a warning, the rest of the registration stored, since refusing a
@@ -1678,14 +1686,17 @@ func (c *Client) DeployedStreamCaptures(topic string) bool {
 // forwards the message to its holder's agent subject, where the stream stores it for the holder's
 // own consumer.
 //
-// It is a method for the same reason UsesCoreTransport is: the question is what the DEPLOYED
+// It is a method for the same reason DeployedStreamCaptures is: the question is what the DEPLOYED
 // stream captures, not what this binary compiles. While two builds serve one NATS, the stream
 // holds the subjects of both, so a topic only the newer build adds reaches a session's consumer
 // and the older build must not refuse a publish or an interest of it (the subjects this client
 // last read, deployedSubjects). The listener's consumer filter judges the same deployed subjects
-// (DeployedStreamCaptures), so a topic a registration stores is one its consumer filters on.
+// (DeployedStreamCaptures), so a topic a registration stores is one its consumer filters on. It is
+// not UsesCoreTransport's negation: a topic this build stores and the deployed stream does not
+// capture takes JetStream and still reaches no session.
 func (c *Client) ReachesNoSession(topic string) bool {
-	return c.UsesCoreTransport(topic) && !strings.HasPrefix(topic, contracts.RoleTopicPrefix)
+	return strings.HasPrefix(topic, NotificationTopicPrefix) && !c.DeployedStreamCaptures(topic) &&
+		!strings.HasPrefix(topic, contracts.RoleTopicPrefix)
 }
 
 // ErrRefused is returned for an envelope that is refused the same way however often it is
@@ -1830,11 +1841,12 @@ func (c *Client) refused(err error, size int) error {
 // be answered inside, and that is what the Within forms below exist for.
 const publishBound = 5 * time.Second
 
-// Publish routes role lanes, their delivery-exception lanes and every topic the stream does not
-// capture through core NATS (UsesCoreTransport); every notification the stream captures retains
-// JetStream durability. Its signature is an interface method in cistore, outbox and webhook, so a
-// caller that wants JetStream's duplicate verdict calls PublishReportingDuplicate instead, and one
-// that has a deadline of its own calls PublishWithin.
+// Publish routes role lanes, their delivery-exception lanes and every topic no stream captures
+// through core NATS (UsesCoreTransport); every notification this build or the deployed stream
+// captures keeps JetStream durability, and a nil error means the stream stored it. Its signature is
+// an interface method in cistore, outbox and webhook, so a caller that wants JetStream's duplicate
+// verdict calls PublishReportingDuplicate instead, and one that has a deadline of its own calls
+// PublishWithin.
 func (c *Client) Publish(item contracts.Envelope) error {
 	_, err := c.PublishReportingDuplicate(item)
 	return err
@@ -1879,9 +1891,11 @@ func (c *Client) PublishReportingDuplicateWithin(ctx context.Context, item contr
 // rather than its duplicate verdict alone: the sequence, the verdict, and whether the verdict
 // answers a resend (StoredAck.Resent), which can make a duplicate this call's own first copy. A
 // core-transport topic has no acknowledgement, so it answers the zero StoredAck beside
-// PublishCoreContext's error. The listener's send and publish routes publish this way: their
-// sender limit charges nothing for a copy the stream already held, and one for a copy this call
-// may have stored (cmd/listener's senderCharge.published).
+// PublishCoreContext's error; no such topic is one this build stores (UsesCoreTransport), so a nil
+// error for one of those is the stream's acknowledgement of a copy it holds. The listener's send
+// and publish routes publish this way: their sender limit charges nothing for a copy the stream
+// already held, and one for a copy this call may have stored (cmd/listener's
+// senderCharge.published).
 func (c *Client) PublishAckWithin(ctx context.Context, item contracts.Envelope) (StoredAck, error) {
 	if c.UsesCoreTransport(item.Topic) {
 		return StoredAck{}, c.PublishCoreContext(ctx, item.Topic, item)
