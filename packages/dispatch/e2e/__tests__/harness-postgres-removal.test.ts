@@ -41,7 +41,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import * as marks from "../harness-postgres-marks";
-import { servingPostmasters } from "../harness-postgres-removal";
+import { servingPostmasters, stopPostmaster } from "../harness-postgres-removal";
 import {
   hostileMarkKept,
   plantedBin,
@@ -625,6 +625,39 @@ test.skipIf(!onLinux)(
   // The row waits for two starts' sweeps, each a `bun` child, and for the two events between them,
   // each for at most `claimEventMs`; the two sweeps then end in well under a second.
   600_000
+);
+
+// The postmaster `postmasterOf` verified may end by itself before the start's first signal. No
+// `await` is between that read and the signal, so no row can time an end into that window: this
+// row asks `stopPostmaster` of a process that ended already, which is what the window gives it. It
+// must answer that no signal of its reached that process, which keeps "removed the postmaster"
+// off the start's line; of a process that runs, that its signal did, and the process ends.
+test.skipIf(!onLinux)(
+  "v-no-leftover-postgres: a start says it stopped a postmaster only where its own signal reached it: a postmaster that ended before the signal got none",
+  async () => {
+    const sleeper = () => {
+      const child = Bun.spawn(["sleep", "600"], { stdout: "ignore", stderr: "ignore" });
+      return { child, start: marks.startOf(readFileSync(`/proc/${child.pid}/stat`, "utf8")) };
+    };
+    const ended = sleeper();
+    const runs = sleeper();
+    try {
+      ended.child.kill("SIGKILL");
+      await ended.child.exited;
+      expect(await stopPostmaster({ pid: ended.child.pid, start: ended.start }, "ended")).toBe(
+        false
+      );
+      expect(await stopPostmaster({ pid: runs.child.pid, start: runs.start }, "runs")).toBe(true);
+      expect(marks.stillRuns(runs.child.pid, runs.start)).toBe(false);
+    } finally {
+      for (const { child } of [ended, runs]) {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      }
+    }
+  },
+  // The stop polls `/proc` every 50 ms until the sleep that got SIGQUIT has ended, which takes
+  // well under a second; 60 s holds a machine under heavy load.
+  60_000
 );
 
 /** A start's claim of `CLAIM_PATH` (`claimForRemoval`) in a child of this file: it prints the

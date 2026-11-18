@@ -364,15 +364,19 @@ async function removeDirectory(path: string, uid: number): Promise<Removal> {
 
 /** Ends `postmaster`, the process `postmasterOf` verified, by its pid alone: SIGQUIT, and SIGKILL
  *  where it still runs after `postmasterQuitMs`, each only while `/proc` still names that process
- *  by its pid and its start. Throws where it still runs after both. */
-async function stopPostmaster({ pid, start }: Postmaster, data: string): Promise<void> {
+ *  by its pid and its start. Answers whether a signal reached it: a postmaster that ended by
+ *  itself after `postmasterOf` read it, before the first signal, got none, and a line must not say
+ *  that this start removed it. Throws where it still runs after both. */
+export async function stopPostmaster({ pid, start }: Postmaster, data: string): Promise<boolean> {
+  let signalled = false;
   for (const [signal, ms] of [
     ["SIGQUIT", postmasterQuitMs],
     ["SIGKILL", postmasterKillMs],
   ] as const) {
-    if (!stillRuns(pid, start)) return;
+    if (!stillRuns(pid, start)) return signalled;
     try {
       process.kill(pid, signal);
+      signalled = true;
     } catch (error) {
       if (codeOf(error) !== "ESRCH") throw error;
     }
@@ -382,14 +386,15 @@ async function stopPostmaster({ pid, start }: Postmaster, data: string): Promise
   if (stillRuns(pid, start)) {
     throw new Error(`the postmaster ${pid} of ${data} still runs after SIGQUIT and SIGKILL`);
   }
+  return signalled;
 }
 
 /** Ends the postmaster of `data`, where one still serves it, and then removes `data`, under this
  *  start's claim of `data` (`claimForRemoval`), so only the start that holds it signals the
- *  postmaster. Answers whether this call stopped a postmaster, and what came of the directory: a
- *  start that finds `data` claimed by another start stops nothing. Throws, giving `data` back
- *  under its name, where the postmaster fails a check of `postmasterOf` or still runs after its
- *  stop. */
+ *  postmaster. Answers whether this call's signal stopped a postmaster, and what came of the
+ *  directory: a start that finds `data` claimed by another start stops nothing. Throws, giving
+ *  `data` back under its name, where the postmaster fails a check of `postmasterOf` or still runs
+ *  after its stop. */
 async function removePostmaster(
   bin: string,
   data: string,
@@ -399,11 +404,11 @@ async function removePostmaster(
   if (claim.kind === "absent") return { stopped: false, removal: "absent" };
   if (claim.kind === "elsewhere") return { stopped: false, removal: "lost" };
   if (claim.kind === "held") throw heldError(data, claim.claim);
-  let postmaster: Postmaster | undefined;
+  let stopped = false;
   try {
     // The kernel names a working directory by its latest name, the claimed one.
-    postmaster = postmasterOf(claim.path, bin, uid);
-    if (postmaster !== undefined) await stopPostmaster(postmaster, data);
+    const postmaster = postmasterOf(claim.path, bin, uid);
+    if (postmaster !== undefined) stopped = await stopPostmaster(postmaster, data);
   } catch (error) {
     try {
       renameSync(claim.path, data);
@@ -413,7 +418,7 @@ async function removePostmaster(
     throw error;
   }
   removeClaimed(data, claim.path);
-  return { stopped: postmaster !== undefined, removal: "removed" };
+  return { stopped, removal: "removed" };
 }
 
 /** `phrases` as one list for a line: "a", "a and b", "a, b and c". */
