@@ -33,21 +33,32 @@ body: |-
   loop follows and nothing else decides. An attempt may have landed when it got a 5xx or `409
   KEY_IN_FLIGHT`, was cut off for silence (an upload's included), failed in transport after it
   went out (a reset after Dispatch read it), or was ended by the deadline or the caller's stop in
-  flight; a refused connection or a name that did not resolve reached nothing. Once one may have
-  landed, only a 2xx or a refusal Dispatch's keyed layer judged for the key settles the write;
-  every other end — a 3xx, a gateway's page, Dispatch's auth refusal (a 401, `403
-  READ_ONLY_TOKEN`, a second `401 BROKER_TOKEN_NOT_ACTIVE`), a credential that cannot present, no
-  route to the end, the deadline, the caller's stop, or no attempt or time left, a 5xx included —
-  is `DispatchWriteUnsettledError`, carrying the write's key as `key`, with that failure as its
+  flight; a refused connection or a name that did not resolve reached nothing. A 2xx's body is
+  read inside its attempt: a body the deadline or the caller's stop ends is that stop in flight,
+  and a body that breaks off or is not the JSON its `Content-Type` says is asked again under the
+  key. Once an attempt may have landed, only a 2xx whose body was read whole, or a refusal
+  Dispatch's keyed layer judged for the key, settles the write; a 2xx that carries no key back
+  from a Dispatch this process knows runs the keyed layer is no answer of Dispatch's (a captive
+  portal's page) and settles nothing, wherever it comes. Every other end — a 3xx, a gateway's
+  page, Dispatch's auth refusal (a 401, `403 READ_ONLY_TOKEN`, a second `401
+  BROKER_TOKEN_NOT_ACTIVE`), a credential that cannot present, no route to the end, the deadline,
+  the caller's stop, or no attempt or time left, a 5xx included — is
+  `DispatchWriteUnsettledError`, carrying the write's key as `key`, with that failure as its
   cause. Before, a 5xx on every attempt, a 3xx, a cancellation or a refusal after a landing could
   each reach the caller as a plain refusal, which reads as nothing written and invited a resend
-  under a new key that wrote twice. No Dispatch or Envoy request follows a redirect any more
-  (`redirect: "manual"`): a 301, 302 or 303 turned a write's POST into a GET whose 2xx read as the
-  write's answer, and a 307 or 308 sent it again to another origin. A 3xx is now the answer; on a
-  first attempt it says nothing reached Dispatch. The dead token's re-send happens once per write
-  call. The markdown round-trip, a POST that writes nothing, is never read as a write that may
-  have landed, so a 503 and then an old build's no route leave the route absent and the upload
-  goes on, as before this change.
+  under a new key that wrote twice. A credential whose trade goes on (`TradeRetryingError`, a
+  trade still unanswered, a pod's registration still pending) is presented again on the write's
+  pacing; one refused for good ends the write at once with its refusal. No Dispatch or Envoy
+  request follows a redirect any more (`redirect: "manual"`): a 301, 302 or 303 turned a write's
+  POST into a GET whose 2xx read as the write's answer, and a 307 or 308 sent it again to another
+  origin. A 3xx is now the answer, and its error names the origin its `Location` points at, never
+  its path, query or user info; on a first attempt it says nothing reached Dispatch. The Envoy
+  client prints a 3xx's body as one line with the bearer redacted, as the Dispatch client prints
+  a gateway's page. The broker credential's pool identity follows no redirect either: a 307 or
+  308 from Google's security token service would have sent the projected token in its body on to
+  another origin. The dead token's re-send happens once per write call. The markdown round-trip,
+  a POST that writes nothing, is never read as a write that may have landed, so a 503 and then an
+  old build's no route leave the route absent and the upload goes on, as before this change.
 time: 2026-11-17T12:39:04Z
 custom:
     Issue: pr4140

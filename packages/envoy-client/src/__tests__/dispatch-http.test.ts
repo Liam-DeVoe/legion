@@ -740,6 +740,46 @@ describe("DispatchClient", () => {
     expect(notFound).toEqual(expect.objectContaining({ code: "HTTP_404", transient: false }));
   });
 
+  // F5 (the review of 81d860a8f7): a read behind a redirect is told where the redirect pointed,
+  // by origin alone, which is what tells a Dispatch URL to correct. The redirect is not followed,
+  // and the Location's user info, path and query are never printed.
+  test("a read a redirect answers names the origin the redirect points at, and does not follow it", async () => {
+    const { fetchImpl, requests } = fakeFetch([
+      new Response("<html><body>Moved</body></html>", {
+        status: 302,
+        statusText: "Found",
+        headers: {
+          "Content-Type": "text/html",
+          Location: "https://user:secret@elsewhere.test:8443/login?token=abc",
+        },
+      }),
+    ]);
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+
+    const error = await client.getIssueEvents("DSP-1", 4, 10).then(
+      () => {
+        throw new Error("expected a refusal");
+      },
+      (caught: Error) => caught
+    );
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.init.redirect).toBe("manual");
+    expect(error).toBeInstanceOf(DispatchGatewayError);
+    expect(error.message).toStartWith(
+      "GET http://dispatch.test/api/v1/issues/DSP-1/events?after=4&limit=10 answered 302 Found " +
+        "(a redirect to https://elsewhere.test:8443, which this client does not follow) with a body " +
+        `that is not Dispatch's error JSON ("Moved")`
+    );
+    expect(error.message).not.toContain("user:");
+    expect(error.message).not.toContain("token=abc");
+    expect(error.message).not.toContain("/login");
+  });
+
   // A gateway's 5xx can come back after it forwarded a write and Dispatch applied it, so advising
   // a retry there can post a message twice: the write is told to check what took effect. A 408 or
   // 429 is the gateway's own timeout or rate limit, sent before it forwards the request, so the

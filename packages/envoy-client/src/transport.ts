@@ -15,6 +15,7 @@ import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
 import { credentialDeadline, type RequestCredential } from "./bearer";
 import { messageFor, reachedNothing } from "./errors";
+import { excerpt, redirectOrigin } from "./excerpt";
 import { machineID } from "./machine";
 import { streamDeliversNothing } from "./stream-topics";
 import type { TmuxPlace } from "./tmux-place";
@@ -1045,11 +1046,25 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       const { response, body } = outcome;
       if (response.ok) return body;
 
+      // A redirect is never followed (`attemptOnce`), and whatever answered it in the listener's
+      // place chose its body, which can echo the request back: it is printed as the Dispatch
+      // client prints a gateway's page, one redacted line (`excerpt`), with the origin the redirect
+      // pointed at, never whole.
+      let responseBody = body;
+      if (response.status >= 300 && response.status < 400) {
+        const secret = credential?.secret() ?? "";
+        const target = redirectOrigin(response, url, secret);
+        const named =
+          target === undefined
+            ? ""
+            : `a redirect to ${target}, which this client does not follow: `;
+        responseBody = `${named}${excerpt(body, secret)}`;
+      }
       const error = new EnvoyApiError({
         method: init.method ?? "GET",
         url: shown(url),
         status: response.status,
-        responseBody: body,
+        responseBody,
       });
       if (response.status >= 500) {
         options.onUnanswered?.();

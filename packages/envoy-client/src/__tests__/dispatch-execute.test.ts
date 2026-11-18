@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import {
@@ -45,6 +45,7 @@ import {
   DispatchClient,
   DispatchWriteLandedError,
   type DispatchWriteRetry,
+  forgetKeyedLayerMemory,
 } from "../dispatch-http";
 import { followedAsk } from "../dispatch-subscribe";
 import { renderSessionAnswersList } from "../session-answers";
@@ -52,6 +53,11 @@ import { ToolInputError } from "../tool-input-errors";
 import { fakeSearchResponse } from "./fake-search-response";
 
 const makeDirectory = temporaryDirectories("dispatch-execute");
+
+// What one test's Dispatch showed of its keyed layer is that test's: the process memory of it
+// (`KEYED_LAYER_SEEN`) would otherwise tell the next test's fake, which answers without the key as
+// a Dispatch without the layer does, that its 2xx is no answer of Dispatch's.
+beforeEach(forgetKeyedLayerMemory);
 
 function response(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -11708,10 +11714,16 @@ describe("executeDispatchTool", () => {
             );
       }
       posts.push(pathname);
-      return response({
-        artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
-        version: { number: 1 },
-      });
+      // The upload's answer is Dispatch's own, whose keyed layer the 503's /healthz named, so it
+      // carries the request's key back.
+      const key = (init?.headers as Record<string, string> | undefined)?.["Idempotency-Key"] ?? "";
+      return new Response(
+        JSON.stringify({
+          artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
+          version: { number: 1 },
+        }),
+        { headers: { "Content-Type": "application/json", "Idempotency-Key": key } }
+      );
     };
 
     const result = await executeDispatchTool({

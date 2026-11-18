@@ -1620,6 +1620,39 @@ describe("EnvoyClient", () => {
     expect((error as EnvoyApiError).details.status).toBe(status);
   });
 
+  // F6 (the review of 81d860a8f7): whatever answered a redirect in the listener's place chose its
+  // body, and a misconfigured proxy echoes the request back, the bearer with it. The error prints
+  // that body as the Dispatch client prints a gateway's page, one line with the bearer redacted, and
+  // names the origin the redirect pointed at; never the body whole.
+  test("a send a redirect answers prints its body as one redacted line, with the redirect's origin", async () => {
+    const listenerToken = fixtureSecret("listener");
+    const echoed = `<html><body><h1>Moved</h1>\n<p>Authorization: Bearer ${listenerToken}</p>\n${"<p>filler</p>\n".repeat(400)}</body></html>`;
+    const client = createEnvoyClient({
+      baseUrl: "http://listener",
+      credential: bearerCredential(listenerToken),
+      fetch: (async () =>
+        new Response(echoed, {
+          status: 308,
+          headers: {
+            "Content-Type": "text/html",
+            Location: "https://user:pass@elsewhere.test/v1/messages/send?token=abc",
+          },
+        })) as unknown as typeof fetch,
+    });
+    const error = await client
+      .send({ sourceSessionID: "ses_source", targetSessionID: "ses_target", message: "hello" })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(EnvoyApiError);
+    const message = (error as EnvoyApiError).message;
+    expect(message).toStartWith(
+      "POST http://listener/v1/messages/send failed with 308: a redirect to https://elsewhere.test, which this client does not follow: Moved Authorization: Bearer [redacted]"
+    );
+    expect(message).not.toContain(listenerToken);
+    expect(message).not.toContain("\n");
+    expect(message).not.toContain("pass@");
+    expect(message.length).toBeLessThan(400);
+  });
+
   // A refused connection, or a name that does not resolve, reached no listener, so nothing was
   // stored: the send is refused, in the transport's own words, never "may or may not have
   // arrived" with a resend to make.

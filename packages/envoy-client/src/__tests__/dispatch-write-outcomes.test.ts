@@ -1,24 +1,28 @@
 // packages/envoy-client/src/__tests__/dispatch-write-outcomes.test.ts
 //
-// Every way a Dispatch write can end, against the rule the client states: once an attempt may have
-// landed, only a 2xx or a refusal the keyed layer judged for the write's key (the key echoed back)
-// settles the write; every other end is `DispatchWriteUnsettledError` carrying the key. Before
-// anything may have landed, a write that ends is told the event's own error. A redirect is never
-// followed. Every attempt of the write carries one key.
+// Every way a Dispatch write can go, against the rule the client states: once an attempt may have
+// landed, only a 2xx whose body was read whole and that Dispatch's keyed layer answered, or a
+// refusal the keyed layer judged for the write's key (the key echoed back), settles the write;
+// every other end is `DispatchWriteUnsettledError` carrying the key. Before anything may have
+// landed, a write that ends is told the event's own error. A redirect is never followed, and every
+// attempt of the write carries one key.
 //
-// The rule is written here on its own (`rule`), not read from the client's table, and the client
-// is driven through its public surface (`DispatchClient.comment`) with a scripted Dispatch, so the
-// same file runs against a client that has no table at all. Two passes:
+// The rule is written here on its own (`oracle`), from what Dispatch and the secrets broker do,
+// not read from the client's table, and the client is driven through its public surface
+// (`DispatchClient.comment`) with a scripted Dispatch, so the same file runs against a client that
+// has no table at all. The oracle says, for each event the client met, whether it must ask again
+// or stop, and how it ends where it stops; so a client that stops while it may still ask, or asks
+// after an event that ends the write, fails as one that ends wrong does. Two passes:
 // - every (state, event) pair: each state reached through each event that reaches it, then every
 //   event kind, then an event whose ending says which state the write was in;
 // - every sequence of events up to the client's limits (its attempts and its time, the
 //   rolling-release schedule, one dead-token re-send), over one event of each kind of step, with
 //   the concrete event of each kind rotated along the path, and every ending after each prefix.
 // A run whose client asks for an attempt past its script is answered 201, and the pass goes on with
-// every event in that place; a run whose client stops is checked against the rule.
+// every event in that place.
 
 import { beforeEach, expect, test } from "bun:test";
-import { TradeRetryingError } from "@legion/broker-client/token-errors";
+import { SignInEndedError, TradeRetryingError } from "@legion/broker-client/token-errors";
 import {
   type CommentWriteResponse,
   IDEMPOTENCY_KEY_COMMITTED,
@@ -45,22 +49,65 @@ const posted = {
   comment: { id: "comment-1", body: "Shipped." },
 } as unknown as CommentWriteResponse;
 
-/** What a step of a write met, by how the rule reads it. */
+/**
+ * What a step of a write met, by what Dispatch and the broker say it is:
+ * - `applied`: a 2xx whose body arrives whole;
+ * - `refusal`: a refusal Dispatch or something in its place made, which a repeat does not change;
+ * - `committed`: `409 KEY_COMMITTED`, a write Dispatch made whose answer is gone;
+ * - `redirect`: a 3xx;
+ * - `repeatable`: an answer or failure the keyed protocol says to ask again after under the key
+ *   (a 5xx, a 408 or 429, `409 KEY_IN_FLIGHT`, a silence cut, a reset, a refused connection, a 2xx
+ *   whose body broke off or is not the JSON it says, a credential whose trade goes on);
+ * - `dead-token`: Dispatch's `401 BROKER_TOKEN_NOT_ACTIVE`, made before any handler ran;
+ * - `no-route`: an old build's "no route for …", made before any handler ran;
+ * - `credential-final`: a credential that cannot present, for good;
+ * - `stop-in-flight`: the deadline or the caller's stop while an attempt, its body included, is out;
+ * - `stop-wait`: the deadline or the caller's stop between attempts.
+ */
 type Role =
   | "applied"
-  | "judged"
-  | "landed"
-  | "unjudged"
+  | "refusal"
+  | "committed"
   | "redirect"
-  | "may-land"
-  | "no-land"
+  | "repeatable"
   | "dead-token"
   | "no-route"
-  | "no-credential"
-  | "deadline-in-flight"
-  | "cancelled-in-flight"
-  | "deadline"
-  | "cancelled";
+  | "credential-final"
+  | "stop-in-flight"
+  | "stop-wait";
+
+/** How the oracle says a write ends. */
+type Ending =
+  | { readonly as: "resolved" }
+  | { readonly as: "refusal"; readonly status: number }
+  | { readonly as: "landed" }
+  | { readonly as: "unsettled" }
+  | { readonly as: "credential" }
+  | { readonly as: "credential-final" }
+  | { readonly as: "unreachable" }
+  | { readonly as: "deadline" }
+  | { readonly as: "cancelled" };
+
+interface Kind {
+  readonly name: string;
+  readonly role: Role;
+  /** Where it happens: an attempt's answer or failure, a credential's presentation, or a wait (a
+   *  pause, the rolling-release wait, or the presentation that comes first). */
+  readonly at: "attempt" | "credential" | "wait";
+  /** Whether the answer carries the request's key back, as Dispatch's keyed layer answers. */
+  readonly echoed?: boolean;
+  /** Whether it can come after Dispatch committed the write: a 5xx, `KEY_IN_FLIGHT`, a silence
+   *  cut, a reset after the request went out, a 2xx whose body did not arrive whole. */
+  readonly followsCommit?: boolean;
+  /** Whether Dispatch may still be running the write when it comes (a silence cut,
+   *  `KEY_IN_FLIGHT`), which lets the client ask for longer. */
+  readonly running?: boolean;
+  /** The status of the answer it is. */
+  readonly status?: number;
+  /** How a write that ends after it with nothing landed is told: its own error. */
+  readonly own?: Ending;
+  readonly respond?: (key: string, init: RequestInit, run: Run) => Response | Promise<Response>;
+}
 
 /** One run of the client: its script and what the scripted Dispatch saw. */
 interface Run {
@@ -79,17 +126,6 @@ interface Run {
   misplaced?: string;
 }
 
-interface Kind {
-  readonly name: string;
-  readonly role: Role;
-  /** Where it happens: an attempt's answer or failure, a credential's presentation, or a wait (a
-   *  pause, the rolling-release wait, or the presentation that comes first). */
-  readonly at: "attempt" | "credential" | "wait";
-  /** The status of the refusal it is, for an answer. */
-  readonly status?: number;
-  readonly respond?: (key: string, init: RequestInit, run: Run) => Response | Promise<Response>;
-}
-
 function json(body: unknown, status: number, key?: string, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), {
     status,
@@ -101,7 +137,7 @@ function json(body: unknown, status: number, key?: string, headers: Record<strin
   });
 }
 
-const refusal = (status: number, code: string, error: string, key?: string) =>
+const refused = (status: number, code: string, error: string, key?: string) =>
   json({ code, error }, status, key);
 
 function page(status: number, statusText: string): Response {
@@ -123,6 +159,41 @@ function hang(signal: AbortSignal | null | undefined): Promise<Response> {
 const timedOut = () => new DOMException("The operation timed out.", "TimeoutError");
 const stopped = () => new DOMException("The operation was aborted.", "AbortError");
 
+/**
+ * A 201 that carries the key back and whose body starts and then, as the client reads on, meets
+ * `then`: the run's deadline or its caller's stop (the body then fails with the request signal's
+ * reason, as fetch fails a body its signal ends), or a broken connection.
+ */
+function partBody(
+  key: string,
+  init: RequestInit,
+  run: Run,
+  then: "deadline" | "stop" | "broken"
+): Response {
+  const whole = JSON.stringify(posted);
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      init.signal?.addEventListener("abort", () => controller.error(init.signal?.reason), {
+        once: true,
+      });
+      controller.enqueue(new TextEncoder().encode(whole.slice(0, 11)));
+    },
+    pull(controller) {
+      if (then === "broken") {
+        controller.error(
+          Object.assign(new TypeError("The socket connection was closed"), { code: "ECONNRESET" })
+        );
+      } else {
+        run.controller.abort(then === "deadline" ? timedOut() : stopped());
+      }
+    },
+  });
+  return new Response(body, {
+    status: 201,
+    headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+  });
+}
+
 /** A 3xx to another origin. Asked not to follow (`redirect: "manual"`), fetch hands it on. Left to
  *  follow, it does what Bun does: a 301, 302 or 303 sends the request again as a GET, a 307 or 308
  *  sends the POST again, and either answers as the other origin does. */
@@ -135,53 +206,110 @@ function redirect(status: number, init: RequestInit, run: Run): Response {
 }
 
 const KINDS: readonly Kind[] = [
-  { name: "201", role: "applied", at: "attempt", respond: (key) => json(posted, 201, key) },
+  {
+    name: "201",
+    role: "applied",
+    at: "attempt",
+    echoed: true,
+    respond: (key) => json(posted, 201, key),
+  },
+  {
+    name: "201 un-echoed",
+    role: "applied",
+    at: "attempt",
+    echoed: false,
+    respond: () => json(posted, 201),
+  },
+  {
+    name: "200 portal page",
+    role: "applied",
+    at: "attempt",
+    echoed: false,
+    respond: () => page(200, "OK"),
+  },
+  {
+    name: "201 body outlives deadline",
+    role: "stop-in-flight",
+    at: "attempt",
+    respond: (key, init, run) => partBody(key, init, run, "deadline"),
+  },
+  {
+    name: "201 body stopped",
+    role: "stop-in-flight",
+    at: "attempt",
+    respond: (key, init, run) => partBody(key, init, run, "stop"),
+  },
+  {
+    name: "201 body broken",
+    role: "repeatable",
+    at: "attempt",
+    followsCommit: true,
+    respond: (key, init, run) => partBody(key, init, run, "broken"),
+  },
+  {
+    name: "201 body malformed",
+    role: "repeatable",
+    at: "attempt",
+    followsCommit: true,
+    respond: (key) =>
+      new Response(JSON.stringify(posted).slice(0, 11), {
+        status: 201,
+        headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+      }),
+  },
   {
     name: "422 KEY_REUSED",
-    role: "judged",
+    role: "refusal",
     at: "attempt",
+    echoed: true,
     status: 422,
     respond: (key) =>
-      refusal(422, IDEMPOTENCY_KEY_REUSED, "this key was used for another request", key),
+      refused(422, IDEMPOTENCY_KEY_REUSED, "this key was used for another request", key),
   },
   {
     name: "400 judged",
-    role: "judged",
+    role: "refusal",
     at: "attempt",
+    echoed: true,
     status: 400,
-    respond: (key) => refusal(400, "INVALID_REQUEST", "body is required", key),
+    respond: (key) => refused(400, "INVALID_REQUEST", "body is required", key),
   },
   {
     name: "409 KEY_COMMITTED",
-    role: "landed",
+    role: "committed",
     at: "attempt",
-    respond: (key) => refusal(409, IDEMPOTENCY_KEY_COMMITTED, "this key's write landed", key),
+    echoed: true,
+    respond: (key) => refused(409, IDEMPOTENCY_KEY_COMMITTED, "this key's write landed", key),
   },
   {
     name: "401 auth",
-    role: "unjudged",
+    role: "refusal",
     at: "attempt",
+    echoed: false,
     status: 401,
-    respond: () => refusal(401, "UNAUTHORIZED", "a token is required"),
+    respond: () => refused(401, "UNAUTHORIZED", "a token is required"),
   },
   {
     name: "403 READ_ONLY_TOKEN",
-    role: "unjudged",
+    role: "refusal",
     at: "attempt",
+    echoed: false,
     status: 403,
-    respond: () => refusal(403, "READ_ONLY_TOKEN", "this token may only read"),
+    respond: () => refused(403, "READ_ONLY_TOKEN", "this token may only read"),
   },
   {
     name: "403 page",
-    role: "unjudged",
+    role: "refusal",
     at: "attempt",
+    echoed: false,
     status: 403,
     respond: () => page(403, "Forbidden"),
   },
   {
     name: "404 page",
-    role: "unjudged",
+    role: "refusal",
     at: "attempt",
+    echoed: false,
     status: 404,
     respond: () => page(404, "Not Found"),
   },
@@ -203,10 +331,11 @@ const KINDS: readonly Kind[] = [
   },
   {
     name: "503 BROKER_UNAVAILABLE",
-    role: "may-land",
+    role: "repeatable",
     at: "attempt",
+    followsCommit: true,
     respond: () =>
-      refusal(
+      refused(
         503,
         "BROKER_UNAVAILABLE",
         "the secrets broker cannot be reached; try again in a minute"
@@ -214,28 +343,47 @@ const KINDS: readonly Kind[] = [
   },
   {
     name: "503 echoed",
-    role: "may-land",
+    role: "repeatable",
     at: "attempt",
-    respond: (key) => refusal(503, "UNAVAILABLE", "the database is restarting", key),
+    echoed: true,
+    followsCommit: true,
+    respond: (key) => refused(503, "UNAVAILABLE", "the database is restarting", key),
   },
-  { name: "502 page", role: "may-land", at: "attempt", respond: () => page(502, "Bad Gateway") },
+  {
+    name: "502 page",
+    role: "repeatable",
+    at: "attempt",
+    followsCommit: true,
+    respond: () => page(502, "Bad Gateway"),
+  },
   {
     name: "409 KEY_IN_FLIGHT",
-    role: "may-land",
+    role: "repeatable",
     at: "attempt",
+    echoed: true,
+    followsCommit: true,
+    running: true,
     respond: (key) =>
-      refusal(
+      refused(
         409,
         IDEMPOTENCY_KEY_IN_FLIGHT,
         "an earlier request with this key is still running",
         key
       ),
   },
-  { name: "silence", role: "may-land", at: "attempt", respond: (_key, init) => hang(init.signal) },
+  {
+    name: "silence",
+    role: "repeatable",
+    at: "attempt",
+    followsCommit: true,
+    running: true,
+    respond: (_key, init) => hang(init.signal),
+  },
   {
     name: "reset",
-    role: "may-land",
+    role: "repeatable",
     at: "attempt",
+    followsCommit: true,
     respond: () => {
       throw Object.assign(new TypeError("The socket connection was closed"), {
         code: "ECONNRESET",
@@ -244,22 +392,24 @@ const KINDS: readonly Kind[] = [
   },
   {
     name: "429 echoed",
-    role: "no-land",
+    role: "repeatable",
     at: "attempt",
-    status: 429,
-    respond: (key) => refusal(429, "RATE_LIMITED", "too many requests", key),
+    echoed: true,
+    own: { as: "refusal", status: 429 },
+    respond: (key) => refused(429, "RATE_LIMITED", "too many requests", key),
   },
   {
     name: "408 page",
-    role: "no-land",
+    role: "repeatable",
     at: "attempt",
-    status: 408,
+    own: { as: "refusal", status: 408 },
     respond: () => page(408, "Request Timeout"),
   },
   {
     name: "refused",
-    role: "no-land",
+    role: "repeatable",
     at: "attempt",
+    own: { as: "unreachable" },
     respond: () => {
       throw Object.assign(new TypeError("Unable to connect"), { code: "ECONNREFUSED" });
     },
@@ -270,7 +420,7 @@ const KINDS: readonly Kind[] = [
     at: "attempt",
     status: 401,
     respond: () =>
-      refusal(
+      refused(
         401,
         "BROKER_TOKEN_NOT_ACTIVE",
         "the secrets broker does not hold this token as live"
@@ -281,11 +431,11 @@ const KINDS: readonly Kind[] = [
     role: "no-route",
     at: "attempt",
     status: 404,
-    respond: () => refusal(404, "NOT_FOUND", "no route for POST /api/v1/issues/DSP-1/comments"),
+    respond: () => refused(404, "NOT_FOUND", "no route for POST /api/v1/issues/DSP-1/comments"),
   },
   {
     name: "deadline in flight",
-    role: "deadline-in-flight",
+    role: "stop-in-flight",
     at: "attempt",
     respond: (_key, init, run) => {
       run.controller.abort(timedOut());
@@ -294,16 +444,17 @@ const KINDS: readonly Kind[] = [
   },
   {
     name: "stop in flight",
-    role: "cancelled-in-flight",
+    role: "stop-in-flight",
     at: "attempt",
     respond: (_key, init, run) => {
       run.controller.abort(stopped());
       return hang(init.signal);
     },
   },
-  { name: "no credential", role: "no-credential", at: "credential" },
-  { name: "deadline", role: "deadline", at: "wait" },
-  { name: "stop", role: "cancelled", at: "wait" },
+  { name: "no credential", role: "repeatable", at: "credential", own: { as: "credential" } },
+  { name: "no credential final", role: "credential-final", at: "credential" },
+  { name: "deadline", role: "stop-wait", at: "wait", own: { as: "deadline" } },
+  { name: "stop", role: "stop-wait", at: "wait", own: { as: "cancelled" } },
 ];
 
 const kind = (name: string): Kind => {
@@ -318,9 +469,93 @@ function waitStep(run: Run): unknown {
   if (next?.at !== "wait") return undefined;
   run.cursor += 1;
   run.consumed.push(next);
-  const reason = next.role === "deadline" ? timedOut() : stopped();
+  const reason = next.name === "deadline" ? timedOut() : stopped();
   run.controller.abort(reason);
   return reason;
+}
+
+/**
+ * The client's limits as this harness sets them (`drive`'s `writeRetry`): the clock moves only by
+ * its pauses, each of 1; no ask starts past 2 on it (`inFlightWithinMs`), so two pauses in all;
+ * on the plain pacing, one pause a round (`pausesMs: [1]`, `withinMs: 1`); while Dispatch may be
+ * running the write, a pause as long as the clock allows (`inFlightPauseMs`). A round starts with
+ * the write and again after each rolling-release wait, which the client makes three times
+ * (`NO_ROUTE_RETRY_DELAYS_MS`). A dead token is presented afresh once a call.
+ */
+const LIMITS = { pauses: 2, routeWaits: 3, deadTokens: 1 } as const;
+
+/** What the oracle says follows one event: the client asks again, or it stops and ends so. */
+type Decision = { readonly asks: true } | { readonly asks: false; readonly ending: Ending };
+
+const UNSETTLED: Ending = { as: "unsettled" };
+
+/**
+ * The rule, on its own: what follows each of `events`, read from what Dispatch and the secrets
+ * broker say each is (`Kind`), and the write's state, the keyed layer it has seen, and the limits
+ * it has spent.
+ */
+function oracle(events: readonly Kind[]): Decision[] {
+  let landed = false;
+  // Whether this call has seen the keyed layer: an answer that echoed its key, or a `/healthz`
+  // that said so, which the client asks before its first paced resend of an answer without the
+  // echo (the harness's says yes).
+  let known = false;
+  let running = false;
+  let pauses = 0;
+  let roundPauses = 0;
+  let routeWaits = 0;
+  let deadTokens = 0;
+  const end = (ending: Ending): Decision => ({ asks: false, ending });
+  const endAfter = (own: Ending): Decision => end(landed ? UNSETTLED : own);
+  return events.map((event): Decision => {
+    const refusal: Ending = { as: "refusal", status: event.status ?? 0 };
+    switch (event.role) {
+      case "applied":
+        // A 2xx without the key, from a Dispatch known to answer every keyed write with it, is
+        // not Dispatch's answer to this write.
+        if (!event.echoed && known) return end(UNSETTLED);
+        return end({ as: "resolved" });
+      case "refusal":
+        if (event.echoed) return end(refusal);
+        return endAfter(refusal);
+      case "committed":
+        return end({ as: "landed" });
+      case "redirect":
+        return endAfter(refusal);
+      case "credential-final":
+        return endAfter({ as: "credential-final" });
+      case "stop-in-flight":
+        return end(UNSETTLED);
+      case "stop-wait":
+        return endAfter(event.own as Ending);
+      case "dead-token":
+        if (deadTokens < LIMITS.deadTokens) {
+          deadTokens += 1;
+          return { asks: true };
+        }
+        return endAfter(refusal);
+      case "no-route":
+        if (routeWaits < LIMITS.routeWaits) {
+          routeWaits += 1;
+          roundPauses = 0;
+          return { asks: true };
+        }
+        return endAfter(refusal);
+      case "repeatable": {
+        if (event.followsCommit) landed = true;
+        if (event.running) running = true;
+        if (event.echoed) known = true;
+        const allowed = pauses < LIMITS.pauses && (running || roundPauses === 0);
+        if (!allowed) return endAfter(event.own ?? UNSETTLED);
+        pauses += 1;
+        roundPauses += 1;
+        known = true;
+        return { asks: true };
+      }
+      default:
+        throw new Error(`the oracle has no rule for ${String(event.role satisfies never)}`);
+    }
+  });
 }
 
 /** Drives one write through `script`. */
@@ -346,6 +581,9 @@ async function drive(script: readonly Kind[]): Promise<{ run: Run; error?: unkno
       if (next?.at === "credential") {
         run.cursor += 1;
         run.consumed.push(next);
+        if (next.role === "credential-final") {
+          throw new SignInEndedError("https://issuer.test", "person@example.test");
+        }
         throw new TradeRetryingError("the secrets broker answered 503 temporarily_unavailable");
       }
       return { Authorization: "DPoP live" };
@@ -373,8 +611,8 @@ async function drive(script: readonly Kind[]): Promise<{ run: Run; error?: unkno
     return await (next.respond as NonNullable<Kind["respond"]>)(key ?? "", init, run);
   };
   const writeRetry: DispatchWriteRetry = {
-    // Two attempts per round on the write's pacing, a third while Dispatch is still running one,
-    // all within the client's time; the clock moves only by the pauses.
+    // `LIMITS` reads these: one pause a round on the plain pacing, two in all, the clock moving only
+    // by the pauses.
     pausesMs: [1],
     withinMs: 1,
     silenceMs: 1,
@@ -401,77 +639,6 @@ async function drive(script: readonly Kind[]): Promise<{ run: Run; error?: unkno
   } catch (error) {
     return { run, error };
   }
-}
-
-/** How the rule says a write ends. */
-type Ending =
-  | { readonly as: "resolved" }
-  | { readonly as: "refusal"; readonly status: number }
-  | { readonly as: "landed" }
-  | { readonly as: "unsettled" }
-  | { readonly as: "credential" }
-  | { readonly as: "unreachable" }
-  | { readonly as: "deadline" }
-  | { readonly as: "cancelled" };
-
-const UNSETTLED: Ending = { as: "unsettled" };
-
-/**
- * The rule, on its own: how a write that met `events` ends, and the index of the event after which
- * it must ask no more (undefined where its last event asks again, so the client may ask again or
- * stop for want of attempts or time).
- */
-function rule(events: readonly Kind[]): { ending: Ending; endsAt?: number } {
-  let landed = false;
-  let deadTokens = 0;
-  for (const [index, event] of events.entries()) {
-    let ending: Ending | undefined;
-    const refused: Ending = { as: "refusal", status: event.status ?? 0 };
-    switch (event.role) {
-      case "applied":
-        ending = { as: "resolved" };
-        break;
-      case "judged":
-        ending = refused;
-        break;
-      case "landed":
-        ending = { as: "landed" };
-        break;
-      case "unjudged":
-      case "redirect":
-        ending = landed ? UNSETTLED : refused;
-        break;
-      case "may-land":
-        landed = true;
-        break;
-      case "no-land":
-      case "no-route":
-        break;
-      case "dead-token":
-        deadTokens += 1;
-        if (deadTokens > 1) ending = landed ? UNSETTLED : refused;
-        break;
-      case "no-credential":
-        if (!landed) ending = { as: "credential" };
-        break;
-      case "deadline-in-flight":
-      case "cancelled-in-flight":
-        ending = UNSETTLED;
-        break;
-      case "deadline":
-        ending = landed ? UNSETTLED : { as: "deadline" };
-        break;
-      case "cancelled":
-        ending = landed ? UNSETTLED : { as: "cancelled" };
-        break;
-    }
-    if (ending !== undefined) return { ending, endsAt: index };
-  }
-  // The client stopped asking after an event that asks again: no attempt or time was left.
-  if (landed) return { ending: UNSETTLED };
-  const last = events.at(-1);
-  if (last?.name === "refused") return { ending: { as: "unreachable" } };
-  return { ending: { as: "refusal", status: last?.status ?? 0 } };
 }
 
 /** Why `error` (or a resolved write, where it is undefined) is not `ending`; undefined where it is. */
@@ -505,6 +672,10 @@ function mismatch(
       return error instanceof TradeRetryingError
         ? undefined
         : `want the credential's error, got ${got}`;
+    case "credential-final":
+      return error instanceof SignInEndedError
+        ? undefined
+        : `want the credential's final refusal, got ${got}`;
     case "unreachable":
       return !unsettled && String((error as Error)?.message).includes("is unreachable")
         ? undefined
@@ -520,23 +691,42 @@ function mismatch(
   }
 }
 
-/** What one run broke of the rule, if anything. */
+/**
+ * What one run broke of the rule, if anything: a redirect followed; an attempt under another key;
+ * an event after one the oracle says ends the write (the client asked again); the client stopping
+ * after an event the oracle says it asks again after, while the script had nothing more to give
+ * it (it gave up with its limits unspent); or an ending that is not the oracle's.
+ */
 async function judge(script: readonly Kind[]): Promise<{ run: Run; findings: string[] }> {
   const { run, error } = await drive(script);
   const path = run.consumed.map((one) => one.name).join(" > ");
   const findings: string[] = [];
   if (run.misplaced !== undefined) findings.push(`[${path}] harness: ${run.misplaced}`);
   if (run.followed > 0) findings.push(`[${path}] followed a redirect`);
-  if (new Set(run.keys).size > 1)
+  if (new Set(run.keys).size > 1) {
     findings.push(`[${path}] the attempts carried ${new Set(run.keys).size} keys`);
-  const verdict = rule(run.consumed);
-  if (
-    verdict.endsAt !== undefined &&
-    (verdict.endsAt < run.consumed.length - 1 || run.wantedMore)
-  ) {
-    findings.push(`[${path}] asked again after ${run.consumed[verdict.endsAt]?.name}`);
-  } else if (!run.wantedMore) {
-    const wrong = mismatch(verdict.ending, error, run.keys);
+  }
+  const decisions = oracle(run.consumed);
+  const last = decisions.length - 1;
+  for (const [index, decision] of decisions.entries()) {
+    if (index < last && !decision.asks) {
+      findings.push(`[${path}] asked again after ${run.consumed[index]?.name}`);
+      return { run, findings };
+    }
+  }
+  const final = decisions[last];
+  if (final === undefined) {
+    if (!run.wantedMore) findings.push(`[${path}] sent nothing and stopped`);
+  } else if (final.asks) {
+    if (!run.wantedMore) {
+      findings.push(
+        `[${path}] stopped after ${run.consumed[last]?.name} with its limits unspent: ${mismatch(UNSETTLED, error, run.keys) ?? "unsettled"}`
+      );
+    }
+  } else if (run.wantedMore) {
+    findings.push(`[${path}] asked again after ${run.consumed[last]?.name}`);
+  } else {
+    const wrong = mismatch(final.ending, error, run.keys);
     if (wrong !== undefined) findings.push(`[${path}] ${wrong}`);
   }
   return { run, findings };
@@ -546,10 +736,15 @@ async function judge(script: readonly Kind[]): Promise<{ run: Run; findings: str
  *  `nothing-sent`; each that may land, for `may-have-landed`. */
 const STATE_PREFIXES: readonly (readonly Kind[])[] = [
   [],
-  ...KINDS.filter((one) => ["no-land", "dead-token", "no-route"].includes(one.role)).map((one) => [
+  ...KINDS.filter(
+    (one) =>
+      (one.role === "repeatable" && one.followsCommit !== true) ||
+      one.role === "dead-token" ||
+      one.role === "no-route"
+  ).map((one) => [one]),
+  ...KINDS.filter((one) => one.role === "repeatable" && one.followsCommit === true).map((one) => [
     one,
   ]),
-  ...KINDS.filter((one) => one.role === "may-land").map((one) => [one]),
 ];
 
 /** Endings that say which state the write was in when they came. */
@@ -557,7 +752,7 @@ const STATE_PROBES: readonly Kind[] = [kind("401 auth"), kind("302 redirect"), k
 
 beforeEach(forgetKeyedLayerMemory);
 
-test("every (state, event) pair ends as the rule says", async () => {
+test("every (state, event) pair goes as the rule says", async () => {
   const findings = new Set<string>();
   let runs = 0;
   for (const prefix of STATE_PREFIXES) {
@@ -570,35 +765,42 @@ test("every (state, event) pair ends as the rule says", async () => {
       }
     }
   }
-  expect(runs).toBeGreaterThan(1_000);
+  expect(runs).toBeGreaterThan(1_500);
   expect([...findings].slice(0, 40)).toEqual([]);
 }, 120_000);
 
 /** The events of each kind of step that asks again, rotated along a path so each appears. */
 const ASKING_AGAIN: readonly (readonly Kind[])[] = [
-  KINDS.filter((one) => one.role === "may-land"),
-  KINDS.filter((one) => one.role === "no-land"),
+  KINDS.filter((one) => one.role === "repeatable" && one.followsCommit === true),
+  KINDS.filter(
+    (one) => one.role === "repeatable" && one.followsCommit !== true && one.at === "attempt"
+  ),
+  [kind("no credential")],
   [kind("dead token")],
   [kind("no route")],
-  [kind("no credential")],
 ];
 
-/** One ending of each role. */
+/** One ending of each role, and each 2xx the keyed layer decides. */
 const ENDINGS: readonly Kind[] = [
   kind("201"),
+  kind("201 un-echoed"),
+  kind("200 portal page"),
+  kind("201 body outlives deadline"),
+  kind("201 body stopped"),
   kind("422 KEY_REUSED"),
   kind("409 KEY_COMMITTED"),
   kind("401 auth"),
   kind("403 page"),
   kind("308 redirect"),
   kind("304"),
+  kind("no credential final"),
   kind("deadline in flight"),
   kind("stop in flight"),
   kind("deadline"),
   kind("stop"),
 ];
 
-test("every sequence of events up to the client's limits ends as the rule says", async () => {
+test("every sequence of events up to the client's limits goes as the rule says", async () => {
   const findings = new Set<string>();
   let runs = 0;
   let longest = 0;
