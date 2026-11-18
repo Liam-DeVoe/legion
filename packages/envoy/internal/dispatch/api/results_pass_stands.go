@@ -9,9 +9,9 @@ import (
 
 // results_pass_stands.go answers the gate's question for each check of a results read: whether a
 // pass of it stands (passStandsOf), the state of each head a pass must stand at (eachSubjectStands,
-// subjectState), and the commits at which CI's results of a check disagree (ciConflicts). It is
-// a calculation over what comparisonReader.answer has already placed, and reads no database and
-// no GitHub.
+// subjectState), and the commits at which a pass and a fail of a `before_merge` check count
+// (passAndFailCommits). It is a calculation over what comparisonReader.answer has already placed,
+// and reads no database and no GitHub.
 
 // standingCommit is where a result's commit stands while the check's words have not moved
 // and no retraction stands against it. It answers no standing without both comparison fields, and
@@ -32,10 +32,11 @@ func standingCommit(result model.CheckResult) string {
 // with heads asks that of each head, its subjects (headBases), and a pass stands only where one
 // stands at each (eachSubjectStands): one head's fail is never hidden by a pass at another.
 //
-// R7: a commit cannot change, so it holds one answer. Where a check CI proves holds a pass and a
-// fail of CI at one commit, in either order, no pass stands there, and the state is unknown for
-// model.PassStandsReasonPassAndFail (ciConflicts): a result its CI job recorded and the result
-// derived from its check run are both CI's evidence of the check at that commit.
+// R4: a commit cannot change, so it holds one answer. Where a `before_merge` check holds a pass
+// and a fail that count at one commit, in either order and from any role, no pass stands there,
+// and the state is unknown for model.PassStandsReasonPassAndFail (passAndFailCommits). A later
+// pass there does not end that state; a retraction of the wrong result does. This holds with and
+// without subjects, so a read at one commit (`?at=`) gives the same answer.
 //
 // A check whose repository Dispatch could not read answers unknown, since it could compare
 // nothing at all. So does a check CI proves whose check runs GitHub could not be read for: it
@@ -48,7 +49,7 @@ func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassSt
 		(check.CI != nil && check.CI.State == model.CIStateUnread) {
 		return model.CheckPassStands{Answer: model.PassStandsUnknown}
 	}
-	conflicted := ciConflicts(check)
+	conflicted := passAndFailCommits(check)
 	if check.When == docs.CheckWhenBeforeMerge && len(compared.subjects) > 0 {
 		return eachSubjectStands(check, compared, conflicted)
 	}
@@ -126,14 +127,30 @@ func eachSubjectStands(check model.CheckBlock, compared comparison, conflicted m
 
 // subjectState is the state of one subject of a check: yes where a pass stands at its commit,
 // no where only a fail stands there (model.PassSubjectReasonFail) or nothing does
-// (model.PassSubjectReasonNoResult), and unknown where a check CI proves holds a pass and a fail
-// of CI at that commit (R7, ciConflicts). It walks every result that counts at the commit, newest
-// first, so a yes names each role whose pass counts there and the newest pass of each, and a no
-// for a fail names the newest fail (model.PassStandsSubject).
+// (model.PassSubjectReasonNoResult), and unknown where a pass and a fail count at that commit
+// (R4, passAndFailCommits), with the newest pass and the newest fail there as its results. It
+// walks every result that counts at the commit, newest first, so a yes names each role whose pass
+// counts there and the newest pass of each, and a no for a fail names the newest fail
+// (model.PassStandsSubject).
 func subjectState(check model.CheckBlock, basis model.CheckBasis, conflicted map[string]bool) model.PassStandsSubject {
 	state := model.PassStandsSubject{Basis: basis, Answer: model.PassStandsNo, Reason: model.PassSubjectReasonNoResult}
 	if conflicted[basis.Commit] {
 		state.Answer, state.Reason = model.PassStandsUnknown, model.PassStandsReasonPassAndFail
+		var pass, fail *model.CheckResult
+		for index := range check.Results {
+			result := &check.Results[index]
+			if result.CommitSHA != basis.Commit || standingCommit(*result) == "" {
+				continue
+			}
+			newest := &fail
+			if result.Verdict == "pass" {
+				newest = &pass
+			}
+			if *newest == nil || newerResult(*result, **newest) {
+				*newest = result
+			}
+		}
+		state.Results = []string{pass.ID, fail.ID}
 		return state
 	}
 	newestFail := ""
@@ -160,15 +177,26 @@ func subjectState(check model.CheckBlock, basis model.CheckBasis, conflicted map
 	return state
 }
 
-// ciConflicts is each commit at which check, a check CI proves (validCICheck), holds both a pass
-// and a fail that count, retracted by nobody and against the check's words now (R7): the results
-// its CI job recorded and the result Dispatch derives from its check run alike, since each is
-// CI's evidence of the one check at that commit, and a pass of one never hides a fail of the
-// other. A role's result of such a check counts for nothing (not_counted), so it joins nothing.
-// An ordinary check holds none here.
-func ciConflicts(check model.CheckBlock) map[string]bool {
+// newerResult reports whether a was recorded after b: by created_at, then by id, the order the
+// results read lists them in.
+func newerResult(a, b model.CheckResult) bool {
+	if !a.CreatedAt.Equal(b.CreatedAt) {
+		return a.CreatedAt.After(b.CreatedAt)
+	}
+	return a.ID > b.ID
+}
+
+// passAndFailCommits is each commit at which check, a `before_merge` check, holds both a pass and
+// a fail that count, retracted by nobody, counted, and against the check's words now (R4): from
+// any role, in either order, and on a check CI proves the results its CI job recorded and the
+// result Dispatch derives from its check run alike. A role's result of a check CI proves counts
+// for nothing (not_counted), so it joins nothing. A later pass at such a commit does not end its
+// state; a retraction of the wrong result, or a change of the check's words, does. The map is
+// keyed by commit, so results at two commits never meet, and a new head of a pull request has a
+// state of its own. An `after_merge` or `default_branch` check holds none here.
+func passAndFailCommits(check model.CheckBlock) map[string]bool {
 	conflicted := map[string]bool{}
-	if !validCICheck(check) {
+	if check.When != docs.CheckWhenBeforeMerge {
 		return conflicted
 	}
 	verdicts := map[string][2]bool{}

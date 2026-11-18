@@ -4347,6 +4347,8 @@ Each item below names a path with its method and identity, then its purpose.
     A `before_merge` check compared with heads asks that of each of its `subjects`, and reads `yes` only where each subject reads `yes`.
     Each subject is `{basis, answer, reason, roles, results}`: `roles` names each role whose pass counts at that head, for `yes` alone, and `results` holds the ids of the results that decide its state, the newest pass of each of those roles for `yes`, the newest fail for `no` with the reason `fail`, and none for `no_result`.
     The check's own `roles` then name a role only where each subject names it, in the order of the first subject.
+    A pass and a fail that count at one commit of a `before_merge` check make that commit `unknown` with the reason `pass_and_fail`, from any role and in either order, with `results` naming the newest pass and the newest fail there, and no pass stands there; a read with `?at=` gives the same answer.
+    A later pass at that commit does not end it. A retraction of the wrong one ends it, and so does a change of the check's words.
 
   - `currency` is a compatibility field for `dispatch` clients older than pi-envoy 17.1.0, which print it beside each result and read none of the fields above (`api/results_currency.go`).
     It is `current` where `commit_stands` is `at_basis`, `check_words_moved` is false and no retraction stands, and `older` where `commit_stands` is `other_commit` or it is `at_basis` and `check_words_moved` is true.

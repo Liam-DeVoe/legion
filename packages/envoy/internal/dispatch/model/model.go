@@ -1395,8 +1395,8 @@ type BasisLearnedAt struct {
 // open pull request's head, or where the issue has none, the newest merged one's final head and
 // the head of each of its branches a CI job's result names. A pass stands only when one stands at
 // each subject, and Subjects says the state of each. Reason is PassStandsReasonPassAndFail where
-// the answer is unknown because a check CI proves holds a pass and a fail of CI at one commit,
-// recorded by its CI job or derived from its check run (R7).
+// the answer is unknown because a pass and a fail that count at one commit of a `before_merge`
+// check, from any role, make that commit's state unknown (R4).
 type CheckPassStands struct {
 	Answer   string              `json:"answer" enum:"yes,no,unknown"`
 	Roles    []string            `json:"roles,omitempty"`
@@ -1407,10 +1407,12 @@ type CheckPassStands struct {
 // PassStandsSubject is one head a `before_merge` check's pass must stand at, and its state:
 // PassStandsYes where a pass stands there; PassStandsNo with PassSubjectReasonFail where only a
 // fail stands there, or PassSubjectReasonNoResult where nothing does; PassStandsUnknown with
-// PassStandsReasonPassAndFail where a check CI proves holds a pass and a fail of CI at that commit.
-// Roles names each role whose pass counts there, for PassStandsYes alone. Results holds the ids of
-// the results that decide the state: for PassStandsYes the newest pass of each role in Roles, for
-// PassStandsNo with PassSubjectReasonFail the newest fail, and for PassSubjectReasonNoResult none.
+// PassStandsReasonPassAndFail where a pass and a fail that count at one commit of a `before_merge`
+// check, from any role, make that commit's state unknown. Roles names each role whose pass counts
+// there, for PassStandsYes alone. Results holds the ids of the results that decide the state: for
+// PassStandsYes the newest pass of each role in Roles, for PassStandsNo with PassSubjectReasonFail
+// the newest fail, for PassStandsReasonPassAndFail the newest pass and the newest fail, and for
+// PassSubjectReasonNoResult none.
 type PassStandsSubject struct {
 	Basis   CheckBasis `json:"basis"`
 	Answer  string     `json:"answer" enum:"yes,no,unknown"`
@@ -1419,7 +1421,8 @@ type PassStandsSubject struct {
 	Results []string   `json:"results,omitempty"`
 }
 
-// The reasons a pass_stands answer and its subjects give.
+// The reasons a pass_stands answer and its subjects give. PassStandsReasonPassAndFail is a pass
+// and a fail that count at one commit of a `before_merge` check, from any role.
 const (
 	PassStandsReasonPassAndFail = "pass_and_fail"
 	PassSubjectReasonFail       = "fail"
