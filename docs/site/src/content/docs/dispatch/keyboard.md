@@ -31,23 +31,27 @@ foot, opens [Change the keys](#change-the-keys).
 
 `Ctrl+K` opens the palette. With an empty box it lists the actions for the page you are on, each
 with the keys that also run it. Type to filter those actions and to search all of Dispatch. Use
-the arrow keys and `Enter` to pick a row. Some actions are only in the palette, because a single
-key would be too easy to press by mistake: **Close issue**, **Reopen issue**, and
+the arrow keys and `Enter` to pick a row. Some actions have no key, because a single key would be
+too easy to press by mistake. Run them from the palette: **Close issue**, **Reopen issue**, and
 **Set priority P0** to **P3**.
 
-Other actions have no key until you give them one: **Go to Priorities**, **Go to Delivery** and
-**Go to Pipeline** on every page, and in the Inbox the actions for the selected row and the
-ticked rows. These include **Assign to me**, **Hand on**, **Un-snooze**, **Mark read**,
-**Decline**, **Ask back**, **Change answer**, **Skip to the answer**, **Next change**,
-**Select all**, and **Dismiss, or Move to Inbox, the selected items**.
+Other actions have no key either: **Go to Priorities**, **Go to Delivery** and **Go to Pipeline**
+on every page, and in the Inbox the actions for the selected row and the ticked rows. These
+include **Assign to me**, **Hand on**, **Un-snooze**, **Mark read**, **Decline**, **Ask back**,
+**Change answer**, **Skip to the answer**, **Next change**, **Select all**, and
+**Dismiss, or Move to Inbox, the selected items**.
+
+You can give each of these actions a key in [Change the keys](#change-the-keys).
 
 `/` opens the palette for search alone, with your last search selected so that typing replaces
 it. `g p` opens it as a project list.
 
-In the palette, `Ctrl+Enter` (`⌘+Enter` on a Mac) opens the highlighted issue, document, project
-or recent page in a new tab. A `Ctrl`+click or a `⌘`+click on one of these rows does the same. The
-tab you are on stays as it was, and the palette stays open on the same words. On an action row,
-`Ctrl+Enter` does nothing. The palette's foot shows this key with its other keys.
+In the palette, `Ctrl+Enter` (`⌘+Enter` on a Mac) opens the highlighted row in a new tab: a search
+result of any kind (an issue, a document, a comment, an ask or a message), a project or a recent
+page. A `Ctrl`+click or a `⌘`+click opens the row that you click in a new tab. The tab you are on
+stays as it was, and the palette stays open on the same words. An action row has no page. A row
+that makes an issue from your words, or sends them to an agent, has no page either. On these rows,
+`Ctrl+Enter` and a `Ctrl`+click do nothing. The palette's foot shows this key with its other keys.
 
 ## Global
 
@@ -90,7 +94,7 @@ the right column is showing. Below that width, and in the Inbox drawer, they act
 | `a` | Approve the version that the selected approval request shows |
 | `Shift+R` | Request changes on the selected approval request: open the box for your reason, with the cursor in it |
 | `r` | Put the cursor in the reply box of the selected thread |
-| `b` or `h` | Open the snooze menu of the selected ask, or of every ticked ask |
+| `b` or `h` | Open the snooze menu of the selected ask, or the selection bar's snooze menu while asks are ticked |
 | `p` | Open the priority menu of the selected ask's issue |
 | `e` | Dismiss the selected thread (**Move to Inbox** in the Dismissed view) |
 | `x` | Tick or untick the selected row |
@@ -110,7 +114,8 @@ loaded, and nothing while the focus is in an ask's card there. In the Request ch
 `Ctrl+Enter` sends the request, and `Escape` closes the box and sends nothing.
 
 `Enter`, the digits, `b`, `h` and `p` are an ask's keys: a thread row has no options, no answer
-box, no snooze and no priority, so they do nothing on one. `r` and `e` are a thread row's keys. An
+box, no snooze and no priority, so they do nothing on one. While asks are ticked, `b` and `h` open
+the selection bar's snooze menu, also from a thread row. `r` and `e` are a thread row's keys. An
 agent-message row has no `dispatch://` reference, so `y` does nothing on one either.
 
 After you snooze, dismiss, approve, request changes on or answer a row, the row after it is
@@ -139,8 +144,9 @@ issue page.
 
 The snooze menu opens on its first choice, and the priority and status menus on the current
 value. A click on a choice chooses it. A click outside the menu closes it, and nothing changes.
-When the menu closes, the focus goes back to where it was before the menu opened. The foot of each
-menu shows its keys.
+When the menu closes, the focus goes back to where it was before the menu opened. If nothing had
+the focus, or you opened the menu with a click, the focus goes to the menu's control. The foot of
+each menu shows its keys.
 
 The issue page's assignee and repository controls, and an ask's **Asked of** control, open a list
 with a search box. On one of these controls, an arrow key, `Home`, `End`, `Page Up` or `Page Down`
@@ -308,7 +314,7 @@ After `Escape`, the next `Tab` goes back into the document, and the cursor is wh
 
 | Keys | Action |
 | --- | --- |
-| `/` | Move the focus to the **Search agents** box (on this page, `/` does not open search) |
+| `/` | Move the focus to the **Search agents** box. While the page shows that box, `/` does not open search. |
 | `j` / `k` | Next / previous agent |
 | `Enter` | Message the focused agent |
 | `i` | Pick an issue for the message |
@@ -362,13 +368,16 @@ Dispatch refuses a key, and names the action that has it, when:
   shown with its documents, and a project's page with its List, Board or Architecture tab.
 - it is the first key of another action's sequence, or another action's key is its first key.
 
-Dispatch also refuses the digits, the arrow keys, `Enter`, `Escape`, `Tab` and `Space`, which keep
-their own actions, and `Ctrl` with `L`, `N`, `Q`, `R`, `T`, `W` or `Tab`, which the browser keeps.
-An action whose keys are all of that kind shows **Fixed**, and you cannot change it.
+Dispatch also refuses the digits, the arrow keys, `Enter`, `Escape`, `Tab` and `Space`, alone or
+with `Shift`, which keep their own actions. It also refuses `Ctrl` with `L`, `N`, `Q`, `R`, `T`,
+`W` or `Tab`, which the browser keeps. An action whose keys all keep their own actions shows
+**Fixed**, and you cannot change it.
 
-A global key that you give to a page's action works for that action on its page, and the global
-action then does not work there. The list says so under each of the two actions. The Agents page's
-`/` and `i` are two such keys already.
+A global key that you give to a page's action runs that action on its page whenever the action can
+run. Where it cannot, the key runs the global action. The list shows a note under each of the two
+actions. The Agents page's `/` and `i` are two such keys already: `/` opens search while the page
+shows no **Search agents** box, and `i` opens the Inbox drawer while no agent row that can pick an
+issue has the focus.
 
 Dispatch keeps your keys in this browser, for your sign-in. Every open Dispatch tab uses them at
 once, and so do the `?` help, the palette, and the keys the controls show.

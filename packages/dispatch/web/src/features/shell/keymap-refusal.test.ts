@@ -96,8 +96,11 @@ test("the List's and the Board's own o are no duplicate, but both meet the proje
   });
 });
 
-test("a key listed twice, or two keys that begin alike, are refused", () => {
+test("a key listed twice, or a key that is the first press of another key of the action, is refused", () => {
   expect(refusalOf("inbox.snooze", ["q", "q"], NO_PERSON_KEYS).kind).toBe("refused");
   expect(refusalOf("inbox.snooze", ["q", "q w"], NO_PERSON_KEYS).kind).toBe("refused");
+  expect(refusalOf("inbox.snooze", ["q w", "q"], NO_PERSON_KEYS).kind).toBe("refused");
   expect(refusalOf("inbox.snooze", ["Shift++"], NO_PERSON_KEYS).kind).toBe("refused");
+  // Two chords that share a first press are no prefix of each other, as `g i` and `g a` are not.
+  expect(refusalOf("inbox.snooze", ["q w", "q e"], NO_PERSON_KEYS).kind).toBe("accepted");
 });

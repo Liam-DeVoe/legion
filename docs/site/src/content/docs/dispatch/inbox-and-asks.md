@@ -239,10 +239,12 @@ column is showing (on the focused row where there is no second column). A bar ap
 list, at the foot of the window (at its top on a phone), so no row moves. It reads `3 selected`,
 and it holds:
 
-- **Snooze**, while asks are ticked: the same four choices, for every ticked ask. `b` and `h`
-  open it too.
-- **Dismiss**, while threads are ticked: it takes every ticked thread out of the Inbox. In the
-  **Dismissed** view it reads **Move to Inbox**.
+- **Snooze**, while asks are ticked: the same four choices, for each ticked ask that the list
+  shows. It does not snooze a ticked ask in a folded band or behind **Show more**, also after you
+  press **Select all**. `b` and `h` open it too.
+- **Dismiss**, while threads are ticked: it takes each ticked thread that the list shows out of
+  the Inbox. After **Select all**, it takes every thread that **Select all** ticked, also the
+  threads that the list does not show. In the **Dismissed** view it reads **Move to Inbox**.
 - **Select all**, which ticks every row that the list's filters and search match.
 - **Clear selection**.
 

@@ -202,8 +202,9 @@ whitespace before the cut, none of its words are indexed. An issue is always fou
 
 Results are grouped by the issue or document they belong to. Choosing a document result opens the
 document and highlights the first place the words appear. Text typed into a live document can take
-about two seconds to show up in search. `Ctrl+Enter` (`⌘+Enter` on a Mac), or a `Ctrl`+click or
-`⌘`+click, opens the highlighted result in a new tab, and the palette stays open.
+about two seconds to show up in search. `Ctrl+Enter` (`⌘+Enter` on a Mac) opens the highlighted
+result in a new tab, and a `Ctrl`+click or a `⌘`+click opens the result that you click in a new
+tab. The palette stays open.
 
 [Keyboard shortcuts](/legion/dispatch/keyboard/#the-help-and-the-palette) covers the palette's
 other modes.

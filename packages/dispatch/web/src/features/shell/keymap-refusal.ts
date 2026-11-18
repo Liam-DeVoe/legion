@@ -137,8 +137,11 @@ export function refusalOf(
     if (chord.some(isBrowsers)) return refused(`${key} is the browser's own key.`);
     for (const earlier of taken) {
       if (sameChord(earlier.chord, chord)) return refused(`${key} is listed twice.`);
-      if (isStrictPrefix(earlier.chord, chord) || isStrictPrefix(chord, earlier.chord)) {
-        return refused(`${earlier.key} and ${key} of ${entry.label} begin with the same press.`);
+      if (isStrictPrefix(earlier.chord, chord)) {
+        return refused(`${earlier.key} is the first press of ${key}, both keys of ${entry.label}.`);
+      }
+      if (isStrictPrefix(chord, earlier.chord)) {
+        return refused(`${key} is the first press of ${earlier.key}, both keys of ${entry.label}.`);
       }
     }
     taken.push({ chord, key });
