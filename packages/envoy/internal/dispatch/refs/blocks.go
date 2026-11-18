@@ -596,7 +596,7 @@ func IndexBlocks(
 	}
 	write.Tuples = append(write.Tuples, moves...)
 	sources := authoredSourcesOf(markdown, nodes, located, pointers)
-	placement, parents, err := reconcileBlockParents(ctx, tx, artifactID, document, nodes, fits, typed.askParents, nil, sources)
+	placement, parents, err := reconcileBlockParents(ctx, tx, artifactID, document, nodes, fits, fragments, typed.askParents, nil, sources)
 	if err != nil {
 		return nil, false, graphstore.Uncaused{}, false, err
 	}

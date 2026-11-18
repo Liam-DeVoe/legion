@@ -1773,14 +1773,42 @@ func (p *dispatchProcess) openEditor(t *testing.T, artifactID, want string) *doc
 }
 
 // openEditorAs is openEditor for login, the person the tab is signed in as (X-Dispatch-User, the
-// identity these processes trust).
+// identity these processes trust). The tab binds the fragment the artifact read answers, as the
+// page does (artifactFragment).
 func (p *dispatchProcess) openEditorAs(t *testing.T, login, artifactID, want string) *docstest.Peer {
 	t.Helper()
+	fragment := p.artifactFragment(t, artifactID)
 	editor := docstest.Dial(t, p.documentURL(artifactID), http.Header{"X-Dispatch-User": []string{login}}, artifactID, crdt.New())
+	editor.Fragment = fragment
 	if err := editor.WaitForText(markdown, want, 10*time.Second); err != nil {
 		t.Fatalf("%v:\n%s", err, p.Output.String())
 	}
 	return editor
+}
+
+// artifactFragment is the fragment of its room GET /api/v1/artifacts/{id} answers for artifactID
+// on this process (model.Artifact.Fragment), the one a page's editor binds (packages/dispatch's
+// fragmentOf): the document's own fragment of its issue's room for a converted document, the
+// room's own where the read answers none.
+func (p *dispatchProcess) artifactFragment(t *testing.T, artifactID string) string {
+	t.Helper()
+	var artifact model.Artifact
+	if answer := p.call(t, http.MethodGet, "/api/v1/artifacts/"+artifactID, "", http.StatusOK); json.Unmarshal(answer, &artifact) != nil {
+		t.Fatalf("decode the artifact %s a tab binds: %s", artifactID, answer)
+	}
+	if artifact.Fragment == "" {
+		return model.ArtifactFragmentOwn
+	}
+	return artifact.Fragment
+}
+
+// editorFragment is the fragment of its room's Yjs document editor edits: the one its dial bound
+// (docstest.Peer.Fragment), the room's own where it bound none.
+func editorFragment(editor *docstest.Peer) string {
+	if editor.Fragment == "" {
+		return model.ArtifactFragmentOwn
+	}
+	return editor.Fragment
 }
 
 // documentURL is the address of the document's socket on this process, at the schema version the
@@ -1789,19 +1817,20 @@ func (p *dispatchProcess) documentURL(artifactID string) string {
 	return "ws://127.0.0.1:" + strconv.Itoa(p.port) + "/ws/doc/" + artifactID + "?schema_version=" + strconv.Itoa(pmdoc.SchemaVersion())
 }
 
-// markdown renders the editor's copy of the document, read under its lock while the room's updates
-// apply, or "" while the copy holds no document it can render.
+// markdown renders the editor's copy of the document, its own fragment (editorFragment), read
+// under its lock while the room's updates apply, or "" while the copy holds no document it can
+// render.
 func markdown(editor *docstest.Peer) string {
-	return renderDocument(editor.Doc)
+	return renderDocument(editor.Doc, editorFragment(editor))
 }
 
-// renderDocument renders doc's Proof document, read under its lock, or "" while doc holds no
-// document it can render.
-func renderDocument(doc *crdt.Doc) string {
-	fragment := doc.GetXmlFragment("prosemirror")
+// renderDocument renders the Proof document doc's fragment named fragment holds, read under its
+// lock, or "" while doc holds no document there it can render.
+func renderDocument(doc *crdt.Doc, fragment string) string {
+	held := doc.GetXmlFragment(fragment)
 	var rendered string
 	doc.Transact(func(txn *crdt.Transaction) {
-		tree, err := pmdoc.ReadInTransaction(txn, fragment)
+		tree, err := pmdoc.ReadInTransaction(txn, held)
 		if err != nil {
 			return
 		}
@@ -1814,7 +1843,7 @@ func renderDocument(doc *crdt.Doc) string {
 // transaction, and sends the room the update it made.
 func replaceText(t *testing.T, editor *docstest.Peer, old, replacement string) {
 	t.Helper()
-	fragment := editor.Doc.GetXmlFragment("prosemirror")
+	fragment := editor.Doc.GetXmlFragment(editorFragment(editor))
 	var changeErr error
 	if _, err := editor.Send(func(txn *crdt.Transaction) {
 		tree, err := pmdoc.ReadInTransaction(txn, fragment)

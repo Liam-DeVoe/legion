@@ -52,14 +52,15 @@ const (
 )
 
 // artifactColumns is the canonical artifact column list scanArtifact reads, over the artifacts
-// table unaliased. role is read through coalesce because model.Artifact carries it as "" when the
-// document plays no role, and, for a document of an issue born converted, which carries none in
-// its row, from its node's query value (graphstore.ArtifactQueryRoleSQL: decision 2 of
-// dispatch://INFRA-1253's plan, such a document writes no role; R8 keeps the read's role);
-// retired_at as whether it is set (model.Artifact.Retired); and last the room the document is
-// edited in, its document_rooms row's room or its own id (model.Artifact.Room, refs.DocumentRoomSQL).
-var artifactColumns = `id::text, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, coalesce(role, ` +
-	graphstore.ArtifactQueryRoleSQL + `, ''), created_by, created_at, retired_at is not null, ` +
+// table unaliased. role is read beside its node's query value (graphstore.ArtifactQueryRoleSQL),
+// and scanArtifact takes the row's own where it holds one: model.Artifact carries it as "" when
+// the document plays no role, and a document of an issue born converted carries none in its row
+// but plays its node's query (decision 2 of this branch's plan; R8 keeps the read's role), the
+// issue's decisions query among them (model.Artifact.DecisionsQuery); retired_at as whether it is
+// set (model.Artifact.Retired); and last the room the document is edited in, its document_rooms
+// row's room or its own id (model.Artifact.Room, refs.DocumentRoomSQL).
+var artifactColumns = `id::text, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, role, ` +
+	graphstore.ArtifactQueryRoleSQL + `, created_by, created_at, retired_at is not null, ` +
 	`(` + refs.DocumentRoomSQL("artifacts.id") + `)::text`
 
 func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
@@ -653,6 +654,9 @@ func (s *server) storeArtifact(
 			refusal = documentRetiredRefusal(artifact)
 		}
 		s.writeHandlerError(w, refusal)
+		return
+	} else if artifact.DecisionsQuery {
+		s.writeHandlerError(w, decisionsQueryRefusal(artifact))
 		return
 	} else if artifact.Kind != kind {
 		s.writeHandlerError(w, artifactKindMismatch(input.name, artifact, kind))
@@ -1439,6 +1443,10 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, documentRetiredRefusal(artifact))
 		return
 	}
+	if artifact.DecisionsQuery {
+		s.writeHandlerError(w, decisionsQueryRefusal(artifact))
+		return
+	}
 	if err := refuseNodesOfOtherIssues(r.Context(), s.deps.Store.Pool, artifact, input.Ops); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -2069,25 +2077,36 @@ func loadArtifactRowByID(ctx context.Context, q queryer, id string) (model.Artif
 
 // scanArtifact reads artifactColumns. A session-owned artifact's project is "". The fragment of
 // the room that holds the document is its own id where its room is another (an issue room's
-// tree), and the room's own fragment otherwise, as docs' fragmentOf names it.
+// tree), and the room's own fragment otherwise, as docs' fragmentOf names it. The issue's
+// decisions query - a document whose node is a query node of query `decisions` and which no
+// document_rooms row joins to a room, as docs.DecisionsQuerySQL reads it - is held by no fragment
+// and answers none.
 func scanArtifact(row pgx.Row) (model.Artifact, error) {
 	var artifact model.Artifact
-	var project *string
+	var project, role, queryRole *string
 	var createdBy []byte
 	if err := row.Scan(
 		&artifact.ID, &artifact.IssueKey, &project, &artifact.SessionID, &artifact.RefKey, &artifact.Slug,
-		&artifact.Name, &artifact.Kind, &artifact.Primary, &artifact.Role, &createdBy, &artifact.CreatedAt, &artifact.Retired,
+		&artifact.Name, &artifact.Kind, &artifact.Primary, &role, &queryRole, &createdBy, &artifact.CreatedAt, &artifact.Retired,
 		&artifact.Room,
 	); err != nil {
 		return model.Artifact{}, err
 	}
 	artifact.Project = deref(project)
+	artifact.Role = deref(queryRole)
+	if role != nil {
+		artifact.Role = *role
+	}
 	if err := json.Unmarshal(createdBy, &artifact.CreatedBy); err != nil {
 		return model.Artifact{}, fmt.Errorf("decode artifact author: %w", err)
 	}
-	artifact.Fragment = model.ArtifactFragmentOwn
-	if artifact.Room != artifact.ID {
+	artifact.DecisionsQuery = artifact.Kind == "doc" && deref(queryRole) == graphstore.QueryDecisions && artifact.Room == artifact.ID
+	switch {
+	case artifact.DecisionsQuery:
+	case artifact.Room != artifact.ID:
 		artifact.Fragment = artifact.ID
+	default:
+		artifact.Fragment = model.ArtifactFragmentOwn
 	}
 	return artifact, nil
 }
@@ -2387,6 +2406,17 @@ func decisionsAreNodes(target artifactTarget, name string) error {
 	return errorf(http.StatusConflict, codeDecisionsAreNodes,
 		"%q names a decisions document, and decisions are nodes now: write each decision as a `decision` block in the `## Decisions` part of the issue's spec (dispatch://%s/spec), with shaped, from_ask and uncertainty as it needs",
 		name, *target.IssueKey)
+}
+
+// decisionsQueryRefusal is the 409 refusing a write of new text to artifact, its issue's decisions
+// query node (model.Artifact.DecisionsQuery): an upload under its name or slug, and an edit by its
+// id or its slug. Its versions render the issue's decisions, which are nodes of the issue's
+// documents, and no fragment of any room holds it, so text written into it would be read by
+// nobody; a socket on it is refused with the same code (docs.DecisionsQuerySQL).
+func decisionsQueryRefusal(artifact model.Artifact) error {
+	return errorf(http.StatusConflict, codeDecisionsQuery,
+		"%s (%s, %s) is the issue's decisions query: it renders the issue's decisions and takes no text; write each decision as a `decision` block in the `## Decisions` part of the issue's spec",
+		artifact.Name, artifact.Slug, artifact.ID)
 }
 
 // documentRetiredRefusal is the 409 refusing a write of new text to artifact, a retired document

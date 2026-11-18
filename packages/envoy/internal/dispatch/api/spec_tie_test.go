@@ -224,6 +224,12 @@ func TestAShapedTupleTiesADecisionToEachSpecNodeItShaped(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	ctx := context.Background()
+	// Held unconverted: the tie's far end is the spec node its pointer names, read here at the
+	// spec's own address (`<KEY>/spec#<block>`) and through the backlink read of that pointer. On an
+	// issue born converted the spec's blocks are the room's nodes, `<tree ref_key>#<block>`, which a
+	// pointer reaches only through T17's resolution of an address (moved_to, then document_rooms)
+	// in this branch's plan; the test moves back to a converted issue with T17.
+	holdIssuesUnconverted(t, database)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", ":::requirement{#r1}\nOne.\n:::\n\n:::requirement{#r2}\nTwo.\n:::\n\n"+
 		":::requirement{#r3}\nThree.\n:::\n\n:::requirement{#r4}\nFour.\n:::\n\n:::requirement{#r5}\nFive.\n:::\n")

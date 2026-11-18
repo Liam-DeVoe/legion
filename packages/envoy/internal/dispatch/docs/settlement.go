@@ -1001,12 +1001,14 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 
 // roomVersion is the latest markdown version a document of an issue room holds, as
 // readRoomVersions reads it: its number, 0 for a document that holds none, its markdown and its
-// row's created_at, with the document's name, which its version event carries.
+// row's created_at, with the document's name, which its version event carries, and whether the
+// document is retired (RetireDocument), whose fragment the room's settlement versions no more.
 type roomVersion struct {
 	number   int
 	markdown string
 	at       time.Time
 	name     string
+	retired  bool
 }
 
 // readRoomVersions reads, in one statement through q, the latest markdown version of each of
@@ -1015,7 +1017,8 @@ type roomVersion struct {
 // dispatch://INFRA-1253's plan), and a block of the room records a version of its own document.
 func readRoomVersions(ctx context.Context, q Queryer, documents []string) ([]roomVersion, error) {
 	rows, err := q.Query(ctx, `
-		select coalesce(v.number, 0), coalesce(v.markdown, ''), coalesce(v.created_at, a.created_at), a.name
+		select coalesce(v.number, 0), coalesce(v.markdown, ''), coalesce(v.created_at, a.created_at), a.name,
+		       a.retired_at is not null
 		from unnest($1::uuid[]) with ordinality as d (id, position)
 		join artifacts a on a.id = d.id
 		left join lateral (
@@ -1029,7 +1032,7 @@ func readRoomVersions(ctx context.Context, q Queryer, documents []string) ([]roo
 	}
 	versions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (roomVersion, error) {
 		var version roomVersion
-		err := row.Scan(&version.number, &version.markdown, &version.at, &version.name)
+		err := row.Scan(&version.number, &version.markdown, &version.at, &version.name, &version.retired)
 		return version, err
 	})
 	if err != nil {
@@ -1059,7 +1062,8 @@ type roomFragment struct {
 // each whose rendering differs from that document's latest version where the room's content
 // changed since the tree artifact's latest version (contentChanged): a settlement of an issue
 // room writes one version of each document whose fragment it changed, and no version of the room
-// as a whole (T12a of dispatch://INFRA-1253's plan).
+// as a whole (T12a of this branch's plan). A retired document takes no new text (RetireDocument),
+// so its fragment is never marked changed, whatever a peer of the room typed into it.
 func (st *settlement) roomFragments(ctx context.Context, contentChanged bool) ([]roomFragment, error) {
 	documents := st.layout.documents(st.room)
 	parts := st.layout.parts(st.versioned, st.versionedCounts)
@@ -1078,7 +1082,7 @@ func (st *settlement) roomFragments(ctx context.Context, contentChanged bool) ([
 		}
 		fragments[index] = roomFragment{
 			document: document, tree: parts[index], markdown: markdown, offsets: offsets, latest: latest[index],
-			changed: contentChanged && (latest[index].number == 0 || markdown != latest[index].markdown),
+			changed: contentChanged && !latest[index].retired && (latest[index].number == 0 || markdown != latest[index].markdown),
 		}
 	}
 	return fragments, nil

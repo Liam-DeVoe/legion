@@ -138,6 +138,18 @@ func (d indexedDocument) top() (kind, id string) {
 	return graphstore.KindArtifact, d.refKey
 }
 
+// topOf is the node block hangs under at the top level: for a block of an issue room that another
+// document's fragment holds (fragmentDocuments), that document's top - the issue's node for a
+// block of the issue's spec, Verification or plan document, and the document's own node for an
+// upload's, as the store census reads a row's top off its document (DocumentTopSQL over
+// BlockDocumentSQL) - and the indexed document's own top for every other block.
+func (d indexedDocument) topOf(block model.ArtifactBlock, fragments map[string]fragmentDocument) (kind, id string) {
+	if held, ok := fragments[block.Document]; ok {
+		return indexedDocument{refKey: held.refKey, issue: d.issue, band: held.band}.top()
+	}
+	return d.top()
+}
+
 // The bands a block's rank stands in (D15 of dispatch://INFRA-1253's plan): its first byte says
 // which document the block is in, and the rest is rank.Between inside that band. So under one
 // parent the spec's blocks come first, then the tree's own fragment's, then the Verification
@@ -194,9 +206,18 @@ func DocumentTopSQL(alias string) string {
 // room's rows carry each document's own version numbers under one key. A block's node address,
 // and every pointer at it, keep the row's own artifact.
 func BlockDocumentSQL(alias string) string {
+	return BlockDocumentOrSQL(alias, alias+".artifact_id")
+}
+
+// BlockDocumentOrSQL is BlockDocumentSQL with fallback, SQL text answering a uuid, in place of the
+// row's own artifact where no issue_room_blocks row names the block: a reader that found a block's
+// node in a document of an issue room before the room's block index reached it - a document that
+// owes that index, whose typed nodes the typed-node pass placed in it (IndexDecisionNodes) -
+// passes that document, which is the only record of it, and the row's own artifact after it.
+func BlockDocumentOrSQL(alias, fallback string) string {
 	return `coalesce((select room_block.document_id from issue_room_blocks room_block
 		where room_block.tree_artifact_id = ` + alias + `.artifact_id and room_block.block_id = ` + alias + `.block_id), ` +
-		alias + `.artifact_id)`
+		fallback + `)`
 }
 
 // AskBlockDocumentSQL is the document holding the block of the ask aliased alias, as SQL text
@@ -577,6 +598,10 @@ func (p parentProbe) position(position int) int {
 // block the render does not place: its author does (placeAuthored, D4 of dispatch://INFRA-1253's
 // plan), and one whose part_of stands is no part of the comparison at all.
 //
+// In an issue room each fragment's top-level blocks hang under their own document's top
+// (indexedDocument.topOf, over fragments, the documents whose fragments hold the blocks): an
+// upload's under the upload's node, as an upload that is its own room hangs them.
+//
 // The comparison is the read's own (heldBlockParentDifferences): the parent the render gives
 // travels with the probe, so a document nothing moved reads back no row at all rather than one
 // row per block for Go to compare. Both statements name a block by its id and build its node
@@ -606,6 +631,7 @@ func reconcileBlockParents(
 	document indexedDocument,
 	nodes []model.ArtifactBlock,
 	fits []bool,
+	fragments map[string]fragmentDocument,
 	askParents map[string]string,
 	only map[string]struct{},
 	authored authoredSources,
@@ -645,6 +671,14 @@ func reconcileBlockParents(
 		return blockPlacement{}, nil, fmt.Errorf("place the authored nodes of %s: %w", artifactID, err)
 	}
 	topKind, topID := document.top()
+	for index, block := range placed {
+		if parents[index] >= 0 || authoredType(nodes[block].Type) || placement.ends != nil && placement.ends[index] != nil {
+			continue
+		}
+		if kind, id := document.topOf(nodes[block], fragments); kind != topKind || id != topID {
+			placement.end(index, blockFarEnd{kind: kind, id: id})
+		}
+	}
 	probe := placement.probe(parentIDs, kept)
 	differences, err := heldBlockParentDifferences(ctx, tx, refKey, topKind, topID, probe)
 	if err != nil {

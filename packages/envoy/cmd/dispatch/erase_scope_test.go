@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/grapherase"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -34,13 +35,14 @@ func listed(erasure *grapherase.Erasure, parts ...string) bool {
 // blockWhoseTextIs is the node address of the block of document whose stored text is exactly
 // text, as ref_key, '#' and the block id (migration 0121), after reading that the store holds its
 // node. It is read by the whole text and not by a search inside it, so a sibling block that
-// repeats the words is never the block it answers.
+// repeats the words is never the block it answers. A converted document's blocks are read under
+// its issue's room, as blockHolding reads them.
 func blockWhoseTextIs(t *testing.T, database *store.Store, document, text string) string {
 	t.Helper()
 	var address string
 	if err := database.Pool.QueryRow(context.Background(), `
 		select a.ref_key || '#' || t.block_id from document_block_texts t join artifacts a on a.id = t.artifact_id
-		where t.artifact_id = $1::uuid and t.text = $2
+		where t.artifact_id = `+refs.DocumentRoomSQL("$1::uuid")+` and `+refs.BlockDocumentSQL("t")+` = $1::uuid and t.text = $2
 		  and exists (select 1 from graph_nodes n where n.kind = 'block' and n.id = a.ref_key || '#' || t.block_id)
 		order by t.version desc limit 1`, document, text).Scan(&address); err != nil {
 		t.Fatalf("read the block node of %s whose text is %q: %v", document, text, err)

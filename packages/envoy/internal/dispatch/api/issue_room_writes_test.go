@@ -2,12 +2,15 @@ package api
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	gws "github.com/gorilla/websocket"
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -193,8 +196,8 @@ func TestAnIssueIsBornConvertedOnlyWhileEveryLiveProcessListsTheIssueRoom(t *tes
 		t.Errorf("the decisions query's row holds role %v and version 1 %q, want no role and an empty version", decisionsRole, decisionsMarkdown)
 	}
 	readDecisions := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+decisions, nil, "alice")
-	if artifact := decodeBody[model.Artifact](t, readDecisions); artifact.Role != graphstore.QueryDecisions || artifact.Room != decisions || artifact.Fragment != model.ArtifactFragmentOwn {
-		t.Errorf("the decisions query reads role %q room %q fragment %q, want role decisions, its own room and fragment", artifact.Role, artifact.Room, artifact.Fragment)
+	if artifact := decodeBody[model.Artifact](t, readDecisions); artifact.Role != graphstore.QueryDecisions || artifact.Room != decisions || artifact.Fragment != "" {
+		t.Errorf("the decisions query reads role %q room %q fragment %q, want role decisions, no room of an issue and no fragment", artifact.Role, artifact.Room, artifact.Fragment)
 	}
 	var selected int
 	if err := database.Pool.QueryRow(ctx, `select count(*) from decisions_documents(include_retired => true) where issue_key = $1`, converted.Key).Scan(&selected); err != nil {
@@ -570,5 +573,71 @@ func TestACopyOfASpecUploadedIntoItsConvertedIssueOpensItsOwnAsks(t *testing.T) 
 			t.Fatalf("the copy never opened an ask of its own: %#v", asks)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// An issue's decisions query (D6 of this branch's plan) renders the issue's decisions and is held
+// by no fragment of any room, so nothing writes text into it: an upload under its name and an edit
+// by its id and by its slug are 409 DECISIONS_QUERY and write no version and no update, the
+// artifact read answers it no fragment, and a socket on it is refused 409 DECISIONS_QUERY before
+// any room opens.
+func TestTheDecisionsQueryTakesNoUploadNoEditAndNoSocket(t *testing.T) {
+	ctx := context.Background()
+	handler, database, deps := newTestServer(t, testServerOptions{browserPeers: true})
+	createRoomProject(t, handler, "QRY")
+	issue, tree := createRoomIssue(t, handler, database, "QRY", "The decisions query", "The spec.\n", "")
+	if tree == "" {
+		t.Fatalf("issue %s holds no tree, want it born converted", issue.Key)
+	}
+	var id, slug string
+	if err := database.Pool.QueryRow(ctx, `select id::text, slug from artifacts where issue_key = $1 and name = $2`,
+		issue.Key, issueDecisionsName).Scan(&id, &slug); err != nil {
+		t.Fatalf("read the decisions query of %s: %v", issue.Key, err)
+	}
+	// Its empty version 1 is indexed in the create's own transaction, so no reconciliation owes it.
+	if indexed := blockIndexVersion(t, database, id); indexed == nil || *indexed != 1 {
+		t.Errorf("the decisions query's blocks stand at %v after its create, want version 1, indexed by the create", indexed)
+	}
+	refused := func(write string, response *httptest.ResponseRecorder) {
+		t.Helper()
+		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), codeDecisionsQuery) {
+			t.Errorf("%s of the decisions query: status=%d body=%s, want 409 %s", write, response.Code, response.Body.String(), codeDecisionsQuery)
+		}
+	}
+	refused("an upload under its name", dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts",
+		map[string]any{"name": issueDecisionsName, "content": "Text written into the query.\n"}, "alice"))
+	ops := map[string]any{"ops": []map[string]any{{"op": "insert", "after": "end", "markdown": "More."}}, "summary": "edit"}
+	refused("an edit by its slug", dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts/"+slug+"/edits", ops, "alice"))
+	refused("an edit by its id", dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+id+"/edits", ops, "alice"))
+	var versions, updates int
+	if err := database.Pool.QueryRow(ctx, `
+		select (select count(*) from artifact_versions where artifact_id = $1::uuid),
+		       (select count(*) from doc_updates where artifact_id = $1::uuid)`, id).Scan(&versions, &updates); err != nil {
+		t.Fatalf("read what the decisions query holds: %v", err)
+	}
+	if versions != 1 || updates != 0 {
+		t.Errorf("the decisions query holds %d versions and %d updates after the refused writes, want its version 1 alone and no update", versions, updates)
+	}
+	if read := decodeBody[model.Artifact](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+id, nil, "alice")); read.Fragment != "" {
+		t.Errorf("the decisions query reads the fragment %q, want none", read.Fragment)
+	}
+
+	// The document server as the browser peer reaches it (connectBrowserPeer), which proves the
+	// browser's login.
+	sockets := &servedSockets{finished: make(map[string]chan struct{})}
+	server := httptest.NewServer(sockets.serve(deps.Docs.(*docs.Service).ServeHTTP))
+	t.Cleanup(server.Close)
+	socket, response, err := gws.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/ws/doc/"+id,
+		http.Header{"X-Dispatch-User": []string{"alice"}, socketHeader: []string{"1"}})
+	if err == nil {
+		_ = socket.Close()
+		t.Fatalf("a socket to the decisions query %s connected, want it refused", id)
+	}
+	if response == nil {
+		t.Fatalf("a socket to the decisions query failed with no answer: %v", err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusConflict || !strings.Contains(string(body), codeDecisionsQuery) {
+		t.Errorf("a socket to the decisions query answers %d %q, want 409 %s", response.StatusCode, body, codeDecisionsQuery)
 	}
 }

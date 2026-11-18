@@ -806,7 +806,11 @@ func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, facts
 	for _, id := range facts.typed {
 		only[id] = struct{}{}
 	}
-	_, parents, err := reconcileBlockParents(ctx, tx, artifactID, document, facts.nodes, facts.fits, facts.askParents, only, authoredSources{})
+	fragments, err := fragmentDocuments(ctx, tx, artifactID, facts.nodes)
+	if err != nil {
+		return nil, graphstore.Uncaused{}, err
+	}
+	_, parents, err := reconcileBlockParents(ctx, tx, artifactID, document, facts.nodes, facts.fits, fragments, facts.askParents, only, authoredSources{})
 	if err != nil {
 		return nil, graphstore.Uncaused{}, err
 	}

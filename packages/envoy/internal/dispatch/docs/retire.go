@@ -46,9 +46,10 @@ var retirementEvents = events.NewBroker()
 // role lookup finds it, its slug included.
 //
 // It takes no new text after it: every process closes its room of the document once tx commits,
-// through the announcement a removal sends (AnnounceDocumentRemoved), a socket that comes back is
-// refused (ServeHTTP), and api refuses an upload, a create and an edit of it 409
-// DOCUMENT_RETIRED.
+// through the announcement a removal sends (AnnounceDocumentRemoved), and for a document of an
+// issue room the issue's room as well (AnnounceDocumentRooms), whose settlement versions the
+// retired document's fragment no more; a socket that comes back is refused (ServeHTTP), and api
+// refuses an upload, a create and an edit of it 409 DOCUMENT_RETIRED.
 //
 // No version is written, so the approval is not left behind a later version as a write leaves
 // one: the approval read answers a retired document's approval stale (api's applyApprovals), and
@@ -116,6 +117,19 @@ func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor mod
 	if err := AnnounceDocumentRemoved(ctx, tx, artifactID); err != nil {
 		return Retirement{}, err
 	}
+	// A converted document is edited in its issue's room, which no removal of the document's own
+	// name closes: every process closes that room too, whose sockets reconnect, the document's
+	// own refused, and whose settlement versions the retired document's fragment no more
+	// (roomFragments).
+	room, err := roomOf(ctx, tx, artifactID)
+	if err != nil {
+		return Retirement{}, err
+	}
+	if room != artifactID {
+		if err := AnnounceDocumentRooms(ctx, tx, room, artifactID); err != nil {
+			return Retirement{}, err
+		}
+	}
 	return Retirement{Event: event, SupersededApproval: superseded}, nil
 }
 
@@ -127,6 +141,29 @@ func documentRetired(ctx context.Context, q Queryer, room string) (bool, error) 
 		return false, fmt.Errorf("read whether the document is retired: %w", err)
 	}
 	return retired, nil
+}
+
+// DecisionsQuerySQL is true of the artifacts row aliased alias while it is its issue's decisions
+// query node (api's createDecisionsQuery, D6 of this branch's plan): a document whose node is a
+// query node of query `decisions` (graphstore.QueryNode) and which no document_rooms row joins to
+// an issue room, whose versions render that query. No fragment of any room holds it, so no socket
+// opens on it (Service.ServeHTTP), and no upload or edit writes it (api's decisionsQueryRefusal).
+func DecisionsQuerySQL(alias string) string {
+	return `(` + alias + `.kind = 'doc' and not exists (select 1 from document_rooms moved where moved.artifact_id = ` + alias + `.id)
+		and exists (select 1 from graph_nodes node where node.kind = '` + graphstore.KindArtifact + `' and node.id = ` + alias + `.ref_key
+		            and node.supertag = '` + graphstore.SupertagQuery + `'
+		            and node.attributes->>'` + graphstore.AttributeQuery + `' = '` + graphstore.QueryDecisions + `'))`
+}
+
+// refusedDocument reads from q, in one statement, whether the document asked is retired
+// (documentRetired) and whether it is its issue's decisions query (DecisionsQuerySQL): no socket
+// opens on either.
+func refusedDocument(ctx context.Context, q Queryer, asked string) (retired, query bool, err error) {
+	if err := q.QueryRow(ctx, `select a.retired_at is not null, `+DecisionsQuerySQL("a")+` from artifacts a where a.id = $1`, asked).
+		Scan(&retired, &query); err != nil {
+		return false, false, fmt.Errorf("read whether the document takes a socket: %w", err)
+	}
+	return retired, query, nil
 }
 
 // writeRetiredNode writes the retired document's artifact node gone, held for the event that

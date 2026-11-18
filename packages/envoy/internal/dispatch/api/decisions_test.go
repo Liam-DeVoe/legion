@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // The Decisions read reads the store alone (dispatch://INFRA-1150 R4, R11). Its entries are held
@@ -102,9 +104,9 @@ func TestTheOldDecisionsMembersAnswerFromTheStore(t *testing.T) {
 			t.Fatalf("%s the old decisions member lists the open ask %s", when, open)
 		}
 		for _, decision := range []model.Decision{agent, person} {
-			if len(decision.Links) != 1 || decision.Links[0].To.ID != spec.address("r1") {
+			if len(decision.Links) != 1 || decision.Links[0].To.ID != spec.pointed("r1") {
 				t.Errorf("%s %s answers the links %s, want one, to %s, from its shaped tuple",
-					when, decision.Ref, entryJSON(t, decision.Links), spec.address("r1"))
+					when, decision.Ref, entryJSON(t, decision.Links), spec.pointed("r1"))
 			}
 		}
 		if !agent.WaitingReview || person.WaitingReview || agent.TextSHA256 != decisionread.TextSum(agent.Text) {
@@ -313,4 +315,92 @@ func waitForOpenQuestions(t *testing.T, handler http.Handler, key string, want i
 	}
 	t.Fatalf("open_questions = %v, want %d of them", questions, want)
 	return view, questions
+}
+
+// An issue born converted answers its spec's decision as an issue of one-document rooms answers
+// it (the T12b fixes of this branch's plan). The agent's decision, written into the spec's
+// fragment of the issue room, is one entry: its text and its tree are its words, its document is
+// the spec - the spec's id, its dispatch:// address and the decision's block id - and its ref is
+// the spec's address of its block. Its two shaped links, to the two paragraphs the spec's blocks
+// read lists, each name the spec's own address of that block, `<KEY>/spec#<id>`, with the block's
+// id, its text, the version that wrote it, the spec and the block's ref; so the spec's margin,
+// which draws a decision's card beside each block of the spec on screen that a link reaches,
+// draws one beside each paragraph. The release before's decisions member answers the same.
+func TestAConvertedIssuesDecisionAnswersAsAnUnconvertedIssuesDecisionDoes(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	ctx := context.Background()
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", "Notices arrive late.\n\nReaders poll for them.\n")
+	spec := readDecisionDocument(t, database, issue.Key, "spec")
+	var room string
+	if err := database.Pool.QueryRow(ctx, `
+		select tree.ref_key from document_rooms moved join artifacts tree on tree.id = moved.room
+		where moved.artifact_id = $1
+	`, spec.id).Scan(&room); err != nil {
+		t.Fatalf("read the room of %s's spec: %v; want the issue born converted", issue.Key, err)
+	}
+	paragraphs := blockIDsByText(t, handler, spec.id)
+	late, poll := paragraphs["Notices arrive late."], paragraphs["Readers poll for them."]
+	if late == "" || poll == "" {
+		t.Fatalf("the spec's blocks read = %v, want its two paragraphs", paragraphs)
+	}
+	pointer := func(block string) string { return "dispatch://" + issue.Key + "/spec#b-" + block }
+	agentEdit(t, handler, spec.id, latestVersion(t, database, spec.id).Number+1, map[string]string{
+		"op": "insert", "after": "end",
+		"markdown": "## Decisions\n\n:::decision{#d1 shaped=\"" + pointer(late) + " " + pointer(poll) + "\"}\n" +
+			"### Store notices in a table\n\nChosen for the simplest storage.\n:::\n",
+	})
+
+	target := "/api/v1/issues/" + issue.Key + "/decisions"
+	view := decodeBody[issueDecisions](t, treesRequest(t, handler, target, true))
+	if len(view.Entries) != 1 {
+		t.Fatalf("the Decisions read answers the entries %s, want one, the agent's decision", entryJSON(t, view.Entries))
+	}
+	entry := requireEntry(t, view.Entries, "the agent's decision", refs.BlockNodeKind+":"+room+"#d1")
+	if entry.Kind != "agent" || !strings.Contains(entry.Text, "Store notices in a table") ||
+		!strings.Contains(entry.Text, "Chosen for the simplest storage.") || entry.TextSHA256 != decisionread.TextSum(entry.Text) {
+		t.Errorf("the decision's entry is kind %q with the text %q and the sum %s, want an agent's, its words and their sum",
+			entry.Kind, entry.Text, entry.TextSHA256)
+	}
+	requireDisplayTree(t, handler, target, "entries.0.text", "entries.0.text_tree")
+	wantDocument := decisionEntryDocument{ArtifactID: spec.id, Ref: "dispatch://" + issue.Key + "/spec", BlockID: "d1", Block: room + "#d1"}
+	if entry.Document == nil || *entry.Document != wantDocument {
+		t.Errorf("the decision's entry names the document %s, want %s: the spec, whose fragment holds its block", entryJSON(t, entry.Document), entryJSON(t, wantDocument))
+	}
+	if want := pointer("d1"); entry.Ref != want {
+		t.Errorf("the decision's entry answers the ref %q, want %q, the spec's address of its block", entry.Ref, want)
+	}
+	requireSpecLinks := func(what string, links []model.DecisionLink) {
+		t.Helper()
+		words := map[string]string{late: "Notices arrive late.", poll: "Readers poll for them."}
+		if len(links) != len(words) {
+			t.Fatalf("%s answers the shaped links %s, want one to each paragraph", what, entryJSON(t, links))
+		}
+		for _, link := range links {
+			text, shaped := words[link.To.BlockID]
+			if !shaped || link.To.Kind != refs.BlockNodeKind || link.To.ID != spec.refKey+"#"+link.To.BlockID ||
+				link.To.Ref != pointer(link.To.BlockID) || link.To.Document != "dispatch://"+issue.Key+"/spec" ||
+				!strings.Contains(link.To.Text, text) || link.To.ChangedVersion != 1 || link.FromBlock != "d1" || link.Stale {
+				t.Errorf("%s answers the shaped link %s, want one to a paragraph at the spec's own address %s#<id>, with its words, version 1 and the spec",
+					what, entryJSON(t, link), spec.refKey)
+			}
+		}
+	}
+	requireSpecLinks("the decision's entry", entry.Shaped)
+	// The margin's shape of the links (useMarginItems): each one whose node is the spec's own,
+	// placed beside the spec's block of its block id.
+	placed := []string{}
+	for _, link := range entry.Shaped {
+		if link.To.BlockID != "" && strings.HasPrefix(link.To.ID, spec.refKey+"#") {
+			placed = append(placed, link.To.BlockID)
+		}
+	}
+	slices.Sort(placed)
+	if want := []string{late, poll}; !slices.Equal(placed, slices.Sorted(slices.Values(want))) {
+		t.Errorf("the spec's margin places the decision beside the blocks %v, want the two paragraphs %v", placed, want)
+	}
+	if len(view.Decisions) != 1 || view.Decisions[0].Ref != entry.Ref || view.Decisions[0].Text != entry.Text {
+		t.Fatalf("the old decisions member = %s, want the decision the entry answers", entryJSON(t, view.Decisions))
+	}
+	requireSpecLinks("the old decisions member", view.Decisions[0].Links)
 }

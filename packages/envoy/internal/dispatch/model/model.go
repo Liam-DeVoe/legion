@@ -1236,17 +1236,24 @@ type Artifact struct {
 	// its plan). Fragment is the fragment of that room's Yjs document that holds the document,
 	// which the page's editor binds: the document's own id for a document of an issue room, and
 	// ArtifactFragmentOwn otherwise, the tree artifact itself included. Every artifact this build
-	// reads answers both (scanArtifact); they are optional on the wire because a server of the
-	// release before the issue room answers neither, and a reader then binds ArtifactFragmentOwn
-	// of the document's own room, as the page does (packages/dispatch's fragmentOf).
+	// reads answers both (scanArtifact) but an issue's decisions query, which no fragment of any
+	// room holds and which answers no Fragment (DecisionsQuery); they are optional on the wire
+	// because a server of the release before the issue room answers neither, and a reader then
+	// binds ArtifactFragmentOwn of the document's own room, as the page does (packages/dispatch's
+	// fragmentOf).
 	Room     string `json:"room,omitempty"`
 	Fragment string `json:"fragment,omitempty"`
 	// Retired is whether the document was retired (artifacts.retired_at, docs.RetireDocument): it
 	// is in no list of its issue's or its project's documents, plays no role, and its approval no
 	// longer stands, while its row, its versions and its address stay readable. No response
 	// carries it.
-	Retired  bool      `json:"-"`
-	Versions []Version `json:"versions"`
+	Retired bool `json:"-"`
+	// DecisionsQuery is whether the document is its issue's decisions query node, whose versions
+	// render the issue's decisions and which no fragment of any room holds (docs'
+	// DecisionsQuerySQL): it answers no Fragment, and no upload, edit or socket writes it. No
+	// response carries it.
+	DecisionsQuery bool      `json:"-"`
+	Versions       []Version `json:"versions"`
 	// Approval is the document's approval as of its latest version, derived from
 	// version-pinned reviews and any open approval ask; nil for non-documents.
 	Approval *ArtifactApproval `json:"approval,omitempty"`

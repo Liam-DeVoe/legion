@@ -302,7 +302,15 @@ func (l *Ledger) commit(ctx context.Context) error {
 	}
 	captures := make([]roomCapture, 0, len(l.versions)+len(l.flushes)+len(l.order))
 	for _, written := range l.versions {
-		captures = append(captures, roomCapture{room: written.artifactID, capture: written.capture})
+		// The capture holds the record of the room the version was read from, the document's
+		// issue room for a converted document (targetOf), which the commit locks, sorts and lets
+		// go under that room's id: let go under the document's own id, which names no room this
+		// server holds, the record would be forgotten while its room still holds it.
+		room := written.artifactID
+		if moved, held := l.roomOf(room); held {
+			room = moved
+		}
+		captures = append(captures, roomCapture{room: room, capture: written.capture})
 	}
 	for _, flush := range l.flushes {
 		captures = append(captures, flushCapture(flush))
@@ -428,8 +436,8 @@ func (l *Ledger) takeRoomCursors() {
 	}
 }
 
-// roomCapture is a version's capture with the document it versions, the room updates a
-// transaction flushed (flush), or the shadow a live write leaves its room (shadow); the last two
+// roomCapture is a version's capture with the room it versions its document in, the room updates
+// a transaction flushed (flush), or the shadow a live write leaves its room (shadow); the last two
 // hold only the state, which the commit locks.
 type roomCapture struct {
 	room    string
@@ -453,8 +461,8 @@ func flushCapture(flush *RoomFlush) roomCapture {
 // credit consumed when it reads it (UpdateCredit.take), or it writes an author a version listed
 // to the pending authors; and a durable writer that takes it must find the updates this commit
 // stored marked, or it stores them again, and the write's shadow installed, or it stores a class
-// measured without the write (flushThrough). The states are locked in their documents' sorted
-// order, so two transactions versioning the same two documents cannot deadlock. ended runs once
+// measured without the write (flushThrough). The states are locked in their rooms' sorted order,
+// so two transactions versioning the same two documents cannot deadlock. ended runs once
 // the commit returns, with its error and the states still locked; a capture with no state locks
 // nothing. A commit that fails marks nothing: the room's persistence stores the flushed updates
 // later.

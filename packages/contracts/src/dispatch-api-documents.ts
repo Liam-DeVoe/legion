@@ -125,6 +125,13 @@ export const artifactFields = {
   role: DocumentRoleSchema.optional(),
   created_by: ActorSchema,
   created_at: z.string(),
+  /** The id of the room the document is edited in: its issue's tree artifact for a document of an
+   *  issue room, its own id otherwise. Absent from a Dispatch older than the issue room. */
+  room: z.string().optional(),
+  /** The fragment of that room's Yjs document that holds the document, which an editor binds: the
+   *  document's own id in an issue room, `prosemirror` otherwise. Absent from a Dispatch older than
+   *  the issue room, and for an issue's decisions query, which no room holds. */
+  fragment: z.string().optional(),
   versions: z.array(VersionSchema),
   /** Document approval, derived from version-pinned reviews; absent for non-document artifacts. */
   approval: ArtifactApprovalSchema.optional(),

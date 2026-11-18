@@ -3773,9 +3773,10 @@ func TestADocumentWriteOnOneProcessReachesTheOpenEditorOnTheOther(t *testing.T) 
 // storedHead is the version of the document's latest durable update.
 func storedHead(t *testing.T, pair *dispatchPair, artifactID string) int64 {
 	t.Helper()
+	room, _ := storedRoomOf(t, pair, artifactID)
 	var head int64
 	if err := pair.database.Pool.QueryRow(context.Background(),
-		`select coalesce(max(version), 0) from doc_updates where artifact_id = $1`, artifactID).Scan(&head); err != nil {
+		`select coalesce(max(version), 0) from doc_updates where artifact_id = $1`, room).Scan(&head); err != nil {
 		t.Fatalf("read the stored head of %s: %v", artifactID, err)
 	}
 	return head
@@ -5113,9 +5114,9 @@ func (t lenientT) Fatalf(format string, args ...any) {
 	panic(dialRefused{fmt.Errorf(format, args...)})
 }
 
-// dialEditor connects login's tab to the document's socket at url, answering a refusal as an
-// error.
-func dialEditor(t *testing.T, url, login, artifactID string) (editor *docstest.Peer, err error) {
+// dialEditor connects login's tab to the document's socket at url, bound to fragment of its room
+// (dispatchProcess.artifactFragment), answering a refusal as an error.
+func dialEditor(t *testing.T, url, login, artifactID, fragment string) (editor *docstest.Peer, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			refused, ok := recovered.(dialRefused)
@@ -5125,7 +5126,9 @@ func dialEditor(t *testing.T, url, login, artifactID string) (editor *docstest.P
 			err = refused.err
 		}
 	}()
-	return docstest.Dial(lenientT{t}, url, asUser(login), artifactID, crdt.New()), nil
+	editor = docstest.Dial(lenientT{t}, url, asUser(login), artifactID, crdt.New())
+	editor.Fragment = fragment
+	return editor, nil
 }
 
 // awaitDocument asks the room for its document until the editor's copy renders one.
@@ -5154,9 +5157,10 @@ func awaitDocument(editor *docstest.Peer, within time.Duration) error {
 // can report what it counted.
 func (p *dispatchProcess) reconnectEditor(t *testing.T, login, artifactID string) (*docstest.Peer, error) {
 	t.Helper()
+	fragment := p.artifactFragment(t, artifactID)
 	var last error
 	for range 20 {
-		editor, err := dialEditor(t, p.documentURL(artifactID), login, artifactID)
+		editor, err := dialEditor(t, p.documentURL(artifactID), login, artifactID, fragment)
 		if err == nil {
 			if err = awaitDocument(editor, 10*time.Second); err == nil {
 				return editor, nil
@@ -5199,12 +5203,14 @@ func (p *dispatchPair) waitStoredPast(t *testing.T, artifactID string, head int6
 	}
 }
 
-// storedText renders the document the store holds: its updates folded in order, which is what
-// every reload of it reads, whatever any room holds.
+// storedText renders the document the store holds: its room's updates folded in order, which is
+// what every reload of it reads, whatever any room holds, read through the document's own fragment
+// (storedRoomOf).
 func storedText(t *testing.T, pair *dispatchPair, artifactID string) string {
 	t.Helper()
+	room, fragment := storedRoomOf(t, pair, artifactID)
 	rows, err := pair.database.Pool.Query(context.Background(),
-		`select update from doc_updates where artifact_id = $1 order by version`, artifactID)
+		`select update from doc_updates where artifact_id = $1 order by version`, room)
 	if err != nil {
 		t.Fatalf("read the stored history of %s: %v", artifactID, err)
 	}
@@ -5222,7 +5228,22 @@ func storedText(t *testing.T, pair *dispatchPair, artifactID string) string {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read the stored history of %s: %v", artifactID, err)
 	}
-	return renderDocument(document)
+	return renderDocument(document, fragment)
+}
+
+// storedRoomOf is the room artifactID's document is edited in (docs.DocumentRoomOfStatement),
+// whose stored history holds the document, and the document's fragment of it, as the artifact
+// read answers both: the issue's room and the document's own fragment for a converted document,
+// the document and the room's own fragment otherwise.
+func storedRoomOf(t *testing.T, pair *dispatchPair, artifactID string) (room, fragment string) {
+	t.Helper()
+	if err := pair.database.Pool.QueryRow(context.Background(), docs.DocumentRoomOfStatement, artifactID).Scan(&room); err != nil {
+		t.Fatalf("read the room of %s: %v", artifactID, err)
+	}
+	if room == artifactID {
+		return room, model.ArtifactFragmentOwn
+	}
+	return room, artifactID
 }
 
 // storedCaughtUpWith waits up to within for the stored document to read as the editor's copy
@@ -5267,7 +5288,7 @@ func (p *dispatchPair) waitStoredHolds(t *testing.T, artifactID, want string, wi
 // typeAtEnd types text at the end of the editor's first paragraph in one keystroke's transaction,
 // on the paragraph's own Yjs text as ProseMirror's binding does, and sends the room the update.
 func typeAtEnd(editor *docstest.Peer, text string) error {
-	fragment := editor.Doc.GetXmlFragment("prosemirror")
+	fragment := editor.Doc.GetXmlFragment(editorFragment(editor))
 	missing := false
 	if _, err := editor.Send(func(txn *crdt.Transaction) {
 		paragraph := crafted.FirstText(fragment)
@@ -5288,7 +5309,7 @@ func typeAtEnd(editor *docstest.Peer, text string) error {
 // rewriteDocument changes the editor's document as one transaction - change edits the tree it
 // reads, and pmdoc writes the difference back - and sends the room the update.
 func rewriteDocument(editor *docstest.Peer, change func(*pmdoc.Node) error) error {
-	fragment := editor.Doc.GetXmlFragment("prosemirror")
+	fragment := editor.Doc.GetXmlFragment(editorFragment(editor))
 	var changeErr error
 	if _, err := editor.Send(func(txn *crdt.Transaction) {
 		tree, err := pmdoc.ReadInTransaction(txn, fragment)
@@ -5343,7 +5364,7 @@ func appendMarkdown(t *testing.T, editor *docstest.Peer, markdown string) {
 // dashboard does before it posts the comment that mark anchors.
 func placeMark(t *testing.T, editor *docstest.Peer, login, quote, id string) {
 	t.Helper()
-	fragment := editor.Doc.GetXmlFragment("prosemirror")
+	fragment := editor.Doc.GetXmlFragment(editorFragment(editor))
 	var markErr error
 	if _, err := editor.Send(func(txn *crdt.Transaction) {
 		tree, err := pmdoc.ReadInTransaction(txn, fragment)
@@ -5385,7 +5406,7 @@ func roomRendering(editor *docstest.Peer, within time.Duration) (string, error) 
 		if err := crdt.ApplyUpdateV1(doc, state, nil); err != nil {
 			return "", fmt.Errorf("apply the room's document: %w", err)
 		}
-		return renderDocument(doc), nil
+		return renderDocument(doc, editorFragment(editor)), nil
 	case <-editor.Ended:
 		return "", fmt.Errorf("the connection closed (code %d) before the room sent its document", editor.CloseCode())
 	case <-time.After(within):

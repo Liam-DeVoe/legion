@@ -197,6 +197,23 @@ func settleOwed(ctx context.Context, tx pgx.Tx, fromKind, fromID string) error {
 	return nil
 }
 
+// SettleOwedDocuments is settleOwed for the documents of an issue room whose text one pass over
+// the room read at their latest versions (docs' indexRenderedVersion and indexDeferredVersion): the
+// room's references are written under its tree artifact (replaceRefs), whose own row that write
+// settles, and each document whose fragment the pass read owes the queue nothing either. Left
+// owed, its row would be drained after the pass by owing the document its block index again,
+// which costs the room a second pass for every version of it. documents is in ascending id, the
+// order every writer of the queue's rows of several documents takes.
+func SettleOwedDocuments(ctx context.Context, tx pgx.Tx, documents []string) error {
+	if len(documents) == 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `delete from refs_grammar_owed where kind = 'artifact' and id = any($1::uuid[])`, documents); err != nil {
+		return fmt.Errorf("settle the index owed by the documents %v: %w", documents, err)
+	}
+	return nil
+}
+
 func scanTargets(rows pgx.Rows, err error) ([]Target, error) {
 	if err != nil {
 		return nil, err

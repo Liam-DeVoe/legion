@@ -896,12 +896,14 @@ func joinIssueRoom(ctx context.Context, tx pgx.Tx, room, document string) error 
 }
 
 // createDecisionsQuery creates, in tx, the decisions query node of the issue key in project: a
-// doc row with no fragment and no document_rooms row (D6 of dispatch://INFRA-1253's plan), whose
-// node is a query node of query `decisions` (graphstore.QueryNode) with its part_of the issue,
-// written before the row that names it, and its version 1, empty, with its version node, as every
-// empty document is created with, so no reader of the issue's documents meets one with no version.
-// The row carries no role: the read projects `decisions` from the node's query value. It answers
-// what the node writes stated, which the caller causes under its event.
+// doc row with no fragment and no document_rooms row (D6 of this branch's plan), whose node is a
+// query node of query `decisions` (graphstore.QueryNode) with its part_of the issue, written
+// before the row that names it, and its version 1, empty, with its version node, as every empty
+// document is created with, so no reader of the issue's documents meets one with no version. That
+// version is indexed here, in the create's transaction (docs.API.IndexDocumentReferences indexes
+// an empty version as the empty document), so no block-index reconciliation picks it up. The row
+// carries no role: the read projects `decisions` from the node's query value. It answers what the
+// node writes stated, which the caller causes under its event.
 func (s *server) createDecisionsQuery(ctx context.Context, tx pgx.Tx, key, project string, actor model.Actor, at time.Time) (graphstore.Uncaused, error) {
 	slug, err := s.nextArtifactSlug(ctx, tx, artifactTarget{IssueKey: &key}, issueDecisionsName)
 	if err != nil {
@@ -934,5 +936,9 @@ func (s *server) createDecisionsQuery(ctx context.Context, tx pgx.Tx, key, proje
 	if err != nil {
 		return graphstore.Uncaused{}, err
 	}
-	return graphstore.Joined(written, versionNode), nil
+	_, indexed, err := s.deps.Docs.IndexDocumentReferences(ctx, id, version.Number, "")
+	if err != nil {
+		return graphstore.Uncaused{}, fmt.Errorf("index the decisions query's first version: %w", err)
+	}
+	return graphstore.Joined(written, versionNode, indexed), nil
 }

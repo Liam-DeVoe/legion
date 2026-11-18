@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/grapherase"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -37,13 +38,16 @@ func confirmErase(ctx context.Context, databaseURL, kind, id string, window time
 
 // blockHolding is the node address of the block of document whose text, at the latest version
 // that recorded one holding text, holds it - a block a later version dropped included - as
-// ref_key, '#' and the block id (migration 0121), after reading that the store holds its node.
+// ref_key, '#' and the block id (migration 0121), after reading that the store holds its node. A
+// converted document's blocks are keyed by its issue's room (refs.DocumentRoomSQL), each in the
+// document its fragment holds it in (refs.BlockDocumentSQL), and its address is the room's.
 func blockHolding(t *testing.T, database *store.Store, document, text string) string {
 	t.Helper()
 	var address string
 	if err := database.Pool.QueryRow(context.Background(), `
 		select a.ref_key || '#' || t.block_id from document_block_texts t join artifacts a on a.id = t.artifact_id
-		where t.artifact_id = $1::uuid and position($2 in t.text) > 0
+		where t.artifact_id = `+refs.DocumentRoomSQL("$1::uuid")+` and `+refs.BlockDocumentSQL("t")+` = $1::uuid
+		  and position($2 in t.text) > 0
 		  and exists (select 1 from graph_nodes n where n.kind = 'block' and n.id = a.ref_key || '#' || t.block_id)
 		order by t.version desc limit 1`, document, text).Scan(&address); err != nil {
 		t.Fatalf("read the block node of %s whose text holds %q: %v", document, text, err)
@@ -374,13 +378,14 @@ func issuesHolding(t *testing.T, database *store.Store, text string) int {
 	return held
 }
 
-// updatesHolding counts the stored updates of document whose bytes hold text's.
+// updatesHolding counts the stored updates of the room document is edited in
+// (refs.DocumentRoomSQL: its issue's room for a converted document) whose bytes hold text's.
 func updatesHolding(t *testing.T, database *store.Store, document, text string) int {
 	t.Helper()
 	var held int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*) from doc_updates
-		where artifact_id = $1 and position(convert_to($2, 'UTF8') in update) > 0`, document, text).Scan(&held); err != nil {
+		where artifact_id = `+refs.DocumentRoomSQL("$1::uuid")+` and position(convert_to($2, 'UTF8') in update) > 0`, document, text).Scan(&held); err != nil {
 		t.Fatalf("count the stored updates holding the text: %v", err)
 	}
 	return held

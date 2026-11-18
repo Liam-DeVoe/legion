@@ -1356,3 +1356,209 @@ func TestAnIssueRoomUpdatesPendingAuthorsAreWrittenUnderItsDocuments(t *testing.
 		t.Errorf("the room's pending authors by document are %v, want alice under the spec and the Verification document and bob and carol under the tree", owed)
 	}
 }
+
+// A version of a document of an issue room is read from the room (captureLiveTextAndAuthors), so
+// the record its commit holds locked is the room's, and the commit lets it go as the room's: a
+// named version of the plan, committed or refused at its commit, leaves the record of the room
+// the server holds registered under the room and not released, and the next lookup of the room
+// finds it. Let go under the document's own id, which names no room the server holds, the record
+// was forgotten while the room still held it and stayed in the service's map, and every later
+// lookup of the room - the next version's read, the room's persistence - spun on it forever.
+func TestAVersionOfADocumentOfAnIssueRoomLeavesTheRoomsRecordToTheRoom(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	service, _ := newTestServiceInstance(t, database)
+	room := createIssueRoom(t, database, 1)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	if _, err := database.Pool.Exec(ctx, `
+		create function test_refuse_version() returns trigger language plpgsql as $$
+		begin
+		  if current_setting('test.refuse_version', true) = 'on' then
+		    raise exception 'the test refuses this commit';
+		  end if;
+		  return null;
+		end $$;
+		create constraint trigger zz_refuse_version after insert on artifact_versions
+		deferrable initially deferred for each row execute function test_refuse_version();
+	`); err != nil {
+		t.Fatalf("install the trigger that refuses a version's commit: %v", err)
+	}
+	for _, refused := range []bool{false, true} {
+		what := "a committed named version of the plan"
+		if refused {
+			what = "a named version of the plan refused at its commit"
+		}
+		committed := func() error {
+			tx, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("%s: begin: %v", what, err)
+			}
+			defer tx.Rollback(ctx)
+			if refused {
+				if _, err := tx.Exec(ctx, `select set_config('test.refuse_version', 'on', true)`); err != nil {
+					t.Fatalf("%s: refuse the commit: %v", what, err)
+				}
+			}
+			joined, ledger := service.Join(ctx, tx)
+			defer ledger.Discard()
+			if _, err := service.NamedVersion(joined, room.plan, "named", alice); err != nil {
+				t.Fatalf("%s: %v", what, err)
+			}
+			return ledger.Commit(ctx)
+		}()
+		if refused != (committed != nil) {
+			t.Fatalf("%s: the commit answered %v", what, committed)
+		}
+		if service.srv.GetDoc(room.tree) == nil {
+			t.Fatalf("%s: the version's read left no room of the issue on the server: this test proves nothing", what)
+		}
+		value, held := service.rooms.Load(room.tree)
+		if !held || value.(*roomState).released {
+			t.Fatalf("%s: the record of the issue's room, which the server still holds, is held %t (released: %t), want it held and not released",
+				what, held, held && value.(*roomState).released)
+		}
+		looked := make(chan struct{})
+		go func() {
+			defer close(looked)
+			if state := service.lockExistingState(room.tree); state != nil {
+				service.unlockState(room.tree, state)
+			}
+		}()
+		select {
+		case <-looked:
+		case <-time.After(roomWait(t)):
+			t.Fatalf("%s: a lookup of the issue's room did not return within %v", what, roomWait(t))
+		}
+	}
+}
+
+// A version of a document of an issue room whose transaction rendered no tree of it - an upload
+// whose replacement changed nothing, or one whose written tree did not render as the version's
+// markdown - is indexed only where the document's own fragment of the room reads as that version,
+// as each other fragment of the room is (indexDocumentInRoom): the plan's fragment holds the
+// conversion's seed, its version 2 says other words, so the room is left owed to the block-index
+// reconciliation and no block of the plan is indexed at version 2.
+func TestAVersionNoWriteRenderedIsIndexedOnlyWhereItsFragmentReadsAsIt(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	service, _ := newTestServiceInstance(t, database)
+	room := createIssueRoom(t, database, 1)
+	const written = "The version's own words.\n"
+	func() {
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer tx.Rollback(ctx)
+		joined, ledger := service.Join(ctx, tx)
+		defer ledger.Discard()
+		if _, _, err := lockArtifactOwner(ctx, tx, room.plan); err != nil {
+			t.Fatalf("take the plan's owner row: %v", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			insert into artifact_versions (artifact_id, number, markdown, authors)
+			values ($1, 2, $2, '[{"kind":"user","id":"alice"}]')`, room.plan, written); err != nil {
+			t.Fatalf("write the plan's version 2: %v", err)
+		}
+		if _, _, err := service.IndexDocumentReferences(joined, room.plan, 2, written); err != nil {
+			t.Fatalf("index the plan's version 2: %v", err)
+		}
+		if err := ledger.Commit(ctx); err != nil {
+			t.Fatalf("commit the plan's version 2: %v", err)
+		}
+	}()
+	var indexed *int
+	var blocks int
+	if err := database.Pool.QueryRow(ctx, `
+		select (select version from document_block_versions where artifact_id = $1),
+		       (select count(*) from issue_room_blocks where tree_artifact_id = $2 and document_id = $1)
+	`, room.plan, room.tree).Scan(&indexed, &blocks); err != nil {
+		t.Fatalf("read the plan's block index: %v", err)
+	}
+	if indexed != nil || blocks != 0 {
+		t.Errorf("the plan's blocks stand indexed at %v with %d block(s) of the room, cut from a fragment holding %q, want the room left owed and no block of the plan indexed at version 2, whose markdown is %q",
+			describeVersion(indexed), blocks, planSeed, written)
+	}
+}
+
+// describeVersion reads a document_block_versions version: the number, or "none" for a document
+// owed its block index.
+func describeVersion(version *int) string {
+	if version == nil {
+		return "none"
+	}
+	return strconv.Itoa(*version)
+}
+
+// A converted document's retirement closes its issue's room on every process, since that room is
+// where the document is edited (AnnounceDocumentRooms beside AnnounceDocumentRemoved), and the
+// retired document's fragment takes no version from then on: the spec's socket, the one open
+// on the room, is closed at the retirement's commit, and a paragraph a peer of the room then
+// types into the retired Verification document's fragment is versioned under no document by the
+// room's settlement, while the spec's fragment it changed beside it is.
+func TestARetiredDocumentOfAnIssueRoomClosesTheRoomAndTakesNoVersion(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	service, server := newTestServiceInstance(t, database)
+	runRoomSync(t, newRoomSync(service))
+	room := createIssueRoom(t, database, 1)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	before := connectPeer(t, server.URL, room.spec, "alice")
+	if err := before.WaitForText(fragmentMarkdown(room.plan), planSeed, roomWait(t)); err != nil {
+		t.Fatal(err)
+	}
+	func() {
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err := RetireDocument(ctx, tx, room.verification, alice, "The checks moved to the plan."); err != nil {
+			t.Fatalf("retire the Verification document: %v", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit the retirement: %v", err)
+		}
+	}()
+	select {
+	case <-before.Ended:
+	case <-time.After(roomWait(t)):
+		t.Fatalf("the spec's socket on the issue's room is still open %v after the Verification document's retirement, want the room closed", roomWait(t))
+	}
+
+	peer := connectPeer(t, server.URL, room.spec, "alice")
+	if err := peer.WaitForText(fragmentMarkdown(room.plan), planSeed, roomWait(t)); err != nil {
+		t.Fatal(err)
+	}
+	stored := roomUpdateCount(t, database, room.tree)
+	retired, own := writeParagraph(peer.Doc, room.verification, "Typed after the retirement."), writeParagraph(peer.Doc, room.spec, "The spec's own words.")
+	if _, err := peer.Send(func(txn *crdt.Transaction) {
+		retired(txn)
+		own(txn)
+	}); err != nil {
+		t.Fatalf("type into the room: %v", err)
+	}
+	waitForStoredUpdates(t, database, room.tree, stored)
+	if err := service.waitForDurableAppends(ctx, room.tree); err != nil {
+		t.Fatalf("wait for the room's appends: %v", err)
+	}
+	if err := service.settleOwedNow(ctx, room.tree, time.Now().Add(roomWait(t))); err != nil {
+		t.Fatalf("settle the issue's room: %v", err)
+	}
+	latest := func(document string) (int, string) {
+		t.Helper()
+		var number int
+		var markdown string
+		if err := database.Pool.QueryRow(ctx, `
+			select number, markdown from artifact_versions where artifact_id = $1 order by number desc limit 1`, document).Scan(&number, &markdown); err != nil {
+			t.Fatalf("read the latest version of %s: %v", document, err)
+		}
+		return number, markdown
+	}
+	if number, markdown := latest(room.verification); number != 1 {
+		t.Errorf("the retired Verification document stands at version %d holding %q, want its version 1 alone", number, markdown)
+	}
+	if number, markdown := latest(room.spec); number != 2 || markdown != "The spec's own words.\n" {
+		t.Errorf("the spec stands at version %d holding %q, want version 2 holding the words typed into its fragment", number, markdown)
+	}
+}
