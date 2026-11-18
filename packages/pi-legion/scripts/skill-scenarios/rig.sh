@@ -1740,8 +1740,16 @@ start_listener() {
     start_held "$name" envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$2"
   pid=${name}_pid
   listener_pids+=("${!pid}")
-  await_start "$name" "${!pid}" 60 "the $1 label's Envoy listener to answer /v1/sessions" \
-    curl -fsS -o /dev/null -H "Authorization: Bearer $(<"$tokens/envoy-token")" "http://127.0.0.1:$envoy_port/v1/sessions"
+  await_start "$name" "${!pid}" 60 "the $1 label's Envoy listener to answer /v1/sessions" listener_answers
+}
+
+# listener_answers reads /v1/sessions of the Envoy listener start_listener started last, on
+# envoy_port, with the rig's bearer, which reaches curl on standard input from printf, a shell
+# builtin, so it is in no command line.
+# shellcheck disable=SC2329 # await_start in start_listener runs it
+listener_answers() {
+  printf 'Authorization: Bearer %s' "$(<"$tokens/envoy-token")" |
+    curl -fsS -o /dev/null -H @- "http://127.0.0.1:$envoy_port/v1/sessions"
 }
 
 # file_digest FILE prints `sha256:<hex>` of FILE's bytes, or `missing` when there is no such file.

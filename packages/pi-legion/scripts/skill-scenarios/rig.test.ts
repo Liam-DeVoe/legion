@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
+  appendFileSync,
   cpSync,
   existsSync,
   lstatSync,
@@ -421,11 +422,13 @@ describe("a setup that fails after install_model_route", () => {
     mkdirSync(path.join(co, "skills/asd-ste100"), { recursive: true });
     writeFileSync(path.join(co, "skills/asd-ste100/SKILL.md"), "# STE\n");
     writeFileSync(path.join(co, ".omp-pin"), "omp@pin\n");
-    // The real key-file route, with the lib it sources for its base URL's check.
-    for (const file of ["install-key-file-model-route.sh", "model-endpoint.sh"]) {
+    // The real key-file route, with the libs it sources: model-endpoint.sh for its base URL's
+    // check, and omp-home.sh for the line that shuts the setup wizard, whose make_omp_home is then
+    // replaced by one that only makes the home's .omp.
+    for (const file of ["install-key-file-model-route.sh", "model-endpoint.sh", "omp-home.sh"]) {
       cpSync(path.join(root, "scripts/e2e/lib", file), path.join(co, "scripts/e2e/lib", file));
     }
-    writeFileSync(
+    appendFileSync(
       path.join(co, "scripts/e2e/lib/omp-home.sh"),
       'make_omp_home() { mkdir -p "$1/.omp"; }\n'
     );
@@ -503,7 +506,7 @@ describe("a setup that fails after install_model_route", () => {
       "root=$1; work=$2; judge_model=fixture; judge_thinking=high; judge_profiles",
     ].join("\n");
     // The bare profile's home cannot be made, after the ste profile's route is installed.
-    writeFileSync(
+    appendFileSync(
       path.join(co, "scripts/e2e/lib/omp-home.sh"),
       'make_omp_home() { [ "$(basename "$(dirname "$1")")" != bare ] || { echo "no home for bare" >&2; return 1; }; mkdir -p "$1/.omp"; }\n'
     );
@@ -530,7 +533,7 @@ describe("a setup that fails after install_model_route", () => {
       "checkout_commit() { printf 'fixture parents=base\\n'; }",
       "root=$1; work=$2; judge_model=fixture; judge_thinking=high; judge_profiles",
     ].join("\n");
-    writeFileSync(
+    appendFileSync(
       path.join(co, "scripts/e2e/lib/omp-home.sh"),
       'make_omp_home() { [ "$(basename "$(dirname "$1")")" != bare ] || { echo "no home for bare" >&2; return 1; }; mkdir -p "$1/.omp"; }\n'
     );
@@ -651,17 +654,17 @@ const fileLines = (file: string) =>
 describe("the rig's own mise", () => {
   /** A label's checkout whose plugin installer records the `mise` its PATH resolves to and runs
    * it, where install-plugin-profile.sh runs `mise where`, `mise install` and `mise x`, with the
-   * real key-file model route and a home maker that makes an empty home. */
+   * real key-file model route, the libs it sources, and a home maker that makes an empty home. */
   function labelCheckout(): string {
     const co = freshDir("mise-checkout");
     mkdirSync(path.join(co, "scripts/e2e/lib"), { recursive: true });
     mkdirSync(path.join(co, "skills/asd-ste100"), { recursive: true });
     writeFileSync(path.join(co, "skills/asd-ste100/SKILL.md"), "# STE\n");
     writeFileSync(path.join(co, ".omp-pin"), "omp@pin\n");
-    for (const file of ["install-key-file-model-route.sh", "model-endpoint.sh"]) {
+    for (const file of ["install-key-file-model-route.sh", "model-endpoint.sh", "omp-home.sh"]) {
       cpSync(path.join(root, "scripts/e2e/lib", file), path.join(co, "scripts/e2e/lib", file));
     }
-    writeFileSync(
+    appendFileSync(
       path.join(co, "scripts/e2e/lib/omp-home.sh"),
       'make_omp_home() { mkdir -p "$1/.omp"; }\n'
     );

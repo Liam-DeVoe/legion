@@ -39,11 +39,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/daemon"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
@@ -750,9 +750,10 @@ func firstBytes(path string, n int) ([]byte, error) {
 // that names that file. The join and the write are this program's own copies of the daemon's
 // (runtime.ComposePrompt, runtime.WriteSystemPrompt), since the rig runs it against each label's
 // checkout of the daemon module, an older one among them, which has neither. The
-// addressing names `repository`, the world's own, and the world's default branch, so the
-// repository a worker is told to work in is the one its gh calls reach and the one the
-// architect's note in its prompt names.
+// addressing names `repository`, the world's own, the world's default branch and the reach of the
+// role's App, that repository's owner, whose directory alone the pane's gh bundle holds
+// (addressingOf), so the repository a worker is told to work in is the one its gh calls reach and
+// the one the architect's note in its prompt names.
 func systemPromptArgument(req paneRequest, token claim.Token, repository ghrepo.Repository) (string, error) {
 	role := claim.Role(req.Role)
 	if claim.IsTreeArchitect(role, req.Issue, req.Issue) {
@@ -766,11 +767,9 @@ func systemPromptArgument(req paneRequest, token claim.Token, repository ghrepo.
 	if err != nil {
 		return "", err
 	}
-	addressing, err := daemon.AddressingFragment(req.Project, supervise.Claim{
+	addressing, err := addressingOf(req.Project, supervise.Claim{
 		Token: token, Project: req.Project, Tree: req.Issue, Issue: req.Issue, Role: role, Generation: 1,
-	}, repository, req.DefaultBranch, api.RepositoriesView{
-		Mapped: []api.MappedRepositoryView{{Repo: repository.String(), Default: true}},
-	})
+	}, repository, req.DefaultBranch)
 	if err != nil {
 		return "", err
 	}
@@ -791,4 +790,51 @@ func systemPromptArgument(req paneRequest, token claim.Token, repository ghrepo.
 		return "", err
 	}
 	return "--append-system-prompt " + shellprefix.Word(promptFile), nil
+}
+
+// addressingOf is the daemon's own addressing of c (daemon.AddressingFragment) for a pane on
+// repository and defaultBranch whose role's App is installed on that repository's owner alone.
+// The fragment's last parameter is not one type across the checkouts the rig runs this program
+// against: since INFRA-2543 it is the owners the role's App reaches ([]string), and before that
+// change it was the project's mapping view (api.RepositoriesView, a Mapped list of Repo and
+// Default), which the older checkout of daemon-standin.test.ts's older-daemon row still takes. A
+// call written for either type does not build against the other, so the call is made through the
+// checkout's own signature, with the reach that checkout's daemon gives this pane: the one owner,
+// or the one repository mapped as the project's default.
+func addressingOf(project string, c supervise.Claim, repository ghrepo.Repository, defaultBranch string) (string, error) {
+	fragment := reflect.ValueOf(daemon.AddressingFragment)
+	if fragment.Type().NumIn() != 5 {
+		return "", fmt.Errorf("daemon.AddressingFragment is %s, which this program does not call", fragment.Type())
+	}
+	reachType := fragment.Type().In(4)
+	var reach reflect.Value
+	switch {
+	case reachType.Kind() == reflect.Slice && reachType.Elem().Kind() == reflect.String:
+		reach = reflect.ValueOf([]string{repository.Owner()}).Convert(reachType)
+	case reachType.Kind() == reflect.Struct:
+		view := reflect.New(reachType).Elem()
+		mapped := view.FieldByName("Mapped")
+		if mapped.Kind() != reflect.Slice || mapped.Type().Elem().Kind() != reflect.Struct {
+			break
+		}
+		entry := reflect.New(mapped.Type().Elem()).Elem()
+		repo, isDefault := entry.FieldByName("Repo"), entry.FieldByName("Default")
+		if repo.Kind() != reflect.String || isDefault.Kind() != reflect.Bool {
+			break
+		}
+		repo.SetString(repository.String())
+		isDefault.SetBool(true)
+		mapped.Set(reflect.Append(mapped, entry))
+		reach = view
+	}
+	if !reach.IsValid() {
+		return "", fmt.Errorf("daemon.AddressingFragment takes the reach as %s, which this program builds no value of", reachType)
+	}
+	out := fragment.Call([]reflect.Value{
+		reflect.ValueOf(project), reflect.ValueOf(c), reflect.ValueOf(repository), reflect.ValueOf(defaultBranch), reach,
+	})
+	if err, _ := out[1].Interface().(error); err != nil {
+		return "", err
+	}
+	return out[0].String(), nil
 }

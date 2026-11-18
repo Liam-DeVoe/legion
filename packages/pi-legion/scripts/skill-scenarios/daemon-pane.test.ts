@@ -247,8 +247,8 @@ test.skipIf(skip)(
 // `example/widgets` on `main`, and a worker follows its addressing: recorded runs posted their
 // review to the repository the addressing named, which the scorer's repository rule read as no
 // review at all (rig.sh's worker world comment holds that story). The gh bundle is the same
-// fact: its one directory is the owner of that repository, so no part of the pane names a
-// second one.
+// fact: its one directory is the owner of that repository, and the addressing names that owner
+// as the one its App reaches, so no part of the pane names a second one.
 test.skipIf(skip)(
   "the addressing names the world's own repository and default branch",
   () => {
@@ -263,7 +263,7 @@ test.skipIf(skip)(
       "<run>/state/secrets/legion-skillsrig-lweval-1-tester-system-prompt.md"
     );
     expect(prompt.text).toContain(
-      "Your issue's repository is example/widgets (default branch main); the project's repositories are example/widgets."
+      "Your issue's repository is example/widgets (default branch main); your role's GitHub App is installed on the owner example, and its token reaches every repository of that owner."
     );
     expect(prompt.text).not.toContain("skills-rig");
     expect(pane.env.GH_CONFIG_DIR).toBe(
