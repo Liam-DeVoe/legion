@@ -257,9 +257,7 @@ function ResultOption({
           <span className="truncate">{result.artifact.name}</span>
         )}
         {/* A comment or a message its author edited says so, as its byline does. */}
-        <span className="shrink-0">
-          <EditedMark at={result.edited_at} deleted={deleted} />
-        </span>
+        <EditedMark at={result.edited_at} className="shrink-0" deleted={deleted} />
       </div>
       {deleted === null ? (
         <MarkdownPreview

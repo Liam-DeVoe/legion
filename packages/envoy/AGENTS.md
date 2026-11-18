@@ -1833,6 +1833,7 @@ Item blocks are top-level only, so the block holding a mention is the top-level 
 A block's identity is `itemblocks.Hash`, the SHA-256 of its text with each CR LF read as LF, so an edit that only turns CR LF into LF (as a textarea does) changes no block.
 Its id is `b1`, `b2`, … in the order the item mints them, and no number is minted twice in one item, a removed block's included (`comment_block_state.next_block` and the ids stored).
 `comment_blocks` and `message_blocks` keep every block an item ever held, a removed one with `position` null and `removed_at` set, with its type, its identity hash, its text cut to 480 runes as its excerpt (`refs.BlockExcerptRunes`), `made_at` and `changed_at`, and for a comment `changed_revision`.
+A delete of the item takes every block out of its current revision and clears each excerpt, and for a comment the text each revision recorded of a block (`refs.TombstoneItem`), so a deleted item's blocks hold no text.
 A comment's `comment_block_state.revision` counts its indexed revisions, 1 the first indexing:
 an index raises it when it is the first, when the body differs byte for byte from the one last indexed (`body_sha256`), or when its blocks changed, and otherwise writes no block.
 At the new revision a new, changed or restored block takes the revision as `changed_revision` and the write's time as `changed_at` (a new one that time as `made_at` too, except at the first indexing of a comment edited before blocks were recorded, whose making Dispatch never recorded:
@@ -1908,7 +1909,8 @@ When the named item is owed an index, or was indexed from another body than it s
 a message parent is taken `for no key update` after its issue, `lockReplyParentMessage`), so the block named is one of the body as stored.
 Every comment and message a route returns, and every `comment.*` and `message.*` event payload, carries `reply_block` (`model.ReplyBlock`:
 `node`, `ref`, absent for a direct message's block, which has no address, `block_id`, `text`, `removed`), null when the reply names no block, read in one batched query per kind (`refs.ReplyBlocks`, `hydrateCommentReplyBlocks`, `hydrateMessageReplyBlocks`):
-`text` is the block's stored excerpt, which a removal keeps, so a removed block reads the last text it held, and `removed` is true while no current revision holds it.
+`text` is the block's stored excerpt, which a removal keeps, so a block an edit removed reads the last text it held, and `removed` is true while no current revision holds it;
+a block of an item its author deleted reads removed with no text, and carries the item's `deleted_at` and `deleted_by` (`refs.ReplyBlocks`).
 A message reply naming a block carries that block's text as `reply_body` in place of its parent's.
 A reply naming no block answers the whole item, as before.
 

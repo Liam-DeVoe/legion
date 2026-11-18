@@ -75,13 +75,21 @@ export function PostPreview({
  * comment card has shown since before this change and which every surface that prints an issue
  * message now shows too. Nothing at all for a post nobody edited, and nothing for a deleted
  * one: the deleted line already says what became of the text.
+ *
+ * A host that sets the mark apart in an element of its own passes that element's classes as
+ * `className`, and the mark draws the element with itself, so a post with no mark draws no
+ * element either. An empty element in a flex row still takes the row's gap, which cut every
+ * unedited Inbox title one glyph short.
  */
 export function EditedMark({
   at,
+  className,
   deleted,
 }: {
   at: string | null | undefined;
+  className?: string;
   deleted?: PostDeletion | null;
 }): ReactNode {
-  return at === null || at === undefined || (deleted ?? null) !== null ? null : <> · edited</>;
+  if (at === null || at === undefined || (deleted ?? null) !== null) return null;
+  return className === undefined ? <> · edited</> : <span className={className}> · edited</span>;
 }

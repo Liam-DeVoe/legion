@@ -83,9 +83,7 @@ function DispatchUnfurl({ card }: { card: DispatchCard }): ReactNode {
         <>
           <span className={`block font-medium ${linkText}`}>
             {title ?? card.text}
-            <span className={`font-normal ${textMutedOnSurfaceMuted}`}>
-              <EditedMark at={edited} />
-            </span>
+            <EditedMark at={edited} className={`font-normal ${textMutedOnSurfaceMuted}`} />
           </span>
           {description === undefined ? null : (
             <Body markdown={description} tree={descriptionTree} />

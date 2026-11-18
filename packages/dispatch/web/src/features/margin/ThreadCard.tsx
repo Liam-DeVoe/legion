@@ -167,9 +167,11 @@ function CollapsedRootPreview({
         source={textSourceOf("comment", comment.id)}
         tree={comment.body_tree}
       />
-      <span className={`shrink-0 text-xs ${textMutedOnSurfaceMuted}`}>
-        <EditedMark at={comment.edited_at} deleted={deleted} />
-      </span>
+      <EditedMark
+        at={comment.edited_at}
+        className={`shrink-0 text-xs ${textMutedOnSurfaceMuted}`}
+        deleted={deleted}
+      />
     </span>
   );
 }

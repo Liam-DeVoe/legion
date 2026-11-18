@@ -345,11 +345,7 @@ function HeadingEdited({
   at: string | null | undefined;
   deleted: PostDeletion | null;
 }): ReactNode {
-  return (
-    <span className={`font-normal ${textMutedOnSurface}`}>
-      <EditedMark at={at} deleted={deleted} />
-    </span>
-  );
+  return <EditedMark at={at} className={`font-normal ${textMutedOnSurface}`} deleted={deleted} />;
 }
 
 /** The card's body: three rendered lines of what the target says, formatted, then cut, or the

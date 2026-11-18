@@ -68,9 +68,11 @@ export function ThreadTitle({
           {words}
         </a>
       )}
-      <span className={`shrink-0 text-xs ${textMutedOnCanvas}`}>
-        <EditedMark at={thread.edited_at} deleted={deleted} />
-      </span>
+      <EditedMark
+        at={thread.edited_at}
+        className={`shrink-0 text-xs ${textMutedOnCanvas}`}
+        deleted={deleted}
+      />
       {thread.unread ? (
         <span
           aria-label="Unread"
