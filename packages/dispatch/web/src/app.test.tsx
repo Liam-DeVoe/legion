@@ -14,12 +14,16 @@ import { liveSocketFor } from "./api/live-socket";
 import type { AuthenticatedUser } from "./api/types";
 import { AuthGate } from "./app";
 import { appKeymap } from "./features/shell/keymap";
-// The Answers, document and project pages are lazy routes of the app. A page module's first
-// compile is not what a wait is for, so the modules are loaded here, with the test file, and no
-// wait measures that load.
+// The pages below are lazy routes of the app. A page module's first compile is not what a wait
+// is for, so the modules are loaded here, with the test file, and no wait measures that load.
+import "./features/agents/AgentsPage";
 import "./features/answers/AnswersPage";
+import "./features/delivery/DeliveryPage";
+import "./features/delivery/PipelinePage";
 import "./features/document/DocumentPage";
+import "./features/priorities/PrioritiesPage";
 import "./features/project/ProjectPage";
+import "./features/settings/SettingsPage";
 import { SendStoppedError } from "./features/writes/keyed-write";
 import { plainWrite, writesOf } from "./features/writes/write-store";
 
@@ -1156,7 +1160,9 @@ test("the command bar's Go to rows reach every page the navigation always shows"
         // page's own test's to draw.
         expect(screen.getByTestId("location").textContent).toBe(address);
       } finally {
-        view.unmount();
+        // The lazy page the move reached suspends until its module, loaded above, resolves; it
+        // resolves inside this act, after the unmount, so no page draws and React says nothing.
+        await act(async () => view.unmount());
       }
     }
   } finally {
