@@ -394,15 +394,21 @@ func podKindFor(role claim.Role) podKind {
 	return issuePod{}
 }
 
-// templateRoles are the roles the stored template of the Sandbox read as s builds its pod with:
-// the --role values its launcher container's command names (issuePod.launcherContainer writes
-// one for each role of the launch, controllerPod.launcherContainer the controller's). It reads
-// every pod this layout builds, its template recording a shape or none, so a pod is judged by
-// the roles it was built with, never by the roles the runtime has now. None is a template no
-// launcher of this layout wrote.
+// templateRoles are the roles the stored template of the Sandbox read as s builds its pod with
+// (builtRoles). It reads every pod this layout builds, its template recording a shape or none, so
+// a pod is judged by the roles it was built with, never by the roles the runtime has now. None is
+// a template no launcher of this layout wrote.
 func templateRoles(s *sandbox) []claim.Role {
+	return builtRoles(s.Spec.PodTemplate.Spec)
+}
+
+// builtRoles are the roles a pod of spec runs: the --role values its launcher container's command
+// names (issuePod.launcherContainer writes one for each role of the launch,
+// controllerPod.launcherContainer the controller's), read off a running pod's spec or off a stored
+// template's alike.
+func builtRoles(spec corev1.PodSpec) []claim.Role {
 	var roles []claim.Role
-	for _, container := range s.Spec.PodTemplate.Spec.Containers {
+	for _, container := range spec.Containers {
 		for i := 0; i+1 < len(container.Command); i++ {
 			if container.Command[i] == "--role" {
 				roles = append(roles, claim.Role(container.Command[i+1]))

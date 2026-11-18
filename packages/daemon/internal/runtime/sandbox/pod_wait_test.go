@@ -127,3 +127,26 @@ func TestALaunchTheSupervisorMakesIntoAPodBuiltWithoutItsRoleIsRefusedNamingTheP
 		t.Errorf("the issue's pod is %v, want the pod %s kept", pod, loc.Sandbox.PodUID)
 	}
 }
+
+// The gh refresh of a pod built before a role of the deployment reads the Secrets of the roles the
+// pod was built with, its own --role values, and never the Secret the pod has no role of: that
+// read would fail at every tick and log a failed refresh for a role no process of the pod runs.
+func TestTheRefreshOfAPodBuiltBeforeARoleReadsNoSecretOfThatRole(t *testing.T) {
+	g := newRig(t, nil)
+	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
+	restarted := secondRuntime(t, g, withChecker)()
+	g.clearActions()
+	restarted.refreshGitHubCredentials(g.ctx)
+	read := map[string]bool{}
+	for _, a := range g.requests() {
+		if a.verb == "get" && a.resource == "secrets" {
+			read[a.name] = true
+		}
+	}
+	if !read[roleSecretName(loc.Sandbox.Name, claim.RoleImplementer)] {
+		t.Fatalf("the refresh read the Secrets %v, want the implementer's among them: the pod was built with it", read)
+	}
+	if checker := roleSecretName(loc.Sandbox.Name, "checker"); read[checker] {
+		t.Errorf("the refresh read %s, want no read of a Secret of a role the pod was built without", checker)
+	}
+}
