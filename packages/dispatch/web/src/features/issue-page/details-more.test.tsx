@@ -1296,8 +1296,9 @@ function PeopleInDrawer(): ReactNode {
  * under the one before, from the box's top, moved up by the box's scroll, and each element as
  * the row it stands in. happy-dom lays nothing out and never calls a resize observer back, so
  * `grow` sets a row's height and `resized` calls every observer back, as the browser does once
- * a row's height has changed. `log` is the answer to the history's read of the issue's log, an
- * empty log at once unless a case holds it back.
+ * a row's height has changed; `heightsChanged` calls back only the observers of an element whose
+ * height changed, as the browser does. `log` is the answer to the history's read of the issue's
+ * log, an empty log at once unless a case holds it back.
  */
 function drawPeopleInDrawer(path: string, log: Promise<DispatchEvent[]> = Promise.resolve([])) {
   const heights = new Map([
@@ -1306,23 +1307,31 @@ function drawPeopleInDrawer(path: string, log: Promise<DispatchEvent[]> = Promis
   ]);
   const observing = new Set<{
     readonly callback: ResizeObserverCallback;
+    /** Each element the observer watches, with its height when the observer began to watch it
+     *  or was last called back for it. */
+    readonly heights: Map<Element, number>;
     readonly observer: ResizeObserver;
   }>();
   const RealResizeObserver = globalThis.ResizeObserver;
   globalThis.ResizeObserver = class {
     readonly #held: {
       readonly callback: ResizeObserverCallback;
+      readonly heights: Map<Element, number>;
       readonly observer: ResizeObserver;
     };
     constructor(callback: ResizeObserverCallback) {
-      this.#held = { callback, observer: this as unknown as ResizeObserver };
+      this.#held = { callback, heights: new Map(), observer: this as unknown as ResizeObserver };
     }
-    observe() {
+    observe(target: Element) {
       observing.add(this.#held);
+      this.#held.heights.set(target, target.getBoundingClientRect().height);
     }
-    unobserve() {}
+    unobserve(target: Element) {
+      this.#held.heights.delete(target);
+    }
     disconnect() {
       observing.delete(this.#held);
+      this.#held.heights.clear();
     }
   } as unknown as typeof ResizeObserver;
   const rectOf = (top: number, height: number) =>
@@ -1403,6 +1412,22 @@ function drawPeopleInDrawer(path: string, log: Promise<DispatchEvent[]> = Promis
         for (const { callback, observer } of [...observing]) callback([], observer);
       });
     },
+    /** Calls back each observer an element of whose height changed since it began to watch that
+     *  element or was last called back for it, and only those, as the browser does. */
+    heightsChanged(): void {
+      act(() => {
+        for (const held of [...observing]) {
+          const changed: ResizeObserverEntry[] = [];
+          for (const [target, height] of held.heights) {
+            const now = target.getBoundingClientRect().height;
+            if (now === height) continue;
+            held.heights.set(target, now);
+            changed.push({ target } as ResizeObserverEntry);
+          }
+          if (changed.length > 0) held.callback(changed, held.observer);
+        }
+      });
+    },
     restore(): void {
       view.unmount();
       globalThis.ResizeObserver = RealResizeObserver;
@@ -1446,6 +1471,36 @@ test("after t o, a row above the focused Collaborators control that grows scroll
       "a growth the browser had already scrolled for was scrolled for again"
     ).toBe(scrolled + 2 * GROWTH);
     expect(page.control().getBoundingClientRect().top).toBe(top);
+  } finally {
+    page.restore();
+  }
+});
+
+// In one frame a row above the focused Collaborators control grows while the row below it shrinks
+// by as much, as two reads that land together can: what Details' box holds keeps its height, and
+// the one child that holds it all observes no change. The hold watches the content around the
+// control at every depth, the rows beside the People rows included, and scrolls Details by the
+// growth. Watching only the box's one child, it heard of no change, and the growth pushed the
+// control down by as much.
+test("after t o, a row above the focused Collaborators control that grows while a row below shrinks by as much in one frame leaves the control where it landed", async () => {
+  const page = drawPeopleInDrawer(`/issues/${KEY}`);
+  try {
+    await userEvent.keyboard("to");
+    await page.focused("t o");
+    const top = page.control().getBoundingClientRect().top;
+    const scrolled = page.box.scrollTop;
+
+    const by = 80;
+    page.grow("row-above", by);
+    page.grow("row-below", -by);
+    page.heightsChanged();
+    expect(page.box.scrollTop, "the row above grew and Details did not scroll by as much").toBe(
+      scrolled + by
+    );
+    expect(
+      page.control().getBoundingClientRect().top,
+      "the row above grew and moved the focused Collaborators control"
+    ).toBe(top);
   } finally {
     page.restore();
   }

@@ -1151,6 +1151,9 @@ test("a place kept in a named box turns the box's own scroll anchoring off until
     if (row === null) throw new Error("r3 missing");
     // user-event's hover sends no clientX/clientY of its own, and the pointer's place is what this row measures.
     fireEvent.pointerOver(row, { clientX: 20, clientY: 220 });
+    // The hand's own move onto the row, which the browser raises after its boundary event and
+    // which is what records the place where the host takes its box over; user-event sets no point.
+    fireEvent.pointerMove(row, { clientX: 20, clientY: 220 });
     expect(chosen()).toEqual({ id: "r3", via: "pointer" });
     expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("none");
 
@@ -1202,6 +1205,9 @@ test("while a place is kept in a named box, the anchor watches the box's other c
 
     // user-event's hover sends no clientX/clientY of its own, and the pointer's place is what this row measures.
     fireEvent.pointerOver(row, { clientX: 20, clientY: 220 });
+    // The hand's own move onto the row, which the browser raises after its boundary event and
+    // which is what records the place where the host takes its box over; user-event sets no point.
+    fireEvent.pointerMove(row, { clientX: 20, clientY: 220 });
     expect(watched.has(above)).toBe(true);
 
     // A pointerout to a relatedTarget outside the rows, at a place of the pointer's own, neither of which user-event's unhover can set.
@@ -1281,13 +1287,14 @@ test("a host that does not take its box over keeps the box's own scroll anchorin
   }
 });
 
-// A scroll event that finds the box where the anchor last found it reports no move of the view,
-// and records nothing. As the page's typeface arrived after Load older landed, with the browser's
-// own anchoring off in Details, the browser raised a scroll event for the box at the offset the
-// place was kept at, before the frame observed the rows laid out again in it. Recording the place
-// at that event kept the focused control where the new typeface had moved it, 38,600 px down, and
-// the observation that followed found nothing to put back.
-test("a scroll event that finds the box where the anchor last found it leaves the place for the change of height observed after it", () => {
+// The box raises a scroll event for a change of height before the frame observes that change, and
+// the anchor makes the change good at the event itself, before it reads it (`ownedScrolled`). As
+// the page's typeface arrived after Load older landed, with the browser's own anchoring off in
+// Details, the browser raised a scroll event for the box at the offset the place was kept at,
+// before the frame observed the rows laid out again in it. Recording the place at that event kept
+// the focused control where the new typeface had moved it, 38,600 px down, and the observation
+// that followed found nothing to put back.
+test("a scroll event raised before the frame observes a change of height makes the change good at that event, and the place holds", () => {
   const box = drawFrameByFrame(ids(30), { ownsScrollAnchoring: true });
   try {
     readerOnR10(box.scroller);
@@ -1296,6 +1303,8 @@ test("a scroll event that finds the box where the anchor last found it leaves th
     listTop += 400;
     expect(controlTop("r10")).toBe(680);
     fireEvent.scroll(box.scroller);
+    expect(controlTop("r10"), "the scroll event left the change for a later observation").toBe(280);
+    expect(box.scroller.scrollTop).toBe(700);
     box.resized();
     expect(controlTop("r10")).toBe(280);
     expect(box.scroller.scrollTop).toBe(700);
@@ -1430,8 +1439,10 @@ test("keepRow(null) lets the row a host kept go, and leaves the reader's own pla
     );
     expect(scroller.scrollTop).toBe(0);
 
-    // The pointer resting on a row is the reader's own place.
+    // The pointer resting on a row is the reader's own place: its boundary event and the hand's
+    // own move onto the row, at a point of the pointer's own, which user-event's hover cannot set.
     fireEvent.pointerOver(rowOf("r4"), { clientX: 20, clientY: 370 });
+    fireEvent.pointerMove(rowOf("r4"), { clientX: 20, clientY: 370 });
     expect(chosen()).toEqual({ id: "r4", via: "pointer" });
     anchor.current?.keepRow(null);
     expect(chosen()).toEqual({ id: "r4", via: "pointer" });
@@ -1442,8 +1453,8 @@ test("keepRow(null) lets the row a host kept go, and leaves the reader's own pla
 });
 
 // A scroll the reader made says where they are now: the row a host kept goes, and the row
-// nearest the middle of the view is the place from then on. A scroll event that finds the box
-// where the anchor last found it reports no move of the view, and leaves the kept row kept.
+// nearest the middle of the view is the place from then on. A scroll event at the offset the
+// place was kept at reports no move of the view, and leaves the kept row kept.
 test("a scroll the reader made lets the row a host kept go, and one that moved nothing leaves it", () => {
   const view = render(<List ownsScrollAnchoring rows={ids(12)} scroller={scrollerRef} />);
   try {
@@ -1652,8 +1663,10 @@ for (const then of [
       box.scroller.scrollTop = 300;
       // The reader's scroll, reported by the box's own scroll event, which user-event has no form for.
       fireEvent.scroll(box.scroller);
-      // The pointer comes to rest on r10 at a place of its own, which user-event's hover cannot set.
+      // The pointer comes to rest on r10 at a place of its own, its boundary event and then the
+      // hand's own move onto the row, which user-event's hover cannot set.
       fireEvent.pointerOver(rowOf("r10"), { clientX: 20, clientY: 260 });
+      fireEvent.pointerMove(rowOf("r10"), { clientX: 20, clientY: 260 });
       expect(chosen()).toEqual({ id: "r10", via: "pointer" });
       expect(viewportTop("r10")).toBe(250);
 
@@ -1768,6 +1781,53 @@ test("a row moved under a pointer resting where its last move left it is no plac
     heights = { r5: 100 };
     box.resized();
     expect(viewportTop("r8")).toBe(450);
+  } finally {
+    box.unmount();
+  }
+});
+
+// A host keeps r8's place (`keepRow`) while the reader's pointer rests where it rested as the list
+// was drawn, over the box's content above the rows: no `pointermove` has been heard since, so no
+// point says where it rests. That content shrinks by 100 px, which brings r2 under the pointer,
+// and the browser raises a `pointerover` for r2 at the resting point; putting r8 back takes r2
+// from under the pointer again, and the browser raises a `pointerout` for it there. Read as the
+// hand moving, the `pointerover` took r2 for the reader's place in the host's stead, the
+// `pointerout` let that place go, and r5 growing then moved r8 down by as much. The history's list
+// is drawn when its log read lands, so a reader whose mouse rests over Details as a key opens it
+// meets exactly this.
+test("before the pointer's first move, the boundary events the browser raises at the point it rests at record no place, and the row a host keeps stays", () => {
+  listTop = 400;
+  const box = drawFrameByFrame(ids(30), { ownsScrollAnchoring: true });
+  try {
+    box.scroller.scrollTop = 300;
+    anchor.current?.keepRow(rowOf("r8"));
+    expect(chosen()).toEqual({ id: "r8", via: "kept" });
+    expect(viewportTop("r8")).toBe(450);
+
+    // The content above the rows shrinks by 100 px, which leaves r2 under the resting pointer.
+    listTop -= 100;
+    // The browser's own boundary event at the point the pointer rests at, which user-event
+    // cannot raise, ahead of the frame's resize observations.
+    fireEvent.pointerOver(rowOf("r2"), { clientX: 21, clientY: 61, relatedTarget: box.scroller });
+    box.resized();
+    expect(chosen(), "a pointerover at the resting pointer took its row for the reader's").toEqual({
+      id: "r8",
+      via: "kept",
+    });
+    expect(viewportTop("r8")).toBe(450);
+
+    // r8 put back took r2 from under the pointer, and the browser's own boundary event for that
+    // comes at the point the pointer rests at, which user-event cannot raise.
+    fireEvent.pointerOut(rowOf("r2"), { clientX: 21, clientY: 61, relatedTarget: box.scroller });
+    expect(chosen(), "a pointerout at the resting pointer let the host's place go").toEqual({
+      id: "r8",
+      via: "kept",
+    });
+
+    // r5 grows by 50 px in a commit of its own.
+    heights = { r5: 2 * ROW_HEIGHT };
+    box.resized();
+    expect(viewportTop("r8"), "the growth of r5 moved the row the host keeps").toBe(450);
   } finally {
     box.unmount();
   }
@@ -1987,8 +2047,10 @@ test("while a place is kept in a named box, the anchor watches the content aroun
     if (root === null) throw new Error("the anchor's root missing");
     expect(watching(true)).toEqual([]);
 
-    // The pointer comes to rest on r3 at a point of its own, which user-event's hover cannot set.
+    // The pointer comes to rest on r3 at a point of its own, its boundary event and then the
+    // hand's own move onto the row, which user-event's hover cannot set.
     fireEvent.pointerOver(rowOf("r3"), { clientX: 20, clientY: 220 });
+    fireEvent.pointerMove(rowOf("r3"), { clientX: 20, clientY: 220 });
     expect(watching(false), "content around the root left unwatched").toEqual([]);
     expect(watched.has(root)).toBe(true);
 
@@ -1999,5 +2061,91 @@ test("while a place is kept in a named box, the anchor watches the content aroun
   } finally {
     view.unmount();
     globalThis.ResizeObserver = RealResizeObserver;
+  }
+});
+
+/**
+ * `List` in a box the host takes over, whose resize observers are called back as the browser's
+ * are: each only where an element it watches has changed height since it was last called back
+ * for that element, or since it began to watch it (`resized`). happy-dom never calls one back,
+ * and the other cases' observers are called back whatever changed.
+ */
+function drawObservingHeights(drawn: string[]) {
+  const RealResizeObserver = globalThis.ResizeObserver;
+  const observers: {
+    callback: ResizeObserverCallback;
+    heights: Map<Element, number>;
+    observer: ResizeObserver;
+  }[] = [];
+  globalThis.ResizeObserver = class {
+    readonly #heights = new Map<Element, number>();
+    constructor(callback: ResizeObserverCallback) {
+      observers.push({
+        callback,
+        heights: this.#heights,
+        observer: this as unknown as ResizeObserver,
+      });
+    }
+    disconnect() {
+      this.#heights.clear();
+    }
+    observe(target: Element) {
+      this.#heights.set(target, target.getBoundingClientRect().height);
+    }
+    unobserve(target: Element) {
+      this.#heights.delete(target);
+    }
+  } as unknown as typeof ResizeObserver;
+  const view = render(<List ownsScrollAnchoring rows={drawn} scroller={scrollerRef} />);
+  const scroller = scrollerRef.current;
+  if (scroller === null) throw new Error("scroller missing");
+  Object.defineProperty(scroller, "clientHeight", { configurable: true, value: VIEWPORT_HEIGHT });
+  Object.defineProperty(scroller, "scrollHeight", {
+    configurable: true,
+    get: () => listTop + listHeight(),
+  });
+  return {
+    resized: () => {
+      for (const { callback, heights: watched, observer } of observers) {
+        const changed: ResizeObserverEntry[] = [];
+        for (const [target, height] of watched) {
+          const now = target.getBoundingClientRect().height;
+          if (now === height) continue;
+          watched.set(target, now);
+          changed.push({ target } as ResizeObserverEntry);
+        }
+        if (changed.length > 0) callback(changed, observer);
+      }
+    },
+    scroller,
+    unmount: () => {
+      view.unmount();
+      globalThis.ResizeObserver = RealResizeObserver;
+    },
+  };
+}
+
+// The reader's focus is on r10's control. In one frame r3, above it, grows by 50 px while r20,
+// below it, shrinks by as much, as a turn's words drawn whole above the place and a turn cut short
+// below it can land together: the list's height is as it was, and so is the height of all the
+// content around the list. The anchor watches the content around the place kept, the rows beside
+// the kept row included, and puts the control back. Watching only the root and the content around
+// it, the anchor heard of no change, and the growth moved the control down by as much.
+test("a row above the kept place that grows while a row below shrinks by as much in the same frame leaves the place where it was", () => {
+  heights = { r20: 2 * ROW_HEIGHT };
+  const box = drawObservingHeights(ids(30));
+  try {
+    box.scroller.scrollTop = 300;
+    const control = rowOf("r10").querySelector<HTMLElement>("button");
+    if (control === null) throw new Error("r10 button missing");
+    control.focus();
+    expect(controlTop("r10")).toBe(280);
+
+    heights = { r3: 2 * ROW_HEIGHT, r20: ROW_HEIGHT };
+    box.resized();
+    expect(controlTop("r10"), "the growth of r3 moved the focused control").toBe(280);
+    expect(box.scroller.scrollTop).toBe(350);
+  } finally {
+    box.unmount();
   }
 });
