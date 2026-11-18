@@ -300,7 +300,7 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 			base := bases[name]
 			names := namesOf(t, base)
 			values := map[string][]any{"attempt": {2}}
-			for kind, other := range map[string]string{"commit": "c9", "deploy": "d9", "graph_tx": "g9", "job": "other-job", "author": "agent-c"} {
+			for kind, other := range map[string]string{"commit": "c9", "deploy": "d9", "graph_tx": "g9", "job": "other-job", "author": "other-author"} {
 				for _, v := range append(slices.Clone(names[kind]), other) {
 					values[kind] = append(values[kind], v)
 					if kind == "author" {
