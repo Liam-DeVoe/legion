@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
@@ -123,7 +122,7 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 		if _, err := rig.consumers.StreamID(ctx); err != nil {
 			return false
 		}
-		readCtx, cancelRead := context.WithTimeout(ctx, time.Second)
+		readCtx, cancelRead := context.WithTimeout(ctx, listenerWait)
 		defer cancelRead()
 		_, _, err := rig.deps.registry.RefreshAt(readCtx, sessionID)
 		return err == nil || errors.Is(err, natsgo.ErrKeyNotFound)

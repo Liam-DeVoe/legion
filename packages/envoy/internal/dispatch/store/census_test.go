@@ -218,7 +218,8 @@ func TestCensusReadsItsStringLiteralsWithStandardConformingStrings(t *testing.T)
 // A census with no options runs each statement under pgmigrate.CensusStatementTimeout, a minute,
 // the bound production's runner gives it, since every test that meets a slow statement sets its
 // own. The census reads the setting it runs under and answers 1 unless it is that minute, so a
-// census given another bound is refused, which the second row shows.
+// census given another bound is refused, which the second row shows. That bound is an hour, so
+// no statement of the census can run into it on a loaded runner and add a refusal of its own.
 func TestACensusWithNoOptionsRunsItsStatementsUnderTheCensusStatementTimeout(t *testing.T) {
 	t.Parallel()
 	check := withCheck(`select case when current_setting('statement_timeout')::interval = interval '1 minute' then 0 else 1 end`)
@@ -227,7 +228,7 @@ func TestACensusWithNoOptionsRunsItsStatementsUnderTheCensusStatementTimeout(t *
 		refusals int
 	}{
 		"no options":         {pgmigrate.CensusOptions{}, 0},
-		"a bound of its own": {pgmigrate.CensusOptions{StatementTimeout: time.Second}, 1},
+		"a bound of its own": {pgmigrate.CensusOptions{StatementTimeout: time.Hour}, 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

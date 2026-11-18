@@ -800,7 +800,7 @@ func TestAgentTargetedMessagesNeedThePersonScopeAndKeepTheirOwnConversation(t *t
 	if len(failedMessage.Deliveries) != 1 || failedMessage.Deliveries[0].State != "failed" ||
 		failedMessage.Deliveries[0].Error == nil ||
 		!strings.HasPrefix(*failedMessage.Deliveries[0].Error, listenerUnreachablePrefix) {
-		t.Fatalf("failed issue-less delivery = %#v", failedMessage.Deliveries)
+		t.Fatalf("failed issue-less delivery, want state failed with an error starting %q: %s", listenerUnreachablePrefix, failed.Body.String())
 	}
 
 	sendStatus = http.StatusOK
