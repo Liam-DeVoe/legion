@@ -619,7 +619,7 @@ afterAll(() => resetNatsConnectForTests());
 // A bound on work, not a hang guard: nothing here waits. The body removes and makes the row's
 // scratch directories, which a loaded host stretches. 60_000. Worst measured cost: 194.62 ms over
 // 10 runs of the `session_shutdown` budget row at 22 busy loops (11 per CPU) on a two-CPU, 8 GiB
-// pod, where 22 stands for 96; 29.72 ms idle over 3 087 invocations.
+// pod; 29.72 ms idle over 3 087 invocations.
 beforeEach(() => {
   rowGeneration += 1;
   jest.useRealTimers();
@@ -13931,9 +13931,9 @@ console.log(JSON.stringify(args));
        *  before it removes the directory: a command the code under test failed to stop ends with
        *  its row, whether the row returned or the runner abandoned it at its limit. */
       const workDirectories: string[] = [];
-      // A hang guard: what can hang is a killed command's group that does not end, which the poll
-      // below waits up to 1_000 turns for. 60_000. Worst measured cost: 563.68 ms at 96 busy loops
-      // (48 per CPU) on a two-CPU pod.
+      // A bound on work, not a hang guard: the poll below waits at most 1_000 turns for a killed
+      // group to end. 60_000. Worst measured cost, on green runs: 563.68 ms at 96 busy loops (48
+      // per CPU) on a two-CPU pod.
       afterEach(async () => {
         for (const directory of workDirectories.splice(0)) {
           let pid = 0;

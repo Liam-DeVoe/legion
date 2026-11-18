@@ -60,9 +60,10 @@ import { renderTemplate } from "./text";
 // the ceiling takes the ceiling and says how many times its worst that is; a row whose loaded
 // worst the ceiling cannot cover moves to a lower rung instead, and its comment says so. A row
 // whose model call only the call's stop or the gate's own 90 s default deadline (`GATE_TIMEOUT_MS`)
-// ends keeps its guard below that deadline, so the runner's limit ends a call that never returns
-// before that deadline can decide the row. The rows that carry 120_000 run on that deadline too,
-// but `bind`'s default answers their model calls at once, so none of their calls waits on it.
+// ends keeps its guard below that deadline, at 60_000, whatever six times its worst is, so the
+// runner's limit ends a call that never returns before that deadline can decide the row. The rows
+// that carry 120_000 run on that deadline too, but `bind`'s default answers their model calls at
+// once, so none of their calls waits on it.
 
 /** Runs a `dispatch` command's --dry-run as the entry's binding does. */
 type DryRunner = (script: string, opts: DryRunOptions) => Promise<DryRunResult>;
