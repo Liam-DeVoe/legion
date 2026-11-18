@@ -1,4 +1,9 @@
-import { checkWithNewerFields } from "@legion/contracts";
+import {
+  checkWithNewerFields,
+  mergedPullRequestsWords,
+  subjectPlace,
+  subjectStateWords,
+} from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
@@ -30,9 +35,9 @@ import { Timestamp } from "../refs/Timestamp";
 /**
  * The one line that answers the gate's question for a check: whether a pass of it stands at
  * what the check compared its results with. The server reads it over every result of the
- * check, so no word here comes from the newest result alone: on an ordinary check, a pass
- * recorded before a fail still stands, and a fail recorded after a pass takes nothing away from
- * it; on a check CI proves, a pass and a fail of CI at one commit leave no pass standing there.
+ * check, so no word here comes from the newest result alone. Two rules decide it: a pass and a
+ * fail that count at one commit of a `before_merge` check leave that commit, and so the check, not
+ * known, whoever recorded them; and a check compared with a branch takes its newest result.
  */
 const PASS_STANDS_LABELS: Record<CheckBlock["pass_stands"]["answer"], string> = {
   no: "No pass stands",
@@ -277,6 +282,39 @@ function ComparedWith({ check }: { check: CheckBlock }): ReactNode {
   ));
 }
 
+/** R13: one row for each head a pass of the check must stand at, under the pill: the pull request,
+ *  its whole head, its state and its roles, in the words `dispatch results` prints on the line of
+ *  that head (`subjectStateWords`); then the line that counts the merged pull requests, which
+ *  decide nothing while one is open. The pill keeps the answer of the whole check. */
+function Heads({ check }: { check: CheckBlock }): ReactNode {
+  const subjects = check.pass_stands.subjects ?? [];
+  if (subjects.length === 0) return null;
+  const merged = mergedPullRequestsWords(check);
+  return (
+    <div className="space-y-1">
+      <ul aria-label={`Heads of ${check.block_id}`} className="space-y-1">
+        {subjects.map((subject) => (
+          <li
+            className={`text-sm break-words ${textSecondaryOnSurface}`}
+            data-pass-stands={subject.answer}
+            data-testid="verification-check-head"
+            key={`${subject.basis.kind}-${subject.basis.pull_request ?? subject.basis.branch ?? ""}-${subject.basis.commit ?? ""}`}
+          >
+            {subjectPlace(subject.basis)} at{" "}
+            <code className="break-all">{subject.basis.commit ?? "an unnamed commit"}</code>:{" "}
+            {subjectStateWords(subject)}
+          </li>
+        ))}
+      </ul>
+      {merged === undefined ? null : (
+        <p className={`text-sm ${textMutedOnSurface}`} data-testid="verification-check-merged">
+          {merged}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function Check({ check }: { check: CheckBlock }): ReactNode {
   const stands = check.pass_stands.answer;
   const roles = check.pass_stands.roles ?? [];
@@ -306,6 +344,7 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
         </span>
         <span className="font-medium">{check.text}</span>
       </div>
+      <Heads check={check} />
       <dl className="grid gap-x-6 gap-y-1 sm:grid-cols-2">
         <Fact label="When" testId="verification-check-when">
           {check.when}

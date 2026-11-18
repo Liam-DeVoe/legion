@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import {
   createIssue,
   createIssueArtifact,
@@ -8,6 +12,7 @@ import {
   recordCheckResult,
   retractCheckResult,
 } from "./api";
+import { runDispatch } from "./dispatch-cli";
 import { connectedDot, documentEditor, paste, placeCaret } from "./editor";
 import { fakeGithubCheckRunReads, seedFakeGithub } from "./fake-github-helpers";
 import { sql } from "./psql";
@@ -262,7 +267,7 @@ test("a check is read over every result of it, never over its newest result alon
     content: `How ${issue.key} is proved.
 
 :::check{#c-both serves="dispatch://${issue.key}/spec#b-r2" surface="cli" run="bun test web/src" negative_control="Record the fail alone and no pass stands."}
-A pass at the head stands under a later fail at the same head.
+A pass and a fail at the head leave the check not known.
 :::
 
 :::check{#c-retracted serves="dispatch://${issue.key}/spec#b-r2" surface="cli" run="bun test web/src" negative_control="Leave the pass alone and it stands."}
@@ -271,16 +276,17 @@ A retracted pass stands for nothing.
 `,
     name: "verification.md",
   });
-  // The tester's pass, then the reviewer's fail at the same commit. The fail is the newest
-  // result of the check, and the tester's pass stands at the head all the same.
-  await recordCheckResult(issue.key, {
+  // The tester's pass, then the reviewer's fail at the same commit of a before_merge check. A
+  // commit holds one answer, so the two leave the head not known, and a later pass would not end
+  // that: only a retraction of the wrong one does.
+  const pass = await recordCheckResult(issue.key, {
     check: "c-both",
     commit: secondHead,
     observed: "41 passed, 0 failed",
     role: "tester",
     verdict: "pass",
   });
-  await recordCheckResult(issue.key, {
+  const fail = await recordCheckResult(issue.key, {
     check: "c-both",
     commit: secondHead,
     failed: 1,
@@ -306,9 +312,9 @@ A retracted pass stands for nothing.
     const checks = page.getByTestId("verification-check");
 
     // Both results are drawn, newest first, each with the reading its role recorded. The
-    // check's own answer is read over both of them: the tester's pass stands at the head, and
-    // the reviewer's later fail takes nothing away from it.
-    const both = checks.filter({ hasText: "A pass at the head stands under a later fail" });
+    // check's own answer is read over both of them: a pass and a fail at the one head leave it
+    // not known, with no role, and the row of that head names both and what ends that state.
+    const both = checks.filter({ hasText: "A pass and a fail at the head leave the check" });
     await expect(both.getByTestId("verification-result")).toHaveCount(2);
     await expect(both.getByTestId("verification-result-verdict")).toHaveText(["Fail", "Pass"]);
     await expect(both.getByTestId("verification-result-role")).toHaveText(["reviewer", "tester"]);
@@ -316,9 +322,14 @@ A retracted pass stands for nothing.
       "40 passed, 1 failed",
       "41 passed, 0 failed",
     ]);
-    await expect(both).toHaveAttribute("data-pass-stands", "yes");
-    await expect(both.getByTestId("verification-check-pass-stands")).toHaveText("A pass stands");
-    await expect(both.getByTestId("verification-check-roles")).toHaveText("from tester");
+    await expect(both).toHaveAttribute("data-pass-stands", "unknown");
+    await expect(both.getByTestId("verification-check-pass-stands")).toHaveText(
+      "Dispatch cannot say whether a pass stands"
+    );
+    await expect(both.getByTestId("verification-check-roles")).toHaveCount(0);
+    await expect(both.getByTestId("verification-check-head")).toHaveText([
+      `#7 at ${secondHead}: not known, as pass ${pass.result.id} and fail ${fail.result.id} count at this commit. A later pass does not end this. A retraction of the wrong one ends it, and so does a change of the check's words. A new head of the pull request gets a state of its own.`,
+    ]);
 
     // The one pass of the other check is retracted, so no pass of it stands. The result is
     // neither changed nor hidden: it shows as retracted, with the reason it is wrong.
@@ -331,6 +342,100 @@ A retracted pass stands for nothing.
     );
     await expect(gone.getByTestId("verification-result-verdict")).toHaveText("Pass");
     await expect(gone.getByTestId("verification-result-commit")).toHaveText(secondHead);
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): a project, its default repository, two open pull requests in the fake GitHub, a
+// Verification document of one check, two recorded results, each record route reading through to
+// that fake for its pull request's head, one run of the real `dispatch results`, then one load of
+// the tab at a desktop width and one at a phone width.
+test("the Verification tab shows the state at each open head", async ({ browser }, testInfo) => {
+  await createProject({ key: "VER", name: "Verification" });
+  await putRepoProject(repository, { default: true, project: "VER" });
+  const issue = await createIssue({ project: "VER", spec, title: "Each open head" });
+  await seedFakeGithub({
+    [repository]: {
+      commit_pulls: { [firstHead]: [7], [secondHead]: [8] },
+      contents: "read",
+      installation_id: 256,
+      pull_requests: "read",
+      pulls: {
+        "7": { head_sha: firstHead, state: "open", title: `${issue.key} the first change` },
+        "8": { head_sha: secondHead, state: "open", title: `${issue.key} the second change` },
+      },
+    },
+  });
+  await createIssueArtifact(issue.key, {
+    content: `How ${issue.key} is proved.
+
+:::check{#c-each serves="dispatch://${issue.key}/spec#b-r2" surface="cli" run="bun test web/src" negative_control="Record the pass at one head alone and no pass stands."}
+A pass must stand at each open head.
+:::
+`,
+    name: "verification.md",
+  });
+  // Each result's record route reads through to the fake for the pull request whose head its
+  // commit is, so the server holds both open heads once both are recorded.
+  const pass = await recordCheckResult(issue.key, {
+    check: "c-each",
+    commit: firstHead,
+    observed: "41 passed",
+    role: "tester",
+    verdict: "pass",
+  });
+  const fail = await recordCheckResult(issue.key, {
+    check: "c-each",
+    commit: secondHead,
+    failed: 1,
+    observed: "40 passed, 1 failed",
+    role: "tester",
+    verdict: "fail",
+  });
+
+  // The lines of the heads that the real command prints for the same issue.
+  const home = mkdtempSync(join(tmpdir(), "dispatch-verification-each-head-"));
+  let printed: string[];
+  try {
+    const read = await runDispatch(["results", "--issue", issue.key], home);
+    expect(read.code, read.stderr).toBe(0);
+    printed = read.stdout
+      .split("\n")
+      .filter((line) => /^ {2}- #\d+ at /.test(line))
+      .map((line) => line.slice(4));
+  } finally {
+    rmSync(home, { force: true, recursive: true });
+  }
+  // The server lists the heads newest learned first, so the command's lines are compared as a set,
+  // and the tab's rows with the command's lines in the command's own order.
+  const wanted = [
+    `#7 at ${firstHead}: yes, from tester. Pass ${pass.result.id} decides it.`,
+    `#8 at ${secondHead}: no, as fail ${fail.result.id} counts there.`,
+  ];
+  expect([...printed].sort()).toEqual(wanted);
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    for (const [width, height, name] of [
+      [1440, 900, "verification-each-head-1440.png"],
+      [390, 844, "verification-each-head-phone.png"],
+    ] as const) {
+      await page.setViewportSize({ height, width });
+      await page.goto(`/issues/${issue.key}/verification`);
+      const check = page.getByTestId("verification-check");
+      await expect(check).toHaveCount(1);
+      // The pill stays, and it shows the answer of the whole check; under it, one row for each
+      // open head, in the words of the command.
+      await expect(check).toHaveAttribute("data-pass-stands", "no");
+      await expect(check.getByTestId("verification-check-pass-stands")).toHaveText(
+        "No pass stands"
+      );
+      await expect(check.getByTestId("verification-check-head")).toHaveText(printed);
+      await expect(check.getByTestId("verification-check-merged")).toHaveCount(0);
+      await page.screenshot({ fullPage: true, path: testInfo.outputPath(name) });
+    }
   } finally {
     await alice.close();
   }

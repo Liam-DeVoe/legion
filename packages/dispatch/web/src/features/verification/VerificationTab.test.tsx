@@ -170,13 +170,20 @@ test("each check reads the server's answer over every result of it", async () =>
   );
 });
 
-// R9: no state of a check is read from its newest result alone. The newest result of this
-// check is a fail, and the pass recorded before it still stands at the head, so the check
-// reads that a pass stands and names the role whose pass it is.
+// No state of a check is read from its newest result alone. The newest result of this check is a
+// fail at a commit the head has moved past, and the pass at the head stands, so the check reads
+// that a pass stands and names the role whose pass it is.
 test("a check whose newest result failed still reads the pass that stands", async () => {
   const { getIssueResults, view } = renderTab(verification, [
     check("c1", [
-      result({ failed: 2, id: "result-new", role: "reviewer", verdict: "fail" }),
+      result({
+        commit_sha: otherCommit,
+        commit_stands: { answer: "other_commit" },
+        failed: 2,
+        id: "result-new",
+        role: "reviewer",
+        verdict: "fail",
+      }),
       result({ id: "result-old" }),
     ]),
   ]);
@@ -196,6 +203,45 @@ test("a check whose newest result failed still reads the pass that stands", asyn
   expect(
     rows.map((row) => within(row).getByTestId("verification-result-verdict").textContent)
   ).toEqual(["Fail", "Pass"]);
+});
+
+// R13: one row for each head a pass of the check must stand at, under the pill, in the words
+// `dispatch results` prints on the line of that head; then the one line that counts the merged
+// pull requests, which decide nothing while one is open. The pill keeps the whole check's answer.
+test("each open head has a row in the words of the command, and the merged ones one count", async () => {
+  const second: CheckBasis = { commit: otherCommit, kind: "pull_request", pull_request: 8 };
+  const merged: CheckBasis = {
+    commit: "f".repeat(40),
+    kind: "pull_request",
+    merged: true,
+    pull_request: 5,
+  };
+  const { getIssueResults, view } = renderTab(verification, [
+    check("c1", [result({ id: "result-pass" })], {
+      compared_with: [head, second, merged],
+      pass_stands: {
+        answer: "no",
+        subjects: [
+          { answer: "yes", basis: head, results: ["result-pass"], roles: ["tester"] },
+          { answer: "no", basis: second, reason: "no_result" },
+        ],
+      },
+    }),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+
+  await screen.findByTestId("verification-checks");
+  expect(screen.getByTestId("verification-check-pass-stands").textContent).toBe("No pass stands");
+  expect(screen.getAllByTestId("verification-check-head").map((row) => row.textContent)).toEqual([
+    `#7 at ${commit}: yes, from tester. Pass result-pass decides it.`,
+    `#8 at ${otherCommit}: no, as it holds no result.`,
+  ]);
+  expect(screen.getByTestId("verification-check-merged").textContent).toBe(
+    "The 1 merged pull request decides nothing while one is open."
+  );
 });
 
 // The two facts of R4, kept apart: where the result's commit stands, and whether the check's
