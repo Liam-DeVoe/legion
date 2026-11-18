@@ -68,6 +68,7 @@ import { libraryRemarkFrontmatterPlugin } from './lib-remark-frontmatter-plugin'
 import { libraryRemarkDirectivePlugin } from './lib-remark-directive-plugin';
 import { libraryRemarkHtmlBlockPlugin, libraryRemarkHtmlFlowPlugin } from './html-blocks';
 import { libraryRemarkNestedLinksPlugin } from './nested-links';
+import { libraryRemarkWholeEmailLinksPlugin } from './whole-email-links';
 import { liveTypedBlocksRemarkPlugin } from './read-only-directives';
 import { brokenAskInputGuards, keepUnselectedAskBlocks, relaxAskContentCheck } from './ask-content';
 import { remarkProofMarksPlugin } from 'proof-sdk-upstream/src/editor/schema/remark-proof-marks-plugin';
@@ -442,6 +443,11 @@ export async function createProofEditor(
     // read it: a block of HTML becomes a paragraph holding the same text, which the schema has a
     // node for. Before the fit check below, which reads that paragraph as the block's content.
     .use(libraryRemarkHtmlBlockPlugin)
+    // An email link remark-gfm made from a bare address starts at the start of the address the
+    // writer wrote, or there is none (./whole-email-links.ts), as in the headless parser. Before
+    // the hoist below, whose copies of a label's link carry no position, so every link it reads is
+    // one the parse made.
+    .use(libraryRemarkWholeEmailLinksPlugin)
     // Last of the remark plugins that shape inline content, so the links it splits are every link
     // the tree holds: a link inside a link label (an autolink, the only nesting CommonMark allows)
     // is hoisted beside the runs around it (./nested-links.ts). `$remark` puts it in `remarkCtx`,

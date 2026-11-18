@@ -42,6 +42,7 @@ import { dispatchMarkPlugins, remarkDispatchMarks, dispatchMarkHandler } from '.
 import remarkInlineLinks from 'remark-inline-links';
 import { remarkSoftBreakAsLine, remarkSoftBreakAsSpace } from './dispatch-soft-breaks.js';
 import { remarkHoistNestedLinks } from './nested-links.js';
+import { remarkWholeEmailLinks } from './whole-email-links.js';
 import { remarkContainerDirectives } from './lib-remark-directive-plugin.js';
 import { remarkHtmlBlockParagraphs, remarkStrictHtmlFlow } from './html-blocks.js';
 import { remarkReadOnlyDirectives } from './read-only-directives.js';
@@ -179,6 +180,11 @@ export async function createHeadlessProof(options: HeadlessProofOptions = {}): P
       // so without this the parse throws and the whole body falls back to its literal source.
       // The live editor's commonmark preset installs the same plugin on its own import parser.
       .use(remarkInlineLinks)
+      // An email link remark-gfm made from a bare address starts at the start of the address
+      // the writer wrote, or there is none (./whole-email-links.ts). Before the hoist below,
+      // whose copies of a label's link carry no position, so every link it reads is one the parse
+      // made.
+      .use(remarkWholeEmailLinks)
       // After remark-inline-links, so a reference-style link inside a label is already the link
       // this splits out: a link inside a link label is hoisted beside the runs around it, each of
       // them wrapped in a copy of the label's link, which is the tree Go's reader reads.
