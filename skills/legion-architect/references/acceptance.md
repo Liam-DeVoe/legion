@@ -102,10 +102,17 @@ controller no message about it.
 
 ## The token the secrets broker lends
 
-Three GitHub writes of your tree's work take the implement App token that the secrets broker
-lends every enrolled pod (`skill://agent-secrets`): a re-run of your tree's CI run, the enqueue of
-a pull request that no merger merges, and a comment on a pull request in a repository that your
-`gh` does not reach. Any other GitHub write your `gh` cannot make is a finding
+The implement App token that the secrets broker lends every enrolled pod (`skill://agent-secrets`)
+takes these GitHub writes of your tree's work, each in the procedure that makes it:
+
+- a re-run of your tree's CI run ([A re-run of your tree's CI run](#a-re-run-of-your-trees-ci-run));
+- for a pull request that no merger merges
+  ([A pull request no merger merges](#a-pull-request-no-merger-merges)), its enqueue on a
+  merge-queue base or the arming of its auto-merge on any other base (step 5), and taking it out
+  of the merge queue or turning its auto-merge off where steps 1 and 7 say;
+- a comment on a pull request in a repository that your `gh` does not reach (below).
+
+Any other GitHub write your `gh` cannot make is a finding
 (`skill://legion-worker/references/findings.md`), never a use of this token. Take the token
 narrowed to the one repository, in this form:
 

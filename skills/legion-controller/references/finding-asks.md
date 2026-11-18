@@ -45,8 +45,14 @@ You file an issue only when nobody owns that code.
    Otherwise reply `Not filed: <reason>` under the evidence, the reason naming the choice a
    person must make or the repository the Apps miss, and open nothing: a finder that reads that
    reply opens its ask itself (`skill://legion-worker/references/findings.md#write-to-the-owner`).
-2. Search first (`skill://dispatch-first`). When an open issue tracks it, comment the evidence
-   there, reply `Filed dispatch://<that KEY>` under the evidence, and file nothing.
+2. Search first (`skill://dispatch-first`). When an open issue tracks it, read whether a running
+   tree owns that issue before you post anything, as step 3 reads the live trees: its record's
+   `tree` field (`read_state` with `issues`) names its root, and an issue with no record stands
+   in no tree. When that root's tree is live, send nothing on and file nothing: reply
+   `Not filed: tracked by dispatch://<KEY>; write to role:<that tree's architect's token>` under
+   the evidence, with the token `issues.<ROOT>.architect.locator.claim` names, so the role writes
+   there itself. Only where no running tree owns it is the evidence yours to take in: comment it
+   on that issue, reply `Filed dispatch://<KEY>` under the evidence, and file nothing.
 3. Check that no running tree owns that code: no live tree whose repository and component match.
    Find the live trees as `skill://legion-controller/references/admission.md` says: each
    recorded root is a record whose `tree` field is its own key, and its row there says when its

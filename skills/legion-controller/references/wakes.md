@@ -159,9 +159,9 @@ carries the same pair, so read it on any of them. A tree the record shows no mov
 
 Read the tree and decide what it needs. Ask a role what it waits on as a Dispatch comment on the
 issue it works that mentions its role, an architect and a phase worker alike
-(`skill://legion-controller/SKILL.md#rules`), so Dispatch delivers the question, retries it and
-records it. Move an issue back a phase where the phase it stands in has nobody to work it. Park the
-tree only as the rule for a move to `backlog` or `icebox` allows
+(`--mention 'role:legion-<project>-<key, lower case>-<role>'`), so Dispatch delivers the question,
+retries it and records it. Move an issue back a phase where the phase it stands in has nobody to
+work it. Park the tree only as the rule for a move to `backlog` or `icebox` allows
 ([Rules](skill://legion-controller/SKILL.md#rules)), and for a tree that waits on an event outside
 Legion, do as [A tree that waits on an event outside Legion](#a-tree-that-waits-on-an-event-outside-legion) says.
 The daemon starts nothing for this wake, and tells you once for
