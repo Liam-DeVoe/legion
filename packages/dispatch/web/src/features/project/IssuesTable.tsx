@@ -556,6 +556,7 @@ export function IssuesTable({
             pager={ISSUE_TABLE_PAGER}
             renderGroup={({ entry, index, measure }) => (
               <GroupRow
+                busy={busy}
                 columns={visibleColumns}
                 viewportWidth={boxWidth}
                 continued={entry.continued}

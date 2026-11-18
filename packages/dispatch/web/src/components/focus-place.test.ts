@@ -1124,6 +1124,75 @@ test("a row removed after its pressed control's hold ended hands the focus to no
   }
 });
 
+/** A row's list - an Inbox row's `Hand this question to` - opened from its trigger in the row:
+ *  the trigger focused, then the list's text box, as the list's own open puts the focus there, so
+ *  the rescue notes the trigger as the panel's opener. The trigger is laid out in the row box's
+ *  sight. */
+function rowList(row: HTMLElement): { list: ListPanel; trigger: HTMLButtonElement } {
+  const trigger = buttonIn(row, "Hand this question to");
+  placeAt(trigger, 200);
+  trigger.focus();
+  const list = listPanel();
+  list.box.focus();
+  return { list, trigger };
+}
+
+/** A pointer pick on the list's option, as a single pick makes it (`MultiSelect`'s `choose`): the
+ *  focus put back on the trigger, the list's panel taken away, and the pick's write holding the
+ *  trigger (`aria-disabled`) for several frames while it is out. */
+async function pickAndHold(list: ListPanel, trigger: HTMLButtonElement): Promise<void> {
+  list.option.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  list.option.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+  trigger.focus();
+  list.panel.remove();
+  trigger.setAttribute("aria-disabled", "true");
+  for (const _ of [0, 1, 2]) await settled();
+}
+
+// (av) A pick in a list's panel that has gone counts as a press on the trigger the list was opened
+// from: the pick's write holds that trigger, and the row around it taken away in the commit that
+// ends the hold - the hand-on answered, the row let go - is the reader's doing, so it keeps the
+// hand-off of (ar), to the control now at the row's place.
+test("a row its list's pick holds, taken away in the commit that ends the hold, keeps today's hand-off", async () => {
+  await withRescue(async () => {
+    const { box, rows } = rowBoxIn(mainOf("Before").main, "One", "Two", "Three");
+    const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+    const third = rows[2] as { mark: HTMLInputElement; row: HTMLElement };
+    const { list, trigger } = rowList(second.row);
+    await pickAndHold(list, trigger);
+    box.dispatchEvent(new Event("scroll"));
+    expect(trigger).toHaveFocus();
+    second.row.remove();
+    await waitFor(() => expect(third.mark).toHaveFocus());
+  });
+});
+
+// (aw) So for (as): once the trigger's hold ends with the row still there, the pick has been
+// answered a frame and a task later, and a live update taking the row away after that is no doing
+// of the reader's: the focus goes into no other row and nothing scrolls (ag).
+test("a row its list's pick held, taken away after the hold ended, hands the focus to no row", async () => {
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await withRescue(async () => {
+      const { box, rows } = rowBoxIn(mainOf("Before").main, "One", "Two", "Three");
+      const second = rows[1] as { mark: HTMLInputElement; row: HTMLElement };
+      const { list, trigger } = rowList(second.row);
+      await pickAndHold(list, trigger);
+      box.dispatchEvent(new Event("scroll"));
+      trigger.removeAttribute("aria-disabled");
+      await settled();
+      second.row.remove();
+      await settled();
+      expect(box).toHaveFocus();
+      expect(document.activeElement?.closest("[data-inbox-row]")).toBeNull();
+      expect(rows[2]?.mark).not.toHaveFocus();
+    });
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+  }
+});
+
 // (ai) A control focused below the fold is one the engine is still to scroll into view - WebKit
 // does so a frame after the focus - and a scroll the page makes first can leave it there. No read
 // has then found it in the reader's sight since it took the focus, so no scroll took it out of

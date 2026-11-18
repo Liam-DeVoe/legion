@@ -34,18 +34,20 @@ function artifactOwner(artifact: Artifact): ArtifactOwner {
  * both land on the open page with no reload: its owner's document list and, for an issue, the
  * issue read the artifact page's header draws from; the document's own read; and the project
  * document page, which reads it by `project/slug`. The slug does not move with a correction, so
- * the same keys name the document after it.
+ * the same keys name the document after it. Answers when the owner's document list has been read
+ * again, or has failed to be (`refreshOwnerArtifacts`).
  *
  * The live stream refreshes the same reads from the event the write appends
  * (`api/event-refresh.ts`), which is how one reader's correction reaches another's page; this is
  * what makes the writer's own page move whether or not that stream is up.
  */
-function refreshArtifact(queryClient: QueryClient, artifact: Artifact): void {
-  refreshOwnerArtifacts(queryClient, artifactOwner(artifact));
+function refreshArtifact(queryClient: QueryClient, artifact: Artifact): Promise<void> {
+  const list = refreshOwnerArtifacts(queryClient, artifactOwner(artifact));
   void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
   void queryClient.invalidateQueries({
     queryKey: ["artifact-ref", `${artifact.project}/${artifact.slug}`],
   });
+  return list;
 }
 
 /**
@@ -178,9 +180,13 @@ export function RemoveDocument({
     label: (name: string) => `Remove ${name}`,
     write: (_name: string, bounds) => api.deleteArtifact(artifact.id, bounds),
     onSettled: () => submitGuard.release(),
+    // Pending, and the button held, through the read of the document list that takes the row
+    // away, so the press is still the cause of the row's going (`causedByReader`). That read
+    // settles either way, and a failed one lets the button go.
     onSuccess: () => {
-      refreshArtifact(queryClient, artifact);
+      const list = refreshArtifact(queryClient, artifact);
       onRemoved?.();
+      return list;
     },
   });
   const problem = remove.isError

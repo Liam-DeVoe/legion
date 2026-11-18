@@ -21,6 +21,7 @@ import { useDialog } from "../shell/useDialog";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { storedSessionTitle } from "./lib/sessionTitles";
+import { useHoldUntilDrawn } from "./useHoldUntilDrawn";
 
 /** One change to the groups: what it is, in the reader's words, and one attempt of it. A delete
  *  is idempotent and goes without the key. A create names what it makes (`made`), which the
@@ -36,7 +37,10 @@ const fieldClass = `h-8 min-w-0 flex-1 rounded border px-2 text-sm ${inputClasse
 
 /** One group: its name, renamable, its members, each removable, and the window's selected
  *  sessions to add. While any group write is pending, every mutating button is disabled so a
- *  second click cannot race the one request that decides the membership. */
+ *  second click cannot race the one request that decides the membership. A write of this card's
+ *  own that lands keeps them disabled until the live update carrying it draws the card anew - it
+ *  is keyed by `updated_at` - or takes it away (`useHoldUntilDrawn`), so the control the reader
+ *  pressed goes as their press's doing; a refusal lets them go at once. */
 function GroupCard({
   group,
   storedTitle,
@@ -48,11 +52,15 @@ function GroupCard({
   storedTitle: (session: string) => string | undefined;
   selected: readonly string[];
   pending: boolean;
-  write: (change: GroupChange) => void;
+  /** Sends `change`, and calls `landed` once Dispatch has made it. */
+  write: (change: GroupChange, landed: () => void) => void;
 }): ReactNode {
   const id = useId();
   const text = useAgentText();
   const [name, setName] = useState(group.name);
+  const [drawing, holdUntilDrawn] = useHoldUntilDrawn();
+  const held = pending || drawing;
+  const send = (change: GroupChange) => write(change, holdUntilDrawn);
   const addable = selected.filter((session) => !(group.sessions ?? []).includes(session));
   return (
     <fieldset aria-label={group.name} className={`grid gap-2 rounded border p-3 ${borderDefault}`}>
@@ -68,9 +76,9 @@ function GroupCard({
         />
         <button
           className={secondaryButtonCompact}
-          disabled={pending || name.trim() === "" || name.trim() === group.name}
+          disabled={held || name.trim() === "" || name.trim() === group.name}
           onClick={() =>
-            write({
+            send({
               label: `Rename of the group ${group.name}`,
               run: (bounds) =>
                 api.updateDeliverySessionGroup(group.id, { name: name.trim() }, bounds),
@@ -95,9 +103,9 @@ function GroupCard({
             <button
               aria-label={`Remove ${text.sessionText(session, storedTitle(session))}`}
               className={dismissButtonText}
-              disabled={pending}
+              disabled={held}
               onClick={() =>
-                write({
+                send({
                   label: `Removal of ${text.sessionText(session, storedTitle(session))} from ${group.name}`,
                   run: (bounds) =>
                     api.updateDeliverySessionGroup(group.id, { remove: [session] }, bounds),
@@ -113,9 +121,9 @@ function GroupCard({
       <div className="flex gap-2">
         <button
           className={secondaryButtonCompact}
-          disabled={pending || addable.length === 0}
+          disabled={held || addable.length === 0}
           onClick={() =>
-            write({
+            send({
               label: `Sessions added to ${group.name}`,
               run: (bounds) => api.updateDeliverySessionGroup(group.id, { add: addable }, bounds),
             })
@@ -126,9 +134,9 @@ function GroupCard({
         </button>
         <button
           className={`${secondaryButtonCompact} ${dangerText}`}
-          disabled={pending}
+          disabled={held}
           onClick={() =>
-            write({
+            send({
               label: `Deletion of the group ${group.name}`,
               run: (bounds) => api.deleteDeliverySessionGroup(group.id, bounds),
             })
@@ -312,7 +320,7 @@ export function SessionGroupsEditor({
               pending={save.isPending}
               selected={selected}
               storedTitle={storedTitle}
-              write={(change) => save.mutate(change)}
+              write={(change, landed) => save.mutate(change, { onSuccess: landed })}
             />
           ))}
         </section>

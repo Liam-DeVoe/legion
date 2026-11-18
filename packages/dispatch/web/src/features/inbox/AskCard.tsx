@@ -247,6 +247,21 @@ function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): Re
     onLive(ask.id, true);
     return () => onLive(ask.id, false);
   }, [ask.id, live, onLive]);
+  // The trigger is held (`aria-disabled`, which keeps the focus on it) from the pick until the
+  // commit after the write's answer: the one in which the list lets go of the row (the release
+  // above) and, where the hand-on takes the ask out of the reader's list, takes the row and this
+  // card away. The hold and that release are both let go by the effects the answer's commit runs,
+  // so they land in one commit, and the page's rescue reads the row's going as the pick's doing
+  // (`causedByReader`): the focus goes to the control now at the row's place. A refusal lets go of
+  // the trigger the commit after its answer, with Retry beside it. While held, the list does not
+  // open.
+  const [answering, setAnswering] = useState(false);
+  useEffect(() => {
+    if (!write.pending) return;
+    setAnswering(true);
+    return () => setAnswering(false);
+  }, [write.pending]);
+  const held = write.pending || answering;
   const waitingOn = askWaitingOnPerson(ask) ?? "";
   // The people are listed only while the list stands open, which is after the reader reached for
   // the control and they were asked for: the query keeps its people for the session, so a card
@@ -278,12 +293,13 @@ function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): Re
         {...badgeReachHandlers(() => setWanted(true))}
       >
         <MultiSelect
+          ariaDisabled={held}
           chevron={false}
           emptyMessage={people.isPending ? "Loading people…" : "Nobody matches that."}
           error={people.isError ? "Could not load the people list." : null}
           label="Hand this question to"
           mode="single"
-          onOpenChange={setOpen}
+          onOpenChange={(next) => setOpen(next && !held)}
           onPick={(login) => {
             if (login !== waitingOn) write.submit(login);
           }}

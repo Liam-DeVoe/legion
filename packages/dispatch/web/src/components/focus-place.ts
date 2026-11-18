@@ -320,11 +320,14 @@ let rescueMounted = false;
 const HELD = '[aria-disabled="true"], :disabled';
 
 /** The reader's latest act - a `pointerdown`, a `keydown`, or a `change` they committed - which
- *  tells a loss the reader caused from one an update made under them: where it landed, the event
- *  that releases it (`pointerup`, `keyup`, none for a change), whether it can still be the cause
- *  of a loss (`live`, `answerPress`), and what stops the timers and the watch that end it. */
+ *  tells a loss the reader caused from one an update made under them: where it landed, the dialog
+ *  or panel it landed in (`DIALOG`) and the loss that region was opened from (`openedFrom`), the
+ *  event that releases it (`pointerup`, `keyup`, none for a change), whether it can still be the
+ *  cause of a loss (`live`, `answerPress`), and what stops the timers and the watch that end it. */
 interface Press {
   live: boolean;
+  readonly opener: Loss | null;
+  readonly region: Element | null;
   readonly release: "keyup" | "pointerup" | null;
   stop: () => void;
   readonly target: Element;
@@ -339,26 +342,43 @@ const RELEASE: Readonly<Record<string, "keyup" | "pointerup">> = {
   pointerdown: "pointerup",
 };
 
+/** The elements `press` reads as now: the one it landed on, and - once that element has left the
+ *  page with the dialog or panel it landed in (`present`) - the control that region was opened
+ *  from too, else the nearest opener before it whose region is still drawn, as `handOn` walks. A
+ *  list's pick or a dialog's confirm takes its region away and hands the focus back to the
+ *  trigger that opened it; a write the press made that takes that trigger, or the row around it,
+ *  away only once the server answers is still the press's doing while the trigger is held. The
+ *  element it landed on still counts, for a loss inside the region that went with it. A press in
+ *  no dialog or panel, or in one opened from the body, is read as it landed. */
+function pressedOn(press: Press): Element[] {
+  const { opener, region, target } = press;
+  if (target.isConnected || region === null || present(region)) return [target];
+  let from = opener;
+  while (from !== null && !present(from.region)) from = from.opener;
+  return from === null ? [target] : [target, from.element];
+}
+
 /** Keeps `press` live while the update that answers it is still to run: a press is the cause only
  *  of the change it leads to. That is a frame and a task from now (`afterComponents`) - from the
  *  press, and again from its release, which a click answers - by when React has committed what the
- *  press did and run its effects, and longer only while the control it was made on is held
- *  (`HELD`), its write out, and then until a frame and a task after that hold ends: the control
- *  taken away, or its `aria-disabled` or `disabled` gone. The hold's end is watched rather than
- *  polled, since its write's latency is the server's. A press past that is no cause, so an update
- *  after it - a live update taking the row away, a refetch emptying the selection bar - is a loss
- *  the reader did not cause. */
+ *  press did and run its effects, and longer only while a control it reads as (`pressedOn`) is
+ *  held (`HELD`), its write out, and then until a frame and a task after that hold ends: the
+ *  control taken away, or its `aria-disabled` or `disabled` gone. The hold's end is watched rather
+ *  than polled, since its write's latency is the server's. A press past that is no cause, so an
+ *  update after it - a live update taking the row away, a refetch emptying the selection bar - is
+ *  a loss the reader did not cause. */
 function answerPress(press: Press): void {
   press.stop();
   press.live = true;
-  const held = () => press.target.isConnected && press.target.closest(HELD) !== null;
+  const held = () =>
+    pressedOn(press).some((pressed) => pressed.isConnected && pressed.closest(HELD) !== null);
   press.stop = afterComponents(() => {
     if (!held()) {
       press.live = false;
       return;
     }
-    // The whole document is watched, so that the control going with a parent of it, or a
-    // fieldset around it enabled again, ends the hold too.
+    // The whole document is watched, so that the control going with a parent of it, a fieldset
+    // around it enabled again, or the region the press landed in going, ends the hold too.
     const watcher = new MutationObserver(() => {
       if (held()) return;
       watcher.disconnect();
@@ -397,7 +417,9 @@ function pressPlaces(element: Element): Element[] {
  * Whether the reader caused the loss of `element`'s focus: their latest act - a `pointerdown`, a
  * `keydown`, or a `change` they committed (a select's pick) - is still live, its answer not yet
  * run (`answerPress`), and landed on the element, inside the row it was in, or inside the dialog,
- * panel or selection bar it was lost from (`pressPlaces`). A loss the reader caused keeps the
+ * panel or selection bar it was lost from (`pressPlaces`), read at every element the press reads
+ * as now (`pressedOn`): a pick in a list, a confirm in a dialog, that has gone counts as a press on
+ * the trigger the list or the dialog was opened from as well. A loss the reader caused keeps the
  * hand-off that pulls the focus to the control now at the lost one's place; one they did not - a
  * live update taking a row away, a refetch emptying a bar - moves the focus into no row and
  * scrolls nothing. The rescue and every component hand-off that can move the focus to a row read
@@ -407,18 +429,22 @@ export function causedByReader(element: Element): boolean {
   if (!rescueMounted) return true;
   const press = recentPress();
   if (press === null) return false;
-  return pressPlaces(element).some(
-    (place) => place === press.target || place.contains(press.target)
+  const pressed = pressedOn(press);
+  return pressPlaces(element).some((place) =>
+    pressed.some((each) => place === each || place.contains(each))
   );
 }
 
-/** Whether the reader's latest press, while it is still live (`answerPress`), was on a row's mark:
- *  the selection bar reads this beside `causedByReader`, since unticking the last row by its mark
- *  empties the bar while the focus may rest in it (a checkbox a click leaves unfocused, as WebKit
- *  does). */
+/** Whether the reader's latest press, while it is still live (`answerPress`), was on a row's mark,
+ *  read at every element the press reads as now (`pressedOn`): the selection bar reads this beside
+ *  `causedByReader`, since unticking the last row by its mark empties the bar while the focus may
+ *  rest in it (a checkbox a click leaves unfocused, as WebKit does). */
 export function pressOnRowMark(): boolean {
   const press = recentPress();
-  return press !== null && press.target.closest(ROW) !== null && press.target.matches(MARK);
+  return (
+    press !== null &&
+    pressedOn(press).some((each) => each.closest(ROW) !== null && each.matches(MARK))
+  );
 }
 
 /** Answers a loss the reader can no longer see, in a region still in the page: nothing scrolls,
@@ -1090,13 +1116,18 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
     };
     /** Records the reader's own act - a `pointerdown`, a `keydown`, or a `change` they committed, a
      *  select's pick that Playwright and assistive tech make without a key or a pointer - so a loss
-     *  while it is live can be told from one an update made under them (`causedByReader`). A newer
-     *  act ends the one before it, and the watch on that one's hold with it. */
+     *  while it is live can be told from one an update made under them (`causedByReader`), with
+     *  the dialog or panel it landed in and the loss that region was opened from, read now, while
+     *  the region is still in the page, for when a pick or a confirm takes it away (`pressedOn`).
+     *  A newer act ends the one before it, and the watch on that one's hold with it. */
     const notePress = (event: Event) => {
       if (!(event.target instanceof Element)) return;
       lastPress?.stop();
+      const region = event.target.closest(DIALOG);
       lastPress = {
         live: true,
+        opener: region === null ? null : (openedFrom.get(region) ?? null),
+        region,
         release: RELEASE[event.type] ?? null,
         stop: () => undefined,
         target: event.target,

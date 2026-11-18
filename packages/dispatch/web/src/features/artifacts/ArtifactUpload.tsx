@@ -70,16 +70,22 @@ export function uploadErrorMessage(error: unknown): string {
   return "Could not upload the artifact.";
 }
 
-/** Refreshes the lists a write to `owner` adds a row to: an upload's, and a new document's. */
-export function refreshOwnerArtifacts(queryClient: QueryClient, owner: ArtifactOwner): void {
+/** Refreshes the lists a write to `owner` adds a row to: an upload's, and a new document's.
+ *  Answers when the owner's document list has been read again, or has failed to be: a removal
+ *  waits on it, so its button stays held until that read takes the row away. */
+export function refreshOwnerArtifacts(
+  queryClient: QueryClient,
+  owner: ArtifactOwner
+): Promise<void> {
   if ("issue" in owner) {
-    void queryClient.invalidateQueries({ queryKey: ["artifacts", owner.issue] });
+    const list = queryClient.invalidateQueries({ queryKey: ["artifacts", owner.issue] });
     void queryClient.invalidateQueries({ queryKey: ["issue", owner.issue] });
-  } else if ("project" in owner) {
-    void queryClient.invalidateQueries({ queryKey: ["project", owner.project, "artifacts"] });
-  } else {
-    void queryClient.invalidateQueries({ queryKey: ["agent-artifacts", owner.session] });
+    return list;
   }
+  if ("project" in owner) {
+    return queryClient.invalidateQueries({ queryKey: ["project", owner.project, "artifacts"] });
+  }
+  return queryClient.invalidateQueries({ queryKey: ["agent-artifacts", owner.session] });
 }
 
 /** `text` added to the end of a draft, a space apart from what is already there. */
