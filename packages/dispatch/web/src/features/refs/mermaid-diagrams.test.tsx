@@ -8,6 +8,7 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
+import { quietConsoleError } from "../../__tests__/act-warnings";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -816,7 +817,7 @@ describe("Mermaid diagrams", () => {
     await warmMarkdownRenderer();
     jest.useFakeTimers();
     FakeWorker.startFails = true;
-    const logged = spyOn(console, "error").mockImplementation(() => {});
+    const logged = quietConsoleError();
     const failures = () =>
       logged.mock.calls.filter(
         ([message]) => typeof message === "string" && message.startsWith("Showing Mermaid source")
@@ -882,7 +883,7 @@ describe("Mermaid diagrams", () => {
 
     test("while the renderer is failed an uncached source draws unavailable inside the call and is not queued", async () => {
       FakeWorker.startFails = true;
-      const logged = spyOn(console, "error").mockImplementation(() => {});
+      const logged = quietConsoleError();
       try {
         requestMermaidDrawing("sequenceDiagram\n  Alice->>Bob: Before", () => {});
         await waitFor(() => expect(logged).toHaveBeenCalledTimes(1));
@@ -914,7 +915,7 @@ describe("Mermaid diagrams", () => {
     test("every draw waiting on a worker that fails draws unavailable, once", async () => {
       // The worker never answers, so one source stays in flight with two draws, the other queued.
       FakeWorker.answer = () => undefined;
-      const logged = spyOn(console, "error").mockImplementation(() => {});
+      const logged = quietConsoleError();
       try {
         const drawn: string[] = [];
         const record = (label: string) => (drawing: MermaidDrawing) =>
@@ -989,7 +990,7 @@ describe("Mermaid diagrams", () => {
 
     test("resolves once a failed renderer clears the queue", async () => {
       FakeWorker.startFails = true;
-      const logged = spyOn(console, "error").mockImplementation(() => {});
+      const logged = quietConsoleError();
       try {
         const drawn: MermaidDrawing[] = [];
         requestMermaidDrawing("sequenceDiagram\n  Alice->>Bob: Never", (drawing) =>
