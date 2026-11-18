@@ -186,13 +186,19 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 // writeFollowerNodes writes the session nodes of the followers one ask batch copies. A session
 // that follows an ask is a node of the store from the write that adds it (asks.Follow), and the
 // batch's copy of the follower rows reaches no asks.Follow: so the batch writes each follower's
-// node beside that copy, at the sentinel, as every write of the seed's is, and a follower an
-// earlier batch wrote moves nothing. Without it a seeded ask's followed_by edges would answer no
-// node in any read, and the census would report every follower. The nodes go in one
-// graphstore.Write, which takes their rows in ascending (kind, id) and appends their base
-// attributes after them; the follower rows carry no foreign key into the store, so where the copy
-// falls beside this moves no lock of the store's order.
+// node beside that copy, at the sentinel, as every write of the seed's is. A follower an earlier
+// batch wrote is written again, so each node restates its session (graphstore.Node's Restates):
+// the seed owns no session's state or visibility, so a node written again keeps the ones the
+// store holds, and a node the store does not hold yet is made as graphstore.SessionNode states
+// it. Without it a seeded ask's followed_by edges would answer no node in any read, and the
+// census would report every follower. The nodes go in one graphstore.Write, which takes their
+// rows in ascending (kind, id) and appends their base attributes after them; the follower rows
+// carry no foreign key into the store, so where the copy falls beside this moves no lock of the
+// store's order.
 func writeFollowerNodes(ctx context.Context, tx pgx.Tx, nodes []graphstore.Node) error {
+	for index := range nodes {
+		nodes[index].Restates = true
+	}
 	if err := graphstore.Write(ctx, tx, nodes, nil); err != nil {
 		return fmt.Errorf("the ask followers' nodes: %w", err)
 	}
@@ -370,8 +376,10 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 // the aliases the server proved of its author go among the comment's own tuples, and the
 // author's node goes among the batch's nodes once, as AuthorFacts makes it for the batch's first
 // comment. The batch's one graphstore.Write then takes every node row before it appends a tuple,
-// which is the store's lock order. Write moves nothing on a node that is already there, so only
-// the first batch makes the author's node, at the time of the first comment the seed writes, as
+// which is the store's lock order. Every batch writes the author's node again, so it restates the
+// author (graphstore.Node's Restates), as the backfill's comment write does: no comment owns its
+// author's state or visibility, so a later batch keeps the ones the store holds, and only the
+// first batch makes the author's node, at the time of the first comment the seed writes, as
 // Authored makes it at the first comment that names it. writeComments refused an author that
 // names nobody before its first batch, so every comment here names one.
 func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphstore.Tuple) {
@@ -397,6 +405,9 @@ func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphsto
 			authors = made
 		}
 		tuples = append(tuples, facts...)
+	}
+	for index := range authors {
+		authors[index].Restates = true
 	}
 	nodes = append(nodes, authors...)
 	return nodes, tuples

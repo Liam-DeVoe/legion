@@ -71,7 +71,10 @@ const storeStepWait = 30 * time.Second
 // step takes, and once the path's backend has queued behind it the test reads the statement that
 // backend waits at, which has to be the statement that takes the step, and the table locks its
 // transaction holds, which have to include every earlier step's and none of a later step's
-// (requireEachDocsStepIsWaitedAtInTurn). These writers run on the service's own pool, so the
+// (requireEachDocsStepIsWaitedAtInTurn). Held at the revision fence, which every path takes right
+// after its owner row or its event cursor row, the write holds no lock of a table or of a row but
+// the ones the steps before the fence take and the fence's own table lock
+// (requireNothingBetweenTheStepsAndTheFence). These writers run on the service's own pool, so the
 // backend a run waits on is read from the holder: the one backend queued behind it.
 func TestEveryDocsStoreWriterTakesTheStoreLockOrder(t *testing.T) {
 	ctx := context.Background()
@@ -117,6 +120,14 @@ type docsTableLock struct {
 
 func (l docsTableLock) String() string { return l.mode + " on " + l.table }
 
+// docsRowLock is one row a transaction has locked, named by its table and its primary key, its
+// columns' values joined by ", " (rowsLocked).
+type docsRowLock struct {
+	table, key string
+}
+
+func (l docsRowLock) String() string { return fmt.Sprintf("the %s row %q", l.table, l.key) }
+
 // docsStep is one lock step of a write path.
 type docsStep struct {
 	name string
@@ -138,6 +149,10 @@ type docsStep struct {
 	at string
 	// takes are the table locks the step shows once it has run.
 	takes []docsTableLock
+	// row is the one row the step locks, for a step whose statement names that row by its key:
+	// the owner row and the tick's event cursor row. A write held at the revision fence has locked
+	// no row but the ones the steps before the fence name (requireNothingBetweenTheStepsAndTheFence).
+	row docsRowLock
 }
 
 // docsWriter is one write path under test: the steps it takes, in the order it takes them, and
@@ -275,6 +290,7 @@ func (r *docsWriterRig) tickEvents() docsWriter {
 				// The insert that starts a build's cursor runs first, and does nothing where the
 				// row is there, as it is here.
 				takes: []docsTableLock{{"block_index_event_cursors", docsRowExclusiveMode}, {"block_index_event_cursors", docsRowShareMode}},
+				row:   docsRowLock{"block_index_event_cursors", ""},
 			},
 			{
 				name: "the revision fence", order: docsFenceStep,
@@ -529,6 +545,7 @@ func (r *docsWriterRig) ownerStep() docsStep {
 		},
 		at:    docsOwnerStatement,
 		takes: []docsTableLock{{"issues", docsRowShareMode}},
+		row:   docsRowLock{"issues", "CORE-1"},
 	}
 }
 
@@ -685,7 +702,8 @@ func requireTheDocsOrderAdmits(t *testing.T, writer docsWriter) {
 // the stopped write to the statement that takes the step and to the locks of exactly the steps
 // before it, as api's requireEachStepIsWaitedAtInTurn does. A lock several steps show is read for
 // the first of them, the one that takes it. Every event these paths append is an issue's, so none
-// of them takes a lock on projects.
+// of them takes a lock on projects. Held at the revision fence, the write is held to taking no
+// lock besides those as well (requireNothingBetweenTheStepsAndTheFence).
 func requireEachDocsStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig *docsWriterRig, writer docsWriter) {
 	t.Helper()
 	first := map[docsTableLock]int{}
@@ -731,6 +749,9 @@ func requireEachDocsStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig 
 			t.Errorf("%s held at %s holds a lock on projects: it took the project of its event, which an issue's event does not name (it holds %v)",
 				writer.name, step.name, held)
 		}
+		if step.order == docsFenceStep {
+			rig.requireNothingBetweenTheStepsAndTheFence(t, ctx, writer, index, backend, held)
+		}
 		release()
 		select {
 		case err := <-done:
@@ -739,6 +760,56 @@ func requireEachDocsStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig 
 			}
 		case <-time.After(storeStepWait):
 			t.Fatalf("%s did not finish within %s of being let go at %s", writer.name, storeStepWait, step.name)
+		}
+	}
+}
+
+// requireNothingBetweenTheStepsAndTheFence holds a write stopped at the revision fence to the
+// locks of the steps before it and the fence's own table lock, which its statement takes before
+// it waits on the row, and to nothing more. A settlement takes the fence right after its owner
+// row (lockSettlementFence), the tick's pass over an owed document right after its owner row, and
+// its read of the events right after its event cursor row, so a lock the write holds there that
+// none of those steps takes is one it took between the step before the fence and the fence, and
+// the failure names it. It reads both kinds of lock: the table locks the transaction holds, and
+// the rows it has locked (rowsLocked), each of which has to be a row a step before the fence
+// names (docsStep's row), since a lock of another row of a table an earlier step locks shows no
+// table lock of its own. Only the fence is held to this: past it, a path takes locks no step of
+// the written order names - a version's row, an ask's row, the share of a row a foreign key reads.
+func (r *docsWriterRig) requireNothingBetweenTheStepsAndTheFence(t *testing.T, ctx context.Context, writer docsWriter, index int, backend uint32, held []docsTableLock) {
+	t.Helper()
+	step := writer.steps[index]
+	before := "the start of its transaction"
+	if index > 0 {
+		before = writer.steps[index-1].name
+	}
+	taken := map[docsTableLock]bool{}
+	for _, earlier := range writer.steps[:index+1] {
+		for _, lock := range earlier.takes {
+			taken[lock] = true
+		}
+	}
+	var named []docsRowLock
+	for _, earlier := range writer.steps[:index] {
+		if earlier.row.table != "" {
+			named = append(named, earlier.row)
+		}
+	}
+	var tables []string
+	for _, lock := range held {
+		if !slices.Contains(tables, lock.table) {
+			tables = append(tables, lock.table)
+		}
+		if !taken[lock] {
+			t.Errorf("%s held at %s holds %s, which neither %s nor a step before it takes: it took that lock between %s and %s, which it takes right after %s (it holds %v)",
+				writer.name, step.name, lock, step.name, before, step.name, before, held)
+		}
+	}
+	locked := r.rowsLocked(t, ctx, backend, tables)
+	t.Logf("held at %s, %s has locked: %v", step.name, writer.name, locked)
+	for _, row := range locked {
+		if !slices.Contains(named, row) {
+			t.Errorf("%s held at %s has locked %s, which no step before it locks: it took that lock between %s and %s, which it takes right after %s (it has locked %v)",
+				writer.name, step.name, row, before, step.name, before, locked)
 		}
 	}
 }
@@ -982,4 +1053,60 @@ func (r *docsWriterRig) locksHeld(t *testing.T, ctx context.Context, backend uin
 		t.Fatalf("read the locks backend %d holds: %v", backend, err)
 	}
 	return held
+}
+
+// rowsLocked is every row of tables that backend's transaction has locked, updated or deleted,
+// each named by its table and its primary key, in table and key order. A row lock, an update and
+// a delete each stamp the row's xmax with the transaction's id, which the row keeps while that
+// transaction is open, and a read through the pool still sees the row as it stood before it, so
+// such a row is the one whose xmax is the backend's transaction id (pg_stat_activity's
+// backend_xid). A transaction is given that id by its first row lock or write, so one with none
+// has locked no row. A row two open transactions lock at once carries a multixact rather than
+// either id, which no run of these paths holds at its fence. A table with no primary key names a
+// row by its ctid.
+func (r *docsWriterRig) rowsLocked(t *testing.T, ctx context.Context, backend uint32, tables []string) []docsRowLock {
+	t.Helper()
+	var xid *string
+	if err := r.database.Pool.QueryRow(ctx,
+		`select backend_xid::text from pg_stat_activity where pid = $1`, backend).Scan(&xid); err != nil {
+		t.Fatalf("read the transaction id of backend %d: %v", backend, err)
+	}
+	if xid == nil {
+		return nil
+	}
+	var locked []docsRowLock
+	for _, table := range tables {
+		rows, err := r.database.Pool.Query(ctx, `
+			select a.attname::text from pg_index i
+			join pg_attribute a on a.attrelid = i.indrelid and a.attnum = any(i.indkey)
+			where i.indrelid = $1::text::regclass and i.indisprimary
+			order by array_position(i.indkey::int2[], a.attnum)`, table)
+		if err != nil {
+			t.Fatalf("read the primary key of %s: %v", table, err)
+		}
+		columns, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read the primary key of %s: %v", table, err)
+		}
+		key := "locked.ctid::text"
+		if len(columns) > 0 {
+			for index, column := range columns {
+				columns[index] = "locked." + pgx.Identifier{column}.Sanitize()
+			}
+			key = "concat_ws(', ', " + strings.Join(columns, ", ") + ")"
+		}
+		rows, err = r.database.Pool.Query(ctx, "select "+key+" from "+pgx.Identifier{table}.Sanitize()+
+			" locked where locked.xmax::text = $1 order by 1", *xid)
+		if err != nil {
+			t.Fatalf("read the rows of %s backend %d has locked: %v", table, backend, err)
+		}
+		keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read the rows of %s backend %d has locked: %v", table, backend, err)
+		}
+		for _, key := range keys {
+			locked = append(locked, docsRowLock{table: table, key: key})
+		}
+	}
+	return locked
 }
