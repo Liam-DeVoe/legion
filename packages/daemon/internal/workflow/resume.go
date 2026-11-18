@@ -243,7 +243,11 @@ func (e *Engine) startSuspendedOwner(ctx context.Context, tx pgx.Tx, owner suspe
 	if OwedEntry(owner.run, owner.root, row.Entry) {
 		return true, e.sendOwedEntry(ctx, tx, owner.issue, owner.role, row, startMarks{ruleResume: true})
 	}
-	resume, err := e.resumeTask(ctx, tx, owner.issue, reviewedPart(owner.role, owner.issue.Phase, row))
+	reviewed, err := e.reviewedPartOf(ctx, tx, owner.issue, owner.role, row)
+	if err != nil {
+		return false, err
+	}
+	resume, err := e.resumeTask(ctx, tx, owner.issue, reviewed)
 	if err != nil {
 		return false, err
 	}

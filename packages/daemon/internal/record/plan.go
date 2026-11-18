@@ -375,6 +375,25 @@ func (s *Postgres) PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Is
 	return earlier, nil
 }
 
+// SetStepReviewedHead writes head as the commit the newest run of the step at position of task of
+// issue's plan at generation read (plan_steps.reviewed_head, PlanStep.ReviewedHead): the commit
+// a step of the type review that runs as step completed at, which the task of that step's next run
+// names (workflow's reviewedPartFor), as the reviewer's phases row names its own (PhaseRow
+// .ReviewedHead). The clear of a generation empties it (clearGeneration), and a carried run keeps
+// it (CarryPlan). A step the plan does not hold is an error: the workflow writes only the step its
+// task stands at.
+func SetStepReviewedHead(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, position int, head string) error {
+	tag, err := tx.Exec(ctx, `update plan_steps set reviewed_head = $5
+		where issue = $1 and generation = $2 and task = $3 and position = $4`, issue, int64(generation), task, position, head)
+	if err != nil {
+		return fmt.Errorf("write the reviewed commit of step %d of task %s of %s at generation %d: %w", position, task, issue, generation, err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("write the reviewed commit of step %d of task %s of %s at generation %d: the plan holds no such step", position, task, issue, generation)
+	}
+	return nil
+}
+
 // CarryPlan copies the plan of issue at generation from to generation to: every version, every task
 // and every step. carried is a hand-over that carries its run, whose tasks go on where they stood,
 // so each task keeps its state, its place and its counts, and each step the commit its review read.

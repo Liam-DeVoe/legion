@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -421,8 +422,11 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 	marks startMarks) error {
 	task := row.EntryTask
 	if task == "" {
-		var err error
-		if task, err = e.resumeTask(ctx, tx, issue, reviewedPart(role, issue.Phase, row)); err != nil {
+		reviewed, err := e.reviewedPartOf(ctx, tx, issue, role, row)
+		if err != nil {
+			return err
+		}
+		if task, err = e.resumeTask(ctx, tx, issue, reviewed); err != nil {
 			return err
 		}
 	}
@@ -1035,8 +1039,12 @@ func startsReviewRound(role claim.Role, at phase.Phase) bool {
 
 // reviewedPartFor is reviewedPart for a start of role on issue, in the phase the issue stands in,
 // whose caller holds no phases row of that role: the transition's start and the promotion's. It
-// reads the reviewer's row only for a review round, so no other start reads the record for it.
+// reads the reviewer's row only for a review round, so no other start reads the record for it. At
+// step it reads the commit of the step the task stands at (stepReviewedPart).
 func (e *Engine) reviewedPartFor(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) (reviewedCommit, error) {
+	if issue.Phase == phase.Step {
+		return e.stepReviewedPart(ctx, tx, issue, role)
+	}
 	if !startsReviewRound(role, issue.Phase) {
 		return "", nil
 	}
@@ -1045,6 +1053,35 @@ func (e *Engine) reviewedPartFor(ctx context.Context, tx pgx.Tx, issue record.Is
 		return "", err
 	}
 	return reviewedPart(role, issue.Phase, reviewer), nil
+}
+
+// reviewedPartOf is reviewedPart for a start of role on issue whose caller holds role's phases row
+// (row): a resume of the worker of the issue's phase. At step it reads the commit of the step the
+// task stands at (stepReviewedPart), so a resumed review step is told the commit its last run read,
+// as a resumed reviewer is.
+func (e *Engine) reviewedPartOf(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, row record.PhaseRow) (reviewedCommit, error) {
+	if issue.Phase == phase.Step {
+		return e.stepReviewedPart(ctx, tx, issue, role)
+	}
+	return reviewedPart(role, issue.Phase, row), nil
+}
+
+// stepReviewedPart is the commit a start of role at step names as the one the newest run of its
+// step read (record.PlanStep.ReviewedHead, which recordStepReview writes), so a review step of a
+// role the deployment defines can read the difference from that commit to the head, as the
+// reviewer does: the commit of the step the issue's task stands at, where that step is role's and
+// of the type review, and "" otherwise — a step of another type, and the step's first run of a
+// generation, whose row holds none.
+func (e *Engine) stepReviewedPart(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) (reviewedCommit, error) {
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return "", err
+	}
+	step, ok := w.planStepAt(w.Place)
+	if !ok || claim.Role(step.Role) != role || step.Type != string(plan.TypeReview) {
+		return "", nil
+	}
+	return reviewedCommit(step.ReviewedHead), nil
 }
 
 func continueLine(issue record.Issue) string {

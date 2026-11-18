@@ -853,3 +853,33 @@ func deliverPhaseTask(t *testing.T, h *harness, token claim.Token, id, task stri
 		t.Fatalf("deliver %s to %s: %v", id, token, err)
 	}
 }
+
+// A completion carries the entry its claim serves, the one value the entry fence reads, so the
+// workflow can hold a review step's commit to the entry that stands: a tester serving entry 1
+// reports entry 1, whether its row stands on 2 (a behind completion at the recorded head, which
+// the fence takes) or on 1.
+func TestACompletionCarriesTheEntryItsClaimServes(t *testing.T) {
+	for _, row := range []int64{2, 1} {
+		t.Run(fmt.Sprintf("the row on %d", row), func(t *testing.T) {
+			h, _, facts := newEntryHarness(t)
+			seedIssueAt(t, h, "LEGION-208", phase.Testing)
+			seedPullRequest(t, h, "LEGION-208", headSHA)
+			seedEntry(t, h, "LEGION-208", claim.RoleTester, row)
+			tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+			takeTask(t, h, tester.token, "outbox:77", "test LEGION-208", 1, 1)
+
+			completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+				Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}))
+
+			var entries []int64
+			for _, fact := range facts.recorded() {
+				if completed, ok := fact.(intake.HandoffComplete); ok && completed.Role == claim.RoleTester {
+					entries = append(entries, completed.Entry)
+				}
+			}
+			if len(entries) != 1 || entries[0] != 1 {
+				t.Fatalf("the tester's completions carried the entries %v, want the one completion's 1, the entry its claim serves", entries)
+			}
+		})
+	}
+}

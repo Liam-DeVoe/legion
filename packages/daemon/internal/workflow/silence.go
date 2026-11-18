@@ -151,7 +151,11 @@ func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root recor
 			return err
 		}
 	} else {
-		resume, err := e.resumeTask(ctx, tx, issue, reviewedPart(fact.Role, issue.Phase, row))
+		reviewed, err := e.reviewedPartOf(ctx, tx, issue, fact.Role, row)
+		if err != nil {
+			return err
+		}
+		resume, err := e.resumeTask(ctx, tx, issue, reviewed)
 		if err != nil {
 			return err
 		}

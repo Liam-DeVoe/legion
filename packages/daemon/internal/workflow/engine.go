@@ -870,6 +870,34 @@ func (e *Engine) ranUnreported(ctx context.Context, tx pgx.Tx, issue record.Issu
 	return run.Claim != nil, nil
 }
 
+// recordStepReview writes the commit a completion of a step of the type review that runs as step
+// read on that step's plan row (record.SetStepReviewedHead), so the task of the step's next run
+// names it (reviewedPartFor), as the reviewer's next round names the commit its own review read
+// (R11). It writes only for a completion of the entry that stands (slice 3's rule, by equality of
+// an entry number and no time compared): row, the role's phases row the completion read in its own
+// transaction before the move raises any entry, holds the task of an entry (EntryTask, which the
+// clear of a generation empties and only a raise writes again) and stands on the entry the
+// completion carries (fact.Entry, the one value the route's entry fence reads). A completion the
+// route read before a reset of the tree's generation and the engine applies after it so writes no
+// commit of the generation before into the new one, whether or not the promotion raised the entry
+// since. A row a start ran stands on 1 or above, so a completion of entry 0 writes none. Otherwise
+// it writes nothing: the commit stays where it stood, and the next run reads more. A step of
+// another type writes none, and nor does a completion naming no commit.
+func (e *Engine) recordStepReview(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, fact intake.HandoffComplete) error {
+	if fact.Commit == "" || row.EntryTask == "" || fact.Entry != row.Entry {
+		return nil
+	}
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	step, ok := w.planStepAt(w.Place)
+	if !ok || claim.Role(step.Role) != fact.Role || step.Type != string(plan.TypeReview) {
+		return nil
+	}
+	return record.SetStepReviewedHead(ctx, tx, issue.Key, issue.Generation, w.Task, w.Place.Position, fact.Commit)
+}
+
 func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComplete) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -1017,7 +1045,12 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		return intake.Result{}, err
 	case phase.Step:
 		// A role the deployment defines reports pass or fail and writes no handoff record; its fail
-		// goes back to the step its returnTo names, or to the one its plan reads (returnTarget).
+		// goes back to the step its returnTo names, or to the one its plan reads (returnTarget). A
+		// step of the type review keeps the commit its completion read first, before the move
+		// raises any entry (recordStepReview).
+		if err := e.recordStepReview(ctx, tx, *issue, row, fact); err != nil {
+			return intake.Result{}, err
+		}
 		switch fact.Verdict {
 		case "fail":
 			return intake.Result{}, e.transition(ctx, tx, *issue, TriggerStepFailed, returnTo, row, pr, "")

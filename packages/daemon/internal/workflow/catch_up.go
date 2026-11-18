@@ -244,7 +244,11 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 			"issue", issue.Key, "role", role, "phase", issue.Phase, "entry", row.Entry, "launch", fact.Launch)
 		return nil
 	}
-	resume, err := e.resumeTask(ctx, tx, *issue, reviewedPart(role, issue.Phase, row))
+	reviewed, err := e.reviewedPartOf(ctx, tx, *issue, role, row)
+	if err != nil {
+		return err
+	}
+	resume, err := e.resumeTask(ctx, tx, *issue, reviewed)
 	if err != nil {
 		return err
 	}

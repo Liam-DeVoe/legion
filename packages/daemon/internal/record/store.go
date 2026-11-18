@@ -1461,6 +1461,12 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, " +
 			"backward_moves = '{}'::jsonb, cap_told = 0, verdict = '', summary = '', decision = null, reviewed_head = '', " +
 			"entry_task = '', entry_verbatim = false, step_task = '', step_place = 0 where " + where,
+		// So does the commit each review step of the plan read (plan_steps.reviewed_head,
+		// SetStepReviewedHead), at the generation each issue keeps: a child keeps its generation
+		// through its root's re-admission, so its plan rows are the same rows in the tree's new
+		// generation, and the first run of its review step in it reads the whole change.
+		"update plan_steps set reviewed_head = '' where " + where +
+			" and generation = (select generation from issues where issues.key = plan_steps.issue)",
 	} {
 		if _, err := tx.Exec(ctx, statement, key); err != nil {
 			return fmt.Errorf("%s: %w", describe, err)

@@ -327,6 +327,15 @@ func (w Walk) reviewFails() bool {
 	return step.Type == string(plan.TypeReview) && step.AgentKey != "owner"
 }
 
+// planStepAt is the plan row of the step of w's task at place, ok false where place is no step
+// the task holds (the retro, the merge, no act, or a walk with no plan rows).
+func (w Walk) planStepAt(place record.TaskPlace) (record.PlanStep, bool) {
+	if !w.Stored || place.Kind != record.PlaceStep || place.Position < 1 || place.Position > len(w.Steps) {
+		return record.PlanStep{}, false
+	}
+	return w.Steps[place.Position-1], true
+}
+
 // RoleAt is the role that works the step of w's task at place: for a step, the worker of the
 // phase its role runs as (phase.RoleFor of plan.RunsAs: the architect for the owner's acceptance),
 // and the role itself where it runs as step, a role the deployment defines; the implementer at the
