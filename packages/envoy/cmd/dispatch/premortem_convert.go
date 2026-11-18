@@ -24,15 +24,16 @@ import (
 const premortemConvertUsage = `usage: envoy-dispatch premortem-convert --issue <KEY> --artifact <slug> --prevented-by <file> [--dry-run]
 
 Converts the pre-mortem document <slug> of issue <KEY>, in the database DATABASE_URL names, into
-nodes, in one transaction, as the server's own credential: one lens of kind pre-mortem under the
-issue, whose verdict is the document's verdict followed by its two closing sections, "What a
-world-class implementation looks like" and "The smallest first slice that proves the model", word
-for word; under it one risk for risk 0 and each numbered risk of the document's newest version,
-each with its heading, its early warning and its prevention and a prevented_by tuple to each check
-the map names for it; then the document is retired, leaving its issue's document list, and its
-address moves to the lens, so GET /api/v1/references?to=<its address> answers the lens. It prints
-the report as JSON: the document, the lens, and each risk with its checks and its reason. A
-document converted already is reported as such, naming its lens, and nothing is written.
+nodes, in one transaction, as the server's own credential. It first retires the document, which
+leaves its issue's document list, and moves its address to the lens it then writes, so
+GET /api/v1/references?to=<its address> answers the lens. Then it writes one lens of kind
+pre-mortem under the issue, whose verdict is the document's verdict followed by its two closing
+sections, "What a world-class implementation looks like" and "The smallest first slice that
+proves the model", word for word; under it one risk for risk 0 and each numbered risk of the
+document's newest version, each with its heading, its early warning and its prevention; and a
+prevented_by tuple to each check the map names for a risk. It prints the report as JSON: the
+document, the lens, and each risk with its checks and its reason. A document converted already
+is reported as such, naming its lens, and nothing is written.
 
   --issue         the issue the document belongs to
   --artifact      the document's slug

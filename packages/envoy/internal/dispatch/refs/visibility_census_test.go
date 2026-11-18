@@ -170,8 +170,6 @@ var readsWithoutAViewer = map[string]string{
 	"AskPartIDs":           nodeDetail,
 	"BlockChanges":         nodeDetail,
 	"BlockEmbeddingStates": nodeDetail,
-	"BlockTexts": nodeDetail + " - GET /api/v1/reference-targets reads the text of a block only once TargetNames, which binds " +
-		"each block kind's predicate, has answered that block to the reader",
 	"BlockTargets":         serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
 	"BlockTextAt":          nodeDetail,
 	"CanonicalRepo":        noNode,
@@ -349,6 +347,21 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 	})
 	record("TargetNames", "TargetNames of every kind at once", func() error {
 		_, err := TargetNames(ctx, recorder, who, everyKind)
+		return err
+	})
+	// BlockTexts reads each kind of block in a statement of its own, one target of every kind of
+	// block at once here. A finding's statement binds the predicate of its kind over the row it
+	// reads; a document's block and an item's bind none, since a caller reads those only once
+	// TargetNames has answered them to the reader. So the read is held to the registry as a whole.
+	everyBlockKind := []Target{
+		{Kind: BlockNodeKind, ID: "no-such-node"},
+		{Kind: graphstore.KindLensBlock, ID: graphstore.KindLens + "/no-such-node#b1"},
+	}
+	for _, item := range itemKinds {
+		everyBlockKind = append(everyBlockKind, Target{Kind: item.BlockKind(), ID: "no-such-node"})
+	}
+	record("BlockTexts", "BlockTexts of every kind of block at once", func() error {
+		_, err := BlockTexts(ctx, recorder, who, everyBlockKind)
 		return err
 	})
 	record("ReferencedBy", "ReferencedBy of CORE-1/spec", func() error {

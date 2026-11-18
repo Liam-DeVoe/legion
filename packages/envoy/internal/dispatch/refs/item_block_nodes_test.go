@@ -371,7 +371,7 @@ func TestBlockTextsReadsEachBlockAsTheOneItemReadsDo(t *testing.T) {
 	for i, read := range reads {
 		targets[i] = read.target
 	}
-	texts, err := BlockTexts(ctx, tx, targets)
+	texts, err := BlockTexts(ctx, tx, model.Actor{Kind: "user", ID: "alice"}, targets)
 	if err != nil {
 		t.Fatalf("read the blocks' texts in one batch: %v", err)
 	}
