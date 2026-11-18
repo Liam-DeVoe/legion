@@ -129,6 +129,14 @@ const PASSING_KEYS: Readonly<Record<string, true>> = {
   Tab: true,
 };
 
+/** The keys the editor answers itself, on its own selection, rather than leaving them to the
+ *  browser (`prosemirror-commands`' base keymaps, Milkdown's heading and list keymaps). */
+const OWN_SELECTION_KEYS: Readonly<Record<string, true>> = {
+  Backspace: true,
+  Delete: true,
+  Enter: true,
+};
+
 /** The keys held with Ctrl or Meta that the editor answers with an edit, or the browser does, by
  *  `event.key` in lower case: select-all, the marks (bold, italic, code, a browser's underline),
  *  cut and paste, undo and redo, a Mac's Ctrl+D and Ctrl+H, a list item's sink and lift, the
@@ -199,7 +207,17 @@ export function confineKey(
     return;
   }
   const taken = keyAtBlock(event, block, ...selected);
-  if (taken === undefined) return;
+  if (taken === undefined) {
+    // The editor acts on these keys itself, on its own selection, which it reads from the page
+    // only once the browser reports a move of the caret, a task later. A caret an arrow moved
+    // just before was not yet its own: in a Job like CI's, Backspace pressed right after
+    // ArrowRight at a heading's start acted at the start, as a lowering of the heading, which
+    // the guard then refused, and the letter stayed (2 runs of 10). So it reads the caret now.
+    if (OWN_SELECTION_KEYS[event.key] === true) {
+      document.dispatchEvent(new Event("selectionchange"));
+    }
+    return;
+  }
   event.preventDefault();
   if (taken !== null) selectInEditor(taken[0][0], taken[0][1], taken[1][0], taken[1][1]);
 }
