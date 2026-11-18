@@ -131,9 +131,9 @@
 -- block brought back are dropped again by this file's last statements. The missing row does not
 -- move the number the state read reports while the older image runs (Store.SchemaVersionTx, the
 -- highest row recorded): every database this release migrated records
--- 20261116165926_role_holders_publish, that older daemon's own newest migration, above this
--- version, so the number reads 20261116165926 before the delete and after it, which is the truth
--- about the image that is running.
+-- 20261117200337_update_ask_marks_at_delivery, that older daemon's own newest migration, above
+-- this version, so the number reads 20261117200337 before the delete and after it, which is the
+-- truth about the image that is running.
 --
 -- What that costs is the numbering, as the phase entry's second fill costs its own: the second
 -- fill reads what the older daemon left exactly as this fill reads what the release before this

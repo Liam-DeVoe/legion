@@ -31,7 +31,7 @@
 // (handoffClaimant). The issues, their pull requests, their trees' slots and the claims the boot
 // relaunches are seeded through the store, as every daemon test seeds its fixture; every
 // assertion is a read of GET /legion/v1/state, of a route's answer, of what the CLI printed, of
-// Dispatch's own routes, or of the task a started worker's shim was prompted with.
+// Dispatch's own routes, or of the task a started worker took.
 package daemon
 
 import (

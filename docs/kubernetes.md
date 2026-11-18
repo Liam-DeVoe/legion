@@ -401,7 +401,7 @@ Then:
   This release refuses one operator mount the release before it took: a `runtime.kubernetes.pod.volume_mounts[].mount_path` at `/var/run/legion/testpg.log` (or `/run/legion/testpg.log`, the same path through the image's link), where role-init now binds the server's log.
   The loader refuses it in every deployment, whether or not it sets `runtime.kubernetes.test_postgres`:
   `runtime.kubernetes.pod.volume_mounts[<i>].mount_path /var/run/legion/testpg.log overlaps /var/run/legion/testpg.log, which Legion mounts in every pod: a mount may be neither at, under, nor above one of Legion's` (`CheckPod`, `packages/daemon/internal/runtime/sandbox/operatorpod.go`).
-  A daemon of this release does not start on a file it refuses, so run this release's `legion start --check-config` on the file before the rollout, and move such a mount elsewhere.
+  A daemon of this release does not start on a file it refuses, so run this release's `legion config check` on the file before the rollout, and move such a mount elsewhere.
   A pod on a worker image of an earlier release reads no log and tells no role `LEGION_TEST_PG_LOG`, whatever release the daemon runs: the launcher, role-init and the file the log is bound over all come from the image.
 
 ### Image size and pull time

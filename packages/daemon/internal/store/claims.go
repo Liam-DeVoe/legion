@@ -728,11 +728,11 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 	return tellKeptDecisions(ctx, tx, token, d.ID)
 }
 
-// PutClaimAndDelivery writes a claim and its pending delivery in one transaction: a confirmation
+// PutClaimAndDelivery writes a claim and its pending delivery in one transaction: an accepted take
 // records both, and a daemon that died between them would leave a claim recorded as working whose
-// delivery nothing retires or re-sends — a task the shim has already answered, so its worker is
-// never prompted again and the phase waits. It is also where a confirmation tells the decisions
-// its delivery holds, in that same transaction and for the same reason.
+// delivery no take could reach again — a task the worker has already taken, so its value is never
+// written again and the phase waits. It is also where an accepted take tells the decisions its
+// delivery holds, in that same transaction and for the same reason.
 func (s *Store) PutClaimAndDelivery(ctx context.Context, c supervise.Claim, d supervise.Delivery) error {
 	var queued bool
 	if err := s.Tx(ctx, func(tx pgx.Tx) (err error) {
