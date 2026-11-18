@@ -57,7 +57,7 @@ func TestAStaleCommentBatchDoesNotRestoreAnErasedComment(t *testing.T) {
 	if err != nil || len(batch) != 1 {
 		t.Fatalf("read the unmarked comment: %d row(s), %v; want 1", len(batch), err)
 	}
-	if _, _, err := writeCommentBatch(ctx, database, batch); err != nil {
+	if _, _, _, err := writeCommentBatch(ctx, database, batch); err != nil {
 		t.Fatalf("write the first run's batch: %v", err)
 	}
 	// The erase takes the issue owner, deletes the stamped row, then erases its node and tuples.
@@ -79,7 +79,7 @@ func TestAStaleCommentBatchDoesNotRestoreAnErasedComment(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("erase the first run's comment: %v", err)
 	}
-	if _, _, err := writeCommentBatch(ctx, database, batch); err != nil {
+	if _, _, _, err := writeCommentBatch(ctx, database, batch); err != nil {
 		t.Fatalf("write the second run's cached batch: %v", err)
 	}
 	if node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindComment, id); err != nil || held {

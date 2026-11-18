@@ -864,11 +864,11 @@ func backfillComments(ctx context.Context, database *store.Store) (KindBackfill,
 			writable = append(writable, row)
 		}
 		if len(writable) > 0 {
-			nodes, tuples, err := writeCommentBatch(ctx, database, writable)
+			rows, nodes, tuples, err := writeCommentBatch(ctx, database, writable)
 			if err != nil {
 				return done, err
 			}
-			done.Rows += int64(len(writable))
+			done.Rows += rows
 			done.Nodes += nodes
 			done.Tuples += tuples
 		}
@@ -956,15 +956,16 @@ func readCommentRows(ctx context.Context, database *store.Store, after string) (
 // The batch is read before this transaction. Another run can mark a row and the erase can then
 // remove it before this run writes. heldCommentRows takes the owners in store order and keeps
 // only rows that still exist and remain unmarked, so a cached batch cannot restore erased nodes.
-func writeCommentBatch(ctx context.Context, database *store.Store, batch []commentRow) (int64, int64, error) {
+// It answers how many rows it gave a node, how many nodes it wrote and how many tuples it stated.
+func writeCommentBatch(ctx context.Context, database *store.Store, batch []commentRow) (int64, int64, int64, error) {
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
-		return 0, 0, fmt.Errorf("begin the comment batch: %w", err)
+		return 0, 0, 0, fmt.Errorf("begin the comment batch: %w", err)
 	}
 	defer tx.Rollback(ctx)
 	batch, err = heldCommentRows(ctx, tx, batch)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 	nodes := make([]graphstore.Node, 0, 2*len(batch))
 	var tuples []graphstore.Tuple
@@ -997,7 +998,7 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 		addresses = append(addresses, row.id)
 	}
 	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
-		return 0, 0, fmt.Errorf("write the nodes of a comment batch: %w", err)
+		return 0, 0, 0, fmt.Errorf("write the nodes of a comment batch: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		update comments c
@@ -1005,10 +1006,10 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 		from unnest($1::text[], $2::text[]) as p (id, address)
 		where c.id = p.id::uuid
 	`, ids, addresses, graphstore.KindComment); err != nil {
-		return 0, 0, fmt.Errorf("name the nodes of a comment batch on their rows: %w", err)
+		return 0, 0, 0, fmt.Errorf("name the nodes of a comment batch on their rows: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, 0, fmt.Errorf("commit a comment batch: %w", err)
+		return 0, 0, 0, fmt.Errorf("commit a comment batch: %w", err)
 	}
 	// Each comment's node states its visibility and its state, and its project or its parties
 	// where it belongs to one.
@@ -1018,7 +1019,7 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 			stated++
 		}
 	}
-	return int64(len(nodes)), int64(len(tuples)) + stated, nil
+	return int64(len(batch)), int64(len(nodes)), int64(len(tuples)) + stated, nil
 }
 
 // heldCommentRows rechecks a cached batch's marker under the owner rows the erase takes first.

@@ -124,7 +124,8 @@ const scopedRows = `
 		union all
 		select 'KIND_COMMENT', c.id::text, coalesce(i.project_key, owner.project_key),
 		       case when coalesce(i.project_key, owner.project_key) is null then COMMENT_PARTIES end, null::text, null::text, false,
-		       c.node_kind is null and (octet_length(anchor.ref_key) > ADDRESS_BOUND or octet_length(owner.ref_key) > ADDRESS_BOUND)
+		       c.node_kind is null and (coalesce(octet_length(anchor.ref_key) > ADDRESS_BOUND, false)
+		                                or coalesce(octet_length(owner.ref_key) > ADDRESS_BOUND, false))
 		from comments c
 		left join issues i on i.key = c.issue_key
 		left join artifacts anchor on anchor.id = (c.anchor->>'artifact_id')::uuid

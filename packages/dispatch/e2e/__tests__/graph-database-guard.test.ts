@@ -61,6 +61,10 @@ for (const driver of drivers) {
     { shape: "a host override", databaseUrl: "postgres://user@127.0.0.1:5433/db?host=remote.invalid" },
     { shape: "an encoded host override", databaseUrl: "postgres://user@127.0.0.1:5433/db?ho%73t=remote.invalid" },
     { shape: "a host override after a newline", databaseUrl: "postgres://user@127.0.0.1:5433/db?application_name=test\n&host=remote.invalid" },
+    { shape: "a query value holding @ that libpq reads as the host", databaseUrl: "postgres://127.0.0.1?application_name=@remote.invalid/db" },
+    { shape: "a query value holding @ after other parameters", databaseUrl: "postgres://127.0.0.1?sslmode=disable&x=@remote.invalid:5432/db" },
+    { shape: "a remote host listed before a loopback one", databaseUrl: "postgres://u@remote.invalid,@127.0.0.1:5433/db" },
+    { shape: "a remote host and port listed before a loopback one", databaseUrl: "postgres://u@remote.invalid:5432,x@127.0.0.1/db" },
     { shape: "a hostaddr override", databaseUrl: "postgres://user@localhost/db?hostaddr=192.0.2.1" },
     { shape: "a service override", databaseUrl: "postgres://user@localhost/db?service=remote" },
   ]) {

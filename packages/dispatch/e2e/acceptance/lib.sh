@@ -30,15 +30,17 @@ require_env() {
 }
 
 # loopback_database_url URL: succeeds only for a single loopback postgres URL authority.
-# A path or a query value cannot name its host. Connection overrides and escaped parameter names
-# are refused: libpq can otherwise replace even an explicit loopback authority with a remote host.
+# Connection overrides and escaped parameter names are refused, and so is any `@` after the
+# authority: libpq reads user credentials up to the first `@` or `/`, not stopping at `?`, so a query
+# value holding `@` can name the host, and an override can replace even an explicit loopback one.
 loopback_database_url() {
   local url="$1" authority host query parameter name
   [[ "$url" == postgres://* || "$url" == postgresql://* ]] || return 1
   [[ "$url" != *\#* ]] || return 1
   authority="${url#*://}"
   authority="${authority%%[/?]*}"
-  host="${authority##*@}"
+  [[ "${url#*://"$authority"}" != *@* ]] || return 1
+  host="${authority#*@}"
   [[ "$host" =~ ^(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?$ ]] || return 1
   if [[ "$url" == *\?* ]]; then
     query="${url#*\?}"
