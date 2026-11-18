@@ -340,6 +340,20 @@ export async function mouseDrag(
   await page.mouse.down();
   await page.mouse.move(from.x + from.width / 2 + 10, from.y + from.height / 2);
   await target.scrollIntoViewIfNeeded();
+  // While a card is in flight, dnd-kit scrolls the Board sideways for as long as the pointer rests
+  // in the outer fifth of the Board's box, and the drop takes the column under the pointer when
+  // the button comes up. A Testing column drawn at the box's right edge scrolled 101 px under the
+  // pointer during the move, so the drop could land in Needs review. The target's middle goes to
+  // the box's middle first, as far as the box scrolls.
+  await target.evaluate((node) => {
+    const box = node.closest(
+      '[data-testid="board-scroll-container"], [data-testid="board-lane-scroll-container"]'
+    );
+    if (box === null) return;
+    const drawn = node.getBoundingClientRect();
+    const edges = box.getBoundingClientRect();
+    box.scrollLeft += drawn.left + drawn.width / 2 - (edges.left + edges.width / 2);
+  });
   const to = await target.boundingBox();
   if (to === null) throw new Error("the place a card is dropped on is not drawn");
   await page.mouse.move(
