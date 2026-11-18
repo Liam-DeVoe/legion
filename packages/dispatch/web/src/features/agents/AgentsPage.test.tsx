@@ -1,4 +1,13 @@
-import { expect, jest, type Mock, spyOn, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  expect,
+  jest,
+  type Mock,
+  setSystemTime,
+  spyOn,
+  test,
+} from "bun:test";
 import { RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts/dispatch-api-constants";
 import {
   focusManager,
@@ -83,6 +92,20 @@ async function refuseBroadcast(): Promise<never> {
 const recentAttemptAt = new Date(Date.now() - 60_000).toISOString();
 
 const now = Date.now();
+
+// Every fixture of this file is dated from `now` (and `recentAttemptAt`), taken once when the
+// module loads, and the groups read a session's age against the clock: Active within two
+// minutes, Quiet past ten (`agent-groups.ts`). A row that ran minutes after the module loaded,
+// as one can in a long parallel run, read those ages older than written - the Reviewer, seen
+// five minutes before `now`, went Quiet six minutes in. So each test runs on a clock held at
+// `now`, and a row's own `jest.useFakeTimers()` starts from it.
+beforeEach(() => {
+  setSystemTime(new Date(now));
+});
+afterEach(() => {
+  setSystemTime();
+});
+
 const agents = [
   {
     capabilities: ["aside", "btw"],
