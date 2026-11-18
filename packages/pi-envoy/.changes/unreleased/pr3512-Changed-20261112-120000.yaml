@@ -8,6 +8,9 @@ body: |-
   reply instead, which two lanes answered by resending whole comments. A message of a direct
   conversation takes no edit, so the note still asks there for a reply with the correction, and only
   where the original would mislead its reader. The four commands need a Dispatch of this release.
+  A Dispatch reply, an AskGate record or a delivery accept that landed while Dispatch kept no copy
+  of its answer is taken as made: no error reply follows a BTW answer that landed, and the log says
+  the write landed rather than that it failed.
 time: 2026-11-12T12:00:00.000000000Z
 custom:
     Issue: pr3512

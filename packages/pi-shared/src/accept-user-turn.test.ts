@@ -16,8 +16,13 @@ const MESSAGE = "44444444-4444-4444-8444-444444444444";
 /** One of a person's direct messages to this session, as the listener publishes it. */
 function personSends(
   body: string,
-  overrides: { readonly mode?: "aside" | "steer" | "btw"; readonly attempt?: number } = {}
+  overrides: {
+    readonly mode?: "aside" | "steer" | "btw";
+    readonly attempt?: number;
+    readonly issueKey?: string;
+  } = {}
 ): string {
+  const issueKey = overrides.issueKey ?? null;
   return JSON.stringify({
     dedupe_key: `agent.${SESSION}.${MESSAGE}:${overrides.mode ?? "steer"}`,
     event_id: "evt-send",
@@ -26,7 +31,7 @@ function personSends(
       delivery: { attempt: overrides.attempt ?? 1, mode: overrides.mode ?? "steer" },
       event: {
         actor: { id: "alice", kind: "user" },
-        issue_key: null,
+        issue_key: issueKey,
         payload: {
           author: { id: "alice", kind: "user" },
           body,
@@ -34,7 +39,7 @@ function personSends(
           deliveries: [],
           id: MESSAGE,
           in_reply_to: null,
-          issue_key: null,
+          issue_key: issueKey,
           target: `session:${SESSION}`,
         },
         type: "message.created",
@@ -193,6 +198,30 @@ test("a frame no person's direct Send or Aside could be is never recorded or acc
   expect(accepted).toBeUndefined();
   expect(session.order).toEqual([]);
   expect([...session.recorded]).toEqual([]);
+});
+
+// An issue message's flow replies on its issue, so it keeps its envelope: no attempt of one is
+// spent, and Dispatch is never asked to accept it. It is the one kind of message its author can
+// edit or delete, so no turn this step makes is ever the text of a post its author withdrew.
+test("a person's message on an issue is never recorded or accepted, and keeps its card", async () => {
+  const session = host();
+  const rendered = renderInbound(personSends("Ship it?", { issueKey: "INFRA-7" }), SESSION, DIRECT);
+  // The frame is the delivery a direct Send is, a person's steer, in all but its issue key.
+  expect(rendered.delivery).toMatchObject({
+    resource: "message",
+    id: MESSAGE,
+    attempt: 1,
+    mode: "steer",
+    issueKey: "INFRA-7",
+  });
+  expect(rendered.dispatchActor?.kind).toBe("user");
+
+  const accepted = await acceptUserTurn({ rendered, ...session });
+
+  expect(accepted).toBeUndefined();
+  expect(session.order).toEqual([]);
+  expect([...session.recorded]).toEqual([]);
+  expect(session.refusals).toEqual([]);
 });
 
 // Dispatch not being configured is no refusal: there is nothing to accept with. The attempt is
