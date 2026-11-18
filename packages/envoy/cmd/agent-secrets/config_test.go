@@ -51,8 +51,8 @@ func TestTheConfigFileFillsAnUnsetVariable(t *testing.T) {
 	if err := loadClientConfig(); err != nil {
 		t.Fatalf("load %s: %v", path, err)
 	}
-	if got := brokerBaseURL(); got != "https://secrets.example" {
-		t.Fatalf("brokerBaseURL = %q; want the file's https://secrets.example", got)
+	if got := brokerBaseURL().Raw(); got != "https://secrets.example" {
+		t.Fatalf("brokerBaseURL().Raw() = %q; want the file's https://secrets.example", got)
 	}
 	if got := clientGetenv("AGENT_SECRETS_SIGNIN_CLIENT_ID"); got != "device-client" {
 		t.Fatalf("AGENT_SECRETS_SIGNIN_CLIENT_ID = %q; want the file's device-client", got)
@@ -71,8 +71,8 @@ func TestAVariableWinsOverTheConfigFile(t *testing.T) {
 	if err := loadClientConfig(); err != nil {
 		t.Fatal(err)
 	}
-	if got := brokerBaseURL(); got != "https://from-the-environment.example" {
-		t.Fatalf("brokerBaseURL = %q; want the environment's https://from-the-environment.example", got)
+	if got := brokerBaseURL().Raw(); got != "https://from-the-environment.example" {
+		t.Fatalf("brokerBaseURL().Raw() = %q; want the environment's https://from-the-environment.example", got)
 	}
 }
 
@@ -85,8 +85,8 @@ func TestAnEmptyVariableReadsTheConfigFile(t *testing.T) {
 	if err := loadClientConfig(); err != nil {
 		t.Fatal(err)
 	}
-	if got := brokerBaseURL(); got != "https://from-the-file.example" {
-		t.Fatalf("brokerBaseURL = %q; want the file's https://from-the-file.example, since an empty variable is unset", got)
+	if got := brokerBaseURL().Raw(); got != "https://from-the-file.example" {
+		t.Fatalf("brokerBaseURL().Raw() = %q; want the file's https://from-the-file.example, since an empty variable is unset", got)
 	}
 }
 
@@ -148,8 +148,8 @@ func TestAConfigFileOthersCanWriteIsRefused(t *testing.T) {
 	if err := loadClientConfig(); err != nil {
 		t.Fatalf("a file others can only read: %v", err)
 	}
-	if got := brokerBaseURL(); got != "https://secrets.example" {
-		t.Fatalf("brokerBaseURL = %q; want the file's", got)
+	if got := brokerBaseURL().Raw(); got != "https://secrets.example" {
+		t.Fatalf("brokerBaseURL().Raw() = %q; want the file's", got)
 	}
 }
 
@@ -186,8 +186,8 @@ func TestAConfigFileAnotherUserOwnsIsRefused(t *testing.T) {
 	if err := loadClientConfig(); err != nil {
 		t.Fatalf("a file root owns: %v", err)
 	}
-	if got := brokerBaseURL(); got != "https://secrets.example" {
-		t.Fatalf("brokerBaseURL = %q; want the file's", got)
+	if got := brokerBaseURL().Raw(); got != "https://secrets.example" {
+		t.Fatalf("brokerBaseURL().Raw() = %q; want the file's", got)
 	}
 }
 
@@ -201,8 +201,8 @@ func TestNoConfigFileIsNoError(t *testing.T) {
 	if err := loadClientConfig(); err != nil {
 		t.Fatalf("loadClientConfig with no file: %v", err)
 	}
-	if got := brokerBaseURL(); got != "https://secrets.example" {
-		t.Fatalf("brokerBaseURL = %q; want the environment's", got)
+	if got := brokerBaseURL().Raw(); got != "https://secrets.example" {
+		t.Fatalf("brokerBaseURL().Raw() = %q; want the environment's", got)
 	}
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	t.Setenv("AGENT_SECRETS_KEY_DIR", "")

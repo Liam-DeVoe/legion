@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -92,7 +93,7 @@ func TestAnEnrollRefusedSessionHeldBacksOffAndEnrolsWhenThePrincipalChanges(t *t
 	}}
 	srv := &Server{
 		Registry: NewRegistry(filepath.Join(t.TempDir(), "sessions.json")),
-		Broker: &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"),
+		Broker: &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"),
 			MachineFile: machineFilePath(t), HTTP: f.srv.Client(), Log: log, SignIns: signIns},
 		Hostname: "testhost", PeerOf: PeerOf, Log: log, MinRenew: time.Second,
 	}

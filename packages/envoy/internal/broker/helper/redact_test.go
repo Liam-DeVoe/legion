@@ -8,8 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -49,7 +49,9 @@ func TestABrokerCallErrorNamesNoCredentialTheURLCarries(t *testing.T) {
 		{"a password holding an escaped at sign", "http://ada@corp.example:hunter2pw%40127.0.0.1:1", np},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			b := &Broker{URL: row.base, HTTP: &http.Client{Timeout: 5 * time.Second}}
+			// A client timeout that fires would end the call with its own error, not the one the
+			// row wants, so it gives up no sooner than the package's guard for an event.
+			b := &Broker{URL: brokeraddr.New(row.base), HTTP: &http.Client{Timeout: eventWait}}
 			_, _, err := b.Renew(context.Background(), s)
 			if err == nil {
 				t.Fatal("renew against a broker that never answers succeeded")
