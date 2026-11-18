@@ -11,6 +11,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -27,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -602,6 +605,53 @@ func TestANoLiveSessionNoticeIsToldOnceARunAcrossARestart(t *testing.T) {
 	}
 	if told := d.sweepEach(76, 100, noLiveSession, d.projectNotifying(w)); told != 0 {
 		t.Fatalf("the daemon after that told %d notices of its run, want none", told)
+	}
+}
+
+// booted is a keeper of a daemon that has just booted onto d's database, whose R6 writer logs to
+// logged and has read the lines the daemon before it left open, as openSupervision loads it.
+func (d *durableReach) booted(logged *testlog.Buffer) *reachKeeper {
+	d.t.Helper()
+	o := d.options(false, d.st.PutClaimReach)
+	o.alerts = fleetalert.New(slog.New(slog.NewTextHandler(logged, nil)), "LEGION")
+	if err := o.alerts.Load(context.Background(), fleetAlertLines{st: d.st, project: "LEGION"}); err != nil {
+		d.t.Fatalf("load the open fleet alert lines: %v", err)
+	}
+	return newReachKeeper(o)
+}
+
+// R6's line is written once until its case ends, and a restart ends no case (R6): a run of lists
+// with no live session that holds through a restart writes its line once, a lock-out line the last
+// daemon wrote is ended by the next one, whose worker stream holds no such lock-out, and a case
+// that ended and came back writes its line again.
+func TestALineIsWrittenOnceUntilItsCaseEndsAcrossARestart(t *testing.T) {
+	d := newDurableReach(t)
+	logged := &testlog.Buffer{}
+	lines := func(word string) int { return strings.Count(logged.String(), "case="+word) }
+	d.noLiveSessions(true)
+	first := d.booted(logged)
+	first.alerts.Open(fleetalert.NewerProcessRefused, "legion-legion-legion-209-implementer")
+	d.sweepEach(1, 25, noLiveSession, first)
+	if got := lines(fleetalert.NoLiveSession.Word); got != 1 {
+		t.Fatalf("the first daemon wrote the no-live line %d times in 25 minutes, want once", got)
+	}
+
+	next := d.booted(logged)
+	d.sweepEach(26, 50, noLiveSession, next)
+	if got := lines(fleetalert.NoLiveSession.Word); got != 1 {
+		t.Fatalf("the no-live line was written %d times across a restart its case held through, want once", got)
+	}
+	if open, err := d.st.FleetAlertLines(context.Background(), "LEGION"); err != nil ||
+		!slices.Equal(open, []store.FleetAlertLine{{Project: "LEGION", Case: fleetalert.NoLiveSession.Word}}) {
+		t.Fatalf("the open lines after the next daemon's sweeps = %+v, %v; want the no-live line alone, the lock-out the next daemon's stream holds none of ended", open, err)
+	}
+
+	d.noLiveSessions(false)
+	d.sweepEach(51, 51, noLiveSession, next)
+	d.noLiveSessions(true)
+	d.sweepEach(52, 75, noLiveSession, d.booted(logged))
+	if got := lines(fleetalert.NoLiveSession.Word); got != 2 {
+		t.Fatalf("a run of lists with no live session after one that held a live session wrote %d lines in all, want 2", got)
 	}
 }
 

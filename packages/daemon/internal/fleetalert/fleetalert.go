@@ -12,13 +12,17 @@
 // package's test holds it, and the policy's filter names it.
 //
 // A line is written once per case and claim until that case ends, so a case that holds for hours
-// opens one incident rather than one a minute. The caller says when a case ends (Close), which
-// is the moment the next Open writes again.
+// opens one incident rather than one a minute, and the daemon's store keeps which lines are open
+// (Load), so a case that holds through a restart opens one incident rather than one a boot. The
+// caller says when a case ends (Close), which is the moment the next Open writes again.
 package fleetalert
 
 import (
+	"context"
+	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 )
 
 // Prefix is the fixed text every line starts with, and the whole of what the alert policy
@@ -77,48 +81,139 @@ type Writer struct {
 	project string
 
 	mu   sync.Mutex
-	open map[openCase]struct{}
+	open map[Line]struct{}
+	// lines keeps open outlive the daemon (Load), nil while nothing has been loaded; undeleted is
+	// each line closed here whose delete the store refused, deleted again at its next close.
+	lines     Lines
+	undeleted map[Line]struct{}
 }
 
-// openCase keys a case that has been written and not ended: one case may be open for several
-// claims at once, each with a line of its own.
-type openCase struct {
-	word  string
-	claim string
+// Line keys a case that has been written and not ended, as its store keeps it: one case may be
+// open for several claims at once, each with a line of its own. Claim is "" for a case of the
+// whole project.
+type Line struct {
+	Word  string
+	Claim string
 }
 
-// New is a Writer that logs through log for project.
+// Lines is where a Writer keeps which lines are open, so that a daemon's boot, which ends no
+// case, writes no line of a case the daemon before it opened (R6 writes a line once until its
+// case ends, and restarts are what the alert must survive).
+type Lines interface {
+	// OpenLines is every line the store holds open.
+	OpenLines(ctx context.Context) ([]Line, error)
+	// PutLine keeps l open, and DeleteLine forgets it.
+	PutLine(ctx context.Context, l Line) error
+	DeleteLine(ctx context.Context, l Line) error
+}
+
+// lineBudget bounds one write of the store a line's open or close makes. Neither takes a
+// context of its caller's: the worker stream opens its line from a timer of its own.
+const lineBudget = 30 * time.Second
+
+// New is a Writer that logs through log for project, and keeps its open lines in its own memory
+// until Load gives it a store.
 func New(log *slog.Logger, project string) *Writer {
-	return &Writer{log: log, project: project, open: map[openCase]struct{}{}}
+	return &Writer{log: log, project: project, open: map[Line]struct{}{}, undeleted: map[Line]struct{}{}}
+}
+
+// Load reads the lines lines holds open, which the daemon before this one wrote and no case's
+// end has closed, and keeps each line this writer opens or closes there from now on. The daemon
+// loads its writer at its boot, before anything can open a line.
+func (w *Writer) Load(ctx context.Context, lines Lines) error {
+	held, err := lines.OpenLines(ctx)
+	if err != nil {
+		return fmt.Errorf("read the fleet alert lines the last daemon left open: %w", err)
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.lines = lines
+	for _, l := range held {
+		w.open[l] = struct{}{}
+	}
+	return nil
 }
 
 // Open writes c's line, naming claim where there is one and whatever else the caller gives as
-// slog key-value pairs, and returns whether it wrote: a case already open writes nothing until
-// Close ends it.
+// slog key-value pairs, and returns whether it wrote: a case already open, in this daemon or in
+// the one before it, writes nothing until Close ends it. The line is written before its record
+// is kept, so a store that refuses the record costs at most a second line from the next daemon,
+// never the line itself.
 func (w *Writer) Open(c Case, claim string, attrs ...any) bool {
+	key := Line{Word: c.Word, Claim: claim}
 	w.mu.Lock()
-	key := openCase{word: c.Word, claim: claim}
+	defer w.mu.Unlock()
 	if _, already := w.open[key]; already {
-		w.mu.Unlock()
 		return false
 	}
 	w.open[key] = struct{}{}
-	w.mu.Unlock()
+	delete(w.undeleted, key)
 
 	args := []any{"case", c.Word, "project", w.project}
 	if claim != "" {
 		args = append(args, "claim", claim)
 	}
 	w.log.Error(Prefix+": "+c.Sentence, append(args, attrs...)...)
+	if err := w.keep(key, Lines.PutLine); err != nil {
+		w.log.Warn("fleet alert: the line is written, but the store did not keep it open; a daemon that boots before its case ends writes it again",
+			"case", c.Word, "claim", claim, "error", err)
+	}
 	return true
 }
 
 // Close ends c for claim, so the next Open of it writes again. Closing a case that is not open
-// changes nothing.
+// changes nothing, but for a close whose delete the store refused, which is made again.
 func (w *Writer) Close(c Case, claim string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	delete(w.open, openCase{word: c.Word, claim: claim})
+	w.close(Line{Word: c.Word, Claim: claim})
+}
+
+// CloseEnded ends each line of c whose claim holds says the case no longer holds for: a case
+// whose end only the caller can read, such as a lock-out the last daemon's worker stream held,
+// which no connection of this daemon's holds. holds is read outside the writer's lock.
+func (w *Writer) CloseEnded(c Case, holds func(claim string) bool) {
+	w.mu.Lock()
+	var open []string
+	for l := range w.open {
+		if l.Word == c.Word {
+			open = append(open, l.Claim)
+		}
+	}
+	w.mu.Unlock()
+	for _, claim := range open {
+		if !holds(claim) {
+			w.Close(c, claim)
+		}
+	}
+}
+
+// close ends key. The caller holds mu.
+func (w *Writer) close(key Line) {
+	_, open := w.open[key]
+	_, undeleted := w.undeleted[key]
+	if !open && !undeleted {
+		return
+	}
+	delete(w.open, key)
+	if err := w.keep(key, Lines.DeleteLine); err != nil {
+		w.undeleted[key] = struct{}{}
+		w.log.Warn("fleet alert: the store did not forget a line whose case ended; it is forgotten again at the next close",
+			"case", key.Word, "claim", key.Claim, "error", err)
+		return
+	}
+	delete(w.undeleted, key)
+}
+
+// keep writes key to the store by write, under lineBudget, where a store is loaded. The caller
+// holds mu, so no open and close of one line reach the store out of order.
+func (w *Writer) keep(key Line, write func(Lines, context.Context, Line) error) error {
+	if w.lines == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), lineBudget)
+	defer cancel()
+	return write(w.lines, ctx, key)
 }
 
 // IsOpen is whether c's line for claim has been written and not ended, for a caller that reads
@@ -126,6 +221,6 @@ func (w *Writer) Close(c Case, claim string) {
 func (w *Writer) IsOpen(c Case, claim string) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	_, open := w.open[openCase{word: c.Word, claim: claim}]
+	_, open := w.open[Line{Word: c.Word, Claim: claim}]
 	return open
 }

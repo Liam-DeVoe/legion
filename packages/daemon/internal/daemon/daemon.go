@@ -1514,14 +1514,18 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	if err != nil {
 		return nil, err
 	}
+	// One writer of R6's lines for the daemon: the worker stream's lock-out and the reach keeper's
+	// cases go through it, so one case writes one line. It reads the lines the last daemon left
+	// open before anything can write one, so a case that holds through the restart writes none.
+	alerts := fleetalert.New(log, cfg.Project)
+	if err := alerts.Load(boot, fleetAlertLines{st: st, project: cfg.Project}); err != nil {
+		return nil, err
+	}
 
 	supervising, cancel := context.WithCancel(context.Background())
 	draining, endDrain := context.WithCancel(context.Background())
 	tokens := api.NewBootTokens(st)
 	sup := newSupervisor(supervising, st, p.project, cfg.StateDir, log)
-	// One writer of R6's lines for the daemon: the worker stream's lock-out and the reach keeper's
-	// cases go through it, so one case writes one line.
-	alerts := fleetalert.New(log, cfg.Project)
 	// The lock-out's notice is the controller's, which the workflow's admission queues, and the
 	// workflow attaches after this listener is up; the report waits LockOutReportAfter after a
 	// first refused hello, by which time supervision is built (reportLockOut).

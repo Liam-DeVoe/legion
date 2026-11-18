@@ -1,8 +1,11 @@
 package fleetalert
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"maps"
 	"strings"
 	"testing"
 
@@ -142,5 +145,113 @@ func TestEveryCaseHasItsOwnWordAndASentence(t *testing.T) {
 	}
 	if len(seen) != 5 {
 		t.Errorf("Cases() names %d cases, want the 5 of R6 and R3", len(seen))
+	}
+}
+
+// heldLines is a store of open lines that outlives the writers it is loaded into, as the
+// daemon's database outlives a daemon.
+type heldLines struct {
+	open       map[Line]bool
+	refuseNext error
+}
+
+func (h *heldLines) OpenLines(context.Context) ([]Line, error) {
+	var lines []Line
+	for l := range h.open {
+		lines = append(lines, l)
+	}
+	return lines, nil
+}
+
+func (h *heldLines) PutLine(_ context.Context, l Line) error {
+	h.open[l] = true
+	return nil
+}
+
+func (h *heldLines) DeleteLine(_ context.Context, l Line) error {
+	if err := h.refuseNext; err != nil {
+		h.refuseNext = nil
+		return err
+	}
+	delete(h.open, l)
+	return nil
+}
+
+// boot is a writer of a daemon that has just booted over held.
+func boot(t *testing.T, held *heldLines) (*Writer, *testlog.Buffer) {
+	t.Helper()
+	w, buf := writer(t)
+	if err := w.Load(context.Background(), held); err != nil {
+		t.Fatalf("load the open lines: %v", err)
+	}
+	return w, buf
+}
+
+// R6's line is written once until its case ends, and a daemon's boot ends no case: a case the
+// last daemon opened and nothing ended writes no line from the daemon that boots next, and one
+// that ended before the boot writes again when it comes back.
+func TestALineOpenBeforeABootIsNotWrittenAgainAfterIt(t *testing.T) {
+	held := &heldLines{open: map[Line]bool{}}
+	first, firstLog := boot(t, held)
+	first.Open(ControllerUnreachable, "claim-1")
+	first.Open(NoLiveSession, "")
+	if got := len(lines(t, firstLog)); got != 2 {
+		t.Fatalf("the first daemon wrote %d lines, want 2", got)
+	}
+
+	second, secondLog := boot(t, held)
+	if wrote := second.Open(ControllerUnreachable, "claim-1"); wrote {
+		t.Error("the daemon that booted next wrote the line of a case the last one opened")
+	}
+	if wrote := second.Open(NoLiveSession, ""); wrote {
+		t.Error("the daemon that booted next wrote the line of a case with no claim the last one opened")
+	}
+	if got := lines(t, secondLog); len(got) != 0 {
+		t.Fatalf("the daemon that booted next wrote %d lines of cases still open: %v", len(got), got)
+	}
+
+	second.Close(ControllerUnreachable, "claim-1")
+	third, thirdLog := boot(t, held)
+	if wrote := third.Open(ControllerUnreachable, "claim-1"); !wrote {
+		t.Error("a case that ended before the boot and came back wrote nothing")
+	}
+	if wrote := third.Open(NoLiveSession, ""); wrote {
+		t.Error("a case open through two boots wrote its line again")
+	}
+	if got := len(lines(t, thirdLog)); got != 1 {
+		t.Fatalf("the third daemon wrote %d lines, want the one of the case that came back", got)
+	}
+}
+
+// A close the store refused is kept and made again at the next close of the same line, so the
+// next daemon does not read a case that ended as open.
+func TestAClosedLineTheStoreKeptIsDeletedAtTheNextClose(t *testing.T) {
+	held := &heldLines{open: map[Line]bool{}}
+	w, _ := boot(t, held)
+	w.Open(SessionListUnreadable, "")
+	held.refuseNext = errors.New("the database is restarting")
+	w.Close(SessionListUnreadable, "")
+	if !held.open[Line{Word: SessionListUnreadable.Word}] {
+		t.Fatal("the refused delete took the line out of the store")
+	}
+	w.Close(SessionListUnreadable, "")
+	if held.open[Line{Word: SessionListUnreadable.Word}] {
+		t.Fatal("the next close of the line did not delete it from the store")
+	}
+}
+
+// A case whose end only the caller can read — a lock-out the worker stream no longer holds — is
+// ended for each claim that reading no longer holds, and kept for each it still holds.
+func TestCloseEndedEndsTheLinesWhoseCaseNoLongerHolds(t *testing.T) {
+	held := &heldLines{open: map[Line]bool{}}
+	w, _ := boot(t, held)
+	w.Open(NewerProcessRefused, "claim-1")
+	w.Open(NewerProcessRefused, "claim-2")
+	w.Open(ControllerUnreachable, "claim-1")
+
+	w.CloseEnded(NewerProcessRefused, func(claim string) bool { return claim == "claim-2" })
+	want := map[Line]bool{{Word: NewerProcessRefused.Word, Claim: "claim-2"}: true, {Word: ControllerUnreachable.Word, Claim: "claim-1"}: true}
+	if !maps.Equal(held.open, want) {
+		t.Fatalf("the open lines are %v, want %v", held.open, want)
 	}
 }

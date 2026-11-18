@@ -396,7 +396,9 @@ func (k *reachKeeper) clearNoLive(ctx context.Context) {
 //
 // The project's notice records are read first, at the first sweep that can, and each lock-out
 // notice the controller's lane has not queued yet is told again, whatever the list answers, since
-// it is no reading of the list (tellLockOut).
+// it is no reading of the list (tellLockOut). R6's line of each lock-out the worker stream no
+// longer holds is ended too: a line the last daemon opened names a connection that ended with it,
+// and this daemon's stream tells that older process to stop at its hello rather than binding it.
 func (k *reachKeeper) sweep(ctx context.Context, claims []supervise.Claim) {
 	if k == nil {
 		return
@@ -404,6 +406,10 @@ func (k *reachKeeper) sweep(ctx context.Context, claims []supervise.Claim) {
 	k.mu.Lock()
 	k.retellLockOuts(ctx)
 	k.mu.Unlock()
+	k.alerts.CloseEnded(fleetalert.NewerProcessRefused, func(token string) bool {
+		_, locked := k.lockOutHeld(claim.Token(token))
+		return locked
+	})
 	if k.list == nil {
 		return
 	}
@@ -842,11 +848,17 @@ func (k *reachKeeper) retellLockOuts(ctx context.Context) {
 // lockOutOpen is whether the worker stream still refuses the newer process untold names for the
 // older one it names.
 func (k *reachKeeper) lockOutOpen(token claim.Token, untold untoldLockOut) bool {
-	if k.lockedOut == nil {
-		return false
-	}
-	open, locked := k.lockedOut(token)
+	open, locked := k.lockOutHeld(token)
 	return locked && open.Newer == untold.newer && open.Older == untold.older
+}
+
+// lockOutHeld is the worker stream's open lock-out of token, if it holds one (stream's
+// Listener.LockedOut); a keeper with no stream reads none open.
+func (k *reachKeeper) lockOutHeld(token claim.Token) (stream.LockOut, bool) {
+	if k.lockedOut == nil {
+		return stream.LockOut{}, false
+	}
+	return k.lockedOut(token)
 }
 
 // guardRefused records that the relaunch guard refused token's relaunch at at: the first refusal
