@@ -3231,3 +3231,96 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
     await context.close();
   }
 });
+
+// The row's editor is the document's whole editor, and Tab, which Milkdown answers in a list item
+// alone, was the browser's: from the caret in a statement it moved the focus on to the next
+// control the editor draws - driving a preview, an ask another block draws - and the editor's box
+// scrolled to it, away from the statement. Tab from the row's editor goes past every control the
+// editor draws outside the node's block to the first tab stop after the editor's box, and
+// Shift+Tab to the row, the outline's one tab stop; each ends the editing, as a Tab out of the
+// outline and Escape do, and edits nothing. The seeded spec holds the open question's `ask` block
+// after its statements, and the ask's card draws controls of its own inside the editor. Nothing
+// of the page's own takes the focus after the outline at this head, so a stand-in control under
+// it is the tab stop Tab goes to (`standInControlBelow`).
+// SLOW(>=2s): the whole issue seeded and loaded, then the row's editor opened twice, each waited
+// on until it takes the caret and the ask's card is drawn in it, and until it closes again.
+test("Tab and Shift+Tab from a row's editor pass over the controls of an ask another block draws, and end the editing", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const { context, page, seeded } = await openTree(browser);
+  try {
+    await expectTreeDrawn(page);
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    const statementBlock = requirementBlockId(2);
+    const statement = blockNodeId(specSlug, statementBlock);
+    const stored = async () => (await getArtifactText(seeded.specArtifactId)).markdown;
+    const before = await stored();
+    const row = nodeRow(page, statement).first();
+    const editable = row.locator('[contenteditable="true"]');
+    const below = await standInControlBelow(page);
+    // The tab stops the ask's card draws in the row's editor.
+    const askControls = row
+      .locator(`[data-block-id="${OPEN_QUESTION_BLOCK_ID}"]`)
+      .locator('a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    /** Where the focus is: in an editor's box, in the ask's block, and its element - its name and
+     *  the block it stands in - for a failure to name. */
+    const focusAt = () =>
+      page.evaluate((ask) => {
+        const active = document.activeElement;
+        if (active === null || active === document.body) {
+          return { inAsk: false, inBox: false, name: "the page itself" };
+        }
+        const words = active.getAttribute("aria-label") ?? active.textContent?.slice(0, 40);
+        const block = active.closest("[data-block-id]")?.getAttribute("data-block-id");
+        const where = typeof block === "string" ? ` of block ${block}` : "";
+        return {
+          inAsk: active.closest(`[data-block-id="${ask}"]`) !== null,
+          inBox: active.closest("[data-editor-box]") !== null,
+          name: `${active.tagName.toLowerCase()} "${words}"${where}`,
+        };
+      }, OPEN_QUESTION_BLOCK_ID);
+    /** Enter on the statement's row, the caret in its block and the ask's card drawn in the
+     *  editor. */
+    const enter = async () => {
+      await focusRow(page, statement);
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(() => caretInRowBlock(page, statementBlock), {
+          message: "Enter put no caret in the statement",
+        })
+        .toBe(true);
+      await expect
+        .poll(() => askControls.count(), {
+          message: "the ask's block draws no control in the row's editor",
+        })
+        .toBeGreaterThan(0);
+    };
+
+    await enter();
+    await page.keyboard.press("Tab");
+    const afterTab = await focusAt();
+    expect(
+      afterTab.inBox,
+      `Tab from the row's editor left the focus in an editor's box, on ${afterTab.name}`
+    ).toBe(false);
+    expect(afterTab.inAsk, `Tab stopped on the ask's ${afterTab.name}`).toBe(false);
+    await expect(
+      below.control,
+      `Tab from the row's editor went to ${afterTab.name}, not the first tab stop after its box`
+    ).toBeFocused();
+    await expect(editable, "Tab from the row's editor did not end the editing").toHaveCount(0);
+    expect(await caretInNode(page), "a caret stayed in a row after Tab").toBe(false);
+
+    await enter();
+    await page.keyboard.press("Shift+Tab");
+    await expect(row, "Shift+Tab from the row's editor did not go to the row").toBeFocused();
+    await expect(editable, "Shift+Tab from the row's editor did not end the editing").toHaveCount(
+      0
+    );
+    await expect(row, "the row lost the focus as the editing ended").toBeFocused();
+    expect(await stored(), "Tab or Shift+Tab from the row's editor changed the spec").toBe(before);
+  } finally {
+    await context.close();
+  }
+});

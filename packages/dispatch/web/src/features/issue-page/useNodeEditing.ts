@@ -17,13 +17,15 @@ import {
   loadEditsHold,
   selectInEditor,
   selectionIntoBlock,
+  tabStopsFrom,
 } from "./node-caret";
 import { KEY_REPORTS } from "./page-structure";
 import { PRESS_ENDS } from "./press-focus";
 
 /** The editor the page draws for an edited row, as the row takes it: its ProseMirror view, which
- *  the row holds every edit of to the node's block (`node-caret.ts`'s `holdEditsToBlock`).
- *  `doc/editor.ts`'s `EditorHandle` is one. */
+ *  the row holds every edit of to the node's block (`node-caret.ts`'s `holdEditsToBlock`), and
+ *  whose own selection it reads a key against (`confineKey`). `doc/editor.ts`'s `EditorHandle` is
+ *  one. */
 export interface RowEditor {
   readonly view: EditorView;
 }
@@ -179,10 +181,13 @@ export function useNodeEditing({
   const holdChanged = useRef<(() => void) | undefined>(undefined);
   // What takes the hold off the editor the page handed over last.
   const letGo = useRef<(() => void) | undefined>(undefined);
+  // The view of the editor the page handed over last, while the page holds it.
+  const editorView = useRef<EditorView | undefined>(undefined);
   const onEditor = useCallback((editor: RowEditor | undefined) => {
     letGo.current?.();
     letGo.current = undefined;
     hold.current = "awaited";
+    editorView.current = editor?.view;
     const parts = load.current?.parts;
     if (editor === undefined || parts === undefined) return;
     hold.current = "loading";
@@ -508,6 +513,23 @@ export function useNodeEditing({
     // while the node's block is not the selection - before the caret is placed, or a Tab into
     // the editable before the block is drawn - no key that could edit reaches the editor at all,
     // and none does while the editor's hold is not on, where the row reads as one with no block.
+    //
+    // Tab and Shift+Tab the editor leaves to the browser - Milkdown answers them in a list item
+    // alone, where it sinks and lifts the item - moved the focus on to whatever the editor draws
+    // next, the whole document's: driving a preview, Tab from a statement's caret went to a
+    // control another block draws, an ask's Copy reference, and the box scrolled to it, away from
+    // the statement. So each such key is read again once the editor has had it (the bubble
+    // phase): where its default stands, the focus goes where the browser would take it, past
+    // every control the editor draws outside the node's block (`tabStopsFrom`): to a control the
+    // block draws itself, or the action bar's while it shows the selection's acts, or back to the
+    // editable, and past those Tab goes to the first tab stop after the editor's box and Shift+Tab
+    // to the row. A stop that refuses the focus, one the page does not draw, is stepped past. Out
+    // of the box, the editing ends: Shift+Tab's as Escape's does, the row holding the focus, and
+    // Tab's as a Tab out of the outline does, which lets go of the row where the focus is out of
+    // the tree (`IssueTree.tsx`'s `useReleaseFocus`); a Tab past the page's last tab stop leaves
+    // the focus on the page itself, as a browser's leaves the page. The key's default goes, so
+    // the box scrolls to nothing on the way, and nothing of the document changes. While the caret
+    // is not in the block the key never gets here (`confineKey`), and goes on to the browser.
     const rowSelector = `[data-node-row][data-row-key="${CSS.escape(editingRow)}"]`;
     const listening = new AbortController();
     box.addEventListener(
@@ -515,12 +537,47 @@ export function useNodeEditing({
       (event) => {
         const row = box.querySelector<HTMLElement>(rowSelector);
         if (row === null) return;
-        confineKey(row, hold.current === "on" ? editingBlock : undefined, event);
+        confineKey(
+          row,
+          hold.current === "on" ? editingBlock : undefined,
+          event,
+          editorView.current
+        );
       },
       { capture: true, signal: listening.signal }
     );
+    box.addEventListener(
+      "keydown",
+      (event) => {
+        if (
+          event.key !== "Tab" ||
+          event.defaultPrevented ||
+          event.altKey ||
+          event.ctrlKey ||
+          event.metaKey ||
+          hold.current !== "on" ||
+          !(event.target instanceof Element)
+        ) {
+          return;
+        }
+        const row = box.querySelector<HTMLElement>(rowSelector);
+        const stops =
+          row === null ? null : tabStopsFrom(row, editingBlock, event.target, event.shiftKey);
+        if (row === null || stops === null) return;
+        event.preventDefault();
+        const to = stops.find((stop) => {
+          stop.focus();
+          return document.activeElement === stop;
+        });
+        if (to === undefined) (document.activeElement as HTMLElement | null)?.blur();
+        else if (row.querySelector(`[${EDITOR_BOX_ATTRIBUTE}]`)?.contains(to) === true) return;
+        if (to === row) stopEditing();
+        else setEditing(undefined);
+      },
+      { signal: listening.signal }
+    );
     return () => listening.abort();
-  }, [container, editingBlock, editingRow]);
+  }, [container, editingBlock, editingRow, stopEditing]);
 
   useEffect(() => {
     const box = container.current;

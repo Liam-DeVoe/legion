@@ -2157,9 +2157,10 @@ function pressIn(editable: HTMLElement, key: string, modifiers: KeyboardEventIni
 }
 
 /** A block of a document as the room holds it, in ProseMirror's JSON: its type, its attributes -
- *  its `blockId` among them - and what it holds. */
+ *  its `blockId` among them, and a typed block's `block[]` pointers as the array they are - and
+ *  what it holds. */
 interface LiveBlock {
-  readonly attrs?: Readonly<Record<string, string | number>>;
+  readonly attrs?: Readonly<Record<string, string | number | readonly string[]>>;
   readonly content?: readonly (LiveBlock | LiveText)[];
   readonly type: string;
 }
@@ -2175,7 +2176,7 @@ interface LiveText {
  *  heading's level as the number it is, where its own types name strings alone. */
 function roomBlock(block: LiveBlock): Y.XmlElement {
   const element = new Y.XmlElement(block.type);
-  const attributes = element as Y.XmlElement<Record<string, string | number>>;
+  const attributes = element as Y.XmlElement<Record<string, string | number | readonly string[]>>;
   for (const [name, value] of Object.entries(block.attrs ?? {})) {
     attributes.setAttribute(name, value);
   }
@@ -2800,6 +2801,45 @@ test("a key pressed in a composition has the row's editor read no caret, and Bac
   }
 });
 
+// The row has its editor read the caret before a key the editor answers (`confineKey`), and that
+// read is the document's `selectionchange`, which every listener on the page hears. The editor's
+// action bar reads each one on a touch selection as the reader's new selection, which it hides and
+// shows again 400 ms later (`@legion/proof-editor`'s `dispatch-action-bar.ts`): read before every
+// key, the bar blinked at each Ctrl+C on a touch device with a keyboard. The read is made only
+// where the page's selection is not the editor's own, so Ctrl+C on a selection the editor holds
+// leaves the bar showing. The bar reads a selection as a touch one from the reader's last touch on
+// the editable, which the case makes as the browser reports it, before the selection.
+test("Ctrl+C on a touch selection the row's editor holds leaves its action bar showing", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await editLive(user);
+  const words = wordsOf(editable, "r1");
+  await act(async () => {
+    editable.dispatchEvent(new Event("touchstart", { bubbles: true }));
+    editable.dispatchEvent(new Event("touchend", { bubbles: true }));
+  });
+  await select(words, 2, words, 11);
+  const { $anchor, $head } = view.state.selection;
+  expect(
+    [$anchor.parentOffset, $head.parentOffset],
+    "the editor did not take the reader's selection as its own"
+  ).toEqual([2, 11]);
+  // The bar is drawn beside the editable, and drawn again as the editor's plugins change.
+  const bar = () =>
+    editable.parentElement?.querySelector<HTMLElement>(":scope > .dispatch-action-bar")?.style
+      .display;
+  await waitFor(
+    () => expect(bar(), "the action bar did not show the touch selection").toBe("flex"),
+    {
+      timeout: 2_000,
+    }
+  );
+  // `Mod-c` is the platform's own (`prosemirror-keymap`).
+  const mod = /Mac|iP(hone|[oa]d)/.test(navigator.platform) ? "metaKey" : "ctrlKey";
+  pressIn(editable, "c", { [mod]: true });
+  expect(bar(), "Ctrl+C on the selection the editor holds hid the action bar").toBe("flex");
+});
+
 // Milkdown's block shortcuts make the block the caret is in another: Ctrl+Alt+1 a heading,
 // Ctrl+Shift+B a quote around it, Ctrl+Alt+7 and Ctrl+Alt+8 a list around it, Ctrl+Alt+C a code
 // block, and `# ` typed at its start a heading. The editor refuses each in the node's paragraph
@@ -2923,6 +2963,186 @@ test("Tab right after the caret moved to the next item of the node's list sinks 
   } finally {
     restore();
   }
+});
+
+/** A plan task `blockId` of `words`, which serves the words above the statement: the editor draws
+ *  its header `contenteditable="false"`, with a link to the block it serves
+ *  (`typed-block-drawing.ts`'s `renderTypedBlock`), where the browser stops for Tab. */
+function taskServing(blockId: string, words: string): LiveBlock {
+  return {
+    attrs: { blockId, serves: [`dispatch://${KEY}/spec#b-r0`] },
+    content: [{ content: [{ text: words, type: "text" }], type: "paragraph" }],
+    type: "plan_task",
+  };
+}
+
+/** The link the plan task `blockId` of the row's `editable` draws in its header. */
+function linkOf(editable: HTMLElement, blockId: string): HTMLElement {
+  const link = editable.querySelector<HTMLElement>(`[data-block-id="${blockId}"] header a[href]`);
+  if (link === null) throw new Error(`the editor draws no link in ${blockId}`);
+  return link;
+}
+
+/** Whether `row`, which held the editor, has let go of it - the editing ended - and draws neither
+ *  its body nor its focused look, as a row the focus left the outline from. */
+function rowLetGo(row: HTMLElement): boolean {
+  return (
+    row.querySelector('[contenteditable="true"]') === null &&
+    row.querySelector("[data-node-body]") === null &&
+    row.querySelector("[data-node-card]")?.className.includes(pageFocusedRow) !== true
+  );
+}
+
+// Milkdown answers Tab in a list item alone, and the browser moved the focus on from the row's
+// editor to the next control the editor draws: driving a preview, another block's, and the
+// editor's box scrolled to it, away from the node's block. Tab from the row's editor goes past
+// every control the editor draws outside the node's block, to the first tab stop after its box,
+// here a control of the page below the outline, and the editing ends as a Tab out of the outline
+// does: the row lets go of the editor, its body and its focused look. The document stays as it
+// was.
+test("Tab from the row's editor goes past a control another block draws to the first tab stop after its box, and ends the editing", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await editLive(user, [
+    paragraph("r0", "The words above the statement."),
+    paragraph("r1", "A statement of the spec."),
+    taskServing("t2", "The task below the statement."),
+  ]);
+  const outside = controlOutside();
+  const link = linkOf(editable, "t2");
+  const row = editable.closest<HTMLElement>("[data-node-row]");
+  if (row === null) throw new Error("the statement's row does not hold the editor");
+  const before = blocksOf(view);
+  await user.tab();
+  expect(document.activeElement === link, "Tab stopped on the link the next block draws").toBe(
+    false
+  );
+  expect(
+    document.activeElement === outside.control,
+    "Tab from the row's editor did not go to the first tab stop after its box"
+  ).toBe(true);
+  expect(blocksOf(view), "Tab changed the document").toEqual(before);
+  await waitFor(() =>
+    expect(rowLetGo(row), "the row kept its editing, its body or its focused look").toBe(true)
+  );
+});
+
+// Shift+Tab from the row's editor goes past every control the editor draws outside the node's
+// block to the row, the outline's one tab stop, and the editing ends there as Escape's does, the
+// focus staying on the row. The document stays as it was.
+test("Shift+Tab from the row's editor goes to the row past a control another block draws, and ends the editing", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await editLive(user, [
+    taskServing("t0", "The task above the statement."),
+    paragraph("r1", "A statement of the spec."),
+    taskServing("t2", "The task below the statement."),
+  ]);
+  const row = editable.closest<HTMLElement>("[data-node-row]");
+  if (row === null) throw new Error("the statement's row does not hold the editor");
+  const before = blocksOf(view);
+  await user.tab({ shift: true });
+  expect(
+    document.activeElement === row,
+    "Shift+Tab from the row's editor did not go to the row"
+  ).toBe(true);
+  expect(blocksOf(view), "Shift+Tab changed the document").toEqual(before);
+  await waitFor(() =>
+    expect(row.querySelector('[contenteditable="true"]') === null, "the editing did not end").toBe(
+      true
+    )
+  );
+  await nextFrame();
+  expect(document.activeElement === row, "the focus left the row as the editing ended").toBe(true);
+});
+
+// What the node's own block draws is the node's: from the caret in a plan task's words, Tab stops
+// at the link the task's header draws, as the browser would, and the editing stays. Tab from that
+// link goes on past the controls the editor draws outside the block, to the first tab stop after
+// its box, and ends the editing.
+test("Tab from the row's editor stops at a link the node's own block draws, and the editing stays", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable } = await editLive(user, [
+    paragraph("r0", "The words above the statement."),
+    taskServing("r1", "A statement of the spec."),
+    taskServing("t2", "The task below the statement."),
+  ]);
+  const outside = controlOutside();
+  const row = editable.closest<HTMLElement>("[data-node-row]");
+  if (row === null) throw new Error("the statement's row does not hold the editor");
+  await user.tab();
+  expect(
+    document.activeElement === linkOf(editable, "r1"),
+    "Tab did not stop at the link the node's block draws"
+  ).toBe(true);
+  await nextFrame();
+  expect(
+    row.querySelector('[contenteditable="true"]') === editable,
+    "the editing ended at a link of the node's block"
+  ).toBe(true);
+  await user.tab();
+  expect(
+    document.activeElement === outside.control,
+    "Tab from the node's link did not go to the first tab stop after the editor's box"
+  ).toBe(true);
+  await waitFor(() =>
+    expect(rowLetGo(row), "the row kept its editing, its body or its focused look").toBe(true)
+  );
+});
+
+// The editor draws its action bar beside the editable, outside every block, but the bar's
+// Comment, Suggest and Ask act on the selection, which the row holds inside the node's block: while
+// the bar shows, Tab from the row's editor stops at each of its controls in turn, as it did before
+// the editor's other controls were passed over, and the editing stays. Tab from the bar's last
+// control goes on by the same rule, past the box, and ends the editing. The selection is a touch
+// one, as the Ctrl+C case above makes it.
+test("Tab from the row's editor stops at each control of the action bar its selection shows, and the editing stays", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable } = await editLive(user, [
+    paragraph("r0", "The words above the statement."),
+    paragraph("r1", "A statement of the spec."),
+    taskServing("t2", "The task below the statement."),
+  ]);
+  const outside = controlOutside();
+  const row = editable.closest<HTMLElement>("[data-node-row]");
+  if (row === null) throw new Error("the statement's row does not hold the editor");
+  const words = wordsOf(editable, "r1");
+  await act(async () => {
+    editable.dispatchEvent(new Event("touchstart", { bubbles: true }));
+    editable.dispatchEvent(new Event("touchend", { bubbles: true }));
+  });
+  await select(words, 2, words, 11);
+  await waitFor(
+    () =>
+      expect(
+        editable.parentElement?.querySelector<HTMLElement>(":scope > .dispatch-action-bar")?.style
+          .display,
+        "the action bar did not show the touch selection"
+      ).toBe("flex"),
+    { timeout: 2_000 }
+  );
+  for (const name of ["Comment", "Suggest", "Ask"]) {
+    await user.tab();
+    const focused = document.activeElement;
+    expect(
+      focused?.closest(".dispatch-action-bar") !== null && focused?.textContent === name,
+      `Tab did not stop at the action bar's ${name}`
+    ).toBe(true);
+    expect(
+      row.querySelector('[contenteditable="true"]') === editable,
+      `the editing ended at the action bar's ${name}`
+    ).toBe(true);
+  }
+  await user.tab();
+  expect(
+    document.activeElement === outside.control,
+    "Tab from the action bar did not go to the first tab stop after the editor's box"
+  ).toBe(true);
+  await waitFor(() =>
+    expect(rowLetGo(row), "the row kept its editing, its body or its focused look").toBe(true)
+  );
 });
 
 // Backspace and Delete at the start of a list's first item lift it out of its list

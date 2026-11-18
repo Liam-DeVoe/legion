@@ -8,6 +8,7 @@ import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import { refocusWhenSettled } from "../doc/refocus-when-settled";
 import { scrollElementToTop } from "../doc/scroll-block";
 import { importWhenOnline } from "../shell/DeploymentResilience";
+import { canHoldFocus } from "./focus-keeper";
 import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 
 /**
@@ -184,11 +185,15 @@ type Point = readonly [node: Node, offset: number];
  * extends the selection to the block's end it stops at. A Mac's Ctrl+A is the editor's own move
  * to the start of the line's paragraph (`prosemirror-commands`' `macBaseKeymap`), which stays in
  * the block, and is left to it.
+ *
+ * `view` is that editor's view, as the page handed it to the row (`useNodeEditing.ts`), whose own
+ * selection a key the editor answers acts on.
  */
 export function confineKey(
   host: HTMLElement,
   blockId: string | undefined,
-  event: KeyboardEvent
+  event: KeyboardEvent,
+  view: EditorView | undefined
 ): void {
   if (event.defaultPrevented || PASSING_KEYS[event.key] === true) return;
   const editable = editableHolding(host, event.target);
@@ -223,18 +228,114 @@ export function confineKey(
     // own selection is in (SinkListItem, LiftListItem), so a Tab right after ArrowDown to the next
     // item, before the browser reported the move, would sink the item the caret had left. So
     // before each key that goes on to the editor with the selection in the block, Escape and the
-    // modifiers aside (`PASSING_KEYS`), the editor reads the caret now, which reads nothing new
-    // where the caret has not moved (`DOMObserver.onSelectionChange`). Not during a composition:
-    // the input method holds the caret then, and ProseMirror reads the page itself as a
-    // composition starts and as it ends, and leaves a key pressed in one alone
-    // (`inOrNearComposition`).
-    if (!event.isComposing && event.key !== "Process") {
+    // modifiers aside (`PASSING_KEYS`), the editor reads the caret now where the page's selection
+    // is not the editor's own (`holdsSelection`). Only there: the read is the document's
+    // `selectionchange`, which every listener on the page hears, and the editor's action bar reads
+    // each one on a touch selection as the reader's new selection, which it hides and shows again
+    // 400 ms later (`@legion/proof-editor`'s `dispatch-action-bar.ts`): read before every key, the
+    // bar blinked at each Ctrl+C on a touch device with a keyboard. Not during a composition: the
+    // input method holds the caret then, and ProseMirror reads the page itself as a composition
+    // starts and as it ends, and leaves a key pressed in one alone (`inOrNearComposition`).
+    if (!event.isComposing && event.key !== "Process" && !holdsSelection(view, ...selected)) {
       document.dispatchEvent(new Event("selectionchange"));
     }
     return;
   }
   event.preventDefault();
   if (taken !== null) selectInEditor(taken[0][0], taken[0][1], taken[1][0], taken[1][1]);
+}
+
+/** Whether the editor `view` holds the selection from `anchor` to `focus` the page shows as its
+ *  own: its anchor and its head stand where those do. A place it cannot read - one outside its
+ *  document, or any in an editor torn down, where `posAtDOM` throws - reads as another, as does
+ *  every place where the row holds no view. */
+function holdsSelection(view: EditorView | undefined, anchor: Point, focus: Point): boolean {
+  if (view === undefined) return false;
+  try {
+    const { selection } = view.state;
+    return (
+      view.posAtDOM(anchor[0], anchor[1]) === selection.anchor &&
+      view.posAtDOM(focus[0], focus[1]) === selection.head
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** The elements the browser stops at for Tab unless a negative `tabindex` says otherwise, and
+ *  every element a `tabindex` puts among them (`isTabStop`). */
+const TAB_STOPS = [
+  "a[href]",
+  "area[href]",
+  "button",
+  "iframe",
+  'input:not([type="hidden"])',
+  "select",
+  "summary",
+  "textarea",
+  '[contenteditable="true"]',
+  '[contenteditable=""]',
+  "[tabindex]",
+].join(", ");
+
+/** The class of the action bar the editor draws for its selection (`@legion/proof-editor`'s
+ *  `dispatch-action-bar.ts`): one element, put beside the editable, inside the editor's box, and
+ *  hidden with an inline `display: none` while the selection holds no text. */
+const ACTION_BAR = ".dispatch-action-bar";
+
+/**
+ * Where Tab - Shift+Tab where `back` - may take the focus from `from`, inside the box the editor
+ * of the row `row` scrolls in (`EDITOR_BOX_ATTRIBUTE`), while that editor draws `blockId`'s
+ * block: the browser's own tab stops in the key's direction, nearest first, in the order it steps
+ * through them - the page's order, which nothing in Dispatch changes with a positive `tabindex` -
+ * passing over every one the editor draws outside that block: another block's link or button.
+ * Its editable and what the node's block draws stay among them, and so does the action bar while
+ * it shows (`ACTION_BAR`): the editor draws the bar outside every block, but its Comment, Suggest
+ * and Ask act on the selection, which the row holds inside the node's block
+ * (`selectionIntoBlock`), so they are the node's controls as much as the block's own, and Tab
+ * reaches them as it did before the rest of the editor's were passed over. A bar hidden is read
+ * by its own inline `display: none`, not through the layout, so a page with none answers as the
+ * browser does, which gives no hidden control the focus. Shift+Tab past the box's start goes to
+ * the row itself, the outline's one tab stop, where the editing began. Null where `from` is not
+ * inside that box, or the editor draws no such block.
+ */
+export function tabStopsFrom(
+  row: HTMLElement,
+  blockId: string | undefined,
+  from: Element,
+  back: boolean
+): HTMLElement[] | null {
+  const box = row.querySelector<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
+  const editable = box?.querySelector<HTMLElement>('[contenteditable="true"]') ?? null;
+  const block = editable === null ? null : blockIn(editable, blockId);
+  if (box === null || editable === null || block === null || !box.contains(from)) return null;
+  const bar = box.querySelector<HTMLElement>(ACTION_BAR);
+  const shownBar = bar !== null && bar.style.display !== "none" ? bar : null;
+  // An ancestor of `from` stands before it in the page's order, and a descendant after it.
+  const side = back ? Node.DOCUMENT_POSITION_PRECEDING : Node.DOCUMENT_POSITION_FOLLOWING;
+  const stops = Array.from(document.querySelectorAll<HTMLElement>(TAB_STOPS)).filter(
+    (stop) =>
+      (from.compareDocumentPosition(stop) & side) !== 0 &&
+      (!box.contains(stop) ||
+        stop === editable ||
+        block.contains(stop) ||
+        shownBar?.contains(stop) === true) &&
+      isTabStop(stop)
+  );
+  return back ? [...stops.filter((stop) => box.contains(stop)).reverse(), row] : stops;
+}
+
+/** Whether the browser stops at `element`, one of `TAB_STOPS`, for Tab: no negative `tabindex`,
+ *  no content of an editable - whose links take no focus of their own there, while what the
+ *  editor draws `contenteditable="false"` does - and able to take the focus (`canHoldFocus`). A
+ *  stop the page draws nothing of - `display: none`, a closed `details` - is one the browser
+ *  refuses the focus to, which `useNodeEditing.ts` steps past. */
+function isTabStop(element: HTMLElement): boolean {
+  return (
+    (!element.hasAttribute("tabindex") || element.tabIndex >= 0) &&
+    element.parentElement?.isContentEditable !== true &&
+    canHoldFocus(element)
+  );
 }
 
 /** Whether `event` is a key the editor or the browser could edit the document with, or move its
