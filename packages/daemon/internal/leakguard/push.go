@@ -249,12 +249,16 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, held, tags []s
 // each run in dir and fetching nothing (fetchesNothing), as the reads of what dir has are. A
 // lightweight tag is a ref at a commit, whose records are its name and the commit's.
 func (g *Guard) tagRecords(ctx context.Context, dir, sha string, read map[string]bool) ([]Record, error) {
+	if read[sha] {
+		return nil, nil
+	}
 	kind, err := g.gitFed(ctx, dir, fetchesNothing, "", "cat-file", "-t", sha)
 	if err != nil {
 		return nil, err
 	}
 	var records []Record
-	for kind = strings.TrimSpace(kind); kind == "tag" && !read[sha]; {
+	kind = strings.TrimSpace(kind)
+	for kind == "tag" && !read[sha] {
 		read[sha] = true
 		out, err := g.gitFed(ctx, dir, fetchesNothing, "", "cat-file", "tag", sha)
 		if err != nil {
@@ -281,7 +285,7 @@ func (g *Guard) tagRecords(ctx context.Context, dir, sha string, read map[string
 	return records, nil
 }
 
-// short is a commit as a report names it.
+// short is a commit or a tag object as a report names it.
 func short(commit string) string {
 	return commit[:min(len(commit), 7)]
 }

@@ -51,15 +51,13 @@ type blobBatch struct {
 
 // readBlobs starts the batch, read in dir.
 func (g *Guard) readBlobs(ctx context.Context, dir string) (*blobBatch, error) {
-	ctx, stop := context.WithCancel(ctx)
-	pipe, into := io.Pipe()
-	batch := &blobBatch{out: bufio.NewReader(pipe), pipe: pipe, stop: stop, ran: make(chan error, 1)}
 	asks, in, err := os.Pipe()
 	if err != nil {
-		stop()
 		return nil, fmt.Errorf("git cat-file's standard input could not be made: %w", err)
 	}
-	batch.in, batch.asks = in, asks
+	ctx, stop := context.WithCancel(ctx)
+	pipe, into := io.Pipe()
+	batch := &blobBatch{in: in, asks: asks, out: bufio.NewReader(pipe), pipe: pipe, stop: stop, ran: make(chan error, 1)}
 	go func() {
 		var stderr strings.Builder
 		status, _, err := g.run(ctx, child{

@@ -107,7 +107,7 @@ It carries:
     A URL that is a relative local path is read from the clone's directory, where git read it for the push.
     It reads no git configuration but its own command line's either, since a `url.<base>.insteadOf` in the process's environment, the user's configuration or the machine's would lead it to another repository the same way:
     of the process's environment it keeps no variable whose name starts `GIT_CONFIG`, so no `GIT_CONFIG_COUNT` block and no `GIT_CONFIG_PARAMETERS`, and `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null` take away the system file, the user's and every file either includes (`heldReadInherits`, `Guard.advertised`).
-    Its command line carries the pod's GitHub credential instead, and no other git configuration: the helper for github.com reset and set to `legion git-credential`, with `useHttpPath` on, as the pod's `GIT_CONFIG_COUNT` block begins (`workspace.GitHubCredentialPairs`, `heldReadCredential`).
+    Its command line carries no git configuration but the guard's own pins (`gitPins`) and the pod's GitHub credential helper, reset and set to `legion git-credential` with `useHttpPath` on, as the pod's `GIT_CONFIG_COUNT` block begins (`workspace.GitHubCredentialPairs`, `heldReadCredential`).
     A credential helper cannot rewrite a URL, so it leads the read nowhere else, and the read authenticates to GitHub as the pod's own git does.
     A destination the guard cannot name that wants a credential set through git configuration is refused as a setup error, and so is a push that needs a transport setting made there, such as `core.sshCommand`, `http.proxy` or `http.sslCAInfo` in the user's file, the machine's or a `GIT_CONFIG_COUNT` block; `GIT_SSH_COMMAND`, the proxy variables and `GIT_SSL_CAINFO` still apply.
     The read has a bound of its own, two minutes, since the hook's context has none (`Guard.heldReadBound`); seven reads of cybermonklabs/legion's 5,749 branches and tags from an issue pod took 0.63 s at the median on 2026-11-18.
@@ -117,8 +117,8 @@ It carries:
     A branch or a tag at a commit the clone does not have holds nothing, so where that commit is ahead of the clone's, the clone's commits it reaches are read, which fails closed.
     A push whose destination holds nothing the clone has, an empty local bare repository among them, fails closed the same way:
     it reads every commit the branch reaches, at one read of each, which is thousands for a fork's branch.
-    Both reads that ask whether the clone has a commit run with `GIT_NO_LAZY_FETCH=1`: the batch check of the shas `git ls-remote` prints (`Guard.advertised`), and the check of the commit the update says the destination's ref is at now (`Guard.holds`).
-    So a partial clone fetches none it lacks from its promisor remote, and such a commit holds nothing there either.
+    Both reads that ask what the clone has run with `GIT_NO_LAZY_FETCH=1`: the batch check of the shas `git ls-remote` prints, which keeps those the clone has as commits or tag objects (`Guard.advertised`), and the check of the commit the update says the destination's ref is at now (`Guard.holds`).
+    So a partial clone fetches no object it lacks from its promisor remote, and such an object holds nothing there either.
     No ref of the clone's own counts: git moves a remote's `refs/remotes/<remote>/` for a push to whatever URL the remote pushes to at that time, a local bare one that a role points it at for one run (`git remote set-url --push origin <bare>`) included, and a ref can be written by hand.
 
   The build's last step asserts that each wrapper is first on `PATH` with the real binary behind it and that the hook is root's and executable;
