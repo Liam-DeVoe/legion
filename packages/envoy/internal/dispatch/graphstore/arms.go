@@ -258,10 +258,13 @@ const (
 	do nothing`
 )
 
-// nodeArrays are the nine arrays a node write binds, in nodeColumns' order: one spelling of the
-// types, read by the arm the publisher's record splices in and by writeNodes alike.
+// nodeArrayTypes are the types of the nine arrays a node write binds, in nodeColumns' order, and
+// nodeArrays their parameter list: one spelling of the types, read by the arm the publisher's
+// record splices in and by writeNodes alike.
+var nodeArrayTypes = []string{"text", "text", "text", "text", "text", "jsonb", "timestamptz", "jsonb", "bigint"}
+
 func nodeArrays(first int) string {
-	return arrayList(first, "text", "text", "text", "text", "text", "jsonb", "timestamptz", "jsonb", "bigint")
+	return arrayList(first, nodeArrayTypes...)
 }
 
 // nodeRows reads the nodes of a write in ascending (kind, id): a write touching several nodes
