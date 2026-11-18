@@ -521,6 +521,9 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	// TestTheOperatorsFreshSessionRetryForgetsTheSessionBeforeTheRestartIsApplied). The ask rides
 	// the retry as well (RequestOperatorRetry.FreshSession, intake.RestartPhase.FreshSession), so
 	// the start the workflow raises spawns rather than resumes whatever the claim still records.
+	// forgot is whether the forget below dropped a recorded session, which a refusal of the
+	// resume after it must say: the claim is no longer the one the request found.
+	forgot := false
 	if session := m.Claim().Session; session != "" {
 		switch err := s.forgetRecordedSession(r, m, token, session, by); {
 		case holdRefusal(err):
@@ -543,6 +546,10 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 			s.operatorFailure(w, "forget-session", token, err)
 			return 0, "", false, false
 		}
+		forgot = true
+	}
+	if s.beforeFreshSessionResume != nil {
+		s.beforeFreshSessionResume()
 	}
 	if m.Claim().State != supervise.StateSuspended {
 		status, ok := s.retryStart(w, r, m, token, true, by)
@@ -559,7 +566,14 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 			"claim", token, "state", m.Claim().State, "error", err)
 		return http.StatusOK, notStartedAgain(token, m.Claim().State, "the start of it in a new session", err), false, true
 	case holdRefusal(err):
-		s.refuseHold(w, token, freshSessionOp, by, err, nothingChanged)
+		// Only a claim this request found suspended comes here (a refusal after this request's
+		// own suspension is answered above), so the hold took over a suspension that was already
+		// there, and the forget, when there was one, has dropped the session.
+		outcome := nothingChanged
+		if forgot {
+			outcome = sessionLeftBehind
+		}
+		s.refuseHold(w, token, freshSessionOp, by, err, outcome)
 		return 0, "", false, false
 	case err != nil:
 		s.operatorFailure(w, "resume", token, err)

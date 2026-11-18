@@ -377,6 +377,10 @@ type server struct {
 	// concurrency regression tests of the operator's forget-session route (after its preflight) and
 	// of the fresh session's forget (forgetRecordedSession, after the suspension it ran).
 	beforeForgetSessionHandle func()
+	// beforeFreshSessionResume pauses a fresh session after its forget dropped the recorded
+	// session and before its resume, in the regression test of a suspension above the caller
+	// that takes the claim over in that window (freshSession, sessionLeftBehind).
+	beforeFreshSessionResume func()
 }
 
 // NewServer builds the daemon's HTTP server on bind:port, the configured address: every interface

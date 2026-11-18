@@ -71,14 +71,18 @@ const (
 )
 
 // What a refusal of a hold says became of the claim (refuseHold): nothing, for a request the
-// hold refused before it changed anything, which is every such refusal but one; and the
-// caller's own suspension and nothing more, for the fresh session whose forget a suspension
-// above the caller refused after taking the claim over from that suspension, which leaves the
-// claim suspended by the holder with the session it recorded (freshSession). Each reads after
+// hold refused before it changed anything, which is every such refusal but two; the caller's
+// own suspension and nothing more, for the fresh session whose forget a suspension above the
+// caller refused after taking the claim over from that suspension, which leaves the claim
+// suspended by the holder with the session it recorded; and the session left behind and
+// nothing more, for the fresh session of a claim it found suspended whose resume such a
+// suspension refused after the forget had dropped that session, which leaves the claim
+// suspended by the holder with no session to resume (freshSession). Each reads after
 // "so <operation> by <caller>", or after "so it" in the daemon's sentence.
 const (
 	nothingChanged         = "is refused and nothing of the claim changed"
 	itsSuspensionTakenOver = "went no further than its own suspension of the claim, which that suspension then took over, and the claim keeps the session it recorded"
+	sessionLeftBehind      = "went no further than leaving behind the session the claim recorded, which that suspension took the claim over after, so the claim starts in a new session once it is started"
 )
 
 // The operator's four claim operations in the words their refusals name them by (claimOp), with

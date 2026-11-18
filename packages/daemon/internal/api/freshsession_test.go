@@ -933,6 +933,50 @@ func TestAFreshSessionKeepsTheSessionOfAClaimASuspensionAboveTheCallerTookOver(t
 	}
 }
 
+// A suspension above the caller can take the claim over after the fresh session's forget dropped
+// the session it recorded and before its resume: the resume is refused that hold, and the
+// refusal says the session was left behind, since the claim the holder starts is no longer the
+// one the request found. Said "nothing of the claim changed", the caller would read the claim as
+// resumable on the session it can no longer reach.
+func TestAFreshSessionWhoseResumeAHoldRefusesAfterTheForgetSaysTheSessionWasLeftBehind(t *testing.T) {
+	h := freshSessionHarness(t, &phaseRestarter{})
+	token := controllerSuspendedImplementer(t, h)
+	m, _ := h.supervisor.Machine(token)
+	s := routeServer(h)
+	tookOver := false
+	s.beforeFreshSessionResume = func() {
+		tookOver = true
+		if err := m.Handle(h.ctx, supervise.RequestSuspend{
+			Claim: token, Reason: "a suspension above the caller takes the claim over", By: supervise.SuspendedByOperator,
+		}); err != nil {
+			t.Errorf("the takeover before the resume: %v", err)
+		}
+	}
+	launches := len(h.runtime.CallsOf("Resume")) + len(h.runtime.CallsOf("Spawn"))
+	recorder := httptest.NewRecorder()
+
+	_, _, _, ok := s.freshSession(recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token, supervise.SuspendedByController)
+
+	if !tookOver {
+		t.Fatalf("the fresh session reached no resume, so nothing took the claim over before one; body %s", recorder.Body)
+	}
+	if ok {
+		t.Fatalf("the fresh session reported success; body %s", recorder.Body)
+	}
+	wantFreshSessionRefusal(t, recorder, http.StatusConflict, suspendedByOperator, string(token)+
+		" is held by the operator's own suspension, which only the operator lifts, so a fresh session by the controller "+
+		"went no further than leaving behind the session the claim recorded, which that suspension took the claim over "+
+		"after, so the claim starts in a new session once it is started. Ask the operator: `legion claims resume --claim "+
+		string(token)+"` is theirs to run")
+	if got := h.stored(token); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByOperator || got.Session != "" {
+		t.Fatalf("the claim is %s suspended by %q on session %q, want it suspended by the operator with no session",
+			got.State, got.SuspendedBy, got.Session)
+	}
+	if got := len(h.runtime.CallsOf("Resume")) + len(h.runtime.CallsOf("Spawn")); got != launches {
+		t.Errorf("the runtime was asked for %d launches, want the %d made before the request", got, launches)
+	}
+}
+
 // wantFreshSessionRefusal holds a refusal to its status, its code and its sentence: the shape
 // both doors give the refusals the fresh session writes itself.
 func wantFreshSessionRefusal(t *testing.T, recorder *httptest.ResponseRecorder, status int, code, message string) {
