@@ -335,6 +335,9 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   }, [open]);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    // A key that ends or moves an IME composition is the input method's: Enter commits the
+    // composed text into the box and picks nothing, and Tab leaves the list open.
+    if (event.nativeEvent.isComposing) return;
     if (event.key === "ArrowDown" && rows.length > 0) {
       event.preventDefault();
       const index = activeRow === undefined ? -1 : rows.indexOf(activeRow);
