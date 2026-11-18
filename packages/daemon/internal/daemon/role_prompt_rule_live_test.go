@@ -11,7 +11,8 @@
 // (packages/daemon/internal/prompts/roles/architect.md, `# Legion Sub-Architect`) and whose
 // addressing line names the architect above it (addressingFragment, in specs.go).
 // CI's agent-harness job runs it by name (.github/workflows/ci-job-agent-harness.yaml), over the
-// PostgreSQL that job gives it and the package's test NATS server.
+// PostgreSQL that job gives it, the package's test NATS server and the job's git and jj 0.38 or
+// later, which the daemon's boot refuses to start without.
 //
 // What this proof reads, and why it reads it there. Unit tests already hold the pod memory rule
 // in each composed prompt and in the one part per tree it comes from

@@ -3,7 +3,8 @@
 // it, a newer task takes its place, and a relaunched process reads, in the first prompt it is
 // sent, what the relaunch ended of its subagents, its background jobs and its turn.
 // CI's agent-harness job runs it by name (.github/workflows/ci-job-agent-harness.yaml), over the
-// PostgreSQL that job gives it and the package's test NATS server.
+// PostgreSQL that job gives it, the package's test NATS server and the job's git and jj 0.38 or
+// later, which the daemon's boot refuses to start without.
 //
 // It is a sibling of claim_compaction_live_test.go and provider_error_retry_live_test.go, and it
 // takes what they share as it is: liveAgentProof's reads of a claim and of the daemon's own log

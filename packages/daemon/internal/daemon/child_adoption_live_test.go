@@ -14,7 +14,8 @@
 // never held, and keeps queueing as its own; and a child recorded in another tree is refused by
 // name.
 // The test runs in CI's daemon-live job (.github/workflows/ci-job-daemon-live.yaml), on the job's
-// PostgreSQL and the package's test NATS server.
+// PostgreSQL and the package's test NATS server, with the job's git and jj 0.38 or later, which
+// the daemon's boot refuses to start without.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
 // whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration load,

@@ -3,8 +3,9 @@
 // the controller's `compact`, and `legion claims retry --fresh-session` and the controller's
 // `fresh_session`. Each is driven through both of its doors against real `omp --mode rpc` panes
 // under the real daemon. CI's agent-harness job runs it by name
-// (.github/workflows/ci-job-agent-harness.yaml), over the PostgreSQL that job gives it and the
-// package's test NATS server.
+// (.github/workflows/ci-job-agent-harness.yaml), over the PostgreSQL that job gives it, the
+// package's test NATS server and the job's git and jj 0.38 or later, which the daemon's boot
+// refuses to start without.
 //
 // The daemon fails a claim once its run of refused turns reaches `launch_failure_limit`
 // (supervise/turnoutcome.go), whose shipped default is 3, and a compaction does not shorten that

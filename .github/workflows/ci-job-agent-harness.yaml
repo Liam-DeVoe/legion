@@ -36,8 +36,9 @@ name: CI job agent-harness
 #   * the NATS image the daemon package's test broker starts (internal/testnats's Image), pulled
 #     first for the reason the action gives, and TESTCONTAINERS_RYUK_DISABLED, as daemon-go sets
 #     it;
-#   * jj, which the daemon resolves at boot and refuses to start without, and which installs the
-#     mise install-omp installs the pin through, so it comes first;
+#   * git and jj 0.38 or later, which the daemon resolves at boot and refuses to start without:
+#     git is the runner image's own, and install-jj gives the jj the worker image ships and
+#     installs the mise install-omp installs the pin through, so it comes first;
 #   * Oh My Pi at the pin .omp-pin names (LEGION_TEST_OMP), which every pane runs;
 #   * Bun and a frozen install, for the plugin packs;
 #   * setup-go and the go-daemon cache restore: the step compiles internal/daemon's test binary,
@@ -109,10 +110,10 @@ jobs:
         with:
           persist-credentials: false
 
-      # Every daemon the tests boot resolves jj at boot and refuses to start without it, and
-      # late_completion_live_test.go makes its panes' workspace with it: the one the worker image
-      # ships. It also leaves mise at ~/.local/bin/mise, which install-omp installs the pin
-      # through.
+      # Every daemon the tests boot resolves git and jj at boot and refuses to start without
+      # either, and late_completion_live_test.go makes its panes' workspace with them: git is the
+      # runner image's own, and this is the jj the worker image ships. It also leaves mise at
+      # ~/.local/bin/mise, which install-omp installs the pin through.
       - uses: ./.github/actions/install-jj
 
       # Every pane runs the Oh My Pi .omp-pin names, and the tests refuse on GitHub Actions

@@ -24,7 +24,8 @@
 // sent again, and one naming a newer record of the phase, each meet the fence in a phase the
 // tester no longer works. The test runs in CI's daemon-live job
 // (.github/workflows/ci-job-daemon-live.yaml), on the job's PostgreSQL and the package's test NATS
-// server.
+// server, with the job's git and jj 0.38 or later, which the daemon's boot refuses to start
+// without.
 //
 // The forward entry of step 2 is raised on the path the daemon has for it: the tester asks for the
 // work back with its own backward move to implementing and ends its turn, and the implementer

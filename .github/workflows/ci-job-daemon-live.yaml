@@ -4,17 +4,18 @@ name: CI job daemon-live
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
-# What runs here is the seven whole-daemon live tests of internal/daemon that
-# .github/scripts/ci_job_reads.py's DAEMON_LIVE_TESTS names, every test of the seven files its
+# What runs here is the eight whole-daemon live tests of internal/daemon that
+# .github/scripts/ci_job_reads.py's DAEMON_LIVE_TESTS names, every test of the eight files its
 # DAEMON_LIVE_FILES names: each boots the whole daemon through the function `legion start`
 # calls, over this job's PostgreSQL and the package's test NATS server, and drives it through
 # GitHub and Dispatch envelopes, its own HTTP routes and its worker stream, with no agent. They
-# were the drivers of seven scripts under scripts/e2e, which only e2e.yaml's nightly ran; they
+# were the drivers of eight scripts under scripts/e2e, which only e2e.yaml's nightly ran; they
 # carry no build tag now, and the daemon-go race step, which runs their package, skips them by
 # name, so each runs once per run of the router, here, where its reads are this job's inputs:
-# handoff_records_live_test.go runs the real `dispatch` CLI and scripts/e2e/completion-head.ts
-# under bun, which load the installed workspace, and with them in daemon-go a change to the
-# lockfile or to the CLI's sources would run the daemon's whole Go suite.
+# handoff_records_live_test.go, and review_range_live_test.go on its rig, run the real
+# `dispatch` CLI and scripts/e2e/completion-head.ts under bun, which load the installed
+# workspace, and with them in daemon-go a change to the lockfile or to the CLI's sources would
+# run the daemon's whole Go suite.
 #
 # The tests' names are written in .github/scripts/ci_job_reads.py (DAEMON_LIVE_TESTS), which
 # builds this step's `-run` and the race step's `-skip` from the one list and holds each step's
@@ -26,7 +27,8 @@ name: CI job daemon-live
 #     database of its own on, whose migrations create the pgvector extension;
 #   * the NATS image the package's test broker starts (internal/testnats's Image), pulled first
 #     for the reason the action gives, and TESTCONTAINERS_RYUK_DISABLED, as daemon-go sets it;
-#   * jj, which the daemon resolves at boot and refuses to start without;
+#   * git and jj 0.38 or later, which the daemon resolves at boot and refuses to start without:
+#     git is the runner image's own, and install-jj gives the jj the worker image ships;
 #   * Bun and a frozen install, for the CLI and the completion-head driver;
 #   * setup-go and the go-daemon cache restore: the step compiles internal/daemon's test binary,
 #     the same package the plugin-pack job's step builds, and builds the Dispatch server.
@@ -119,8 +121,8 @@ jobs:
           key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
 
-      # Every daemon the tests boot resolves jj at boot and refuses to start without it: the one
-      # the worker image ships.
+      # Every daemon the tests boot resolves git and jj at boot and refuses to start without
+      # either: git is the runner image's own, and this is the jj the worker image ships.
       - uses: ./.github/actions/install-jj
 
       # The package's test broker starts testnats.Image (the hub's 2.15.1), pulled first for the
@@ -131,13 +133,13 @@ jobs:
           consts: |
             packages/daemon/internal/testnats/nats.go Image
 
-      # The seven tests, by name. .github/scripts/ci_job_reads.py builds this text and the
+      # The eight tests, by name. .github/scripts/ci_job_reads.py builds this text and the
       # daemon-go race step's `-skip` from DAEMON_LIVE_TESTS and holds both steps to what it
       # builds.
       - name: Run the whole-daemon live tests
         env:
           LEGION_TEST_DAEMON_LOG_DIR: ${{ runner.temp }}/daemon-live-logs
-        run: go test -v -count=1 -timeout 20m -run '^(TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive|TestAConflictStartsTheNextRoleAtOnceAndTakesNoTurnOverLive|TestAPhaseEntryConvergesOnARunningDaemonLive|TestAQueuedRootUnderALiveTreeJoinsItLive|TestEveryChildThatStartsRunsUnderItsOwnArchitectLive|TestHandoffRecordsLive|TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive)$' ./internal/daemon/
+        run: go test -v -count=1 -timeout 20m -run '^(TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive|TestAConflictStartsTheNextRoleAtOnceAndTakesNoTurnOverLive|TestAPhaseEntryConvergesOnARunningDaemonLive|TestAQueuedRootUnderALiveTreeJoinsItLive|TestEveryChildThatStartsRunsUnderItsOwnArchitectLive|TestHandoffRecordsLive|TestReviewRangeLive|TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive)$' ./internal/daemon/
         working-directory: packages/daemon
 
       # A failed test's logs, one directory per test: the daemon's own daemon.log at debug, and
