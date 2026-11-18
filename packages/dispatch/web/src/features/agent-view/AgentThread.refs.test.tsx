@@ -1,11 +1,11 @@
-import { afterEach, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, test as bunTest, expect, type Mock, spyOn } from "bun:test";
 import {
   AssistantRuntimeProvider,
   type ThreadMessageLike,
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
 import { type AgentStreamCommand, dispatchWritingBox } from "@legion/contracts";
-import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -17,6 +17,7 @@ import { api } from "../../api/client";
 import type { ArtifactWithTrees, GraphReferences, SearchResult } from "../../api/types";
 import { NO_SESSION_SENDS } from "../conversation/useSessionSends";
 import { REF_PICKER_INSTRUCTION, REF_PICKER_PARTS_WORDS } from "../refs/ref-picker";
+import { SEARCH_DEBOUNCE_MS } from "../refs/useRefPicker";
 import { AgentThread } from "./AgentThread";
 
 /**
@@ -101,6 +102,30 @@ afterEach(() => {
   pane?.restore();
   pane = undefined;
 });
+
+/**
+ * A row of this file: `bun:test`'s own, but its body ends by letting the picker's search debounce
+ * run out inside act. The live composer hands the query typed after an open door to
+ * `useRefPicker` (`ReferenceTriggers.tsx`), which copies it into the one it searches through
+ * `useSettled`, a real timer of `SEARCH_DEBOUNCE_MS` that every key changing the query sets
+ * again, a door opening or closing included, and most rows assert a state that does not wait for
+ * that copy. A timer still set when a body ends fires in the turn Bun gives the event loop between
+ * the body and its `afterEach`, outside act, and the preload's act rule fails the row on the
+ * update React reports (`__tests__/setup.ts`). A wait in the `afterEach` above comes too late,
+ * since that turn lies before it. A wait as long as the debounce, begun after the last key, ends
+ * after the timer that key set. `refs/useRefPicker.test.tsx`, whose rows drive the same picker
+ * from a plain textarea, is where this flake was measured, and its rows end the same way.
+ */
+const test = (name: string, body: () => Promise<void>): void =>
+  bunTest(name, async () => {
+    try {
+      await body();
+    } finally {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, SEARCH_DEBOUNCE_MS));
+      });
+    }
+  });
 
 function Harness({
   commands,
