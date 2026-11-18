@@ -24,13 +24,7 @@ subject construction come from the Envoy core packages. Its NATS connection (the
 `envoy.natsUrls`; "Configuration" below), and without a credential when none is set; an unusable
 seed fails the connect naming its source, and a Legion daemon strips both variables from every pane
 it launches, handing it instead the `legion-pane` seed file it holds as `NATS_NKEY_SEED_FILE` when
-it has one.
-With `NATS_AUTH=broker` (or `envoy.natsAuth`) and no seed, it presents the session's own broker
-token instead, which a hub's NATS auth service admits to that session's subjects alone: the token
-is taken before the dial and renewed before it lapses (`keepNatsCredential`), and a session switch
-moves the connection to the new session's token and waits for it to come back before the pass
-subscribes anything of the new session's (`followNatsCredential`).
-`@legion/envoy-client/delivery` is the sole inbound
+it has one. `@legion/envoy-client/delivery` is the sole inbound
 renderer: it produces a tolerant TOON block and never exposes raw envelope bytes. A targeted
 Dispatch **BTW** frame runs the host's side turn (`ctx.runEphemeralTurn`, Oh My Pi 18.3 on) and
 posts its body or error to the correlated delivery attempt. Every other frame that is not a
