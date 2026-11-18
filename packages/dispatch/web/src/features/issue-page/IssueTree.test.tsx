@@ -1,4 +1,5 @@
 import { afterEach, expect, jest, type Mock, setSystemTime, spyOn, test } from "bun:test";
+import { ID_AMBIGUOUS } from "@legion/contracts";
 import { macBaseKeymap } from "@milkdown/kit/prose/commands";
 import { Schema } from "@milkdown/kit/prose/model";
 import { EditorState, TextSelection } from "@milkdown/kit/prose/state";
@@ -16,7 +17,14 @@ import { jump, realClock } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import { issueCoverageQuery, issueResultsQuery } from "../../api/queries";
-import type { Artifact, Comment, Decision, IssueDecisions, IssueDetails } from "../../api/types";
+import type {
+  Artifact,
+  Comment,
+  Decision,
+  IDCandidate,
+  IssueDecisions,
+  IssueDetails,
+} from "../../api/types";
 import { pageFocusedRow } from "../../theme/classes";
 import { bindRemoteMarks, createEditor, type EditorHandle } from "../doc/editor";
 import { compiledBlockSchema } from "../doc/schema";
@@ -7055,8 +7063,8 @@ test("an address naming a turn only agents wrote in lands on its nearest drawn a
 // followed the address: a reader who put the focus on a control and pressed a key there while the
 // item's read was still out lost it to the line. The line takes the focus only while the reader
 // has not acted since the address was followed - as the landing on a row takes none after such an
-// act - or while nothing holds the focus, and the same address followed again, with no act
-// since, gives it the focus again.
+// act - or in place of a line that held the focus, and the same address followed again, with no
+// act since, gives it the focus again.
 test("an item's failure drawn after the reader pressed a key leaves the focus where they put it", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -7085,6 +7093,66 @@ test("an item's failure drawn after the reader pressed a key leaves the focus wh
         "the same address followed again, with no act since, left the focus off the failure's line"
       ).toBe(body.view.getByRole("heading", { name: "Comment not found" }))
     );
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// After the reader acted, the fallback's line took the focus wherever nothing held it, so a
+// reader who left the focus on the page's body - their own nowhere - lost it to the line drawn
+// after, where the address's row drawn after the same act takes none: a press on blank space,
+// and Tab from a row of the outline, the page's last tab stop, which a browser run measured on
+// a missing comment's address (the line took the focus in all 7 of 7 tries where Tab left it on
+// the body). The line takes the focus after an act only in place of a line that held it.
+test("an item's failure drawn after the reader left the focus on the page's body leaves it there", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const read = spyOn(api, "getComment");
+  const outside = controlOutside();
+  // Something outside the outline that takes no focus.
+  const words = "Words outside the outline";
+  const blank = render(<p>{words}</p>).getByText(words);
+  const paths = [
+    [
+      "a press on a control, then on blank space",
+      async () => {
+        await user.click(outside.control);
+        await user.click(blank);
+      },
+    ],
+    [
+      "Tab from a row of the outline, the last tab stop",
+      async (container: HTMLElement) => {
+        await waitFor(() => expect(focusedRow(container)).toBe("head-a"));
+        await user.keyboard("{Tab}");
+      },
+    ],
+  ] as const;
+  try {
+    for (const [what, leave] of paths) {
+      const answer = Promise.withResolvers<never>();
+      read.mockReturnValue(answer.promise);
+      // Drawn after the control and the words, so the outline is the page's last tab stop.
+      const body = renderAddressedBody(
+        buildIssuePath({ id: GONE_COMMENT, key: KEY, kind: "comment" }),
+        TWO_THREADS
+      );
+      await waitFor(() => expect(read).toHaveBeenCalledWith(GONE_COMMENT));
+      await leave(body.view.container);
+      expect(document.activeElement, `${what} left the focus on an element`).toBe(document.body);
+
+      await act(async () => answer.reject(noSuchComment()));
+      await waitFor(() => body.view.getByRole("heading", { name: "Comment not found" }));
+      await nextFrame();
+      expect(
+        document.activeElement,
+        `the line that names no comment, drawn after ${what}, took the focus`
+      ).toBe(document.body);
+      body.view.unmount();
+      read.mockClear();
+    }
   } finally {
     names.mockRestore();
     read.mockRestore();
@@ -7474,7 +7542,7 @@ test("an item's failed line drawn for the same address followed again stays draw
 
 // The reader's press of Retry is an act, and the line drawn once its read answers replaced the
 // line that held the focus, which fell to the page's body: the line that names no comment took
-// no focus. A line drawn in the fallback's place takes the focus where nothing holds it.
+// no focus. A line drawn in place of a line of the fallback that held the focus takes it.
 test("a Retry whose read answers that the item is gone leaves the focus on the line that says so", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -7509,37 +7577,144 @@ test("a Retry whose read answers that the item is gone leaves the focus on the l
   }
 });
 
-// The landing on an address's row watched for the reader's acts only from the moment the row
-// drew, so a row whose read answered late took the focus from a control the reader had moved to
-// since they followed the address. A landing whose following saw an act before its row drew
-// brings the row on screen and gives it no focus.
-test("a comment's row drawn after the reader pressed a control since following its address leaves the focus on that control", async () => {
+// A Retry pressed on the failed read of an id written short, whose read then answers with the
+// several items the id names: the list is drawn in place of the line that held the focus, which
+// fell to the page's body with that line, and the list takes it, as the line that names no item
+// does. No case held it: a list that took none still passed.
+test("a Retry whose read answers that the id names several items leaves the focus on their list", async () => {
   setViewport(1440);
   const user = userEvent.setup();
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
-  const answer = Promise.withResolvers<Comment[]>();
-  const comments = spyOn(api, "listComments").mockReturnValue(answer.promise as never);
-  const outside = controlOutside();
+  const read = spyOn(api, "getReferences").mockRejectedValueOnce(serverDown());
+  const short = GONE_COMMENT.slice(0, 8);
+  const match = (id: string, first_line: string): IDCandidate => ({
+    first_line,
+    id,
+    issue_key: KEY,
+    kind: "comment",
+    ref: buildDispatchReference({ id, key: KEY, kind: "comment" }),
+  });
   try {
     const body = renderAddressedBody(
-      buildIssuePath({ id: "reply-b", key: KEY, kind: "comment" }),
-      undefined
+      buildIssuePath({ id: short, key: KEY, kind: "comment" }),
+      TWO_THREADS
     );
-    await waitFor(() => expect(comments).toHaveBeenCalled());
-    await user.click(outside.control);
-    expect(document.activeElement).toBe(outside.control);
+    const retry = await waitFor(() =>
+      body.view.getByRole("button", { name: CONTROL_LABELS.retry })
+    );
+    const again = Promise.withResolvers<never>();
+    read.mockReturnValueOnce(again.promise as never);
+    await user.click(retry);
+    await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
 
-    await act(async () => answer.resolve([...TWO_THREADS]));
-    await waitFor(() => expect(rowsFor(body.view.container, "reply-b")).not.toEqual([]));
-    await nextFrame();
-    await nextFrame();
-    expect(
-      document.activeElement,
-      "the comment's row, drawn after the reader pressed a control, took the focus from it"
-    ).toBe(outside.control);
+    await act(async () =>
+      again.reject(
+        new ApiError(409, {
+          candidates: [
+            match(GONE_COMMENT, "The first note"),
+            match(`${short}-0000-4000-8000-000000000002`, "The other note"),
+          ],
+          code: ID_AMBIGUOUS,
+          error: `the id prefix "${short}" names 2 items; write more of the id`,
+        })
+      )
+    );
+    const list = await waitFor(() => {
+      const drawn = body.view
+        .getByRole("heading", { name: "Several items match that link" })
+        .closest<HTMLElement>('[tabindex="-1"]');
+      if (drawn === null) throw new Error("the list of matches is drawn in no focusable box");
+      return drawn;
+    });
+    await waitFor(() =>
+      expect(
+        document.activeElement,
+        "the list of matches, drawn in place of the Retry the reader pressed, left the focus on the page's body"
+      ).toBe(list)
+    );
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// The landing on an address's row watched for the reader's acts only from the moment the row
+// drew, so a row whose read answered late took the focus from a control the reader had moved to
+// since they followed the address. Given no focus, it was still brought on screen, which took the
+// page away from where the reader had it. A landing whose following saw an act before its row
+// drew - a press, a key, a turn of the wheel - does nothing to the page: the row is drawn where it
+// stands, the focus and the page where the reader left them. happy-dom lays nothing out, so the
+// row is given a box 2,000 px below the window, which the page's one rule (`identity-block.ts`'s
+// `bringOnScreen`) scrolls to.
+test("a comment's row drawn after the reader acted since following its address moves neither the focus nor the page", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const comments = spyOn(api, "listComments");
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return this.matches('[data-node-row][data-node-id="reply-b"]')
+      ? new DOMRect(0, window.innerHeight + 2000, 800, 40)
+      : new DOMRect();
+  });
+  const scrolls = [
+    spyOn(window, "scroll").mockImplementation(() => {}),
+    spyOn(window, "scrollBy").mockImplementation(() => {}),
+    spyOn(window, "scrollTo").mockImplementation(() => {}),
+    spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {}),
+  ];
+  const outside = controlOutside();
+  const acts = [
+    ["a press on a control", () => user.click(outside.control), outside.control],
+    [
+      "a key pressed on a control",
+      async () => {
+        await act(async () => outside.control.focus());
+        await user.keyboard("{Shift}");
+      },
+      outside.control,
+    ],
+    [
+      "a turn of the wheel",
+      () => act(async () => window.dispatchEvent(new Event("wheel"))),
+      document.body,
+    ],
+  ] as const;
+  try {
+    for (const [what, run, stays] of acts) {
+      const answer = Promise.withResolvers<Comment[]>();
+      comments.mockReturnValue(answer.promise as never);
+      const body = renderAddressedBody(
+        buildIssuePath({ id: "reply-b", key: KEY, kind: "comment" }),
+        undefined
+      );
+      await waitFor(() => expect(comments).toHaveBeenCalled());
+      await run();
+      expect(document.activeElement, `${what} left the focus elsewhere`).toBe(stays);
+      for (const scroll of scrolls) scroll.mockClear();
+
+      await act(async () => answer.resolve([...TWO_THREADS]));
+      await waitFor(() => expect(rowsFor(body.view.container, "reply-b")).not.toEqual([]));
+      await nextFrame();
+      await nextFrame();
+      expect(
+        document.activeElement,
+        `the comment's row, drawn after ${what}, took the focus from where it was`
+      ).toBe(stays);
+      expect(
+        scrolls.flatMap<unknown>((scroll) => scroll.mock.calls),
+        `the comment's row, drawn after ${what}, scrolled the page`
+      ).toEqual([]);
+      body.view.unmount();
+      comments.mockClear();
+      await act(async () => outside.control.blur());
+    }
   } finally {
     names.mockRestore();
     comments.mockRestore();
+    boxes.mockRestore();
+    for (const scroll of scrolls) scroll.mockRestore();
   }
 });
 

@@ -30,7 +30,6 @@ import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { specSummary } from "../spec-summary";
-import { focusIsLoose } from "../tree-focus";
 import { abortOnReaderAct } from "../useNodeEditing";
 import { FailedReadLine } from "./failed-read-line";
 
@@ -81,8 +80,9 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   const request = useOutlineRequest();
   // Whether the reader has acted since they followed the address, after which a line drawn in
-  // the outline's place leaves the focus where they put it, unless nothing holds it, and the
-  // address's row drawn after the act takes none (`IssueTree`'s `addressActs`).
+  // the outline's place leaves the focus where they put it, unless the line it replaces held it,
+  // and the address's row drawn after the act does nothing to the page (`IssueTree`'s
+  // `addressActs`).
   const acts = useReaderActs(locationKey);
   // The document a row of the outline is being edited in, and that document's one editor, which
   // the body draws for the row to take onto its own stage (`useOutlineEditing`).
@@ -166,9 +166,11 @@ function useReaderActs(following: string): ReaderActs {
  * names are listed to choose from; and an item the issue holds none of, or whose read failed,
  * is said to be so. The list and the failure take the focus as they are drawn, so it is on the
  * line that names the item and never left on the page's body, unless the reader has acted since
- * the address was followed (`acts`) and something holds the focus: it is then where they put it.
- * A line drawn in place of the one that held the focus - a Retry pressed, and its read answering
- * that the item is gone, or naming several - takes it, as the focus fell to the page's body.
+ * the address was followed (`acts`): the focus is then where they put it, nowhere included - a
+ * press on blank space. A line drawn in place of the one that held the focus - a Retry pressed,
+ * and its read answering that the item is gone, or naming several - takes it, as the focus fell
+ * to the page's body with the line it was on, which is no place the reader put it
+ * (`useFocusOnDraw`'s `held`).
  *
  * Going to a document goes to the address that opens it with the item marked (`landingPath`),
  * never to the one the old landing writes (`?comment=`), which this page reads as the item's
@@ -181,34 +183,50 @@ function ItemFallback({
   acts: ReaderActs;
   fallback: Extract<AddressFallback, { kind: "landing" }>;
 }): ReactNode {
+  // Whether a line of the fallback holds the focus, read on the element its lines are drawn in,
+  // which stays as they swap: the focus going into it marks it held, and the focus leaving it -
+  // for an element outside it, or for none, as a press on blank space leaves it - clears the
+  // mark. A line taken out of the page while it holds the focus fires no focusout in Chromium,
+  // so the mark stays set for the line drawn in its place, which takes the focus.
+  const held = useRef(false);
   const { failure, landing, retrying, route } = fallback;
   // The address is replaced rather than added to the reader's history, so Back still leaves the
   // page they came from.
   if (landing.kind === "redirect" || landing.kind === "rewrite") {
     return <Navigate replace to={landingPath(landing.to)} />;
   }
-  if (landing.kind === "ambiguous") {
-    return <MatchList acts={acts} candidates={landing.candidates} route={route} />;
-  }
   const noun = ITEM_NOUNS[route.kind];
-  if (landing.kind === "missing") {
-    return (
-      <NotFoundLine
-        acts={acts}
-        heading={`${noun} not found`}
-        issueKey={route.key}
-        line={`That link doesn't name ${route.kind === "ask" ? "an" : "a"} ${noun.toLowerCase()} on ${route.key} — it may have been deleted.`}
-      />
-    );
-  }
   return (
-    <ItemReadFailed
-      acts={acts}
-      failure={failure}
-      noun={noun}
-      onRetry={landing.retry}
-      retrying={retrying}
-    />
+    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only note where the focus has already gone, so the lines' box needs no role of its own.
+    <div
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) held.current = false;
+      }}
+      onFocus={() => {
+        held.current = true;
+      }}
+    >
+      {landing.kind === "ambiguous" ? (
+        <MatchList acts={acts} candidates={landing.candidates} held={held} route={route} />
+      ) : landing.kind === "missing" ? (
+        <NotFoundLine
+          acts={acts}
+          heading={`${noun} not found`}
+          held={held}
+          issueKey={route.key}
+          line={`That link doesn't name ${route.kind === "ask" ? "an" : "a"} ${noun.toLowerCase()} on ${route.key} — it may have been deleted.`}
+        />
+      ) : (
+        <ItemReadFailed
+          acts={acts}
+          failure={failure}
+          held={held}
+          noun={noun}
+          onRetry={landing.retry}
+          retrying={retrying}
+        />
+      )}
+    </div>
   );
 }
 
@@ -217,13 +235,15 @@ function ItemFallback({
 function MatchList({
   acts,
   candidates,
+  held,
   route,
 }: {
   acts: ReaderActs;
   candidates: Extract<ItemLanding, { kind: "ambiguous" }>["candidates"];
+  held: FocusHeld;
   route: ItemRoute;
 }): ReactNode {
-  const list = useFocusOnDraw<HTMLDivElement>(acts);
+  const list = useFocusOnDraw<HTMLDivElement>(acts, held);
   return (
     <div ref={list} tabIndex={-1}>
       <ItemMatchList candidates={candidates} route={route} />
@@ -234,20 +254,26 @@ function MatchList({
 /** What the reader's first act since the address was followed aborts (`useReaderActs`). */
 type ReaderActs = RefObject<AbortController | undefined>;
 
+/** Whether a line of the fallback holds the focus, or held it as it left the page
+ *  (`ItemFallback`). */
+type FocusHeld = RefObject<boolean>;
+
 /**
- * The element its ref is given to takes the focus once it is drawn, unless the reader has acted
- * since the address was followed (`acts`) and something holds the focus then, as the landing on
- * a row takes none after such an act (`IssueTree.tsx`). Nothing holds it on the page itself, or
- * on an element that holds the line (`focusIsLoose`): the line it replaced held it and took it
- * off the page with it - a Retry the reader pressed, whose read then answered.
+ * The element its ref is given to takes the focus once it is drawn while the reader has not
+ * acted since the address was followed (`acts`), as the landing on a row does
+ * (`IssueTree.tsx`), or where the line it is drawn in place of held the focus (`held`): that
+ * line took the focus off the page with it - a Retry the reader pressed, whose read then
+ * answered. Anywhere else the focus is the reader's after such an act, nowhere included: a
+ * line drawn after they pressed blank space, which leaves the focus on the page's body, takes
+ * none, as the row takes none.
  */
-function useFocusOnDraw<T extends HTMLElement>(acts: ReaderActs) {
+function useFocusOnDraw<T extends HTMLElement>(acts: ReaderActs, held?: FocusHeld) {
   const element = useRef<T>(null);
   useEffect(() => {
     const drawn = element.current;
     if (drawn === null) return;
-    if (acts.current?.signal.aborted !== true || focusIsLoose(drawn)) drawn.focus();
-  }, [acts]);
+    if (acts.current?.signal.aborted !== true || held?.current === true) drawn.focus();
+  }, [acts, held]);
   return element;
 }
 
@@ -293,15 +319,19 @@ const ABSENT_LINES: Readonly<
 function NotFoundLine({
   acts,
   heading,
+  held,
   issueKey,
   line,
 }: {
   acts: ReaderActs;
   heading: string;
+  /** Whether the line drawn before this one held the focus (`ItemFallback`); left out where
+   *  no line is drawn before it. */
+  held?: FocusHeld;
   issueKey: string;
   line: string;
 }): ReactNode {
-  const title = useFocusOnDraw<HTMLHeadingElement>(acts);
+  const title = useFocusOnDraw<HTMLHeadingElement>(acts, held);
   return (
     <section>
       <h2 className="mb-2 text-2xl font-semibold" ref={title} tabIndex={-1}>
@@ -328,17 +358,19 @@ function NotFoundLine({
 function ItemReadFailed({
   acts,
   failure,
+  held,
   noun,
   onRetry,
   retrying,
 }: {
   acts: ReaderActs;
   failure: number;
+  held: FocusHeld;
   noun: string;
   onRetry: () => void;
   retrying: boolean;
 }): ReactNode {
-  const heading = useFocusOnDraw<HTMLHeadingElement>(acts);
+  const heading = useFocusOnDraw<HTMLHeadingElement>(acts, held);
   return (
     <section>
       <h2 className={`text-xl font-semibold ${textPrimaryOnCanvas}`} ref={heading} tabIndex={-1}>

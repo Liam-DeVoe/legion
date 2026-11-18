@@ -98,9 +98,10 @@ export function IssueTree({
 }: {
   /** The reader's acts since they followed the address (`addressKey`): a controller the page
    *  starts as each following is drawn and the reader's first act since aborts
-   *  (`slots/body.tsx`). A landing whose following saw an act before the address's row drew
-   *  brings the row on screen and gives it no focus, so the focus stays where the reader put
-   *  it. Left out, the landing reads the reader's acts from the moment its row is drawn. */
+   *  (`slots/body.tsx`). A landing whose following saw an act before the address's row drew does
+   *  nothing to the page: the row takes no focus and the page does not scroll to it, so the
+   *  focus and the page stay where the reader put them. Left out, the landing reads the reader's
+   *  acts from the moment its row is drawn. */
   addressActs?: RefObject<AbortController | undefined>;
   /** Which following of the address `reveal` comes from: the location's own key
    *  (`useLocation().key`), a new one at each navigation - a link followed again to the address
@@ -600,22 +601,25 @@ export function IssueTree({
   // back whenever nothing holds it (`focusIsLoose`: the page itself, or the element the app
   // focuses at a page change, which holds the tree), until the reader's first act since they
   // followed the address (`addressActs`; `READER_ACTS`, which end `acts`). A reader who acted
-  // before the row drew - the reads still out, a press on another control - keeps the focus
-  // where they put it, and the row is brought on screen alone (`placeOnScreen`): watched only
-  // from the row's drawing, a row that drew late took the focus from the control they had moved
-  // to. Whatever else holds the focus keeps it, and from the reader's first act the focus is
-  // theirs wherever they put it, nowhere included - a second Escape, a press on blank space: the
-  // effect takes it no more until the address is followed again (`landingKey`: the following
-  // and the node), to this node or another. Keyed on the node alone, a link to the node the
-  // reader had moved away from, followed again, landed nowhere; a tree drawn again at the same
-  // following lands nowhere again. A tree drawn before the landing's frame comes - a read
-  // answering - leaves that landing waiting (`landingAsked`): asked again, it was put off by a
-  // frame at each render. The issue itself is no row: an address lands on it for a turn of a
-  // thread only agents wrote in whose nearest drawn ancestor is the issue (`slots/body.tsx`),
-  // and the row it lands on is then the tree's tab stop, where the tree says what has no row of
-  // its own. What the landing says (`landingReport`) is said at the row once it holds the focus:
-  // the focus moving there lets go of what was said before. The page's own opening on its first
-  // row or its question (below) keeps its own rule.
+  // before the row drew - the reads still out, a press on another control, a key, a turn of the
+  // wheel - keeps the focus where they put it and the page where they had it: the landing does
+  // nothing to the page - no focus, no scroll, no row's hold ended, no report - and the row is
+  // drawn where it stands, the branches the address opens opened. Watched only from the row's
+  // drawing, a row that drew late took the focus from the control they had moved to; brought on
+  // screen alone, it took the page away from the place they had scrolled to or the row they had
+  // moved to, and ended that row's hold. Whatever else holds the focus keeps it, and from the
+  // reader's first act the focus is theirs wherever they put it, nowhere included - a second
+  // Escape, a press on blank space: the effect takes it no more until the address is followed
+  // again (`landingKey`: the following and the node), to this node or another. Keyed on the node
+  // alone, a link to the node the reader had moved away from, followed again, landed nowhere; a
+  // tree drawn again at the same following lands nowhere again. A tree drawn before the landing's
+  // frame comes - a read answering - leaves that landing waiting (`landingAsked`): asked again, it
+  // was put off by a frame at each render. The issue itself is no row: an address lands on it for
+  // a turn of a thread only agents wrote in whose nearest drawn ancestor is the issue
+  // (`slots/body.tsx`), and the row it lands on is then the tree's tab stop, where the tree says
+  // what has no row of its own. What the landing says (`landingReport`) is said at the row once it
+  // holds the focus: the focus moving there lets go of what was said before. The page's own
+  // opening on its first row or its question (below) keeps its own rule.
   const taken = useRef<{ readonly acts: AbortController; readonly key: string } | undefined>(
     undefined
   );
@@ -642,11 +646,11 @@ export function IssueTree({
     if (held === undefined) {
       taken.current?.acts.abort();
       if (addressActs?.current?.signal.aborted === true) {
-        // The landing ends as it starts: the reader has acted since the following.
+        // The landing ends as it starts: the reader has acted since the following, and the page
+        // stays as they left it.
         const ended = new AbortController();
         ended.abort();
         taken.current = { acts: ended, key: landingKey };
-        placeOnScreen(row, onScreenHold);
         return;
       }
       taken.current = { acts: abortOnReaderAct(), key: landingKey };
@@ -1043,24 +1047,6 @@ export function landOnRow(
   });
   landing.signal.addEventListener("abort", () => cancelAnimationFrame(frame));
   return landing;
-}
-
-/**
- * Brings `row` on screen in the next frame by the page's one rule (`bringOnScreen`) and gives it
- * no focus: the landing on an address's row that drew after the reader acted
- * (`IssueTree`'s `addressActs`), which leaves the focus where they put it. Until the frame it is
- * what `held` holds, as a landing is (`landOnRow`), so a later landing or hold ends it, and so
- * does the reader's next act.
- */
-function placeOnScreen(row: HTMLElement, held: RefObject<AbortController | undefined>): void {
-  held.current?.abort();
-  const placing = abortOnReaderAct();
-  held.current = placing;
-  const frame = requestAnimationFrame(() => {
-    placing.abort();
-    if (row.isConnected) bringOnScreen(row);
-  });
-  placing.signal.addEventListener("abort", () => cancelAnimationFrame(frame));
 }
 
 /** Holds `row` on screen (`holdOnScreen`) and ends the hold of the row `held` held before, so
