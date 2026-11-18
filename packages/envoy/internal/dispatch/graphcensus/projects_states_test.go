@@ -78,6 +78,43 @@ func TestARowWhoseNodeIsGoneIsNamedAndTheBackfillMakesItLive(t *testing.T) {
 	}
 }
 
+// A row a build before this one made again at an address this build's removal stated gone is a new
+// document, and its node owes nothing to the removed one but the address: the backfill writes the
+// node the row's own content makes, its visibility included, rather than keeping what the removed
+// document's node held. Only a node that is its row's own, and not gone, is written again keeping
+// its state and visibility (graphstore.Node's Restates), since the backfill then states only the
+// project or parties it lacks.
+//
+// Its control is every node of the object batch written restating: the node then keeps the removed
+// document's author visibility.
+func TestARowMadeAgainAtAnAddressTakesNoVisibilityOfTheRowBefore(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	created := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
+	seedGoneRow(t, database, created, model.Actor{Kind: "user", ID: "alice"})
+	// The removed document's node was reserved for its author before it went.
+	removed, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindArtifact, "GONE-1/notes-md")
+	if err != nil || !held {
+		t.Fatalf("read the removed document's node: held %t, %v", held, err)
+	}
+	removed.Visibility, removed.MadeAt = graphstore.VisibilityAuthor, created.Add(-time.Minute)
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		return graphstore.Write(ctx, tx, []graphstore.Node{removed}, nil)
+	}); err != nil {
+		t.Fatalf("reserve the removed document's node for its author: %v", err)
+	}
+
+	if _, err := Backfill(ctx, database, &bytes.Buffer{}); err != nil {
+		t.Fatalf("run the backfill: %v", err)
+	}
+	requireComplete(t, ctx, database, "after the backfill")
+	node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindArtifact, "GONE-1/notes-md")
+	if err != nil || !held || node.State != graphstore.StateLive || node.Visibility != graphstore.VisibilityProject {
+		t.Errorf("after the backfill the new document's node is %+v (held %t, %v), want live and %s, as its own row makes it",
+			node, held, err, graphstore.VisibilityProject)
+	}
+}
+
 // The backfill reads a batch of rows and then writes their nodes. A removal that commits between
 // the two leaves the row gone, and a node written live then would stand behind no row. The batch
 // takes the owner rows a removal takes, reads again under them which of its rows stand, and writes

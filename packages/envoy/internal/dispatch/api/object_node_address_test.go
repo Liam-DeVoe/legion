@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -83,7 +84,8 @@ func TestADocumentMadeWhereAnOrphanedNodeStandsStatesItGoneThenLive(t *testing.T
 const laterNodeState = "proposed"
 
 // markNodeState writes the node kind/id at state, as a later release's build marks a node: the
-// store's own writer moving the state, which states it in one tuple.
+// store's own writer moving the state, which states it in one tuple, at the sentinel, since the mark
+// is no event of the node's: a later release's state write states it so.
 func markNodeState(t *testing.T, database *store.Store, kind, id, state string) {
 	t.Helper()
 	ctx := context.Background()
@@ -91,11 +93,55 @@ func markNodeState(t *testing.T, database *store.Store, kind, id, state string) 
 	if err != nil || !held {
 		t.Fatalf("read the node %s %s to mark it %s: held %t, %v", kind, id, state, held, err)
 	}
-	node.State, node.MadeAt = state, time.Now().UTC()
+	node.State, node.MadeAt, node.SourceEvent = state, time.Now().UTC(), graphstore.NoEvent
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
 		return graphstore.Write(ctx, tx, []graphstore.Node{node}, nil)
 	}); err != nil {
 		t.Fatalf("mark the node %s %s %s: %v", kind, id, state, err)
+	}
+}
+
+// A later release can mark the node of a document a removal can take while its row stands, at the
+// sentinel (markNodeState). The node is still that row's: the row's own live statement, caused by
+// its artifact.created, is the newest statement a create or a removal made about the address, and
+// the mark is neither. So the project census reads the row as complete, and the backfill writes
+// nothing for it and leaves its node marked, with the state history it had.
+//
+// Its control is the census's own-statement read taken back to the newest state statement of any
+// cause: the mark is then the newest, at the sentinel, and the row has its own create event, so
+// the census names the row gone, and the backfill states the node gone and then live.
+func TestADocumentALaterReleaseMarkedWhileItStandsIsComplete(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	issue := createInteractionIssue(t, handler, "MRK", "A document a later release marked", "The spec.\n")
+	document := emptyDocument(t, handler, issue.Key, "Scratch.md")
+	markNodeState(t, database, graphstore.KindArtifact, document.RefKey, laterNodeState)
+	requireProjectsComplete(t, database)
+
+	report, err := graphcensus.Backfill(ctx, database, io.Discard)
+	if err != nil {
+		t.Fatalf("run the backfill: %v", err)
+	}
+	for _, kind := range report.Kinds {
+		if kind.Kind == graphstore.KindArtifact && kind.Nodes != 0 {
+			t.Errorf("the backfill reports %+v for documents, want no node: the marked document's node is its row's own", kind)
+		}
+	}
+	requireProjectsComplete(t, database)
+	node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindArtifact, document.RefKey)
+	if err != nil || !held || node.State != laterNodeState {
+		t.Errorf("after the backfill the node of %s is %+v (held %t, %v), want it %s", document.RefKey, node, held, err, laterNodeState)
+	}
+	history, err := graphstore.History(ctx, database.Pool, graphstore.KindArtifact, document.RefKey, graphstore.AttributeState)
+	if err != nil {
+		t.Fatalf("read the state history of %s: %v", document.RefKey, err)
+	}
+	var stated []string
+	for _, tuple := range history {
+		stated = append(stated, tuple.ToID)
+	}
+	if want := []string{graphstore.StateLive, laterNodeState}; !equalStrings(stated, want) {
+		t.Errorf("the node of %s states %v over its life, want %v", document.RefKey, stated, want)
 	}
 }
 

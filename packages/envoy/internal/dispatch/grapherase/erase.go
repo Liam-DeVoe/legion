@@ -125,8 +125,8 @@ func ParseNode(value string) (kind, id string, err error) {
 // comments and the document blocks that derive from a node. A run over one would delete the node
 // and its tuples, record an erasure and answer applied with every byte of that text still in
 // place, the project census would read the row as missing its node, and the backfill would write
-// the node again (graphcensus.ProjectComplete). A live node of one of those kinds that no row
-// stands behind - a document a build before this one removed, during a roll or after a rollback,
+// the node again (graphcensus.ProjectComplete). A node of one of those kinds, at any state but
+// gone, that no row stands behind - a document a build before this one removed, during a roll or after a rollback,
 // without stating its node gone - holds no text and is the project census's orphaned class; the
 // erase removes it with its tuples, which is that class's one remedy.
 //

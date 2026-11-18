@@ -201,20 +201,29 @@ var orphanKindList = func() string {
 	return strings.Join(quoted, ", ")
 }()
 
-// ownLiveStatement is, for the node of a document row a removal can take away, whether the node's
-// newest state statement, in the order the store appends them, was made for that row: the
-// document's address (its issue's key and its slug) is one a removed row gives up and a later row
-// takes again, so the node alone cannot say which row it stands for, and its statement says it.
+// ownLiveStatement is, for the node of a document row a removal can take away, whether the newest
+// state statement a create, a removal or the backfill made about the node, in the order the store
+// appends them, was made for that row: the document's address (its issue's key and its slug) is
+// one a removed row gives up and a later row takes again, so the node alone cannot say which row it
+// stands for, and that statement says it.
 //
 // A statement made for the row is caused by the row's own create event, the artifact.created
 // whose payload names the row's id: this build's create states the node live under it (api's
-// storeArtifact, which states a node an earlier row left live gone first), and the backfill finds
-// it and states the row's node under it too (readObjectNodes). Every release that creates such a
-// row appends that event, and an event names one row, so a statement caused by it names that row
-// whatever its time: an earlier row's statement, caused by that row's own event, names the earlier
-// row. A row with no create event of its own - one made before Dispatch recorded artifact.created -
-// is made for by a statement at the sentinel, as the backfill writes it then. A later row always
-// has its own event, so a sentinel statement never stands for it. Nothing in this rests on time.
+// storeArtifact, which states a node an earlier row left standing gone first), and the backfill
+// finds it and states the row's node under it too (readObjectNodes). Every release that creates
+// such a row appends that event, and an event names one row, so a statement caused by it names that
+// row whatever its time: an earlier row's statement, caused by that row's own event, names the
+// earlier row, and a removal's, caused by its artifact.removed, names the row it removed. A row
+// with no create event of its own - one made before Dispatch recorded artifact.created - is made
+// for by a statement at the sentinel, as the backfill writes it then. A later row always has its
+// own event, so a sentinel statement never stands for it. Nothing in this rests on time.
+//
+// Every other state statement is passed over: one at the sentinel about a row that has its own
+// create event, and one caused by an event that names no document. That is what a later release
+// writes when it marks a standing document's node with a state of its own, such as a requirement's
+// proposed (graphstore.Node's Restates), and the mark says nothing of which row the node stands
+// for: read as the newest statement, it would make a row that stands, with its own node, read as
+// gone, and the backfill would state that node gone and live again over the mark.
 //
 // Time keeps the order the store appends in, which is what a read as of a time reads: this
 // build's create and removal read their one time under the address's owner row, from the
@@ -225,20 +234,19 @@ var orphanKindList = func() string {
 // is its issue's, read through the issue's own events by the index that keys them (the events
 // table's unique (issue_key, seq)).
 func ownLiveStatement(node, rowID, ownerKey string) string {
-	return `coalesce((
-		select case
-			when e.payload->'artifact'->>'id' is not null then e.payload->'artifact'->>'id' = ` + rowID + `
-			when s.source_event = ` + strconv.FormatInt(graphstore.NoEvent, 10) + ` then not exists (
+	noCreateEvent := `not exists (
 				select 1 from events o
 				where o.issue_key = ` + ownerKey + `
-				  and o.type = 'artifact.created' and o.payload->'artifact'->>'id' = ` + rowID + `)
-			else false
-		end
-		from (select t.source_event from graph_tuples t
-			where t.from_kind = ` + node + `.kind and t.from_id = ` + node + `.id and t.kind = '` + graphstore.AttributeState + `'
-			  and t.to_kind = '` + graphstore.KindValue + `'
-			order by t.seq desc limit 1) s
-		left join events e on e.id = s.source_event), false)`
+				  and o.type = 'artifact.created' and o.payload->'artifact'->>'id' = ` + rowID + `)`
+	return `coalesce((
+		select coalesce(e.payload->'artifact'->>'id' = ` + rowID + `, true)
+		from graph_tuples t
+		left join events e on e.id = t.source_event and e.payload->'artifact'->>'id' is not null
+		where t.from_kind = ` + node + `.kind and t.from_id = ` + node + `.id and t.kind = '` + graphstore.AttributeState + `'
+		  and t.to_kind = '` + graphstore.KindValue + `'
+		  and (e.id is not null
+		       or (t.source_event = ` + strconv.FormatInt(graphstore.NoEvent, 10) + ` and ` + noCreateEvent + `))
+		order by t.seq desc limit 1), false)`
 }
 
 // rowClass is the class of one row of scopedRows against its node n, null for a complete one and

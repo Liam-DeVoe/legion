@@ -323,12 +323,15 @@ func derefText(value *string) string {
 }
 
 // writeObjectBatch writes one batch's nodes in one transaction, which takes their rows in ascending
-// (kind, id) and states each one's base attributes, and answers what it wrote. Every node it writes
-// restates its node (graphstore.Node's Restates), as the backfill's other passes do: the run owns
-// the row's project or parties, not the state or the visibility another write gave the node, so a
-// node at a state a later release adds keeps it. A node a live writer
-// wrote meanwhile is written again with nothing moved, and states nothing; a gone node is moved
-// live, which states its state alone; one in another project fails the batch
+// (kind, id) and states each one's base attributes, and answers what it wrote. A node that is its
+// row's own and not gone is written restating it (graphstore.Node's Restates), as the backfill's
+// other passes write theirs: the run owns the row's project or parties, not the state or the
+// visibility another write gave the node, so a node at a state a later release adds keeps it. Any
+// other node is written as the row makes it: one the store does not hold, one held gone, and one
+// another row left standing are a node for a row that is new to it, which owes nothing to the row
+// before but the address, as this build's create writes it (api's storeArtifact). A node a live
+// writer wrote meanwhile is written again with nothing moved, and states nothing; a gone node is
+// moved live, which states its state alone; one in another project fails the batch
 // (graphstore.ErrProjectMoved), which is a difference for the census to report rather than for
 // this run to paper over. Each node and what it states carry its row's own create event where the
 // read found one (readObjectNodes), and the sentinel otherwise: the batch writes its nodes in
@@ -390,7 +393,6 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 		taken := map[string]graphstore.Node{}
 		for _, row := range nodes {
 			node := row.Node
-			node.Restates = true
 			if identity, stands := standing[node.ID]; !stands || identity != row.identity {
 				continue
 			}
@@ -402,6 +404,7 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 			if found && stored.present && stored.own && stored.scoped {
 				continue
 			}
+			node.Restates = found && stored.present && stored.own
 			if found && !stored.newest.Before(node.MadeAt) {
 				node.MadeAt = stored.newest.Add(time.Microsecond)
 			}
