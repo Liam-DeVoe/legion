@@ -747,6 +747,31 @@ test("a press that keeps the focus where it is and closes the layer is no move o
   }
 });
 
+// The same press, made after the focus fell to the body inside the open layer: a press on a blank
+// part of the layer puts the focus there, which is no move onto the page. The press on Details
+// that follows moves no focus, so it is no move of the reader's either, and the layer's close
+// still owes the reader a place.
+test("a press that moves no focus from the body, after a press inside the layer, is no move of the reader's, though its opener is gone", async () => {
+  const view = render(<LayerRegion />);
+  try {
+    await onFakeClock(async () => {
+      const user = userOnFakeClock();
+      await openLayer();
+      view.rerender(<LayerRegion opener={false} />);
+      await jump(1);
+      const layer = document.querySelector<HTMLElement>(`aside[${DETAILS_ATTRIBUTE}]`);
+      if (layer === null) throw new Error("the layer is not drawn");
+      await user.click(layer);
+      expect(document.body).toHaveFocus();
+      await user.click(button("Details"));
+      await jump(1);
+      expect(button("First fallback")).toHaveFocus();
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
 test("a press that shuts a popover as it begins, keeps the focus where it fell and closes the layer is no move of the reader's, though its opener is gone", async () => {
   const view = render(<LayerRegion />);
   try {
