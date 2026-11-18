@@ -150,9 +150,12 @@ export interface LiveSocket {
   subscribeAgent(sessionId: string, handlers: AgentHandlers): () => void;
   state(): LiveSocketState;
   /** Whether the event feed is up: the socket open, and an events subscription on it started by
-   *  Dispatch (`events_start`) since the page last sent it. Dispatch that cannot start the feed -
-   *  its database not answering - ends each send a second later with the socket still open: the
-   *  feed is down from each send until its start, and while the page waits out its backoff. */
+   *  Dispatch (`events_start`) since the page last sent it, with no send of it waiting. Dispatch
+   *  that refuses a feed it started holds no subscription, and the page sends the feed again only
+   *  after a backoff: the feed is down from the refusal until Dispatch starts that send. Dispatch
+   *  that cannot start the feed - its database not answering - ends each send a second later with
+   *  the socket still open: the feed is down from each send until its start, and while the page
+   *  waits out its backoff. */
   eventsUp(): boolean;
   /** Calls `listener` with `state()` whenever it changes; returns the unsubscribe. */
   onState(listener: (state: LiveSocketState) => void): () => void;
@@ -771,7 +774,8 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
     eventsUp() {
       if (!isOpen) return false;
       for (const sub of subs.values()) {
-        if (sub.kind === "events" && sub.started) return true;
+        // A refusal leaves `started` as it stood and schedules the next send (`resendLater`).
+        if (sub.kind === "events" && sub.started && sub.cancelRetry === undefined) return true;
       }
       return false;
     },
@@ -805,11 +809,11 @@ export function liveSocketFor(queryClient: QueryClient): LiveSocket {
 }
 
 /** Whether `queryClient`'s live feed is up: its socket open and the event feed's subscription on
- *  it started by Dispatch (`events_start`) since the page last sent it (`LiveSocket.eventsUp`).
- *  False where it has no socket, which this makes none of, as `liveSocketFor` would: a reader
- *  asking how the feed stands - the issue page's tree read, on a window focus, on a write the
- *  page puts in the cache, and on a refresh, which it holds back while a write is out
- *  (`subscribeTreeFreshness`) - opens nothing. */
+ *  it started by Dispatch (`events_start`) since the page last sent it, with no send of it waiting
+ *  (`LiveSocket.eventsUp`). False where it has no socket, which this makes none of, as
+ *  `liveSocketFor` would: a reader asking how the feed stands - the issue page's tree read, on a
+ *  window focus, on a write the page puts in the cache, and on a refresh, which it holds back
+ *  while a write is out (`subscribeTreeFreshness`) - opens nothing. */
 export function liveFeedUp(queryClient: QueryClient): boolean {
   return sockets.get(queryClient)?.eventsUp() === true;
 }

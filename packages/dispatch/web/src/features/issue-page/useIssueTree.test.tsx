@@ -4116,3 +4116,56 @@ test("a focus held for a write reads no refused tree once the live feed came bac
     client.clear();
   }
 });
+
+// An event of the comments with the live feed up, a moment after the tree was read and the
+// comments were read just after it: the app's scheduler marks the comments invalid, which the
+// page's subscription hears, and the scheduler would hold both reads back to a second after
+// their last ones began, the tree's first. In that order the comments read the scheduler owes
+// begins after the tree read the event asked for, in a later task, still marked invalid by the
+// event, and answers what the comments held; counted as newer, it would read the tree once more
+// for the one event. The tree read waits until that comments read has begun, so the event reads
+// the tree once.
+test("the tree read an event asks for begins after the comments read the scheduler owes for it, and the event reads the tree once", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs), { comments: [comment] });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  trackQueryFetches(client);
+  const feed = liveFeedOn(client);
+  const commentReads = () => (api.listComments as Mock<typeof api.listComments>).mock.calls.length;
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper: stageWrapper(client) });
+    await waitFor(() => expect(holdsComment(view.result.current)).toBe(true));
+    await act(async () => {
+      await Bun.sleep(1_100);
+      // A read of the tree, and 50 ms later one of the comments, each answering what it held.
+      await client.refetchQueries({ exact: true, queryKey: issueTreeKey(KEY) });
+      await Bun.sleep(50);
+      await client.refetchQueries({ queryKey: ["comments", KEY] });
+      await Bun.sleep(200);
+    });
+    const before = treeReadsOf();
+    const commentsBefore = commentReads();
+
+    act(() => {
+      refreshQueries(client, [{ queryKey: ["comments", KEY] }]);
+    });
+    await act(async () => {
+      await Bun.sleep(100);
+    });
+    expect(client.getQueryState(["comments", KEY])?.isInvalidated, "the event's mark").toBe(true);
+    expect(commentReads() - commentsBefore, "the comments read is held back").toBe(0);
+    expect(treeReadsOf() - before, "and so is the tree read").toBe(0);
+
+    // Past the moment a tree read made for the comments read would begin, a second after the
+    // event's tree read.
+    await act(async () => {
+      await Bun.sleep(2_500);
+    });
+    expect(commentReads() - commentsBefore, "the comments read the scheduler owed").toBe(1);
+    expect(treeReadsOf() - before, "one tree read for the event").toBe(1);
+    view.unmount();
+  } finally {
+    feed.end();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
