@@ -19,11 +19,17 @@ import (
 // storedCopyUnreadablePrefix, whatever the read met.
 var errStoredCopyUnread = errors.New("the copy the stream holds could not be read")
 
-// publishHeld publishes *item within ctx (bus.Client.PublishAckWithin), marks charge by the
-// stream's answer to that publish (senderCharge.published), and leaves in *item the envelope the
-// stream holds for it. It is the one publish of the send route and of the topic publish, so
-// neither can answer an envelope the stream does not hold: a route answers *item, and after a
-// duplicate verdict *item is the stored copy, not the envelope the route built.
+// storedPublish is the publish of an envelope on its own topic that returns the stream's
+// acknowledgement: bus.Client.PublishAckWithin for both routes in the listener, and a function of
+// the test's own where a test stands in for an answer of the stream's, as keptRolePublish is for
+// a keep.
+type storedPublish func(ctx context.Context, item contracts.Envelope) (bus.StoredAck, error)
+
+// publishHeld publishes *item within ctx through publish, marks charge by the stream's answer to
+// that publish (senderCharge.published), and leaves in *item the envelope the stream holds for
+// it, which it reads through client. It is the one publish of the send route and of the topic
+// publish, so neither can answer an envelope the stream does not hold: a route answers *item, and
+// after a duplicate verdict *item is the stored copy, not the envelope the route built.
 //
 // A publish the stream stored as a new copy leaves *item as it was, and duplicate false. A
 // duplicate verdict names the copy the stream holds under the same message id, at its sequence
@@ -37,8 +43,8 @@ var errStoredCopyUnread = errors.New("the copy the stream holds could not be rea
 // A copy that cannot be read, and a refusal of a publish whose message id is still in process
 // under an earlier one (bus.ErrDuplicateInProcess), are an error wrapping errStoredCopyUnread,
 // with *item untouched, and the charge stays marked by the publish's own answer.
-func publishHeld(ctx context.Context, client *bus.Client, charge *senderCharge, item *contracts.Envelope) (duplicate bool, err error) {
-	ack, err := client.PublishAckWithin(ctx, *item)
+func publishHeld(ctx context.Context, client *bus.Client, publish storedPublish, charge *senderCharge, item *contracts.Envelope) (duplicate bool, err error) {
+	ack, err := publish(ctx, *item)
 	charge.published(ack, err)
 	if errors.Is(err, bus.ErrDuplicateInProcess) {
 		return false, fmt.Errorf("%w: %v", errStoredCopyUnread, err)

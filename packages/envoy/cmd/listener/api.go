@@ -991,7 +991,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		}
 		// After a duplicate verdict item is the copy the stream holds, which this route answers
 		// and its record line names; a copy that cannot be read is the 503 that asks again.
-		duplicate, err := publishHeld(ctx, d.client, charge, &item)
+		duplicate, err := publishHeld(ctx, d.client, d.client.PublishAckWithin, charge, &item)
 		if err != nil {
 			record.refuseBusUnavailable(w, err)
 			return
@@ -1391,7 +1391,7 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
 		// After a duplicate verdict item is the copy the stream holds, which this route answers
 		// and its record line names; a copy that cannot be read is the 503 that asks again.
-		duplicate, err := publishHeld(ctx, d.client, charge, &item)
+		duplicate, err := publishHeld(ctx, d.client, d.client.PublishAckWithin, charge, &item)
 		if err != nil {
 			record.refuseBusUnavailable(w, err)
 			return
