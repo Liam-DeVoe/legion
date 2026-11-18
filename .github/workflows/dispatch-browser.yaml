@@ -1254,7 +1254,8 @@ jobs:
           path: packages/dispatch/e2e/test-results
 
   # The ask card's rows (INFRA-3231's R5 and R7: e2e/ask-card-rewrite.e2e.ts,
-  # ask-card-define.e2e.ts, ask-card-reviewer.e2e.ts and ask-card-menu.e2e.ts), which a pull
+  # ask-card-define.e2e.ts, ask-card-reviewer.e2e.ts, ask-card-menu.e2e.ts and
+  # ask-card-quote.e2e.ts's Chromium rows), which a pull
   # request must see on every push, where the shard job's lane cannot hold them: its real-stack
   # share is full, at the 150 rows e2e/__tests__/pull-request-lane.test.ts holds it to
   # (dispatch://INFRA-1407's R1), so they carry no `@pr` and the pull-request lane runs them
@@ -1268,13 +1269,14 @@ jobs:
   # in the merge job's `needs` and in that job's name filter, where it gets a null leg and is
   # passed over by reading one, exactly as embedder is.
   #
-  # No budget measured on this file's own runs yet, so the two below are derived from the
-  # embedder job's, whose steps these are: its install step's 4 min, and for the browser step
-  # the rows' own seconds - about forty rows, of 2 to 25 s each by their `SLOW(>=2s)` notes, so
-  # about six minutes at the run's one worker, doubled for the retry a failed row takes. The job
-  # budget is those two plus the embedder job's 135 s for every step without one, rounded up:
-  # 4 + 12 min plus 135 s = 19 min. The first runs replace these with readings of their own, as
-  # this file's head requires.
+  # The budgets below were derived from the embedder job's, whose steps these are: its install
+  # step's 4 min, and for the browser step the rows' own seconds - about forty rows, of 2 to 25 s
+  # each by their `SLOW(>=2s)` notes, so about six minutes at the run's one worker, doubled for
+  # the retry a failed row takes. The job budget is those two plus the embedder job's 135 s for
+  # every step without one, rounded up: 4 + 12 min plus 135 s = 19 min. Measured on pull request
+  # #3981's run at 698fef20 (job 134701463267), before the quote rows joined: the job took 5 min
+  # 43 s, the browser step 200 s and the install 5 s. The quote rows add nine Chromium rows of 4
+  # to 13 s each (a pod's run, 2026-11-18), about a minute, so both budgets keep their room.
   ask-card:
     if: inputs.lane == 'pull-request'
     runs-on: ubuntu-24.04
@@ -1333,7 +1335,7 @@ jobs:
         working-directory: packages/dispatch
       - name: Browser-test the ask card against the stand-in model
         timeout-minutes: 12
-        run: bun run e2e -- --project=chromium ask-card-rewrite ask-card-define ask-card-reviewer ask-card-menu
+        run: bun run e2e -- --project=chromium ask-card-rewrite ask-card-define ask-card-reviewer ask-card-menu ask-card-quote
         working-directory: packages/dispatch
       # `if: failure()`, as the embedder job's upload is, for the reason it gives. The folder
       # holds the reviewer's server log too (e2e/reviewer-server.ts writes it there).
