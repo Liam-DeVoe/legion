@@ -4802,6 +4802,18 @@ const WAYS = {
       act(() => focusWindow());
     },
   },
+  reload: {
+    words: "the reader leaving the issue and coming back to it",
+    // A new load of the stage, with the filter that was on: the page mounts the stage once for
+    // each issue it opens, and the stage's mount drops every view a past load held
+    // (`dropViews`).
+    does: async (rig) => {
+      stageOf(rig).unmount();
+      rig.stage = undefined;
+      await tick(100, 10);
+      mountStage(rig);
+    },
+  },
 } satisfies Record<string, RuleWay>;
 
 /** How many reads of a query a way starts: a count, or the least and the most. */
@@ -5051,9 +5063,10 @@ const READ_RULES: readonly ReadRule[] = [
   { read: "spec", state: "inFlight", observed: false, way: "mount", now: 0, back: 0 },
   { read: "spec", state: "inFlight", observed: false, way: "event", now: 0, back: 1 },
   // The cells added below: a write with the live feed down, a write the page puts in the cache,
-  // a write Dispatch refuses, a focus while a write is out, a focus after Dispatch refused the
-  // live feed, a read out that is refused or that holds an answer, a read refused a second time
-  // after an ask, and the Plan and Verification views.
+  // a write Dispatch refuses, the reader leaving the issue and coming back to it (a new load of
+  // the stage), a focus while a write is out, a focus after Dispatch refused the live feed, a read
+  // out that is refused or that holds an answer, a read refused a second time after an ask, and
+  // the Plan and Verification views.
   // Writes with the live feed up and down, a write the page puts in the cache, and a write Dispatch refuses.
   { read: "tree", state: "answered", observed: true, way: "resolveDown200", now: 1 },
   { read: "tree", state: "answered", observed: true, way: "resolveDown1200", now: 1 },
@@ -5175,6 +5188,31 @@ const READ_RULES: readonly ReadRule[] = [
   { read: "spec", state: "inFlightHeld", observed: false, way: "focusDown", now: 0, back: 0 },
   { read: "spec", state: "inFlightHeld", observed: false, way: "feedPart", now: 0, back: 1 },
   { read: "spec", state: "inFlightHeld", observed: false, way: "event", now: 0, back: 1 },
+  // The reader leaving the issue and coming back to it: a new load of the stage.
+  { read: "tree", state: "answered", observed: true, way: "reload", now: 0 },
+  { read: "tree", state: "refused", observed: true, way: "reload", now: 0 },
+  { read: "tree", state: "refusedHeld", observed: true, way: "reload", now: 0 },
+  { read: "tree", state: "inFlight", observed: true, way: "reload", now: 1 },
+  { read: "tree", state: "refusedAgain", observed: true, way: "reload", now: 0 },
+  { read: "spec", state: "answered", observed: true, way: "reload", now: 1 },
+  { read: "spec", state: "answered", observed: false, way: "reload", now: 0, back: 1 },
+  { read: "spec", state: "never", observed: false, way: "reload", now: 0, back: 1 },
+  { read: "spec", state: "stale", observed: false, way: "reload", now: 0, back: 1 },
+  { read: "spec", state: "inFlight", observed: true, way: "reload", now: 1 },
+  { read: "spec", state: "refusedAgain", observed: true, way: "reload", now: 0 },
+  { read: "spec", state: "refusedAgain", observed: false, way: "reload", now: 0, back: 0 },
+  { read: "spec", state: "refused", observed: true, way: "reload", now: 0 },
+  { read: "spec", state: "refused", observed: false, way: "reload", now: 0, back: 0 },
+  { read: "spec", state: "refusedHeld", observed: true, way: "reload", now: 0 },
+  { read: "spec", state: "refusedHeld", observed: false, way: "reload", now: 0, back: 0 },
+  { read: "plan", state: "refused", observed: true, way: "reload", now: 0 },
+  { read: "plan", state: "refused", observed: false, way: "reload", now: 0, back: 0 },
+  { read: "plan", state: "refusedHeld", observed: true, way: "reload", now: 0 },
+  { read: "plan", state: "refusedHeld", observed: false, way: "reload", now: 0, back: 0 },
+  { read: "verification", state: "refused", observed: true, way: "reload", now: 0 },
+  { read: "verification", state: "refused", observed: false, way: "reload", now: 0, back: 0 },
+  { read: "verification", state: "refusedHeld", observed: true, way: "reload", now: 0 },
+  { read: "verification", state: "refusedHeld", observed: false, way: "reload", now: 0, back: 0 },
   // Refused, asked for again while nothing observed it, read again and refused again.
   { read: "tree", state: "refusedAgain", observed: true, way: "mount", now: 0 },
   { read: "tree", state: "refusedAgain", observed: true, way: "focusUp", now: 0 },
