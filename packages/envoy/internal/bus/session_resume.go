@@ -124,7 +124,16 @@ func (s *SessionConsumers) recordResumeFloorAt(ctx context.Context, sessionID st
 	if err != nil {
 		return 0, err
 	}
-	if _, err := s.client.publishStoredRaw(ctx, SessionResumeSubject(sessionID), record, id.New(), nil); err != nil {
+	s.pendingMu.Lock()
+	fault := s.recordFault
+	s.pendingMu.Unlock()
+	if fault != nil {
+		err = fault(sessionID)
+	}
+	if err == nil {
+		_, err = s.client.publishStoredRaw(ctx, SessionResumeSubject(sessionID), record, id.New(), nil)
+	}
+	if err != nil {
 		return 0, fmt.Errorf("bus: record the resume floor of session %q: %w", sessionID, err)
 	}
 	if pastTheEnd {

@@ -329,3 +329,81 @@ func TestAResumeRecordWhoseAckTheDropLostAnswersTheLossOnTheSessionConsumersClie
 		t.Fatalf("the resume record after the retry = %d, %t, %v; want the newest, floor %d", got, recorded, err, later)
 	}
 }
+
+// setRecordFault makes every resume record consumers writes call fault(session id) first and fail,
+// unsent, with the error it returns; nil removes it (recordFault).
+func setRecordFault(consumers *SessionConsumers, fault func(sessionID string) error) {
+	consumers.pendingMu.Lock()
+	defer consumers.pendingMu.Unlock()
+	consumers.recordFault = fault
+}
+
+// A delete whose resume record could not be written deletes nothing: Delete answers the record's
+// error, the consumer stands and the stream holds no record, so the session's position is never
+// left nowhere. Once the record can be written, the delete made again records the floor the
+// consumer had acked and deletes the consumer. The record's write fails here with the loss its
+// client answers for a connection that is down (ErrConnectionLost, unsent), while the connection
+// stays up and the consumer API answers throughout (recordFault fails the record's write alone),
+// so a delete that went on after the record failed would delete the consumer. The rows above
+// cannot tell that apart: there the connection that refuses the record refuses the delete too.
+//
+// The control is this row with Delete's return after a record that failed taken out: the delete
+// goes on, and the consumer is gone with no record stored.
+func TestADeleteWhoseResumeRecordCouldNotBeWrittenDeletesNothing(t *testing.T) {
+	owner, consumers := sessionConsumersOnStream(t)
+	ctx, cancel := context.WithTimeout(context.Background(), ownWait(t))
+	defer cancel()
+	const session = "ses_delete_unrecorded"
+	agent := contracts.LegacyAgentSubject(session)
+	subject := SessionResumeSubject(session)
+	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
+		t.Fatalf("ensure the session's consumer: %v", err)
+	}
+	acked := publishStored(t, owner, agent, "acked before the delete")
+	pull := pullSession(t, consumers, session)
+	msg := next(t, pull)
+	if msg.StreamSeq != acked {
+		t.Fatalf("first message = %d, want %d", msg.StreamSeq, acked)
+	}
+	if err := msg.Ack(); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+	pull.Stop()
+	waitForAckFloor(t, consumers, session, acked)
+
+	var faulted []string
+	setRecordFault(consumers, func(sessionID string) error {
+		faulted = append(faulted, sessionID)
+		return &connectionLost{client: consumers.client, unsent: true}
+	})
+	floor, err := consumers.Delete(ctx, session, nil)
+	setRecordFault(consumers, nil)
+	if len(faulted) != 1 || faulted[0] != session {
+		t.Fatalf("the delete wrote the records of %v through the fault, want one of %s", faulted, session)
+	}
+	if !consumers.client.Connected() {
+		t.Fatal("the client is not connected after the delete, so a delete that went on could not have deleted the consumer")
+	}
+	_, infoErr := consumers.Info(ctx, session)
+	stored := storedOn(t, subject)
+	if infoErr != nil || stored != 0 {
+		t.Fatalf("after the delete whose resume record could not be written (%d, %v) the consumer's info = %v and the stream holds %d resume records of %s; want the consumer still there and no record", floor, err, infoErr, stored, session)
+	}
+	if !errors.Is(err, ErrConnectionLost) || floor != 0 {
+		t.Fatalf("the delete whose resume record could not be written = %d, %v; want 0 and the record's ErrConnectionLost", floor, err)
+	}
+
+	floor, err = consumers.Delete(ctx, session, nil)
+	if err != nil || floor != acked {
+		t.Fatalf("the delete made again once the record could be written = %d, %v; want the floor %d it acked", floor, err, acked)
+	}
+	if _, err := consumers.Info(ctx, session); !errors.Is(err, ErrSessionConsumerNotFound) {
+		t.Fatalf("the consumer's info after the second delete = %v, want ErrSessionConsumerNotFound", err)
+	}
+	if stored := storedOn(t, subject); stored != 1 {
+		t.Fatalf("the stream holds %d resume records of %s after the second delete, want 1", stored, session)
+	}
+	if got, recorded, err := consumers.resumeFloor(ctx, session, streamIDOf(t, consumers)); err != nil || !recorded || got != acked {
+		t.Fatalf("the resume record after the second delete = %d, %t, %v; want the floor %d", got, recorded, err, acked)
+	}
+}
