@@ -167,8 +167,9 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 // renameAcceptedVersion renames the document version comment's accepted suggestion made to the
 // name an accept gives a suggestion with no body (acceptedVersionName), in the delete's own
 // transaction, so no read of the document's versions serves any part of the deleted body as a
-// version's name. The artifact.version event the accept appended keeps the name it carried, as
-// every event keeps its payload.
+// version's name. The artifact.version event the accept appended keeps the name it carried: no
+// delete rewrites a stored event, and only the deleted comment's own events are read without its
+// body (attachPostMarks).
 //
 // No row links the version to the comment, so the version is found by the time the accept wrote
 // it. The accept writes the version (Docs.NamedVersion), the version's artifact.version event and

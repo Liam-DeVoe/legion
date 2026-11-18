@@ -4239,7 +4239,8 @@ Each item below names a path with its method and identity, then its purpose.
   A session names itself in `actor` where its credential proves none; a person's own credential, a browser cookie or a personal token holding the `person` scope, is that person and names nothing (`correctionActor`).
   The comment keeps its row and its place in its thread, and every read of it gives `deleted_at` and `deleted_by` and no body; the body it held is kept, and `GET /api/v1/comments/{id}/history` reads the mark in its place.
   A suggestion of it still pending is rejected out of the document before the body goes, so an insert suggestion's text leaves the document with it.
-  The suggestion's replacement text goes with the body, each block is removed with its excerpt cleared and the text every revision recorded of it cleared too (`refs.TombstoneItem`), the margin mark is projected again with no text, and every mention attempt still pending is failed, `not sent: the post was deleted`.
+  The suggestion's replacement text goes from the comment with the body, and the document version an accepted suggestion made, which the accept named after the comment's body, is renamed to the change it made (its `artifact.version` event keeps the name it carried).
+  Each block is removed with its excerpt cleared and the text every revision recorded of it cleared too (`refs.TombstoneItem`), the margin mark is projected again with no text, and every mention attempt still pending is failed, `not sent: the post was deleted`.
   A comment of a closed issue is deleted too; a second delete is `409 POST_DELETED`.
 
 - `/api/v1/comments/{id}/history?before=` (GET; cookie, trusted header, or bearer)
@@ -4248,7 +4249,7 @@ Each item below names a path with its method and identity, then its purpose.
   `{deleted_at, deleted_by, entries: [{body, edited_by, edited_at}]}`.
   Read by whoever reads the comment, which is any authenticated caller.
   At most 200 rows in one answer; `?before=<RFC3339 time>` answers the page after, the rows written before it.
-  A comment nobody edited answers an empty list, and a deleted comment answers the mark with every body empty, since no read of a deleted post gives its text.
+  A comment nobody edited or deleted answers an empty list; a delete writes an entry of its own, so a comment deleted with no edit lists one, and a deleted comment answers the mark with every body empty, since no read of a deleted post gives its text.
 
 - `/api/v1/comments/{id}/resolve` (POST; cookie, trusted header, or bearer)
 
@@ -4313,9 +4314,9 @@ Each item below names a path with its method and identity, then its purpose.
   Every body an edit or a delete of this message replaced, newest first, each with the actor that replaced it and the time:
   `{deleted_at, deleted_by, entries: [{body, edited_by, edited_at}]}`.
   Read under `GET /api/v1/messages/{id}`'s rule:
-  a bearer reading a direct message names its session in `?session=` (`400 SESSION_REQUIRED`, `403 THREAD_FORBIDDEN`).
+  a credential without the `person` scope reading a direct message names its session in `?session=` (`400 SESSION_REQUIRED`, `403 THREAD_FORBIDDEN`).
   At most 200 rows in one answer; `?before=<RFC3339 time>` answers the page after, the rows written before it.
-  A message nobody edited answers an empty list, and a deleted message answers the mark with every body empty, since no read of a deleted post gives its text.
+  A message nobody edited or deleted answers an empty list; a delete writes an entry of its own, so a message deleted with no edit lists one, and a deleted message answers the mark with every body empty, since no read of a deleted post gives its text.
 
 - `/api/v1/issues/{key}/results` (GET, POST; cookie, trusted header, or bearer)
 

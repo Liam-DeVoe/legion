@@ -6911,8 +6911,8 @@ describe("executeDispatchTool", () => {
 
         // A delete takes every block with the body, and what says so is the post's own mark:
         // the read of the post the block was in answers `deleted_at`, and the message carries
-        // that, whatever words the server's refusal of the block holds. Every read that quotes
-        // a post says that the post is deleted.
+        // that, whatever words the server's refusal of the block holds. Every read of the post
+        // says that it is deleted.
         const deleted = () => notFound(`no block "b2" in comment ${comment}`);
         const deletedPost = () =>
           response({
@@ -15970,7 +15970,7 @@ test("deletes a comment by bare id and says no read of it gives its body again",
   );
 
   expect(result).toEqual({
-    text: `Deleted comment ${correctedComment} on DSP-42. No read of it gives its body again; a reply's own event keeps the preview of it the reply froze.`,
+    text: `Deleted comment ${correctedComment} on DSP-42. No read of it gives its body again; a reply's own event keeps the preview of it the reply froze, and the version event of an accepted suggestion keeps the name the accept gave the version.`,
     details: { issue: "DSP-42", comment: correctedComment },
   });
   // A bare id is the comment itself, so nothing is read before the delete.

@@ -1,21 +1,22 @@
 kind: Added
 body: |-
   New commands: dispatch edit-comment, dispatch delete-comment, dispatch edit-message and dispatch
-  delete-message. dispatch read --history prints each body an edit replaced, newest first, with
-  the actor and the time; of a deleted post it prints the deleted mark and each entry's time and
-  actor, and no body. A read of an edited post prints the time of its edit (above the body of the
-  post itself, and after the head of an event line), and a deleted post prints as deleted with no
-  body. The four corrections and the history read need a Dispatch of this release, except an edit
-  of a person's own comment made with that person's token, which an older Dispatch takes as the
-  person and keeps no earlier body of. Where an older
-  server answers with no route, or with the scope or the `actor` refusal its comment edit gives,
-  each of them says that this Dispatch predates post corrections and that a correction is one more
-  post until it is deployed. Against an older Dispatch, a person's own token that names a session
-  can be answered as the person, so an edit of that session's own comment can be refused
-  NOT_AUTHOR. A delete says that no read of the post gives its body again and that a reply's own
-  event keeps the preview of it the reply froze. An
-  edit an older server does take is reported as the edit that landed and nothing more: what became
-  of the body it replaced is the history read's to answer.
+  delete-message. dispatch read --history prints each body an edit replaced, newest first, with the
+  actor and the time; of a deleted post it prints the deleted mark and each entry's time and actor,
+  and no body. A read of an edited post prints the time of its edit (above the body of the post
+  itself, and after the head of an event line), and a deleted post prints as deleted with no body.
+  The four corrections and the history read need a Dispatch of this release. Where an older server
+  answers with no route, or with the scope or the `actor` refusal its comment edit gives, each of
+  them says that this Dispatch predates post corrections and that a correction is one more post
+  until it is deployed. An older Dispatch that ignores the `actor` field answers a person's own
+  token as the person: it takes an edit of that person's own comment and keeps no earlier body,
+  refuses that edit on a closed issue with ISSUE_CLOSED, and refuses an edit of the comment of a
+  session the token names with NOT_AUTHOR; the command passes each of those answers on as it is. A
+  delete says that no read of the post gives its body again, that a reply's own event keeps the
+  preview of it the reply froze, and, of a comment, that the version event of an accepted suggestion
+  keeps the name the accept gave the version. An edit an older server does take is reported as the
+  edit that landed and nothing more: what became of the body it replaced is the history read's to
+  answer.
 time: 2026-11-11T07:23:34.685796308Z
 custom:
     Issue: pr3512

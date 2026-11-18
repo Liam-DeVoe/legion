@@ -117,8 +117,8 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     return refDocumentId;
   };
   /** The sentence a missing block's message ends with when the post that held the block is
-   *  deleted: a delete clears every block the post held, and every read that quotes a post says
-   *  that the post is deleted. The fact is the post's own `deleted_at`, read from the post
+   *  deleted: a delete clears every block the post held, and every read of the post says that it
+   *  is deleted. The fact is the post's own `deleted_at`, read from the post
    *  itself; the words of the server's refusal are never read, because a reader of prose breaks
    *  on the day the prose changes (`skill://dispatch`: branch on an error's code, never on its
    *  text). The message read is the issue's, as the message read below makes it, because
@@ -307,8 +307,8 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     // names a block no current version holds, and a pinned one's answer says which of its
     // version, that version's record or the block the server could not find. The unpinned
     // answer is rewritten in the reference's own words, and a delete, which clears every block
-    // the post held, is the one cause of it that a reader needs told, since every read that
-    // quotes a post says that the post is deleted. The post's own mark is what says so.
+    // the post held, is the one cause of it that a reader needs told, since every read of the
+    // post says that it is deleted. The post's own mark is what says so.
     const [incoming, outgoing, partOf, typed] = await Promise.all([
       client.getReferences({ to: blockRef }).catch(async (error: unknown) => {
         if (ref.pin === undefined && dispatchAnswered(error, 404)) {

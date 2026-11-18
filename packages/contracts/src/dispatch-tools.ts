@@ -1280,9 +1280,11 @@ export const dispatchToolSpecs = [
       "Withdraw a comment or a suggestion you wrote, where the text itself should not stand. The " +
       "author alone may delete a comment: every other caller is refused 403 NOT_AUTHOR. The " +
       "comment keeps its id and its place in its thread, and no read of it gives any part of its " +
-      "body again: each read of it marks it deleted and names who deleted it and when, and a " +
-      "reply's own event keeps the preview of it the reply froze. Its replies keep " +
-      "their own text and their own places, a suggestion's replacement text goes with the body, " +
+      "body again: each read of it marks it deleted and names who deleted it and when. A reply's " +
+      "own event keeps the preview of it the reply froze, and the version event of an accepted " +
+      "suggestion keeps the name the accept gave the version, which the delete renames. Its " +
+      "replies keep their own text and their own places, a suggestion's replacement text goes " +
+      "from the comment with the body (an accepted one's stays in the document as its own text), " +
       "the document's margin mark holds no text, each mention delivery still waiting is failed, " +
       "and search stops matching it. A suggestion of it still waiting is rejected out of the " +
       "document before the body goes, so the text an insert suggestion put there goes with it. " +

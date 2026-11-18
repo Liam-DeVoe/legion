@@ -5,10 +5,16 @@ body: |-
   took a person's edit alone and refused one on a closed issue, now takes its author's edit, an
   agent's included, on an open or a closed issue. GET /api/v1/comments/{id}/history and GET
   /api/v1/messages/{id}/history give each body an edit replaced, newest first, with the actor and
-  the time, at most 200 in one answer; of a deleted post they give the deleted mark and each
-  entry's actor and time, with no body. A deleted post keeps its place in its thread, and no read
-  of it gives any part of its body; a reply's own event keeps the preview it froze of the post it
-  answered.
+  the time, at most 200 in one answer; a delete writes an entry of its own, and of a deleted post
+  they give the deleted mark and each entry's actor and time, with no body. A deleted post keeps
+  its place in its thread, and no read of it gives any part of its body, a read of its own events
+  included. Two kinds of event keep text of it: a reply's post and delete events keep the preview
+  of it the reply froze, and the artifact.version event of an accepted suggestion keeps the name it gave
+  the document version, which was the comment's body. The delete renames that version to the
+  change the suggestion made, so the document's versions no longer give the body. A write whose
+  answer is the post (an edit, a resolve, reopen, accept or reject, a create, or a session's
+  reply), repeated under its Idempotency-Key, answers the post as it stands now; a delivery
+  retry's repeat answers the attempt it kept, which holds no body.
 time: 2026-11-11T07:23:15.742008842Z
 custom:
     Issue: pr3512

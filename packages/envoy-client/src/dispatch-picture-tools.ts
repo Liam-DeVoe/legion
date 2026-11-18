@@ -234,8 +234,8 @@ export function eventTexts(event: DispatchEvent): DatedText[] {
     case "message.edited":
       texts = [event.payload.body];
       break;
-    // Every other event carries no text of its own, a delete among them: a deleted post gives no
-    // part of its body to any read, so its event names no picture either.
+    // Every other event is read for no picture, a delete's among them: a delete's own event
+    // carries no body, as every event of a deleted post is read with none.
     default:
       texts = [];
   }

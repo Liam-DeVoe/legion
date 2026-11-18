@@ -172,11 +172,17 @@ export async function editCommentCommand(context: CommandContext): Promise<Dispa
 }
 
 /** What each delete command says the delete leaves readable: no read of the post gives its body
- *  again, and a reply's own event keeps the preview of the post it froze when it was written
- *  (`reply_block.text` of a reply naming a block, `reply_body` of a message reply, which holds
- *  one whether or not the reply named a block), which the delete leaves as it froze. */
-const DELETED_POST_READS =
+ *  again, and the event log keeps what its events already wrote. A reply's own event keeps the
+ *  preview of the post it froze when it was written (`reply_block.text` of a reply naming a
+ *  block, `reply_body` of a message reply, which holds one whether or not the reply named a
+ *  block). Of a comment, the `artifact.version` event of an accepted suggestion also keeps the
+ *  name the accept gave the version, which was the comment's body; the version itself is
+ *  renamed by the delete. */
+const DELETED_MESSAGE_READS =
   "No read of it gives its body again; a reply's own event keeps the preview of it the reply froze.";
+const DELETED_COMMENT_READS =
+  "No read of it gives its body again; a reply's own event keeps the preview of it the reply " +
+  "froze, and the version event of an accepted suggestion keeps the name the accept gave the version.";
 
 /** `dispatch delete-comment`: the author withdraws their own comment. */
 export async function deleteCommentCommand(context: CommandContext): Promise<DispatchToolResult> {
@@ -191,7 +197,7 @@ export async function deleteCommentCommand(context: CommandContext): Promise<Dis
   );
   const { label, details } = await commentOwnerResult(client, comment, document);
   return {
-    text: `Deleted comment ${comment.id} on ${label}. ${DELETED_POST_READS}`,
+    text: `Deleted comment ${comment.id} on ${label}. ${DELETED_COMMENT_READS}`,
     details,
   };
 }
@@ -239,7 +245,7 @@ export async function deleteMessageCommand(context: CommandContext): Promise<Dis
   );
   const issue = messageIssueKey(message);
   return {
-    text: `Deleted message ${message.id} on ${issue}. ${DELETED_POST_READS}`,
+    text: `Deleted message ${message.id} on ${issue}. ${DELETED_MESSAGE_READS}`,
     details: { issue, message: message.id },
   };
 }

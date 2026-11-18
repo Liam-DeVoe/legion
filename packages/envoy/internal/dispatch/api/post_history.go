@@ -57,7 +57,7 @@ func postHistoryOwner(kind refs.ItemKind) (items, column string, err error) {
 // replace, in the caller's transaction and under the locks that caller already holds: one
 // post_body_history row with the actor making the write. An edit calls it with the body it
 // replaces and a delete with the body it clears; a create calls it never, so the history of a
-// post nobody edited is empty.
+// post nobody edited or deleted is empty.
 func recordPostBodyHistory(ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID, body string, actor model.Actor) error {
 	_, column, err := postHistoryOwner(kind)
 	if err != nil {
