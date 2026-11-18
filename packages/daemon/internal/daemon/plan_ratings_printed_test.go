@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -189,6 +190,45 @@ func TestThePrintedReadHoldsEachIssueToItsPlan(t *testing.T) {
 		}
 		if _, err := plansPrintedHold("SR1", tc.fails, want); err == nil || !strings.Contains(err.Error(), tc.why) {
 			t.Errorf("control: %s printed with the other plan = %v, want an error saying %q", tc.name, err, tc.why)
+		}
+	}
+}
+
+// The printed read holds two issues to their order, their ratings, their times and their failed
+// steps: a newer issue, rated, with one failed step and records more than an hour apart, printed
+// before an older one with no rating. Each control changes one thing of the printed text and wants
+// the error that names it: the two lines swapped, the rated issue printed with no rating, the
+// unrated one printed with a rating, the time printed past its minutes, and the failed step
+// printed as none.
+func TestThePrintedReadHoldsTwoIssuesToTheirOrderRatingsTimesAndFailedSteps(t *testing.T) {
+	records := func(started, ended string) stepRecordsRead {
+		t.Helper()
+		var steps stepRecordsRead
+		text := fmt.Sprintf(`{"tasks":[{"task":"default","steps":[{"started_at":%q,"ended_at":%q}]}]}`, started, ended)
+		if err := json.Unmarshal([]byte(text), &steps); err != nil {
+			t.Fatal(err)
+		}
+		return steps
+	}
+	want := []ratedWant{
+		{walkIssue: walkIssue{key: "SR1-2"}, rating: &intake.PlanRating{Score: 4, Reason: "The plan fit the work."}, failed: 1, steps: records("2026-11-16T22:50:00Z", "2026-11-16T23:55:00Z")},
+		{walkIssue: walkIssue{key: "SR1-1"}, steps: records("2026-11-16T23:58:00Z", "2026-11-16T23:59:00Z")},
+	}
+	newer := "SR1-2 closed 2026-11-17T01:00:00Z plan " + defaultPlanPrinted() + ` ratings 4/5 "The plan fit the work." time 1h5m failed steps 1`
+	older := "SR1-1 closed 2026-11-17T00:00:00Z plan " + defaultPlanPrinted() + " ratings none time 0h1m failed steps 0"
+	printed := func(lines ...string) string { return "SR1: 2 finished issues\n" + strings.Join(lines, "\n") }
+	if _, err := plansPrintedHold("SR1", printed(newer, older), want); err != nil {
+		t.Fatalf("the two issues printed newest close first: %v, want them held", err)
+	}
+	for _, control := range []struct{ name, out, why string }{
+		{"the older issue printed first", printed(older, newer), "want the newest close first"},
+		{"the rated issue printed with no rating", printed(strings.Replace(newer, `ratings 4/5 "The plan fit the work."`, "ratings none", 1), older), "want the one rating"},
+		{"the unrated issue printed with a rating", printed(newer, strings.Replace(older, "ratings none", `ratings 2/5 "x"`, 1)), "want none"},
+		{"the rated issue's time printed past its minutes", printed(strings.Replace(newer, "time 1h5m", "time 1h65m", 1), older), "prints time 1h65m, want 1h5m"},
+		{"the rated issue's failed step printed as none", printed(strings.Replace(newer, "failed steps 1", "failed steps 0", 1), older), failedStepsPrinted("SR1-2", 0, 1)},
+	} {
+		if _, err := plansPrintedHold("SR1", control.out, want); err == nil || !strings.Contains(err.Error(), control.why) {
+			t.Errorf("control: %s = %v, want an error saying %q", control.name, err, control.why)
 		}
 	}
 }
