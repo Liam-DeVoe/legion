@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // forcedPointModeEnv names what forcedProxy does at its armed point: "" passes the operation on (the
@@ -190,35 +191,33 @@ func eventLines(listener *listenerProcess, eventID string) []map[string]any {
 // that line's msg (and error, if any).
 func awaitRoleOutcome(t *testing.T, listener *listenerProcess, eventID string) string {
 	t.Helper()
-	deadline := time.Now().Add(time.Minute)
-	for {
+	outcome := ""
+	ended := testwait.Holds(time.Minute, 20*time.Millisecond, func() bool {
 		for _, record := range eventLines(listener, eventID) {
 			if msg, _ := record["msg"].(string); roleOutcomeLines[msg] {
+				outcome = msg
 				if errText, ok := record["error"].(string); ok {
-					return msg + ": " + errText
+					outcome = msg + ": " + errText
 				}
-				return msg
+				return true
 			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the listener logged no outcome for %s in a minute; its lines for it: %v", eventID, eventLines(listener, eventID))
-		}
-		time.Sleep(20 * time.Millisecond)
+		return false
+	})
+	if !ended {
+		t.Fatalf("the listener logged no outcome for %s in a minute; its lines for it: %v", eventID, eventLines(listener, eventID))
 	}
+	return outcome
 }
 
 // awaitOutput waits, up to a minute, for pattern to match the listener's output past offset.
 func awaitOutput(t *testing.T, listener *listenerProcess, offset int, pattern *regexp.Regexp, what string) {
 	t.Helper()
-	deadline := time.Now().Add(time.Minute)
-	for {
-		if output := listener.Output.String(); len(output) > offset && pattern.MatchString(output[offset:]) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: not in the listener's output after a minute", what)
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !testwait.Holds(time.Minute, 20*time.Millisecond, func() bool {
+		output := listener.Output.String()
+		return len(output) > offset && pattern.MatchString(output[offset:])
+	}) {
+		t.Fatalf("%s: not in the listener's output after a minute", what)
 	}
 }
 
@@ -320,15 +319,14 @@ func TestRoleLaneForcedPointDeliversEveryRoleMessage(t *testing.T) {
 	}
 	deadline := time.Now().Add(time.Minute)
 	awaitSettled := func(eventID string) (dropped bool) {
-		for {
-			if settled, dropped := settle(eventID); settled {
-				return dropped
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("%s is not settled within a minute; the listener's lines for it: %v", eventID, eventLines(listener, eventID))
-			}
-			time.Sleep(20 * time.Millisecond)
+		if !testwait.Holds(time.Until(deadline), 20*time.Millisecond, func() bool {
+			var settled bool
+			settled, dropped = settle(eventID)
+			return settled
+		}) {
+			t.Fatalf("%s is not settled within a minute; the listener's lines for it: %v", eventID, eventLines(listener, eventID))
 		}
+		return dropped
 	}
 
 	published := make([]contracts.Envelope, 0, messages)

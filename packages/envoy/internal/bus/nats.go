@@ -660,19 +660,32 @@ func (c *Client) untilStopped() (context.Context, context.CancelFunc) {
 	return ctx, cancel
 }
 
-// readDeployedSubjects reads the deployed stream's subjects on conn within timeout, and within
-// ctx, and keeps them for DeployedStreamCaptures. A read that fails keeps what the client held. It
-// reports false only when the server refused the read under the NATS user's permissions: such a
-// user cannot read them later either, so the client keeps deciding by what it holds, and reads no
-// more (subjectsRefused).
-func (c *Client) readDeployedSubjects(ctx context.Context, conn *nats.Conn, timeout time.Duration) bool {
+// storeDeployedSubjects reads the deployed stream's subjects on conn within timeout, and within
+// ctx, and keeps them for DeployedStreamCaptures. A read that fails keeps what the client held and
+// returns why. It is the one read both callers make: the periodic one (readDeployedSubjects) and
+// the one a caller makes now (ReadDeployedStreamCaptures).
+func (c *Client) storeDeployedSubjects(ctx context.Context, conn *nats.Conn, timeout time.Duration) error {
 	js, err := conn.JetStream(nats.MaxWait(timeout))
+	if err != nil {
+		return err
+	}
+	subjects, err := readStreamSubjects(requestsUnder(ctx, js))
+	if err != nil {
+		return err
+	}
+	c.deployedSubjects.Store(&subjects)
+	return nil
+}
+
+// readDeployedSubjects reads the deployed stream's subjects on conn within timeout, and within
+// ctx, and keeps them for DeployedStreamCaptures (storeDeployedSubjects). A read that fails keeps
+// what the client held. It reports false only when the server refused the read under the NATS
+// user's permissions: such a user cannot read them later either, so the client keeps deciding by
+// what it holds, and reads no more (subjectsRefused).
+func (c *Client) readDeployedSubjects(ctx context.Context, conn *nats.Conn, timeout time.Duration) bool {
+	err := c.storeDeployedSubjects(ctx, conn, timeout)
 	if err == nil {
-		var subjects []string
-		if subjects, err = readStreamSubjects(requestsUnder(ctx, js)); err == nil {
-			c.deployedSubjects.Store(&subjects)
-			return true
-		}
+		return true
 	}
 	if publishDenial(conn.LastError(), streamInfoSubject) != nil {
 		slog.Info("envoy nats may not read the stream's subjects; the client decides each topic's transport by the subjects it compiles",
@@ -1721,15 +1734,9 @@ func (c *Client) ReadDeployedStreamCaptures(topic string, timeout time.Duration)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	js, err := conn.JetStream(nats.MaxWait(timeout))
-	if err != nil {
+	if err := c.storeDeployedSubjects(ctx, conn, timeout); err != nil {
 		return c.DeployedStreamCaptures(topic), false
 	}
-	subjects, err := readStreamSubjects(requestsUnder(ctx, js))
-	if err != nil {
-		return c.DeployedStreamCaptures(topic), false
-	}
-	c.deployedSubjects.Store(&subjects)
 	return c.DeployedStreamCaptures(topic), true
 }
 

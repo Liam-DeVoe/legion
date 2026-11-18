@@ -76,3 +76,55 @@ func TestAFullStreamIsAnsweredAsFullNotAsABusThatDidNotAnswer(t *testing.T) {
 		}
 	}
 }
+
+// A send or publish the stream refuses for the message itself (bus.StreamRefusesMessage) was
+// answered, and the answer is final: the 409 under streamRefusedPrefix, with no Retry-After, and
+// the request record's outcome stream_refused, so an operator reading it looks at the stream's
+// configuration or the message's size rather than for an outage or a full stream.
+func TestAStreamRefusalIsAnsweredAndRecordedAsARefusal(t *testing.T) {
+	subject := contracts.RoleTopicPrefix + "reviewer"
+	for _, route := range []struct {
+		name    string
+		line    string
+		laneKey string
+		lane    string
+	}{
+		{"publish", "listener publish", "topic", subject},
+		{"send", "listener send", "target_session", "ses_refused_target"},
+	} {
+		for _, failure := range []struct {
+			name string
+			err  error
+		}{
+			{"a sealed stream", fmt.Errorf("%w: %w", bus.ErrForwardNotStored,
+				&nats.APIError{Code: http.StatusBadRequest, ErrorCode: 10109, Description: "invalid operation on sealed stream"})},
+			{"a message past the stream's maximum size", fmt.Errorf("%w: %w", bus.ErrForwardNotStored,
+				&nats.APIError{Code: http.StatusBadRequest, ErrorCode: 10054, Description: "message size exceeds maximum allowed"})},
+		} {
+			t.Run(route.name+"/"+failure.name, func(t *testing.T) {
+				recorder, record := serveRecorded(t, func(logger *logging.Logger) http.HandlerFunc {
+					return func(w http.ResponseWriter, r *http.Request) {
+						rec := &requestRecord{logger: logger, line: route.line, laneKey: route.laneKey, lane: route.lane}
+						rec.refuseBusUnavailable(w, failure.err)
+					}
+				}, postJSON("/v1/messages/publish", "{}"))
+				if recorder.Code != http.StatusConflict {
+					t.Fatalf("status = %d, want 409: no retry gets past the stream's refusal; body = %s", recorder.Code, recorder.Body.String())
+				}
+				if got := recorder.Header().Get("Retry-After"); got != "" {
+					t.Fatalf("Retry-After is %q, want none: no wait changes the stream's answer", got)
+				}
+				var refusal apiError
+				if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
+					t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
+				}
+				if !strings.HasPrefix(refusal.Error, streamRefusedPrefix) {
+					t.Fatalf("the refusal reads %q, want it to open with %q", refusal.Error, streamRefusedPrefix)
+				}
+				if record["outcome"] != "stream_refused" || record["status"] != float64(http.StatusConflict) {
+					t.Fatalf("the request record's outcome is %v with status %v, want stream_refused with 409; record = %v", record["outcome"], record["status"], record)
+				}
+			})
+		}
+	}
+}

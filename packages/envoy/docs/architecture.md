@@ -177,6 +177,7 @@ attempt:
 | The publish is refused as too large (`bus.ErrTooLarge`) | `413` naming the size against the server's max payload |
 | The publish is refused for its subject or key (`bus.ErrRefused`) | `400` naming the refusal, with no `Retry-After` |
 | The stream refuses the publish because it holds its byte limit (`bus.ErrStreamFull`) | `503 {"error":"envoy: the message bus refused the message because its stream is full: <reason>"}` with `Retry-After: 1`, recorded `stream_full` |
+| The stream refuses the message itself, however often it is sent: a message or headers past the stream's maxima, a message too large for the store, a sealed stream (`bus.StreamRefusesMessage`) | `409 {"error":"envoy: the message bus stream refused the message, and refuses it however often it is sent: <reason>"}` with no `Retry-After`, recorded `stream_refused`. A role send answers it after one forward rather than retrying it to its 504. A role send with no live holder whose keep the stream refuses that way is the no-holder `404` instead, since the keep is that send's own give-up |
 | The server denies the publish under this listener's own grant (`bus.ErrPublishDenied`) | `403 {"error":"envoy: the message bus denied the publish under this listener's own permissions: <reason>"}` with no `Retry-After`, recorded `publish_denied` (below) |
 | Any other publish failure | `503` with the same prefix and `Retry-After: 1`, carrying the bus's own reason |
 
@@ -254,9 +255,10 @@ Each inbound send and publish is recorded in one line, INFO when accepted and WA
 `listener send` (`target_session`) and `listener publish` (`topic`), both carrying `event_id`,
 `source`, `source_session`, `payload_summary`, `outcome` and `status`, and `holder` as well when a
 role topic resolved one. `outcome` is one of `accepted`, `invalid_request`, `too_large`,
-`bus_unavailable` and `stream_full`, plus `no_live_session` for send, `session_stopped` for a
-`connected_only` send whose target is stopped, `capability_refused` for send and a role send,
-`publish_denied` for send and publish alike, since a publish on either transport can be denied,
+`bus_unavailable`, `stream_full` and `stream_refused`, plus `no_live_session` for send,
+`session_stopped` for a `connected_only` send whose target is stopped, `capability_refused` for
+send and a role send, `publish_denied` for send and publish alike, since a publish on either
+transport can be denied,
 and `role_unclaimed`, `role_lapsed`,
 `role_claim_unreadable` and a role send's one 504 reason, `delivery_failed`, for publish. A role
 send whose message the listener kept is `accepted`, because its 202 is an answer and not a

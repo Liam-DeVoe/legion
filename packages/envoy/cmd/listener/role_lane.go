@@ -198,10 +198,8 @@ func (f *roleForwarder) enqueue(forward roleForward) {
 // on taking the messages its subscription holds, or the lane's drain runs out and closes the
 // connection under them.
 func (f *roleForwarder) acquire() bool {
-	select {
-	case <-f.stop:
+	if f.stopped() {
 		return false
-	default:
 	}
 	select {
 	case f.slots <- struct{}{}:
