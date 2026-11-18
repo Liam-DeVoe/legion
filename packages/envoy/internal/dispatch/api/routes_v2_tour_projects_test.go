@@ -19,10 +19,10 @@ import (
 func init() { addTourSteps("projects", projectsTourSteps) }
 
 // projectsTourSteps are the route tour's steps of the project, architecture, repository,
-// priority and settings routes (plan t10's project half): each route, the project list with its
-// default assignees, the project patch of each field alone, the sync of one named source and of
-// every source, the related search with the other projects' questions, and the priorities' count
-// alone at limit 0.
+// near-copy check, priority, settings and related-search routes: each route, the project list with
+// its default assignees, the project patch of its gated steps alone by the deployment's daemon, the
+// sync of one named source and of every source, the related search with the other projects'
+// questions, and the priorities' count alone at limit 0.
 func projectsTourSteps() []tourStep {
 	alice := tourPerson("alice")
 	projectMissing := []tourMissing{{Param: "key", Value: "NOPE", Code: apicode.ProjectNotFound}}
@@ -343,7 +343,7 @@ func (tour *routeTour) repository(t *testing.T) (project, repo string) {
 	return project, repo
 }
 
-// TestV2NearCopyChecksPageAProjectsRowsWithinTheWindow is plan t10's acceptance of the near-copy
+// TestV2NearCopyChecksPageAProjectsRowsWithinTheWindow holds the near-copy
 // list (the plan's departure 2): GET /api/v2/projects/{key}/near-copy-checks answers the envelope
 // of the project's rows alone, oldest first, from inclusive and to exclusive on created_at, paged
 // by limit and offset with the total the window holds, 1,000 the default limit and the largest; a
@@ -430,8 +430,8 @@ func TestV2NearCopyChecksPageAProjectsRowsWithinTheWindow(t *testing.T) {
 	}
 }
 
-// TestV2ArchitectureSyncAnswersAnAccessFailureOnTheSourcesRow is plan t10 step 4 (the route map's
-// J15): POST /api/v2/projects/{key}/architecture-syncs naming one source whose branch GitHub does
+// TestV2ArchitectureSyncAnswersAnAccessFailureOnTheSourcesRow holds the route map's J15: POST
+// /api/v2/projects/{key}/architecture-syncs naming one source whose branch GitHub does
 // not answer imports it and answers 200 with the failure on that row's last_error, where /api/v1's
 // sync of that one source answers 409 SOURCE_ACCESS; a repos list naming a source the project does
 // not have is 404 SOURCE_NOT_FOUND, and the named source beside it is not imported.

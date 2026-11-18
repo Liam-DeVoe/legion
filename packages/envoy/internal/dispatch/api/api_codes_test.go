@@ -117,7 +117,9 @@ func TestV1CodesAreTheCodesOfC8a44f97(t *testing.T) {
 			}
 		}
 		mismatches := v1CodeMismatches(apicode.All(), short)
-		if len(mismatches) != 2 {
+		lost := fmt.Sprintf("renders %q under /api/v1", v1Pair(apicode.IssueNotFound))
+		if len(mismatches) != 2 || !slices.ContainsFunc(mismatches, func(m string) bool { return strings.Contains(m, lost) }) ||
+			!slices.Contains(mismatches, `v1-codes.txt lists "NOT_A_CODE 499", which no constant renders under /api/v1`) {
 			t.Fatalf("the list without ISSUE_NOT_FOUND 404 and with NOT_A_CODE 499: mismatches %q, want those two", mismatches)
 		}
 	})
@@ -163,10 +165,14 @@ func refusalLiteralProblems(fset *token.FileSet, file *ast.File, writers map[str
 	return problems
 }
 
-// A refusal is written only by the error writers, from a code of the one list: no source of the
-// api or routes package makes an apicode.Code (whose zero value the writers answer 500) or
-// writes an errorBody of its own, but for the test hooks' writer.
-func TestARefusalIsMadeOnlyByTheErrorWriters(t *testing.T) {
+// No source of the api or routes package makes an apicode.Code (whose zero value the writers
+// answer 500), and none builds an errorBody but writeVersionedError, the one writer writeError and
+// writeErrorAt write through, and testHookFailure, the test hooks' writer. That is all it reads: a
+// refusal written with a body of its own through WriteJSON, its code named through refusalPair
+// (writeV2DecodeError, writeHandlerError's lost edit, writeClaimError, the issue state's and the
+// marks' STATE_STALE), and the routes package's writeCodeError, which takes its code as a string,
+// make no literal it reads.
+func TestNoSourceMakesACodeOrAnErrorBodyOutsideItsWriters(t *testing.T) {
 	writers := map[string]int{}
 	for _, dir := range []string{".", filepath.Join("..", "routes")} {
 		paths, err := filepath.Glob(filepath.Join(dir, "*.go"))

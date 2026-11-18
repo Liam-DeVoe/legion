@@ -249,11 +249,12 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 // The Inbox route's description states the rule the person a question reaches is resolved by —
 // the person it was handed to, then the issue's assignee, then the project's default assignee —
 // and that the read filters by no caller unless it asks for the caller's own (R10.1 of
-// dispatch://INFRA-2946/spec), in both versions, and the four descriptions that rule narrowed no
-// longer carry what it replaced. This is a test of its own because the two route tests above read
-// every description and assert no word of one: the index leaves descriptions out
-// (routeIndexLines) and the pin only holds each row to having one, so nothing else fails when a
-// description outlives the code it describes.
+// dispatch://INFRA-2946/spec), at GET /api/v1/inbox and at GET /api/v2/asks alike; the /api/v1
+// descriptions of the default assignee's create, list and write state their side of the rule; and
+// none of the five descriptions the rule narrowed says what the rule makes false. This is a test of
+// its own because the two route tests above read every description and assert no word of one: the
+// index leaves descriptions out (routeIndexLines) and the pin only holds each row to having one, so
+// nothing else fails when a description outlives the code it describes.
 func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
 	descriptions := map[string]string{}
 	for _, route := range (&server{}).routes() {
@@ -304,7 +305,7 @@ func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
 			t.Fatalf("the table mounts no %s", stale.route)
 		}
 		if strings.Contains(description, stale.says) {
-			t.Errorf("%s still says %q, which the three-step rule made false: %s", stale.route, stale.says, description)
+			t.Errorf("%s says %q, which the three-step rule makes false: %s", stale.route, stale.says, description)
 		}
 	}
 }

@@ -168,11 +168,10 @@ func convertAPlanStoredAsAFile(t *testing.T, api string) {
 	if api == "/api/v2" {
 		// The row's facts of its newest version are the Markdown's, and it counts the file's.
 		facts := newestVersionFactsOf(t, decodeBody[map[string]json.RawMessage](t, read))
-		if facts.Number == nil || *facts.Number != 2 || *facts.Count != 2 || facts.Size == nil || answer.Version.Size == nil ||
+		if facts.Number == nil || *facts.Number != 2 || facts.Count == nil || *facts.Count != 2 || facts.Size == nil || answer.Version.Size == nil ||
 			*facts.Size != *answer.Version.Size || facts.At == nil || !facts.At.Equal(answer.Version.CreatedAt) {
-			t.Fatalf("the plan's row says latest_version %v, version_count %v, latest_version_size %v and latest_version_at %v; "+
-				"want version 2 of 2, written at %s storing %v bytes", facts.Number, *facts.Count, facts.Size, facts.At,
-				answer.Version.CreatedAt, answer.Version.Size)
+			t.Fatalf("the plan's row is %s; want version 2 of 2 in latest_version, version_count, latest_version_size and "+
+				"latest_version_at, written at %s storing the upload's bytes (%s)", read.Body.String(), answer.Version.CreatedAt, converted.Body.String())
 		}
 	}
 	requireEarlierFileVersion(t, handler, plan, issue.Key, "plan-md", planType, planText)

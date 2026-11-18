@@ -57,10 +57,13 @@ func TestTheV2RouteIndexReadsItsPageThroughTheDecoder(t *testing.T) {
 	if past.Total != whole.Total || past.Items == nil || len(past.Items) != 0 {
 		t.Fatalf("a page past the end answered %d items (nil %v), want an empty list", len(past.Items), past.Items == nil)
 	}
-	for target, code := range map[string]string{"/api/v2?limit=0": "INVALID_LIMIT", "/api/v2?offset=-1": "INVALID_OFFSET"} {
-		response := dispatchRequest(t, handler, http.MethodGet, target, nil, "")
-		if refused, _ := refusalOf(t, response); response.Code != http.StatusBadRequest || refused != code {
-			t.Errorf("GET %s: %d %s, want 400 %s", target, response.Code, response.Body.String(), code)
+	for _, refusal := range []struct{ target, code, bound string }{
+		{"/api/v2?limit=0", "INVALID_LIMIT", "1 or more"},
+		{"/api/v2?offset=-1", "INVALID_OFFSET", "0 or more"},
+	} {
+		response := dispatchRequest(t, handler, http.MethodGet, refusal.target, nil, "")
+		if refused, text := refusalOf(t, response); response.Code != http.StatusBadRequest || refused != refusal.code || !strings.Contains(text, refusal.bound) {
+			t.Errorf("GET %s: %d %s, want 400 %s naming the bound %q", refusal.target, response.Code, response.Body.String(), refusal.code, refusal.bound)
 		}
 	}
 }

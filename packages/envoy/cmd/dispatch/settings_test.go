@@ -1561,8 +1561,9 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			// The instant as time.RFC3339 reads it, its offset kept and whitespace at either end
 			// ignored; unset or empty, /api/v1 has no end.
 			want := time.Date(2027, time.January, 1, 9, 0, 0, 0, time.FixedZone("", 9*60*60))
-			if boot := resolveWith(t, map[string]string{"DISPATCH_API_V1_END": " 2027-01-01T09:00:00+09:00 "}); !boot.APIV1End.Equal(want) {
-				t.Errorf("APIV1End = %v, want %v", boot.APIV1End, want)
+			boot := resolveWith(t, map[string]string{"DISPATCH_API_V1_END": " 2027-01-01T09:00:00+09:00 "})
+			if _, offset := boot.APIV1End.Zone(); !boot.APIV1End.Equal(want) || offset != 9*60*60 {
+				t.Errorf("APIV1End = %v (offset %ds), want %v", boot.APIV1End, offset, want)
 			}
 			for _, unset := range []string{"", " "} {
 				if boot := resolveWith(t, map[string]string{"DISPATCH_API_V1_END": unset}); !boot.APIV1End.IsZero() {

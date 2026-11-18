@@ -15,7 +15,7 @@ import (
 
 func init() { addTourSteps("asks", asksTourSteps) }
 
-// asksTourSteps are the route tour's steps of the asks (plan t8): each route, each of the four
+// asksTourSteps are the route tour's steps of the asks: each route, each of the four
 // states of PUT /api/v2/asks/{id}/state, and the reads with what include= and the filters add.
 func asksTourSteps() []tourStep {
 	alice := tourPerson("alice")
@@ -133,10 +133,10 @@ func asksTourSteps() []tourStep {
 type questionRow struct{ block, ask, ref string }
 
 // GET /api/v2/asks?source=<kind>:<id> answers the asks GET /api/v1/references/questions answers for
-// the same source (the route map's row 171, plan t8's acceptance): one row per question block of
-// the source's document - a block of its own and a copy of its ask in a second block alike - each
-// naming its block, its ask and the ask's address, with the document beside the page, whatever
-// the asks' states; a source on no document is 404 NOT_FOUND in both.
+// the same source (the route map's row 171): one row per question block of the source's document -
+// a block of its own and a copy of its ask in a second block alike - each naming its block, its ask
+// and the ask's address, with the document beside the page, whatever the asks' states; a source on
+// no document is 404 NOT_FOUND in both.
 func TestTheAskListOfASourceAnswersItsQuestionMap(t *testing.T) {
 	tour := newRouteTour(t)
 	alice := tourPerson("alice")
@@ -197,7 +197,13 @@ func TestTheAskListOfASourceAnswersItsQuestionMap(t *testing.T) {
 		}
 	}
 
-	nowhere := tour.send(t, route, tourRequest{Query: url.Values{"source": {"message:" + uuid.NewString()}}, As: alice}, "")
+	message := uuid.NewString()
+	if v1Nowhere := dispatchRequest(t, tour.handler, http.MethodGet, "/api/v1/references/questions?kind=message&id="+message, nil, "alice"); v1Nowhere.Code != http.StatusNotFound {
+		t.Fatalf("GET /api/v1/references/questions of a source on no document: %d %s, want 404 NOT_FOUND", v1Nowhere.Code, v1Nowhere.Body.String())
+	} else if code, _ := refusalOf(t, v1Nowhere); code != "NOT_FOUND" {
+		t.Fatalf("GET /api/v1/references/questions of a source on no document: refused %s, want NOT_FOUND", code)
+	}
+	nowhere := tour.send(t, route, tourRequest{Query: url.Values{"source": {"message:" + message}}, As: alice}, "")
 	if code, _ := refusalOf(t, nowhere); nowhere.Code != http.StatusNotFound || code != "NOT_FOUND" {
 		t.Fatalf("a source on no document: %d %s, want 404 NOT_FOUND", nowhere.Code, nowhere.Body.String())
 	}

@@ -139,9 +139,10 @@ type testServerOptions struct {
 	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
 	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
 	buildCommit string
-	// agentSecretsURL points the credential pages' relay at a fake secrets broker
-	// (newFakeBrokerRig), Dispatch presenting credentialTestAccountToken to it; empty leaves the
-	// feature off, as every test but the route tour's and the credential routes' own does.
+	// agentSecretsURL points the credential pages' relay at a fake secrets broker (the route
+	// tour's, newTourSecretsBroker), Dispatch presenting credentialTestAccountToken to it; empty
+	// leaves the feature off, as every test but the route tour does. The credential routes' own
+	// tests build a server of their own (newCredentialTestHandler).
 	agentSecretsURL string
 	// duplicateBound is the near-copy gate's bound (server.duplicateBound); zero keeps
 	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
@@ -396,6 +397,16 @@ func awaitResponse(t *testing.T, responses <-chan *httptest.ResponseRecorder) *h
 
 func dispatchRequest(t *testing.T, handler http.Handler, method, target string, body any, login string) *httptest.ResponseRecorder {
 	t.Helper()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, newDispatchRequest(t, method, target, body, login))
+	return response
+}
+
+// newDispatchRequest is the request dispatchRequest serves: body as JSON, from login where one is
+// given. It fails t for a body it cannot encode, so a test that serves on a goroutine of its own
+// builds the request here, on the test's goroutine.
+func newDispatchRequest(t *testing.T, method, target string, body any, login string) *http.Request {
+	t.Helper()
 	if strings.HasSuffix(target, "/answer") {
 		data, err := json.Marshal(body)
 		if err != nil {
@@ -427,9 +438,7 @@ func dispatchRequest(t *testing.T, handler http.Handler, method, target string, 
 	if login != "" {
 		request.Header.Set("X-Dispatch-User", login)
 	}
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	return response
+	return request
 }
 
 func multipartRequest(t *testing.T, handler http.Handler, target string, fields map[string]string, filename, contentType string, content []byte, login string) *httptest.ResponseRecorder {

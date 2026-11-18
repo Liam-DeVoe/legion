@@ -8,9 +8,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -876,14 +878,17 @@ func unknownIDRouteRequest(t *testing.T, handler http.Handler, method, path stri
 	return response
 }
 
-// idRoutes names, per route, the 404 that route answers for an id of its kind it does not hold,
-// and the prefix layer answers a prefix that names none with that code, copied there by hand
-// (resolvePathValue). This drives every resolving row with a whole uuid nothing carries - which
-// the layer leaves as written (text.IsIDPrefix), so the answer is the handler's own - and holds
-// what the handler writes to what the table claims, the {block_id} of the two block routes with
-// a document that exists and a block id nothing carries. A row whose code is wrong fails by its
-// own name. The one route that answers no 404 for an id it does not hold (NoNotFound) is held
-// to that: its answer is anything but a 404.
+// idRoutes names, per route of the v1 table, the 404 that route answers for an id of its kind it
+// does not hold, and a routeRow's IDs column names it for its /api/v2 route; the prefix layer
+// answers a prefix that names none with that code, copied there by hand (resolvePathValue). This
+// drives every resolving route of both versions with a whole uuid nothing carries - which the
+// layer leaves as written (text.IsIDPrefix), so the answer is the handler's own - and holds what
+// the handler writes to what the table claims, the {block_id} of the block routes with a document
+// that exists and a block id nothing carries. A /api/v1 route is sent a probe of its own; a /api/v2
+// route is sent the request of the route tour's step of it that sends that wildcard missing
+// (tourStep.Missing), its first step where none does, which its decoder reads. A route whose code
+// is wrong fails by its own name. The one route that answers no 404 for an id it does not hold
+// (NoNotFound) is held to that: its answer is anything but a 404.
 func TestEveryResolvingIDRouteAnswersTheNotFoundItNames(t *testing.T) {
 	// Every route the table mounts, the test hooks' one that takes a document id included.
 	handler, _ := newTestHandlerWithTestHooks(t)
@@ -939,4 +944,74 @@ func TestEveryResolvingIDRouteAnswersTheNotFoundItNames(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("/api/v2", func(t *testing.T) {
+		tour := newRouteTour(t)
+		steps := tourSteps()
+		stepOf := func(name, param string) (tourStep, bool) {
+			var first *tourStep
+			for index, step := range steps {
+				if step.route() != name {
+					continue
+				}
+				if slices.ContainsFunc(step.Missing, func(missing tourMissing) bool { return missing.Param == param }) {
+					return step, true
+				}
+				if first == nil {
+					first = &steps[index]
+				}
+			}
+			if first == nil {
+				return tourStep{}, false
+			}
+			return *first, true
+		}
+		driven := 0
+		for _, name := range slices.Sorted(maps.Keys(tour.routes)) {
+			route := tour.routes[name]
+			if route.IDs == nil || !route.IDs.resolves() {
+				continue
+			}
+			driven++
+			t.Run(name, func(t *testing.T) {
+				type idProbe struct {
+					param string
+					want  apicode.Code
+					none  bool
+				}
+				var probes []idProbe
+				if route.IDs.Kind != "" {
+					probes = append(probes, idProbe{"id", route.IDs.NotFound, route.IDs.NoNotFound})
+				}
+				if route.IDs.Blocks {
+					probes = append(probes, idProbe{"block_id", route.IDs.BlockNotFound, false})
+				}
+				for _, probe := range probes {
+					step, stepped := stepOf(name, probe.param)
+					if !stepped {
+						t.Fatalf("no step of the route tour calls %s, so its {%s} is sent missing nowhere", name, probe.param)
+					}
+					request := step.Setup(t, tour)
+					request.Path = maps.Clone(request.Path)
+					request.Path[probe.param] = unknown
+					answer := tour.send(t, route, request, "")
+					code, _ := refusalOf(t, answer)
+					if probe.none {
+						if answer.Code == http.StatusNotFound {
+							t.Fatalf("%s answers 404 %s for a {%s} nothing carries; its IDs say it answers none: %s",
+								name, code, probe.param, answer.Body.String())
+						}
+						continue
+					}
+					if answer.Code != http.StatusNotFound || code != probe.want.Name() {
+						t.Fatalf("%s answers %d %s for a {%s} nothing carries, not the 404 %s its IDs name: %s",
+							name, answer.Code, code, probe.param, probe.want.Name(), answer.Body.String())
+					}
+				}
+			})
+		}
+		if driven == 0 {
+			t.Fatal("no /api/v2 route the tour walks resolves an id, so none was driven")
+		}
+	})
 }

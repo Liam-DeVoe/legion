@@ -92,13 +92,17 @@ func newRouteTour(t *testing.T) *routeTour {
 	}
 }
 
-// requireMounted skips t while /api/v2 serves no route method and pattern (version-free) name:
-// a test of a route a later task builds turns on when that task mounts it, and never before.
+// requireMounted is the route /api/v2 serves at method and pattern (version-free), and fails t for
+// one it does not walk: a route the server does not mount, a row of the INFRA-979 tree, or a test
+// hook. Every test of the tour looks its routes up here, so a renamed route fails the test that
+// names it.
 func (tour *routeTour) requireMounted(t *testing.T, method, pattern string) apiRoute {
 	t.Helper()
-	route, mounted := tour.routes[method+" /api/v2"+pattern]
+	name := method + " /api/v2" + pattern
+	route, mounted := tour.routes[name]
 	if !mounted {
-		t.Skip("route not mounted yet: " + method + " /api/v2" + pattern)
+		t.Fatalf("the test calls %s, which is no /api/v2 route the tour walks: a route the server does not mount, "+
+			"a row of the INFRA-979 tree, or a test hook", name)
 	}
 	return route
 }
@@ -170,7 +174,9 @@ func (tour *routeTour) comment(t *testing.T, issue tourIssue) string {
 	}](t, created).ID
 }
 
-// eventCount is how many events the issue's log holds of type, or of every type where type is "".
+// eventCount is how many events the issue's log holds of eventType, or of every type where
+// eventType is "". Where issue is "" it counts the whole event log: every issue's events, and those
+// of no issue, so a caller that compares two counts sees a write anywhere.
 func (tour *routeTour) eventCount(t *testing.T, issue, eventType string) int {
 	t.Helper()
 	awaitBackgroundWrites(t, tour.served)

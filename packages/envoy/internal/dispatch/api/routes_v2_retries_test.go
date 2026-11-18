@@ -9,11 +9,11 @@ import (
 	"github.com/google/uuid"
 )
 
-// TestV2Retries is c-retry of dispatch://INFRA-4071 (plan t5's acceptance): every /api/v2 write
-// is keyed (R8), a repeat under one key answers the first answer marked a replay and writes
-// nothing, and an equal PUT by the caller who set what it sets is answered 200 and writes nothing
-// (decision 8, putChangesNothing), while a PUT that changes a field is a change. Each case runs
-// once its route is mounted, and skips naming it until then.
+// TestV2Retries is c-retry of dispatch://INFRA-4071: every /api/v2 write is keyed (R8), a repeat
+// under one key answers the first answer marked a replay and writes nothing, and an equal PUT by
+// the caller who set what it sets is answered 200 and writes nothing (decision 8,
+// putChangesNothing), while a PUT that changes a field is a change. A case whose route /api/v2
+// does not serve fails (requireMounted).
 func TestV2Retries(t *testing.T) {
 	tour := newRouteTour(t)
 	alice, bob := tourPerson("alice"), tourPerson("bob")
@@ -138,7 +138,7 @@ func TestV2Retries(t *testing.T) {
 		}
 	})
 
-	// The no-op PUT of a credential request (plan t5 step 2): the broker's request already in that
+	// The no-op PUT of a credential request: the broker's request already in that
 	// state by that approver is answered 200 with the request and nothing is relayed, and the same
 	// body from a caller who is not its approver is relayed, for the broker to judge.
 	t.Run("a credential request's decision by its approver", func(t *testing.T) {
@@ -164,7 +164,7 @@ func TestV2Retries(t *testing.T) {
 		}
 	})
 
-	// The equal PUTs of plan t5 step 2 whose objects record no setter, or whose setter is the
+	// The equal PUTs whose objects record no setter, or whose setter is the
 	// caller: each answered 200, the repeat writing no event.
 	for _, put := range []struct {
 		name, pattern string

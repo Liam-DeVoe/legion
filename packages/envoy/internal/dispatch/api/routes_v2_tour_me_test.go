@@ -19,8 +19,8 @@ import (
 
 func init() { addTourSteps("me", meTourSteps) }
 
-// meTourSteps are the route tour's steps of the caller's own routes and the credential routes
-// (plan t11): each route, GET /api/v2/me for a person and for a bearer, every kind of mark read and
+// meTourSteps are the route tour's steps of the caller's own routes and the credential routes:
+// each route, GET /api/v2/me for a person and for a bearer, every kind of mark read and
 // written, a thread's dismissal and restore, the bulk write in each of its forms, and a credential
 // request's approve, its deny, and the decision the broker already holds.
 func meTourSteps() []tourStep {
@@ -360,8 +360,8 @@ func (tour *routeTour) threadVersion(t *testing.T, root string) int64 {
 func TestV2MarksAnswerWhatEachKindStores(t *testing.T) {
 	tour := newRouteTour(t)
 	alice := tourPerson("alice")
-	patch, get, list := tour.routes["PATCH /api/v2/me/marks/{kind}/{id}"], tour.routes["GET /api/v2/me/marks/{kind}/{id}"],
-		tour.routes["GET /api/v2/me/marks"]
+	patch, get := tour.requireMounted(t, http.MethodPatch, "/me/marks/{kind}/{id}"), tour.requireMounted(t, http.MethodGet, "/me/marks/{kind}/{id}")
+	list := tour.requireMounted(t, http.MethodGet, "/me/marks")
 	write := func(kind, id string, body any) markV2 {
 		t.Helper()
 		response := tour.send(t, patch, tourRequest{Path: map[string]string{"kind": kind, "id": id}, Body: body, As: alice}, "")
@@ -432,8 +432,8 @@ func TestV2MarksAnswerWhatEachKindStores(t *testing.T) {
 func TestV2BulkMarksWriteAllOrNothing(t *testing.T) {
 	tour := newRouteTour(t)
 	alice := tourPerson("alice")
-	bulk, get := tour.routes["PATCH /api/v2/me/marks"], tour.routes["GET /api/v2/me/marks/{kind}/{id}"]
-	pinnedNow := func(key string) bool {
+	bulk, get := tour.requireMounted(t, http.MethodPatch, "/me/marks"), tour.requireMounted(t, http.MethodGet, "/me/marks/{kind}/{id}")
+	pinnedNow := func(t *testing.T, key string) bool {
 		t.Helper()
 		response := tour.send(t, get, tourRequest{Path: map[string]string{"kind": "issue", "id": key}, As: alice}, "")
 		if response.Code != http.StatusOK {
@@ -476,14 +476,14 @@ func TestV2BulkMarksWriteAllOrNothing(t *testing.T) {
 			if code, _ := refusalOf(t, response); response.Code != http.StatusBadRequest || code != refused.code {
 				t.Fatalf("a bulk write whose second item the database refuses: %d %s, want 400 %s", response.Code, response.Body.String(), refused.code)
 			}
-			if pinnedNow(issue) {
+			if pinnedNow(t, issue) {
 				t.Fatalf("the refused bulk write left its first item written: issue %s is pinned", issue)
 			}
 			if after := tour.eventCount(t, "", ""); after != events {
 				t.Fatalf("the refused bulk write appended %d events, want none", after-events)
 			}
 			written := tour.send(t, bulk, tourRequest{Body: map[string]any{"items": []map[string]any{first, refused.taken(t)}}, As: alice}, "")
-			if updated := decodeBody[markUpdatesV2](t, written); written.Code != http.StatusOK || updated.Updated != 2 || !pinnedNow(issue) {
+			if updated := decodeBody[markUpdatesV2](t, written); written.Code != http.StatusOK || updated.Updated != 2 || !pinnedNow(t, issue) {
 				t.Fatalf("the same bulk write with a second item the database takes: %d %s, want 200 {updated: 2} and the issue pinned",
 					written.Code, written.Body.String())
 			}
@@ -497,7 +497,7 @@ func TestV2BulkMarksWriteAllOrNothing(t *testing.T) {
 // took first would end one of them in a deadlock Postgres breaks with a 500.
 func TestV2BulkMarksOfOnePersonAtOnceBothLand(t *testing.T) {
 	tour := newRouteTour(t)
-	bulk := tour.routes["PATCH /api/v2/me/marks"]
+	bulk := tour.requireMounted(t, http.MethodPatch, "/me/marks")
 	issues := []string{tour.issue(t).Key, tour.issue(t).Key}
 	threads := []string{tour.comment(t, tour.issue(t)), tour.comment(t, tour.issue(t))}
 	for round := range 10 {
@@ -511,11 +511,12 @@ func TestV2BulkMarksOfOnePersonAtOnceBothLand(t *testing.T) {
 			}
 			return tourRequest{Body: map[string]any{"items": items}, As: tourPerson("alice")}
 		}
-		requests := []tourRequest{marks(0, 1), marks(1, 0)}
+		// Each request is built here, on the test's goroutine, which alone may fail the test.
+		requests := []*http.Request{tour.request(t, bulk, marks(0, 1), ""), tour.request(t, bulk, marks(1, 0), "")}
 		responses := make([]*httptest.ResponseRecorder, len(requests))
 		var sending sync.WaitGroup
 		for index, request := range requests {
-			sending.Go(func() { responses[index] = tour.send(t, bulk, request, "") })
+			sending.Go(func() { responses[index] = tour.serve(request) })
 		}
 		sending.Wait()
 		for index, response := range responses {
@@ -568,31 +569,28 @@ func TestV2BulkMarksAndTheV1InboxWritesOfOnePersonAtOnceAllLand(t *testing.T) {
 		reversed := slices.Clone(replies)
 		slices.Reverse(reversed)
 		dismissal := map[string]any{"dismiss_through": now, "restore": round%2 == 1}
-		writes := map[string]func() *httptest.ResponseRecorder{
-			"the bulk write under /api/v2": func() *httptest.ResponseRecorder {
-				return dispatchRequest(t, handler, http.MethodPatch, "/api/v2/me/marks", map[string]any{"items": []map[string]any{
-					{"kind": "agent", "id": "s1", "read_through": now, "read_replies": replies},
-					{"kind": "thread", "id": threads[1], "read_through": now},
-					{"kind": "issue", "id": issue.Key, "pinned": round%2 == 0},
-					{"kind": "thread", "id": threads[0], "read_through": now},
-				}}, "alice")
-			},
-			"the mark-all": func() *httptest.ResponseRecorder {
-				return postInboxRead(t, handler, "alice", map[string]any{"read_through": now})
-			},
-			"the dismissal": func() *httptest.ResponseRecorder { return postInboxDismiss(t, handler, "alice", dismissal) },
-			"the conversation's state": func() *httptest.ResponseRecorder {
-				return dispatchRequest(t, handler, http.MethodPut, "/api/v1/me/agents/s1/state", map[string]any{
-					"read_through": now, "read_replies": reversed,
-				}, "alice")
-			},
+		// Each request is built here, on the test's goroutine, which alone may fail the test, and
+		// served on a goroutine of its own.
+		writes := map[string]*http.Request{
+			"the bulk write under /api/v2": newDispatchRequest(t, http.MethodPatch, "/api/v2/me/marks", map[string]any{"items": []map[string]any{
+				{"kind": "agent", "id": "s1", "read_through": now, "read_replies": replies},
+				{"kind": "thread", "id": threads[1], "read_through": now},
+				{"kind": "issue", "id": issue.Key, "pinned": round%2 == 0},
+				{"kind": "thread", "id": threads[0], "read_through": now},
+			}}, "alice"),
+			"the mark-all":  newDispatchRequest(t, http.MethodPost, "/api/v1/me/inbox/read", map[string]any{"read_through": now}, "alice"),
+			"the dismissal": newDispatchRequest(t, http.MethodPost, "/api/v1/me/inbox/dismiss", dismissal, "alice"),
+			"the conversation's state": newDispatchRequest(t, http.MethodPut, "/api/v1/me/agents/s1/state", map[string]any{
+				"read_through": now, "read_replies": reversed,
+			}, "alice"),
 		}
 		responses := make(map[string]*httptest.ResponseRecorder, len(writes))
 		var mu sync.Mutex
 		var sending sync.WaitGroup
 		for name, write := range writes {
 			sending.Go(func() {
-				response := write()
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, write)
 				mu.Lock()
 				defer mu.Unlock()
 				responses[name] = response

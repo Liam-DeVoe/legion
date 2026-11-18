@@ -15,7 +15,7 @@ import (
 
 func init() { addTourSteps("issues", issuesTourSteps) }
 
-// issuesTourSteps are the route tour's steps of the issue routes (plan t10's issue half): each
+// issuesTourSteps are the route tour's steps of the issue routes: each
 // route, the list with its cross-project filters and its route_status cut, the read with every
 // include=, the patch of the design gates alone, and the checks read with the commit at= names.
 func issuesTourSteps() []tourStep {
@@ -303,7 +303,7 @@ func (tour *routeTour) subscribeToIssue(t *testing.T, key string) string {
 	return session
 }
 
-// TestAProjectsIssuesAreTheIssuesItsProjectFilterLists is plan t10's acceptance of R1.3: GET
+// TestAProjectsIssuesAreTheIssuesItsProjectFilterLists holds R1.3: GET
 // /api/v2/projects/{key}/issues and GET /api/v2/issues?project={key} answer the same rows for the
 // same filters, the project's own and none of another's.
 func TestAProjectsIssuesAreTheIssuesItsProjectFilterLists(t *testing.T) {
@@ -358,7 +358,7 @@ func TestAProjectsIssuesAreTheIssuesItsProjectFilterLists(t *testing.T) {
 
 // TestIssueChangedNamesTheSequenceTheCallerReadUnderBothVersions is the parent's R10.2, which R3
 // lets /api/v1 change too: a fenced patch whose expected_sequence the issue has moved past is 409
-// ISSUE_CHANGED saying the issue changed since the sequence the caller read, and no longer naming a
+// ISSUE_CHANGED saying the issue changed since the sequence the caller read, and naming no
 // hand-over, which the write never was, under /api/v1 and /api/v2 alike.
 func TestIssueChangedNamesTheSequenceTheCallerReadUnderBothVersions(t *testing.T) {
 	tour := newRouteTour(t)
@@ -496,7 +496,7 @@ func TestTheChecksReadNamesWhatLeftACheckNothingToCompareWith(t *testing.T) {
 		BlockID         string `json:"block_id"`
 		ComparedNothing string `json:"compared_nothing"`
 	}
-	v2Reason := func(key, blockID string) string {
+	v2Reason := func(t *testing.T, key, blockID string) string {
 		t.Helper()
 		response := dispatchRequest(t, handler, http.MethodGet, "/api/v2/issues/"+key+"/checks", nil, "alice")
 		if response.Code != http.StatusOK {
@@ -518,7 +518,7 @@ func TestTheChecksReadNamesWhatLeftACheckNothingToCompareWith(t *testing.T) {
 		{"an after_merge check of an issue in no repository", inNone.Key, "k2", reasonNoRepository},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			if got := v2Reason(row.key, row.blockID); got != row.v2 {
+			if got := v2Reason(t, row.key, row.blockID); got != row.v2 {
 				t.Errorf("/api/v2 names compared_nothing %q, want %q", got, row.v2)
 			}
 			if got := checkOf(t, readResults(t, handler, row.key), row.blockID).ComparedNothing; got != model.ReasonNoPullRequestOrBranch {

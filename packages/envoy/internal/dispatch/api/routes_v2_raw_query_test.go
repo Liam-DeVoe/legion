@@ -32,6 +32,34 @@ var rawQueryReaders = map[string]string{
 		"UTF-8 before its handler runs, whatever the route declares",
 }
 
+// v1OnlyWriters are the response writers of package api that only a /api/v1 route's chain wraps an
+// answer in, each with the one function that builds it and the reason no /api/v2 answer goes
+// through it. The graph resolves a call of an http.ResponseWriter method to the method of every
+// writer of the module that implements it (funcTargets), so a /api/v2 handler's w.WriteHeader
+// reaches each writer's WriteHeader; a writer only a /api/v1 chain builds is never the w a /api/v2
+// handler writes to, and the scan follows no /api/v2 handler into its methods. Each writer is held
+// to its builder: one built in another function, or a builder a /api/v2 handler reaches, fails the
+// scan.
+var v1OnlyWriters = map[string]struct{ builtBy, reason string }{
+	"successorWriter": {
+		builtBy: "api.linkSuccessor",
+		reason: "routeHandler wraps only a /api/v1 route's chain in linkSuccessor, and no /api/v2 answer carries its Link " +
+			"(TestAV1AnswerLinksTheV2RouteThatAnswersForIt)",
+	},
+}
+
+// v1OnlyWriterMethod reports whether fn is a method of a writer v1OnlyWriters names, or a function
+// literal inside one.
+func v1OnlyWriterMethod(fn *lockFunction) bool {
+	name := declaringFunction(fn)
+	for writer := range v1OnlyWriters {
+		if strings.HasPrefix(name, "api."+writer+".") {
+			return true
+		}
+	}
+	return false
+}
+
 // rawQueryRead reports whether selector reads the raw query: the URL's Query method or RawQuery
 // field, or the http.Request's FormValue, Form and ParseForm, each of which fills or reads r.Form
 // from the URL's query as well as the body. info decides what the selector names, so a field or
@@ -65,11 +93,12 @@ func declaringFunction(fn *lockFunction) string {
 // handler when the row it is declared on is mounted at a /api/v2 route the rules bind
 // (apiRoute.v2Bound): the table decides, not the file's name, so a handler a v2_<group>.go row
 // names and one a v1Row names are told apart however the files are laid out, and a handler one
-// row serves in both versions is a /api/v2 handler. A read is allowed in a function rawQueryReaders
-// lists with its reason, and in a function no /api/v2 handler reaches that another handler does: a
-// /api/v1 handler, a test hook's, a row of the INFRA-979 tree's. A read in a function no handler
-// reaches at all - a layer of the chain, a helper - is named until it is listed, so every reader
-// of the raw query outside a handler is one the list states a reason for.
+// row serves in both versions is a /api/v2 handler. The walk from a /api/v2 handler stops at the
+// methods of a writer only a /api/v1 chain builds (v1OnlyWriters). A read is allowed in a function
+// rawQueryReaders lists with its reason, and in a function no /api/v2 handler reaches that another
+// handler does: a /api/v1 handler, a test hook's, a row of the INFRA-979 tree's. A read in a
+// function no handler reaches at all - a layer of the chain, a helper - is named until it is
+// listed, so every reader of the raw query outside a handler is one the list states a reason for.
 func TestNoV2HandlerReadsTheRawQuery(t *testing.T) {
 	graph := copyLockGraph(t)
 	bound := map[string]bool{}
@@ -80,23 +109,24 @@ func TestNoV2HandlerReadsTheRawQuery(t *testing.T) {
 	}
 
 	reachedByV2, reachedByOther := map[*lockFunction]bool{}, map[*lockFunction]bool{}
-	var walk func(fn *lockFunction, reached map[*lockFunction]bool)
-	walk = func(fn *lockFunction, reached map[*lockFunction]bool) {
-		if fn == nil || reached[fn] {
+	var walk func(fn *lockFunction, reached map[*lockFunction]bool, skip func(*lockFunction) bool)
+	walk = func(fn *lockFunction, reached map[*lockFunction]bool, skip func(*lockFunction) bool) {
+		if fn == nil || reached[fn] || skip(fn) {
 			return
 		}
 		reached[fn] = true
 		for _, call := range ownCalls(fn) {
 			for _, callee := range graph.callees(call) {
-				walk(callee, reached)
+				walk(callee, reached, skip)
 			}
 			for _, argument := range call.Args {
 				for _, callee := range graph.functionValue(argument) {
-					walk(callee, reached)
+					walk(callee, reached, skip)
 				}
 			}
 		}
 	}
+	skipNone := func(*lockFunction) bool { return false }
 	v2Handlers := 0
 	for _, row := range tableRowsInSource(t, graph) {
 		handlers := graph.functionValue(row.handler)
@@ -106,16 +136,55 @@ func TestNoV2HandlerReadsTheRawQuery(t *testing.T) {
 			}
 			v2Handlers++
 			for _, handler := range handlers {
-				walk(handler, reachedByV2)
+				walk(handler, reachedByV2, v1OnlyWriterMethod)
 			}
 			continue
 		}
 		for _, handler := range handlers {
-			walk(handler, reachedByOther)
+			walk(handler, reachedByOther, skipNone)
 		}
 	}
 	if v2Handlers == 0 || !reachedByV2[graph.named["api.server.getRouteIndexV2"]] {
 		t.Fatalf("the scan reads %d /api/v2 handlers and does not reach api.server.getRouteIndexV2, GET /api/v2's", v2Handlers)
+	}
+	for _, writer := range slices.Sorted(maps.Keys(v1OnlyWriters)) {
+		held := v1OnlyWriters[writer]
+		built := 0
+		for _, fn := range graph.functions {
+			if fn.pkg != "api" {
+				continue
+			}
+			ast.Inspect(fn.body, func(node ast.Node) bool {
+				switch n := node.(type) {
+				case *ast.FuncLit:
+					return false
+				case *ast.CompositeLit:
+					// The graph records what each name denotes (Uses), not each expression's type,
+					// so the literal is read by the type it names.
+					ident, ok := n.Type.(*ast.Ident)
+					if !ok {
+						return true
+					}
+					named, ok := graph.info.Uses[ident].(*types.TypeName)
+					if !ok || named.Pkg() == nil || named.Pkg().Name() != "api" || named.Name() != writer {
+						return true
+					}
+					built++
+					if where := declaringFunction(fn); where != held.builtBy {
+						t.Errorf("%s builds a %s at %s, which v1OnlyWriters holds to %s (%s): a /api/v2 answer may go through it, "+
+							"so the scan must follow a /api/v2 handler into its methods", where, writer, graph.line(fn.source, n), held.builtBy, held.reason)
+					}
+				}
+				return true
+			})
+		}
+		if built == 0 {
+			t.Errorf("v1OnlyWriters names %s, which no function of package api builds: delete its line", writer)
+		}
+		if reachedByV2[graph.named[held.builtBy]] {
+			t.Errorf("a /api/v2 handler reaches %s, which builds %s: a /api/v2 answer may go through it, so v1OnlyWriters "+
+				"cannot name it (%s)", held.builtBy, writer, held.reason)
+		}
 	}
 
 	listed := map[string]bool{}

@@ -17,8 +17,9 @@ import (
 
 func init() { addTourSteps("logs", logsTourSteps) }
 
-// logsTourSteps are the route tour's steps of the five logs (plan t6): each read whole, and each
-// read from a position.
+// logsTourSteps are the route tour's steps of the five logs: each read whole and each read from a
+// position, but a document's log (/artifacts/{id}/events), which the tour reads from a position
+// alone.
 func logsTourSteps() []tourStep {
 	alice := tourPerson("alice")
 	issueEvents := func(query url.Values) func(*testing.T, *routeTour) tourRequest {
@@ -136,13 +137,12 @@ type logAnswer struct {
 	Offset int             `json:"offset"`
 }
 
-// TestV2LogPositions is c-log-position of dispatch://INFRA-4071 (R5, plan t6), with c-unknown-keys'
-// offset case: each log names the field its after and before read in its index entry; an after
-// above the log's last written position, or one that is no position at all, is 400
-// POSITION_INVALID naming the parameter and the field; a before past the end answers the newest
-// page; the global event log and the dismissed threads answer a null total, which the global log's
-// index entry says, and every other log an exact one; and an offset of a long log answers the page
-// it names, which /api/v1 ignored.
+// TestV2LogPositions is c-log-position of dispatch://INFRA-4071 (R5), with c-unknown-keys' offset
+// case: each log names the field its after and before read in its index entry; an after above the
+// log's last written position, or one that is no position at all, is 400 POSITION_INVALID naming
+// the parameter and the field; a before past the end answers the newest page; the global event log
+// and the dismissed threads answer a null total, which the global log's index entry says, and every
+// other log an exact one; and an offset of a long log answers the page it names.
 func TestV2LogPositions(t *testing.T) {
 	tour := newRouteTour(t)
 	alice := tourPerson("alice")
@@ -194,7 +194,7 @@ func TestV2LogPositions(t *testing.T) {
 		}
 	})
 
-	t.Run("a position of no integer", func(t *testing.T) {
+	t.Run("a position that is no integer of 0 or more", func(t *testing.T) {
 		refused(t, "/issues/{key}/events", forty, url.Values{"after": {"abc"}}, "after", "seq")
 		refused(t, "/issues/{key}/events", forty, url.Values{"before": {"-1"}}, "before", "seq")
 		refused(t, "/events", nil, url.Values{"before": {"x1"}}, "before", "id")

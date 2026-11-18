@@ -82,14 +82,15 @@ func readOnlyTable() []apiRoute {
 	return (&server{deps: Deps{TestHooksEnabled: true}}).routes()
 }
 
-// TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler builds every row's own
+// TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler builds every route's own
 // chain as register does (routeHandler) with the row's handler replaced by a recorder, and sends
-// each a read-only token with a body and a valid Idempotency-Key. Every row the list does not name
-// answers 403 READ_ONLY_TOKEN and never runs its handler; the row the list names runs it once.
-// GET /ws/live is walked the same way through its own chain (liveSocketHandler), with the socket
-// replaced. A row is counted once its assertions have run, and the count is held to the rows the
-// registered server mounts (its route index, one entry a row), so a walk that skipped a row, or
-// walked none, fails.
+// each a read-only token with a body and a valid Idempotency-Key. Every route the list does not
+// name answers 403 READ_ONLY_TOKEN and never runs its handler; each route the list names (a row's
+// /api/v1 and /api/v2 routes) runs it once. GET /ws/live is walked the same way through its own
+// chain (liveSocketHandler), with the socket replaced. A route is counted once its assertions have
+// run, the count is held to the routes the registered server mounts (its two route indexes, one
+// entry a route), and the routes that carry the list's mark to the list's length, so a walk that
+// skipped a route, or walked none, fails.
 func TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler(t *testing.T) {
 	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
 	caller := newBrokerCaller(t)

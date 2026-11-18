@@ -65,8 +65,8 @@ func (r *signInRig) rebuilt(t *testing.T, change func(*AppContextOptions)) http.
 }
 
 // Every refusal of the /auth routes, of the cookie-origin guard and of an unknown API path is a
-// {code, error} body a client can tell apart by its code (R7, R3.2): before this, the /auth
-// refusals and the origin guard answered {error} alone.
+// {code, error} body a client can tell apart by its code (R7, R3.2), the /auth refusals and the
+// origin guard among them.
 func TestAuthAndOriginRefusalsCarryACode(t *testing.T) {
 	t.Run("a callback with an expired state", func(t *testing.T) {
 		rig := newSignInRig(t, "")

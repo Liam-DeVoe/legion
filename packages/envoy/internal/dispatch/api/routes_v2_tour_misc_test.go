@@ -18,7 +18,7 @@ import (
 
 func init() { addTourSteps("misc", miscTourSteps) }
 
-// miscTourSteps are the route tour's steps of the other routes (plan t12): each route, a search
+// miscTourSteps are the route tour's steps of the other routes: each route, a search
 // over several projects within a window beside the plain one, and a page of the going actions
 // beside the whole catalogue.
 func miscTourSteps() []tourStep {

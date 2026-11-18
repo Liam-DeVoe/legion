@@ -225,8 +225,8 @@ func TestARequestKeysRowIsOneOfItsStates(t *testing.T) {
 
 // Every route the keyed layer's own tables name - those that replay a recovery point, never keep
 // their answer, take an upload's body, or read a body of their own size (handoffWriteRoute,
-// markdownRoundTripRoute) - is a POST or PATCH route the server registers: a pattern spelled
-// wrong would silently turn its rule off.
+// markdownRoundTripRoute) - is a route the server registers and keys (keyedMethod): a pattern
+// spelled wrong would silently turn its rule off.
 func TestEveryKeyedRouteTableNamesARoute(t *testing.T) {
 	registered := map[string]bool{}
 	for _, route := range (&server{}).routes() {
@@ -249,7 +249,7 @@ func TestEveryKeyedRouteTableNamesARoute(t *testing.T) {
 	for table, routes := range tables {
 		for _, route := range routes {
 			if !registered[route] {
-				t.Errorf("%s names %q, which is no registered POST or PATCH route", table, route)
+				t.Errorf("%s names %q, which is no registered route the server keys", table, route)
 			}
 		}
 	}

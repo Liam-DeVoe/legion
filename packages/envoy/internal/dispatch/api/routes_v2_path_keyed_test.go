@@ -5,16 +5,21 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
+
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // TestEveryPathKeyedBehaviourHoldsOnV2 runs, through its /api/v2 route, each behaviour server code
-// once keyed on a /api/v1 route path (R10 of dispatch://INFRA-4071/spec, plan t13), where no test
-// of a route group already proves it. Those that one does:
+// once keyed on a /api/v1 route path (R10 of dispatch://INFRA-4071/spec), where no test of a route
+// group already proves it. Those that one does:
 //
 //   - an issue document read on an issue path, not a project's:
 //     TestEachV2ArtifactListAnswersTheDocumentItsV1SlugReadAnswers, beside the v1 slug reads whose
-//     owner is now the row's DocumentOwner;
-//   - the session check of an agent mark: TestV2DeclaredAuthority, "another session's agent mark";
+//     owner is the row's DocumentOwner;
+//   - the session check of an agent mark, which /api/v2 holds as the person scope its row needs:
+//     TestV2DeclaredAuthority, "an agent mark by a broker token";
 //   - the replay of a keyed message, comment and broadcast create: TestV2RouteTour's replays, every
 //     write step sent twice under one key, each of those rows' Replay among them;
 //   - the agent token's KEY_COMMITTED and the upload's own body limit: TestV2Retries, "an agent
@@ -26,14 +31,30 @@ func TestEveryPathKeyedBehaviourHoldsOnV2(t *testing.T) {
 	tour := newRouteTour(t)
 
 	t.Run("an upload to a closed issue is refused before its body is read", func(t *testing.T) {
+		// A body that is no JSON object: the route refuses it 400 once it reads it, so a 409
+		// ISSUE_CLOSED for it is an answer made before the body was read.
+		const unreadable = `{"name": "late.md", "content": `
+		upload := func(key string) *httptest.ResponseRecorder {
+			request := httptest.NewRequest(http.MethodPost, "/api/v2/issues/"+key+"/artifacts", strings.NewReader(unreadable))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("X-Dispatch-User", "alice")
+			request.Header.Set(contracts.IdempotencyKeyHeader, uuid.NewString())
+			response := httptest.NewRecorder()
+			tour.handler.ServeHTTP(response, request)
+			return response
+		}
+		open := tour.issue(t)
+		if read := upload(open.Key); read.Code != http.StatusBadRequest {
+			t.Fatalf("the unreadable upload to an open issue answered %d %s, want 400: the route reads the body", read.Code, read.Body.String())
+		}
 		issue := tour.issue(t)
 		if closed := dispatchRequest(t, tour.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"status": "done"}, "alice"); closed.Code != http.StatusOK {
 			t.Fatalf("close %s: %d %s", issue.Key, closed.Code, closed.Body.String())
 		}
-		upload := dispatchRequest(t, tour.handler, http.MethodPost, "/api/v2/issues/"+issue.Key+"/artifacts",
-			map[string]any{"name": "late.md", "content": "# Late"}, "alice")
-		if code, _ := refusalOf(t, upload); upload.Code != http.StatusConflict || code != "ISSUE_CLOSED" {
-			t.Fatalf("an upload to a closed issue answered %d %s, want 409 ISSUE_CLOSED", upload.Code, upload.Body.String())
+		refused := upload(issue.Key)
+		if code, _ := refusalOf(t, refused); refused.Code != http.StatusConflict || code != "ISSUE_CLOSED" {
+			t.Fatalf("the unreadable upload to a closed issue answered %d %s, want 409 ISSUE_CLOSED, made before the body is read",
+				refused.Code, refused.Body.String())
 		}
 	})
 

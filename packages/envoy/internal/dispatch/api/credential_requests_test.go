@@ -40,8 +40,9 @@ func accountTokenFile(t *testing.T, token string) string {
 }
 
 // newCredentialTestHandler mounts the real routes with AgentSecrets pointed at brokerURL ("" to
-// leave the feature off). It never shares newTestServer's testServerOptions on purpose: every
-// other API test leaves the feature off, and this file's tests are the only ones that need it on.
+// leave the feature off) on a server of its own, holding the people alice and bob and the shared
+// agent token "agent-token". The route tour turns the feature on through newTestServer's own
+// option instead (testServerOptions.agentSecretsURL).
 func newCredentialTestHandler(t *testing.T, brokerURL string) http.Handler {
 	t.Helper()
 	tokenFile := ""

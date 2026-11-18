@@ -445,6 +445,7 @@ func TestTheGoingCatalogueIsMountedOnTheServedTable(t *testing.T) {
 		}
 		resolve := actions["dispatch_resolve_ask"].Routes
 		if len(resolve) != 2 || resolve[0].Method != http.MethodPut || resolve[0].Pattern != "/api/v2/asks/{id}/state" ||
+			resolve[1].Method != http.MethodPut || resolve[1].Pattern != "/api/v2/asks/{id}/state" ||
 			!reflect.DeepEqual(resolve[0].Body, map[string]any{"state": "resolved"}) ||
 			!reflect.DeepEqual(resolve[1].Body, map[string]any{"state": "retracted"}) {
 			t.Fatalf("the ask resolve names the routes %+v, want PUT /api/v2/asks/{id}/state carrying state resolved, then retracted", resolve)
@@ -542,9 +543,9 @@ func (d *handlerDoer) Do(request *http.Request) (*http.Response, error) {
 
 // TestTheV2ClaimFollowAndResolveRunThroughTheCallerAgainstV2: the /api/v2 catalogue's claim and
 // follow actions, both their rows, and the ask resolve with its fixed state, performed by
-// GoingCaller against /api/v2 of a running server, are each answered as the route answers them
-// and send no body member their route does not declare: the argument that picks the row stays
-// out, and the state is the row's own.
+// GoingCaller against /api/v2 of a running server, each send the row's method to the path its
+// arguments fill, are answered the status the route answers, and send no body member their route
+// does not declare: the argument that picks the row stays out, and the state is the row's own.
 func TestTheV2ClaimFollowAndResolveRunThroughTheCallerAgainstV2(t *testing.T) {
 	tour := newRouteTour(t)
 	issue := tour.issue(t)
@@ -555,29 +556,31 @@ func TestTheV2ClaimFollowAndResolveRunThroughTheCallerAgainstV2(t *testing.T) {
 		action    string
 		arguments map[string]any
 		route     string
+		path      string
 		status    int
 	}{
-		{"dispatch_claim", map[string]any{"issue": issue.Key}, "PUT /api/v2/issues/{key}/claim", http.StatusOK},
-		{"dispatch_claim", map[string]any{"issue": issue.Key, "release": true}, "DELETE /api/v2/issues/{key}/claim", http.StatusOK},
-		{"dispatch_follow", map[string]any{"ask": ask, "action": "follow"}, "PUT /api/v2/asks/{id}/followers/{session_id}", http.StatusOK},
-		{"dispatch_follow", map[string]any{"ask": ask, "action": "unfollow"}, "DELETE /api/v2/asks/{id}/followers/{session_id}", http.StatusNoContent},
-		{"dispatch_resolve_ask", map[string]any{"ask": ask, "kind": "retracted", "reason": "The tour no longer asks it."},
-			"PUT /api/v2/asks/{id}/state", http.StatusOK},
+		{"dispatch_claim", map[string]any{"issue": issue.Key}, "PUT /api/v2/issues/{key}/claim", "/api/v2/issues/" + issue.Key + "/claim", http.StatusOK},
+		{"dispatch_claim", map[string]any{"issue": issue.Key, "release": true}, "DELETE /api/v2/issues/{key}/claim", "/api/v2/issues/" + issue.Key + "/claim", http.StatusOK},
+		{"dispatch_follow", map[string]any{"ask": ask, "action": "follow"}, "PUT /api/v2/asks/{id}/followers/{session_id}",
+			"/api/v2/asks/" + ask + "/followers/" + tourRecipient, http.StatusOK},
+		{"dispatch_follow", map[string]any{"ask": ask, "action": "unfollow"}, "DELETE /api/v2/asks/{id}/followers/{session_id}",
+			"/api/v2/asks/" + ask + "/followers/" + tourRecipient, http.StatusNoContent},
+		{"dispatch_resolve_ask", map[string]any{"ask": ask, "kind": "retracted", "reason": "The tour has its answer elsewhere."},
+			"PUT /api/v2/asks/{id}/state", "/api/v2/asks/" + ask + "/state", http.StatusOK},
 	} {
+		method, pattern, _ := strings.Cut(call.route, " ")
+		route := tour.requireMounted(t, method, strings.TrimPrefix(pattern, "/api/v2"))
 		response, err := caller.Do(t.Context(), call.action, call.arguments)
 		if err != nil {
 			t.Fatalf("%s %v: %v", call.action, call.arguments, err)
 		}
 		answer, _ := io.ReadAll(response.Body)
-		route := tour.routes[call.route]
 		if sent := response.Request.Method + " " + response.Request.URL.Path; response.StatusCode != call.status ||
-			!strings.HasPrefix(call.route, response.Request.Method+" ") {
-			t.Fatalf("%s %v: %s answered %d %s, want %s answered %d", call.action, call.arguments, sent, response.StatusCode, answer, call.route, call.status)
+			sent != route.Method+" "+call.path {
+			t.Fatalf("%s %v: %s answered %d %s, want %s %s answered %d", call.action, call.arguments, sent, response.StatusCode, answer,
+				route.Method, call.path, call.status)
 		}
-		declared := map[string]bool{}
-		for name := range jsonMembersOf(route.Body) {
-			declared[name] = true
-		}
+		declared := jsonMembersOf(route.Body)
 		for member := range doer.sent[len(doer.sent)-1] {
 			if !declared[member] {
 				t.Errorf("%s %v sent the member %q, which %s does not declare", call.action, call.arguments, member, call.route)
@@ -594,7 +597,7 @@ func TestTheV2ClaimFollowAndResolveRunThroughTheCallerAgainstV2(t *testing.T) {
 }
 
 // jsonMembersOf is every top-level JSON member a route's body declares, over its type or each of
-// its union's arms.
+// its union's arms, an embedded struct's members included (membersDeclaredBy).
 func jsonMembersOf(body requestBody) map[string]bool {
 	members := map[string]bool{}
 	types := []any{body.Type}
@@ -605,11 +608,8 @@ func jsonMembersOf(body requestBody) map[string]bool {
 		if value == nil {
 			continue
 		}
-		typ := reflect.TypeOf(value)
-		for index := range typ.NumField() {
-			if name, _, _ := strings.Cut(typ.Field(index).Tag.Get("json"), ","); name != "" && name != "-" {
-				members[name] = true
-			}
+		for name := range membersDeclaredBy(reflect.TypeOf(value)) {
+			members[name] = true
 		}
 	}
 	return members

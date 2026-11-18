@@ -105,7 +105,8 @@ func TestV2RoleHoldersPublicationOfTheStoredSetWritesNothing(t *testing.T) {
 		t.Fatalf("lock the issue row: %v", err)
 	}
 	answered := make(chan *httptest.ResponseRecorder, 1)
-	go func() { answered <- tour.send(t, route, roleHoldersPublication(issue, reversed(tourHolders)), "") }()
+	republished := tour.request(t, route, roleHoldersPublication(issue, reversed(tourHolders)), "")
+	go func() { answered <- tour.serve(republished) }()
 	select {
 	case again := <-answered:
 		if again.Code != http.StatusOK {

@@ -5,15 +5,16 @@ import (
 	"testing"
 )
 
-// The shape map is the table's sixth column: every mounted row has a shape, and every shape
-// names a mounted row, so routeShapes and the table the server mounts are the same set.
+// Every mounted route has a shape - a route of the v1 table its routeShapes entry, the mount of a
+// routeRow its Shape column (shapelessRoutes) - and every entry of routeShapes names a mounted
+// route, so routeShapes and the v1 table the server mounts are the same set.
 //
 // No count of the table's rows is pinned, for the reason routes_table_test.go gives above
 // TestRoutesTablePinsEveryRegisteredRoute: a count is one number two branches cannot both be
 // right about. What catches a row added or removed by accident is the committed index
 // testdata/routes.txt, which TestRouteIndexListsEveryRouteSortedByPathThenMethod compares the
 // table against. That index lists no test hook, since a server mounts them only when its hooks are
-// enabled: the one guard of the test-hook routes is a count, len(routes)+2*14 in
+// enabled, so of the test-hook routes only their number is pinned: len(routes)+2*14 in
 // TestRoutesTablePinsEveryRegisteredRoute, fourteen hooks at two paths each.
 func TestRouteShapesCoverEveryRouteTheTableMounts(t *testing.T) {
 	if shapeless := shapelessRoutes((&server{deps: Deps{TestHooksEnabled: true}}).routes()); len(shapeless) > 0 {

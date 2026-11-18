@@ -383,8 +383,9 @@ func TestTheV2DecoderIgnoresAnUndeclaredBodyMember(t *testing.T) {
 		t.Fatalf("the body read again is %q, %v; want the bytes sent", again, err)
 	}
 	var members map[string]json.RawMessage
-	if decoded, _ := decodedV2(request); json.Unmarshal([]byte(sent), &members) != nil || len(decoded.members) != len(members) {
-		t.Fatalf("the decoder kept members %v, want every member sent", decoded.members)
+	decoded, held := decodedV2(request)
+	if !held || json.Unmarshal([]byte(sent), &members) != nil || len(decoded.members) != len(members) {
+		t.Fatalf("the decoder kept members %v (a decoded request on it: %v), want every member sent", decoded.members, held)
 	}
 }
 
@@ -420,44 +421,47 @@ func TestARowTheV2DecoderCannotReadRefusesToMount(t *testing.T) {
 		Ratio float64 `query:"ratio"`
 	}
 	person := routeScopeSet{"person"}
-	for name, change := range map[string]func(*routeRow){
-		"an untagged field":                func(row *routeRow) { row.Query = untagged{} },
-		"a sort with no default":           func(row *routeRow) { row.Query = sortWithoutDefault{} },
-		"an enum on a boolean":             func(row *routeRow) { row.Query = enumOnABoolean{} },
-		"a limit with a bound of its own":  func(row *routeRow) { row.Query = limitWithItsOwnBound{} },
-		"a session of its own":             func(row *routeRow) { row.Query = sessionOfItsOwn{} },
-		"a comma list that is no slice":    func(row *routeRow) { row.Query = commaScalar{} },
-		"a default no value of its own":    func(row *routeRow) { row.Query = badDefault{} },
-		"a type the decoder does not read": func(row *routeRow) { row.Query = unreadType{} },
-		"a query that is a pointer":        func(row *routeRow) { row.Query = &widgetQuery{} },
-		"bounds with no default":           func(row *routeRow) { row.Query, row.List = widgetQuery{}, listBounds{Max: 10} },
-		"a union with no arms":             func(row *routeRow) { row.Body = requestBody{Kind: bodyStateUnion} },
-		"a body that is a pointer":         func(row *routeRow) { row.Body = requestBody{Kind: bodyJSON, Type: &widgetBody{}} },
-		"a rule on an undeclared key": func(row *routeRow) {
+	for name, broken := range map[string]struct {
+		change func(*routeRow)
+		names  string
+	}{
+		"an untagged field":                {func(row *routeRow) { row.Query = untagged{} }, "carries no query tag"},
+		"a sort with no default":           {func(row *routeRow) { row.Query = sortWithoutDefault{} }, "a sort names the order a query that names none is answered in"},
+		"an enum on a boolean":             {func(row *routeRow) { row.Query = enumOnABoolean{} }, "an enum holds a string"},
+		"a limit with a bound of its own":  {func(row *routeRow) { row.Query = limitWithItsOwnBound{} }, "the row's List bounds hold it"},
+		"a session of its own":             {func(row *routeRow) { row.Query = sessionOfItsOwn{} }, "session is declared once for every /api/v2 route"},
+		"a comma list that is no slice":    {func(row *routeRow) { row.Query = commaScalar{} }, "only a slice is a comma list"},
+		"a default no value of its own":    {func(row *routeRow) { row.Query = badDefault{} }, `its default "week"`},
+		"a type the decoder does not read": {func(row *routeRow) { row.Query = unreadType{} }, "the decoder reads string, bool, int, int64 and time.Time"},
+		"a query that is a pointer":        {func(row *routeRow) { row.Query = &widgetQuery{} }, "is no struct"},
+		"bounds with no default":           {func(row *routeRow) { row.Query, row.List = widgetQuery{}, listBounds{Max: 10} }, "its List bounds"},
+		"a union with no arms":             {func(row *routeRow) { row.Body = requestBody{Kind: bodyStateUnion} }, "a union names its arms"},
+		"a body that is a pointer":         {func(row *routeRow) { row.Body = requestBody{Kind: bodyJSON, Type: &widgetBody{}} }, "never nil and never a pointer"},
+		"a rule on an undeclared key": {func(row *routeRow) {
 			row.Query = widgetQuery{}
 			row.Authorities = []authorityRule{{Where: authorityWhere{In: partQuery, Name: "waiting_on"}, Value: "me", Scopes: person}}
-		},
-		"a rule on a value the enum does not list": func(row *routeRow) {
+		}, "reads a query key the route's Query does not declare"},
+		"a rule on a value the enum does not list": {func(row *routeRow) {
 			row.Query = widgetQuery{}
 			row.Authorities = []authorityRule{{Where: authorityWhere{In: partQuery, Name: "state"}, Value: "opne", Scopes: person}}
-		},
-		"a rule on a member no type declares": func(row *routeRow) {
+		}, "names a value the key's enum does not list"},
+		"a rule on a member no type declares": {func(row *routeRow) {
 			row.Body = requestBody{Kind: bodyJSON, Type: widgetBody{}}
 			row.Authorities = []authorityRule{{Where: authorityWhere{In: partBody, Name: "colour"}, Scopes: person}}
-		},
-		"a rule on a state no arm is": func(row *routeRow) {
+		}, "reads a body member no type of the route's Body declares"},
+		"a rule on a state no arm is": {func(row *routeRow) {
 			row.Body = requestBody{Kind: bodyStateUnion, Arms: map[string]any{"resolved": widgetResolved{}}}
 			row.Authorities = []authorityRule{{Where: authorityWhere{In: partBody, Name: "state"}, Value: "accepted", Scopes: person}}
-		},
-		"a rule with no scope": func(row *routeRow) {
+		}, "names a state no arm of the union is"},
+		"a rule with no scope": {func(row *routeRow) {
 			row.Body = requestBody{Kind: bodyJSON, Type: widgetBody{}}
 			row.Authorities = []authorityRule{{Where: authorityWhere{In: partBody, Name: "owner"}}}
-		},
+		}, "names no member or key, or no scope"},
 	} {
 		row := madeUpRow()
-		change(&row)
-		if faults := undecodableRoutes([]apiRoute{madeUpV2Route(row)}); len(faults) != 1 {
-			t.Errorf("%s: refused %q, want the row refused once", name, faults)
+		broken.change(&row)
+		if faults := undecodableRoutes([]apiRoute{madeUpV2Route(row)}); len(faults) != 1 || !strings.Contains(faults[0], broken.names) {
+			t.Errorf("%s: refused %q, want the row refused once, naming %q", name, faults, broken.names)
 		}
 	}
 

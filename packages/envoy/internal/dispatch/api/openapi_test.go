@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // openAPIVersions are the versions of the API a document is emitted for (RenderOpenAPI).
@@ -556,22 +557,26 @@ func TestTheV2DocumentRequiresWhatTheStructsTag(t *testing.T) {
 		t.Fatalf("held %d answer schemas to their types, and the /api/v2 document declares hundreds: the walk found next to nothing", held)
 	}
 
+	// An ask shape is a schema whose type holds model.Ask, embedded at any depth (askV2 through
+	// shapedAsk), or one that holds the member: each must require opened_event_id, so a shape that
+	// drops the member fails as one that leaves it optional does.
 	asks := 0
 	for _, name := range slices.Sorted(maps.Keys(document.Components.Schemas)) {
 		schema := schemaOf(name)
 		properties, _ := schema["properties"].(map[string]any)
 		property, holds := properties["opened_event_id"]
-		if !holds {
+		goType, owned := emitter.schemaOwners[name]
+		if !holds && (!owned || !embedsAsk(goType)) {
 			continue
 		}
 		asks++
 		required, _ := schema["required"].([]any)
-		if !slices.Contains(required, any("opened_event_id")) || openAPIAllowsNull(property) {
-			t.Errorf("%s is an ask shape whose opened_event_id is optional or nullable: every ask of /api/v2 has one (R6)", name)
+		if !holds || !slices.Contains(required, any("opened_event_id")) || openAPIAllowsNull(property) {
+			t.Errorf("%s is an ask shape whose opened_event_id is missing, optional or nullable: every ask of /api/v2 has one (R6)", name)
 		}
 	}
 	if asks == 0 {
-		t.Error("no schema of the /api/v2 document holds opened_event_id, so no ask shape was held to it")
+		t.Error("no schema of the /api/v2 document is an ask shape, so none was held to opened_event_id")
 	}
 
 	var tree map[string]any
@@ -597,6 +602,24 @@ func TestTheV2DocumentRequiresWhatTheStructsTag(t *testing.T) {
 	if transitions == 0 {
 		t.Error("the /api/v2 table holds no transition (a row of kind state), so no union was held to it")
 	}
+}
+
+// embedsAsk reports whether goType, or what it points to, embeds model.Ask at any depth: the
+// members of an ask are promoted into it, so its schema is an ask shape.
+func embedsAsk(goType reflect.Type) bool {
+	for goType.Kind() == reflect.Pointer {
+		goType = goType.Elem()
+	}
+	if goType.Kind() != reflect.Struct {
+		return false
+	}
+	for index := range goType.NumField() {
+		field := goType.Field(index)
+		if field.Anonymous && (field.Type == reflect.TypeFor[model.Ask]() || embedsAsk(field.Type)) {
+			return true
+		}
+	}
+	return false
 }
 
 // holdV2SchemaToFields holds one answer schema of the /api/v2 document to its Go type's fields as
@@ -785,8 +808,8 @@ func TestTheV2DocumentListsEveryCodeItCanAnswer(t *testing.T) {
 		t.Errorf("components.x-refusal-codes holds %d codes, want the %d /api/v2 names of apicode without %s",
 			len(got), len(want), apicode.APIV1Ended.V1Name())
 	}
-	if want["ANSWER_NOT_KEPT"] != "*" {
-		t.Errorf("ANSWER_NOT_KEPT is listed at %v, want *: its status is the call's", want["ANSWER_NOT_KEPT"])
+	if got["ANSWER_NOT_KEPT"] != "*" {
+		t.Errorf("components.x-refusal-codes gives ANSWER_NOT_KEPT %v, want *: its status is the call's", got["ANSWER_NOT_KEPT"])
 	}
 
 	operations := 0

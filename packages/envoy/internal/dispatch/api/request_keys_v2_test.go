@@ -22,11 +22,12 @@ func madeUpGadgetRows() []routeRow {
 	return rows
 }
 
-// Every write method of /api/v2 is keyed (R8, decision 7): a PUT and a DELETE sent twice under one
-// key run once, the repeat answered the first answer's body, marked a replay. The same rows' PUT and
-// DELETE under /api/v1 stay unkeyed, so each send runs and none is a replay. One key sent to a
-// /api/v1 route and then to its /api/v2 route is two requests under one key: the fingerprint holds
-// the route's pattern, so the second is 422 KEY_REUSED.
+// Every write method of a route the rules of /api/v2 bind is keyed (R8, decision 7, keyedMethod):
+// a PUT and a DELETE sent twice under one key run once, the repeat answered the first answer's
+// body, marked a replay. The same rows' PUT and DELETE under /api/v1 stay unkeyed, so each send
+// runs and none is a replay. One key sent to a /api/v1 route and then to its /api/v2 route is two
+// requests under one key: the fingerprint holds the route's pattern, so the second is 422
+// KEY_REUSED.
 func TestAV2PutAndDeleteAreKeyedAndAV1OneIsNot(t *testing.T) {
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	var runs atomic.Int32

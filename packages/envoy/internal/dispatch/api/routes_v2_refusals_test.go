@@ -10,7 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
-// TestV2Refusals is c-refusals of dispatch://INFRA-4071 (plan t16 step 3) as far as the api
+// TestV2Refusals is c-refusals of dispatch://INFRA-4071 as far as the api
 // package reaches it: a missing issue's comments are 404 ISSUE_NOT_FOUND; the route tour's
 // missing-objects subtest covers every route whose path names an object Dispatch stores; a route
 // whose path names a session, and the app-installation read, answer as /api/v1 does; and a parent

@@ -1,10 +1,10 @@
 package api
 
-// routes_v2_tour_test.go is the route tour (plan t16 step 2 of dispatch://INFRA-4071): one step
-// per /api/v2 route the rules of /api/v2 bind - every route but the rows of the INFRA-979 tree and
-// the test hooks - each a request the route answers with a status the step names, on a server of
-// its own (newRouteTour), and subtests that send every step again in the ways R1, R4, R7 and R8
-// say every route answers alike.
+// routes_v2_tour_test.go is the route tour of dispatch://INFRA-4071: one step per /api/v2 route
+// the rules of /api/v2 bind - every route but the rows of the INFRA-979 tree and the test hooks -
+// each a request the route answers with a status the step names, on a server of its own
+// (newRouteTour), and subtests that send every step again in the ways R1, R4, R7 and R8 say every
+// route answers alike.
 //
 // Each group of routes registers its steps in a file of its own, routes_v2_tour_<group>_test.go,
 // with an init function:
@@ -23,7 +23,7 @@ package api
 //	}
 //
 // so a group adds a file and edits no shared literal. The tour fails while a mounted route has no
-// step (every-route-has-a-step), which it does until every group has added its own.
+// step (every-route-has-a-step).
 
 import (
 	"bytes"
@@ -171,7 +171,7 @@ func tourSteps() []tourStep {
 //   - unknown-keys: each step sent again with ?zz_undeclared=1 is answered 400 QUERY_KEY_UNKNOWN,
 //     naming the key and every key the route declares, and writes nothing (R4).
 //   - undeclared-members: each write step sent with a body member, or an upload's field, the
-//     route does not declare is answered as it is without it (R4).
+//     route does not declare is answered the status the step names, as it is without it (R4).
 //   - missing-objects: each step whose path names a stored object, sent naming one that does not
 //     exist, is answered 404 with that object's code (decision 11, R7).
 //   - unauthenticated: each step of a route that is not public, sent with no credential, is
@@ -292,10 +292,14 @@ func TestV2RouteTour(t *testing.T) {
 			for _, missing := range step.Missing {
 				t.Run(step.name()+" "+missing.Param, func(t *testing.T) {
 					route := tour.stepRoute(t, step)
-					if !slices.Contains(patternWildcards(route.Pattern), missing.Param) || missing.Param == "session_id" {
-						t.Fatalf("names {%s}, which is no wildcard of %s whose object Dispatch stores", missing.Param, route.Pattern)
+					if !slices.Contains(patternWildcards(route.Pattern), missing.Param) {
+						t.Fatalf("names {%s}, which is no wildcard of %s", missing.Param, route.Pattern)
 					}
 					request := step.Setup(t, tour)
+					if keepsItsAnswer(route, request, missing.Param) {
+						t.Fatalf("names {%s} of %s, which names no object Dispatch stores: it keeps today's answer (ruling A)",
+							missing.Param, route.Pattern)
+					}
 					request.Path = maps.Clone(request.Path)
 					request.Path[missing.Param] = missing.Value
 					response := tour.send(t, route, request, "")
@@ -366,21 +370,40 @@ func TestV2RouteTour(t *testing.T) {
 	})
 }
 
-// stepRoute is the mounted route step calls, and fails the test for a step of a route /api/v2
-// does not serve or that the rules of /api/v2 do not bind.
+// stepRoute is the mounted route step calls, looked up as every test of the tour looks one up
+// (requireMounted).
 func (tour *routeTour) stepRoute(t *testing.T, step tourStep) apiRoute {
 	t.Helper()
-	route, mounted := tour.routes[step.route()]
-	if !mounted {
-		t.Fatalf("the step calls %s, which is no /api/v2 route the tour walks: a route the server does not mount, "+
-			"a row of the INFRA-979 tree, or a test hook", step.route())
+	return tour.requireMounted(t, step.Method, step.Pattern)
+}
+
+// keepsItsAnswer reports whether param, a wildcard of route that request fills, names no object
+// Dispatch stores, so a value no object has keeps today's answer rather than a 404 (ruling A,
+// tourStep.Missing): a {session_id}, the {id} of an agent mark, and the app-installation read's
+// {owner} and {repo}.
+func keepsItsAnswer(route apiRoute, request tourRequest, param string) bool {
+	switch {
+	case param == "session_id":
+		return true
+	case param == "id" && route.Pattern == "/api/v2/me/marks/{kind}/{id}":
+		return request.Path["kind"] == "agent"
+	case param == "owner" || param == "repo":
+		return strings.HasSuffix(route.Pattern, "/app-installation")
 	}
-	return route
+	return false
 }
 
 // send carries request to route through the tour's server, under the Idempotency-Key key where
 // one is given.
 func (tour *routeTour) send(t *testing.T, route apiRoute, request tourRequest, key string) *httptest.ResponseRecorder {
+	t.Helper()
+	return tour.serve(tour.request(t, route, request, key))
+}
+
+// request is the HTTP request send carries: request to route, under the Idempotency-Key key where
+// one is given. It fails t for a request it cannot build, so a test that sends on a goroutine of
+// its own builds the request here, on the test's goroutine, and serves it there (serve).
+func (tour *routeTour) request(t *testing.T, route apiRoute, request tourRequest, key string) *http.Request {
 	t.Helper()
 	target := route.Pattern
 	for _, name := range patternWildcards(route.Pattern) {
@@ -423,6 +446,12 @@ func (tour *routeTour) send(t *testing.T, route apiRoute, request tourRequest, k
 	if key != "" {
 		sending.Header.Set(contracts.IdempotencyKeyHeader, key)
 	}
+	return sending
+}
+
+// serve carries sending through the tour's server. It fails no test, so it may run on any
+// goroutine.
+func (tour *routeTour) serve(sending *http.Request) *httptest.ResponseRecorder {
 	response := httptest.NewRecorder()
 	tour.handler.ServeHTTP(response, sending)
 	return response

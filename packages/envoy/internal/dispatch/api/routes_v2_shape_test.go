@@ -1,6 +1,6 @@
 package api
 
-// routes_v2_shape_test.go is c-shape of dispatch://INFRA-4071 (plan t16 step 1): the rules of the
+// routes_v2_shape_test.go is c-shape of dispatch://INFRA-4071: the rules of the
 // parent's shape (dispatch://INFRA-2946/spec, R1), decided from each /api/v2 row's declarations and
 // its path, over every route the rules of /api/v2 bind, and the rules a /api/v1 row's path and
 // shape can decide over the v1 rows.
@@ -24,7 +24,7 @@ import (
 )
 
 // shapeActionWords are the words no path segment may be, nor end in as its last hyphen-separated
-// word, the word that names what a compound segment is (plan t16 step 1): `syncs` and `replies`
+// word, the word that names what a compound segment is: `syncs` and `replies`
 // are plural nouns and no such word, and `search-results` ends in `results`.
 var shapeActionWords = []string{
 	"resolve", "approve", "deny", "revoke", "sync", "dismiss", "reply", "accept", "reject", "reopen",
@@ -679,26 +679,59 @@ var v1ActionWordPaths = []string{
 	"PUT /api/v1/me/threads/{id}/read",
 }
 
-// TestTheShapeRulesRefuseTheV1Rows is c-shape's /api/v1 half: the rules a v1 row's path and shape
-// can decide, a v1 row declaring no column of R1, refuse the action-word paths the route map
-// lists, every list that answers a bare array at a path the map keeps, and the 15 slug addresses.
+// TestTheShapeRulesRefuseTheV1Rows is c-shape's /api/v1 half: three rules of R1, run on each v1
+// row read as a /api/v2 row at its path under /api/v2 with the columns of R1 its path and shape
+// decide (a v1 row declares none), refuse the action-word paths the route map lists, every list
+// that answers a bare array at a path the map keeps, and the 15 slug addresses. The action-word
+// rule reads the path alone. The envelope rule reads a GET answering a list at a kept path as a
+// collection. The one-address rule reads a path naming {slug} as an item of the noun before its
+// last wildcard, keyed by that wildcard, or as a collection of its last noun, in the /api/v2 table
+// with that row beside it.
 func TestTheShapeRulesRefuseTheV1Rows(t *testing.T) {
-	var actions, bare, slugs []string
+	rules := map[string]shapeRule{}
+	for _, rule := range shapeRules() {
+		rules[rule.name] = rule
+	}
+	var v2 []apiRoute
+	for _, route := range servedAt(apiV2, (&server{}).routes()) {
+		if route.v2Bound() {
+			v2 = append(v2, route)
+		}
+	}
+	refuses := func(rule string, route apiRoute, table shapeTable) bool {
+		return len(rules[rule].faults(route, table)) > 0
+	}
+	var actions, lists, bare, slugAddresses, slugs []string
 	for _, row := range (&server{}).v1Rows() {
 		name := row.Method + " " + row.Pattern
-		for _, segment := range strings.Split(strings.TrimPrefix(row.Pattern, "/api/v1/"), "/") {
-			if actionWordOf(segment) != "" {
-				actions = append(actions, name)
-				break
-			}
+		route := v1Route(routeRow{Method: row.Method, Pattern: row.Pattern, Auth: row.Auth, Description: row.Description, Handler: row.Handler}, nil)
+		route.Pattern = "/api/v2" + strings.TrimPrefix(row.Pattern, "/api/v1")
+		if refuses("action-words", route, shapeTable{}) {
+			actions = append(actions, name)
 		}
-		if response := routeShapes[name].Response; row.Method == http.MethodGet && response != nil &&
+		if response := route.Shape.Response; row.Method == http.MethodGet && response != nil &&
 			reflect.TypeOf(response).Kind() == reflect.Slice &&
 			successorRoute(row.Successor) == row.Method+" "+strings.TrimPrefix(row.Pattern, "/api/v1") {
-			bare = append(bare, name)
+			lists = append(lists, name)
+			list := route
+			list.Kind = kindCollection
+			if refuses("list-envelope", list, shapeTable{}) {
+				bare = append(bare, name)
+			}
 		}
 		if strings.Contains(row.Pattern, "{slug}") {
-			slugs = append(slugs, name)
+			slugAddresses = append(slugAddresses, name)
+			segments := shapeSegments(route)
+			address := route
+			address.Kind = kindCollection
+			if last := segments[len(segments)-1]; isWildcardSegment(last) {
+				address.Kind, address.Resource, address.Key = kindItem, segments[len(segments)-2], last
+			} else {
+				address.Resource = last
+			}
+			if refuses("one-address", address, newShapeTable(append(slices.Clone(v2), address))) {
+				slugs = append(slugs, name)
+			}
 		}
 	}
 	slices.Sort(actions)
@@ -708,10 +741,11 @@ func TestTheShapeRulesRefuseTheV1Rows(t *testing.T) {
 	if !slices.Equal(actions, v1ActionWordPaths) {
 		t.Errorf("the action-word rule refuses %v, want the paths the route map renames %v", actions, v1ActionWordPaths)
 	}
-	if len(bare) < 20 || !slices.Contains(bare, "GET /api/v1/issues") {
-		t.Errorf("the envelope rule refuses %d bare arrays at kept paths, want at least 20 with GET /api/v1/issues", len(bare))
+	if !slices.Equal(bare, lists) || len(bare) < 20 || !slices.Contains(bare, "GET /api/v1/issues") {
+		t.Errorf("the envelope rule refuses %d of the %d bare arrays at kept paths (%v), want every one, at least 20 with GET /api/v1/issues",
+			len(bare), len(lists), bare)
 	}
-	if len(slugs) != 15 {
-		t.Errorf("the one-address rule refuses %d slug addresses, want 15", len(slugs))
+	if !slices.Equal(slugs, slugAddresses) || len(slugs) != 15 {
+		t.Errorf("the one-address rule refuses %d of the %d slug addresses (%v), want every one of 15", len(slugs), len(slugAddresses), slugs)
 	}
 }

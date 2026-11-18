@@ -93,8 +93,9 @@ type keyedWriteOffence struct {
 	at, function, why string
 }
 
-// keyedWriteGuard is what the guard reads off the graph: every POST and PATCH route's handler, and
-// every function those handlers run while their commit step may be live (walk).
+// keyedWriteGuard is what the guard reads off the graph: every keyed write route's handler
+// (keyedRouteNames), and every function those handlers run while their commit step may be live
+// (walk).
 type keyedWriteGuard struct {
 	graph   *lockGraph
 	objects map[*lockFunction]*types.Func
@@ -155,10 +156,11 @@ func writingCallOf(functions []string) *regexp.Regexp {
 }
 
 // TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks enforces what KEY_COMMITTED rests on
-// (markRequestKeyCommitted): every write a POST or PATCH route makes commits in a transaction the
-// shared pool opens, so the commit step marks the request's key committed with the write itself. A
-// write made as a bare pool statement commits on its own and marks nothing; the process dying after
-// it, before the answer is kept, leaves a key a repeat takes over, and the write is made twice.
+// (markRequestKeyCommitted): every write a keyed route makes (keyedMethod: a POST or a PATCH, and on
+// /api/v2 a PUT or a DELETE too) commits in a transaction the shared pool opens, so the commit step
+// marks the request's key committed with the write itself. A write made as a bare pool statement
+// commits on its own and marks nothing; the process dying after it, before the answer is kept,
+// leaves a key a repeat takes over, and the write is made twice.
 //
 // It reads each route's handler from the routes table and follows it through the copy-lock guard's
 // graph (TestCopyLockComesBeforeEveryPendingRowAndEvent says how a call is resolved) through
@@ -181,7 +183,7 @@ func TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks(t *testing.T) {
 	slices.Sort(offences)
 	offences = slices.Compact(offences)
 	if len(offences) > 0 {
-		t.Fatalf("a POST or PATCH route reaches a write outside the transactions the commit mark hooks:\n\t%s\n"+
+		t.Fatalf("a keyed write route reaches a write outside the transactions the commit mark hooks:\n\t%s\n"+
 			"Make the write inside a transaction of the shared pool (s.begin, store.Pool.Begin): its commit "+
 			"step marks the request's Idempotency-Key committed with the write, which is what answers a "+
 			"repeat after a crash KEY_COMMITTED rather than making the write a second time.",
@@ -190,7 +192,7 @@ func TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks(t *testing.T) {
 }
 
 // TestTheKeyedWriteGuardSeesWhatItGuards holds the guard to what it must see, so it cannot pass by
-// seeing nothing: every POST and PATCH route of the table, the writes behind the comment and send
+// seeing nothing: every keyed write route of the table, the writes behind the comment and send
 // routes, the bare reads those handlers do make, the statement a caller names for a function that
 // takes its SQL as a parameter, the work a handler hands a Go method or starts with a go statement,
 // and a select of a SQL function that writes.
@@ -212,7 +214,7 @@ func TestTheKeyedWriteGuardSeesWhatItGuards(t *testing.T) {
 		t.Errorf("the guard reads %d keyed routes, want the table's %d", len(guard.routes), len(want))
 	}
 	for _, function := range []string{
-		"api.server.createCommentFor", "api.server.deliverResolvedCommentMention",
+		"api.server.writeComment", "api.server.deliverResolvedCommentMention",
 		"api.server.recordCommentDeliveryResolution", "api.server.createStoredMessage",
 		"api.server.recordPendingMessageDelivery", "architecture.Importer.touch",
 	} {
@@ -306,10 +308,9 @@ func keyedRouteNames() map[string]bool {
 }
 
 // sourceRow is one row of the route table as its source declares it, for the guards that read
-// what a row's handler runs from that handler's source: its method, the "<method> <pattern>" of
-// every route the server mounts it as, and the expression the row names its handler by.
+// what a row's handler runs from that handler's source: the "<method> <pattern>" of every route the
+// server mounts it as, and the expression the row names its handler by.
 type sourceRow struct {
-	method  string
 	names   []string
 	handler ast.Expr
 }
@@ -338,7 +339,7 @@ func tableRowsInSource(t *testing.T, graph *lockGraph) []sourceRow {
 	}
 	var rows []sourceRow
 	add := func(declaring, method string, handler ast.Expr, columns bool, patterns ...string) {
-		row := sourceRow{method: method, handler: handler}
+		row := sourceRow{handler: handler}
 		for _, pattern := range patterns {
 			name := method + " " + pattern
 			if isColumns, served := mounted[name]; served && isColumns == columns {

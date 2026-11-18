@@ -14,8 +14,8 @@ import (
 
 func init() { addTourSteps("threads", threadsTourSteps) }
 
-// threadsTourSteps are the route tour's steps of the comments, messages, broadcasts and handoffs
-// (plan t9): each route, each of the four states of PUT /api/v2/comments/{id}/state, and the
+// threadsTourSteps are the route tour's steps of the comments, messages, broadcasts and handoffs:
+// each route, each of the four states of PUT /api/v2/comments/{id}/state, and the
 // reads with what include= and the filters add.
 func threadsTourSteps() []tourStep {
 	alice := tourPerson("alice")
@@ -359,8 +359,8 @@ func (tour *routeTour) handoff(t *testing.T, issue tourIssue) string {
 // An issue's comments read through /api/v1 and then /api/v2, one after the other and then again,
 // answer each version its own body - a bare array and an envelope - though the second round of each
 // is the answer that version's route kept (list_answers.go): the kept answers are filed under each
-// version's own route, and a validator one version gave is no validator of the other's answer
-// (plan t13's row for list_answers.go). A missing issue's list is 404 ISSUE_NOT_FOUND under
+// version's own route, and a validator one version gave is no validator of the other's answer.
+// A missing issue's list is 404 ISSUE_NOT_FOUND under
 // /api/v2, where /api/v1 answers it the empty list as it always has.
 func TestTheIssueCommentListAnswersEachVersionItsOwnShape(t *testing.T) {
 	tour := newRouteTour(t)

@@ -123,10 +123,9 @@ func wildcardsOf(pattern string) []string {
 // TestEveryV1RowNamesItsV2Route holds the map the table records (R2, c-map): every row /api/v1
 // alone serves names the /api/v2 route that answers it, or its deletion with the route that
 // answers for it; the INFRA-979 tree's rows are served in both versions instead; every value the
-// successor's path needs is one the v1 request or its handler gives; and the rows of c8a44f97 name
-// at most 137 distinct /api/v2 routes, which a table that names 138 fails. successors-are-mounted
-// holds every successor to a route /api/v2 serves, which it does once the route groups of the
-// plan's t6 to t12 mount them.
+// successor's path needs is one the v1 request or its handler gives; the rows of c8a44f97 name at
+// most 137 distinct /api/v2 routes, which a table that names 138 fails; and every successor is a
+// route /api/v2 serves (successors-are-mounted).
 func TestEveryV1RowNamesItsV2Route(t *testing.T) {
 	served := &server{}
 	rows := served.v1Rows()
@@ -245,13 +244,13 @@ func TestEveryV1RowNamesItsV2Route(t *testing.T) {
 		}
 	})
 
-	// The successors are the /api/v2 routes the route groups of the plan's t6 to t12 mount; until
-	// they land, this subtest names every successor /api/v2 does not serve yet, and fails.
+	// Every successor is a route the table mounts at /api/v2, which only the mount of a routeRow
+	// is: a row of the v1 table is mounted at its /api/v1 pattern alone (v1Route).
 	t.Run("successors-are-mounted", func(t *testing.T) {
 		var unmounted []string
 		for _, row := range rows {
 			at := row.Successor.Method + " /api/v2" + row.Successor.Pattern
-			if route, ok := mounted[at]; !ok || route.Version != apiV2 || !route.columns {
+			if _, ok := mounted[at]; !ok {
 				unmounted = append(unmounted, row.Method+" "+row.Pattern+" -> "+at)
 			}
 		}

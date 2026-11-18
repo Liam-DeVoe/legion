@@ -22,9 +22,9 @@ import (
 
 // versionReadStatements are the statements a text read of a document takes its version from, the
 // first of which the split-read hook puts a write in front of: the read of the version by the
-// markdown the read answers (versionOfText), and the newest version's number, which the route read
-// on a statement of its own before R13 (latestVersionNumber), so this test run against such a
-// build puts the write where that build splits its answer.
+// markdown the read answers (versionOfText), and the newest version's number, which a build that
+// does not hold R13 reads on a statement of its own (latestVersionNumber), so this test run against
+// such a build puts the write where that build splits its answer.
 var versionReadStatements = []string{
 	"artifact_id = $1 and markdown = $2 order by number desc limit 1",
 	"select max(number) from artifact_versions where artifact_id = $1",

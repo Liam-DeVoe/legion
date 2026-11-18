@@ -51,8 +51,8 @@ func keyedRequest(t *testing.T, handler http.Handler, method, target string, bod
 	return response
 }
 
-// keyedRig is one write route behind the keyed layer, as register mounts every POST and PATCH
-// route, whose handler counts its runs and answers as the test says.
+// keyedRig is one write route behind the keyed layer, as register mounts every route it keys
+// (keyedMethod), whose handler counts its runs and answers as the test says.
 type keyedRig struct {
 	handler  http.Handler
 	database *store.Store
@@ -921,13 +921,14 @@ func TestBoundaryMaskFindsABoundaryAcrossWrites(t *testing.T) {
 	}
 }
 
-// Every POST and PATCH route takes a key, and so does every PUT and DELETE route of /api/v2
-// (keyedMethod): a header that is not a key is refused on each of them before its handler runs,
-// and ignored by a PUT and a DELETE of /api/v1, which are idempotent already. A GET writes nothing
-// and is never wrapped. A route whose body is a union is sent a body its decoder reads
+// Every POST and PATCH route takes a key, and so does every PUT and DELETE route the rules of
+// /api/v2 bind (keyedMethod, apiRoute.v2Bound): a header that is not a key is refused on each of
+// them before its handler runs, and ignored by a PUT and a DELETE of /api/v1 and of the INFRA-979
+// tree, which no rule of /api/v2 binds. A GET writes nothing and is never wrapped. The table is
+// read without its test hooks. A route whose body is a union is sent a body its decoder reads
 // (unionProbe): the decoder refuses one naming no arm before the keyed layer judges the key, the
 // order in which a refused body claims no key, so `{}` would never reach the layer this holds.
-func TestEveryPostAndPatchRouteTakesAKey(t *testing.T) {
+func TestEveryKeyedRouteTakesAKeyAndNoOtherJudgesOne(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	for _, route := range (&server{}).routes() {
 		if route.Method == http.MethodGet {
@@ -993,7 +994,11 @@ func unionProbe(route apiRoute, extra map[string]any) (body, member, arm string,
 		}
 	}
 	members := map[string]any{}
-	if encoded, err := json.Marshal(route.Body.Arms[arm]); err != nil || json.Unmarshal(encoded, &members) != nil {
+	written, err := json.Marshal(route.Body.Arms[arm])
+	if err == nil {
+		err = json.Unmarshal(written, &members)
+	}
+	if err != nil {
 		panic(fmt.Sprintf("%s %s: the arm %s writes no JSON object: %v", route.Method, route.Pattern, arm, err))
 	}
 	members[member] = arm

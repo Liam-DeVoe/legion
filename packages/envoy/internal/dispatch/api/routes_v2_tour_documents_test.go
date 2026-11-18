@@ -24,7 +24,7 @@ import (
 
 func init() { addTourSteps("documents", documentsTourSteps) }
 
-// documentsTourSteps are the route tour's steps of the document routes (plan t7): each route, the
+// documentsTourSteps are the route tour's steps of the document routes: each route, the
 // reads with what include= and the filters add, a file's version beside a document's, and the
 // review with and without the version it guards.
 func documentsTourSteps() []tourStep {
@@ -44,7 +44,7 @@ func documentsTourSteps() []tourStep {
 	}
 	onProjectDocument := func(query url.Values, body any) func(*testing.T, *routeTour) tourRequest {
 		return func(t *testing.T, tour *routeTour) tourRequest {
-			return tourRequest{Path: map[string]string{"id": tour.settledDocument(t)}, Query: query, Body: body, As: alice}
+			return tourRequest{Path: map[string]string{"id": tour.document(t)}, Query: query, Body: body, As: alice}
 		}
 	}
 	agentFiles := func(query func(slug string) url.Values) func(*testing.T, *routeTour) tourRequest {
@@ -226,7 +226,7 @@ func documentsTourSteps() []tourStep {
 		{
 			Method: http.MethodDelete, Pattern: "/artifacts/{id}/subscribers/{session_id}", Status: http.StatusNoContent,
 			Setup: func(t *testing.T, tour *routeTour) tourRequest {
-				document := tour.settledDocument(t)
+				document := tour.document(t)
 				return tourRequest{Path: map[string]string{"id": document, "session_id": tour.subscribeToDocument(t, document)}, As: alice}
 			},
 			Missing: documentMissing,
@@ -342,15 +342,6 @@ func tourVersion(query url.Values) func(*testing.T, *routeTour) tourRequest {
 		number := strconv.Itoa(tour.latestVersion(t, issue.Document))
 		return tourRequest{Path: map[string]string{"id": issue.Document, "number": number}, Query: query, As: tourPerson("alice")}
 	}
-}
-
-// settledDocument is a project document (tour.document) that owes no settlement, as an issue's
-// spec owes none once tour.issue answers it.
-func (tour *routeTour) settledDocument(t *testing.T) string {
-	t.Helper()
-	document := tour.document(t)
-	awaitSettled(t, tour.database, document)
-	return document
 }
 
 // issueDocument uploads a markdown document named name to the issue key, as alice, answering it
@@ -470,7 +461,7 @@ func (tour *routeTour) subscribeToDocument(t *testing.T, document string) string
 	return session
 }
 
-// unloadableDocument is a project document whose stored history no longer decodes, with no room
+// unloadableDocument is a project document whose stored history does not decode, with no room
 // holding it and no settlement owed: the document a rebuild is for (makeDocumentUnloadable).
 func (tour *routeTour) unloadableDocument(t *testing.T) string {
 	t.Helper()
@@ -540,7 +531,7 @@ func sameDocumentRow(t *testing.T, v1, v2 map[string]json.RawMessage, members []
 	}
 }
 
-// TestEachV2ArtifactListAnswersTheDocumentItsV1SlugReadAnswers is plan t7's slug acceptance: each
+// TestEachV2ArtifactListAnswersTheDocumentItsV1SlugReadAnswers: each
 // /api/v1 read by slug - an issue's document by its slug and by its exact file name, a project's
 // own, a conversation's file, and each one's text, blocks, summary and version - answers the
 // document the /api/v2 list filtered by that slug answers, as one row, with what include= adds;
@@ -845,10 +836,18 @@ func TestEachV2ArtifactRowCarriesTheFactsOfItsNewestVersion(t *testing.T) {
 		t.Errorf("the citation's reference to an artifact with no version answers %v, want null, null, null and 0", cited)
 	}
 	v1 := decodeBody[model.ArtifactReferences](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+citation+"/references", nil, "alice"))
+	edges := 0
 	for _, edge := range v1.Outgoing {
-		if edge.Artifact != nil && edge.Artifact.ID == none && (len(edge.Artifact.Versions) != 1 || edge.Artifact.Versions[0].Number != 0) {
-			t.Errorf("the /api/v1 references answer the artifact with no version as %+v, where they answered one version numbered 0", edge.Artifact.Versions)
+		if edge.Artifact == nil || edge.Artifact.ID != none {
+			continue
 		}
+		edges++
+		if len(edge.Artifact.Versions) != 1 || edge.Artifact.Versions[0].Number != 0 {
+			t.Errorf("the /api/v1 references answer the artifact with no version as %+v, want one version numbered 0", edge.Artifact.Versions)
+		}
+	}
+	if edges != 1 {
+		t.Errorf("the /api/v1 references of the citation answer %d edges to the artifact with no version, want one", edges)
 	}
 }
 

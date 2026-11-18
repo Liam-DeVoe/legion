@@ -8,19 +8,20 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// TestV2DeclaredAuthority is c-authority of dispatch://INFRA-4071 (plan t4's acceptance): the
-// authority each state, field and query value of the /api/v2 routes needs holds at run time,
-// declared on the routes' rows and held by their wrapper (gateV2Authorities) before the handler
-// runs. A session token that holds no person scope - alice's personal token holding no scope,
-// acting for tourSession - resolves a comment and an ask, and changes a project's gated steps, but
-// is refused 403 OAUTH_SCOPE_REQUIRED naming person for a comment's accept, an ask's answer, an
-// ask's asked_of, waiting_on=me, pinned=true, a claim's force and a project's default assignee; a
-// person's token without approve is refused an approval naming approve; a broker token for one
-// session cannot change another session's agent mark. Each case runs once its route is mounted, and
-// skips naming it until then.
+// TestV2DeclaredAuthority is c-authority of dispatch://INFRA-4071: the authority each state, field
+// and query value of the /api/v2 routes needs holds at run time, declared on the routes' rows and
+// held by their wrapper (gateV2Authorities) before the handler runs. A session token that holds no
+// person scope - alice's personal token holding no scope, acting for tourSession - resolves a
+// comment and an ask, and changes a project's gated steps, but is refused 403 OAUTH_SCOPE_REQUIRED
+// naming person for a comment's accept, an ask's answer, an ask's asked_of, waiting_on=me,
+// pinned=true, a claim's force and a project's default assignee; a person's token without approve
+// is refused an approval naming approve; a broker token scoped to one project is refused an agent
+// mark naming person, whichever session it marks, and one held to no project marks another
+// session's. A case whose route /api/v2 does not serve fails (requireMounted).
 //
 // Each refusal of a declared value must be the wrapper's own, whose text names the rule
 // (assertGateRefused): the comment's accept and the ask's answer are refused by their handlers
@@ -94,8 +95,8 @@ func TestV2DeclaredAuthority(t *testing.T) {
 	})
 
 	t.Run("a claim taken by force", func(t *testing.T) {
-		// The holder's force is a check on the data the handler makes (plan t4 step 3), and it
-		// answers the gate's refusal.
+		// The holder's force is a check on the data the handler makes, not a declared value, so
+		// the handler answers the scope refusal the gate would.
 		route := tour.requireMounted(t, http.MethodPut, "/issues/{key}/claim")
 		assertScopeRefused(t, "the session token forcing a claim", tour.send(t, route, tourRequest{
 			Path: map[string]string{"key": tour.issue(t).Key}, Query: asSession,
@@ -124,8 +125,9 @@ func TestV2DeclaredAuthority(t *testing.T) {
 	t.Run("an approval without approve", func(t *testing.T) {
 		route := tour.requireMounted(t, http.MethodPut, "/credential-requests/{id}/state")
 		record := uuid.NewString()
-		// Both states of this route need approve, so the route's own scope refuses the request
-		// before the per-state column is read (routeScopes), and its text names the route.
+		// Both states of this route need approve, so the route's own scopes (its row's
+		// OAuthScopes) refuse the request before its state's rule is read, and the text names the
+		// route.
 		assertScopeRefused(t, "a person's token without approve approving", tour.send(t, route, tourRequest{
 			Path: map[string]string{"id": record}, Body: map[string]any{"state": "approved", "code": "ABCD-1234"},
 			As: tourBearer(tour.personToken),
@@ -135,17 +137,31 @@ func TestV2DeclaredAuthority(t *testing.T) {
 		}
 	})
 
-	t.Run("another session's agent mark", func(t *testing.T) {
+	t.Run("an agent mark by a broker token", func(t *testing.T) {
+		// The row needs the person scope, which a session's token scoped to one project does not
+		// hold: an agent mark is the person's own, and on a row that declares OAuth scopes no
+		// session check holds the mark to the session the token proved (refusesAnotherSession).
+		// So the project-scoped token is refused whichever session the path names, its own among
+		// them, and a token held to no one project, which holds person, marks another session's.
 		route := tour.requireMounted(t, http.MethodPatch, "/me/marks/{kind}/{id}")
 		caller := newBrokerCaller(t)
-		const token = "a-broker-token-for-one-session"
-		tour.brokerTokens.Says(token, liveNamedToken(caller.jkt))
-		response := httptest.NewRecorder()
-		tour.handler.ServeHTTP(response, caller.presenting(t, route.Method, "/api/v2/me/marks/agent/session-someone-else", token,
-			map[string]any{"pinned": true}))
-		if code, _ := refusalOf(t, response); response.Code != http.StatusForbidden || (code != "OAUTH_SCOPE_REQUIRED" && code != "SESSION_SCOPE") {
-			t.Errorf("a broker token for %s changing another session's agent mark: %d %s, want 403",
-				brokerTestSession, response.Code, response.Body.String())
+		const scoped, unscoped = "a-broker-token-for-one-project", "a-broker-token-for-no-one-project"
+		tour.brokerTokens.Says(scoped, liveNamedToken(caller.jkt))
+		person := liveNamedToken(caller.jkt)
+		person.ProjectScope, person.Projects = brokertoken.ProjectScopePerson, nil
+		tour.brokerTokens.Says(unscoped, person)
+		mark := func(token, session string) *httptest.ResponseRecorder {
+			response := httptest.NewRecorder()
+			tour.handler.ServeHTTP(response, caller.presenting(t, route.Method, "/api/v2/me/marks/agent/"+session, token,
+				map[string]any{"pinned": true}))
+			return response
+		}
+		for _, session := range []string{"session-someone-else", brokerTestSession} {
+			assertScopeRefused(t, "a broker token scoped to one project marking "+session, mark(scoped, session), model.ScopePerson)
+		}
+		if marked := mark(unscoped, "session-someone-else"); marked.Code != http.StatusOK {
+			t.Errorf("a broker token for %s held to no one project marking another session: %d %s, want 200",
+				brokerTestSession, marked.Code, marked.Body.String())
 		}
 	})
 }
