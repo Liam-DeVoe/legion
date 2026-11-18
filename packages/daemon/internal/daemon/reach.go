@@ -480,7 +480,7 @@ func (k *reachKeeper) judge(ctx context.Context, c supervise.Claim, now time.Tim
 		// that the relaunch did not bring it back.
 		return k.judgeController(ctx, c, rec, now), false
 	}
-	if c.Session == "" || !runsOnSession(c.State) {
+	if c.Session == "" || !holdsEpisode(c.State) {
 		// The claim no longer records a session a process runs on: suspended, failed, retired,
 		// or between launches with no session yet. Its episode is over.
 		if rec.Session != "" && rec != rec.EndEpisode() {
@@ -521,7 +521,7 @@ func (k *reachKeeper) judge(ctx context.Context, c supervise.Claim, now time.Tim
 	if !rec.Unreachable() {
 		if !supervise.SaidReady(c.State) {
 			// A mark is made of a settled agent; once made it holds in every launch state of the
-			// session (runsOnSession).
+			// session (holdsEpisode).
 			return rec, false
 		}
 		rec.Since, rec.LastSeen, rec.Generation = countedFrom, lastSeen, c.Generation
@@ -841,8 +841,7 @@ func (k *reachKeeper) relaunched(ctx context.Context, c supervise.Claim) error {
 }
 
 // runsOnSession is whether a claim in state runs, or is starting, a process on the session it
-// records: every live state. A mark holds in each, so a claim relaunched again and again on its
-// session stays marked through its launches.
+// records: every live state.
 func runsOnSession(state supervise.ClaimState) bool {
 	switch state {
 	case supervise.StateLaunching, supervise.StateShimConnected, supervise.StateRegistered,
@@ -850,6 +849,16 @@ func runsOnSession(state supervise.ClaimState) bool {
 		return true
 	}
 	return false
+}
+
+// holdsEpisode is whether a claim in state keeps the episode its reach record marks: every live
+// state (runsOnSession), so a claim relaunched again and again on its session stays marked
+// through its launches, and the two a launch waits in. A boot restores a claim the last daemon
+// left mid-launch as launch_uncertain, and a claim with nothing launched yet is queued: neither
+// has left the session it records, so a claim reported before the boot is not reported again
+// after it, and a relaunch's not-back notice still counts from that relaunch (R5).
+func holdsEpisode(state supervise.ClaimState) bool {
+	return runsOnSession(state) || state == supervise.StateLaunchUncertain || state == supervise.StateQueued
 }
 
 // latest is the latest of moments.

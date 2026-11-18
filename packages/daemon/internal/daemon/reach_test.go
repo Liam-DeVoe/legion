@@ -477,6 +477,58 @@ func TestAClaimReportedBeforeABootIsNotReportedAgainAfterIt(t *testing.T) {
 	}
 }
 
+// A boot restores a claim the last daemon left mid-launch as launch_uncertain, and the claim
+// stays queued until a launch starts. Neither state ends the episode: the claim reported before
+// the boot is not reported again after it, and the relaunch's not-back notice still comes 20
+// minutes after that relaunch (R5).
+func TestAClaimRestoredMidLaunchKeepsItsEpisode(t *testing.T) {
+	for _, restored := range []supervise.ClaimState{supervise.StateLaunchUncertain, supervise.StateQueued} {
+		t.Run(string(restored), func(t *testing.T) {
+			r := newReachRig(t, false)
+			worker := reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer")
+			r.at(21 * time.Minute)
+			r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
+			r.sweep(worker)
+			// The controller's relaunch at 25 minutes launches generation 4, which its launch
+			// records on the claim's own row.
+			worker.Generation++
+			worker.Reach.LastRelaunch = reachBoot.Add(25 * time.Minute)
+			r.at(26 * time.Minute)
+			r.sweep(r.with(worker))
+			if got := r.reach(worker.Token); !got.Reported || !got.Relaunched {
+				t.Fatalf("before the boot the claim reads %+v, want it reported and relaunched", got)
+			}
+
+			// The daemon ends during that launch and boots again at 30 minutes. The boot
+			// restores the claim as restored, with the reach record the store holds.
+			booted := newReachRig(t, false)
+			booted.k.boot = reachBoot.Add(30 * time.Minute)
+			booted.puts[worker.Token] = r.reach(worker.Token)
+			booted.at(31 * time.Minute)
+			booted.listing(map[string]time.Duration{"ses_other": 31 * time.Minute})
+			stored := booted.with(worker)
+			stored.State = restored
+			booted.sweep(stored)
+			if got := booted.reach(worker.Token); !got.Reported || !got.Relaunched {
+				t.Fatalf("a claim restored as %s reads %+v, want its episode kept: reported and relaunched", restored, got)
+			}
+
+			// The launch comes up and the claim is still out of reach.
+			for minute := 32; minute <= 60; minute++ {
+				booted.at(time.Duration(minute) * time.Minute)
+				booted.listing(map[string]time.Duration{"ses_other": time.Duration(minute) * time.Minute})
+				booted.sweep(booted.with(worker))
+			}
+			if told := booted.notices(record.UnreachableClaimsNotice); len(told) != 0 {
+				t.Fatalf("a claim reported before the boot and restored as %s was listed again: %+v", restored, told)
+			}
+			if notBack := booted.notices(record.RelaunchNotBackNotice); len(notBack) != 1 || notBack[0].notice.Claim != string(worker.Token) {
+				t.Fatalf("not-back notices after a restore as %s = %+v, want one 20 minutes after the relaunch", restored, notBack)
+			}
+		})
+	}
+}
+
 // The tree's architect is told of each claim of its tree but its own, and the controller's list
 // names every claim, the architect's included. A list the outbox did not take leaves its claims
 // unreported, to be listed again at the next pass.
