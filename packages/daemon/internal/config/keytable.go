@@ -17,7 +17,7 @@ import (
 // that reads its value. The table is the only way the loader dispatches a top-level key — readKeys
 // looks each key up in it and calls its Read, and a key the table does not list falls through to
 // the warned, migration and tossed classification — so a new key is a new row here, never a new
-// case. `legion config-reference --json` prints the table, the documentation site's configuration
+// case. `legion config reference --json` prints the table, the documentation site's configuration
 // reference is generated from that output, and TestNoKeyBypassesTheKeyTable holds internal/config
 // to it: a key the loader dispatches with no row, and a row with no description, each fail the
 // build.
@@ -111,7 +111,7 @@ func reads[T any](read func(*yaml.Node, string) (T, error), keep func(*fileConfi
 func roundCap(value *yaml.Node, key string) (*int, error) { return readPositiveInteger(value, key, 0) }
 
 // topLevelKeys is every top-level key of legion.yaml, grouped by what the keys settle, which is the
-// order `legion config-reference --json` prints them in: the project and where the daemon keeps
+// order `legion config reference --json` prints them in: the project and where the daemon keeps
 // its state and listens, how many issues run at once, the controller, the deployment's
 // instructions and the agents' Oh My Pi and its credentials, the endpoints and token files, the
 // projects, the repository renames, the hooks, the design gate and the GitHub Apps, the runtime
@@ -198,7 +198,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "operator_token_file", Default: "none: the boot refuses a daemon that names no operator token", RequiredBy: "yes",
-			Description: "The file holding the operator's bearer token, which `legion controller start`, `legion claims` and `legion status` present and the daemon's operator routes authenticate against; make it one long random string readable by its owner alone.",
+			Description: "The file holding the operator's bearer token, which `legion controller start`, `legion claims` and `legion issue status` present and the daemon's operator routes authenticate against; make it one long random string readable by its owner alone.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.OperatorTokenFile = v }),
 		},
 		{
@@ -445,7 +445,7 @@ type member struct {
 
 // memberGroup is one mapping of nested keys: the dotted path an operator writes them under, with
 // `<KEY>` for a project key and `[]` for a sequence entry, and the keys the mapping may carry. A
-// group's path begins with the top-level key it belongs to, which is how `legion config-reference
+// group's path begins with the top-level key it belongs to, which is how `legion config reference
 // --json` prints each nested key under its own top-level key.
 type memberGroup struct {
 	Path    string
@@ -850,9 +850,9 @@ var nestedKeys = []memberGroup{
 		{Name: "base_url", Default: "none: a provider that names no base URL is refused", RequiredBy: "yes",
 			Description: "The provider's API endpoint, an `http` or `https` URL, from which the loop takes every call's base and never from its environment."},
 		{Name: "api_key_file", Default: "the key comes from `api_key_command`", RequiredBy: "when the provider names no `api_key_command`: a provider carries exactly one key",
-			Description: "A file holding the provider's key, resolved against this file's directory and read again for every model call, so a rotated key is the one each call carries; neither boot nor `legion start --check-config` reads it, and no refusal or log line carries the key."},
+			Description: "A file holding the provider's key, resolved against this file's directory and read again for every model call, so a rotated key is the one each call carries; neither boot nor `legion config check` reads it, and no refusal or log line carries the key."},
 		{Name: "api_key_command", Default: "the key comes from `api_key_file`", RequiredBy: "when the provider names no `api_key_file`: a provider carries exactly one key",
-			Description: "A command that prints the provider's key, run under `sh` with the daemon's environment less its NATS seeds for every model call, as `github_apps`' `private_key_command` is, so a short-lived token it mints is the one each call carries; neither boot nor `legion start --check-config` runs it."},
+			Description: "A command that prints the provider's key, run under `sh` with the daemon's environment less its NATS seeds for every model call, as `github_apps`' `private_key_command` is, so a short-lived token it mints is the one each call carries; neither boot nor `legion config check` runs it."},
 	}},
 	{Path: answersKey + ".prices.<MODEL>", Members: []member{
 		{Name: "input", Default: "none: a model priced without it is refused, since a price left out would be a cost `bounds.daily_usd` never counts", RequiredBy: "yes",
@@ -921,7 +921,7 @@ var nestedByPath = func() map[string]*memberGroup {
 	return byPath
 }()
 
-// ConfigKey is one top-level key as `legion config-reference --json` prints it: the key table's
+// ConfigKey is one top-level key as `legion config reference --json` prints it: the key table's
 // own four columns, and beneath them the nested keys that belong to this key, so a generator of
 // the documentation site renders one section per top-level key and one table of the nested keys
 // under it. Nested is never null.
@@ -944,7 +944,7 @@ type ConfigNestedKey struct {
 	Description string `json:"description"`
 }
 
-// ConfigReference is the key table as `legion config-reference --json` prints it: every top-level
+// ConfigReference is the key table as `legion config reference --json` prints it: every top-level
 // key in table order, each with its described nested keys in nestedKeys order. It reads no file
 // and no daemon.
 func ConfigReference() []ConfigKey {

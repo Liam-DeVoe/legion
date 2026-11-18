@@ -255,7 +255,7 @@ func TestAnswersRefusesEachMalformedShapeByName(t *testing.T) {
 	}
 }
 
-// Neither Load nor LoadForValidation (`legion start --check-config`'s) runs api_key_command or reads
+// Neither Load nor LoadForValidation (`legion config check`'s) runs api_key_command or reads
 // api_key_file: a provider's key is read for each model call, never at load.
 func TestLoadingAnswersReadsNoProviderKey(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "ran")

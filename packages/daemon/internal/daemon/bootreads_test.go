@@ -39,7 +39,7 @@ func dsnFileOf(t *testing.T, contents string) string {
 // none; with `answers` it resolves the real gh the answer loop's gh tool runs at boot, as a tmux
 // daemon resolves its own, and refuses to start, naming gh and its override, when there is none.
 // The gh it resolves, LEGION_GH_PATH's here, and the conversation store's URL are boot's reads,
-// and neither boot nor `legion start --check-config` runs the provider's key command.
+// and neither boot nor `legion config check` runs the provider's key command.
 func TestAKubernetesDaemonWithAnswersRefusesToStartWithoutGH(t *testing.T) {
 	noGH := []string{"PATH=" + t.TempDir()}
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
