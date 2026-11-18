@@ -102,7 +102,7 @@ test("a project's default repository moves with its Default radio, and a mapping
     const deleted = page.waitForResponse(
       (response) =>
         response.request().method() === "DELETE" &&
-        new URL(response.url()).pathname === "/api/v1/settings/repo-projects/acme/widgets"
+        new URL(response.url()).pathname === "/api/v2/repositories/acme/widgets"
     );
     await page.getByRole("button", { name: "Delete mapping for acme/widgets" }).click();
     expect((await deleted).status()).toBe(204);
