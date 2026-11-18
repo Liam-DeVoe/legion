@@ -619,9 +619,11 @@ describe("no page builds a control or an address of its own", () => {
 
   test("a `declare module` of the table library that adds anything but `ColumnMeta` is refused", () => {
     const declaring = (body: string) =>
-      ['import type { RowData } from "@tanstack/react-table";', "", `declare module "@tanstack/react-table" {${body}}`].join(
-        "\n"
-      );
+      [
+        'import type { RowData } from "@tanstack/react-table";',
+        "",
+        `declare module "@tanstack/react-table" {${body}}`,
+      ].join("\n");
     const refusal =
       "features/inbox/probe-table.ts:3 declares `@tanstack/react-table` with more than the one `ColumnMeta` it may add — the one table is `components/DataTable.tsx`, which re-exports `flexRender`";
     expect(
@@ -678,21 +680,20 @@ describe("the shared controls are defined once, under components/", () => {
   });
   const CONTROL_KEYS = new Map(Object.entries(CONTROL).map(([key, value]) => [value, key]));
 
-  test.each(SHARED_CONTROLS)(
-    "%s is exported from components/ and sets its own `data-control`, and no page defines one",
-    (name, value) => {
-      const source = stripComments(
-        readFileSync(join(import.meta.dir, `${name}.tsx`), "utf8"),
-        `components/${name}.tsx`
-      );
-      expect(source).toMatch(new RegExp(`\\bexport\\s+function\\s+${name}\\b`));
-      expect(source).toMatch(new RegExp(`\\bCONTROL\\.${CONTROL_KEYS.get(value)}\\b`));
-      const definedIn = FEATURE_FILES.filter(([relativePath, file]) =>
-        new RegExp(`\\b(?:function|const|let|class)\\s+${name}\\b`).test(
-          stripComments(readFileSync(file, "utf8"), relativePath)
-        )
-      ).map(([relativePath]) => relativePath);
-      expect(definedIn).toEqual([]);
-    }
-  );
+  test.each(
+    SHARED_CONTROLS
+  )("%s is exported from components/ and sets its own `data-control`, and no page defines one", (name, value) => {
+    const source = stripComments(
+      readFileSync(join(import.meta.dir, `${name}.tsx`), "utf8"),
+      `components/${name}.tsx`
+    );
+    expect(source).toMatch(new RegExp(`\\bexport\\s+function\\s+${name}\\b`));
+    expect(source).toMatch(new RegExp(`\\bCONTROL\\.${CONTROL_KEYS.get(value)}\\b`));
+    const definedIn = FEATURE_FILES.filter(([relativePath, file]) =>
+      new RegExp(`\\b(?:function|const|let|class)\\s+${name}\\b`).test(
+        stripComments(readFileSync(file, "utf8"), relativePath)
+      )
+    ).map(([relativePath]) => relativePath);
+    expect(definedIn).toEqual([]);
+  });
 });
