@@ -544,7 +544,10 @@ type healthAnswer struct {
 // create, correct or subscribe to the durable answers 200 "degraded" with the failure in "error"
 // and how long it has failed in "receive_failing_ms", and 503 "unhealthy" once that has lasted
 // the alarm bound (durableTakeoverAlarmAfter): a holder gives the lease up then and is a standby
-// again. A listener that mounts no GitHub webhook route keeps no CI cache, and its answer
+// again. A failure that is the NATS grant's refusal of the durable's read, create or correction
+// answers 503 "unhealthy" from the first refused try for as long as the refusal lasts, and the
+// holder keeps the lease through it (durableReceiver.prepare); /livez answers 204 throughout.
+// A listener that mounts no GitHub webhook route keeps no CI cache, and its answer
 // carries "ci_cache": "not_applicable". The checks run under one healthzDeadline, and an answer
 // they have not reached by then is 503 "unhealthy".
 //
@@ -696,7 +699,7 @@ func listenerHealth(ctx context.Context, d *listenerDeps, verifiers ...*apiVerif
 		if report.Failing > 0 {
 			response["error"] = "durable consumer unavailable: " + report.FailingReason
 			response["receive_failing_ms"] = report.Failing.Milliseconds()
-			if report.Stuck {
+			if report.Stuck || report.Refused {
 				return unhealthy(response)
 			}
 			response["status"] = "degraded"
@@ -1154,7 +1157,8 @@ func refusesBucket(err error, bucket string) bool {
 // (errListenerStateRefused) returns no lease and no connection after one ERROR naming the bucket
 // and the missing grant: the listener then delivers without a lease, as the machine's one
 // deliverer receiving only while no other subscriber holds the durable, and says so in /healthz.
-func openDeliveryLease(urls []string, replicas int, machineID, instance string, logger *logging.Logger) (*lease, *nats.Conn) {
+// ctx is the start's (openListenerState).
+func openDeliveryLease(ctx context.Context, urls []string, replicas int, machineID, instance string, logger *logging.Logger) (*lease, *nats.Conn) {
 	var conn *nats.Conn
 	for {
 		var err error
@@ -1163,7 +1167,7 @@ func openDeliveryLease(urls []string, replicas int, machineID, instance string, 
 		}
 		if err == nil {
 			var kv bus.KeyValue
-			if kv, err = openListenerState(conn, replicas, listenerStateRequestWait); err == nil {
+			if kv, err = openListenerState(ctx, conn, replicas, listenerStateRequestWait); err == nil {
 				return newLease(kv, machineID, instance, productionLeaseConfig(), time.Now, logger), conn
 			}
 		}
@@ -1567,17 +1571,32 @@ func main() {
 	// leaves as it is a stream that a newer build stamped with a higher generation
 	// (bus.ConnectOwningStream).
 	client := connectListener(cfg, instance, logger)
+	// starting is the context the bucket opens below run under, and it is context.Background() on
+	// purpose: do not replace it with a context a signal ends. Each open waits on the cluster until
+	// it answers (a bucket's create, a raise's copies, a member applying a create, a stream's
+	// leader: bus.EnsureKeyValue), and what bounds one open is the start's hang guard, 36 s per
+	// bus.EnsureKeyValue call (bus's startHangGuard, three times the slowest wait measured under
+	// load from a raise's answer until its stream had a leader and every copy was current). An open
+	// the guard ends failed for want of NATS (natsConnectionError reads the guard's
+	// context.DeadlineExceeded), so openStartStore and openDeliveryLease try it again every
+	// startRetry while /healthz answers 503 "starting". A signal needs no context here: this
+	// process installs no handler for SIGTERM or SIGINT until signal.NotifyContext makes stopping
+	// below, so until then the signal's default action ends the process at once, wherever the
+	// start is. Making stopping here instead would change that for the whole start, the NATS
+	// connect and the cache warm-ups included, into an ordered shutdown of a start not yet serving.
+	starting := context.Background()
 	// The spent-proof bucket, before anything of /v1 can be served: a listener configured to take
 	// broker access tokens on a bus that cannot open it refuses to start, naming the setting,
 	// rather than recording spent proofs where its own replicas cannot see them.
-	if err := brokerTokenAuth.open(client.Conn, cfg.NATSReplicas); err != nil {
+	if err := brokerTokenAuth.open(starting, client.Conn, cfg.NATSReplicas); err != nil {
 		log.Fatalf("open the spent-proof bucket for broker access tokens: %v", err)
 	}
 	consumer := bus.ListenerDurable(cfg.MachineID)
 	// The durable is checked here, before the cache warm-ups below (up to 30 s each), so a refused
 	// one ends the start within the NATS connect: no pod could receive from it, and nothing serves
 	// yet, so the start ends at once. A lookup that fails is left to the receive loop, which retries
-	// it.
+	// it, a read the NATS grant refuses included: that loop names the refusal at ERROR on each retry
+	// and keeps the pod unready while it lasts (durableReceiver.prepare).
 	if _, err := listenerDurable(context.Background(), client, consumer); errors.Is(err, errListenerDurableRefused) {
 		logger.Error(durableRefusedLine, slog.String("error", err.Error()))
 		client.Conn.Close()
@@ -1591,7 +1610,7 @@ func main() {
 	// has the grant for it, so its keeper raises that bucket to the deployment's copies every
 	// period too (bus.Client.KeepBucket): naming it at the connect would have a pod whose grant
 	// lacks it, which delivers without a lease, refused on it every period instead.
-	deliveryLease, leaseConn := openDeliveryLease(cfg.NATSURLs, cfg.NATSReplicas, cfg.MachineID, instance, logger)
+	deliveryLease, leaseConn := openDeliveryLease(starting, cfg.NATSURLs, cfg.NATSReplicas, cfg.MachineID, instance, logger)
 	if deliveryLease != nil {
 		client.KeepBucket(bus.ListenerStateBucket)
 	}
@@ -1609,7 +1628,7 @@ func main() {
 	if webhookCfg.GitHub != nil {
 		renames = webhookCfg.GitHub.RepositoryRenames
 		ciStore = openStartStore(client, logger, "CI store", []string{bus.CIStateBucket}, func(conn *nats.Conn) (*cistore.Store, error) {
-			return cistore.Open(conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(7*24*time.Hour))
+			return cistore.Open(starting, conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(7*24*time.Hour))
 		})
 	} else {
 		logger.Info("CI store not opened: no GitHub webhook route, so this listener records and settles no checks")
@@ -1635,7 +1654,7 @@ func main() {
 		registryOptions = append(registryOptions, store.WithServiceSince(func() time.Time { return deliveryLease.Status().ServiceSince }))
 	}
 	registry := openStartStore(client, logger, "interest registry", []string{bus.InterestBucket, bus.RoleClaimBucket}, func(conn *nats.Conn) (*store.Registry, error) {
-		return store.Open(conn, registryOptions...)
+		return store.Open(starting, conn, registryOptions...)
 	})
 
 	// Wait for both of the registry's views before accepting NATS messages or HTTP requests.
@@ -1715,7 +1734,7 @@ func main() {
 		sessionOptions = append(sessionOptions, session.WithLastSeenBucket(deliveryLease.kv))
 	}
 	sessions := openStartStore(client, logger, "session registry", []string{bus.SessionBucket}, func(conn *nats.Conn) (*session.SessionRegistry, error) {
-		return session.OpenSessionRegistry(conn, sessionOptions...)
+		return session.OpenSessionRegistry(starting, conn, sessionOptions...)
 	})
 
 	// The margin between a client's registration refresh and this lifetime can only be checked
@@ -1761,6 +1780,7 @@ func main() {
 	// restart. This line is the one failure that leaves no store at all, a connection that gives
 	// no JetStream context, which answers as an empty store does.
 	known, knownErr := session.OpenKnownSessions(
+		starting,
 		client.Conn,
 		session.WithKnownSessionReplicas(cfg.NATSReplicas),
 		session.WithKnownSessionLogger(logger.Slog()),

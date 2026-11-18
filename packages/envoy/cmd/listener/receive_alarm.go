@@ -4,6 +4,8 @@ import (
 	"errors"
 	"log/slog"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/bus"
 )
 
 // errDurableStuck is what prepare returns once a holder's failures on the durable have lasted
@@ -69,27 +71,30 @@ func (r *durableReceiver) alarm(reason string, waited time.Duration) {
 // failures are timed from the start of the first of them since the term began or an attempt last
 // succeeded (succeeded), as awaitUnbound times its wait, and their alarm is paced by the same
 // throttle (alarmThrottle), with err as its reason. It reports whether the term gives the lease
-// up for them: a holder does once they have lasted alarmAfter; a listener without a lease, the
-// machine's one deliverer, never does.
+// up for them: a holder does once they have lasted alarmAfter, unless the latest is the NATS
+// grant's refusal (bus.ErrPublishDenied), which every pod of the machine would meet alike, so the
+// holder keeps the lease and its alarm goes on; a listener without a lease, the machine's one
+// deliverer, never does.
 func (r *durableReceiver) failed(attempt time.Time, err error) bool {
 	now := time.Now()
+	refused := errors.Is(err, bus.ErrPublishDenied)
 	r.mu.Lock()
 	if r.failingSince.IsZero() {
 		r.failingSince = attempt
 	}
-	r.failingReason = err.Error()
+	r.failingReason, r.failingRefused = err.Error(), refused
 	failing := now.Sub(r.failingSince)
 	alarm := r.failAlarm.due(r.timing, now, failing)
 	r.mu.Unlock()
 	if alarm {
 		r.alarm(err.Error(), failing)
 	}
-	return r.lease != nil && failing >= r.timing.alarmAfter
+	return r.lease != nil && !refused && failing >= r.timing.alarmAfter
 }
 
 // succeeded ends the failures failed times.
 func (r *durableReceiver) succeeded() {
 	r.mu.Lock()
-	r.failingSince, r.failingReason, r.failAlarm = time.Time{}, "", alarmThrottle{}
+	r.failingSince, r.failingReason, r.failingRefused, r.failAlarm = time.Time{}, "", false, alarmThrottle{}
 	r.mu.Unlock()
 }

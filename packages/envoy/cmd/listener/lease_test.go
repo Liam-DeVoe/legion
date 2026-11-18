@@ -52,7 +52,7 @@ func leaseBucket(t *testing.T) bus.KeyValue {
 	t.Helper()
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)
-	kv, err := openListenerState(conn, 1, listenerStateRequestWait)
+	kv, err := openListenerState(t.Context(), conn, 1, listenerStateRequestWait)
 	if err != nil {
 		t.Fatalf("open the listener state bucket: %v", err)
 	}

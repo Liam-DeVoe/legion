@@ -135,9 +135,12 @@ func TestHostPermissionsOnRealServers(t *testing.T) {
 					require.Equal(t, []string{"Publish", removed}, v[1:], "the server refused something else too: %s", v[0])
 				}
 				t.Logf("server violation (%d alike): %s", len(logged), logged[0][0])
-				// The lease holder retries the create it cannot make; `subscribe failed, retrying`
-				// was the line of the start-time bind this listener no longer has.
-				require.Contains(t, process.Output.String(), "durable consumer read failed; retrying")
+				// The lease holder stays up and tries the create again, naming the grant's refusal
+				// at ERROR at each try with the refused subject and the server's text, so a grant
+				// that lacks the create is still loud; it no longer exits on it.
+				require.Contains(t, process.Output.String(), `"level":"ERROR","msg":"durable consumer refused by the NATS grant; retrying"`)
+				require.Contains(t, process.Output.String(), `bus: NATS denied the publish to \"`+removed)
+				require.NotContains(t, process.Output.String(), "subscribe refused, shutting down")
 			})
 		})
 	}
@@ -238,9 +241,9 @@ func TestListenerPermissionsOpenTheListenerStateBucketOnRealServers(t *testing.T
 			config := &natsgo.KeyValueConfig{
 				Bucket: bus.ListenerStateBucket, History: 1, TTL: 10 * time.Minute, Storage: natsgo.FileStorage,
 			}
-			_, err = bus.EnsureKeyValue(conn, js, config)
+			_, err = bus.EnsureKeyValue(t.Context(), conn, js, config)
 			require.NoError(t, err, "create the %s bucket", bus.ListenerStateBucket)
-			kv, err := bus.EnsureKeyValue(conn, js, config)
+			kv, err := bus.EnsureKeyValue(t.Context(), conn, js, config)
 			require.NoError(t, err, "open the existing %s bucket", bus.ListenerStateBucket)
 
 			lease := "lease." + bus.ListenerDurable(liveMachineID)

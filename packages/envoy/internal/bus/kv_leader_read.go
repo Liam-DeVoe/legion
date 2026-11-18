@@ -110,7 +110,14 @@ func (kv KeyValue) GetFromLeader(ctx context.Context, key string) (nats.KeyValue
 		defer cancel()
 	}
 	bucket := kv.Bucket()
-	message, marker, err := kv.newestMessage(key, nats.Context(ctx))
+	// A read the grant refuses draws no answer; the record names the refusal after the read's own
+	// wait (refusedAfter), which costs a read the leader answers nothing.
+	var marker bool
+	message, err := refusedAfter(kv.owner, func() []string { return []string{jsAPI("STREAM.MSG.GET", "KV_"+bucket)} }, func() (*nats.RawStreamMsg, error) {
+		message, isMarker, err := kv.newestMessage(key, nats.Context(ctx))
+		marker = isMarker
+		return message, err
+	})
 	if errors.Is(err, nats.ErrMsgNotFound) || marker {
 		return nil, nats.ErrKeyNotFound
 	}

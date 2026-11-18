@@ -2212,8 +2212,9 @@ dropped another deployment's overlapping stream subject), `<N>-durable-refused` 
 refused its durable consumer) and `<N>-subscribe-exhausted` (a listener that has waited 135 s or
 more on another subscriber's push binding of its durable, usually a build from before the lease
 still running, or whose reads, creations, policy corrections or subscribes of the durable have
-failed for that long: a lease holder gives the lease up for the failures, and a listener without
-a lease logs the line again every five minutes). `<N>-publish-failure` and
+failed for that long: a lease holder gives the lease up for the failures, unless the NATS grant
+refuses the durable, and a holder the grant refuses, like a listener without a lease, logs the
+line again every five minutes). `<N>-publish-failure` and
 `<N>-webhook-refused` count a GitHub delivery's first failure or refusal in each listener task: a
 later one of the same delivery, such as each of the redeliveries Dispatch's sweep asks for over 72
 hours, is logged `redelivery <delivery>: <action> refused` (or `failed`), which no filter counts,

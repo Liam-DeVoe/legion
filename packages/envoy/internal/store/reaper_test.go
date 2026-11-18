@@ -269,7 +269,7 @@ func restoredRoleClaimRegistry(t *testing.T, seed func(roles natsgo.KeyValue, st
 	seed(raw, start)
 	serviceSince := time.Now()
 	var elapsed atomic.Int64
-	reg, err := Open(conn, WithReplicas(1),
+	reg, err := Open(t.Context(), conn, WithReplicas(1),
 		WithClock(func() time.Time { return serviceSince.Add(time.Duration(elapsed.Load())) }),
 		WithServiceSince(func() time.Time { return serviceSince }))
 	if err != nil {

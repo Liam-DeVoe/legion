@@ -23,7 +23,7 @@ func podRegistries(t *testing.T) (a, b *Registry) {
 		t.Helper()
 		conn, cleanup := connectNATS(t)
 		t.Cleanup(cleanup)
-		reg, err := Open(conn, WithReplicas(1))
+		reg, err := Open(t.Context(), conn, WithReplicas(1))
 		if err != nil {
 			t.Fatalf("open pod %s's registry: %v", name, err)
 		}

@@ -24,7 +24,7 @@ func TestARegistrationWriteLostWithItsConnectionFailsAtTheReconnect(t *testing.T
 		t.Fatalf("connect through the relay: %v", err)
 	}
 	t.Cleanup(client.Close)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}

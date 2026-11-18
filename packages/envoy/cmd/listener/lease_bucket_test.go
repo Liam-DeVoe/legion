@@ -42,7 +42,7 @@ func TestListenerStateBucketIsCreatedAtTheConfiguredReplicas(t *testing.T) {
 	t.Run("three replicas reach the server", func(t *testing.T) {
 		conn := testnats.Connect(t, testnats.URL(t))
 		t.Cleanup(conn.Close)
-		_, err := openListenerState(conn, 3, listenerStateRequestWait)
+		_, err := openListenerState(t.Context(), conn, 3, listenerStateRequestWait)
 		if err == nil || !strings.Contains(err.Error(), "replicas > 1 not supported") {
 			t.Fatalf("open at 3 replicas on one server: %v, want the server's refusal of replicas > 1", err)
 		}
@@ -57,7 +57,7 @@ func TestListenerStateBucketIsCreatedAtTheConfiguredReplicas(t *testing.T) {
 func TestTheListenerStateBucketOutlivesTheLastSeenWindow(t *testing.T) {
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)
-	sessions, err := session.OpenSessionRegistry(conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestOpeningTheListenerStateBucketRaisesAnEarlierBuildsMaxAge(t *testing.T) 
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	if _, err := bus.EnsureKeyValue(conn, js, &natsgo.KeyValueConfig{
+	if _, err := bus.EnsureKeyValue(t.Context(), conn, js, &natsgo.KeyValueConfig{
 		Bucket:   bus.ListenerStateBucket,
 		History:  1,
 		TTL:      10 * time.Minute,
@@ -88,7 +88,7 @@ func TestOpeningTheListenerStateBucketRaisesAnEarlierBuildsMaxAge(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("create the bucket as an earlier build did: %v", err)
 	}
-	if _, err := openListenerState(conn, 1, listenerStateRequestWait); err != nil {
+	if _, err := openListenerState(t.Context(), conn, 1, listenerStateRequestWait); err != nil {
 		t.Fatalf("open the bucket: %v", err)
 	}
 	info, err := js.StreamInfo("KV_" + bus.ListenerStateBucket)
@@ -113,7 +113,7 @@ func TestListenerStateBucketRefusalIsTheMissingGrant(t *testing.T) {
 	}
 	t.Cleanup(conn.Close)
 
-	_, err = openListenerState(conn, 1, 500*time.Millisecond)
+	_, err = openListenerState(t.Context(), conn, 1, 500*time.Millisecond)
 	if !errors.Is(err, errListenerStateRefused) || !errors.Is(err, natsgo.ErrPermissionViolation) {
 		t.Fatalf("open without the grant: %v, want errListenerStateRefused wrapping the server's violation", err)
 	}
@@ -124,7 +124,7 @@ func TestListenerStateBucketRefusalIsTheMissingGrant(t *testing.T) {
 	}
 
 	grant.Grant(t, "_INBOX.>", "$JS.API.>", "$KV.envoy_listener.>")
-	kv, err := openListenerState(conn, 1, listenerStateRequestWait)
+	kv, err := openListenerState(t.Context(), conn, 1, listenerStateRequestWait)
 	if err != nil {
 		t.Fatalf("open with the grant: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestListenerStateBucketRefusalIsTheMissingGrant(t *testing.T) {
 	}
 
 	conn.Close()
-	if _, err := openListenerState(conn, 1, 500*time.Millisecond); err == nil || errors.Is(err, errListenerStateRefused) {
+	if _, err := openListenerState(t.Context(), conn, 1, 500*time.Millisecond); err == nil || errors.Is(err, errListenerStateRefused) {
 		t.Fatalf("open on a closed connection: %v, want a connection error that is not the refusal", err)
 	}
 }

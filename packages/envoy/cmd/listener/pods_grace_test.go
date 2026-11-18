@@ -35,7 +35,7 @@ func openStateTestPod(t *testing.T, instance string, startedAgo time.Duration, s
 	podLease := testLease(stateKV, instance, productionLeaseConfig(), time.Now)
 	var elapsed atomic.Int64
 	elapsed.Store(int64(-startedAgo))
-	registry, err := store.Open(client.Conn, store.WithReplicas(1),
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1),
 		store.WithClock(func() time.Time { return time.Now().Add(time.Duration(elapsed.Load())) }),
 		store.WithServiceSince(func() time.Time { return podLease.Status().ServiceSince }))
 	if err != nil {
@@ -44,7 +44,7 @@ func openStateTestPod(t *testing.T, instance string, startedAgo time.Duration, s
 	t.Cleanup(registry.StopWatch)
 	elapsed.Store(0)
 	sessionOptions = append([]session.SessionRegistryOption{session.WithSessionReplicas(1), session.WithLastSeenBucket(stateKV)}, sessionOptions...)
-	sessions, err := session.OpenSessionRegistry(client.Conn, sessionOptions...)
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, sessionOptions...)
 	if err != nil {
 		t.Fatalf("open pod %s's session registry: %v", instance, err)
 	}

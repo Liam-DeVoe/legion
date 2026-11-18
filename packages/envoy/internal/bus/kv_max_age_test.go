@@ -9,9 +9,10 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// maxAgeBucket creates a KV bucket keeping one value per key for ttl and returns a JetStream
-// context on it, so a test can raise the bucket and read its stream back.
-func maxAgeBucket(t *testing.T, bucket string, ttl time.Duration) nats.JetStreamContext {
+// maxAgeBucket creates a KV bucket keeping one value per key for ttl and returns the client's
+// connection and a JetStream context on it, so a test can raise the bucket and read its stream
+// back.
+func maxAgeBucket(t *testing.T, bucket string, ttl time.Duration) (*nats.Conn, nats.JetStreamContext) {
 	t.Helper()
 	client, err := Connect([]string{testnats.URL(t)})
 	if err != nil {
@@ -22,10 +23,10 @@ func maxAgeBucket(t *testing.T, bucket string, ttl time.Duration) nats.JetStream
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	if _, err := EnsureKeyValue(client.Conn, js, &nats.KeyValueConfig{Bucket: bucket, History: 1, TTL: ttl, Replicas: 1}); err != nil {
+	if _, err := EnsureKeyValue(t.Context(), client.Conn, js, &nats.KeyValueConfig{Bucket: bucket, History: 1, TTL: ttl, Replicas: 1}); err != nil {
 		t.Fatalf("create the bucket with a max age of %s: %v", ttl, err)
 	}
-	return js
+	return client.Conn, js
 }
 
 // maxAge reads the age the bucket keeps a key's latest value for.
@@ -43,8 +44,8 @@ func maxAge(t *testing.T, js nats.JetStreamContext, bucket string) time.Duration
 // raise raises an age and never lowers one.
 func TestRaiseMaxAgeLeavesABucketWithNoAgeLimitAlone(t *testing.T) {
 	bucket := "envoy_test_unlimited_age"
-	js := maxAgeBucket(t, bucket, 0)
-	if err := RaiseMaxAge(js, bucket, 20*time.Minute); err != nil {
+	conn, js := maxAgeBucket(t, bucket, 0)
+	if err := RaiseMaxAge(t.Context(), conn, js, bucket, 20*time.Minute); err != nil {
 		t.Fatalf("raise the max age of a bucket that keeps its values forever: %v", err)
 	}
 	if age := maxAge(t, js, bucket); age != 0 {
@@ -65,8 +66,8 @@ func TestRaiseMaxAgeRaisesAShorterAgeAndKeepsALongerOne(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			bucket := "envoy_test_raise_age"
-			js := maxAgeBucket(t, bucket, tc.ttl)
-			if err := RaiseMaxAge(js, bucket, 20*time.Minute); err != nil {
+			conn, js := maxAgeBucket(t, bucket, tc.ttl)
+			if err := RaiseMaxAge(t.Context(), conn, js, bucket, 20*time.Minute); err != nil {
 				t.Fatalf("raise the max age of a bucket that keeps its values for %s: %v", tc.ttl, err)
 			}
 			if age := maxAge(t, js, bucket); age != tc.want {

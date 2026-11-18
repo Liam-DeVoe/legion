@@ -63,7 +63,7 @@ func (kv *lateSessionWrite) wrote(key string, write func() (uint64, error)) (uin
 // reads the delete and writes the same entry over it itself, the very writes Create makes.
 func TestALateSessionWriteIsRefusedOverADeleteMadeAfterItsRead(t *testing.T) {
 	client := setupNATS(t)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}

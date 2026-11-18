@@ -60,6 +60,17 @@ import (
 // listener without a lease has no one to give it to: it keeps retrying and logs the line again
 // every durableTakeoverAlarmEvery.
 //
+// A read, create or correction of the durable that the listener's NATS grant refuses
+// (bus.ErrPublishDenied, answered as the server's refusal arrives) is retried the same way and
+// never ends the process: each retry logs durableGrantRefusedLine at ERROR, naming the refused
+// subject and the server's own text, and the retries back off from durableBindPoll, doubling, to
+// durableRefusedRetryCap. The holder keeps the lease through it and its alarm line goes on every
+// durableTakeoverAlarmEvery, since every pod of the machine connects as the same NATS user and
+// would be refused the same way, and /healthz answers 503 for as long as the refusal lasts
+// (receiveReport.Refused). An exit would send each pod in turn to the lease, to the refusal and to
+// a crash loop whose backoff delays the recovery by minutes once the grant is fixed; a pod that
+// stays up recovers at its next retry.
+//
 // A holder whose receive connection goes down keeps none of that: the lease reads the signal
 // this loop gives it (durableReceiver.receiveUp) and, once the connection has been down for
 // leaseReceiveLost, releases the record, so a standby takes it while this pod's own connection
@@ -125,6 +136,14 @@ const (
 	inProgressEvery           = 2 * time.Second
 	inflightGrace             = 3 * time.Second
 	inflightCancelWait        = time.Second
+	// durableGrantRefusedLine is the ERROR a term logs at each retry of a durable request the
+	// NATS grant refused (durableReceiver.prepare), with the refused subject and the server's text.
+	durableGrantRefusedLine = "durable consumer refused by the NATS grant; retrying"
+	// durableRefusedRetryCap is the longest wait between two tries of a durable request the NATS
+	// grant refused: the waits start at bindPoll and double up to it. 30 s writes at most two of
+	// those ERROR lines a minute once the cap is reached, and a grant fixed meanwhile is used
+	// within 30 s.
+	durableRefusedRetryCap = 30 * time.Second
 	// holderLoopsStopWait bounds how long the end of a term waits for a pass of the holder-only
 	// loops in flight, measured from when they were told to stop.
 	holderLoopsStopWait = 5 * time.Second
@@ -256,10 +275,13 @@ type receiveReport struct {
 	Deliverer bool
 	// Failing is how long the term has failed to read, create, correct or subscribe to the
 	// durable (durableReceiver.failed), zero while it is not failing; FailingReason is the latest
-	// failure, and Stuck says the failures have lasted the alarm bound (alarmAfter).
+	// failure, Stuck says the failures have lasted the alarm bound (alarmAfter), and Refused says
+	// the latest failure is the NATS grant's refusal (bus.ErrPublishDenied), which /healthz answers
+	// 503 for while it lasts.
 	Failing       time.Duration
 	FailingReason string
 	Stuck         bool
+	Refused       bool
 }
 
 // durableReceiverOptions is what a durableReceiver is made of.
@@ -330,10 +352,12 @@ type durableReceiver struct {
 	done  chan struct{}
 	// failingSince is when the first of the term's failed attempts on the durable began, zero
 	// while there is none since the term began or an attempt last succeeded; failingReason is the
-	// latest failure, and failAlarm paces their alarm (durableReceiver.failed).
-	failingSince  time.Time
-	failingReason string
-	failAlarm     alarmThrottle
+	// latest failure, failingRefused whether that failure is the NATS grant's refusal, and
+	// failAlarm paces their alarm (durableReceiver.failed).
+	failingSince   time.Time
+	failingReason  string
+	failingRefused bool
+	failAlarm      alarmThrottle
 }
 
 func newDurableReceiver(options durableReceiverOptions) *durableReceiver {
@@ -474,6 +498,7 @@ func (r *durableReceiver) report() receiveReport {
 		report.Failing = time.Since(r.failingSince)
 		report.FailingReason = r.failingReason
 		report.Stuck = report.Failing >= r.timing.alarmAfter
+		report.Refused = r.failingRefused
 	}
 	r.mu.Unlock()
 	// One snapshot answers both questions the report asks of the lease, so the hold and the
@@ -672,10 +697,15 @@ func (r *durableReceiver) serve(ctx, termCtx context.Context, status leaseStatus
 // prepare reads the durable, creating it when it is missing and, when correct is set, correcting
 // its policy when it has drifted (correctListenerDurable), retrying every bindPoll until it
 // answers, and records its deliver subject in the lease. Each failure counts toward the term's
-// alarm bound (failed). It returns a refusal (errListenerDurableRefused), errDurableStuck once a
-// holder's failures have lasted that bound, or ctx's error.
+// alarm bound (failed). A failure that is the NATS grant's refusal (bus.ErrPublishDenied) is
+// logged at ERROR at every retry, durableGrantRefusedLine with the refused subject and the
+// server's text, and its retries wait bindPoll, then twice as long each time, up to
+// durableRefusedRetryCap; any other failure is logged once, at WARN, and retried every bindPoll.
+// It returns a refusal (errListenerDurableRefused), errDurableStuck once a holder's failures
+// other than the grant's refusal have lasted that bound, or ctx's error.
 func (r *durableReceiver) prepare(ctx context.Context, correct bool) (*nats.ConsumerInfo, error) {
 	failing := false
+	refusedWait := r.timing.bindPoll
 	for {
 		attempt := time.Now()
 		step := "read"
@@ -703,17 +733,36 @@ func (r *durableReceiver) prepare(ctx context.Context, correct bool) (*nats.Cons
 			return nil, ctx.Err()
 		}
 		err = fmt.Errorf("%s the durable consumer: %w", step, err)
-		if !failing {
-			failing = true
+		wait := r.timing.bindPoll
+		switch {
+		case errors.Is(err, bus.ErrPublishDenied):
+			wait, refusedWait = refusedWait, min(2*refusedWait, durableRefusedRetryCap)
+			r.logger.Error(durableGrantRefusedLine,
+				slog.String("consumer", r.consumer),
+				slog.String("subject", refusedSubject(err)),
+				slog.String("error", err.Error()),
+				slog.String("retry_in", wait.String()))
+		case !failing:
 			r.logger.Warn("durable consumer read failed; retrying", slog.String("consumer", r.consumer), slog.String("error", err.Error()))
 		}
+		failing = true
 		if r.failed(attempt, err) {
 			return nil, errDurableStuck
 		}
-		if err := waitUnlessDone(ctx, r.timing.bindPoll); err != nil {
+		if err := waitUnlessDone(ctx, wait); err != nil {
 			return nil, err
 		}
 	}
+}
+
+// refusedSubject is the subject err, a request the NATS grant refused (bus.ErrPublishDenied), was
+// refused on, read from the server's violation it carries (publishViolation), and empty when it
+// carries none.
+func refusedSubject(err error) string {
+	if match := publishViolation.FindStringSubmatch(err.Error()); match != nil {
+		return match[1]
+	}
+	return ""
 }
 
 // awaitUnbound waits, polling the durable every bindPoll without writing it, until no subscriber

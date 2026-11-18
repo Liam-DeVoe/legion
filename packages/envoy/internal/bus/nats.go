@@ -298,6 +298,15 @@ type Client struct {
 	// the same credentials. A record retention has spent and anything past publishDenialDepth are
 	// dropped when the next one is recorded, and a read takes the violation it answers with out.
 	deniedPublishes map[string][]publishViolation
+	// refusal is the channel closed when the next refusal of a publish is recorded, which every send
+	// waiting on an answer selects on beside it (refusalSignal): recordPublishDenial closes it and
+	// puts a new one in its place, so a refused send is answered as the refusal arrives rather than
+	// at the end of its own wait. It is atomic, apart from c.mu, since a send takes it with one load.
+	refusal atomic.Pointer[chan struct{}]
+	// installing is the connection install ensures the stream on before it becomes Conn, whose
+	// refusals are recorded as Conn's are (recordPublishDenial); nil outside that ensure. c.mu
+	// guards it.
+	installing *nats.Conn
 
 	// subscriptionsMu guards subscriptions and stopMode. It is held to read and write them, never
 	// across a bind's request to the server, so a reconnect's restore, the health reads and Drain
@@ -633,19 +642,28 @@ func (c *Client) install(nc *nats.Conn, ensure, dialedUp bool) error {
 		return err
 	}
 	if ensure {
+		// The server's refusals on nc are recorded while the stream is ensured on it, before nc is
+		// c.Conn (recordPublishDenial), so a request of the ensure the grant refuses ends at once.
+		c.mu.Lock()
+		c.installing = nc
+		c.mu.Unlock()
 		ctx, cancel := c.untilStopped()
-		err := c.ensureStreamReported(ctx, nc, js)
+		err := c.ensureStreamReported(ctx, ctx, nc, js, atStart)
 		cancel()
+		c.mu.Lock()
+		c.installing = nil
+		c.mu.Unlock()
 		if err != nil {
 			return err
 		}
 	}
 	c.mu.Lock()
-	c.Conn, c.js = nc, js
+	c.Conn, c.js = nc, c.readsOwnRefusals(js)
 	c.markConnected(nc, dialedUp)
 	c.connectionChangedLocked()
-	// install runs only from the constructor, before any connection is c.Conn, so nothing has
-	// been recorded (recordPublishDenial records only for c.Conn) and this clear finds it empty.
+	// install runs only from the constructor, before any connection is c.Conn, so the record holds
+	// at most what the stream's ensure on nc left unread (recordPublishDenial records for the
+	// connection being installed too), and nothing of it is owed to a send: it is cleared.
 	c.clearPublishDenials()
 	c.mu.Unlock()
 	registerClient(c)
@@ -686,10 +704,11 @@ const streamSubjectsRead = 10 * time.Second
 // on the subjects the client holds inside the gap (PublishTakesJetStream).
 const streamSubjectsRereadGap = 250 * time.Millisecond
 
-// ensureStream ensures the stream through js and keeps the subjects it carries afterwards as a read
-// of them like any other: numbered as it starts, and kept unless the client already keeps a read
-// that started after it (keepSubjects). The ensure's own list is what it wrote, after a read of its
-// own, or what that read answered when it wrote nothing (the stream needed no change, or a newer
+// ensureStream ensures the stream through js, for at, the caller that ensures it (streamEnsure),
+// and keeps the subjects it carries afterwards as a read of them like any other: numbered as it
+// starts, and kept unless the client already keeps a read that started after it (keepSubjects).
+// The ensure's own list is what it wrote, after a read of its own, or what that read answered
+// when it wrote nothing (the stream needed no change, or a newer
 // build's generation owns its settings). A read the client began between the ensure's read and its
 // write can be answered before the write lands, so when a read began while the ensure ran, the
 // subjects are read back once the ensure ends, numbered as that read-back starts: a read answered
@@ -697,10 +716,11 @@ const streamSubjectsRereadGap = 250 * time.Millisecond
 // keeps its own list, numbered as the ensure started, as does one whose read-back fails.
 // defaultsAnUnsetCap is what the connected server is, read from the version it answers
 // (serverDefaultsAnUnsetCap): whether a deployed stream with no consumer cap is one the server
-// caps at a default of its own.
-func (c *Client) ensureStream(js nats.JetStreamContext, defaultsAnUnsetCap bool) error {
+// caps at a default of its own. ctx ends the ensure's waits on the server, which the start's hang
+// guard bounds too (ensureStreamWithConfig).
+func (c *Client) ensureStream(ctx context.Context, js nats.JetStreamContext, defaultsAnUnsetCap bool, at streamEnsure) error {
 	started := c.subjectsReadSeq.Add(1)
-	subjects, err := ensureStreamWithConfig(js, c.streamConfig, defaultsAnUnsetCap)
+	subjects, err := ensureStreamWithConfig(ctx, js, c.streamConfig, defaultsAnUnsetCap, at)
 	if err != nil {
 		return err
 	}
@@ -726,14 +746,18 @@ func (c *Client) ensureStream(js nats.JetStreamContext, defaultsAnUnsetCap bool)
 //
 // Every request of the ensure is made under ctx, the run's context (whileConnected), and each but
 // the role-lane migration's consumer listing (js.ConsumerNames) also ends as soon as conn is lost
-// under it (connectionBoundJetStream), so one sent on a connection that drops ends with it. The
-// hooks run one at a time and this one runs first, so a request whose answer died with a
-// connection that dropped again mid-ensure would otherwise hold every hook after it - the KV
-// rewatch, the listener's receive - for the JetStream context's whole 10 s wait.
+// under it (connectionBoundJetStream), so one sent on a connection that drops ends with it, and the
+// ensure's waits on the server end with ctx too. The hooks run one at a time and this one runs
+// first, so a request whose answer died with a connection that dropped again mid-ensure would
+// otherwise hold every hook after it - the KV rewatch, the listener's receive - for the JetStream
+// context's whole 10 s wait. It waits for no election it did not cause (atReconnect): a stream it
+// finds with no leader is left to elect one, so the hooks after it run, unless the stream must be
+// reconciled, an update that fails at once while the cluster has no quorum, as at main; a create or
+// a raise it makes is waited out.
 func (c *Client) ensureStreamOn(ctx context.Context, conn *nats.Conn) error {
 	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
 	if err == nil {
-		err = c.ensureStreamReported(lookOnce(), conn, connectionBoundJetStream{JetStreamContext: js, client: c, ctx: ctx})
+		err = c.ensureStreamReported(lookOnce(), ctx, conn, connectionBoundJetStream{JetStreamContext: js, client: c, ctx: ctx}, atReconnect)
 	}
 	if err != nil {
 		return fmt.Errorf("ensure stream %s: %w", Stream, err)
@@ -808,15 +832,15 @@ func (js connectionBoundJetStream) ConsumerNames(stream string, opts ...nats.JSO
 }
 
 // ensureStreamReported ensures the stream through js with what conn's server reports it is
-// (connectedDefaultsAnUnsetCap), waiting for that report until ctx is done or
+// (connectedDefaultsAnUnsetCap), waiting for that report until versionCtx is done or
 // natsversion.VersionWait passes; a connection that reports none in that time ensures nothing and
-// answers the error.
-func (c *Client) ensureStreamReported(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext) error {
-	defaultsAnUnsetCap, err := connectedDefaultsAnUnsetCap(ctx, conn)
+// answers the error. ctx ends the ensure itself, made for at (ensureStream).
+func (c *Client) ensureStreamReported(versionCtx, ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, at streamEnsure) error {
+	defaultsAnUnsetCap, err := connectedDefaultsAnUnsetCap(versionCtx, conn)
 	if err != nil {
 		return err
 	}
-	return c.ensureStream(js, defaultsAnUnsetCap)
+	return c.ensureStream(ctx, c.readsOwnRefusals(js), defaultsAnUnsetCap, at)
 }
 
 // lookOnce is a context already done, for a read of the server version that must not wait: given
@@ -859,12 +883,12 @@ func (c *Client) readDeployedSubjectsAs(ctx context.Context, conn *nats.Conn, ti
 	js, err := conn.JetStream(nats.MaxWait(timeout))
 	if err == nil {
 		var subjects []string
-		if subjects, err = readStreamSubjects(requestsUnder(ctx, js)); err == nil {
+		if subjects, err = readStreamSubjects(readsRefusals(conn, requestsUnder(ctx, js))); err == nil {
 			c.keepSubjects(started, subjects)
 			return true
 		}
 	}
-	if publishDenial(conn.LastError(), streamInfoSubject) != nil {
+	if errors.Is(err, ErrPublishDenied) || publishDenial(conn.LastError(), streamInfoSubject) != nil {
 		slog.Info("envoy nats may not read the stream's subjects; the client decides each topic's transport by the subjects it compiles",
 			slog.String("name", c.name), slog.String("subject", streamInfoSubject))
 		c.subjectsRefused.Store(true)
@@ -1910,7 +1934,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 			continue
 		}
 		c.Conn = nc
-		c.js = js
+		c.js = c.readsOwnRefusals(js)
 		// connectWithContext returns only a connection that connected.
 		c.markConnected(nc, true)
 		c.markHooksDueLocked()

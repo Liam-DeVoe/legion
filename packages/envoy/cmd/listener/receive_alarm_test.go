@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -82,35 +83,84 @@ func TestAPreLeaseBindingIsWaitedOutAndAlarmedOn(t *testing.T) {
 	}
 }
 
-// consumerInfoDeniedNATS runs a NATS server with JetStream and two users, and returns a URL for
-// each: granted holds every permission, and denied every one but reading a consumer of the stream
-// (CONSUMER.INFO), so a pod whose bus client connects as denied cannot read its durable while its
-// lease renews on a granted connection. NATS answers a request it denies with nothing, so each
-// read waits out the JetStream wait (10 s) before it fails.
-func consumerInfoDeniedNATS(t *testing.T) (granted, denied string) {
+// consumerInfoUnansweredNATS runs a NATS server with JetStream and returns its URL, granted, and
+// the URL of a relay to it that drops every read of machineID's durable (its CONSUMER.INFO), so a
+// pod whose bus client connects through the relay cannot read its durable while its lease renews
+// on a granted connection. The server never sees a dropped read, so each read waits out the
+// JetStream wait (10 s) before it fails, and the failure is no refusal of the grant: a refusal is
+// answered as the server's report of it arrives (bus.ErrPublishDenied), and a holder keeps the
+// lease through one (TestAHolderWhoseDurableReadTheGrantRefusesNamesItAtOnceAndTriesAgain).
+func consumerInfoUnansweredNATS(t *testing.T, machineID string) (granted, unanswered string) {
 	t.Helper()
-	config := fmt.Sprintf(`jetstream {}
-authorization {
-  users = [
-    { user: granted, password: granted },
-    { user: denied, password: denied, permissions: { publish: { allow: [">"], deny: [%q] } } }
-  ]
-}
-`, "$JS.API.CONSUMER.INFO."+bus.Stream+".*")
-	_, uri := testnats.StartConfig(t, config, []string{"-js"}, false)
-	return strings.Replace(uri, "nats://", "nats://granted:granted@", 1), strings.Replace(uri, "nats://", "nats://denied:denied@", 1)
+	_, uri := testnats.Start(t)
+	relay := testnats.StartUnansweredRelayOn(t, uri, "$JS.API.CONSUMER.INFO."+bus.Stream+"."+bus.ListenerDurable(machineID))
+	relay.Arm(1 << 30)
+	return uri, relay.URL()
 }
 
-// A lease holder that cannot prepare its durable (here it may not read it) says so in /healthz,
-// 200 degraded with the reason, and once its failures have lasted the alarm bound, timed from the
-// start of the first, logs the alarm line at ERROR with that reason and gives the lease up: the
-// other pod takes it at its next poll and delivers what was published meanwhile, and the stuck pod,
-// a standby again, does not take it back from a pod that receives. Before, the holder retried
-// forever and renewed its lease, so no standby ever tried, /healthz answered 200 healthy and no
-// alarm fired.
+// refusedDurableHolder is pod-a of machineID taking the lease on a server whose one nkey user may
+// publish anything but deny (testnats.StartNkeyDenied), bus and lease connection alike, and what
+// its term then does with the refusal of step: it names the refusal at ERROR as the server's
+// answer arrives, within 3 s of the receive loop's start, with the refused subject and the
+// server's text, tries again and names it again, and keeps the lease, preparing the durable and
+// reporting the refusal (receiveReport.Refused), which /healthz answers 503 for. The rig fails
+// the row if the receive loop ever takes it for a refused durable (refused).
+func refusedDurableHolder(t *testing.T, machineID, step string, deny ...string) {
+	t.Helper()
+	seed, public := testnats.User(t)
+	uri := testnats.StartNkeyDenied(t, public, deny...)
+	rig := newReceiverRigAs(t, uri, uri, seed, machineID, "pod-a", func(_ context.Context, msg *natsgo.Msg) { _ = msg.Ack() }, testReceiveTiming(), testLeaseTiming())
+	rig.lease.Start(context.Background())
+	waitFor(t, 10*time.Second, "pod-a to take the lease", rig.lease.Holding)
+	started := time.Now()
+	rig.receiver.Start()
+	refusals := func() []map[string]any {
+		return linesIn(rig.logs.String(), durableGrantRefusedLine, map[string]any{"level": "ERROR"})
+	}
+	waitFor(t, 10*time.Second, "pod-a to name the grant's refusal at ERROR", func() bool { return len(refusals()) > 0 })
+	if took := time.Since(started); took > 3*time.Second {
+		t.Fatalf("pod-a named the refusal %s after its receive loop started, want within 3s, as the server's refusal arrives", took.Round(time.Millisecond))
+	}
+	first := refusals()[0]
+	subject, text := fmt.Sprint(first["subject"]), fmt.Sprint(first["error"])
+	if !slices.Contains(deny, subject) || !strings.Contains(text, step) || !strings.Contains(text, `Permissions Violation for Publish to "`+subject+`"`) {
+		t.Fatalf("pod-a's refusal line = %v, want one of %q as its subject and an error naming %q and the server's violation of it", first, deny, step)
+	}
+	waitFor(t, 5*time.Second, "pod-a to try again and name the refusal again", func() bool { return len(refusals()) >= 2 })
+	if report := rig.receiver.report(); report.State != receivePreparing || !report.Refused || !rig.lease.Holding() {
+		t.Fatalf("pod-a after a second refused try: %+v, holding %v; want it preparing the durable, the refusal reported and the lease kept", report, rig.lease.Holding())
+	}
+}
+
+// A lease holder whose create of its durable the NATS grant refuses stays up and tries again,
+// naming the refusal at ERROR at each try as the server's answer arrives. #4343 ended the start
+// at this refusal, exit 1 within 0.03 s; before #4343 the refusal was read only after the
+// create's own 10 s wait.
+func TestAHolderWhoseDurableCreateTheGrantRefusesNamesItAtOnceAndTriesAgain(t *testing.T) {
+	const machineID = "box-create-refused"
+	consumer := bus.ListenerDurable(machineID)
+	create := "$JS.API.CONSUMER.CREATE." + bus.Stream + "." + consumer
+	refusedDurableHolder(t, machineID, "create the durable consumer", create, create+".>", "$JS.API.CONSUMER.DURABLE.CREATE."+bus.Stream+"."+consumer)
+}
+
+// A lease holder whose read of its durable the NATS grant refuses stays up and tries again,
+// naming the refusal at ERROR at each try as the server's answer arrives. #4343 ended a rebuild's
+// wait for the durable at this refusal; before #4343 the read waited out its own 10 s.
+func TestAHolderWhoseDurableReadTheGrantRefusesNamesItAtOnceAndTriesAgain(t *testing.T) {
+	const machineID = "box-read-refused"
+	refusedDurableHolder(t, machineID, "read the durable consumer", "$JS.API.CONSUMER.INFO."+bus.Stream+"."+bus.ListenerDurable(machineID))
+}
+
+// A lease holder that cannot prepare its durable (here its reads of it go unanswered) says so in
+// /healthz, 200 degraded with the reason, and once its failures have lasted the alarm bound, timed
+// from the start of the first, logs the alarm line at ERROR with that reason and gives the lease
+// up: the other pod takes it at its next poll and delivers what was published meanwhile, and the
+// stuck pod, a standby again, does not take it back from a pod that receives. Before, the holder
+// retried forever and renewed its lease, so no standby ever tried, /healthz answered 200 healthy
+// and no alarm fired.
 func TestAHolderThatCannotPrepareItsDurableAlarmsAndGivesTheLeaseUp(t *testing.T) {
-	granted, denied := consumerInfoDeniedNATS(t)
 	const machineID = "box-stuck"
+	granted, denied := consumerInfoUnansweredNATS(t, machineID)
 	// The bound is past one failed read, so /healthz is read between the first failure and the
 	// give-up.
 	timing := testReceiveTiming()
@@ -374,7 +424,7 @@ func TestATermThatNeverSubscribedOwesTheNextHolderAnAckWait(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			granted, denied := consumerInfoDeniedNATS(t)
+			granted, denied := consumerInfoUnansweredNATS(t, row.machineID)
 			// A lost node's connection still push-binds the durable and acknowledges nothing.
 			client := bindAsADeadHolder(t, granted, row.machineID)
 			timing := testReceiveTiming()

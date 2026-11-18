@@ -44,16 +44,16 @@ func TestTheInterestsListAnswersWithinItsBudgetWhileTheLastSeenBucketHangs(t *te
 		t.Fatalf("connect the listener's bus: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	state, err := openListenerState(client.Conn, 1, listenerStateRequestWait)
+	state, err := openListenerState(t.Context(), client.Conn, 1, listenerStateRequestWait)
 	if err != nil {
 		t.Fatalf("open the listener state bucket: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1),
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1),
 		session.WithLastSeenBucket(bus.NewKeyValue(hangingSeenKV{KeyValue: state.Legacy(), released: released}, state.WatchHandle(), state.Streams())))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)

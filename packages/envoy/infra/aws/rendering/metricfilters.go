@@ -153,7 +153,8 @@ var ListenerLogSignals = []LogSignal{
 		// A lease holder that has waited durableTakeoverAlarmAfter (135 s) for its durable, which
 		// another subscriber holds push-bound, logged again every durableTakeoverAlarmEvery (5 min)
 		// while that lasts, or whose reads, writes or subscribes of the durable have failed for as
-		// long, which then gives the lease up (cmd/listener/receive.go). The alarm and metric keep
+		// long, which then gives the lease up unless the NATS grant refused them
+		// (cmd/listener/receive.go). The alarm and metric keep
 		// the names of the start-time bind exhaustion this line replaced, so no resource is
 		// replaced.
 		alarm:  "subscribe-exhausted",
@@ -170,7 +171,9 @@ var ListenerLogSignals = []LogSignal{
 			"ENVOY_NOTIFICATIONS listener-<machine id>` (push_bound) and stop its process. Any other " +
 			"reason is a failed read, create, update or subscribe of the durable (a JetStream that does " +
 			"not answer, a grant refusing the consumer API): the holder gives the lease up to another " +
-			"task, and takes it back when none has, logging the line for each stuck term.",
+			"task, and takes it back when none has, logging the line for each stuck term; one the grant " +
+			"refuses keeps the lease, names the refusal at each try (`durable consumer refused by the " +
+			"NATS grant; retrying`, with `subject` and `error`) and repeats this line every 5 min.",
 	},
 }
 

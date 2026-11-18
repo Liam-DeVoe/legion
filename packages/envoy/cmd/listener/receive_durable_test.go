@@ -29,11 +29,11 @@ import (
 // 503 unhealthy past the bound, so its runtime counts it unready, as the bounded subscribe that
 // exited did.
 func TestAPodThatCannotPrepareItsDurableAloneTriesAgain(t *testing.T) {
-	granted, denied := consumerInfoDeniedNATS(t)
 	timing := testReceiveTiming()
 	timing.alarmAfter, timing.alarmEvery = 5*time.Second, time.Millisecond
 	t.Run("sole holder", func(t *testing.T) {
 		t.Parallel()
+		granted, denied := consumerInfoUnansweredNATS(t, "box-stuck-alone")
 		handle, _ := recordingHandler()
 		rig := newReceiverRigVia(t, denied, granted, "box-stuck-alone", "pod-a", handle, timing, testLeaseTiming())
 		rig.lease.Start(context.Background())
@@ -51,6 +51,7 @@ func TestAPodThatCannotPrepareItsDurableAloneTriesAgain(t *testing.T) {
 	})
 	t.Run("without a lease", func(t *testing.T) {
 		t.Parallel()
+		_, denied := consumerInfoUnansweredNATS(t, "box-stuck-unleased")
 		client, err := bus.ConnectOwningStream([]string{denied}, bus.WithReplicas(1), bus.WithName("receive-test without a lease"))
 		if err != nil {
 			t.Fatalf("connect: %v", err)
@@ -160,12 +161,12 @@ func TestAStandbyOutlivesThreeSelfHealthIntervals(t *testing.T) {
 		return standby.lease.Status().ActiveInstance == "pod-a"
 	})
 
-	registry, err := store.Open(standby.client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), standby.client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	sessions, err := session.OpenSessionRegistry(standby.client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), standby.client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}

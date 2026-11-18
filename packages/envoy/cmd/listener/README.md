@@ -166,6 +166,9 @@ it fails with messages missing on v2.10.29.
   The pod goes back to standby and does not take back the record it released for two standby polls (1 s), so every other standby has its chance first;
   a pod that runs alone takes it back after that and tries again, alarming again at the end of each stuck term.
   A listener without a lease has no one to give it to: it keeps retrying and logs the line again every 5 min (`durableTakeoverAlarmEvery`).
+  A read, create or policy correction of the durable that the NATS grant refuses is the one failure that gives no lease up: every pod of the machine connects as the same NATS user and would be refused the same way, and an exit, as #4343 had it, would send each pod in turn to the lease, to the refusal and into a crash loop whose backoff delays the recovery by minutes once the grant is fixed.
+  The holder keeps the lease and tries again, logging `durable consumer refused by the NATS grant; retrying` at ERROR at every try, with the refused `subject`, the server's text in `error` and `retry_in`, which starts at 1 s and doubles up to 30 s (`durableRefusedRetryCap`);
+  its alarm line comes again every 5 min while the refusal lasts, and `/healthz` answers 503 from the first refused try until a try succeeds.
 
 - **A holder whose receive connection is lost.**
   The lease and the durable ride two connections, so a pod can renew a lease it receives nothing on:
@@ -195,7 +198,7 @@ failed; holding on` (with `error`), `durable receiving` (with `lease`, `waited_m
 why no mark was written), `cancelling the message in hand after the shutdown grace` (with `grace`), `the message
 in hand was still being handled after its cancel`, `clean hand-back not marked; the next holder
 settles for an ack wait` (with `error`), `durable consumer read failed; retrying` and `durable subscribe failed;
-retrying` (with `error`), `lease holder cannot deliver from the durable` (ERROR, with `reason` and `waited_ms`), `giving the listener lease up: this pod cannot deliver from the durable`, `listener
+retrying` (with `error`), `durable consumer refused by the NATS grant; retrying` (ERROR, with `subject`, `error` and `retry_in`), `lease holder cannot deliver from the durable` (ERROR, with `reason` and `waited_ms`), `giving the listener lease up: this pod cannot deliver from the durable`, `listener
 lease lost: another listener holds it`, `listener lease released: the receive connection is down` (WARN, with `down_ms` and the `revision` it released) and `listener lease released`.
 
 ### Graceful stop order
@@ -256,6 +259,7 @@ A lease left unreleased (the budget ran out) is taken by a standby once it expir
   the lease reads the same signal and releases the record, after which the pod answers as a standby ("Take-over" above).
   Also the failing durable above once it has failed for 135 s:
   a lease holder gives the lease up then and answers as a standby, so only a listener without a lease, which keeps retrying, stays unready.
+  And the durable the NATS grant refuses, from the first refused try until a try succeeds: the holder keeps the lease and stays unready, and `/livez` answers `204` throughout, so nothing restarts it ("A holder that cannot use the durable" above).
 
 Every healthy answer also carries the body fields it always did (`ci_cache`, the session registry's fields).
 A standby is ready: route traffic to it.

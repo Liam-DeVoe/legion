@@ -24,7 +24,7 @@ func listenerStateBucket(t *testing.T, conn *natsgo.Conn) bus.KeyValue {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	kv, err := bus.EnsureKeyValue(conn, js, &natsgo.KeyValueConfig{Bucket: bus.ListenerStateBucket, Replicas: 1, Storage: natsgo.FileStorage, TTL: 10 * time.Minute})
+	kv, err := bus.EnsureKeyValue(t.Context(), conn, js, &natsgo.KeyValueConfig{Bucket: bus.ListenerStateBucket, Replicas: 1, Storage: natsgo.FileStorage, TTL: 10 * time.Minute})
 	if err != nil {
 		t.Fatalf("open the listener state bucket: %v", err)
 	}
@@ -37,7 +37,7 @@ func lastSeenPod(t *testing.T, name string, ttl time.Duration, options ...Sessio
 	t.Helper()
 	client := setupNATS(t)
 	options = append([]SessionRegistryOption{WithSessionReplicas(1), WithSessionTTL(ttl), WithLastSeenBucket(listenerStateBucket(t, client.Conn))}, options...)
-	reg, err := OpenSessionRegistry(client.Conn, options...)
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, options...)
 	if err != nil {
 		t.Fatalf("open pod %s's session registry: %v", name, err)
 	}
@@ -172,7 +172,7 @@ func TestARegistrationWhoseLastSeenRecordFailsIsStillWritten(t *testing.T) {
 	client := setupNATS(t)
 	var logs syncBuffer
 	state := listenerStateBucket(t, client.Conn)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1),
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1),
 		WithLastSeenBucket(bus.NewKeyValue(failingPutKV{KeyValue: state.Legacy()}, state.WatchHandle(), state.Streams())),
 		WithSessionLogger(slog.New(slog.NewTextHandler(&logs, nil))))
 	if err != nil {
@@ -205,7 +205,7 @@ func TestARegistrationUnderTheListenersGrantRecordsItsLastSeen(t *testing.T) {
 	}
 	t.Cleanup(conn.Close)
 	var logs syncBuffer
-	reg, err := OpenSessionRegistry(conn, WithSessionReplicas(1), WithLastSeenBucket(listenerStateBucket(t, conn)),
+	reg, err := OpenSessionRegistry(t.Context(), conn, WithSessionReplicas(1), WithLastSeenBucket(listenerStateBucket(t, conn)),
 		WithSessionLogger(slog.New(slog.NewTextHandler(&logs, nil))))
 	if err != nil {
 		t.Fatalf("open the session registry under the listener's grant: %v", err)
@@ -257,7 +257,7 @@ func TestALastSeenReadBackThatFindsANewerWriteRecordsNothing(t *testing.T) {
 	client := setupNATS(t)
 	var logs syncBuffer
 	state := listenerStateBucket(t, client.Conn)
-	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithLastSeenBucket(state),
+	reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithLastSeenBucket(state),
 		WithSessionLogger(slog.New(slog.NewTextHandler(&logs, nil))))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)

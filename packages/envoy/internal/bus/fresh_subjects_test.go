@@ -471,7 +471,7 @@ func TestAnEnsureKeepsItsSubjectsOverAReadAnsweredBeforeItsUpdate(t *testing.T) 
 		}
 		r = client.deployedSubjects.Load()
 	}}
-	if err := client.ensureStream(interleaved, capsAnUnsetStream); err != nil {
+	if err := client.ensureStream(t.Context(), interleaved, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("ensure the stream with notifications.x.>: %v", err)
 	}
 	if r == nil {

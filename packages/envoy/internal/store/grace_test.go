@@ -23,7 +23,7 @@ func openGracePod(t *testing.T, startedAgo time.Duration, since func() time.Time
 	elapsed := &atomic.Int64{}
 	elapsed.Store(int64(-startedAgo))
 	clock := func() time.Time { return time.Now().Add(time.Duration(elapsed.Load())) }
-	reg, err := Open(conn, WithReplicas(1), WithClock(clock), WithServiceSince(since))
+	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(clock), WithServiceSince(since))
 	if err != nil {
 		t.Fatalf("open the registry: %v", err)
 	}

@@ -17,7 +17,7 @@ func podRegistries(t *testing.T) (a, b *SessionRegistry) {
 	open := func(name string) *SessionRegistry {
 		t.Helper()
 		client := setupNATS(t)
-		reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
+		reg, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
 		if err != nil {
 			t.Fatalf("open pod %s's session registry: %v", name, err)
 		}

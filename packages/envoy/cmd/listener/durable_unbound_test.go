@@ -54,7 +54,7 @@ func setupUnboundDurableFixture(t *testing.T, machineID string, handle durableHa
 // listenerDeps would.
 func healthzFor(t *testing.T, client *bus.Client, receiver *durableReceiver) func() (int, map[string]any) {
 	t.Helper()
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
@@ -64,7 +64,7 @@ func healthzFor(t *testing.T, client *bus.Client, receiver *durableReceiver) fun
 	if err := registry.WaitForCacheReady(readyCtx); err != nil {
 		t.Fatalf("wait for interest cache: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}

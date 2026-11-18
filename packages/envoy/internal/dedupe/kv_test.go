@@ -27,7 +27,7 @@ func openTestBucket(t *testing.T) bus.KeyValue {
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
-	kv, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{
+	kv, err := bus.EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{
 		Bucket:   bus.ListenerStateBucket,
 		History:  1,
 		TTL:      10 * time.Minute,

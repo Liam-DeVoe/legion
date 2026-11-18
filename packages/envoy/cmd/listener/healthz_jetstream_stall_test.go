@@ -191,12 +191,12 @@ func TestHealthzAnswersAJetStreamThatStoppedAnsweringInsideItsBudget(t *testing.
 			rig := startReceiverRig(t, relay.relayed, stall.machineID, "pod-a", func(_ context.Context, msg *natsgo.Msg) { _ = msg.Ack() }, testReceiveTiming(), testLeaseTiming())
 			rig.awaitState(t, receiveActive, 10*time.Second)
 			client := rig.client
-			registry, err := store.Open(client.Conn, store.WithReplicas(1))
+			registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 			if err != nil {
 				t.Fatalf("open the interest registry: %v", err)
 			}
 			t.Cleanup(registry.StopWatch)
-			sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+			sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 			if err != nil {
 				t.Fatalf("open the session registry: %v", err)
 			}

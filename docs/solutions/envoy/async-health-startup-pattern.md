@@ -155,7 +155,7 @@ while the old pod still delivers.
 | Active | 200 | `{"status":"healthy","role":"active",...}` | Serving, and this pod receives the durable; the body carries its lag |
 | Standby | 200 | `{"status":"healthy","role":"standby","active_instance":...}` | Serving; another pod of the machine id holds the lease |
 | Degraded | 200 | `{"status":"degraded","error":"..."}` | A KV dependency or the durable's lag read failed transiently (NATS reconnect and the monitor retry), or this pod is the machine's deliverer and does not receive the durable yet: it holds the delivery lease, runs without one, has read no holder at all, or the lease record still names it while its renewals have lapsed. Nothing of the durable reaches a session until it receives, so no such answer is healthy; it stays 200, so a readiness probe keeps the pod in service |
-| Unhealthy | 503 | `{"status":"unhealthy","error":"..."}` | NATS, the role subscription, a KV watcher or, on the active pod, the subscription or the durable consumer is gone |
+| Unhealthy | 503 | `{"status":"unhealthy","error":"..."}` | NATS, the role subscription, a KV watcher or, on the active pod, the subscription or the durable consumer is gone, or the NATS grant refuses the deliverer's read, create or correction of the durable |
 
 Every answer comes within 5 s (`healthzDeadline`): a check still running then makes the answer
 503, so a readiness probe with a longer timeout always gets one.
@@ -171,7 +171,11 @@ probe therefore must not fail on a 503: it checks only that the process answers 
 A start that cannot succeed still ends rather than waits: a durable the listener refuses (an idle
 heartbeat or an ack policy NATS cannot change in place) is the one durable failure no retry can
 fix, so the listener checks its durable right after the NATS connect, before the cache warm-ups,
-and on a refusal exits 1 at once; so does a store bucket the NATS user's grant refuses.
+and on a refusal exits 1 at once; so does a store bucket the NATS user's grant refuses. A durable
+the grant refuses is not that: the lease holder stays up, names the refusal at ERROR at each try
+and answers 503 until a try succeeds (`cmd/listener/README.md`, "Readiness"), since every pod of
+the machine shares the grant and an exit would only move the refusal from pod to pod into a crash
+loop.
 
 **A 200 means the pod serves.** Before #2404 the listener answered 200 `starting` from the
 moment its port was bound, and anything that called `/v1` after starting it had to wait for the

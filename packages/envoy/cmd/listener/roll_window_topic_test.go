@@ -180,12 +180,12 @@ func TestAPublishByAUserThatMayNotReadTheStreamIsJudgedOnTheSubjectsItHolds(t *t
 		t.Fatalf("connect the admin: %v", err)
 	}
 	t.Cleanup(admin.Close)
-	registry, err := store.Open(admin.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), admin.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
 	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(admin.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), admin.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}

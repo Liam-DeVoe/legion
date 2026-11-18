@@ -150,7 +150,7 @@ func TestAMachinesGrantRefusesAnotherMachinesLeaseMarkAndLedger(t *testing.T) {
 		t.Fatalf("connect as box-a's user: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	kv, err := openListenerState(conn, 1, 2*time.Second)
+	kv, err := openListenerState(t.Context(), conn, 1, 2*time.Second)
 	if err != nil {
 		t.Fatalf("open the listener state bucket under box-a's grant: %v", err)
 	}
@@ -212,14 +212,15 @@ func TestAMachinesGrantRefusesAnotherMachinesLeaseMarkAndLedger(t *testing.T) {
 }
 
 // A listener whose grant lacks the create of its own durable consumer never receives: it takes
-// the machine's lease, its create is refused, and it delivers nothing. No answer of /healthz may
-// then be "healthy", which is what the infra live row
+// the machine's lease, its create is refused, and it delivers nothing. It stays up and tries the
+// create again, naming the refusal at ERROR on every try (durableGrantRefusedLine), with the
+// refused subject and the server's own text, and from the first refused try on /healthz answers
+// 503 and /livez 204: unready while the refusal lasts, and never restarted for it, so it recovers
+// at its next try once the grant is fixed. The infra live row
 // TestHostPermissionsOnRealServers/*/without_its_durable's_consumer_create_the_listener_never_reaches_healthy
-// guards, watching it for a minute. It answers 200 "degraded" as a standby preparing its durable,
-// so a readiness probe (`curl -fsS`) keeps it in service while another pod of the machine could
-// deliver. Before, a holder that had not received yet answered 200 "healthy" until its first
-// durable attempt failed, about ten seconds in, and the live row failed on that answer.
-func TestAListenerWithoutItsDurablesConsumerCreateNeverAnswersHealthy(t *testing.T) {
+// watches it the same way for a minute. Before, #4343's start exited 1 at the refusal, and before
+// that a holder answered 200 "degraded" while it retried, which kept it ready.
+func TestAListenerWhoseGrantRefusesItsDurablesCreateStaysLiveAndUnready(t *testing.T) {
 	t.Parallel()
 	const (
 		machineID = "box-no-create"
@@ -243,26 +244,34 @@ func TestAListenerWithoutItsDurablesConsumerCreateNeverAnswersHealthy(t *testing
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), granted.URL(), machineID,
 		"NATS_NKEY_SEED="+seed, "ENVOY_INSTANCE_ID="+instance)
 
-	var degraded map[string]any
+	refusals := func() int {
+		return countRecords(listener, durableGrantRefusedLine, func(record map[string]any) bool {
+			return record["level"] == "ERROR" && strings.HasPrefix(fmt.Sprint(record["subject"]), "$JS.API.CONSUMER.CREATE."+bus.Stream+".") &&
+				strings.Contains(fmt.Sprint(record["error"]), `Permissions Violation for Publish to "`+fmt.Sprint(record["subject"])+`"`)
+		})
+	}
+	waitFor(t, 30*time.Second, "the listener to name its refused durable create at ERROR", func() bool { return refusals() > 0 })
 	for deadline := time.Now().Add(liveHealthWindow); time.Now().Before(deadline); time.Sleep(time.Second) {
-		status, body := callListener(t, listener.port, http.MethodGet, "/healthz", "")
-		var health map[string]any
-		_ = json.Unmarshal([]byte(body), &health)
-		if health["status"] == "healthy" {
-			t.Fatalf("the listener answered healthy without its durable's consumer create: %d %s\n%s",
+		select {
+		case <-listener.Exited:
+			t.Fatalf("the listener exited at its refused durable create:\n%s", listener.Output.String())
+		default:
+		}
+		if status, body := callListener(t, listener.port, http.MethodGet, "/healthz", ""); status == http.StatusOK {
+			t.Fatalf("/healthz answered %d %s while the grant refused the durable's create, want it unready:\n%s",
 				status, body, listener.Output.String())
 		}
-		if status == http.StatusOK && health["status"] == "degraded" {
-			degraded = health
+		if status, body := callListener(t, listener.port, http.MethodGet, "/livez", ""); status != http.StatusNoContent {
+			t.Fatalf("/livez answered %d %s while the grant refused the durable's create, want 204:\n%s",
+				status, body, listener.Output.String())
 		}
 	}
-	if degraded == nil {
-		t.Fatalf("the listener never answered 200 degraded; a standby's 200 keeps it ready:\n%s", listener.Output.String())
+	if got := refusals(); got < 2 {
+		t.Fatalf("the listener named the refusal %d times in %s, want it named again at each try:\n%s", got, liveHealthWindow, listener.Output.String())
 	}
-	if degraded["role"] != "standby" || degraded["receive"] != receivePreparing.String() {
-		t.Fatalf("the degraded answer = %v, want role standby, receive %q", degraded, receivePreparing.String())
-	}
-	if !strings.Contains(listener.Output.String(), "durable consumer read failed; retrying") {
-		t.Fatalf("the listener never logged a retry of its refused durable create:\n%s", listener.Output.String())
+	for _, line := range []string{durableRefusedLine, "durable consumer read failed; retrying"} {
+		if strings.Contains(listener.Output.String(), line) {
+			t.Fatalf("the listener logged %q for a refusal of its grant, want only %q:\n%s", line, durableGrantRefusedLine, listener.Output.String())
+		}
 	}
 }

@@ -164,7 +164,7 @@ func TestAKeyValueReadLostWithItsConnectionFailsAtTheReconnect(t *testing.T) {
 	relay := testnats.StartUnansweredRelayOn(t, testnats.URL(t), "$JS.API.DIRECT.GET.KV_"+bucket+".$KV."+bucket+"."+key)
 	conn, js := relayedJetStream(t, relay)
 	t.Cleanup(func() { _ = js.DeleteKeyValue(bucket) })
-	kv, err := EnsureKeyValue(conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	kv, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
 	if err != nil {
 		t.Fatalf("open the bucket: %v", err)
 	}
