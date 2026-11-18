@@ -355,6 +355,16 @@ const DispatchEventBodyMax = 32000
 // refusal cannot drift apart.
 const DispatchHandoffBodyMax = 262144
 
+// PlanRatingLeast and PlanRatingMost are the scale of a retro's rating of the plan its issue ran,
+// from the plan cost the work to the plan fit the work, and PlanReasonMax the most characters,
+// counted as Unicode code points, the rating's reason holds. Generated from
+// LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST and LEGION_PLAN_REASON_MAX in
+// packages/contracts, so Dispatch's record of the retro, the Legion daemon's completion route
+// (through github.com/sjawhar/envoy/planrating) and the plugins' tools hold one scale.
+const PlanRatingLeast = 1
+const PlanRatingMost = 5
+const PlanReasonMax = 2000
+
 // HandoffPhaseRule says the handoff-phase pattern's rule in words; every refusal of a phase that is
 // not a handoff phase gives it. Generated from HANDOFF_PHASE_RULE_WORDS in packages/contracts so
 // the server and the tool word it once.

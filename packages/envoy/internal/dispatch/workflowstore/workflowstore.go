@@ -120,19 +120,6 @@ const (
 	PlanSourceOwner   = "owner"
 )
 
-// RatingLeast and RatingMost are the scale of a rating: RatingLeast, the plan cost the work, to
-// RatingMost, the plan fit the work.
-const (
-	RatingLeast = 1
-	RatingMost  = 5
-)
-
-// RatingReasonMost is the most a rating's reason holds, counted in Unicode code points as the
-// daemon counts it when the retro's completion carries the reason, so every reason the daemon
-// takes is one Dispatch takes. It and the scale are held equal to the daemon's own bounds by
-// TestDispatchsRatingBoundsAreTheDaemons (internal/textcheck).
-const RatingReasonMost = 2000
-
 // The refusals a caller maps to an answer of its own. They are the only ones: a write is never
 // refused for its order or for stating again a field the node already holds.
 var (

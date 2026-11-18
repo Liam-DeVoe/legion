@@ -637,6 +637,7 @@ jobs:
               # is a module of its own, so Go's internal rule bars it from internal/contracts,
               # where the generated values are.
               - 'packages/envoy/sessiontiming/*'
+              - 'packages/envoy/planrating/*'
               # The daemon reads an issue event's key and a role lane's role in both forms of
               # their names through this one public package, and the nats-server versions it
               # refuses through the next, for the same reason.
@@ -840,6 +841,7 @@ jobs:
               # liveness and notice rules read: it sits in the envoy module because the
               # daemon, a module of its own, cannot reach internal/contracts, where they are.
               - 'packages/envoy/sessiontiming/*'
+              - 'packages/envoy/planrating/*'
               # The doors onto the readers of a message name's two forms and onto the
               # nats-server versions the daemon refuses, for the same reason.
               - 'packages/envoy/subjectforms/*'
@@ -1030,6 +1032,7 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/sessiontiming/*'
+              - 'packages/envoy/planrating/*'
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
               - 'packages/envoy/testnatsimages/*'
@@ -2306,6 +2309,7 @@ jobs:
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/sessiontiming/*'
+              - 'packages/envoy/planrating/*'
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
               - *go_workspace
@@ -2802,9 +2806,6 @@ jobs:
               - *go_workspace
               - 'packages/envoy/**'
               - 'packages/daemon/**/*.go'
-              # The daemon's bounds of a rating, which packages/envoy/internal/textcheck's
-              # rating_bounds_test.go:23 holds Dispatch's own bounds to.
-              - 'packages/contracts/fixtures/daemon-api/plan-rating.json'
               # The prompt design_approved_wake_test.go:32-38 holds the resume's wake to, the copy
               # of the phrase it reads in place of importing internal/workflow (:26-27), and the
               # committed extract reclaim_doc_test.go:50 holds the guide's paragraph to.
@@ -4030,6 +4031,7 @@ jobs:
               # liveness and notice rules read: it sits in the envoy module because the
               # daemon, a module of its own, cannot reach internal/contracts, where they are.
               - 'packages/envoy/sessiontiming/*'
+              - 'packages/envoy/planrating/*'
               # The doors onto the readers of a message name's two forms and onto the
               # nats-server versions the daemon refuses, for the same reason.
               - 'packages/envoy/subjectforms/*'
@@ -4367,6 +4369,7 @@ jobs:
               - 'packages/envoy/roleholder/**'
               - 'packages/envoy/scripts/**'
               - 'packages/envoy/sessiontiming/**'
+              - 'packages/envoy/planrating/**'
               - 'packages/envoy/subjectforms/**'
               - 'packages/envoy/natsversion/**'
               - 'packages/envoy/testnatsimages/**'

@@ -887,23 +887,13 @@ type HandoffComplete struct {
 	HandoffVersion int
 	// PlanRating is the rating of the plan the issue ran, which the completion that ends the retro
 	// carries (api.PlanRatingContract): the route took it only on that completion and held it to
-	// the scale and to a reason. nil on every other completion, and on a retro's from a plugin
-	// before that contract.
-	PlanRating *PlanRating
+	// the scale and to a reason (api's planRatingOf, its one producer), and the workflow writes it
+	// onto the retro's record as it stands. nil on every other completion, and on a retro's from a
+	// plugin before that contract.
+	PlanRating *record.PlanRating
 }
 
 func (HandoffComplete) isFact() {}
-
-// PlanRating is a retro's rating of the plan its issue ran: Score, from 1 (the plan cost the work)
-// to 5 (the plan fit the work), and Reason, why. The type holds the pair, so a fact carries the
-// rating with its reason or none; it keeps no rule of either. That Score is within
-// record.PlanRatingLeast to record.PlanRatingMost and Reason is not blank and at most
-// record.PlanReasonMax code points is the completion route's rule (api's planRatingOf), and that
-// route, which builds the value only where the rule has held, is its one producer.
-type PlanRating struct {
-	Score  int
-	Reason string
-}
 
 // BackwardMove asks the workflow to return to an earlier phase.
 type BackwardMove struct {

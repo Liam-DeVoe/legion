@@ -137,6 +137,7 @@ on:
       - 'packages/envoy/migrationid/*'
       - 'packages/envoy/roleholder/*'
       - 'packages/envoy/sessiontiming/*'
+      - 'packages/envoy/planrating/*'
       - 'packages/envoy/subjectforms/*'
       - 'packages/envoy/natsversion/*'
       # ci.yaml's *dispatch_server:

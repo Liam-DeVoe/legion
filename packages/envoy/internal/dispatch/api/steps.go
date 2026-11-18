@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
@@ -141,7 +142,7 @@ func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write wo
 	// package refuses a required field it lacks.
 	if rates && write.Rating == nil {
 		writeError(w, codeStepInput, http.StatusBadRequest, fmt.Sprintf(
-			"rating is required: the rating route writes a retro's rating, %d to %d, with its rating_reason", workflowstore.RatingLeast, workflowstore.RatingMost))
+			"rating is required: the rating route writes a retro's rating, %d to %d, with its rating_reason", contracts.PlanRatingLeast, contracts.PlanRatingMost))
 		return
 	}
 

@@ -21,7 +21,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -115,7 +114,7 @@ func TestAnOldPluginsRetroCompletesWithNoRatingAcrossTheDeploy(t *testing.T) {
 // release before the one that writes each run's plan, which lists no plan.
 type ratedWant struct {
 	walkIssue
-	rating    *intake.PlanRating
+	rating    *record.PlanRating
 	failed    int
 	steps     stepRecordsRead
 	unplanned bool
@@ -134,9 +133,9 @@ func (r *stepRecordsRig) walkThreeRated() []ratedWant {
 	want := []ratedWant{
 		// The first reason holds `<` and `&`, which Go's JSON encoder escapes and the CLI prints as
 		// they are, so the live driver's check of the read script's PASS line meets them.
-		{walkIssue: r.issues[0], rating: &intake.PlanRating{Score: 3, Reason: "The plan fit the work; the review sent it back once, in <1 day & with no new task."}, failed: 1},
-		{walkIssue: r.issues[2], rating: &intake.PlanRating{Score: 5, Reason: "The plan was the work, step for step."}},
-		{walkIssue: r.issues[1], rating: &intake.PlanRating{Score: 4, Reason: "The plan fit the work as written."}},
+		{walkIssue: r.issues[0], rating: &record.PlanRating{Rating: 3, Reason: "The plan fit the work; the review sent it back once, in <1 day & with no new task."}, failed: 1},
+		{walkIssue: r.issues[2], rating: &record.PlanRating{Rating: 5, Reason: "The plan was the work, step for step."}},
+		{walkIssue: r.issues[1], rating: &record.PlanRating{Rating: 4, Reason: "The plan fit the work as written."}},
 	}
 	each := func(step func()) {
 		for _, w := range want {
@@ -259,9 +258,9 @@ func plansHold(read projectPlansRead, want []ratedWant) error {
 		case w.rating == nil && len(got.Ratings) != 0:
 			return fmt.Errorf("%s lists the ratings %+v, want none", w.key, got.Ratings)
 		case w.rating != nil && len(got.Ratings) != 1:
-			return fmt.Errorf("%s lists the ratings %+v, want the one rating %d", w.key, got.Ratings, w.rating.Score)
-		case w.rating != nil && (got.Ratings[0].Rating != w.rating.Score || got.Ratings[0].Reason != w.rating.Reason):
-			return fmt.Errorf("%s lists the rating %d %q, want %d %q", w.key, got.Ratings[0].Rating, got.Ratings[0].Reason, w.rating.Score, w.rating.Reason)
+			return fmt.Errorf("%s lists the ratings %+v, want the one rating %d", w.key, got.Ratings, w.rating.Rating)
+		case w.rating != nil && (got.Ratings[0].Rating != w.rating.Rating || got.Ratings[0].Reason != w.rating.Reason):
+			return fmt.Errorf("%s lists the rating %d %q, want %d %q", w.key, got.Ratings[0].Rating, got.Ratings[0].Reason, w.rating.Rating, w.rating.Reason)
 		case w.rating != nil && (got.Ratings[0].StepID != retro.ID || got.Ratings[0].EndedAt == nil || retro.EndedAt == nil ||
 			!got.Ratings[0].EndedAt.Equal(*retro.EndedAt)):
 			return fmt.Errorf("%s lists its rating on the record %s ended %v, want the retro's record %s ended %v", w.key,

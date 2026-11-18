@@ -387,7 +387,7 @@ Each item below names a task and where its code is, then notes on it.
   Beside the step records, three routes write and read the plans the runs ran from and the ratings the retros gave them:
 
   - `PUT /api/v1/issues/{key}/steps/{id}/rating` writes the rating the agent that did a retro gave the plan into the retro's record:
-    its body is the step write's with `rating` (1 to 5) and `rating_reason` (not blank, at most `RatingReasonMost`, 2,000 code points) required, so it makes the retro's record where the run's start and end have not landed, each is set once, and a record held or written as another kind refuses them (`400 STEP_INPUT`).
+    its body is the step write's with `rating` (`contracts.PlanRatingLeast` to `contracts.PlanRatingMost`) and `rating_reason` (not blank, at most `contracts.PlanReasonMax` code points) required, the scale and bound `gen-go.ts` generates from `packages/contracts`, so it makes the retro's record where the run's start and end have not landed, each is set once, and a record held or written as another kind refuses them (`400 STEP_INPUT`).
     The rating is a route and not a member of the step write because `decodeJSON` ignores a member its route does not declare: a Dispatch older than the rating would drop the member in silence, where it answers the route its router's `NOT_FOUND`, which the daemon sends again.
 
   - `PUT /api/v1/issues/{key}/plans/{id}` writes the plan a run of an issue runs from, under the step write's writer check (`403 STEP_WRITER`), the same `for key share` read with no open check, and no event:

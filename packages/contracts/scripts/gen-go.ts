@@ -87,7 +87,12 @@ import {
   GOING_SEARCH_TOOL,
   GOING_WORDS_MAX,
 } from "../src/going";
-import { controllerToken } from "../src/legion-roles";
+import {
+  controllerToken,
+  LEGION_PLAN_RATING_LEAST,
+  LEGION_PLAN_RATING_MOST,
+  LEGION_PLAN_REASON_MAX,
+} from "../src/legion-roles";
 import {
   agentSubject,
   DISPATCH_ISSUE_TOPIC_PREFIX,
@@ -499,6 +504,16 @@ const DispatchEventBodyMax = ${DISPATCH_EVENT_BODY_MAX}
 // packages/contracts so the server's 413 and the \`dispatch handoff-write\` command's pre-send
 // refusal cannot drift apart.
 const DispatchHandoffBodyMax = ${DISPATCH_HANDOFF_BODY_MAX}
+
+// PlanRatingLeast and PlanRatingMost are the scale of a retro's rating of the plan its issue ran,
+// from the plan cost the work to the plan fit the work, and PlanReasonMax the most characters,
+// counted as Unicode code points, the rating's reason holds. Generated from
+// LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST and LEGION_PLAN_REASON_MAX in
+// packages/contracts, so Dispatch's record of the retro, the Legion daemon's completion route
+// (through github.com/sjawhar/envoy/planrating) and the plugins' tools hold one scale.
+const PlanRatingLeast = ${LEGION_PLAN_RATING_LEAST}
+const PlanRatingMost = ${LEGION_PLAN_RATING_MOST}
+const PlanReasonMax = ${LEGION_PLAN_REASON_MAX}
 
 // HandoffPhaseRule says the handoff-phase pattern's rule in words; every refusal of a phase that is
 // not a handoff phase gives it. Generated from HANDOFF_PHASE_RULE_WORDS in packages/contracts so

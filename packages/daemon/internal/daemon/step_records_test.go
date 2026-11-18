@@ -36,7 +36,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -617,24 +616,24 @@ func (r *stepRecordsRig) test() {
 // retro is the implementer's retro rating the plan 4 (rate).
 func (r *stepRecordsRig) retro() {
 	r.t.Helper()
-	r.rate(&intake.PlanRating{Score: 4, Reason: "The plan fit the work."})
+	r.rate(&record.PlanRating{Rating: 4, Reason: "The plan fit the work."})
 }
 
 // rate is the implementer's retro, whose completion names no record, the head it leaves, as each
 // completion of the implementer's does, and the rating of the plan with its reason, which a pane
 // at api.PlanRatingContract or later must give (PLAN_RATING_REQUIRED). A nil rating is a retro
 // with none, a pane's of the plugin before that contract.
-func (r *stepRecordsRig) rate(rating *intake.PlanRating) {
+func (r *stepRecordsRig) rate(rating *record.PlanRating) {
 	r.t.Helper()
 	r.work(claim.RoleImplementer, "", r.retroCompletion(rating), phase.Merging)
 }
 
 // retroCompletion is the implementer's completion of its retro with rating and its reason, and with
 // neither for a nil rating.
-func (r *stepRecordsRig) retroCompletion(rating *intake.PlanRating) api.HandoffCompleteRequest {
+func (r *stepRecordsRig) retroCompletion(rating *record.PlanRating) api.HandoffCompleteRequest {
 	req := api.HandoffCompleteRequest{Summary: "retro written", Commit: stepRecordsHead}
 	if rating != nil {
-		score, reason := rating.Score, rating.Reason
+		score, reason := rating.Rating, rating.Reason
 		req.PlanRating, req.PlanReason = &score, &reason
 	}
 	return req

@@ -137,10 +137,10 @@ const schemas: Record<string, z.ZodType> = {
   // a name of the rating Go writes and the contract does not read fails the gate above, and the
   // case "the rated completion the daemon reads parses under the contract's names" below.
   "handoff-complete-request-rated.json": LegionHandoffCompleteRequest,
-  // Nor this one: the bounds `planRatingOf` holds a rating of the plan to (`PlanRatingLeast`,
-  // `PlanRatingMost` and `PlanReasonMax` in the daemon's `internal/record`), written by
+  // Nor this one: the bounds `planRatingOf` holds a rating of the plan to (`planrating.Least`,
+  // `Most` and `ReasonMax`, which gen-go generates from this package's constants), written by
   // TestPlanRatingGolden so that the case "the rating's bounds are the daemon's" below holds the
-  // contract's own bounds, which the plugin's tool reads, to them.
+  // file the read script reads to the contract's constants.
   "plan-rating.json": z.strictObject({
     least: z.number().int(),
     most: z.number().int(),
@@ -962,10 +962,10 @@ test("the rated completion the daemon reads parses under the contract's names", 
   expect(request.planReason).toBe("The tester found the bug the plan had left out.");
 });
 
-// The scale and the reason's bound are stated on each side of the wire: the daemon refuses by its
-// own (`PLAN_RATING_INPUT`), and the contract and the plugin's tool by the contract's exports. A
-// bound moved on one side alone would have one side refuse what the other takes, so the
-// contract's bounds are held to the daemon's, which its golden test writes.
+// The scale and the reason's bound are defined once, in legion-roles.ts, and generated into the
+// Go that the daemon and Dispatch refuse by. The daemon's golden test writes the bounds it holds
+// to plan-rating.json, which plan-ratings-read.sh reads with no Go and no TypeScript, so a file
+// left behind a change of the constants, or a generated file not regenerated, fails here.
 test("the rating's bounds are the daemon's", () => {
   expect(fixture("plan-rating.json")).toEqual({
     least: LEGION_PLAN_RATING_LEAST,

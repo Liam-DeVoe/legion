@@ -29,8 +29,8 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // planRatingsLive is one run of the proof: the walk's rig over four issues of one project, and the
@@ -69,7 +69,7 @@ func (l *planRatingsLive) readByProject() {
 	t := l.t
 	want := l.walkThreeRated()
 	l.note("%s, %s and %s walked to done, the first with one failed review; their retros rated the plan %d, %d and %d",
-		want[0].key, want[1].key, want[2].key, want[0].rating.Score, want[1].rating.Score, want[2].rating.Score)
+		want[0].key, want[1].key, want[2].key, want[0].rating.Rating, want[1].rating.Rating, want[2].rating.Rating)
 	// The ratings and the closes ride the outbox, so the read by project holds them a moment after
 	// the walks end: GET /api/v1/projects/{key}/plans is waited on for the whole of what it must
 	// list before the CLI reads it once.
@@ -139,7 +139,7 @@ func (l *planRatingsLive) ratingRequired() {
 	l.note("the retro's completion with no rating, from the implementer at plugin contract %d: %d %s; %s still in retro",
 		l.d.claim(c.token).PluginContract, http.StatusBadRequest, strings.TrimSpace(body), l.key)
 
-	l.finish(c, "", l.retroCompletion(&intake.PlanRating{Score: 4, Reason: "The plan fit the work once its retro was asked for a rating."}), phase.Merging)
+	l.finish(c, "", l.retroCompletion(&record.PlanRating{Rating: 4, Reason: "The plan fit the work once its retro was asked for a rating."}), phase.Merging)
 	l.note("control: the same completion with planRating 4 and a reason: 200; %s in merging", l.key)
 }
 
