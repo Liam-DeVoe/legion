@@ -86,6 +86,19 @@ def problem(path: Path, message: str, line: int | None = None) -> None:
     problems.append(f"::error file={where}::{message}")
 
 
+def limits(path: Path) -> str:
+    """The two numbers a refusal for anything but the size names all the same, with the file's own
+    bytes against them, so that every refusal says what the limit and the cap are."""
+    try:
+        size = f"{path.stat().st_size:,} bytes"
+    except OSError:
+        size = "of a size this check could not read"
+    return (
+        f" The file is {size}, against this check's limit of {LIMIT:,} bytes and GitHub's cap "
+        f"of {GITHUB_CAP:,} bytes (500 KB), above which GitHub starts no run at all."
+    )
+
+
 def composed(path: Path) -> tuple[object, object]:
     """The file's YAML node tree, or the error that stopped it. Cached, since a callee is read once
     however many jobs call it."""
@@ -126,7 +139,7 @@ def check_folded_keys(path: Path, root: object) -> None:
                     f"'{first.value}' of line {first.start_mark.line + 1} again after "
                     f"upper-casing. GitHub's workflow parser compares keys without regard "
                     f"to case and refuses the file, while YAML keeps the last of the two "
-                    f"and reports nothing.",
+                    f"and reports nothing." + limits(path),
                     line=line,
                 )
             for name, value in node.value:
@@ -206,10 +219,10 @@ for path in targets:
                 path,
                 f"{path} is not valid YAML: {one_line(error)}. GitHub reads it no further than "
                 f"this check does, and neither can read the file's keys or its "
-                f"reusable-workflow calls until the syntax is fixed.",
+                f"reusable-workflow calls until the syntax is fixed." + limits(path),
             )
         else:
-            problem(path, f"{path} could not be read: {one_line(error)}")
+            problem(path, f"{path} could not be read: {one_line(error)}." + limits(path))
         continue
     if node is None:
         continue
@@ -223,7 +236,7 @@ for path in targets:
             f"{path} calls {len(called)} unique reusable workflows, above this check's limit of "
             f"{CALL_LIMIT}: {', '.join(sorted(called))}. GitHub allows {GITHUB_CALL_CAP} from a "
             f"single workflow file, counting every tree of nested calls, and a file over that cap "
-            f"starts no run.",
+            f"starts no run." + limits(path),
         )
 
 if problems:

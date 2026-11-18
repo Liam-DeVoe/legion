@@ -142,6 +142,8 @@ check "names both keys and the line of the second" \
   "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=3::.github/workflows/ci.yaml:3: the mapping key 'name' is the key 'name' of line 1 again after upper-casing")"
 check "says why GitHub refuses it" \
   "$(contains "$out" 'compares keys without regard to case')"
+check "names this check's limit and GitHub's cap, with the file's bytes" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=3::.* The file is [0-9,]* bytes, against this check.s limit of 64,000 bytes and GitHub.s cap of 500,000 bytes (500 KB), above which GitHub starts no run at all\.$")"
 
 echo "case: an env mapping holding http_proxy and HTTP_PROXY"
 root=$(fixture folded-env)
@@ -218,6 +220,8 @@ check "exits 1" "$(is "$status" 1)"
 check "names the file and the parser's message" \
   "$(contains "$out" '^::error file=.github/workflows/ci.yaml::.github/workflows/ci.yaml is not valid YAML: ')"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "names this check's limit and GitHub's cap, with the file's bytes" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml::.* The file is [0-9,]* bytes, against this check.s limit of 64,000 bytes and GitHub.s cap of 500,000 bytes (500 KB), above which GitHub starts no run at all\.$")"
 
 echo "case: two files at fault at once, one of each class"
 root=$(fixture two-faults)
@@ -300,6 +304,8 @@ check "names the count and the limit" \
 check "lists the callees" "$(contains "$out" '.github/workflows/w46.yaml')"
 check "names GitHub's own cap of 50" \
   "$(contains "$out" 'GitHub allows 50 from a single workflow file, counting every tree of nested calls')"
+check "names this check's limit and GitHub's cap, with the file's bytes" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml::.* The file is [0-9,]* bytes, against this check.s limit of 64,000 bytes and GitHub.s cap of 500,000 bytes (500 KB), above which GitHub starts no run at all\.$")"
 
 echo "case: 44 calls, one of which calls two more, is a tree of 46"
 root=$(fixture nested-calls)
