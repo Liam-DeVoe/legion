@@ -396,7 +396,7 @@ export const JUDGED: readonly Judged[] = [
     })
   ),
   {
-    file: "scripts/checks/setting-prints.ts",
+    file: "scripts/checks/setting-prints/program.ts",
     text: 'Bun.spawnSync(["git", ...args]',
     why: "the git commands this search runs to read its scope, handed the revision --base names; nothing prints them",
   },
