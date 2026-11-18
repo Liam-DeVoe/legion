@@ -169,6 +169,17 @@ var ErrSessionFileMissing = errors.New("the recorded session file is missing")
 // started.
 var ErrSessionStore = errors.New("the session store could not be asked")
 
+// ErrAwaitingPodRound is a launch refused because the live pod it would keep cannot give its role a
+// Dispatch credential: under dispatch_token_broker a launch carries no Dispatch token, and its role
+// trades its pod's exchange identity for one of its own, but this pod was built before that
+// identity and dispatch_token_transition_file, the shared token such a pod's launch carries
+// instead, is not set. Only the pod's update round, which replaces it with a pod that carries the
+// identity, cures it, and a launch never replaces a pod a round covers (the sandbox runtime's
+// relaunch). It is not the claim's own failure: the caller charges nothing and starts again every
+// minute until the pod it finds carries the identity (supervise's startWaitsForPodRound). Nothing
+// of the pod was touched and nothing was started.
+var ErrAwaitingPodRound = errors.New("the launch waits for its pod's update round")
+
 // ErrPodGone is PodDrift asked about a place that is not there, or on its way out for an act
 // that is not its round's: the Sandbox the locator records is gone, no pod of it is running, the
 // pod running now is not the one the locator records, or the pod is being ended under it — the

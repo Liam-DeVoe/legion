@@ -150,7 +150,7 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	case "tmux":
 		r.tmux, err = readTmux(cfg, lookup, getenv, hostOMP)
 	case "kubernetes":
-		r.sandbox, err = readSandbox(cfg, r.project, r.dispatchToken, r.paneNatsUser, lookup, log)
+		r.sandbox, err = readSandbox(cfg, r.project, r.dispatchToken, r.transitionToken, r.paneNatsUser, lookup, log)
 	default:
 		err = fmt.Errorf("runtime %q is neither tmux nor kubernetes", cfg.Runtime.Name)
 	}

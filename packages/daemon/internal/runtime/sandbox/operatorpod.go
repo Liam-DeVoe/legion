@@ -56,8 +56,11 @@ type setter struct {
 // attributes alone today), and the operator's own pod env. The exchange identity's two variables
 // (exchangeOwned) are the runtime's only where exchange says the deployment names an exchange
 // audience; otherwise nothing of Legion's sets them, and the operator's pod env may, as it could
-// before the key existed. The first setter of a name is the one named.
-func podVariables(pod Pod, launchSecrets []string, exchange bool) map[string]setter {
+// before the key existed. DISPATCH_TOKEN_BROKER (brokerOwned) is the runtime's in the same way,
+// only where broker says the deployment sets dispatch_token_broker: a deployment that does not
+// keeps the name the operator's, as it was before the setting existed. The first setter of a name
+// is the one named.
+func podVariables(pod Pod, launchSecrets []string, exchange, broker bool) map[string]setter {
 	set := map[string]setter{}
 	add := func(name, who string, operatorMay bool) {
 		if _, taken := set[name]; !taken {
@@ -93,6 +96,11 @@ func podVariables(pod Pod, launchSecrets []string, exchange bool) map[string]set
 	if exchange {
 		for _, name := range slices.Sorted(maps.Keys(exchangeOwned)) {
 			add(name, "Legion's runtime sets in every enrolled pod under runtime.kubernetes.agent_secrets.exchange_audience", false)
+		}
+	}
+	if broker {
+		for _, name := range slices.Sorted(maps.Keys(brokerOwned)) {
+			add(name, "Legion's runtime sets in every pod that carries an exchange identity under dispatch_token_broker", false)
 		}
 	}
 	for _, name := range imageEnv {
@@ -146,15 +154,17 @@ func podVariables(pod Pod, launchSecrets []string, exchange bool) map[string]set
 // which may be the session database's URL key. exchange is whether the deployment names an
 // exchange audience (runtime.kubernetes.agent_secrets.exchange_audience): only then are the
 // exchange identity's variables (exchangeOwned), volume and mount path Legion's, and refused; a
-// deployment that names none keeps them the operator's, as before the key existed. configure runs
-// it, and the daemon before its boot and for `legion start --check-config`.
-func CheckPod(pod Pod, providerKeys map[string]string, tools Tools, launchSecrets, providersSecrets []string, store ompsessions.Store, exchange bool) error {
+// deployment that names none keeps them the operator's, as before the key existed. broker is
+// whether it sets dispatch_token_broker, under which DISPATCH_TOKEN_BROKER (brokerOwned) is
+// Legion's and refused in the same way. configure runs it, and the daemon before its boot and for
+// `legion start --check-config`.
+func CheckPod(pod Pod, providerKeys map[string]string, tools Tools, launchSecrets, providersSecrets []string, store ompsessions.Store, exchange, broker bool) error {
 	sessionDSNKey := store.DSNSecretKey()
 	if slices.Contains(providersSecrets, sessionDSNKey) {
 		return fmt.Errorf("runtime.kubernetes.session_dsn_secret %s is the providers Secret's key the pod mounts as the launch secret %s: name a key of its own for the session database's URL",
 			sessionDSNKey, sessionDSNKey)
 	}
-	variables := podVariables(pod, launchSecrets, exchange)
+	variables := podVariables(pod, launchSecrets, exchange, broker)
 	for _, name := range slices.Sorted(maps.Keys(pod.Env)) {
 		if s := variables[name]; !s.operatorMay {
 			return fmt.Errorf("runtime.kubernetes.pod.env sets %s, which %s", name, s.who)

@@ -1376,6 +1376,13 @@ type Machine struct {
 	cancelStart    context.CancelFunc
 	startStopped   bool
 	storeFaultTold time.Time
+	// podRoundWaiting is whether the retry relaunchLater has armed is one of a start the runtime
+	// refused for want of its pod's update round (startWaitsForPodRound): the wait is logged once,
+	// at the refusal that begins it, and not at each minute's retry of it. letGo clears it, so
+	// every other way out of that wait — a start that succeeds or fails otherwise, a suspension, a
+	// retirement — makes the next such refusal a new wait that logs again. Memory only, as
+	// relaunch is: a restarted daemon's first refusal logs.
+	podRoundWaiting bool
 	// wake is the launch the wake pacing holds until its turn (reserveWake), run when TimerWake
 	// fires (wakeNow); nil for none. It lives as long as that timer, which letGo disarms with it,
 	// and it is memory only, as relaunch and staleRelaunch are: a restart loses no wake. A
@@ -2337,7 +2344,8 @@ func (m *Machine) dropStale(event, fence, got, held string) {
 // budget runs out; only a start that succeeds forgets it. A system prompt past the start frame
 // (runtime.PromptTooLarge, promptRefused) is no launch failure: the claim fails at once, charged
 // nothing, and a start the session store could not answer is charged nothing and tried again
-// (startWaitsForStore). A launch that fails stops the process it
+// (startWaitsForStore), as is one the runtime refused for want of its pod's update round
+// (startWaitsForPodRound). A launch that fails stops the process it
 // let go (stopPrevious), whichever step failed. A launch the tree lifecycle refuses (checkLaunch)
 // starts nothing and is charged nothing (relaunchRefused), and so is one whose context ended under
 // it — the daemon's stop. A runtime waits out a cluster that answers a launch's requests overloaded
@@ -2420,8 +2428,9 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt bool, cause s
 // It is also where the process a relaunch replaces is let go, for cause, and what that process
 // ended is recorded before the first try's write moves the generation and clears the process's
 // activity report (letGo, recordEnd, the store's putClaim). The retries this launch arms — a
-// failed write's here, a session store's that could not answer (startWaitsForStore) — launch a
-// claim that records no process any more, so they pass noEnd.
+// failed write's here, a session store's that could not answer (startWaitsForStore), a pod
+// round's (startWaitsForPodRound) — launch a claim that records no process any more, so they
+// pass noEnd.
 func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause string) error {
 	// The intent is read before it is committed rather than taken, because committing takes it
 	// off the machine (commitPluginRelaunch, takePluginRelaunch) and the retry a failed write
@@ -2429,6 +2438,9 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 	// wake gate does for the kind it reads off it (reserveWake).
 	intent := m.pluginRelaunch
 	m.commitPluginRelaunch()
+	// Read before letGo clears it: this launch may be the retry of a wait for a pod's round, whose
+	// next refusal is the same wait and logs nothing more (startWaitsForPodRound).
+	waiting := m.podRoundWaiting
 	m.letGo(ctx, cause)
 	starting, started := m.startable(ctx)
 	defer started()
@@ -2503,6 +2515,9 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 		if errors.Is(err, runtime.ErrSessionStore) {
 			return m.startWaitsForStore(starting, err, charged, exempt)
 		}
+		if errors.Is(err, runtime.ErrAwaitingPodRound) {
+			return m.startWaitsForPodRound(starting, err, charged, exempt, waiting)
+		}
 		var tooLarge *runtime.PromptTooLarge
 		if errors.As(err, &tooLarge) {
 			return m.promptRefused(ctx, starting, err)
@@ -2515,6 +2530,9 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			return m.failLaunch(ctx, err, fmt.Sprintf("launch failures ran out: %v", err))
 		}
 		charged = true
+		// A charged failure ends whatever wait this launch retried: a refusal on the next try is
+		// a new one.
+		waiting = false
 	}
 }
 
@@ -2615,6 +2633,35 @@ func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, 
 		"generation", m.claim.Generation, "retry", sessionStoreRetry, "error", err)
 	m.tellStoreFault(cause)
 	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, noEnd) })
+	return errors.Join(err, m.persist(ctx))
+}
+
+// podRoundRetry is how long a start refused for want of its pod's update round waits before
+// trying again (startWaitsForPodRound): the round replaces the pod once every role in it has
+// answered, or at its bound (pod_update_grace_minutes), and the first try after that finds the
+// pod the round brought.
+const podRoundRetry = time.Minute
+
+// podRoundWaitLine is the one line a claim's wait for its pod's update round logs, at the refusal
+// that begins the wait (startWaitsForPodRound).
+const podRoundWaitLine = "supervise: this start waits for its pod's update round; trying it again every minute, charging nothing"
+
+// startWaitsForPodRound is a start the runtime refused because the live pod it would keep carries
+// no exchange identity, under dispatch_token_broker, and the deployment names no transition token
+// for such a pod (runtime.ErrAwaitingPodRound). That is the pod's state, not the claim's failing:
+// charging it would fail a claim whose agent is fine for a pod that only its round replaces, so
+// the same launch is started again every minute (relaunchLater) until the pod it finds carries the
+// identity. A round can take hours, so the wait logs one line, with the runtime's refusal, which
+// names the pod, at the refusal that begins it; waiting is whether this refusal is a retry of a
+// wait already logged (podRoundWaiting). The process the launch let go is let go already, so the
+// retry lets none go (noEnd).
+func (m *Machine) startWaitsForPodRound(ctx context.Context, cause error, charged, exempt, waiting bool) error {
+	err := errors.Join(cause, m.stopPrevious(ctx))
+	if !waiting {
+		m.log.Warn(podRoundWaitLine, "generation", m.claim.Generation, "retry", podRoundRetry, "error", err)
+	}
+	m.relaunchLater(podRoundRetry, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, noEnd) })
+	m.podRoundWaiting = true
 	return errors.Join(err, m.persist(ctx))
 }
 
@@ -3153,7 +3200,7 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.recordEnd(ctx, cause)
 	m.disarmAll()
-	m.relaunch = nil
+	m.relaunch, m.podRoundWaiting = nil, false
 	m.wake = nil
 	m.forgetSend()
 	m.outstanding = nil

@@ -85,7 +85,8 @@ type Runtime struct {
 	sandboxConfig                  SandboxConfig
 	resources                      PodResources
 	streamURL, daemonURL, envoyURL string
-	dispatchURL, dispatchToken     string
+	dispatchURL                    string
+	dispatch                       DispatchCredential
 	natsURLs                       []string
 	tools                          Tools
 	pod                            Pod
@@ -314,9 +315,15 @@ func configureProber(opts Options) (*Runtime, error) {
 		return refuse("the registration deadline intervals %d is not positive", opts.RegistrationIntervals)
 	case opts.BusyBackoff <= 0:
 		return refuse("the busy backoff %s is not positive", opts.BusyBackoff)
-	case (opts.DispatchURL == "") != (opts.DispatchToken == ""):
-		return refuse("the Dispatch URL and its bearer are configured together (URL %q, bearer given: %t)",
-			opts.DispatchURL, opts.DispatchToken != "")
+	case (opts.DispatchURL == "") != (opts.Dispatch.Bearer == "" && !opts.Dispatch.Broker):
+		return refuse("the Dispatch URL and its credential are configured together (URL %q, Dispatch.Bearer given: %t, Dispatch.Broker: %t)",
+			opts.DispatchURL, opts.Dispatch.Bearer != "", opts.Dispatch.Broker)
+	case opts.Dispatch.Bearer != "" && opts.Dispatch.Broker:
+		return refuse("Dispatch.Bearer is given beside Dispatch.Broker: a launch's Dispatch credential is the shared bearer or its role's own trade at the secrets broker, never both")
+	case opts.Dispatch.Transition != "" && !opts.Dispatch.Broker:
+		return refuse("Dispatch.Transition is given without Dispatch.Broker: it is the shared token a launch into a pod built before the broker carries, which only Dispatch.Broker hands out")
+	case opts.Dispatch.Broker && (opts.AgentSecrets == nil || opts.AgentSecrets.ExchangeAudience == ""):
+		return refuse("Dispatch.Broker is set but AgentSecrets names no exchange audience: under the broker a launch carries no Dispatch token and its role trades its pod's exchange identity, which no pod carries without one")
 	case poolSet:
 		return refuse("scheduling node selector sets %s=%q: %s is the runtime's, which puts every pod on the %s pool the cluster's admission policy requires",
 			poolKey, pool, poolKey, poolValue)
@@ -367,7 +374,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		}
 	}
 	if err := CheckPod(opts.Pod, opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore,
-		opts.AgentSecrets != nil && opts.AgentSecrets.ExchangeAudience != ""); err != nil {
+		opts.AgentSecrets != nil && opts.AgentSecrets.ExchangeAudience != "", opts.Dispatch.Broker); err != nil {
 		return refuse("%v", err)
 	}
 	for _, name := range opts.ProvidersSecrets {
@@ -396,7 +403,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		namespace: opts.Namespace, project: opts.Project, image: opts.Image, storageClass: opts.StorageClass,
 		volumeSize: opts.IssueVolume, scheduling: opts.Scheduling, sandboxConfig: opts.Sandbox, resources: opts.Resources,
 		streamURL: opts.StreamURL, daemonURL: opts.DaemonURL, envoyURL: opts.EnvoyURL, dispatchURL: opts.DispatchURL,
-		dispatchToken: opts.DispatchToken, natsURLs: opts.NATSURLs, tools: opts.Tools, agentSecrets: opts.AgentSecrets,
+		dispatch: opts.Dispatch, natsURLs: opts.NATSURLs, tools: opts.Tools, agentSecrets: opts.AgentSecrets,
 		pod: opts.Pod, roleConfigFiles: opts.RoleConfigFiles, experimentVariants: opts.ExperimentVariants,
 		variantFiles: runtime.VariantOverlays(opts.ExperimentVariants),
 		providerKeys: opts.ProviderKeys, providersSecrets: slices.Sorted(slices.Values(opts.ProvidersSecrets)), natsUser: opts.NATSUser,

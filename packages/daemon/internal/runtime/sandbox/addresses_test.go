@@ -22,7 +22,7 @@ const (
 func addressRuntime(t *testing.T, edit func(*Options)) *Runtime {
 	t.Helper()
 	opts := testOptions()
-	opts.DispatchURL, opts.DispatchToken = testDispatchURL, "dispatch-bearer"
+	opts.DispatchURL, opts.Dispatch = testDispatchURL, DispatchCredential{Bearer: "dispatch-bearer"}
 	opts.AgentSecrets = &AgentSecrets{URL: testBrokerURL, Audience: "agent-secrets", TokenExpiry: time.Hour}
 	if edit != nil {
 		edit(&opts)
@@ -96,7 +96,7 @@ func TestEachAddressARoleIsHandedIsComparedAlone(t *testing.T) {
 			want:     &movedAddress{"AGENT_SECRETS_URL", "https://secrets-old.internal.example", testBrokerURL},
 		},
 		"Dispatch configured only now": {
-			launched: func(o *Options) { o.DispatchURL, o.DispatchToken = "", "" },
+			launched: func(o *Options) { o.DispatchURL, o.Dispatch = "", DispatchCredential{} },
 			want:     &movedAddress{"DISPATCH_URL", "(unset)", testDispatchURL},
 		},
 		"the secrets broker no longer configured": {

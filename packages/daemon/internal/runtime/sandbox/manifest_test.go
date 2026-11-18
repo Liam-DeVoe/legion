@@ -1374,7 +1374,7 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 		"relative tool":             {func(o *Options) { o.Tools.Git = "git" }, "git path \"git\" is not absolute"},
 		"bad project":               {func(o *Options) { o.Project = "s4a run" }, "is not a label value"},
 		"url no bearer":             {func(o *Options) { o.DispatchURL = "https://dispatch.internal" }, "configured together"},
-		"bearer no url":             {func(o *Options) { o.DispatchToken = "dispatch-bearer" }, "configured together"},
+		"bearer no url":             {func(o *Options) { o.Dispatch.Bearer = "dispatch-bearer" }, "configured together"},
 		"another pool":              {func(o *Options) { o.Scheduling.NodeSelector = map[string]string{poolKey: "gpu"} }, "legion.dev/pool is the runtime's"},
 		"the pool restated":         {func(o *Options) { o.Scheduling.NodeSelector = map[string]string{poolKey: poolValue} }, "legion.dev/pool is the runtime's"},
 		"no tokens":                 {func(o *Options) { o.Tokens = nil }, "no provisioning token source"},
@@ -1445,6 +1445,31 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 			},
 			"no storage class for the disks of the issue pods that run in a microVM",
 		},
+		"broker no url": {
+			func(o *Options) { o.AgentSecrets, o.Dispatch.Broker = exchangeEnrolled(), true },
+			"configured together",
+		},
+		"bearer and broker": {
+			func(o *Options) {
+				o.DispatchURL, o.AgentSecrets = "https://dispatch.internal", exchangeEnrolled()
+				o.Dispatch = DispatchCredential{Bearer: "dispatch-bearer", Broker: true}
+			},
+			"Dispatch.Bearer is given beside Dispatch.Broker",
+		},
+		"transition without the broker": {
+			func(o *Options) {
+				o.DispatchURL = "https://dispatch.internal"
+				o.Dispatch = DispatchCredential{Bearer: "dispatch-bearer", Transition: "dispatch-transition"}
+			},
+			"Dispatch.Transition is given without Dispatch.Broker",
+		},
+		"the broker without an exchange audience": {
+			func(o *Options) {
+				o.DispatchURL, o.Dispatch.Broker = "https://dispatch.internal", true
+				o.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
+			},
+			"Dispatch.Broker is set but AgentSecrets names no exchange audience",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			opts := testOptions()
@@ -1475,7 +1500,7 @@ func TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			opts := testOptions()
-			opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal", "dispatch-bearer"
+			opts.DispatchURL, opts.Dispatch = "https://dispatch.internal", DispatchCredential{Bearer: "dispatch-bearer"}
 			opts.AgentSecrets = agentSecrets
 			opts.TestPostgres = true
 			r, err := configure(opts)
@@ -1589,7 +1614,7 @@ func TestTheWorkerContainersEnvCarriesTheStallLimits(t *testing.T) {
 // controller's, each enrolled with the secrets broker here, are each held to that one list.
 func TestHandedAddressesAreEveryAddressAPodCarries(t *testing.T) {
 	opts := testOptions()
-	opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal.example", "dispatch-bearer"
+	opts.DispatchURL, opts.Dispatch = "https://dispatch.internal.example", DispatchCredential{Bearer: "dispatch-bearer"}
 	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
 	r, err := configure(opts)
 	if err != nil {
@@ -1636,8 +1661,9 @@ func TestHandedAddressesAreEveryAddressAPodCarries(t *testing.T) {
 	}
 }
 
-// The Dispatch bearer is the runtime's to carry, not the spec's: with Dispatch configured, every
-// claim's Secret holds it as DISPATCH_TOKEN and the worker container reads it through
+// The Dispatch bearer is the runtime's to carry, not the spec's: with Dispatch configured with
+// one, every launch carries it as DISPATCH_TOKEN in its start command's Files, which the launcher
+// writes into the generation's private directory, and the worker container reads it through
 // DISPATCH_TOKEN_FILE; without it, neither exists.
 func TestTheDispatchBearerIsARuntimeOption(t *testing.T) {
 	for name, tc := range map[string]struct {
@@ -1648,7 +1674,7 @@ func TestTheDispatchBearerIsARuntimeOption(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			opts := testOptions()
-			opts.DispatchURL, opts.DispatchToken = tc.url, tc.bearer
+			opts.DispatchURL, opts.Dispatch = tc.url, DispatchCredential{Bearer: tc.bearer}
 			r, err := configure(opts)
 			if err != nil {
 				t.Fatal(err)
@@ -1659,7 +1685,7 @@ func TestTheDispatchBearerIsARuntimeOption(t *testing.T) {
 			}
 			pointer, pointed := envOf(workerOf(t, r, workerSpec(t)))["DISPATCH_TOKEN_FILE"]
 			if got := l.secrets[dispatchTokenKey]; got != tc.bearer || pointed != (tc.bearer != "") {
-				t.Fatalf("the claim's Secret carries %q as %s and DISPATCH_TOKEN_FILE is %q (set: %t), want %q",
+				t.Fatalf("the launch carries %q as %s and DISPATCH_TOKEN_FILE is %q (set: %t), want %q",
 					got, dispatchTokenKey, pointer, pointed, tc.bearer)
 			}
 			if want := generationDir(workerSpec(t).Generation) + "/" + dispatchTokenKey; pointed && pointer != want {
@@ -2120,7 +2146,7 @@ func TestNewRefusesAProvidersSecretThatIsNoLaunchSecret(t *testing.T) {
 // list that no pod carries is refused for nothing.
 func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 	opts := goldenOptions()
-	opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal", "dispatch-bearer"
+	opts.DispatchURL, opts.Dispatch = "https://dispatch.internal", DispatchCredential{Bearer: "dispatch-bearer"}
 	opts.ProviderKeys = map[string]string{"ANTHROPIC_API_KEY": "anthropic"}
 	// With every optional piece configured: the pod's own test database is one (testPGVolume), the
 	// skills marketplace is another (skillsVolume, skillsTempVolume and SkillsDir), and a microVM

@@ -202,6 +202,13 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			l.kept = &kept
 		}
 	}
+	// Whether this launch keeps its pod is settled now, so under dispatch_token_broker so is its
+	// Dispatch credential: none for a pod that carries an exchange identity, the transition token
+	// for a kept pod built before it, or a refusal, before anything of the pod is touched, that
+	// waits for that pod's update round (dispatchCredential).
+	if err := r.dispatchCredential(&l); err != nil {
+		return runtime.Locator{}, err
+	}
 	if installing && replace {
 		// Replaced for some other reason: the fresh pod's image is already current, so nothing is
 		// installed into it.
@@ -343,6 +350,36 @@ func (r *Runtime) keptBy(s *sandbox, l launch) (keptPod, bool) {
 	}
 	kind, _, _ := heldSessionStore(spec)
 	return keptPod{enrolled: r.enrollsIn(&spec, l.spec.Role), trades: r.tradesIn(&spec, l.spec.Role), overlays: overlays, variantFiles: variantFiles, store: kind, skills: skills}, true
+}
+
+// dispatchCredential settles, under dispatch_token_broker, the Dispatch credential l's generation
+// carries, once relaunch knows whether l keeps the live pod it found (l.kept), whose name is its
+// Sandbox's (l.name). prepare gave no launch a Dispatch token under the setting. A launch whose
+// pod carries an exchange identity — every pod a launch builds, since configure takes the setting
+// only beside an exchange audience, and a kept pod built with that identity — keeps none, and its
+// role trades the identity for a token of its own (launch.brokersDispatch,
+// DISPATCH_TOKEN_BROKER). A launch that keeps a pod built before the identity has none to trade
+// until the pod's update round replaces the pod (keptPod.trades), so it carries the transition
+// token as a launch carries the bearer without the setting, the role reading it through
+// DISPATCH_TOKEN_FILE; with no transition token named, the launch is refused with
+// runtime.ErrAwaitingPodRound, naming the pod, and the supervisor waits for that round, charging
+// nothing. A launch never replaces a pod a round covers, and the controller's pod, which no round
+// covers, is never kept without the identity: its launch replaces it for that drift (movedInPod).
+//
+// Each launch that carries the transition token logs it, naming the claim and the pod: those are
+// the launches a deployment waits out before it removes dispatch_token_transition_file.
+func (r *Runtime) dispatchCredential(l *launch) error {
+	if !r.dispatch.Broker || l.trades(r) {
+		return nil
+	}
+	if r.dispatch.Transition == "" {
+		return fmt.Errorf("launch %s: %w: pod %s carries no exchange identity and dispatch_token_transition_file is not set; its update round replaces it",
+			l.spec.Claim, runtime.ErrAwaitingPodRound, l.name)
+	}
+	l.secrets[dispatchTokenKey] = r.dispatch.Transition
+	r.log.Warn("sandbox: a launch into a pod with no exchange identity carries the transition Dispatch token",
+		"claim", l.spec.Claim, "pod", l.name)
+	return nil
 }
 
 // stopIssuedChild stops generation of token's launcher in podUID after its Start returned startErr,

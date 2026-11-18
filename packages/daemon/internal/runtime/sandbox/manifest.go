@@ -117,12 +117,15 @@ const podUser = 1000
 // runtimeOwned are the main container's variables the runtime sets itself, the whole of each
 // value: with the composed names (composed), whose value the operator begins and the runtime
 // finishes, and, where the deployment names an exchange audience, the exchange identity's two
-// (exchangeOwned), it is exactly what the container is told by the runtime
-// (TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime). The shared validator refuses a
-// name of any of them in a spec's Env and as a secret's pointer (Runtime.specOwned), and CheckPod
-// refuses a runtime-owned one, or an exchange one where the deployment names the audience, in the
-// operator's pod — a composed one is the operator's to set, since composing is what the runtime
-// does with it. The image probe's
+// (exchangeOwned), it is exactly what the container is told by the runtime under Dispatch's shared
+// bearer (TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime). Under
+// dispatch_token_broker a launch into a pod that carries an exchange identity is told
+// DISPATCH_TOKEN_BROKER (brokerOwned) in place of DISPATCH_TOKEN_FILE, which stays owned, since a
+// launch into a kept pod without that identity carries the transition token behind it. The shared
+// validator refuses a name of any of them in a spec's Env and as a secret's pointer
+// (Runtime.specOwned), and CheckPod refuses a runtime-owned one, or an exchange or broker one where
+// the deployment names the audience or sets the broker, in the operator's pod — a composed one is
+// the operator's to set, since composing is what the runtime does with it. The image probe's
 // container sets none of its own. The two CLAUDE_* names and claudelaunch.SessionVariable are told
 // a Claude role alone, as the controller's Slack channels are the controller's, and owned in every
 // pod: an operator that could place a Claude Code worker's configuration directory, let the clock
@@ -193,11 +196,40 @@ var runtimeOwnedComposedOrExchange = func() map[string]bool {
 	return names
 }()
 
+// dispatchBrokerVariable is the daemon's word to a role that its Dispatch credential is a token
+// its Dispatch client trades its pod's exchange identity for at the secrets broker, and nothing
+// else: under it the client reads no bearer from any source (packages/envoy-client's
+// dispatch-config.ts, brokerRouteForced). The runtime tells it, as 1, to every role of a pod that
+// carries an exchange identity under dispatch_token_broker (launch.brokersDispatch), and so never
+// beside DISPATCH_TOKEN_FILE.
+const dispatchBrokerVariable = "DISPATCH_TOKEN_BROKER"
+
+// brokerOwned is the one variable the runtime sets itself only where the deployment sets
+// dispatch_token_broker (Options.Dispatch.Broker), as exchangeOwned is only where it names an
+// exchange audience: a deployment without the setting tells no role DISPATCH_TOKEN_BROKER, so the
+// name stays the operator's pod env's and a launch spec's to set, as it was before the setting
+// existed. It is no address: a role started under another word holds its credential for its life
+// and is never relaunched for the word (handedAddresses leaves it out).
+var brokerOwned = map[string]bool{dispatchBrokerVariable: true}
+
+// runtimeOwnedComposedExchangeOrBroker is every variable a launch spec may not set under
+// dispatch_token_broker, which configure takes only beside an exchange audience:
+// runtimeOwnedComposedOrExchange and brokerOwned together, built once.
+var runtimeOwnedComposedExchangeOrBroker = func() map[string]bool {
+	names := maps.Clone(runtimeOwnedComposedOrExchange)
+	maps.Copy(names, brokerOwned)
+	return names
+}()
+
 // specOwned is every variable a launch spec may not set under r (runtime.ValidateSpawnSpec): the
-// runtime's own and the composed ones, and the exchange identity's two where the deployment names
-// an exchange audience (exchangeOwned).
+// runtime's own and the composed ones, the exchange identity's two where the deployment names
+// an exchange audience (exchangeOwned), and DISPATCH_TOKEN_BROKER where it sets
+// dispatch_token_broker (brokerOwned).
 func (r *Runtime) specOwned() map[string]bool {
-	if r.agentSecrets != nil && r.agentSecrets.ExchangeAudience != "" {
+	switch {
+	case r.dispatch.Broker:
+		return runtimeOwnedComposedExchangeOrBroker
+	case r.agentSecrets != nil && r.agentSecrets.ExchangeAudience != "":
 		return runtimeOwnedComposedOrExchange
 	}
 	return runtimeOwnedOrComposed
@@ -357,7 +389,10 @@ type launch struct {
 	// secrets are the claim's launch credentials, each reaching the agent as a `<NAME>_FILE`
 	// pointer into its generation's private directory: the boot token, the spec's but the providers
 	// Secret's own (Options.ProvidersSecrets, which the runtime points at the providers mount
-	// whatever the spec carries), and the Dispatch bearer when Dispatch is configured.
+	// whatever the spec carries), and the Dispatch bearer when Dispatch is configured with one
+	// (DispatchCredential.Bearer) — or, under dispatch_token_broker, the transition token for a
+	// launch that keeps a pod with no exchange identity (relaunch's dispatchCredential), and no
+	// Dispatch token at all for every other launch.
 	secrets map[string]string
 	// prompt is the launch's composed system prompt (runtime.ComposePrompt), which reaches the agent
 	// as a file and never as an argv string: launcherCommand carries it in the start command's Files
@@ -486,6 +521,16 @@ func (l launch) trades(r *Runtime) bool {
 		return l.kept.trades
 	}
 	return r.tradesIn(nil, l.spec.Role)
+}
+
+// brokersDispatch is whether this launch's role holds no Dispatch token and trades its pod's
+// exchange identity for one of its own: the deployment sets dispatch_token_broker and the pod the
+// role runs in carries that identity (trades). Such a role is told DISPATCH_TOKEN_BROKER=1
+// (mainEnvironment), and its launch carries neither the bearer nor the transition token; under
+// the setting, a launch that is not one keeps a pod built before the identity, and carries the
+// transition token or waits for that pod's round (relaunch's dispatchCredential).
+func (l launch) brokersDispatch(r *Runtime) bool {
+	return r.dispatch.Broker && l.trades(r)
 }
 
 // overlays are this launch's settings overlays, which its generation is told in PI_CONFIG_FILES
@@ -675,8 +720,11 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 	for _, name := range r.providersSecrets {
 		delete(secrets, name)
 	}
-	if r.dispatchToken != "" {
-		secrets[dispatchTokenKey] = r.dispatchToken
+	// The shared bearer, when Dispatch is configured with one. Under dispatch_token_broker no
+	// launch carries it: a launch that keeps a pod with no exchange identity is given the
+	// transition token instead, once relaunch knows it keeps that pod (dispatchCredential).
+	if r.dispatch.Bearer != "" {
+		secrets[dispatchTokenKey] = r.dispatch.Bearer
 	}
 	l.secrets, l.prompt = secrets, prompt
 	// The prompt travels to the pod in the start command's Files, one frame a launcher reads whole
@@ -1593,6 +1641,12 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	if l.trades(r) {
 		add(machineIdentityVariable, kubernetesIdentity)
 		add(machineTokenFileVariable, AgentSecretsExchangeDir+"/"+AgentSecretsExchangeFile)
+	}
+	// Under dispatch_token_broker, the word that this role's Dispatch credential is the token that
+	// identity trades for, and nothing else (brokersDispatch): its launch carries no Dispatch
+	// token, so it is told no DISPATCH_TOKEN_FILE either (the pointers below follow l.secrets).
+	if l.brokersDispatch(r) {
+		add(dispatchBrokerVariable, "1")
 	}
 	// The pod's own test database, when the deployment serves one (runtime.kubernetes.test_postgres):
 	// an issue pod's roles alone, whose launcher serves it before it accepts a role start

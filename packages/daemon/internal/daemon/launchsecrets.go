@@ -68,7 +68,8 @@ func launchSecretNames(cfg config.Config, lookup func(string) (string, bool)) []
 // behind its `<NAME>_FILE` pointer alone (a tmux pane would refuse every launch; a pod's shim skips
 // the key). Under runtime: kubernetes, the operator's pod and provider keys are then held to the
 // Sandbox runtime's own refusals (sandbox.CheckPod), the exchange identity's names among them only
-// where runtime.kubernetes.agent_secrets names an exchange_audience.
+// where runtime.kubernetes.agent_secrets names an exchange_audience, and DISPATCH_TOKEN_BROKER only
+// under dispatch_token_broker.
 func checkOperatorConfig(cfg config.Config, lookup func(string) (string, bool)) error {
 	names := launchSecretNames(cfg, lookup)
 	for _, key := range cfg.ProviderKeys {
@@ -81,7 +82,8 @@ func checkOperatorConfig(cfg config.Config, lookup func(string) (string, bool)) 
 	}
 	broker := cfg.Runtime.Kubernetes.AgentSecrets
 	return sandbox.CheckPod(sandbox.Pod(cfg.Runtime.Kubernetes.Pod), providerSecretKeys(cfg.ProviderKeys),
-		workerImageTools, names, providersSecrets(cfg, lookup), cfg.Runtime.Kubernetes.SessionStore, broker != nil && broker.ExchangeAudience != "")
+		workerImageTools, names, providersSecrets(cfg, lookup), cfg.Runtime.Kubernetes.SessionStore, broker != nil && broker.ExchangeAudience != "",
+		cfg.DispatchTokenBroker)
 }
 
 // environLookup is os.LookupEnv over environ, the daemon's environment or a test's.

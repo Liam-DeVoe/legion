@@ -181,10 +181,9 @@ type Options struct {
 	// DaemonURL, EnvoyURL, and DispatchURL are the pane values LEGION_DAEMON_URL, ENVOY_URL, and
 	// DISPATCH_URL; an empty one is left unset.
 	DaemonURL, EnvoyURL, DispatchURL string
-	// DispatchToken is the Dispatch bearer every claim's Secret carries as DISPATCH_TOKEN, and its
-	// main container reads through DISPATCH_TOKEN_FILE. It is configured exactly when DispatchURL
-	// is.
-	DispatchToken string
+	// Dispatch is the Dispatch credential a launch's role holds, configured exactly when
+	// DispatchURL is (DispatchCredential).
+	Dispatch DispatchCredential
 	// NATSURLs are ENVOY_NATS_URL, comma-joined; none leaves it unset.
 	NATSURLs []string
 	Tools    Tools
@@ -390,6 +389,27 @@ type Options struct {
 // issue pod's, whose one container runs every workflow role, and the project controller's.
 type PodResources struct {
 	Issue, Controller corev1.ResourceRequirements
+}
+
+// DispatchCredential is the Dispatch credential a launch's role holds, in exactly one of two ways.
+//
+// Bearer is the shared Dispatch bearer (dispatch_token_file): every launch carries it as
+// DISPATCH_TOKEN in its start command's Files, which the launcher writes into the generation's
+// private directory, and its role reads it through DISPATCH_TOKEN_FILE.
+//
+// Broker is dispatch_token_broker: a launch into a pod that carries an exchange identity
+// (launch.trades) carries no Dispatch token at all, and its role is told DISPATCH_TOKEN_BROKER=1,
+// under which its Dispatch client trades that identity at the secrets broker for a token of its
+// own session. It needs AgentSecrets.ExchangeAudience, so every pod a launch builds carries the
+// identity. Transition, given only with Broker, is the shared token
+// dispatch_token_transition_file holds: a launch that keeps a live pod built before the identity
+// carries it as a launch carries Bearer, since a role of such a pod has no identity to trade until
+// its update round replaces the pod; with no Transition such a launch is refused, nothing of the
+// pod touched, and waits for that round (runtime.ErrAwaitingPodRound).
+type DispatchCredential struct {
+	Bearer     string
+	Broker     bool
+	Transition string
 }
 
 // AgentSecrets is the secrets broker the runtime enrolls every pod with: the URL the
