@@ -227,10 +227,10 @@ export async function notFoundText(page: Page): Promise<string> {
   return (await mainContent(page).textContent()) ?? "";
 }
 
-/** Whether `later` stands after `earlier` in the document, each locator's one element. */
+/** Whether `later` stands after `earlier` in the document, each locator's one element. The
+ *  handle waits for `later`'s element, and throws where none comes or more than one matches. */
 export async function follows(earlier: Locator, later: Locator): Promise<boolean> {
   const handle = await later.elementHandle();
-  if (handle === null) return false;
   try {
     return await earlier.evaluate(
       (first, second) =>
