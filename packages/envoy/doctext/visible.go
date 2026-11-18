@@ -85,53 +85,70 @@ func (cmarkGFMBlock) CanAcceptIndentedLine() bool { return false }
 // it opened stands, or after a byte that is no dash.
 var cmarkGFMCommentEnd = regexp.MustCompile(`(?:^|[^-])(?:---)*-->`)
 
-// cmarkGFMRawHTML is whether GitHub writes n, an inline raw HTML node goldmark reads with text raw,
-// as raw HTML: when it does not, GitHub writes it as text, which hides nothing and ends no open
-// comment. cmark-gfm reads inline raw HTML as goldmark does but at a `<!` (src/inlines.c:940-980),
-// and the three readings below are its (a declaration with no space after its name is under
+// inlineScan is what cmark-gfm's inline scan of each block has read so far, as cmarkGFMRawHTML and
+// markTextOpener follow it: whether a `<!--` in the block's inline text found no end (noBang), and
+// the source offset that inline raw HTML ran on to (readTo), whose bytes cmark-gfm read as that raw
+// HTML and no further: goldmark's nodes that start before it are no nodes to cmark-gfm.
+type inlineScan struct {
+	noBang map[ast.Node]bool
+	readTo map[ast.Node]int
+}
+
+// cmarkGFMRawHTML is how GitHub writes n, an inline raw HTML node goldmark reads with text raw: as
+// text (ok false), which hides nothing and ends no open comment, or as raw HTML (ok true) through
+// source offset end, which lies past n where cmark-gfm's comment runs on past goldmark's end.
+// cmark-gfm reads inline raw HTML as goldmark does but at a `<!` (src/inlines.c:940-980), and the
+// three readings below are its (a declaration with no space after its name is under
 // VisibleMarkdown's "Not modelled"):
 //   - `<!-->` and `<!--->` are comments to both (inlines.c:943-947);
 //   - another `<!--` opens a comment that cmark-gfm's scanner (inlines.c:949) ends at the first
 //     cmarkGFMCommentEnd after it, which may lie past goldmark's end, the first `-->`, anywhere
-//     later in the inline text of n's block. With such an end GitHub writes the whole span as raw
-//     HTML, and the page's comment ends where goldmark's does, since an HTML parser ends a comment
-//     at its first `-->`; with none, the `<` is text;
+//     later in the inline text of n's block. With such an end GitHub writes every byte from the
+//     `<!--` through it as one piece of raw HTML, code spans, escapes and other `<!--` in it
+//     included, and an HTML parser reads that piece, ending its first comment at the first `-->`;
+//     with none, the `<` is text;
 //   - once a `<!--` in a block's inline text finds no end, raw HTML or a text `<!--`
 //     (markTextOpener), cmark-gfm reads no later `<!` in that text as raw HTML: no comment, CDATA
-//     section or declaration (FLAG_SKIP_HTML_COMMENT, inlines.c:940 and :952-955). noBang holds
-//     those blocks.
-func cmarkGFMRawHTML(n *ast.RawHTML, raw, source []byte, noBang map[ast.Node]bool) bool {
+//     section or declaration (FLAG_SKIP_HTML_COMMENT, inlines.c:940 and :952-955).
+func cmarkGFMRawHTML(n *ast.RawHTML, raw, source []byte, scan inlineScan) (ok bool, end int) {
+	stop := n.Segments.At(n.Segments.Len() - 1).Stop
 	if !bytes.HasPrefix(raw, []byte("<!")) {
-		return true
+		return true, stop
 	}
 	block := inlineBlock(n)
-	if noBang[block] {
-		return false
+	if scan.noBang[block] {
+		return false, 0
 	}
-	inner, ok := bytes.CutPrefix(raw, []byte("<!--"))
-	if !ok || bytes.HasPrefix(inner, []byte(">")) || bytes.HasPrefix(inner, []byte("->")) {
-		return true
+	inner, opens := bytes.CutPrefix(raw, []byte("<!--"))
+	if !opens || bytes.HasPrefix(inner, []byte(">")) || bytes.HasPrefix(inner, []byte("->")) ||
+		cmarkGFMCommentEnd.Match(inner) {
+		return true, stop
 	}
-	if cmarkGFMCommentEnd.Match(inner) ||
-		commentEndAfter(block, n.Segments.At(n.Segments.Len()-1).Stop, source) {
-		return true
+	if end := commentEndAfter(block, stop, source); end >= 0 {
+		return true, end
 	}
-	noBang[block] = true
-	return false
+	scan.noBang[block] = true
+	return false, 0
 }
 
-// markTextOpener records in noBang the block of n, inline text, when n holds a `<!--` that
+// markTextOpener records in scan.noBang the block of n, inline text, when n holds a `<!--` that
 // cmark-gfm's scan finds no end for: one that no backslash escapes, outside a code span, which
 // cmark-gfm reads as a `<` to scan (inlines.c:913), and that neither opens `<!-->` or `<!--->` nor
-// has a cmarkGFMCommentEnd after it.
-func markTextOpener(n *ast.Text, source []byte, noBang map[ast.Node]bool) {
-	if parent := n.Parent(); parent == nil || parent.Kind() == ast.KindCodeSpan {
+// has a cmarkGFMCommentEnd after it. Bytes before scan.readTo were raw HTML to cmark-gfm and are
+// not read, and a code span goldmark opened among them is none to cmark-gfm, so its text after them
+// is read as text.
+func markTextOpener(n *ast.Text, source []byte, scan inlineScan) {
+	parent := n.Parent()
+	if parent == nil {
 		return
 	}
 	block := inlineBlock(n)
-	segment := n.Segment
-	for at := segment.Start; at < segment.Stop; {
-		i := bytes.Index(source[at:segment.Stop], []byte("<!--"))
+	readTo := scan.readTo[block]
+	if parent.Kind() == ast.KindCodeSpan && n.Segment.Start >= readTo {
+		return
+	}
+	for at, stop := max(n.Segment.Start, readTo), n.Segment.Stop; at < stop; {
+		i := bytes.Index(source[at:stop], []byte("<!--"))
 		if i < 0 {
 			return
 		}
@@ -142,8 +159,8 @@ func markTextOpener(n *ast.Text, source []byte, noBang map[ast.Node]bool) {
 		}
 		next := source[opener+len("<!--"):]
 		if slashes%2 == 0 && !bytes.HasPrefix(next, []byte(">")) && !bytes.HasPrefix(next, []byte("->")) &&
-			!commentEndAfter(block, opener+len("<!--"), source) {
-			noBang[block] = true
+			commentEndAfter(block, opener+len("<!--"), source) < 0 {
+			scan.noBang[block] = true
 			return
 		}
 		at = opener + 1
@@ -159,23 +176,44 @@ func inlineBlock(n ast.Node) ast.Node {
 	return block
 }
 
-// commentEndAfter is whether the inline text of block, from source offset from on, holds a
-// cmarkGFMCommentEnd: the text cmark-gfm's inline scanner reads as one subject, the bytes of the
-// block's lines without the prefix a block quote or a list item puts before each. Each line is
-// matched where it lies in source, with nothing copied: a `-->` holds no line break, and what
-// stands before a line's first byte in that subject is a line break, never a `-`.
-func commentEndAfter(block ast.Node, from int, source []byte) bool {
+// commentEndAfter is the source offset just past the first cmarkGFMCommentEnd in the inline text
+// of block from source offset from on, or -1 when it holds none: the text cmark-gfm's inline
+// scanner reads as one subject, the bytes of the block's lines without the prefix a block quote or
+// a list item puts before each. Each line is matched where it lies in source, with nothing copied:
+// a `-->` holds no line break, and what stands before a line's first byte in that subject is a line
+// break, never a `-`. The leftmost match ends at the first end, since a match spans one run of
+// dashes and the `>` after it.
+func commentEndAfter(block ast.Node, from int, source []byte) int {
 	if block == nil {
-		return false
+		return -1
 	}
 	lines := block.Lines()
 	for i := range lines.Len() {
 		line := lines.At(i)
-		if line.Stop > from && cmarkGFMCommentEnd.Match(source[max(line.Start, from):line.Stop]) {
-			return true
+		if line.Stop <= from {
+			continue
+		}
+		start := max(line.Start, from)
+		if at := cmarkGFMCommentEnd.FindIndex(source[start:line.Stop]); at != nil {
+			return start + at[1]
 		}
 	}
-	return false
+	return -1
+}
+
+// linesBetween are the segments of block's lines from source offset from up to to, without the
+// prefix a block quote or a list item puts before each line.
+func linesBetween(block ast.Node, from, to int) []text.Segment {
+	var segments []text.Segment
+	lines := block.Lines()
+	for i := range lines.Len() {
+		line := lines.At(i)
+		start, stop := max(line.Start, from), min(line.Stop, to)
+		if start < stop {
+			segments = append(segments, text.NewSegment(start, stop))
+		}
+	}
+	return segments
 }
 
 // VisibleMarkdown is doc as a reader of the page GitHub renders sees it, for a check that holds a
@@ -318,7 +356,7 @@ func rawHTML(source []byte) []piece {
 		pieces = append(pieces, p)
 	}
 	root := markdown.Parser().Parse(text.NewReader(source))
-	noBang := map[ast.Node]bool{}
+	scan := inlineScan{noBang: map[ast.Node]bool{}, readTo: map[ast.Node]int{}}
 	_ = ast.Walk(root, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
 		if !entering {
 			return ast.WalkContinue, nil
@@ -336,8 +374,15 @@ func rawHTML(source []byte) []piece {
 			read(segments, true)
 			return ast.WalkSkipChildren, nil
 		case *ast.Text:
-			markTextOpener(n, source, noBang)
+			markTextOpener(n, source, scan)
 		case *ast.RawHTML:
+			if n.Segments.Len() == 0 {
+				break
+			}
+			block := inlineBlock(n)
+			if n.Segments.At(0).Start < scan.readTo[block] {
+				break
+			}
 			segments := make([]text.Segment, 0, n.Segments.Len())
 			var raw []byte
 			for i := range n.Segments.Len() {
@@ -345,8 +390,13 @@ func rawHTML(source []byte) []piece {
 				segments = append(segments, segment)
 				raw = append(raw, segment.Value(source)...)
 			}
-			if !cmarkGFMRawHTML(n, raw, source, noBang) {
-				return ast.WalkContinue, nil
+			ok, end := cmarkGFMRawHTML(n, raw, source, scan)
+			if !ok {
+				break
+			}
+			if stop := segments[len(segments)-1].Stop; end > stop {
+				segments = append(segments, linesBetween(block, stop, end)...)
+				scan.readTo[block] = end
 			}
 			read(segments, false)
 		}

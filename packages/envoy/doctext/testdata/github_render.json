@@ -1,5 +1,5 @@
 {
- "read": "2026-11-17T23:18:27Z",
+ "read": "2026-11-18T00:05:36Z",
  "how": "gh api markdown -f text=<doc> -f mode=gfm (POST /markdown), GitHub's renderer and sanitizer",
  "rows": [
   {
@@ -336,6 +336,35 @@
     "zt40"
    ],
    "html": "<div> zs40<p></p>\n<p>zt40</p></div>"
+  },
+  {
+   "name": "a code span inside a run-on comment's raw HTML holds a comment",
+   "doc": "Run `make` <!-- fix: zm42 ---> then `<!-- footer: zm43 -->` is the footer zf42.\n",
+   "markers": [
+    "zm42",
+    "zm43",
+    "zf42"
+   ],
+   "html": "<p>Run <code class=\"notranslate\">make</code>  then `` is the footer zf42.</p>"
+  },
+  {
+   "name": "an escape inside a run-on comment's raw HTML holds a comment",
+   "doc": "a <!-- note ---> b \\<!-- zm44 --> c zf44\n",
+   "markers": [
+    "zm44",
+    "zf44"
+   ],
+   "html": "<p>a  b \\ c zf44</p>"
+  },
+  {
+   "name": "the same code span after a comment that ends where goldmark's does",
+   "doc": "Run `make` <!-- fix: zm45 --> then `<!-- footer: zm46 -->` is the footer zf45.\n",
+   "markers": [
+    "zm45",
+    "zm46",
+    "zf45"
+   ],
+   "html": "<p>Run <code class=\"notranslate\">make</code>  then <code class=\"notranslate\">&lt;!-- footer: zm46 --&gt;</code> is the footer zf45.</p>"
   }
  ]
 }
