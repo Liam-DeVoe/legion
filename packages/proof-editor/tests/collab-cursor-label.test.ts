@@ -187,15 +187,19 @@ test("a caret label that would pass the end of its box hangs back from the caret
             "carol's label, moved 20 px from the box's end, still hangs toward the line's end"
           ).toBe(true);
         } finally {
+          // y-prosemirror hands each awareness change it hears to the view in a 0 ms timeout it
+          // queues (`setMeta`), and runs it on a view even once that view is destroyed. In CI one
+          // such task ran after the view was gone (`this.docView` null in prosemirror-view's
+          // `updateStateInner`), and one after this window was gone (`document is not defined`).
+          // Timeouts of one delay run in the order they were set, so a 0 ms timeout set now runs
+          // after every task queued so far: first while the view still lives, then once more
+          // after the view and the peers are gone, while this window is still the document.
+          // No fake clock can stand in: the task is y-prosemirror's own.
+          const queuedSoFar = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+          await queuedSoFar();
           view.destroy();
           for (const peer of [bob, carol, awareness]) peer.destroy();
-          // y-prosemirror hands each change it hears to the view in a 0 ms timeout it queues
-          // (`setMeta`), and in CI one such task ran after this window was gone, with no
-          // `document` (`document is not defined` in upstream's `installCollabCursorStyles`).
-          // Timeouts of one delay run in the order they were set, so a 0 ms timeout set after
-          // the view and the peers are gone runs after every task they queued: the window
-          // outlives them. No fake clock can stand in: the task is y-prosemirror's own.
-          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          await queuedSoFar();
         }
       });
     });
