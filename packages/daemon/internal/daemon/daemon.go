@@ -969,7 +969,8 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken
 }
 
 // checkPaneRoleOverlays is the boot gate's read of the overlays each role names beyond the
-// operator's own, as that role's pane will start Oh My Pi: its PI_CONFIG_FILES,
+// operator's own (overlayRoles: Legion's, then each role the deployment defines), as that role's
+// pane will start Oh My Pi: its PI_CONFIG_FILES,
 // runtime.tmux.pi_config_files then the role's own files (role_config_files) and, for a workflow
 // role of a project that declares an arm naming overlays, that arm's files after them
 // (runtime.RoleOverlayValues, which the image probe's manifest builds its values with too), each
@@ -993,7 +994,7 @@ func checkPaneRoleOverlays(ctx context.Context, cfg config.Config, image capabil
 	}
 	declared := experiment.DeclaredVariants(cfg.ExperimentsDeclared())
 	reads := capabilities.OverlayReads{}
-	for _, role := range config.RoleConfigRoles {
+	for _, role := range overlayRoles(cfg) {
 		own := cfg.RoleConfigFiles[role]
 		ownField := "role_config_files." + string(role)
 		for _, value := range runtime.RoleOverlayValues(role, own, declared) {
