@@ -316,6 +316,31 @@ describe("a write that landed with no answer to give", () => {
     expect(out.some((line) => line.startsWith("close "))).toBe(false);
     expect(code).toBe(2);
   });
+
+  test("fails the status write when the read back finds the issue in another status", async () => {
+    const closed: string[] = [];
+    const run: DispatchWrites = {
+      ...writes(async (key) => {
+        closed.push(key);
+        return { status: "done" };
+      }),
+      setStatus: async () => {
+        throw landed("PATCH");
+      },
+      readIssue: async () => ({ status: "triage" }),
+    };
+    const out: string[] = [];
+    const code = await runCheck(parseArguments(["--project", "ACME"]), run, (line) =>
+      out.push(line)
+    );
+    expect(out).toContain("status landed: read back");
+    expect(out).toContain(`status issue=${KEY} status=other fail`);
+    expect(out.some((line) => line.startsWith("scratch issue="))).toBe(false);
+    expect(out.some((line) => line.startsWith("request "))).toBe(false);
+    expect(out).toContain(`close issue=${KEY} status=done pass`);
+    expect(closed).toEqual([KEY]);
+    expect(code).toBe(2);
+  });
 });
 
 describe("the close of the scratch issue", () => {

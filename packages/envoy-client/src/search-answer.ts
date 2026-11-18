@@ -11,7 +11,7 @@ import {
   type SearchResultsPageAbsentAs,
   snippetText,
 } from "@legion/contracts";
-import { actorText, deletedMark, editedMark } from "./actor-text";
+import { actorText, deletedMark, withEditedMark } from "./actor-text";
 import { dispatchWordsText } from "./ask-answer";
 import { dispatchDocumentRef } from "./dispatch-owner";
 
@@ -29,9 +29,7 @@ function searchHitLine(result: SearchResult, baseUrl: string): string {
   const href = new URL(result.href, baseUrl).toString();
   const text =
     result.deleted_at == null
-      ? result.edited_at == null
-        ? snippetText(result.snippet)
-        : `${snippetText(result.snippet)} · ${editedMark(result.edited_at)}`
+      ? withEditedMark(snippetText(result.snippet), result.edited_at)
       : deletedMark(result.deleted_at, result.deleted_by);
   const { owner } = result;
   if (owner.kind === "document") {

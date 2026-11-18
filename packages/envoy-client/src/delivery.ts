@@ -33,7 +33,7 @@ import {
 } from "@legion/contracts";
 import { encode } from "@toon-format/toon";
 import { z } from "zod";
-import { deletedMark, editedMark } from "./actor-text";
+import { deletedMark, withEditedMark } from "./actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "./ask-answer";
 import { commandLine } from "./dispatch-command";
 import type { ActiveDispatchConfig } from "./dispatch-config";
@@ -605,7 +605,7 @@ export async function wholeCarriedBody(
     const post = posts.find((candidate) => candidate.id === item.id);
     if (post === undefined) return undefined;
     if (post.deleted_at != null) return deletedMark(post.deleted_at, post.deleted_by);
-    return post.edited_at == null ? post.body : `${post.body} · ${editedMark(post.edited_at)}`;
+    return withEditedMark(post.body, post.edited_at);
   } catch {
     return undefined;
   }

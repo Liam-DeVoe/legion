@@ -427,11 +427,12 @@ type TargetName struct {
 // node was deleted, or its kind is one this build cannot address (resolveNodes) — which is what
 // a caller draws as a reference whose target is gone. A block of a deleted comment or message
 // resolves to nothing too, since the delete removed every block of its post (TombstoneItem), but
-// it has an entry: Gone, with no name and its post's delete mark, as a block read of it is
-// refused naming the deletion (api's itemBlockNotFound). Each kind is read in one statement
-// whatever the number of targets, so a batch costs a statement per kind, not per target; a block
-// of a comment or a message that resolves to nothing costs one statement more per kind of post,
-// which reads whether its post was deleted.
+// it has an entry: Gone, with no name and its post's marks, the delete's and, where its author
+// edited the post before deleting it, the last edit's time, as a block read of it is refused
+// naming the deletion (api's itemBlockNotFound). Each kind is read in one statement whatever the
+// number of targets, so a batch costs a statement per kind, not per target; a block of a comment
+// or a message that resolves to nothing, whose post targets does not name too, costs one
+// statement more per kind of post, which reads whether its post was deleted.
 func TargetNames(ctx context.Context, q Queryer, targets []Target) (map[Target]TargetName, error) {
 	rows := make([]edgeRow, len(targets))
 	for index, target := range targets {
@@ -453,10 +454,11 @@ func TargetNames(ctx context.Context, q Queryer, targets []Target) (map[Target]T
 	return names, nil
 }
 
-// deletedPostBlocks enters into names, Gone and under its post's delete mark, each of targets
-// that is a block of a comment or a message (ParseItemBlockNode) with no entry in names, whose
-// post its author deleted. The posts are read as nodes of their own kind (resolveNodes), in one
-// statement per kind of post, and none when every block resolved.
+// deletedPostBlocks enters into names, Gone and under its post's marks (its delete's and its last
+// edit's), each of targets that is a block of a comment or a message (ParseItemBlockNode) with no
+// entry in names, whose post its author deleted. A post targets names too has its marks in names
+// already; the others are read as nodes of their own kind (resolveNodes), in one statement per
+// kind of post, and none when every block resolved or every such post is named.
 func deletedPostBlocks(ctx context.Context, q Queryer, targets []Target, names map[Target]TargetName) error {
 	var posts []edgeRow
 	blocks := map[[2]string][]Target{}
@@ -470,11 +472,13 @@ func deletedPostBlocks(ctx context.Context, q Queryer, targets []Target, names m
 		}
 		post := [2]string{string(kind), itemID}
 		if _, held := blocks[post]; !held {
-			posts = append(posts, edgeRow{otherKind: post[0], otherID: post[1]})
+			if _, named := names[Target{Kind: post[0], ID: post[1]}]; !named {
+				posts = append(posts, edgeRow{otherKind: post[0], otherID: post[1]})
+			}
 		}
 		blocks[post] = append(blocks[post], target)
 	}
-	if len(posts) == 0 {
+	if len(blocks) == 0 {
 		return nil
 	}
 	nodes, err := resolveNodes(ctx, q, true, posts)
@@ -482,12 +486,20 @@ func deletedPostBlocks(ctx context.Context, q Queryer, targets []Target, names m
 		return err
 	}
 	for post, held := range blocks {
-		node, found := nodes[post]
-		if !found || node.DeletedAt == nil {
+		marks, named := names[Target{Kind: post[0], ID: post[1]}]
+		if !named {
+			node, found := nodes[post]
+			if !found {
+				continue
+			}
+			marks = TargetName{EditedAt: node.EditedAt, DeletedAt: node.DeletedAt, DeletedBy: node.DeletedBy}
+		}
+		if marks.DeletedAt == nil {
 			continue
 		}
+		gone := TargetName{Gone: true, EditedAt: marks.EditedAt, DeletedAt: marks.DeletedAt, DeletedBy: marks.DeletedBy}
 		for _, target := range held {
-			names[target] = TargetName{Gone: true, DeletedAt: node.DeletedAt, DeletedBy: node.DeletedBy}
+			names[target] = gone
 		}
 	}
 	return nil

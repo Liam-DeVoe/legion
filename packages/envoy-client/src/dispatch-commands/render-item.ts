@@ -13,7 +13,7 @@ import type {
   PostHistoryRead,
 } from "@legion/contracts";
 import { actorActText, encodeBlockId, POST_HISTORY_PAGE_LIMIT } from "@legion/contracts";
-import { actorText, deletedMark, editedMark } from "../actor-text";
+import { actorText, deletedMark, withEditedMark } from "../actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "../ask-answer";
 import type { DispatchClient } from "../dispatch-http";
 import { ownerTitle } from "../dispatch-owner";
@@ -293,11 +293,13 @@ function replyBlockLines(record: Pick<Comment, "reply_block">): string[] {
       `Re: block ${block.block_id} (parent deleted): ${deletedMark(block.deleted_at, block.deleted_by)}`,
     ];
   }
-  const edited = block.edited_at == null ? "" : ` · ${editedMark(block.edited_at)}`;
   return [
-    block.removed
-      ? `Re: block ${block.block_id} (removed)${edited}`
-      : `Re: block ${block.block_id}: ${textHead(block.text)}${edited}`,
+    withEditedMark(
+      block.removed
+        ? `Re: block ${block.block_id} (removed)`
+        : `Re: block ${block.block_id}: ${textHead(block.text)}`,
+      block.edited_at
+    ),
   ];
 }
 

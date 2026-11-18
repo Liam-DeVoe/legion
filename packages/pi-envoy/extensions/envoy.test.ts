@@ -30,6 +30,7 @@ import { hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import {
   canonicalTopic,
+  IDEMPOTENCY_KEY_COMMITTED,
   legacyDispatchIssueSubject,
   type SessionAnswer,
   uncapturedTopicRefusal,
@@ -13612,7 +13613,7 @@ console.log(JSON.stringify(args));
         if (path === REPLY) {
           replies.push(JSON.parse(init?.body?.toString() ?? "{}"));
           return new Response(
-            JSON.stringify({ code: "KEY_COMMITTED", error: "this request already ran" }),
+            JSON.stringify({ code: IDEMPOTENCY_KEY_COMMITTED, error: "this request already ran" }),
             { status: 409, headers: { "Content-Type": "application/json" } }
           );
         }
@@ -14056,7 +14057,7 @@ console.log(JSON.stringify(args));
       try {
         const { accepts, agent, delivered, fixture, posts } = await bootDirectSession(
           "direct-accept-landed",
-          { accept: () => ({ code: "KEY_COMMITTED", status: 409 }) }
+          { accept: () => ({ code: IDEMPOTENCY_KEY_COMMITTED, status: 409 }) }
         );
 
         await onTestClock(() => {

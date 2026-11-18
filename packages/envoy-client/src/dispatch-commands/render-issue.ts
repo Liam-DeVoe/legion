@@ -15,7 +15,7 @@ import type {
   MessageEventPayload,
 } from "@legion/contracts";
 import { actorLabel, claimHolds, claimTakeableAt, ISSUE_ROUTE_STATUSES } from "@legion/contracts";
-import { actorText, deletedMark, editedMark } from "../actor-text";
+import { actorText, deletedMark, withEditedMark } from "../actor-text";
 import { askAnswerText, textHead } from "../ask-answer";
 import type { DispatchClient } from "../dispatch-http";
 import { humanEditHead } from "../human-edit";
@@ -398,8 +398,7 @@ export function logSummary(issue: IssueDetails, events: readonly DispatchEvent[]
 function postEventHead(payload: CommentEventPayload | MessageEventPayload): string | undefined {
   if (payload.deleted_at != null) return deletedMark(payload.deleted_at, payload.deleted_by);
   if (payload.body === undefined) return undefined;
-  const head = textHead(payload.body);
-  return payload.edited_at == null ? head : `${head} · ${editedMark(payload.edited_at)}`;
+  return withEditedMark(textHead(payload.body), payload.edited_at);
 }
 
 /** The head of the text an event carries, so a log reads without opening each item. */

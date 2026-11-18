@@ -1485,13 +1485,13 @@ function askThreadsOn(issue: string): RefreshTarget {
   };
 }
 
-/** Two caches hold a post's words under a key that is not the post's own: the search palette keeps each
- *  answer under its words for its `staleTime` (`useTieredSearch.ts`, `["search", words,
- *  request]`), and a page's reference chips keep their targets' names under the set of
- *  references they name (`referenceTargetsQuery`, `["reference-targets", refs]`), each printing a
- *  post's text or a block of it with the post's marks. So an edit or a delete of a post reads every
- *  answer of both again: the post may be in any of them, and its words may be gone. A create needs
- *  none: a kept answer that misses a post written since shows no text of it. */
+/** Two caches hold a post's words under a key that is not the post's own: the search palette keeps
+ *  each answer under its words for its `staleTime` (`useTieredSearch.ts`, `["search", words,
+ *  request]`), and `referenceTargetsQuery` keeps the names of a set of references under that set
+ *  (`["reference-targets", refs]`); each holds a post's text or a block of it with the post's
+ *  marks. So an edit or a delete of a post reads every answer of both again: the post may be in
+ *  any of them, and its words may be gone. A create needs none: a kept answer that misses a post
+ *  written since shows no text of it. */
 const POST_CORRECTIONS: Partial<Record<EventType, true>> = {
   "comment.edited": true,
   "comment.deleted": true,

@@ -120,9 +120,9 @@ const EditAnswer = z.looseObject({
   advice: z.looseObject({ moved_approval_request: MovedReport.optional() }).optional(),
 });
 
-/** `PATCH /api/v1/issues/{key}`: the status the close left; `GET /api/v1/issues/{key}` reads the
- *  same field. */
-const ClosedIssue = z.looseObject({ status: z.string() });
+/** `PATCH /api/v1/issues/{key}`: the status the write left, the status write's or the close's;
+ *  `GET /api/v1/issues/{key}` reads the same field. */
+const IssueStatus = z.looseObject({ status: z.string() });
 
 /** One row of `GET /api/v1/issues?project=`, by the fields the check finds its scratch issue by. */
 const ListedIssue = z.looseObject({
@@ -375,7 +375,9 @@ function madeRequest(listed: unknown, spec: string): unknown {
  * The scratch issue, its spec and the two documents beside it. An answer that is not the 201 of
  * an issue of the named project is refused without closing anything: the check closes the issues
  * it made and no other. A write that landed with no answer to give made what it was sent to make,
- * and each step goes on from what a read of the issue finds it made (`written`).
+ * and each step goes on from what a read of the issue finds it made (`written`). The status write
+ * must leave the issue `in_progress`, by its answer or by that read: any other status fails it as
+ * the close's check fails, and stops the steps after it.
  */
 async function makeScratch(
   project: string,
@@ -418,12 +420,18 @@ async function makeScratch(
     );
   try {
     // An issue Dispatch still shows in triage is out of the workflow an approval request stands in.
-    await written(
-      "status",
-      () => writes.setStatus(key, "in_progress"),
-      () => writes.readIssue(key),
-      out
-    );
+    const status = IssueStatus.parse(
+      await written(
+        "status",
+        () => writes.setStatus(key, "in_progress"),
+        () => writes.readIssue(key),
+        out
+      )
+    ).status;
+    if (status !== "in_progress") {
+      out(`status issue=${key} status=${OTHER} fail`);
+      return { key };
+    }
     const verification = await upload(VERIFICATION, WRITTEN.verification);
     const notes = await upload(NOTES, WRITTEN.notes);
     out(`scratch issue=${key} documents=${SPEC},${VERIFICATION},${NOTES} pass`);
@@ -537,7 +545,7 @@ async function checkControl(
  *  leaves no open request in production. */
 async function closeScratch(key: string, writes: DispatchWrites, out: Out): Promise<Verdict> {
   try {
-    const closed = ClosedIssue.parse(
+    const closed = IssueStatus.parse(
       await written(
         "close",
         () => writes.close(key),

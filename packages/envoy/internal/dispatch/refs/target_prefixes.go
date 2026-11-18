@@ -169,14 +169,15 @@ func messageShortIDCandidates(ctx context.Context, q Queryer, ids []ShortID, fou
 		return nil
 	}
 	lows, highs, issues := shortIDRanges(ids)
-	rows, err := q.Query(ctx, `select p.n, m.id::text, m.issue_key, coalesce(i.project_key, ''), m.body, `+ItemMessage.postMarkColumns("m")+`
+	rows, err := q.Query(ctx, `select p.n, m.id::text, m.issue_key, coalesce(i.project_key, ''), m.body,
+		       m.edited_at, m.deleted_at, m.deleted_by
 		from unnest($1::text[], $2::text[], $3::text[]) with ordinality as p (low, high, issue_key, n)
 		cross join lateral (
-			select m.id, m.issue_key, m.body, m.edited_at, m.deleted_at, m.deleted_by
+			select m.id, m.issue_key, m.body, `+ItemMessage.postMarkColumns("m")+`
 			from messages m
 			where m.id >= p.low::uuid and m.id <= p.high::uuid and m.issue_key = p.issue_key
 			order by m.id limit `+prefixLimit+`
-		) m
+		) m (id, issue_key, body, edited_at, deleted_at, deleted_by)
 		left join issues i on i.key = m.issue_key
 		order by p.n, m.id`, lows, highs, issues)
 	if err != nil {

@@ -32,6 +32,9 @@ const DIRECT = `notifications.agent.${SESSION}`
 const MESSAGE = "33333333-3333-4333-8333-333333333333"
 /** Where a reply to MESSAGE is posted, which a reply's landing names. */
 const REPLY_URL = `https://dispatch.test/api/v1/messages/${MESSAGE}/reply`
+/** A reply to MESSAGE Dispatch made and gave no copy of its answer for: what every reply of a
+ *  harness built with `repliesLand` throws, and whose message the line about it carries. */
+const REPLY_LANDED = new DispatchWriteLandedError(IDEMPOTENCY_KEY_COMMITTED, 409, "POST", REPLY_URL)
 
 /** One of a person's direct messages to this session, as the listener publishes it. */
 function personSends(
@@ -157,7 +160,7 @@ async function harness(input: {
   readonly commandEchoMs?: number
   readonly directory?: string
   /** Every reply is one Dispatch made and gave no copy of its answer for: it is recorded, then
-   *  thrown as `409 KEY_COMMITTED` (`DispatchWriteLandedError`). */
+   *  thrown as `409 KEY_COMMITTED` (`REPLY_LANDED`). */
   readonly repliesLand?: boolean
 }): Promise<Harness> {
   const directory = input.directory ?? (await mkdtemp(join(tmpdir(), "claude-envoy-turns-")))
@@ -195,7 +198,7 @@ async function harness(input: {
         ...(asked === undefined ? {} : { followUp: asked }),
       })
       if (input.repliesLand === true) {
-        throw new DispatchWriteLandedError(IDEMPOTENCY_KEY_COMMITTED, 409, "POST", REPLY_URL)
+        throw REPLY_LANDED
       }
     },
     session,
@@ -773,10 +776,6 @@ test("a BTW is answered from the model's fork and adds nothing to the conversati
   }
 })
 
-/** The message of a reply to MESSAGE Dispatch made and gave no copy of its answer for (`repliesLand`). */
-const REPLY_LANDED = new DispatchWriteLandedError(IDEMPOTENCY_KEY_COMMITTED, 409, "POST", REPLY_URL)
-  .message
-
 // A reply Dispatch made and gave no copy of its answer for answered the attempt: an error reply
 // after it would answer the person a second time with the error of a write that was made, and
 // the line says it landed, never that it did not reach Dispatch.
@@ -792,7 +791,7 @@ test("a BTW answer that landed with no answer back is followed by no error reply
     // Every reply the router posted, an error reply included, in the order it posted them.
     expect(session.order).toEqual(["reply:It is the migration guard."])
     expect(session.warnings).toEqual([
-      `a BTW answer to message ${MESSAGE} landed on Dispatch, which gave no copy of its answer — ${REPLY_LANDED}`,
+      `a BTW answer to message ${MESSAGE} landed on Dispatch, which gave no copy of its answer — ${REPLY_LANDED.message}`,
     ])
   } finally {
     await rm(session.directory, { recursive: true, force: true })
@@ -812,7 +811,7 @@ test("a reply that landed with no answer back is not said to have missed Dispatc
 
     expect(session.order).toEqual(["refresh", `reply:${modelPicked("anthropic/claude-opus-4-1")}`])
     expect(session.warnings).toEqual([
-      `a reply to message ${MESSAGE} landed on Dispatch, which gave no copy of its answer — ${REPLY_LANDED}`,
+      `a reply to message ${MESSAGE} landed on Dispatch, which gave no copy of its answer — ${REPLY_LANDED.message}`,
     ])
   } finally {
     await rm(session.directory, { recursive: true, force: true })

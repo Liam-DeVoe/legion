@@ -8,7 +8,7 @@ import type {
   IssueCoverage,
   IssueReferences,
 } from "@legion/contracts";
-import { actorText, deletedMark, editedMark } from "../actor-text";
+import { actorText, deletedMark, editedMark, withEditedMark } from "../actor-text";
 import { textHead } from "../ask-answer";
 import type { DispatchClient, GraphReferencesQuery } from "../dispatch-http";
 import { ITEM_KINDS, type ItemKind, type ParsedDispatchRef } from "../dispatch-owner";
@@ -190,9 +190,6 @@ export function blockLines(
 ): string[] {
   const unit = ref.item === undefined ? "version" : "revision";
   const blockID = node.block_id ?? ref.block;
-  // The edit mark of a post that stands: of a deleted one, the delete is what a read says (`read.ts`).
-  const edited =
-    node.deleted_at == null && node.edited_at != null ? ` · ${editedMark(node.edited_at)}` : "";
   const head =
     ref.item === undefined
       ? [
@@ -209,7 +206,11 @@ export function blockLines(
           ...(node.text === undefined ? [] : ["Text:", node.text]),
         ]
       : [
-          `${noun} ${blockID} of ${ref.item.kind} ${ref.item.id}${node.changed_version === undefined ? "" : ` (changed in revision ${node.changed_version})`}${edited}:`,
+          // The edit mark of a post that stands: of a deleted one, the delete is what a read says (`read.ts`).
+          `${withEditedMark(
+            `${noun} ${blockID} of ${ref.item.kind} ${ref.item.id}${node.changed_version === undefined ? "" : ` (changed in revision ${node.changed_version})`}`,
+            node.deleted_at == null ? node.edited_at : undefined
+          )}:`,
           ...(node.text === undefined ? [] : [node.text]),
         ];
   const { pin } = node;

@@ -260,9 +260,10 @@ func TestReferenceTargetsRefuseASetPastTheCapAndAReferenceItCannotRead(t *testin
 // delete no member gives a word of either post, with trees or without: a member naming the post
 // keeps its place, not gone, named "" and carrying the delete's mark, and a member naming its
 // block is gone, with no name and no tree and the same mark, as a block read of it is refused
-// naming the deletion. The tag of a set naming the two blocks alone, which the edit leaves as
-// they were, changes at the edit and again at the delete: a holder of the older tag is answered
-// the new answer, never 304.
+// naming the deletion. Each still carries the time of the edit before the delete, whether the
+// request names the post and its block (the whole set) or the blocks alone. The tag of a set
+// naming the two blocks alone, which the edit leaves as they were, changes at the edit and again
+// at the delete: a holder of the older tag is answered the new answer, never 304.
 func TestReferenceTargetsMarkAnEditedPostAndGiveNoWordOfADeletedOne(t *testing.T) {
 	handler, _ := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -347,7 +348,19 @@ func TestReferenceTargetsMarkAnEditedPostAndGiveNoWordOfADeletedOne(t *testing.T
 	if commentDeleted == nil || messageDeleted == nil {
 		t.Fatalf("the deletes answered no mark: comment %v, message %v", commentDeleted, messageDeleted)
 	}
-	deletedAt := []*time.Time{commentDeleted, commentDeleted, messageDeleted, messageDeleted}
+	deletedAt := []time.Time{*commentDeleted, *commentDeleted, *messageDeleted, *messageDeleted}
+	// deleteMarked fails t unless member, answered for ref after the delete in the read what names,
+	// carries the edit before the delete at edited and alice's delete at deleted.
+	deleteMarked := func(what, ref string, member model.ReferenceTarget, edited, deleted time.Time) {
+		t.Helper()
+		if member.EditedAt == nil || !member.EditedAt.Equal(edited) {
+			t.Errorf("after the delete (%s) %s carries edited_at %v, want the edit's time %s", what, ref, member.EditedAt, edited)
+		}
+		if member.DeletedAt == nil || !member.DeletedAt.Equal(deleted) ||
+			member.DeletedBy == nil || member.DeletedBy.Kind != "user" || member.DeletedBy.ID != "alice" {
+			t.Errorf("after the delete (%s) %s carries the mark %v by %#v, want alice's delete at %s", what, ref, member.DeletedAt, member.DeletedBy, deleted)
+		}
+	}
 	for _, trees := range []bool{false, true} {
 		members, body := read(trees)
 		for _, word := range []string{commentWords, messageWords} {
@@ -359,11 +372,17 @@ func TestReferenceTargetsMarkAnEditedPostAndGiveNoWordOfADeletedOne(t *testing.T
 			if block := member.Kind == "block"; member.Gone != block || member.Name != "" || len(member.TextTree) != 0 {
 				t.Errorf("after the delete (trees %t) %s answered %#v, want no name and no tree, the post in its place and its block gone", trees, set[index], member)
 			}
-			if member.DeletedAt == nil || !member.DeletedAt.Equal(*deletedAt[index]) ||
-				member.DeletedBy == nil || member.DeletedBy.Kind != "user" || member.DeletedBy.ID != "alice" {
-				t.Errorf("after the delete (trees %t) %s carries the mark %v by %#v, want alice's delete at %s", trees, set[index], member.DeletedAt, member.DeletedBy, *deletedAt[index])
-			}
+			deleteMarked("the post and its block, trees "+strconv.FormatBool(trees), set[index], member, editedAt[index], deletedAt[index])
 		}
 	}
-	changedBlocks("after the delete", editedTag)
+	deletedBlocks, _ := changedBlocks("after the delete", editedTag)
+	if len(deletedBlocks) != len(blocks) {
+		t.Fatalf("after the delete the blocks alone answered %#v, want one member per block", deletedBlocks)
+	}
+	for index, member := range deletedBlocks {
+		if !member.Gone || member.Name != "" {
+			t.Errorf("after the delete (the blocks alone) %s answered %#v, want it gone with no name", blocks[index], member)
+		}
+		deleteMarked("the blocks alone", blocks[index], member, editedAt[2*index+1], deletedAt[2*index+1])
+	}
 }

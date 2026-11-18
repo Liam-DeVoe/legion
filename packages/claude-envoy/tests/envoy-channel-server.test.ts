@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
+import { IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
@@ -684,7 +685,7 @@ test("a rejected frame's report that landed with no answer back is not said to b
       fetch: (request) => {
         replies.push(new URL(request.url).pathname)
         return Response.json(
-          { code: "KEY_COMMITTED", error: "this request already ran" },
+          { code: IDEMPOTENCY_KEY_COMMITTED, error: "this request already ran" },
           { status: 409 },
         )
       },

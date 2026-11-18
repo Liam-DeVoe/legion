@@ -60,3 +60,13 @@ export function deletedMark(at: string, by: Actor | WrittenActor | null | undefi
 export function editedMark(at: string): string {
   return `edited ${at}`;
 }
+
+/**
+ * `words`, what a line about a post holds so far, followed by ` · ` and `editedMark(at)` where its
+ * author edited the post (`at`, the time of the last edit), and as they are where `at` is null or
+ * undefined: the join of the mark to what the line prints before it, as `editedMark` says a line
+ * makes it.
+ */
+export function withEditedMark(words: string, at: string | null | undefined): string {
+  return at == null ? words : `${words} · ${editedMark(at)}`;
+}

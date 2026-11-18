@@ -468,11 +468,11 @@ type loopSend struct {
 	// accept lists the statuses other than 2xx this write takes as the object existing.
 	accept  []int
 	localID func(body []byte) string
-	// match and want find what the write made when it landed with no answer to give
-	// (callResult.landed): readBack's element whose field match is want. Every title, name and
-	// body the seed writes is one object's own. An empty match is a write whose localID reads no
-	// answer at all (a resolve, the project).
-	match, want string
+	// match finds what the write made when it landed with no answer to give
+	// (callResult.landed): readBack's element whose field match holds what the write's body holds
+	// under match. Every title, name and body the seed writes is one object's own. An empty match is
+	// a write whose localID reads no answer at all (a resolve, the project).
+	match string
 }
 
 // loopLandedUnread is the code a write that landed is counted under when the read of what it
@@ -526,8 +526,8 @@ func (w *loopWriter) send(ctx context.Context, s loopSend) (string, bool, error)
 
 // readBack finds what a landed write made in the list the GET of its own route answers - the
 // project's issues for an issue create, the issue's documents or comments for theirs, each of
-// which holds every object of its kind - as the element whose field s.match is s.want: its key
-// for an issue, else its id; "" when no element is.
+// which holds every object of its kind - as the element whose field s.match holds what s.body
+// holds under s.match: its key for an issue, else its id; "" when no element is.
 func (w *loopWriter) readBack(ctx context.Context, s loopSend) (string, error) {
 	path, id := s.url, "id"
 	if s.kind == loopKindIssue {
@@ -541,9 +541,10 @@ func (w *loopWriter) readBack(ctx context.Context, s loopSend) (string, error) {
 	if err := json.Unmarshal(res.body, &rows); err != nil {
 		return "", fmt.Errorf("GET %s: %w", path, err)
 	}
+	want, _ := s.body.(map[string]any)[s.match].(string)
 	for _, row := range rows {
 		var got, local string
-		if json.Unmarshal(row[s.match], &got) == nil && got == s.want && json.Unmarshal(row[id], &local) == nil {
+		if json.Unmarshal(row[s.match], &got) == nil && got == want && json.Unmarshal(row[id], &local) == nil {
 			return local, nil
 		}
 	}
@@ -682,14 +683,13 @@ func (w *loopWriter) createProject(ctx context.Context) error {
 // proposal writes one issue and everything on it.
 func (w *loopWriter) proposal(ctx context.Context, index int) error {
 	pr := &w.plan.Proposals[index]
-	title := loopIssueTitle(pr)
 	key, ok, err := w.send(ctx, loopSend{
 		kind: loopKindIssue, path: loopIssuePath(index), route: "POST /api/v1/issues",
 		method: "POST", url: "/api/v1/issues",
-		body: map[string]any{"project": w.project, "title": title,
+		body: map[string]any{"project": w.project, "title": loopIssueTitle(pr),
 			"spec": loopIssueSpec(pr), "force": true, "actor": loopSeedActorBody},
 		localID: localOfKey,
-		match:   "title", want: title,
+		match:   "title",
 	})
 	if err != nil {
 		return err
@@ -744,16 +744,15 @@ func (w *loopWriter) skipProposal(index int, pr *loopProposal) {
 func (w *loopWriter) part(ctx context.Context, key string, proposal, part int) error {
 	threads := w.plan.partThreads(proposal, part)
 	text := w.plan.partDocument(proposal, part)
-	name := loopPartName(part)
 	doc, ok, err := w.send(ctx, loopSend{
 		kind: loopKindPart, path: loopPartPath(proposal, part),
 		route:  "POST /api/v1/issues/{key}/artifacts",
 		method: "POST", url: "/api/v1/issues/" + key + "/artifacts",
-		body: loopDocBody(name, text,
+		body: loopDocBody(loopPartName(part), text,
 			fmt.Sprintf("part %03d of the Verified Linux spec loop's seed", part+1)),
 		bytes:   int64(len(text)),
 		localID: idOf,
-		match:   "name", want: name,
+		match:   "name",
 	})
 	if err != nil {
 		return err
@@ -815,7 +814,7 @@ func (w *loopWriter) thread(ctx context.Context, key, doc string, th loopThread)
 			"anchor": map[string]any{"artifact": doc, "quote": th.Quote}},
 		bytes:   int64(len(body)),
 		localID: idOf,
-		match:   "body", want: body,
+		match:   "body",
 	})
 	if err != nil {
 		return err
@@ -838,7 +837,7 @@ func (w *loopWriter) thread(ctx context.Context, key, doc string, th loopThread)
 				"actor": loopSeedActorBody},
 			bytes:   int64(len(reply)),
 			localID: idOf,
-			match:   "body", want: reply,
+			match:   "body",
 		}); err != nil {
 			return err
 		}
@@ -862,16 +861,15 @@ func (w *loopWriter) review(ctx context.Context, key string, proposal int) error
 		// The seed writes a page's first generation; a verdict of a run writes the next of the
 		// same size over it (events.go, case kindVerdict).
 		text := loopPageText(proposal, page.Index, 0, page.Bytes)
-		name := loopPageName(page.Index)
 		if _, _, err := w.send(ctx, loopSend{
 			kind: loopKindPage, path: loopPagePath(proposal, page.Index),
 			route:  "POST /api/v1/issues/{key}/artifacts",
 			method: "POST", url: "/api/v1/issues/" + key + "/artifacts",
-			body: loopDocBody(name, text,
+			body: loopDocBody(loopPageName(page.Index), text,
 				fmt.Sprintf("review page %04d of proposal %04d", page.Index+1, proposal)),
 			bytes:   int64(len(text)),
 			localID: idOf,
-			match:   "name", want: name,
+			match:   "name",
 		}); err != nil {
 			return err
 		}
@@ -889,7 +887,7 @@ func (w *loopWriter) review(ctx context.Context, key string, proposal int) error
 			fmt.Sprintf("the review index of proposal %04d", proposal)),
 		bytes:   int64(len(text)),
 		localID: idOf,
-		match:   "name", want: loopIndexName,
+		match:   "name",
 	})
 	return err
 }

@@ -32,6 +32,7 @@ import {
   handedBack,
   ISSUE,
   opened,
+  recorded,
   recordedAt,
   recordedRounds,
   reply,
@@ -84,12 +85,6 @@ function humanReply(seq: number) {
 function withdrawnReply(seq: number, at: number) {
   const { body: _withdrawn, ...routing } = humanReply(seq).payload;
   return { ...routing, deleted_at: recordedAt(at), deleted_by: human };
-}
-
-/** An event of the human's own at `at`, on the issue the request is on. */
-function byHuman(at: number) {
-  const { type: _type, payload: _payload, ...recorded } = humanReply(at);
-  return recorded;
 }
 
 /** A message the human posted on the issue, which no ask names, edited at 8 and deleted at 9: a
@@ -408,13 +403,13 @@ describe("ask census", () => {
     const edited = humanReply(4);
     const corrections: PostCorrection[] = [
       {
-        ...byHuman(6),
+        ...recorded(6, human),
         type: "comment.edited",
         payload: { ...edited.payload, body: "Why not hourly?", edited_at: recordedAt(6) },
       },
-      { ...byHuman(7), type: "comment.deleted", payload: withdrawnReply(2, 7) },
-      { ...byHuman(8), type: "message.edited", payload: withdrawnMessage },
-      { ...byHuman(9), type: "message.deleted", payload: withdrawnMessage },
+      { ...recorded(7, human), type: "comment.deleted", payload: withdrawnReply(2, 7) },
+      { ...recorded(8, human), type: "message.edited", payload: withdrawnMessage },
+      { ...recorded(9, human), type: "message.deleted", payload: withdrawnMessage },
     ];
     const asRead = [
       opened(1, 1),

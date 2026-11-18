@@ -11,9 +11,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// decodeEvent decodes one Dispatch event of LEGION-7, built from its fields, as the consumer
-// would: the fact, and the fields the decoder could not read.
-func decodeEvent(t *testing.T, eventType string, actor, payload map[string]any) decodedMessage {
+// dispatchEventJSON is one Dispatch event of LEGION-7, built from its fields, as Dispatch writes
+// it.
+func dispatchEventJSON(t *testing.T, eventType string, actor, payload map[string]any) []byte {
 	t.Helper()
 	event, err := json.Marshal(map[string]any{
 		"id": 40, "issue_key": "LEGION-7", "seq": 12, "type": eventType, "notify": true,
@@ -22,6 +22,14 @@ func decodeEvent(t *testing.T, eventType string, actor, payload map[string]any) 
 	if err != nil {
 		t.Fatalf("encode the event: %v", err)
 	}
+	return event
+}
+
+// decodeEvent decodes one Dispatch event of LEGION-7, built from its fields (dispatchEventJSON),
+// as the consumer would: the fact, and the fields the decoder could not read.
+func decodeEvent(t *testing.T, eventType string, actor, payload map[string]any) decodedMessage {
+	t.Helper()
+	event := dispatchEventJSON(t, eventType, actor, payload)
 	decoded, err := decodeMessage("notifications.dispatch.issue.LEGION-7."+eventType, "LEGION", nil, envelopeJSON(t, "dispatch-40", "dispatch", string(event)))
 	if err != nil {
 		t.Fatalf("decode %s: %v, want no poison", eventType, err)
@@ -53,19 +61,12 @@ func TestACallbackReplyDecodesAsTheReplyItIs(t *testing.T) {
 	}
 }
 
-// decodeLoggedEvent decodes one Dispatch event of LEGION-7, built from its fields, as the boot
-// catch-up does: as Dispatch's issue event log serves it (DecodeDispatchEvent), which is where a
-// deleted post's events are read masked.
+// decodeLoggedEvent decodes one Dispatch event of LEGION-7, built from its fields
+// (dispatchEventJSON), as the boot catch-up does: as Dispatch's issue event log serves it
+// (DecodeDispatchEvent), which is where a deleted post's events are read masked.
 func decodeLoggedEvent(t *testing.T, eventType string, actor, payload map[string]any) decodedMessage {
 	t.Helper()
-	event, err := json.Marshal(map[string]any{
-		"id": 40, "issue_key": "LEGION-7", "seq": 12, "type": eventType, "notify": true,
-		"created_at": "2026-10-25T12:00:00Z", "actor": actor, "payload": payload,
-	})
-	if err != nil {
-		t.Fatalf("encode the event: %v", err)
-	}
-	fact, unread, err := DecodeDispatchEvent("LEGION", "LEGION-7", event)
+	fact, unread, err := DecodeDispatchEvent("LEGION", "LEGION-7", dispatchEventJSON(t, eventType, actor, payload))
 	if err != nil {
 		t.Fatalf("decode %s from the event log: %v, want no refusal", eventType, err)
 	}

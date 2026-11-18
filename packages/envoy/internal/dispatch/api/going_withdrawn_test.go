@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -243,13 +244,8 @@ func TestGoingRunStillAnsweringAtTheDeleteSlipsNoFramePastIt(t *testing.T) {
 		t.Fatalf("ask: status=%d body=%s", response.Code, response.Body.String())
 	}
 	run := decodeBody[askedRun](t, response)
-	t.Cleanup(func() {
-		select {
-		case <-answerer.release:
-		default:
-			close(answerer.release)
-		}
-	})
+	release := sync.OnceFunc(func() { close(answerer.release) })
+	t.Cleanup(release)
 
 	sink := &goingStreamSink{header: http.Header{}, flushed: make(chan struct{}, 4)}
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/going/requests/"+run.ID+"/stream", nil)
@@ -265,7 +261,7 @@ func TestGoingRunStillAnsweringAtTheDeleteSlipsNoFramePastIt(t *testing.T) {
 	})
 
 	deleteThreadComment(t, rig.handler, comment.ID, "alice")
-	close(answerer.release)
+	release()
 	select {
 	case err := <-answerer.stored:
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {

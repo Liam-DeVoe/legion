@@ -3,6 +3,7 @@ package intake
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -155,7 +156,7 @@ func TestLabelSetterPassesOverDeletedPostsAndCorrections(t *testing.T) {
 	if err != nil || bare != "session" {
 		t.Fatalf("LabelSetter of the issue's own events = %q, %v; want the session that labelled it", bare, err)
 	}
-	withPosts := append(append(append(append([]json.RawMessage{created}, posts(2)...), labelled), posts(9)...), kept)
+	withPosts := slices.Concat([]json.RawMessage{created}, posts(2), []json.RawMessage{labelled}, posts(9), []json.RawMessage{kept})
 	got, err := LabelSetter(withPosts)
 	if err != nil {
 		t.Fatalf("LabelSetter of the log with the deleted posts and corrections: %v", err)

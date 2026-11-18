@@ -506,7 +506,9 @@ The steps print one line each, in this order:
   `gh api repos/cybermonklabs/legion/compare/<merge>...<commit> --jq .status` (`ahead` or
   `identical`). An unreadable `/healthz` makes the run unavailable.
 - **Scratch**: the issue and its three documents, `scratch issue=<KEY>
-  documents=spec.md,verification.md,notes.md pass`.
+  documents=spec.md,verification.md,notes.md pass`. Its status write must leave the issue
+  `in_progress`: an issue that stands in any other status prints `status issue=<KEY>
+  status=other fail` in place of that line.
 - **Request**: `POST /api/v1/artifacts/{id}/approval-requests` with `include_verification`,
   `request ask=<uuid> include-verification=yes pass`.
 - **Moved**, an assertion: `POST /api/v1/artifacts/{id}/edits` writes a new version of
@@ -542,10 +544,10 @@ printing `scratch|status|upload|request|close landed: read back` first: the scra
 newest open issue of the project holding the scratch title (`GET /api/v1/issues?project=`), an
 upload the issue's document of that name (`GET /api/v1/issues/{key}/artifacts`), the request the
 issue's open approval ask on the spec (`GET /api/v1/issues/{key}/asks?state=open`), and a status
-write or the close the issue as it stands (`GET /api/v1/issues/{key}`). Where the read finds
-nothing, the step prints `unavailable: landed`. An edit that landed is `moved unavailable:
-landed` or `control unavailable: landed`: the report it is judged by was in the answer Dispatch
-no longer has.
+write or the close the issue as it stands (`GET /api/v1/issues/{key}`), whose status is checked
+as the write's own answer would be. Where the read finds nothing, the step prints `unavailable:
+landed`. An edit that landed is `moved unavailable: landed` or `control unavailable: landed`: the
+report it is judged by was in the answer Dispatch no longer has.
 
 The last two lines are `result pass|fail|unavailable exit=<code>` and the count of the
 assertions, `all 3 assertions passed` or `assertions passed <n> of 3`, so a reader can tell a

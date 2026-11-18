@@ -43,31 +43,11 @@ func requireReplyBlock(t *testing.T, step string, got, want *model.ReplyBlock) {
 	if same && got != nil {
 		plain, wanted := *got, *want
 		plain.EditedAt, wanted.EditedAt = nil, nil
-		same = plain == wanted && sameTime(got.EditedAt, want.EditedAt)
+		same = plain == wanted && sameInstant(got.EditedAt, want.EditedAt)
 	}
 	if !same {
 		t.Fatalf("%s: reply_block = %s, want %s", step, describeReplyBlock(got), describeReplyBlock(want))
 	}
-}
-
-// sameTime is whether two optional times are both absent or the same instant.
-func sameTime(got, want *time.Time) bool {
-	return (got == nil) == (want == nil) && (got == nil || got.Equal(*want))
-}
-
-// commentEditedAt is comment id's edited_at as GET /api/v1/comments/{id} reads it, nil while
-// nobody edited it.
-func commentEditedAt(t *testing.T, handler http.Handler, id string) *time.Time {
-	t.Helper()
-	editedAt := readCommentThread(t, handler, id).Comment.EditedAt
-	if editedAt == nil {
-		return nil
-	}
-	at, err := time.Parse(time.RFC3339Nano, *editedAt)
-	if err != nil {
-		t.Fatalf("comment %s's edited_at %q: %v", id, *editedAt, err)
-	}
-	return &at
 }
 
 // requireRefusal fails unless the response is a 400 with code whose message holds message.
@@ -256,17 +236,15 @@ func TestAReplyNamesTheBlockItAnswers(t *testing.T) {
 	requireCommentBlocks(t, database, old, "the owed comment after the reply", "b1@1 b2@1", 1)
 
 	// Alice's edit removes b2: the reply still names it, removed, with the text it last held.
-	requireEdit(t, "remove beta", editCommentAs(t, handler, x.ID, "Alpha.", nil, nil))
 	removed := *beta
 	removed.Removed = true
-	removed.EditedAt = commentEditedAt(t, handler, x.ID)
+	removed.EditedAt = new(editThreadComment(t, handler, x.ID, "Alpha.", "alice"))
 	requireReplyBlock(t, "GET the reply after the edit removed b2", readCommentThread(t, handler, reply.ID).Comment.ReplyBlock, &removed)
 	requireReplyBlock(t, "the root's replies after the edit", readCommentThread(t, handler, x.ID).Replies[0].ReplyBlock, &removed)
 	requireRefusal(t, "a removed block", post(map[string]any{"body": "On beta.", "reply_to": x.ID, "reply_to_block": "b2"}),
 		"INVALID_COMMENT", "reply_to_block b2 is not a block of comment "+x.ID)
-	requireEdit(t, "restore beta", editCommentAs(t, handler, x.ID, "Alpha.\n\nBeta.", nil, nil))
 	restored := *beta
-	restored.EditedAt = commentEditedAt(t, handler, x.ID)
+	restored.EditedAt = new(editThreadComment(t, handler, x.ID, "Alpha.\n\nBeta.", "alice"))
 	requireReplyBlock(t, "GET the reply after the edit restored b2", readCommentThread(t, handler, reply.ID).Comment.ReplyBlock, &restored)
 
 	// The delivery callback names a block of the comment that mentioned the session.
@@ -571,7 +549,7 @@ func quotedEdit(t *testing.T, handler http.Handler, step, path string) *time.Tim
 // quoted post's own edited_at (nil: nobody edited it).
 func requireQuotedEdit(t *testing.T, handler http.Handler, step, path string, want *time.Time) {
 	t.Helper()
-	if got := quotedEdit(t, handler, step, path); !sameTime(got, want) {
+	if got := quotedEdit(t, handler, step, path); !sameInstant(got, want) {
 		t.Fatalf("%s: reply_block.edited_at = %v, want %v", step, got, want)
 	}
 }
@@ -590,12 +568,8 @@ func TestAReplysQuoteOfAnEditedPostCarriesThePostsEdit(t *testing.T) {
 	}, "bob")
 	replyPath := "/api/v1/comments/" + reply.ID
 	requireQuotedEdit(t, handler, "the comment reply while its parent stands unedited", replyPath, nil)
-	requireEdit(t, "edit the comment the reply quotes", editCommentAs(t, handler, root.ID, "One, said again.\n\nTwo.", nil, nil))
-	rootEdit := commentEditedAt(t, handler, root.ID)
-	if rootEdit == nil {
-		t.Fatalf("the edited comment %s reads no edited_at", root.ID)
-	}
-	requireQuotedEdit(t, handler, "the comment reply after its parent's edit", replyPath, rootEdit)
+	rootEdit := editThreadComment(t, handler, root.ID, "One, said again.\n\nTwo.", "alice")
+	requireQuotedEdit(t, handler, "the comment reply after its parent's edit", replyPath, &rootEdit)
 
 	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "One.\n\nTwo."}, "alice")
 	answer := createIssueMessage(t, handler, issue.Key, map[string]any{
@@ -603,12 +577,11 @@ func TestAReplysQuoteOfAnEditedPostCarriesThePostsEdit(t *testing.T) {
 	}, "bob")
 	answerPath := "/api/v1/issues/" + issue.Key + "/messages/" + answer.ID
 	requireQuotedEdit(t, handler, "the message reply while its parent stands unedited", answerPath, nil)
-	editIssueMessage(t, handler, message.ID, "One, said again.\n\nTwo.", "alice")
-	parent := decodeBody[messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/messages/"+message.ID, nil, "alice"))
-	if parent.Message.EditedAt == nil {
-		t.Fatalf("the edited message %s reads no edited_at", message.ID)
+	messageEdit := editIssueMessage(t, handler, message.ID, "One, said again.\n\nTwo.", "alice").EditedAt
+	if messageEdit == nil {
+		t.Fatalf("the edit of message %s answered no edited_at", message.ID)
 	}
-	requireQuotedEdit(t, handler, "the message reply after its parent's edit", answerPath, parent.Message.EditedAt)
+	requireQuotedEdit(t, handler, "the message reply after its parent's edit", answerPath, messageEdit)
 }
 
 // A7's last sentence: a reply an older build wrote, with no block state, still shows after the

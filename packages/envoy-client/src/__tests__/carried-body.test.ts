@@ -261,9 +261,9 @@ describe("renderInbound and a body an event did not carry whole", () => {
     ).toBe(mark);
   });
 
-  // The architect's ruling: a card that re-reads the post prints the mark. The re-read gives the
-  // words the post holds now, which an edit since the event replaced, so the card says it was
-  // edited and when, beside those words, as every line that prints an edited post does.
+  // A card that re-reads the post prints the mark. The re-read gives the words the post holds
+  // now, which an edit since the event replaced, so the card says it was edited and when, beside
+  // those words, as every line that prints an edited post does.
   test("a card that re-reads an item edited since carries the edited mark beside its words", async () => {
     const edit = { body: STORED_BODY, edited_at: "2026-09-10T00:00:00Z" };
     const marked = `${STORED_BODY} · edited 2026-09-10T00:00:00Z`;
@@ -284,15 +284,31 @@ describe("renderInbound and a body an event did not carry whole", () => {
     ).toBe(marked);
   });
 
-  // The other half of the ruling: a card that prints only what its delivery frame carried is a
-  // delivery Dispatch already sent, and keeps what it carried, with no mark, though Dispatch now
-  // holds the post edited.
+  // A card that prints only what its delivery frame carried is a delivery Dispatch already sent,
+  // and keeps what it carried, with no mark, though Dispatch now holds the post edited. Each frame
+  // here carries an edited_at of its own, so a card that printed a mark from its frame would print
+  // one.
   test("a card that prints only what its frame carried carries no edited mark", () => {
-    const rode = renderInbound(envelopeOf(wholeEvent), SESSION);
+    const edited_at = "2026-09-10T00:00:00Z";
+    const rode = renderInbound(
+      envelopeOf({
+        ...wholeEvent,
+        payload: { ...comment, body: STORED_BODY, edited_at, artifact_name: "" },
+      }),
+      SESSION
+    );
     expect(rode.content).toContain(`body: ${JSON.stringify(STORED_BODY)}`);
     expect(rode.content).not.toContain("· edited");
 
-    const kept = renderInbound(envelopeOf(cutEvent), SESSION, undefined, undefined);
+    const kept = renderInbound(
+      envelopeOf({
+        ...cutEvent,
+        payload: { ...comment, edited_at, body_truncated: true, artifact_name: "" },
+      }),
+      SESSION,
+      undefined,
+      undefined
+    );
     expect(kept.content).toContain(`body: ${CARRIED_BODY}`);
     expect(kept.content).not.toContain("· edited");
   });
