@@ -217,6 +217,11 @@ type Issue struct {
 	// that queues the notice, and PutIssue keeps the stored value as it does for moved_at: every
 	// pass that records an issue holds a copy read before its own telling.
 	TreeStalledToldAt *time.Time
+	// StepRole is the role of the step at the place of the issue's task, running or stopped: read
+	// with the issue from its run's plan rows (plan_tasks and plan_steps at the issue's
+	// generation), "" where the run has no plan rows or its task stands at no step. It is read
+	// only: PutIssue writes nothing of it, and workflow's moveTask sets it on the issue it moves.
+	StepRole claim.Role
 }
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
@@ -421,6 +426,16 @@ func (i Issue) WorkingPhase() phase.Phase {
 		return i.Hold.From
 	}
 	return i.Phase
+}
+
+// RoleAt is the role that works the issue at p: the role of the step its task stands at
+// (StepRole) for phase.Step, whose role the plan names, and phase.RoleFor(p) for every other
+// phase.
+func (i Issue) RoleAt(p phase.Phase) claim.Role {
+	if p == phase.Step {
+		return i.StepRole
+	}
+	return phase.RoleFor(p)
 }
 
 // EventMark places a Dispatch event in its issue's event log: its sequence on the issue (Seq) and

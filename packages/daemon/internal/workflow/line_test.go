@@ -98,6 +98,42 @@ func TestAWalkOfDeploymentStepsRunsThemAsStep(t *testing.T) {
 	}
 }
 
+// A move of the task sets the role of the step it moves to on the issue the caller holds, so a
+// reader of that issue after the move, in the same transaction, reads the role a fresh read of the
+// store gives: implementer at the first step, reviewer at the second, and none at the retro.
+func TestAMoveOfTheTaskSetsTheRoleOfItsStep(t *testing.T) {
+	pool := migratedPool(t)
+	engine := stepEngine(nil)
+	root := stepRoot(t, pool, phase.Implementing)
+	seedOwnersPlan(t, pool, root.Key, root.Generation)
+	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := engine.store.Issue(ctx, tx, root.Key)
+		if err != nil || issue == nil {
+			return fmt.Errorf("read %s: %v (recorded %t)", root.Key, err, issue != nil)
+		}
+		w, err := engine.walk(ctx, tx, *issue)
+		if err != nil {
+			return err
+		}
+		for _, move := range []struct {
+			to   phase.Phase
+			role claim.Role
+		}{{phase.Implementing, "implementer"}, {phase.Reviewing, "reviewer"}, {phase.Retro, ""}} {
+			if err := engine.moveTask(ctx, tx, issue, &w, move.to, record.TaskRunning); err != nil {
+				return err
+			}
+			read, err := engine.store.Issue(ctx, tx, root.Key)
+			if err != nil {
+				return err
+			}
+			if issue.StepRole != move.role || read.StepRole != move.role {
+				t.Errorf("after the move to %s, the moved issue's StepRole = %q and a fresh read's = %q, want %q", move.to, issue.StepRole, read.StepRole, move.role)
+			}
+		}
+		return nil
+	})
+}
+
 // taskStands says why key's task does not stand at place in state with issues.phase the phase
 // that place derives, nil when it does. The phase and the task's row are read in one select, so
 // the two are the store's at one moment; want is the phase the move should have reached, which

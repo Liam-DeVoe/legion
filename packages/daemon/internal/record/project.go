@@ -766,7 +766,8 @@ func later(a, b time.Time) time.Time {
 // design gate has never opened is its architect at work, so it waits on nothing and keeps its
 // row.
 //
-// Planning, implementing, testing, reviewing and retro each have a phase worker with work.
+// Planning, implementing, testing, reviewing, step and retro each have a worker with work: step's
+// is the role of the deployment the plan names for the step the issue's task stands at.
 // Merging has one too, and keeps it: its merger's own merge is what ends the phase, so there is
 // no armed READY waiting on a person here any more. Admitted is work only for
 // a root whose design gate has never opened at every step the deployment gates, where its
@@ -775,7 +776,7 @@ func later(a, b time.Time) time.Time {
 // accepting, held, awaiting_person, done.
 func AtWork(issue Issue, gate TreeGate) bool {
 	switch issue.Phase {
-	case phase.Planning, phase.Implementing, phase.Testing, phase.Reviewing, phase.Retro:
+	case phase.Planning, phase.Implementing, phase.Testing, phase.Reviewing, phase.Step, phase.Retro:
 		return true
 	case phase.Merging:
 		// The merger works this phase, so an issue in it is at work. Its own merge is what ends
@@ -790,12 +791,12 @@ func AtWork(issue Issue, gate TreeGate) bool {
 
 // PhaseKeepsSlot is the one list of the phases that hold one of the cap's slots: admitted, where
 // a root's architect writes its design and a started child waits to be entered again;
-// awaiting_person; the four phases a step's worker runs besides the owner's acceptance —
-// planning, implementing, testing and reviewing; and held, which is reached here only where the
-// record names no earlier phase for the hold (StandsAt). Every other phase holds none: accepting,
-// retro and merging (in the default steps, the phases after the review), and done, which has
-// finished. A step after accepting whose phase keeps a slot waits for one again
-// (workflow.StartOrOwe).
+// awaiting_person; the phases a step's worker runs besides the owner's acceptance — planning,
+// implementing, testing, reviewing, and step, where a role of the deployment works; and held,
+// which is reached here only where the record names no earlier phase for the hold (StandsAt).
+// Every other phase holds none: accepting, retro and merging (in the default steps, the phases
+// after the review), and done, which has finished. A step after accepting whose phase keeps a
+// slot waits for one again (workflow.StartOrOwe).
 //
 // It is written as one list so that a later change adds or removes one entry and every reader of
 // the rule moves with it. Two read it, and a phase in one and not the other would be a deadlock:
@@ -806,7 +807,7 @@ func AtWork(issue Issue, gate TreeGate) bool {
 func PhaseKeepsSlot(at phase.Phase) bool {
 	switch at {
 	case phase.Admitted, phase.AwaitingPerson, phase.Planning, phase.Implementing, phase.Testing,
-		phase.Reviewing, phase.Held:
+		phase.Reviewing, phase.Step, phase.Held:
 		return true
 	default:
 		return false
@@ -816,12 +817,12 @@ func PhaseKeepsSlot(at phase.Phase) bool {
 // KeepsSlot is the phase half of the admission rule: an issue holds one of the cap's slots from
 // the moment the daemon starts it until it stands in accepting, retro or merging, which hold
 // none, or until it is done or Dispatch takes it out of the workflow (InWorkflow). Every other
-// phase keeps the row — admitted, awaiting_person, the four worker phases and a hold the record
-// names no phase for (PhaseKeepsSlot) — so an issue waiting for a person or for its review keeps
-// its place against the cap and wins none back from the line when the wait ends. A wait on
-// another issue is the one wait that is not read here: an issue the daemon has started that waits
-// on one gives its row back and stands in the line for one again, by the rule beside this
-// (blockers.waitsOf, admit's releaseSlotsForWaits), save the roots that rule names as keepers.
+// phase keeps the row — admitted, awaiting_person, the five worker phases (step among them) and a
+// hold the record names no phase for (PhaseKeepsSlot) — so an issue waiting for a person or for its
+// review keeps its place against the cap and wins none back from the line when the wait ends. A
+// wait on another issue is the one wait that is not read here: an issue the daemon has started
+// that waits on one gives its row back and stands in the line for one again, by the rule beside
+// this (blockers.waitsOf, admit's releaseSlotsForWaits), save the roots that rule names as keepers.
 // That rule reads this one first, so an issue in accepting, retro or merging waits on nothing
 // there (blockers.waitsOf). The rule whole is root AGENTS.md's "Admission".
 //

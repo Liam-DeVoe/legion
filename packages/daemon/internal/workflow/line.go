@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -130,11 +131,13 @@ func issuePhaseOf(w Walk, place record.TaskPlace, state string) phase.Phase {
 
 // moveTask is the one writer of where a task stands (C8): it moves w's task to the place of to in
 // state (record.Store.MoveTask), keeping its place on a move to done, and sets issue.Phase to the
-// phase that place derives (issuePhaseOf), in the caller's transaction and before the caller's
-// write of issue (record.Store.PutIssue), so the two never disagree in the store. w then stands
-// where the task does, for whatever the caller reads of it after the move. A run with no plan rows
-// has no task to move, and issue.Phase is to, as it always was. A move to where the task already
-// stands writes nothing. The caller clears or keeps issue.Hold itself.
+// phase that place derives (issuePhaseOf) and issue.StepRole to the role of the step at that place
+// ("" at the retro, the merge or no act), in the caller's transaction and before the caller's
+// write of issue (record.Store.PutIssue), so the two never disagree in the store and a caller that
+// reads the issue after the move reads the role a fresh read gives. w then stands where the task
+// does, for whatever the caller reads of it after the move. A run with no plan rows has no task to
+// move, and issue.Phase is to, as it always was. A move to where the task already stands writes
+// nothing. The caller clears or keeps issue.Hold itself.
 //
 // A write of issues.phase that does not move the task keeps its place and says so where it is
 // made: a hold, which overlays held on the derived phase (claimFailed); the retry of a hold, which
@@ -160,6 +163,10 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w
 		w.Place, w.State = place, state
 	}
 	issue.Phase = issuePhaseOf(*w, place, state)
+	issue.StepRole = ""
+	if place.Kind == record.PlaceStep && place.Position >= 1 && place.Position <= len(w.Steps) {
+		issue.StepRole = claim.Role(w.Steps[place.Position-1].Role)
+	}
 	return nil
 }
 
