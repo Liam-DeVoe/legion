@@ -22,8 +22,10 @@ function pointers(block: ArtifactBlock, name: string): readonly string[] {
 
 /** A block a pointer names, drawn as its own words once the graph answers them and as the
  *  reference's short form until then; a pointer that names nothing shows as the text it is. The
- *  words are the label every link to a reference shows (`useReferenceLabel`), so a block of an
- *  edited post carries ` · edited` and an empty block never draws an empty link. */
+ *  words are the label every link to a reference shows (`useReferenceLabel`), so an empty block
+ *  never draws an empty link. Every block here is a document's - the task's own, and what its
+ *  pointers name, which is never a block of a comment or a message (`parseBlockPointerValue`) -
+ *  so no link here prints a post. */
 function BlockLink({ reference }: { reference: string }): ReactNode {
   const route = parseNodeReference(reference);
   const { text } = useReferenceLabel(route, useReferenceTarget(route, { text: false }));

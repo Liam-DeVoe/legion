@@ -12,6 +12,7 @@ import {
 import { askThreadsIssue, eventRefreshTargets } from "../api/event-refresh";
 import {
   advancesIssuesQuery,
+  agentMessagesQuery,
   architectureSourcesQuery,
   askThreadQuery,
   inboxQuery,
@@ -66,6 +67,9 @@ const READS = {
   // The work under another priority, which a delete of linkage-closure leaves where it is.
   otherAdvancesWork: { key: advancesIssuesQuery({ advances: "oss-verify" }, true).queryKey },
   agentsPicker: { key: ["agents", "issue-picker"] },
+  // The Agents page's conversation with session planner, which lists the issue messages aimed at
+  // it.
+  agentConversation: { key: agentMessagesQuery("planner").queryKey },
   answers: { key: ["me", "answers"] },
   architecture: { key: ["architecture", "CORE"] },
   ask: { key: askQuery("ask-1").queryKey },
@@ -185,6 +189,8 @@ const READS = {
     data: { edges: [], node: { id: "CORE-1/spec#intro", kind: "block" } },
     key: blockQuery("dispatch://CORE-1/spec#b-intro@v2").queryKey,
   },
+  // CORE-1's spec itself, as its document page reads it (`ProofDocument`).
+  specDocument: { key: ["artifact", "artifact-3"] },
   // CORE-1's spec, one document, opened on two spellings of its address.
   specPanel: {
     data: { edges: [], node: { id: "artifact-3", kind: "artifact" } },
@@ -1412,6 +1418,21 @@ const rules: Record<string, Rule> = {
     refreshes: ["projects"],
     spares: ["projectDefaultAssignees", "inbox", "detail"],
   },
+  // A message's correction names the logins with a row on its thread, as its create does: a
+  // viewer it does not name, and who did not write it, reads no thread row again.
+  "a correction of a message in a thread the viewer has no row in leaves the viewer's Inbox thread rows alone":
+    {
+      event: event("message.edited", { id: "message-0", target: null, thread_logins: ["bob"] }),
+      refreshes: ["conversationMessages", "messageBlock"],
+      spares: ["inboxThreads", "replies"],
+    },
+  // The answers page lists the viewer's answers and replies on asks: a comment on no ask is none
+  // of them, and neither is the ask list or the Inbox row of an ask.
+  "a delete of a comment on no ask leaves the answers page and every ask read alone": {
+    event: event("comment.deleted", { anchor: null, ask_id: null, id: "comment-1" }),
+    refreshes: ["comment", "comments"],
+    spares: ["answers", "asks", "inbox", "projectInbox"],
+  },
 };
 
 test.each(Object.entries(rules))("%s", (_name, rule) => {
@@ -1426,6 +1447,101 @@ test.each(Object.entries(rules))("%s", (_name, rule) => {
     expect({ read: name, refreshed: refreshed.includes(name) }).toEqual({
       read: name,
       refreshed: false,
+    });
+  }
+});
+
+type Correction = "comment.edited" | "comment.deleted" | "message.edited" | "message.deleted";
+
+/** One edit and one delete of each kind of post of CORE-1: comment-1, a reply to root-1 in ask-1's
+ *  thread, anchored in CORE-1's spec; and message-0, a root aimed at session planner. Alice has a
+ *  row on both threads: the message's correction names her in `thread_logins`, and the comment's
+ *  carries none, which every viewer's rows read again on. */
+const corrections: Record<Correction, DispatchEvent> = {
+  "comment.edited": event("comment.edited", {
+    anchor: { artifact_id: "artifact-3" },
+    ask_id: "ask-1",
+    id: "comment-1",
+    reply_to: "root-1",
+  }),
+  "comment.deleted": event("comment.deleted", {
+    anchor: { artifact_id: "artifact-3" },
+    ask_id: "ask-1",
+    id: "comment-1",
+    reply_to: "root-1",
+  }),
+  "message.edited": event("message.edited", {
+    id: "message-0",
+    target: "session:planner",
+    thread_logins: ["alice"],
+  }),
+  "message.deleted": event("message.deleted", {
+    id: "message-0",
+    target: "session:planner",
+    thread_logins: ["alice"],
+  }),
+};
+
+const commentCorrections: readonly Correction[] = ["comment.edited", "comment.deleted"];
+const messageCorrections: readonly Correction[] = ["message.edited", "message.deleted"];
+
+/** Each read a post's create refreshes that prints the post - its body, a part of it, or its edit
+ *  and delete marks - with the corrections of the posts it prints. */
+const correctedReads: readonly (readonly [string, readonly Correction[], readonly ReadName[]])[] = [
+  [
+    "the Inbox's thread rows and their count",
+    [...commentCorrections, ...messageCorrections],
+    ["inboxThreads", "replies"],
+  ],
+  ["the issue's References tab", [...commentCorrections, ...messageCorrections], ["referencesTab"]],
+  [
+    "the issue's comments, which the margin and the Conversation draw",
+    commentCorrections,
+    ["comments"],
+  ],
+  [
+    "the issue's ask lists and the Inbox rows of the ask the comment replies on",
+    commentCorrections,
+    ["asks", "askThreads", "inbox", "projectInbox"],
+  ],
+  ["the document the comment is anchored in", commentCorrections, ["specDocument"]],
+  [
+    "the comment's read, its root's, and its ask's read and thread",
+    commentCorrections,
+    ["comment", "rootComment", "ask", "thread"],
+  ],
+  [
+    "every read of the comment's blocks",
+    commentCorrections,
+    ["commentBlock", "commentBlockPinned"],
+  ],
+  ["the answers page", commentCorrections, ["answers"]],
+  ["every read of the message's blocks", messageCorrections, ["messageBlock"]],
+  [
+    "the Agents page's conversation the message is aimed at",
+    messageCorrections,
+    ["agentConversation"],
+  ],
+  [
+    "the issue's message reads, which the Conversation and every reference to a message draw",
+    messageCorrections,
+    ["conversationMessages", "message", "rootMessage"],
+  ],
+];
+
+// R2 and R3 of dispatch://INFRA-1523: a page open across a post's edit or delete marks the post
+// edited, or says it is deleted and prints no part of it, without a reload, so every read that
+// prints a post reads again on its corrections as it does on its create.
+test.each(
+  correctedReads.flatMap(([page, types, names]) =>
+    types.map((type) => [type, page, names] as const)
+  )
+)("%s refreshes %s", (type, _page, names) => {
+  const refreshed = refreshedReads(corrections[type]);
+  for (const name of names) {
+    expect({ read: name, refreshed: refreshed.includes(name) }).toEqual({
+      read: name,
+      refreshed: true,
     });
   }
 });

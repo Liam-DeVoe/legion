@@ -79,6 +79,55 @@ test("eventDescription labels an edited ask with its new question", () => {
   expect(eventDescription(editedAskEvent())).toEqual(["Ask edited: Publish?"]);
 });
 
+// The line of a deleted post's event says who deleted it, where its body would be. The read of
+// the event takes the body out and stamps the marks in its place (`api/events.go`); this payload
+// keeps its body beside the marks, so only the line's own reading of them keeps the words off.
+// The delete's own event reads the same, and a payload that carries the time alone says the post
+// is deleted and names nobody.
+test("eventDescription reads a deleted post's events as who deleted it, with no part of its body", () => {
+  const alice = { id: "alice", kind: "user" } as const;
+  const post = (type: DispatchEvent["type"], marks: Record<string, unknown>): DispatchEvent =>
+    ({
+      actor: alice,
+      created_at: "2026-09-11T00:00:00Z",
+      id: 5,
+      issue_key: "CORE-1",
+      notify: false,
+      payload: {
+        author: alice,
+        body: "Ship it on Friday.",
+        id: "post-1",
+        issue_key: "CORE-1",
+        ...marks,
+      },
+      seq: 5,
+      type,
+    }) as DispatchEvent;
+  const deleted = { deleted_at: "2026-09-11T01:00:00Z", deleted_by: alice };
+
+  for (const [type, kind] of [
+    ["comment.created", "Comment"],
+    ["comment.answered", "Comment"],
+    ["comment.deleted", "Comment"],
+    ["message.created", "Message"],
+    ["message.answered", "Message"],
+    ["message.deleted", "Message"],
+  ] as const) {
+    expect({ type, line: eventDescription(post(type, deleted)) }).toEqual({
+      type,
+      line: [`${kind} deleted by `, { actor: alice }],
+    });
+  }
+  expect(eventDescription(post("comment.created", { deleted_at: deleted.deleted_at }))).toEqual([
+    "Comment deleted",
+  ]);
+  expect(eventDescription(post("message.deleted", { deleted_at: deleted.deleted_at }))).toEqual([
+    "Message deleted",
+  ]);
+  // The same payload with no marks is a post that stands, and its line is its body.
+  expect(eventDescription(post("message.created", {}))).toEqual(["Ship it on Friday."]);
+});
+
 function answeredAskEvent(
   previousAnswer?: Extract<DispatchEvent, { type: "ask.answered" }>["payload"]["previous_answer"]
 ): Extract<DispatchEvent, { type: "ask.answered" }> {

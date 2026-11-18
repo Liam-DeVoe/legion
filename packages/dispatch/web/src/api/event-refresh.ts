@@ -386,12 +386,17 @@ function appendRepliedBlock(targets: RefreshTarget[], event: DispatchEvent): voi
   }
 }
 
-/** The signed-in person's answers page lists every answer and every reply on an ask, so the
- *  two events that write one refresh it. The query exists only while that page is open. */
+/** The signed-in person's answers page lists every answer and every reply on an ask, and prints
+ *  each reply's body with its edit and delete marks, so the two events that write one refresh
+ *  it, and so do the edit and the delete of a reply on an ask. The query exists only while that
+ *  page is open. */
 function appendAnswersPage(targets: RefreshTarget[], event: DispatchEvent): void {
   if (
     event.type === "ask.answered" ||
-    (event.type === "comment.created" && payloadString(event, "ask_id") !== undefined)
+    ((event.type === "comment.created" ||
+      event.type === "comment.edited" ||
+      event.type === "comment.deleted") &&
+      payloadString(event, "ask_id") !== undefined)
   ) {
     targets.push({ queryKey: ["me", "answers"] });
   }
@@ -517,7 +522,15 @@ function isMessageEvent(event: DispatchEvent): boolean {
 // The writes that fire a `user_threads` trigger - a comment, a session's reply to a mention
 // (`comment.answered`), an issue message or a reply to one, an answer - and an ask opening
 // (settlement restoring one) or being resolved, which decides whether the Inbox lists its thread
-// instead. An edit, a resolution of a comment, a delivery or a claim moves no row.
+// instead. A resolution of a comment, a delivery or a claim moves no row.
+//
+// An edit or a delete of a comment or an issue message (`comment.edited`, `comment.deleted`,
+// `message.edited`, `message.deleted`) moves no row either, but it changes what a row prints: a
+// Reply row draws its thread's root (`subject`, with the root's edit time and its delete marks,
+// `ThreadTitle`) and its newest reply (`reply.first_line`), so an Inbox that did not read its rows
+// again would go on printing a post's old words after its edit, and a deleted post's words after
+// its delete (R2 and R3 of dispatch://INFRA-1523). The correction's `thread_logins` decides whose
+// rows read again, as a create's does, and every viewer's do where it carries none.
 //
 // A hand-on (`ask.asked_of`) is here for the same reason an assignee move is: the Inbox leaves
 // out the Reply row of an open ask it already lists (`myRepliesOwner` in the server's
@@ -538,8 +551,12 @@ function isMessageEvent(event: DispatchEvent): boolean {
 const INBOX_THREAD_WRITES: Partial<Record<EventType, true>> = {
   "comment.created": true,
   "comment.answered": true,
+  "comment.edited": true,
+  "comment.deleted": true,
   "message.created": true,
   "message.answered": true,
+  "message.edited": true,
+  "message.deleted": true,
   "ask.opened": true,
   "ask.answered": true,
   "ask.asked_of": true,

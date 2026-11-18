@@ -1,17 +1,26 @@
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
+  createAsk,
   createComment,
   createIssue,
   createMessage,
   createProject,
   deleteComment,
+  deleteMessage,
+  editComment,
   editMessage,
   getCommentHistory,
   getMessageHistory,
 } from "./api";
 import { marginCard, openSpec } from "./editor";
 import { hasReadingPane, inboxPane } from "./inbox-pane";
-import { replyRowId, seedCommentThread, THREAD_SESSION } from "./inbox-threads";
+import {
+  holdReadMarks,
+  replyRowId,
+  seedCommentThread,
+  seedMessageThread,
+  THREAD_SESSION,
+} from "./inbox-threads";
 import { expect, type Locator, test } from "./test";
 import { asUser } from "./users";
 
@@ -21,17 +30,20 @@ import { asUser } from "./users";
  * (`data-post-deleted`) where its text was, with no part of that text anywhere on the page
  * (`web/src/features/refs/PostBody.tsx`).
  *
- * Three rows over the four pages chk-pages names: the issue's Conversation and the margin of
- * its spec in one row, which read one deleted comment two ways from one seeding; the Inbox
- * thread of a reply to such a comment; and a session's own conversation page. Each row seeds
- * through the API and then reads the page, because the mark is the server's record drawn by
- * the component rather than anything the browser can make on its own, and each pays a Go
+ * Five rows. Three read the four pages chk-pages names: the issue's Conversation and the margin
+ * of its spec in one row, which read one deleted comment two ways from one seeding; the Inbox
+ * thread of a reply to such a comment; and a session's own conversation page. Each of those
+ * seeds through the API and then reads the page, because the mark is the server's record drawn
+ * by the component rather than anything the browser can make on its own, and each pays a Go
  * server, a Postgres, a sign-in and a database reset for that, which is why the two pages that
- * read one comment are read by one row. Every other surface that prints a body is covered by a
- * test of its component in `web/src`, which CI runs.
+ * read one comment are read by one row. The other two hold a page open while the post's author
+ * edits it and then deletes it through the API - the Inbox's thread rows and the answers page -
+ * and read the marks without a reload: the event each correction appends makes the page read its
+ * list again (`web/src/api/event-refresh.ts`). Every other surface that prints a body is covered
+ * by a test of its component in `web/src`, which CI runs.
  *
  * No row here carries the ` @pr` tag, so the suite that answers a pull request schedules none
- * of them and the full lane, which the merge queue and the nightly run, holds all three:
+ * of them and the full lane, which the merge queue and the nightly run, holds all five:
  * `main` is gated exactly as it would be with the tag. The lane's real-stack share is full at
  * its 150 (`e2e/__tests__/pull-request-lane.test.ts`), and the stubbed layer cannot take these
  * rows, because each writes to the server — a `PATCH` of a message, a `DELETE` of a comment —
@@ -184,6 +196,97 @@ test("the Inbox thread of a reply to a deleted comment reads that comment as del
     await expect(deletedLine(rootTurn)).toHaveText(/^Deleted by alice · /);
     await expect(body.getByText("Seven days, and the eighth is dropped.")).toBeVisible();
     await expect(page.getByText("How far back does the replay go?")).toHaveCount(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+// An Inbox left open while a thread's root is edited and then deleted reads its rows again on
+// each correction's event: the row prints the root, so it carries ` · edited` after the edit and
+// the deleted line in place of the words after the delete, with no reload. One comment thread and
+// one issue message thread, since each kind of post has correction events of its own. The page's
+// read marks are held, so no mark of a thread the reading column shows reads the rows again in
+// their place.
+// SLOW(>=2s): two posts written, edited and deleted through the API on top of the sign-in, and
+// each correction waited for on the open page through the live feed, which starts a read's
+// refetches at least a second apart (`MIN_REFETCH_INTERVAL_MS`).
+test("an open Inbox marks a thread's root edited and then deleted without a reload", async ({
+  browser,
+}) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "The replay window" });
+  const comment = await seedCommentThread(
+    issue.key,
+    "How far back does the replay go?",
+    "Seven days, and the eighth is dropped."
+  );
+  const message = await seedMessageThread(
+    issue.key,
+    "Is the mirror caught up?",
+    "Two hours behind, replaying."
+  );
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await holdReadMarks(page);
+    await page.goto("/");
+    const commentRow = page.locator(`[data-inbox-row="${replyRowId(comment)}"]`);
+    const messageRow = page.locator(`[data-inbox-row="${replyRowId(message)}"]`);
+    await expect(commentRow).toContainText("How far back does the replay go?");
+    await expect(messageRow).toContainText("Is the mirror caught up?");
+    await expect(commentRow).not.toContainText("edited");
+
+    await editComment(comment, { body: "How far back does the nightly replay go?" });
+    await editMessage(message, { body: "Is the mirror caught up yet?" });
+    await expect(commentRow).toContainText("How far back does the nightly replay go? · edited");
+    await expect(messageRow).toContainText("Is the mirror caught up yet? · edited");
+
+    await deleteComment(comment);
+    await deleteMessage(message);
+    await expect(deletedLine(commentRow)).toHaveText("Deleted by alice");
+    await expect(deletedLine(messageRow)).toHaveText("Deleted by alice");
+    await expect(commentRow).not.toContainText("replay go");
+    await expect(messageRow).not.toContainText("caught up");
+    await expect(page.getByText(/replay go\?|caught up/)).toHaveCount(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+// The answers page left open while its reader edits and then deletes a reply they wrote on an ask
+// reads its rows again on each correction's event: the row marks the reply edited, then says it
+// is deleted and prints none of it, with no reload.
+// SLOW(>=2s): an ask and a reply written, then edited and deleted through the API on top of the
+// sign-in, and each correction waited for on the open page through the live feed, which starts a
+// read's refetches at least a second apart (`MIN_REFETCH_INTERVAL_MS`).
+test("an open answers page marks a reply edited and then deleted without a reload", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Build question" });
+  const ask = await createAsk(
+    issue.key,
+    { options: [{ label: "Nightly" }, { label: "Release" }], question: "Which build ships?" },
+    asPlanner
+  );
+  const reply = await createComment(issue.key, { ask_id: ask.id, body: "Does nightly count?" });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/answers");
+    const row = page.locator(`[data-answer-row="${ask.id}"]`);
+    await expect(row).toContainText("Replied: Does nightly count?");
+
+    await editComment(reply.id, { body: "Does the nightly build count?" });
+    await expect(row).toContainText("Replied · edited: Does the nightly build count?");
+
+    await deleteComment(reply.id);
+    await expect(deletedLine(row)).toHaveText(/^Deleted by alice · /);
+    await expect(row).not.toContainText("count?");
+    await expect(row).not.toContainText("edited");
   } finally {
     await alice.close();
   }

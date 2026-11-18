@@ -177,6 +177,42 @@ test("a pointer to a block whose text is empty reads as the reference's short fo
   expect(needs.getByRole("link").textContent).toBe("CORE-1 plan-md block");
 });
 
+// A pointer names a block of a document, never a block of a comment or an issue message
+// (`parseBlockPointerValue`, after Go's `pmdoc.validateBlockPointerValues`): a value naming one is
+// no pointer at all, so the tab reads no post's block and prints none of its words. An edited or
+// deleted post has nothing here to mark or to withhold.
+test("a value naming a block of a comment or a message is no pointer, and the tab reads and prints no post", async () => {
+  const comment = "dispatch://CORE-1/comment/11111111-1111-4111-8111-111111111111#b-b1";
+  const message = "dispatch://CORE-1/message/22222222-2222-4222-8222-222222222222#b-b1";
+  const { getArtifactBlocks, getReferences, view } = renderTab(plan(), [
+    {
+      attributes: [
+        { kind: "block[]", name: "serves", value: comment },
+        { kind: "block[]", name: "needs", value: message },
+      ],
+      from: 0,
+      id: "t1",
+      references: { asks: 0, comments: 0 },
+      to: 4,
+      token: "sha256:t1",
+      type: "plan_task",
+    },
+  ]);
+  restore = () => {
+    getArtifactBlocks.mockRestore();
+    getReferences.mockRestore();
+    view.unmount();
+  };
+
+  const task = within(await screen.findByTestId("plan-task"));
+  // The task's own block is read and drawn; the two values beside it are not.
+  await task.findByRole("link", { name: "Draw the panel." });
+  expect(task.getByTestId("plan-task-serves").textContent).toBe("Servesnone");
+  expect(task.getByTestId("plan-task-needs").textContent).toBe("Needsnone");
+  expect(getReferences).not.toHaveBeenCalledWith(comment);
+  expect(getReferences).not.toHaveBeenCalledWith(message);
+});
+
 // A plan is approved by its plan review, never by a person, and the chip beside it says so.
 test("the plan review's approval shows on the tab", async () => {
   const { getArtifactBlocks, getReferences, view } = renderTab(
