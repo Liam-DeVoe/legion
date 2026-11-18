@@ -315,10 +315,11 @@ func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
 	if kept.repeat {
 		s.record.charge.forgive()
 	}
-	// A repeat's kept copy is another request's when its event_id is not this send's, which the
-	// 202 says with duplicate as a 200 does (deliveredHeld), and which tells a client the shorter
+	// The kept copy is another request's when its event_id is not this send's, whether the keep
+	// read it as a repeat or answered its own resend or in-process refusal with it, which the 202
+	// says with duplicate as a 200 does (deliveredHeld), and which tells a client the shorter
 	// answer another sender gets (requestSender.answer) from a whole one.
-	duplicate := kept.repeat && kept.item.EventID != s.item.EventID
+	duplicate := kept.item.EventID != s.item.EventID
 	asked := s.item
 	s.record.asked = &asked
 	s.item = s.sender.answer(kept.item)

@@ -137,9 +137,10 @@ func publishHeld(ctx context.Context, reader storedReader, publish storedPublish
 //
 //   - sequence 0, which names no copy, refused before any read as a defence: the read would hand
 //     back the subject's first message, another one. nats-server v2.10.29 acknowledged a
-//     duplicate at 0 for an id it had staged there; the 2.11 line answers a staged id with the
-//     in-process error instead, and later lines stage nothing, so no server the listener admits
-//     sends one (packages/envoy/AGENTS.md);
+//     duplicate at 0 for an id it had staged there (server/jetstream_cluster.go:7984-7996); the
+//     2.11 line answers a staged id with the in-process error 10158 instead (:8571-8579 in
+//     v2.11.12-RC.1), and v2.12.0 and later stage nothing, so no server the listener admits
+//     sends one;
 //   - a read that failed or did not answer within ctx;
 //   - a stream that holds nothing at seq on subject, as after an operator's delete, or at the
 //     edge of the 72-hour age, which equals the duplicate window, where the stream can still

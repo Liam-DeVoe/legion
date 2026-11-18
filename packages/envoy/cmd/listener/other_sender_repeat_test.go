@@ -4,7 +4,9 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -15,6 +17,8 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
+	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/roles"
 )
 
 // TestARepeatByAnotherSenderLearnsTheKeyIsTakenAndNotTheText is check c-other-sender-repeat.
@@ -176,6 +180,53 @@ func TestARepeatByAnotherSenderLearnsTheKeyIsTakenAndNotTheText(t *testing.T) {
 		first.requireStatus(t, "the tokened first publish to the unclaimed role", http.StatusAccepted)
 		if kept := r.stored(t); !reflect.DeepEqual(first.envelope, kept) || first.Duplicate {
 			t.Fatalf("the tokened first publish answered %s, want its own kept copy %+v whole with no duplicate", first.raw, kept)
+		}
+	})
+}
+
+// A keep that answers its own resend or its own in-process refusal with the copy the role's kept
+// lane holds reads it as no repeat (keptRoleCopy.repeat false), and that copy can still be another
+// sender's: the 202 then says duplicate, with the copy's ids and times alone, as it does for a
+// repeat. The control is the keep's own copy, answered whole with no duplicate.
+func TestAKeptAnswerOfAnotherSendersCopyIsDuplicateOutsideARepeat(t *testing.T) {
+	rig := newSenderLimitRig(t)
+	topic := contracts.RoleTopicPrefix + "kept-outside-" + id.New()
+	key := publishDedupePrefix + uuid.NewString()
+	aliceCopy := contracts.MessageEnvelope(contracts.Message{SourceSession: "ses_kept_outside_alice", Text: "alice's kept words"}, topic, key)
+	bobItem := contracts.MessageEnvelope(contracts.Message{SourceSession: "ses_kept_outside_bob", Text: "bob's words"}, topic, key)
+	// keep is the 202 a send of item answers when the keep, reading no repeat, hands it kept.
+	keep := func(t *testing.T, item, kept contracts.Envelope) heldAnswer {
+		t.Helper()
+		var logs strings.Builder
+		recorder := httptest.NewRecorder()
+		send := &roleSend{
+			w:      recorder,
+			record: &requestRecord{logger: logging.NewWithWriter("test", &logs), line: "listener publish", laneKey: "topic", lane: topic, item: &item},
+			d:      rig.deps,
+			item:   item,
+			sender: requestSender{eventID: item.EventID, source: item.Source, session: item.SourceSession},
+		}
+		send.kept(roles.Resolution{State: roles.Unclaimed}, keptRoleCopy{item: kept, until: 1, repeat: false})
+		answer := limitedAnswer{status: recorder.Code, raw: recorder.Body.String()}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
+			t.Fatalf("decode the kept answer %s: %v", answer.raw, err)
+		}
+		answer.requireStatus(t, "the kept answer", http.StatusAccepted)
+		return held(t, answer)
+	}
+
+	t.Run("case: another sender's kept copy, read as no repeat, is answered with duplicate and its ids alone", func(t *testing.T) {
+		answer := keep(t, bobItem, aliceCopy)
+		got := answer.envelope
+		if !answer.Duplicate || got.EventID != aliceCopy.EventID || got.PayloadSummary != "" || got.SourceSession != "" {
+			t.Fatalf("the kept answer of Alice's copy to Bob is %s, want duplicate and Alice's event_id with no text or session", answer.raw)
+		}
+	})
+
+	t.Run("control: the keep's own copy is answered whole with no duplicate", func(t *testing.T) {
+		answer := keep(t, bobItem, bobItem)
+		if answer.Duplicate || !reflect.DeepEqual(answer.envelope, bobItem) {
+			t.Fatalf("the kept answer of Bob's own copy is %s, want it whole with no duplicate", answer.raw)
 		}
 	})
 }
